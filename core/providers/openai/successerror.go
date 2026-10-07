@@ -41,7 +41,41 @@ func errorInValidatedChatBody(body []byte) *schemas.BifrostError {
 	if message == "" {
 		return nil
 	}
+	return inBandError(errObj, message)
+}
 
+// errorInChatChoices returns a BifrostError when a decoded 2xx chat-completions body
+// or stream chunk reports a failed choice, and nil otherwise. OpenRouter reports a
+// failure during generation on the choice itself: choices[i].error {code, message,
+// metadata} with finish_reason "error", next to the 200 it already committed
+// (https://openrouter.ai/docs/api-reference/errors). A finish_reason of "error"
+// without an error object is a failure too. It reads only the decoded choices, so the
+// success path pays no extra JSON pass.
+func errorInChatChoices(choices []schemas.BifrostResponseChoice) *schemas.BifrostError {
+	for i := range choices {
+		choice := &choices[i]
+		if len(choice.Error) > 0 {
+			if errObj := gjson.ParseBytes(choice.Error); errObj.IsObject() {
+				message := errObj.Get("message").String()
+				if message == "" {
+					message = choiceErrorMessage
+				}
+				return inBandError(errObj, message)
+			}
+		}
+		if choice.FinishReason != nil && *choice.FinishReason == "error" {
+			return inBandError(gjson.Result{}, choiceErrorMessage)
+		}
+	}
+	return nil
+}
+
+// choiceErrorMessage describes a failed choice whose provider gave no message.
+const choiceErrorMessage = `provider ended the choice with finish_reason "error"`
+
+// inBandError builds the BifrostError for an in-band failure on a 2xx response.
+// errObj is the provider's error object, or the zero Result when it sent none.
+func inBandError(errObj gjson.Result, message string) *schemas.BifrostError {
 	// OpenRouter types error.code as a number and sets the HTTP status to match it
 	// on pre-stream failures; OpenAI uses a string slug there instead. Honour the
 	// numeric form as a status code and keep either form as the code field.

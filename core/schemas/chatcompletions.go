@@ -1675,6 +1675,7 @@ type BifrostResponseChoice struct {
 	Index        int              `json:"index"`
 	FinishReason *string          `json:"finish_reason,omitempty"`
 	LogProbs     *BifrostLogProbs `json:"logprobs,omitempty"`
+	Error        json.RawMessage  `json:"error,omitempty"` // In-band failure of this choice on a 200 (OpenRouter), passed through untouched
 
 	*TextCompletionResponseChoice
 	*ChatNonStreamResponseChoice

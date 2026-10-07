@@ -6088,3 +6088,111 @@ func TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel(t *testing.T)
 		t.Errorf("Expected range over empty stream to yield 0 chunks, got %d", count)
 	}
 }
+
+// TestInBandChoiceErrorFallsBack pins that a 200 whose choice reports a failure
+// (choices[i].error with finish_reason "error", as OpenRouter sends once generation
+// has started) is an error, not a success: without a fallback the caller gets the
+// provider's status and message, and with one the request moves to the fallback.
+// Covers both orchestrator loops and a top-level error as the control.
+func TestInBandChoiceErrorFallsBack(t *testing.T) {
+	const choiceError = `{"id":"gen-1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,` +
+		`"message":{"role":"assistant","content":""},"finish_reason":"error",` +
+		`"error":{"code":429,"message":"upstream rate limited","metadata":{"error_type":"rate_limit_exceeded"}}}]}`
+	const choiceErrorChunk = `{"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,` +
+		`"delta":{"content":""},"finish_reason":"error","error":{"code":429,"message":"upstream rate limited"}}]}`
+	const topLevelError = `{"error":{"code":429,"message":"upstream rate limited"}}`
+
+	for _, tc := range []struct {
+		name      string
+		streaming bool
+		body      string
+	}{
+		{name: "unary choice error", body: choiceError},
+		{name: "unary top-level error", body: topLevelError},
+		{name: "stream choice error", streaming: true, body: choiceErrorChunk},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.streaming {
+					sseHandler(tc.body)(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, tc.body)
+			}))
+			defer primary.Close()
+			var fallbackHits atomic.Int32
+			fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fallbackHits.Add(1)
+				if tc.streaming {
+					sseHandler(`{"id":"c","object":"chat.completion.chunk","created":1,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`)(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, `{"id":"c","object":"chat.completion","created":1,"model":"gpt-4o-mini",`+
+					`"choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`)
+			}))
+			defer fallback.Close()
+
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.OpenRouter, 1, 1, primary.URL)
+			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, fallback.URL)
+			account.configs[schemas.OpenRouter].NetworkConfig.MaxRetries = 0
+			account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+			account.SetKeysForProvider(schemas.OpenRouter, []schemas.Key{
+				{ID: "openrouter-key", Value: *schemas.NewSecretVar("sk-or"), Models: schemas.WhiteList{"*"}, Weight: 100},
+			})
+			account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+				{ID: "openai-key", Value: *schemas.NewSecretVar("sk-openai"), Models: schemas.WhiteList{"*"}, Weight: 100},
+			})
+			client := newStreamTestClient(t, account)
+
+			request := func(fallbacks []schemas.Fallback) (string, *schemas.BifrostError) {
+				req := &schemas.BifrostChatRequest{
+					Provider: schemas.OpenRouter,
+					Model:    "openai/gpt-4o-mini",
+					Input: []schemas.ChatMessage{
+						{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+					},
+					Fallbacks: fallbacks,
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+				if !tc.streaming {
+					resp, bifrostErr := client.ChatCompletionRequest(ctx, req)
+					if bifrostErr != nil {
+						return "", bifrostErr
+					}
+					return *resp.Choices[0].Message.Content.ContentStr, nil
+				}
+				stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, req)
+				if bifrostErr != nil {
+					return "", bifrostErr
+				}
+				for chunk := range stream {
+					if chunk.BifrostError != nil {
+						return "", chunk.BifrostError
+					}
+				}
+				return "streamed", nil
+			}
+
+			_, bifrostErr := request(nil)
+			if bifrostErr == nil {
+				t.Fatal("an in-band failure on a 200 must surface as an error")
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusTooManyRequests {
+				t.Errorf("status = %v, want 429 from the provider's numeric code", bifrostErr.StatusCode)
+			}
+			if bifrostErr.Error == nil || bifrostErr.Error.Message != "upstream rate limited" {
+				t.Errorf("error = %+v, want the provider's message", bifrostErr.Error)
+			}
+
+			if _, bifrostErr := request([]schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-4o-mini"}}); bifrostErr != nil {
+				t.Fatalf("fallback after an in-band failure failed: %s", bifrostErr.Error.Message)
+			}
+			if fallbackHits.Load() != 1 {
+				t.Fatalf("fallback hits = %d, want 1", fallbackHits.Load())
+			}
+		})
+	}
+}

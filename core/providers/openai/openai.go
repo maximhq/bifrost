@@ -944,6 +944,9 @@ func HandleOpenAIChatCompletionRequest(
 	} else {
 		inBandErr = errorInValidatedChatBody(body)
 	}
+	if inBandErr == nil {
+		inBandErr = errorInChatChoices(response.Choices)
+	}
 	if inBandErr != nil {
 		logger.Debug("in-band error on a 200 from %s provider: %s", providerName, inBandErr.Error.Message)
 		return nil, providerUtils.EnrichError(ctx, inBandErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
@@ -1285,6 +1288,14 @@ func HandleOpenAIChatCompletionStreaming(
 			// choices be array if nil
 			if response.Choices == nil {
 				response.Choices = []schemas.BifrostResponseChoice{}
+			}
+
+			// A failure during generation can arrive on the choice instead of as a
+			// top-level error (see errorInChatChoices).
+			if chunkErr := errorInChatChoices(response.Choices); chunkErr != nil {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, chunkErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
+				return
 			}
 
 			if isResponsesToChatCompletionsFallback {

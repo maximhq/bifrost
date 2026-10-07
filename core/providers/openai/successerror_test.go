@@ -1,6 +1,11 @@
 package openai
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/schemas"
+)
 
 // TestErrorInSuccessfulChatBody pins that an error object smuggled into a 2xx
 // chat-completions body is surfaced as an error rather than reported as success.
@@ -101,6 +106,100 @@ func TestErrorInSuccessfulChatBody(t *testing.T) {
 			// The upstream produced this, so it must not be attributed to Bifrost.
 			if got.IsBifrostError {
 				t.Error("IsBifrostError = true; an upstream in-band error is not a Bifrost error")
+			}
+		})
+	}
+}
+
+// TestErrorInChatChoices pins the choice-level form of an in-band failure. OpenRouter
+// reports a failure during generation on the choice itself, as choices[i].error
+// {code, message, metadata} with finish_reason "error", on both unary bodies and
+// stream chunks; a bare finish_reason "error" is a failure too.
+func TestErrorInChatChoices(t *testing.T) {
+	decode := func(t *testing.T, body string) []schemas.BifrostResponseChoice {
+		t.Helper()
+		var response schemas.BifrostChatResponse
+		if err := sonic.UnmarshalString(body, &response); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return response.Choices
+	}
+	tests := []struct {
+		name           string
+		body           string
+		wantErr        bool
+		wantMessage    string
+		wantStatusCode int
+		wantType       string
+	}{
+		{
+			name:           "choice error with numeric code",
+			body:           `{"choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"error","error":{"code":429,"message":"upstream rate limited","metadata":{"error_type":"rate_limit_exceeded"}}}]}`,
+			wantErr:        true,
+			wantMessage:    "upstream rate limited",
+			wantStatusCode: 429,
+			wantType:       "rate_limit_exceeded",
+		},
+		{
+			name:           "choice error with string code",
+			body:           `{"choices":[{"index":0,"delta":{},"finish_reason":"error","error":{"code":"server_error","message":"generation failed"}}]}`,
+			wantErr:        true,
+			wantMessage:    "generation failed",
+			wantStatusCode: 502,
+		},
+		{
+			name:           "bare finish_reason error",
+			body:           `{"choices":[{"index":0,"message":{"role":"assistant","content":"partial"},"finish_reason":"error"}]}`,
+			wantErr:        true,
+			wantMessage:    `provider ended the choice with finish_reason "error"`,
+			wantStatusCode: 502,
+		},
+		{
+			name:           "error on a later choice",
+			body:           `{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"},{"index":1,"finish_reason":"error","error":{"code":500,"message":"second choice failed"}}]}`,
+			wantErr:        true,
+			wantMessage:    "second choice failed",
+			wantStatusCode: 500,
+		},
+		{
+			name: "ordinary completion",
+			body: `{"choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`,
+		},
+		{
+			name: "explicit null choice error",
+			body: `{"choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop","error":null}]}`,
+		},
+		{
+			name: "no choices",
+			body: `{"choices":[]}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := errorInChatChoices(decode(t, tt.body))
+			if !tt.wantErr {
+				if got != nil {
+					t.Fatalf("expected no error, got %+v", got.Error)
+				}
+				return
+			}
+			if got == nil || got.Error == nil {
+				t.Fatal("expected an error")
+			}
+			if got.Error.Message != tt.wantMessage {
+				t.Errorf("message = %q, want %q", got.Error.Message, tt.wantMessage)
+			}
+			if got.StatusCode == nil || *got.StatusCode != tt.wantStatusCode {
+				t.Errorf("status code = %v, want %d", got.StatusCode, tt.wantStatusCode)
+			}
+			if tt.wantType != "" && (got.Error.Type == nil || *got.Error.Type != tt.wantType) {
+				t.Errorf("type = %v, want %q", got.Error.Type, tt.wantType)
+			}
+			if got.IsBifrostError {
+				t.Error("an upstream in-band error is not a Bifrost error")
+			}
+			if got.AllowFallbacks != nil && !*got.AllowFallbacks {
+				t.Error("an in-band generation failure must allow fallbacks")
 			}
 		})
 	}
