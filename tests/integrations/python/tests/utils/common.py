@@ -3756,3 +3756,87 @@ def run_openai_base_url_client_secret_request(
         }
     finally:
         client.close()
+
+
+# ============================================================================
+# Rerank helpers
+# ============================================================================
+
+# A rerank call takes a query plus documents and returns them ordered by relevance.
+# The corpus is deliberately unambiguous so the expected ordering is stable across
+# providers and model versions: only one document answers the query.
+RERANK_QUERY = "What is the capital of France?"
+
+RERANK_DOCUMENTS = [
+    "Paris is the capital and most populous city of France.",
+    "Carrots are orange root vegetables rich in beta carotene.",
+    "Berlin is the capital of Germany and its largest city.",
+]
+
+# Index into RERANK_DOCUMENTS that any working reranker must rank first.
+RERANK_RELEVANT_INDEX = 0
+
+# Index of the document with no relationship to the query at all.
+RERANK_IRRELEVANT_INDEX = 1
+
+
+def assert_valid_rerank_results(
+    pairs: List[tuple],
+    expected_count: Optional[int] = None,
+    expected_top_index: int = RERANK_RELEVANT_INDEX,
+):
+    """Assert a reranking is well-formed and actually ranked.
+
+    Args:
+        pairs: (index, score) tuples normalized from a provider's wire shape, in
+            the order the provider returned them.
+        expected_count: number of results expected, when top_n was supplied.
+        expected_top_index: index into RERANK_DOCUMENTS that must rank first.
+
+    Checking only that a call returned 200 would pass even if every score were
+    zero, so this also asserts the ordering carries real signal.
+    """
+    assert pairs, "rerank returned no results"
+
+    if expected_count is not None:
+        assert len(pairs) == expected_count, (
+            f"expected {expected_count} results, got {len(pairs)}"
+        )
+
+    for index, score in pairs:
+        assert isinstance(index, int), f"result index must be an int, got {type(index)}"
+        assert 0 <= index < len(RERANK_DOCUMENTS), f"result index {index} out of range"
+        assert isinstance(score, (int, float)), (
+            f"relevance score must be numeric, got {type(score)}"
+        )
+
+    indices = [index for index, _ in pairs]
+    assert len(indices) == len(set(indices)), f"duplicate indices in results: {indices}"
+
+    scores = [score for _, score in pairs]
+    assert scores == sorted(scores, reverse=True), (
+        f"results are not ordered by descending relevance: {scores}"
+    )
+
+    # A provider that dropped the document content still returns 200 with all-zero
+    # scores, so assert the ranking separated the relevant document from the rest.
+    assert indices[0] == expected_top_index, (
+        f"expected document {expected_top_index} to rank first, got {indices[0]} "
+        f"(scores: {scores})"
+    )
+    if len(scores) > 1:
+        assert scores[0] > scores[-1], (
+            f"top and bottom scores are indistinguishable: {scores}"
+        )
+
+
+def rerank_documents_as_objects() -> List[Dict[str, Any]]:
+    """RERANK_DOCUMENTS in Cohere's object form, carrying id and metadata.
+
+    Cohere ranks only the ``text`` field; every other key rides along and is
+    echoed back untouched, which is what lets Bifrost round-trip document ids.
+    """
+    return [
+        {"text": text, "id": f"doc-{i}", "metadata": {"position": i}}
+        for i, text in enumerate(RERANK_DOCUMENTS)
+    ]

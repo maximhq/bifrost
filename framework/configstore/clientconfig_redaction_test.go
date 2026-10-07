@@ -1,6 +1,7 @@
 package configstore
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -9,6 +10,118 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// Nested identifiers accept secret references just like credential fields. They
+// must retain literals and references without exposing resolved env/vault values
+// or modifying the live configuration during redaction.
+func TestProviderConfig_Redacted_NestedSecretVars(t *testing.T) {
+	const canary = "synthetic-nested-secretvar-canary-0123456789"
+	const envRef = "env.BIFROST_NESTED_REDACTION_TEST"
+	const vaultRef = "vault.bifrost-test/nested-redaction"
+	t.Setenv("BIFROST_NESTED_REDACTION_TEST", canary)
+	previousHook := schemas.VaultResolveHook
+	schemas.VaultResolveHook = func(_ context.Context, value *string) error {
+		require.Equal(t, vaultRef, *value)
+		*value = canary
+		return nil
+	}
+	t.Cleanup(func() { schemas.VaultResolveHook = previousHook })
+
+	for _, source := range []struct {
+		name, input, ref string
+	}{
+		{"literal", canary, ""},
+		{"env", envRef, envRef},
+		{"vault", vaultRef, vaultRef},
+	} {
+		t.Run(source.name, func(t *testing.T) {
+			secret := func() *schemas.SecretVar { return schemas.NewSecretVar(source.input) }
+			endpoints := func() *schemas.BedrockEndpoints {
+				return &schemas.BedrockEndpoints{
+					Runtime: secret(), ControlPlane: secret(), Mantle: secret(), AgentRuntime: secret(), S3: secret(),
+				}
+			}
+			config := ProviderConfig{Keys: []schemas.Key{{
+				ID: "nested-key", Name: "nested-key",
+				Aliases: schemas.KeyAliases{
+					"rich": {
+						ModelID: "model-id", Description: "alias metadata",
+						Region: secret(), ProjectID: secret(),
+						AzureAliasCfg:   &schemas.AzureAliasCfg{Endpoint: secret()},
+						VertexAliasCfg:  &schemas.VertexAliasCfg{ProjectNumber: secret()},
+						BedrockAliasCfg: &schemas.BedrockAliasCfg{InferenceProfileARN: secret()},
+					},
+					"legacy-project": {ModelID: "legacy-model", VertexAliasCfg: &schemas.VertexAliasCfg{ProjectID: secret()}},
+					"simple":         {ModelID: "simple-model"},
+				},
+				BedrockKeyConfig:       &schemas.BedrockKeyConfig{ProjectID: secret(), Endpoints: endpoints()},
+				BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{ProjectID: secret(), Endpoints: endpoints()},
+			}}}
+			fields := func(key schemas.Key) map[string]*schemas.SecretVar {
+				alias := key.Aliases["rich"]
+				result := map[string]*schemas.SecretVar{
+					"alias.region": alias.Region, "alias.project_id": alias.ProjectID,
+					"alias.endpoint": alias.AzureAliasCfg.Endpoint, "alias.project_number": alias.VertexAliasCfg.ProjectNumber,
+					"alias.inference_profile_arn": alias.BedrockAliasCfg.InferenceProfileARN,
+					"alias.legacy_project_id":     key.Aliases["legacy-project"].VertexAliasCfg.ProjectID,
+					"bedrock.project_id":          key.BedrockKeyConfig.ProjectID,
+					"mantle.project_id":           key.BedrockMantleKeyConfig.ProjectID,
+				}
+				for name, ep := range map[string]*schemas.BedrockEndpoints{
+					"bedrock": key.BedrockKeyConfig.Endpoints, "mantle": key.BedrockMantleKeyConfig.Endpoints,
+				} {
+					result[name+".runtime"] = ep.Runtime
+					result[name+".control_plane"] = ep.ControlPlane
+					result[name+".mantle"] = ep.Mantle
+					result[name+".agent_runtime"] = ep.AgentRuntime
+					result[name+".s3"] = ep.S3
+				}
+				return result
+			}
+			originals := fields(config.Keys[0])
+			for name, original := range originals {
+				// An unresolved reference would otherwise make the leak check pass.
+				require.Equal(t, canary, original.GetValue(), "setup: %s must resolve", name)
+			}
+			before, err := json.Marshal(config)
+			require.NoError(t, err)
+			redacted := config.Redacted()
+			data, err := json.Marshal(redacted)
+			require.NoError(t, err)
+			if source.ref != "" {
+				assert.NotContains(t, string(data), canary)
+				assert.Contains(t, string(data), source.ref)
+			}
+			assert.Equal(t, "model-id", redacted.Keys[0].Aliases["rich"].ModelID)
+			assert.Equal(t, "alias metadata", redacted.Keys[0].Aliases["rich"].Description)
+			assert.Contains(t, string(data), `"simple":"simple-model"`)
+			// The legacy Vertex project is promoted by MarshalJSON; it must be
+			// redacted before that promotion too.
+			legacyJSON, err := json.Marshal(redacted.Keys[0].Aliases["legacy-project"])
+			require.NoError(t, err)
+			assert.Contains(t, string(legacyJSON), `"project_id"`)
+			for name, field := range fields(redacted.Keys[0]) {
+				t.Run(name, func(t *testing.T) {
+					require.NotNil(t, field)
+					assert.Equal(t, source.ref, field.GetRawRef())
+					assert.Equal(t, originals[name].Type(), field.Type())
+					want := canary
+					if source.ref != "" {
+						want = originals[name].Redacted().GetValue()
+					}
+					assert.Equal(t, want, field.GetValue())
+					assert.NotSame(t, originals[name], field)
+					field.Val = "changed response copy"
+					assert.Equal(t, canary, originals[name].GetValue(), "redaction must not alias live secrets")
+				})
+			}
+			delete(redacted.Keys[0].Aliases, "simple")
+			after, err := json.Marshal(config)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(before), string(after), "redaction must not modify live config")
+		})
+	}
+}
 
 // TestProviderConfig_Redacted_AutoMasksEnvBackedFields verifies that env-backed
 // values in provider config fields are redacted in the JSON output of a Redacted()
@@ -225,6 +338,100 @@ func TestProviderConfig_Redacted_FullJSONHasNoLeakedEnvSecrets(t *testing.T) {
 	}
 	for _, ref := range expectedRefs {
 		assert.True(t, strings.Contains(jsonStr, ref),
+			"env var reference %q missing from redacted JSON output", ref)
+	}
+}
+
+// TestProviderConfig_Redacted_SurfacesLiteralIdentifiers pins the rule that a
+// region or a self-hosted service URL is an identifier, not a credential: when
+// it is stored as a literal it must read back verbatim so the update form shows
+// something an operator can actually read.
+func TestProviderConfig_Redacted_SurfacesLiteralIdentifiers(t *testing.T) {
+	config := ProviderConfig{
+		Keys: []schemas.Key{{
+			ID:    "k1",
+			Name:  "test",
+			Value: schemas.SecretVar{Val: ""},
+			VertexKeyConfig: &schemas.VertexKeyConfig{
+				Region: *schemas.NewSecretVar("us-central1"),
+			},
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: schemas.SecretVar{Val: ""},
+				SecretKey: schemas.SecretVar{Val: ""},
+				Region:    schemas.NewSecretVar("us-east-1"),
+			},
+			BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+				AccessKey: schemas.SecretVar{Val: ""},
+				SecretKey: schemas.SecretVar{Val: ""},
+				Region:    schemas.NewSecretVar("us-east-1"),
+			},
+			VLLMKeyConfig: &schemas.VLLMKeyConfig{
+				URL: *schemas.NewSecretVar("http://vllm.internal.example.com:8000"),
+			},
+			OllamaKeyConfig: &schemas.OllamaKeyConfig{
+				URL: *schemas.NewSecretVar("http://ollama.internal.example.com:11434"),
+			},
+			SGLKeyConfig: &schemas.SGLKeyConfig{
+				URL: *schemas.NewSecretVar("http://sgl.internal.example.com:30000"),
+			},
+		}},
+	}
+
+	redacted := config.Redacted()
+	require.NotNil(t, redacted)
+	require.Len(t, redacted.Keys, 1)
+	key := redacted.Keys[0]
+
+	assert.Equal(t, "us-central1", key.VertexKeyConfig.Region.GetValue())
+	assert.Equal(t, "us-east-1", key.BedrockKeyConfig.Region.GetValue())
+	assert.Equal(t, "us-east-1", key.BedrockMantleKeyConfig.Region.GetValue())
+	assert.Equal(t, "http://vllm.internal.example.com:8000", key.VLLMKeyConfig.URL.GetValue())
+	assert.Equal(t, "http://ollama.internal.example.com:11434", key.OllamaKeyConfig.URL.GetValue())
+	assert.Equal(t, "http://sgl.internal.example.com:30000", key.SGLKeyConfig.URL.GetValue())
+
+	// The redacted copy must not alias the live config: these are pointer
+	// fields, and an API response handing out the live SecretVar would let a
+	// caller edit the running configuration.
+	assert.NotSame(t, config.Keys[0].BedrockKeyConfig.Region, key.BedrockKeyConfig.Region)
+	assert.NotSame(t, config.Keys[0].BedrockMantleKeyConfig.Region, key.BedrockMantleKeyConfig.Region)
+}
+
+// TestProviderConfig_Redacted_MasksSecretBackedIdentifiers is the other half of
+// the rule: an operator who deliberately sourced a region or URL from env/vault
+// still gets the resolved value masked, with the reference intact for the UI.
+func TestProviderConfig_Redacted_MasksSecretBackedIdentifiers(t *testing.T) {
+	t.Setenv("LEAK_TEST_REGION", "ap-southeast-2")
+	t.Setenv("LEAK_TEST_VLLM_URL", "http://vllm-secret.internal.example.com:8000")
+
+	config := ProviderConfig{
+		Keys: []schemas.Key{{
+			ID:    "k1",
+			Name:  "test",
+			Value: schemas.SecretVar{Val: ""},
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: schemas.SecretVar{Val: ""},
+				SecretKey: schemas.SecretVar{Val: ""},
+				Region:    schemas.NewSecretVar("env.LEAK_TEST_REGION"),
+			},
+			VLLMKeyConfig: &schemas.VLLMKeyConfig{
+				URL: *schemas.NewSecretVar("env.LEAK_TEST_VLLM_URL"),
+			},
+		}},
+	}
+	require.Equal(t, "ap-southeast-2", config.Keys[0].BedrockKeyConfig.Region.GetValue(),
+		"setup: region should resolve from the environment")
+
+	redacted := config.Redacted()
+	data, err := json.Marshal(redacted)
+	require.NoError(t, err)
+	jsonStr := string(data)
+
+	for _, secret := range []string{"ap-southeast-2", "vllm-secret.internal.example.com"} {
+		assert.NotContains(t, jsonStr, secret,
+			"resolved env value %q leaked into redacted JSON output", secret)
+	}
+	for _, ref := range []string{"env.LEAK_TEST_REGION", "env.LEAK_TEST_VLLM_URL"} {
+		assert.Contains(t, jsonStr, ref,
 			"env var reference %q missing from redacted JSON output", ref)
 	}
 }

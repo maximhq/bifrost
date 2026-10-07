@@ -1,89 +1,36 @@
 ## ✨ Features
 
-- **MCP Per-User OAuth** - MCP clients can hold per-user OAuth credentials and per-user headers, configurable from `config.json` as well as the UI, with a documented shared vs per-identity token lookup contract and VK/Users filters on the OAuth Grants and MCP Auth Sessions sidebars
-- **Token Exchange IDP Credentials** - New `use_idp_credentials` on `token_exchange` reuses SSO login app credentials for providers that require it, such as Microsoft Entra ID; `client_id` becomes optional when it is set (#6068, #6069)
-- **Bedrock VPC Endpoints** - AWS Bedrock keys can target VPC endpoints (#6064)
-- **Per-Request Flat-Fee Pricing** - New `cost_per_request` field flows through datasheet sync, the cost engine, custom overrides and the UI override form (#6079)
-- **Pricing Overrides in the Model Catalog** - `/api/models/details` exposes resolved pricing overrides, and catalog rows resolve overrides server-side (#6055, #6056)
-- **MCP Tool Discovery Persistence** - Discovered MCP tools persist and resync uniformly across all client types through a hash-gated core callback, surviving restarts and propagating across a cluster
-- **W3C Trace ID Propagation** - Requests carry a W3C trace ID on the context (#5945)
-- **Cancellable Log Cost Recalculation** - Log cost recalculation tasks can be cancelled from the backend (#5801)
-- **Separate OTEL Metrics Pipeline** - The OTEL collector supports a metrics tab independent of traces, plus separate headers for traces and metrics (#5939, #5940)
-- **Roots-Only Log Filter** - New `roots_only` filter collapses fallback chains into their root entry with child aggregates (#5737)
-- **MCP Log Redaction and Plugin Logs** - MCP tool logs carry redaction mappings and plugin logs (#5744, #5746)
-- **User Agent and App Attribution in Logs** - Logs and MCP tool logs record user agent, app, source, decision, app key and device ID
-- **S3 Log Export Metadata** - Additional metadata is written alongside S3 log exports (#6070)
-- **Matview Maintenance Off Switch** - `matview_refresh_interval` accepts `"off"` to disable logstore matview maintenance entirely (thanks [@jeremym-tanium](https://github.com/jeremym-tanium)!) (#5693)
-- **Video Request Info in Logs UI** - Video requests surface their details in the logs UI (#5946)
-- **Shell Rewriter Hook** - The UI handler exposes a `ShellRewriter` hook for pre-hydration HTML rewriting (#5807)
-- **Auth Skip Path** - Adds a context path letting trusted internal callers bypass auth resolution
-- - **Runware passthrough** - Adds `runware_passthrough` path for handling passthrough mode for Runware provider
+- **OSS Management API Setup Lock** - While dashboard auth is not active (no admin account, or auth disabled), every non-public `/api` call on OSS Bifrost now needs the setup token, sent as the `X-Bifrost-Setup-Token` header or as the `bifrost_setup_session` cookie the dashboard gets from `POST /api/session/setup`. A missing token returns `401`. A wrong token, or no token set on the server, returns `403`. `/health`, `/api/version`, the session login routes, `/.well-known/*` and whitelisted routes stay public. The lock lifts as soon as an enabled admin is saved (#8010)
+  <Warning>
+  Migration: set `setup_token` in config.json (or `BIFROST_SETUP_TOKEN`) and restart. Then either enable dashboard auth, or send `X-Bifrost-Setup-Token` from scripts and API clients that call `/api` with auth off. Enterprise is not affected by the lock.
+  </Warning>
+- **Inference Auth On by Default** - `enforce_auth_on_inference` now defaults to `true` for fresh deployments when config.json leaves it out, file-only deployments included. Creating the first enabled admin also turns inference auth on unless the request sets it explicitly. Inference without a credential then returns `401`. A stored database value always wins, and an explicit `false` is always kept. This also applies to Bifrost Enterprise (#8010, #7864)
+  <Warning>
+  Migration: to keep unauthenticated inference, set `"enforce_auth_on_inference": false` in config.json, or send it explicitly when creating the first admin.
+  </Warning>
+- **OAuth Discovery Requires issuer_url** - When `mcp_server_auth_mode` is `oauth` or `both`, `oauth2_server_config.issuer_url` must be set to a non-empty value. Config load fails and `PUT /api/config` rejects the save otherwise. The issuer is never derived from the request `Host` header any more, and discovery responses carry `Cache-Control: no-store` (#7863)
+  <Warning>
+  Migration: set `oauth2_server_config.issuer_url` (env syntax `env.MY_VAR` works) before upgrading any deployment that has MCP OAuth discovery enabled, or the server will not start.
+  </Warning>
+- **Provider Dial Target and Proxy Changes Need Real Auth** - With dashboard auth off, these changes now return `403` unless the request carries a genuine admin credential (a session, or the OSS setup token): provider `base_url`, `allow_private_network`, key endpoint URLs (Ollama, SGL, vLLM, Azure, etc.), provider proxy, custom CA certs, skipped TLS verification, absolute `request_path_overrides`, and enabling the global proxy with a URL (#7865, #7867)
+- **Private Framework Config URLs Rejected** - `pricing_url`, `model_parameters_url` and `mcp_library_url` are now checked at save time and at dial time against private, link-local and CGNAT addresses, and redirects are not followed. Air-gapped setups should use `file://` URLs (#7861)
+- **Semantic Cache Scoped per Virtual Key** - Cache buckets are now partitioned by virtual key, so a shared `cache_key` or `default_cache_key` no longer serves one virtual key's cached response to another. Entries written before the upgrade under a virtual key are not reused, so expect a cold cache. Unscoped cache keys that start with `vk:` are moved to `raw:vk:`. A per-request threshold override can only raise the configured threshold, and is capped at 1.0 (#7862)
+- **zstd Decoder Window Cap** - zstd-compressed bodies whose frame header asks for a window above 100 MiB are rejected before any allocation (#7859)
+- **Dashboard Setup Session** - The login page has a new setup screen that trades the setup token for a 12-hour `HttpOnly; SameSite=Strict` cookie. The cookie is signed with a key derived from the token, so the browser never stores the token itself. A sidebar card flags missing dashboard auth until an admin exists. `GET /api/session/is-auth-enabled` now reports `setup_required` and `setup_token_configured`, and `PUT /api/config` accepts a setup-token request as first-admin proof (#8010)
+- **Compat: Clamp Over-Limit Output Tokens** - With `should_convert_params` on (UI: Convert Unsupported Param Values, or `x-bf-compat: ["should_convert_params"]`), a `max_output_tokens`, `max_completion_tokens` or `max_tokens` above the model's `max_output_tokens` in the model catalog is lowered to that limit instead of being rejected by the provider. This works for every provider whose model has a limit in the catalog. A thinking budget at or above the lowered cap is moved just below it. Values are never raised, and models with no catalog limit are left alone. Each change is logged as a warning on the request. The setting did nothing before this release. A config.json whose `client_config` has no `compat` block turns it on by default
+- **Datasheet Control for Per-Message Effort** - Per-message effort support can now be set per provider and model with the datasheet field `supports_mid_conversation_output_config`, so a surface that ships the feature can be enabled without a release. With no datasheet value the current behaviour applies (Anthropic direct on Fable 5.1, Opus 5+ and Sonnet 5.5). On a provider other than Anthropic, also allow the beta header with `beta_header_overrides: {"mid-conversation-output-config-": true}` in that provider's network config
+- **Per-Message Effort Override** - A per-turn effort override sent as an effort-only system message (`{"role":"system","content":[],"output_config":{"effort":"low"}}`) now reaches Anthropic instead of being dropped, with the `mid-conversation-output-config-2026-07-01` beta added. Models without per-turn effort, and OpenAI-shaped providers, drop it instead of returning an error (#7714)
+- **Claude Code Per-Message Effort on Vertex and Other Cloud Surfaces** - Claude Code requests to Opus 5.5, Fable 5.1 and Sonnet 5.5 on Vertex no longer fail with `messages.1.output_config: Extra inputs are not permitted`. The per-message `output_config` is now removed for every provider and model without per-message effort (Vertex, Bedrock, Bedrock Mantle, Azure, DeepSeek, Fireworks, vLLM, SGL). The system message text and the top-level effort are kept
+
 
 ## 🐞 Fixed
 
-- **GenAI SSE Heartbeats** - GenAI streams delimit heartbeat comments so Google SDK clients preserve the following event (thanks [@dani29](https://github.com/dani29)!) (#6240)
-- **Path Normalization Auth Bypass** - Fixed a path normalization flaw that allowed auth to be bypassed (#5763)
-- **Minimal Reasoning Effort on GPT-5 Models** - `reasoning_effort: "minimal"` is preserved for GPT-5-family OpenAI models instead of being downgraded to `low` (thanks [@jitokim](https://github.com/jitokim)!) (#6046)
-- **Gemini Truncated Response Finish Reason** - Truncated Gemini responses report `MAX_TOKENS` instead of `OTHER` (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!) (#5979)
-- **Null Tool-Call Function Name on Streaming** - Streaming continuation deltas no longer materialize an absent tool-call function name as `null` (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!) (#5966)
-- **Bedrock Document Uploads** - Fixed Bedrock file handling in inference so office and PDF documents sent as OpenAI `type: "file"` are accepted (#5947)
-- **xAI Usage Cost** - Fixed USD cost ticks for xAI usage (#5950)
-- **Anthropic Encrypted Reasoning** - Added an Anthropic error branch when stripping encrypted reasoning content
-- **MCP Reconnect and Lock Ordering** - Broke a lock-order inversion in `ConnectionCheckerManager`, rebuilt ephemeral clients across the whole connect+init retry, preserved last-known tool maps across close-first reconnects, bound connect attempts to entry identity, deduped background reconnects and gated SSE `OnConnectionLost` on connection identity
-- **MCP OAuth Session Correctness** - Restricted `Reauthorize` to shared OAuth clients, rejected inactive tokens in `ValidateToken`, made the OAuth flow claim atomic against concurrent reauth, stopped dropping stored scopes on decode failure, and closed a verify-headers double-submit race that also dropped TLS, timeout and per-user-header fields
-- **Session Stickiness Reconciliation** - `needs_session_stickiness` is pinned across `config.json` reconciliation, so an unrelated file edit can no longer silently revert a client to per-call
-- **Credential Cache Cancellation** - `headerCredentialCache.Fill` and `userTokenCache.Fill` propagate context so a cancelled request unblocks instead of waiting on an unrelated leader; LRU entries carry a version so a rejected stale `Get` cannot evict a concurrently-updated value
-- **Governance List-Models Call** - Budgets and rate limits no longer trigger a list-models call (#6051)
-- **Realtime Response Create Input** - Guarded `response.create` input (#6050)
-- **HTTP Server Timeouts** - Configured bounded `http.Server` timeouts and a request-body limit
-- **MCP Client State Badges** - State badges render with spaces instead of underscores, and the state filter bucket was renamed from `disconnected` to `unstable`
-- **Entra OBO Scope** - `offline_access` is combined with `<audience>/.default` for Entra OBO instead of replacing it (#6078)
-
-## 🔧 Maintenance
-
-- **Governance Route Families** - Editions can override governance route families (#5839)
-- **Dependency Upgrades** - Dependabot updates across all modules, plus module path fixes (#6040, #5864)
-- **Documentation** - config.schema.json doc fixes and Datadog env var reference fixes in the helm chart docs (#5938, #6019)
+- **Claude Tool-Call Argument Streaming on Bedrock and Vertex** - Claude tool arguments now stream incrementally, so a long Write call no longer arrives as one burst after minutes of silence and Claude Code no longer aborts with "Stream idle timeout". `eager_input_streaming` defaults on for custom tools that leave it unset (every Claude model on Vertex; Sonnet 4.6, Sonnet 5+, Opus 4.7+ and Fable on Bedrock). An explicit `false` is kept. Converse carries `fine-grained-tool-streaming-2025-05-14` in `additionalModelRequestFields` (#8009)
+- **Tool-Result Cache Markers for gpt-5.6+** - Anthropic `cache_control` markers on tool results (as Claude Code sends them) now become `prompt_cache_breakpoint` on both Chat Completions and Responses for gpt-5.6+ on OpenAI, Azure, Bedrock and Bedrock Mantle, so caching keeps advancing past the first tool turn. Responses also marks `input_image` and `input_file` parts. At most four breakpoints are kept, the latest ones (#8012)
+- **Handler Panic Recovery** - A panic in a request handler now returns a `500` and logs a server-side stack trace instead of crashing the process (#7866)
+- **Secret Redaction in Config Responses** - Env and vault-resolved values in provider alias configs (region, project ID, Azure endpoint, Vertex project, Bedrock inference profile ARN) and in Bedrock endpoint overrides are now masked in management API responses (#7858)
+- **Admin Password Autofill** - The Security page's admin fields carry `autoComplete="username"` and `"new-password"`, so password managers no longer fill a saved host password into the new admin's password field (#8010)
 
 ## 🗄️ Database Migrations
 
-**configstore:**
-
-- **add_mcp_client_pending_oauth_config_json_column** - Adds `pending_oauth_config_json` to `config_mcp_clients`. Reversible: drops the added column.
-- **merge_oauth_token_tables** - Consolidates `oauth_tokens` and `oauth_user_tokens` into `mcp_oauth_tokens`. **Non-reversible**: rollback deliberately leaves `mcp_oauth_tokens` in place, because every OAuth read and write targets it from this migration onward and dropping it would destroy any token created or refreshed since, forcing every holder to re-authorize.
-- **create_mcp_oauth_flows_table** - Creates `mcp_oauth_flows` to track in-flight OAuth flows. Reversible: drops the new table.
-- **drop_oauth_config_pkce_columns** - Drops CSRF state, PKCE verifier and `expires_at` from the OAuth config table now that they live on `mcp_oauth_flows`. **Non-reversible**: forward-only, the dropped values were per-flow ephemeral and re-adding empty columns would restore nothing.
-- **drop_oauth_config_token_id_column** - Drops `token_id`. **Non-reversible**: forward-only, it was a pure FK shortcut now reachable via `(oauth_config_id, auth_mode)`.
-- **add_mcp_admin_auth_mode_indexes** - Adds admin partial unique indexes on `mcp_oauth_tokens` and `mcp_per_user_header_credentials`. Reversible: drops both indexes.
-- **add_mcp_client_token_exchange_json_column** - Adds `token_exchange_json` to `config_mcp_clients`. Reversible: drops the added column.
-- **add_needs_session_stickiness_column** - Adds `needs_session_stickiness` to `config_mcp_clients`. Reversible: drops the added column.
-- **add_bedrock_endpoints_columns** - Adds Bedrock VPC endpoint columns to the keys table. Reversible: drops the added columns.
-- **add_cost_per_request_pricing_column** - Adds `cost_per_request` to model pricing. Reversible: drops the added column.
-
-**logstore:**
-
-- **logs_add_guardrail_debug_column** - Adds `guardrail_debug` to logs. Reversible: drops the added column.
-- **mcp_tool_logs_add_redaction_mapping_column** - Adds the redaction mapping column to MCP tool logs. **Non-reversible**: rollback is a no-op because dropping the column would permanently destroy reveal data for already-redacted MCP logs.
-- **logs_add_user_agent_column** - Adds user agent and app columns, their indexes, and a `UserAgentMapping` table. Reversible: drops the indexes and the mapping table.
-- **mcp_tool_logs_add_user_agent_column** - Adds user agent and app columns plus indexes to MCP tool logs. Reversible: drops both indexes and the `app` column.
-- **mcp_tool_logs_add_endpoint_columns** - Adds `source`, `decision`, `app_key` and `device_id` to MCP tool logs. Reversible: drops all four columns.
-- **mcp_tool_logs_add_plugin_logs_column** - Adds `plugin_logs` to MCP tool logs. Reversible: drops the added column.
-- **logs_recreate_matviews_with_user_agent_column** and **logs_recreate_matviews_with_app_column** - Recreate the log materialized views to include the new columns. Rollback is a no-op because `ensureMatViews` recreates them on next startup.
-
-<Warning>
-**High-throughput deployments: run the logstore migrations during a low-activity window.**
-
-Every logstore migration above alters `logs` or `mcp_tool_logs`, the two highest-insert tables in Bifrost, and several also build indexes on them. On a busy instance the index builds hold locks that block concurrent log inserts for the duration of the build, and the matview recreations rebuild against the full table. Schedule the upgrade for a low-traffic period, or expect elevated log-write latency and possible request-path backpressure while the migrations run.
-</Warning>
-
-<Warning>
-`merge_oauth_token_tables`, `drop_oauth_config_pkce_columns` and `drop_oauth_config_token_id_column` transform or remove existing OAuth state and cannot be rolled back. Take a database backup before upgrading, and do not roll the binary back past this release once the migration has run.
-</Warning>
-
-## 🐙 Closed GitHub Issues
-
-- [#123](https://github.com/maximhq/bifrost/issues/123) - Files API Support
-- [#5472](https://github.com/maximhq/bifrost/issues/5472) - [Bug]: Bedrock rejects office/PDF document uploads via OpenAI `type:"file"` - "The PDF specified was not valid"
-- [#5900](https://github.com/maximhq/bifrost/issues/5900) - [Bug]: Streaming continuation chunks materialize omitted tool-call metadata as null
-- [#5978](https://github.com/maximhq/bifrost/issues/5978) - [Bug]: Gemini egress reports truncated responses as FinishReason OTHER, IncompleteDetails switch matches a string that never occurs
-- [#6044](https://github.com/maximhq/bifrost/issues/6044) - [Bug]: normalizeOpenAIReasoningEffort maps 'minimal' to 'low' for ALL OpenAI models, even ones that natively support 'minimal'
+- No new database migrations in this release.

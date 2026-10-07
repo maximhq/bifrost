@@ -2,14 +2,16 @@ import FullPageLoader from "@/components/fullPageLoader";
 import NotAvailableBanner from "@/components/notAvailableBanner";
 import OnboardingWidget from "@/components/onboardingWidget";
 import ProgressProvider from "@/components/progressBar";
+import WarpDock from "@/components/warp/warpDock";
 import Sidebar from "@/components/sidebar";
 import { ThemeProvider } from "@/components/themeProvider";
 import Topbar from "@/components/topbar";
 import TrialExpiryBanner from "@/components/trialExpiryBanner";
 import { Button } from "@/components/ui/button";
 import { SidebarProvider } from "@/components/ui/sidebar";
-import { useStoreSync } from "@/hooks/useStoreSync";
 import { useNotificationSync } from "@/hooks/useNotificationSync";
+import { useStoreSync } from "@/hooks/useStoreSync";
+import { WarpProvider } from "@/lib/contexts/warpContext";
 import { TopbarProvider } from "@/lib/contexts/topbarContext";
 import { WebSocketProvider } from "@/hooks/useWebSocket";
 import { getErrorMessage, ReduxProvider, useGetCoreConfigQuery, useIsAuthEnabledQuery } from "@/lib/store";
@@ -18,7 +20,7 @@ import { RbacProvider, useRbacContext } from "@enterprise/lib/contexts/rbacConte
 import { useLocation, useMatches } from "@tanstack/react-router";
 import { RefreshCw, WifiOff } from "lucide-react";
 import { NuqsAdapter } from "nuqs/adapters/tanstack-router";
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { CookiesProvider } from "react-cookie";
 import { toast, Toaster } from "sonner";
 
@@ -44,8 +46,8 @@ function AppContent({ children }: { children: React.ReactNode }) {
 	// Routes can declare `staticData: { tempTokenScoped: true }` to advertise that
 	// they're reachable via a server-emitted, temp-token-bearing URL by visitors
 	// without a dashboard session. The actual layout choice is made per-visitor:
-	// an authenticated admin still sees the full dashboard chrome, while an
-	// anonymous visitor arriving with `#t=<token>` gets a stripped MinimalShell.
+	// an authenticated admin still sees the full dashboard chrome, while a
+	// signed-out visitor gets a stripped MinimalShell.
 	// The auth-via-temp-token half lives in <TempTokenScope>.
 	const matches = useMatches();
 	const tempTokenScoped = matches.some((m) => (m.staticData as { tempTokenScoped?: boolean } | undefined)?.tempTokenScoped === true);
@@ -59,17 +61,9 @@ function AppContent({ children }: { children: React.ReactNode }) {
 	// (no 401 risk) and returns whether the current cookie is a valid session.
 	const { data: authState, isLoading: authLoading } = useIsAuthEnabledQuery(undefined, { skip: !tempTokenScoped });
 
-	// Snapshot fragment presence at mount: TempTokenScope strips the fragment
-	// shortly after, so re-reading window.location.hash would flip false on
-	// re-render. Only fragment-bearing arrivals are MinimalShell candidates.
-	const [hadFragmentTempToken] = useState(() => {
-		if (typeof window === "undefined") return false;
-		const fragment = window.location.hash;
-		if (!fragment || fragment.length < 2) return false;
-		return !!new URLSearchParams(fragment.slice(1)).get("t");
-	});
-
-	const useMinimalShell = tempTokenScoped && !!authState?.is_auth_enabled && !authState?.has_valid_token && hadFragmentTempToken;
+	// Not gated on a `#t=` fragment: it's gone after a /login round-trip, and
+	// dashboard chrome for a signed-out visitor fires protected fetches that 401.
+	const useMinimalShell = tempTokenScoped && !!authState?.is_auth_enabled && !authState?.has_valid_token;
 
 	const {
 		data: bifrostConfig,
@@ -117,36 +111,45 @@ function AppContent({ children }: { children: React.ReactNode }) {
 			<CookiesProvider>
 				<StoreSyncInitializer />
 				<TopbarProvider>
-					<SidebarProvider>
-						<Sidebar />
-						{/* Content column: a fixed-height flex stack so the topbar takes its
-					    48px and the content card absorbs the remainder. The topbar has no
-					    background of its own, so it reads as the same surface as the
-					    sidebar (both show the page body background). */}
-						<div className="flex h-dvh w-full min-w-0 flex-col">
-							<Topbar />
-							{/* No w-full: in a column flex container the cross axis is width, and
+					<WarpProvider>
+						<SidebarProvider>
+							<Sidebar />
+							{/* Content column: a fixed-height flex stack so the topbar takes its
+							    52px and the content card absorbs the remainder. The topbar has no
+							    background of its own, so it reads as the same surface as the
+							    sidebar (both show the page body background). */}
+							<div className="flex h-dvh w-full min-w-0 flex-col">
+								<Topbar />
+								{/* Warp docks beside the content, never beside the topbar. The topbar
+								    keeps its full width when the dock opens, so its title, its
+								    description portal and its menu anchors are not remeasured - and
+								    the page keeps a fixed frame while only the region below it
+								    splits. */}
+								<WarpDock>
+									{/* No w-full: in a column flex container the cross axis is width, and
 							    an explicit 100% would sit *outside* the right margin, pushing it
 							    off-screen. Default align-items:stretch already fills the column
 							    minus margins. No top margin either: the card butts against the
 							    60px topbar so its top edge lands on the same line as the sidebar's
 							    search input, and --app-content-viewport compensates so full-height
 							    pages still measure to the card's inner height. */}
-							<div className="dark:bg-card custom-scrollbar content-container mx-0 min-h-0 min-w-0 flex-1 overflow-auto border border-gray-200 bg-white md:mr-2 md:mb-2 md:rounded-md md:px-10 dark:border-zinc-800">
-								<TrialExpiryBanner />
-								<main className="custom-scrollbar content-container-inner relative mx-auto flex h-full min-h-0 flex-col overflow-y-hidden md:p-4">
-									{isLoading ? (
-										<FullPageLoader />
-									) : (
-										<FullPage config={bifrostConfig} hasError={!!error} isRetrying={isFetching} onRetry={refetch}>
-											{children}
-										</FullPage>
-									)}
-								</main>
-								{bifrostConfig?.is_db_connected && <OnboardingWidget />}
+									<div className="dark:bg-card custom-scrollbar content-container mx-0 min-h-0 min-w-0 flex-1 overflow-auto border border-gray-200 bg-white md:mr-3 md:mb-3 md:rounded-md md:px-10 dark:border-zinc-800">
+										<TrialExpiryBanner />
+										<main className="custom-scrollbar content-container-inner relative mx-auto flex h-full min-h-0 flex-col overflow-y-hidden md:p-4">
+											{isLoading ? (
+												<FullPageLoader />
+											) : (
+												<FullPage config={bifrostConfig} hasError={!!error} isRetrying={isFetching} onRetry={refetch}>
+													{children}
+												</FullPage>
+											)}
+										</main>
+										{bifrostConfig?.is_db_connected && <OnboardingWidget />}
+									</div>
+								</WarpDock>
 							</div>
-						</div>
-					</SidebarProvider>
+						</SidebarProvider>
+					</WarpProvider>
 				</TopbarProvider>
 			</CookiesProvider>
 		</WebSocketProvider>

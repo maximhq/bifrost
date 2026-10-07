@@ -289,8 +289,28 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 
 		copyOptionalStringFieldByName(copy.ResponsesToolMessage, original.ResponsesToolMessage, "Execution")
 
+		if original.ResponsesToolMessage.Async != nil {
+			copy.ResponsesToolMessage.Async = new(*original.ResponsesToolMessage.Async)
+		}
+
 		if original.ResponsesToolMessage.Error != nil {
-			copyError := *original.ResponsesToolMessage.Error
+			copyError := schemas.ResponsesToolMessageError{}
+			if original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStr != nil {
+				copyError.ResponsesToolMessageErrorStr = new(*original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStr)
+			}
+			if original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct != nil {
+				copyErrorStruct := *original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct
+				if copyErrorStruct.Code != nil {
+					copyCode := *copyErrorStruct.Code
+					copyErrorStruct.Code = &copyCode
+				}
+				if copyErrorStruct.Message != nil {
+					copyMessage := *copyErrorStruct.Message
+					copyErrorStruct.Message = &copyMessage
+				}
+				copyErrorStruct.Content = append(json.RawMessage(nil), copyErrorStruct.Content...)
+				copyError.ResponsesToolMessageErrorStruct = &copyErrorStruct
+			}
 			copy.ResponsesToolMessage.Error = &copyError
 		}
 
@@ -667,6 +687,32 @@ func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*Re
 			// Deep copy to prevent shared pointer mutation when deltas are appended
 			if resp.Item != nil {
 				messages = append(messages, deepCopyResponsesMessage(*resp.Item))
+			}
+
+		case schemas.ResponsesStreamResponseTypeOutputItemDone:
+			// Server-side tool items (web_search_call, code_interpreter_call, image_generation_call)
+			// send their whole payload on this event; output_item.added is a bare shell for them, so
+			// without this the queries, code, and results never reach the accumulated response.
+			// Items whose content streamed as deltas are already complete and their builders own the
+			// message fields, so those take only the final status.
+			if resp.Item != nil && resp.Item.ID != nil {
+				matched := false
+				for i := len(messages) - 1; i >= 0; i-- {
+					if messages[i].ID == nil || *messages[i].ID != *resp.Item.ID {
+						continue
+					}
+					if accums[i] == nil {
+						messages[i] = deepCopyResponsesMessage(*resp.Item)
+					} else if resp.Item.Status != nil {
+						status := *resp.Item.Status
+						messages[i].Status = &status
+					}
+					matched = true
+					break
+				}
+				if !matched {
+					messages = append(messages, deepCopyResponsesMessage(*resp.Item))
+				}
 			}
 
 		case schemas.ResponsesStreamResponseTypeContentPartAdded:

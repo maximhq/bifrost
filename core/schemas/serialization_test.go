@@ -1211,6 +1211,8 @@ func TestNormalizeResponsesToolType(t *testing.T) {
 		{"web_fetch_20260209", ResponsesToolTypeWebFetch},
 		{"web_fetch_20260309", ResponsesToolTypeWebFetch},
 
+		// bare "computer" is OpenAI's own tool (GPT-6 Astra / GPT-5.6) and must not fold into the preview type
+		{ResponsesToolTypeComputer, ResponsesToolTypeComputer},
 		// computer versioned aliases
 		{"computer_20250124", ResponsesToolTypeComputerUsePreview},
 		{"computer_20251124", ResponsesToolTypeComputerUsePreview},
@@ -1881,4 +1883,84 @@ func TestSonic_ResponsesStreamCompleted_CapturesPromptCacheAndCacheWrite(t *test
 	require.NotNil(t, stream.Response.Usage.InputTokensDetails)
 	assert.Equal(t, 80, stream.Response.Usage.InputTokensDetails.CachedWriteTokens)
 	assert.Equal(t, 1920, stream.Response.Usage.InputTokensDetails.CachedReadTokens)
+}
+
+func TestEmbeddingData_EncodingFormatSurvivesRoundTrip(t *testing.T) {
+	// A JSON number array decodes as []float64 on the first attempt, so without the
+	// encoding label an int8 or int32 representation would silently come back as
+	// floats on any store-and-replay path.
+	tests := []struct {
+		name   string
+		data   EmbeddingData
+		assert func(t *testing.T, got EmbeddingData)
+	}{
+		{
+			name: "binary stays int8",
+			data: EmbeddingData{Object: "embedding", Embedding: EmbeddingStruct{EmbeddingInt8Array: []int8{1, 0, -1}}, EncodingFormat: EmbeddingEncodingBinary},
+			assert: func(t *testing.T, got EmbeddingData) {
+				assert.Equal(t, []int8{1, 0, -1}, got.Embedding.EmbeddingInt8Array)
+				assert.Nil(t, got.Embedding.EmbeddingArray)
+			},
+		},
+		{
+			name: "ubinary stays int32",
+			data: EmbeddingData{Object: "embedding", Embedding: EmbeddingStruct{EmbeddingInt32Array: []int32{1, 255}}, EncodingFormat: EmbeddingEncodingUbinary},
+			assert: func(t *testing.T, got EmbeddingData) {
+				assert.Equal(t, []int32{1, 255}, got.Embedding.EmbeddingInt32Array)
+				assert.Nil(t, got.Embedding.EmbeddingArray)
+			},
+		},
+		{
+			name: "float stays float64",
+			data: EmbeddingData{Object: "embedding", Embedding: EmbeddingStruct{EmbeddingArray: []float64{0.25, 0.75}}, EncodingFormat: EmbeddingEncodingFloat},
+			assert: func(t *testing.T, got EmbeddingData) {
+				assert.Equal(t, []float64{0.25, 0.75}, got.Embedding.EmbeddingArray)
+			},
+		},
+		{
+			name: "unlabelled entry is unchanged",
+			data: EmbeddingData{Object: "embedding", Embedding: EmbeddingStruct{EmbeddingArray: []float64{0.25, 0.75}}},
+			assert: func(t *testing.T, got EmbeddingData) {
+				assert.Empty(t, got.EncodingFormat)
+				assert.Equal(t, []float64{0.25, 0.75}, got.Embedding.EmbeddingArray)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			serialized, err := json.Marshal(test.data)
+			require.NoError(t, err)
+
+			var got EmbeddingData
+			require.NoError(t, json.Unmarshal(serialized, &got))
+			assert.Equal(t, test.data.EncodingFormat, got.EncodingFormat)
+			assert.Equal(t, "embedding", got.Object)
+			test.assert(t, got)
+		})
+	}
+}
+
+func TestDeepCopyChatMessagePreservesGuardContent(t *testing.T) {
+	text := "What is the capital of France?"
+	original := ChatMessage{
+		Role: ChatMessageRoleUser,
+		Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
+			Type:         ChatContentBlockTypeText,
+			Text:         &text,
+			GuardContent: &GuardContent{Qualifiers: []string{"query"}},
+		}}},
+	}
+	copied := DeepCopyChatMessage(original)
+	got := copied.Content.ContentBlocks[0].GuardContent
+	if got == nil {
+		t.Fatal("deep copy dropped the guard marker")
+	}
+	if got == original.Content.ContentBlocks[0].GuardContent {
+		t.Error("copy aliases the original guard marker struct")
+	}
+	got.Qualifiers[0] = "grounding_source"
+	if original.Content.ContentBlocks[0].GuardContent.Qualifiers[0] != "query" {
+		t.Error("copy shares the qualifiers backing array with the original")
+	}
 }

@@ -3,6 +3,7 @@ package schemas
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // UserAgentIdentifiers lists substrings that may appear in User-Agent for a given integration.
@@ -14,10 +15,17 @@ var (
 	ClaudeChatWeb = UserAgentIdentifiers{"claude-chat-web", "claude-web"}
 	// ClaudeDesktop identifies requests from the Claude Desktop app.
 	ClaudeDesktop = UserAgentIdentifiers{"claude-desktop", "claude/"}
+	// ClaudeCowork identifies Edge-routed Cowork sessions independently of Claude Code.
+	ClaudeCowork = UserAgentIdentifiers{"claude-cowork"}
 	// ClaudeCLI identifies requests from Claude Code / Claude CLI clients.
 	ClaudeCLI = UserAgentIdentifiers{"claude-cli", "claude-code", "claude-vscode"}
 	// APIClient identifies generic programmatic API clients.
 	APIClient = UserAgentIdentifiers{"fasthttp"}
+	// Warp identifies the dashboard's own data agent talking to this gateway.
+	// Deliberately prefixed rather than a bare "warp": the identifiers are matched
+	// as substrings, and a four-letter word appears inside plenty of unrelated
+	// User-Agent strings.
+	Warp = UserAgentIdentifiers{"bifrost-warp"}
 	// CodexCLI identifies requests from Codex CLI clients.
 	CodexCLI = UserAgentIdentifiers{"codex-cli", "codex-tui"}
 	// CodexDesktop identifies requests from the Codex desktop app.
@@ -39,6 +47,54 @@ var (
 	// QwenCodeCLI identifies requests from Qwen Code clients.
 	QwenCodeCLI = UserAgentIdentifiers{"qwen-code", "qwencode", "qwen"}
 )
+
+// MaxSessionIDLength caps every caller-asserted session identifier Bifrost
+// ingests, counted in runes rather than bytes so the limit means the same thing
+// for a non-ASCII identifier as for an ASCII one.
+//
+// Session IDs become KV lookup keys and exported trace attributes, and the
+// OpenTelemetry attribute value length limit defaults to unlimited
+// (https://opentelemetry.io/docs/specs/otel/common/#attribute-limits), so
+// nothing downstream bounds a caller-controlled value for us. Every ingestion
+// path (x-bf-session-id, the baggage session-id member, x-bf-mcp-session-id, and
+// the harness headers below) goes through NormalizeSessionID.
+const MaxSessionIDLength = 255
+
+// NormalizeSessionID trims a caller-asserted session identifier and reports
+// whether it is usable: non-empty and no longer than MaxSessionIDLength runes.
+// Every session ingestion path shares it so one rule governs what can become a
+// KV lookup key or an exported trace attribute.
+func NormalizeSessionID(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || utf8.RuneCountInString(value) > MaxSessionIDLength {
+		return "", false
+	}
+	return value, true
+}
+
+// HarnessSessionHeaders lists the headers coding harnesses use to carry their
+// own session identifier, in priority order. Bifrost falls back to these when
+// x-bf-session-id is absent, so harness traffic gets provider key stickiness and
+// OTEL session grouping without the caller renaming anything.
+//
+// Claude Code documents x-claude-code-session-id for exactly this purpose and
+// classifies it as a header a gateway may consume rather than forward:
+// https://code.claude.com/docs/en/llm-gateway-protocol#request-headers
+// That reference also treats x-claude-code-* as an open list that grows with
+// releases, so revisit this table when Claude Code ships new attribution headers.
+//
+// Only headers a harness verifiably sends belong here. Deliberately absent:
+// x-parent-session-id (OpenCode) would collapse every sub-agent onto its
+// parent's key, and x-qwen-code-session-id was designed but never shipped.
+var HarnessSessionHeaders = []string{
+	"x-claude-code-session-id", // Claude Code, and wrappers that spawn it (e.g. Conductor)
+	"x-session-affinity",       // OpenCode
+	"x-session-id",             // OpenCode sends this alongside the above; also the generic convention
+	"session-id",               // Codex CLI
+	"session_id",               // Codex CLI, builds predating the dashed rename
+	"thread-id",                // Codex CLI thread: coarser, only when no session header is sent
+	"conversation_id",          // Codex CLI, builds predating the dashed rename
+}
 
 // UserAgentAppMatcher maps a detected application label to User-Agent identifiers.
 type UserAgentAppMatcher struct {
@@ -70,7 +126,11 @@ const (
 var UserAgentAppMatchers = []UserAgentAppMatcher{
 	{App: "Claude Chat Web", Identifiers: ClaudeChatWeb},
 	{App: "Claude Desktop", Identifiers: ClaudeDesktop},
+	{App: "Claude Cowork", Identifiers: ClaudeCowork},
 	{App: "Claude Code", Identifiers: ClaudeCLI},
+	// Ahead of API: Warp reaches the gateway over fasthttp, so the generic
+	// matcher would otherwise claim it first and label it a plain API client.
+	{App: "Warp", Identifiers: Warp},
 	{App: "API", Identifiers: APIClient},
 	{App: "Codex CLI", Identifiers: CodexCLI},
 	{App: "Codex Desktop", Identifiers: CodexDesktop},

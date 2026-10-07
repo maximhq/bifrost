@@ -13,20 +13,21 @@ type SpanHandle interface{}
 // StreamAccumulatorResult contains the accumulated data from streaming chunks.
 // This is the return type for tracer's streaming accumulation methods.
 type StreamAccumulatorResult struct {
-	RequestID             string                          // Request ID
-	RequestedModel        string                          // Original model requested by the caller
-	ResolvedModel         string                          // Actual model used by the provider (equals RequestedModel when no alias mapping exists)
-	Provider              ModelProvider                   // Provider used
-	Status                string                          // Status of the stream
-	Latency               int64                           // Latency in milliseconds
-	TimeToFirstToken      int64                           // Time to first token in milliseconds
-	OutputMessage         *ChatMessage                    // Accumulated output message
-	OutputMessages        []ResponsesMessage              // For responses API
-	TokenUsage            *BifrostLLMUsage                // Token usage
-	ServiceTier           *BifrostServiceTier             // Served tier ("priority"/"flex"/"default"); needs its own field because it lives on the response envelope, not on BifrostLLMUsage like Speed and InferenceGeo
-	Cost                  *float64                        // Cost in dollars
-	CacheDebug            *BifrostCacheDebug              // Semantic cache debug info if available
-	GuardrailDebug        *BifrostGuardrailDebug          // Guardrail debug info if available
+	RequestID        string              // Request ID
+	RequestedModel   string              // Original model requested by the caller
+	ResolvedModel    string              // Actual model used by the provider (equals RequestedModel when no alias mapping exists)
+	Provider         ModelProvider       // Provider used
+	Status           string              // Status of the stream
+	Latency          int64               // Latency in milliseconds
+	TimeToFirstToken int64               // Time to first token in milliseconds
+	OutputMessage    *ChatMessage        // Accumulated output message
+	OutputMessages   []ResponsesMessage  // For responses API
+	TokenUsage       *BifrostLLMUsage    // Token usage
+	ServiceTier      *BifrostServiceTier // Served tier (for example "priority", "fast", "flex", "ultrafast", or "default"); needs its own field because it lives on the response envelope, not on BifrostLLMUsage like Speed and InferenceGeo
+	Cost             *float64            // Cost in dollars
+	// Debug spelling is retained for the established Go contract.
+	CacheDebug            *BifrostCacheMetadata           // Semantic cache metadata if available
+	GuardrailDebug        *BifrostGuardrailMetadata       // Guardrail metadata if available
 	ErrorDetails          *BifrostError                   // Error details if any
 	AudioOutput           *BifrostSpeechResponse          // For speech streaming
 	TranscriptionOutput   *BifrostTranscriptionResponse   // For transcription streaming
@@ -91,6 +92,14 @@ type Tracer interface {
 	// PopulateLLMResponseAttributes populates all LLM-specific response attributes on the span.
 	// This includes output messages, tokens, usage stats, and error information if present.
 	PopulateLLMResponseAttributes(ctx *BifrostContext, handle SpanHandle, resp *BifrostResponse, err *BifrostError)
+
+	// DeferTraceCompletion marks a trace as still being written by a worker, so the
+	// transport skips completing it.
+	DeferTraceCompletion(traceID string)
+	// ClearTraceCompletionDeferral drops the marker once the worker has completed it.
+	ClearTraceCompletionDeferral(traceID string)
+	// AwaitTransportHandoff blocks until the transport has attached its own logs.
+	AwaitTransportHandoff(traceID string)
 
 	// StoreDeferredSpan stores a span handle for later completion (used for streaming requests).
 	// The span handle is stored keyed by trace ID so it can be retrieved when the stream completes.
@@ -242,6 +251,15 @@ func (n *NoOpTracer) PopulateLLMResponseAttributes(_ *BifrostContext, _ SpanHand
 
 // StoreDeferredSpan does nothing.
 func (n *NoOpTracer) StoreDeferredSpan(_ string, _ SpanHandle) {}
+
+// DeferTraceCompletion is a no-op.
+func (n *NoOpTracer) DeferTraceCompletion(_ string) {}
+
+// ClearTraceCompletionDeferral is a no-op.
+func (n *NoOpTracer) ClearTraceCompletionDeferral(_ string) {}
+
+// AwaitTransportHandoff is a no-op.
+func (n *NoOpTracer) AwaitTransportHandoff(_ string) {}
 
 // GetDeferredSpanHandle returns nil.
 func (n *NoOpTracer) GetDeferredSpanHandle(_ string) SpanHandle { return nil }

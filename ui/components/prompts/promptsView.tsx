@@ -34,7 +34,7 @@ export default function PromptsView() {
 
 	if (folders.length === 0 && prompts.length === 0) {
 		return (
-			<div className="no-padding-parent no-border-parent flex h-[calc(var(--app-content-viewport)_-_18px)] w-full items-center">
+			<div className="no-padding-parent no-border-parent flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] w-full items-center">
 				<PromptSheets />
 				<PromptsEmptyState />
 			</div>
@@ -43,7 +43,7 @@ export default function PromptsView() {
 
 	if (isMobile) {
 		return (
-			<div className="no-padding-parent no-border-parent bg-background flex h-[calc(var(--app-content-viewport)_-_16px)] w-full flex-col gap-2 overflow-auto">
+			<div className="no-padding-parent no-border-parent bg-background flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] w-full flex-col gap-2 overflow-auto">
 				<DeleteFolderDialog />
 				<DeletePromptDialog />
 				<PromptSheets />
@@ -78,7 +78,7 @@ export default function PromptsView() {
 	}
 
 	return (
-		<div className="no-padding-parent no-border-parent bg-background h-[calc(var(--app-content-viewport)_-_16px)] w-full">
+		<div className="no-padding-parent no-border-parent bg-background h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] w-full">
 			<DeleteFolderDialog />
 			<DeletePromptDialog />
 			<PromptSheets />

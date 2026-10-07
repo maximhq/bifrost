@@ -264,7 +264,7 @@ func (a *AgentModeExecutor) executeAgent(
 			}
 
 			// Check if tool can be auto-executed
-			if canAutoExecuteTool(toolName, client.ExecutionConfig) {
+			if CanAutoExecuteTool(toolName, client.ExecutionConfig) {
 				autoExecutableTools = append(autoExecutableTools, toolCall)
 				a.logger.Debug("Tool %s can be auto-executed", toolName)
 			} else {
@@ -295,6 +295,9 @@ func (a *AgentModeExecutor) executeAgent(
 					// plugin can create separate log entries for each parallel tool call.
 					toolCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 					toolCtx.SetValue(schemas.BifrostContextKeyMCPLogID, uuid.New().String())
+					// No human approved this call, so Code Mode must hold every nested
+					// tool invocation to tools_to_auto_execute (see AuthorizeCodeModeToolCall).
+					toolCtx.SetValue(schemas.BifrostContextKeyMCPUnattendedExecution, true)
 
 					// Create MCP request for this tool call
 					mcpRequest := &schemas.BifrostMCPRequest{
@@ -389,125 +392,11 @@ func (a *AgentModeExecutor) executeAgent(
 		}
 
 		currentResponse = response
-		accumulatedUsage = mergeUsage(accumulatedUsage, adapter.extractUsage(currentResponse))
+		accumulatedUsage = schemas.MergeBifrostLLMUsage(accumulatedUsage, adapter.extractUsage(currentResponse))
 	}
 
 	adapter.applyUsage(currentResponse, accumulatedUsage)
 	return currentResponse, nil
-}
-
-// mergeUsage sums token counts and costs from two BifrostLLMUsage values.
-// Detail sub-fields are summed when both are present; if only one is non-nil it is kept as-is.
-func mergeUsage(base, add *schemas.BifrostLLMUsage) *schemas.BifrostLLMUsage {
-	if add == nil {
-		return base
-	}
-	if base == nil {
-		return add
-	}
-
-	merged := &schemas.BifrostLLMUsage{
-		PromptTokens:     base.PromptTokens + add.PromptTokens,
-		CompletionTokens: base.CompletionTokens + add.CompletionTokens,
-		TotalTokens:      base.TotalTokens + add.TotalTokens,
-	}
-
-	// Merge prompt token details
-	if base.PromptTokensDetails != nil || add.PromptTokensDetails != nil {
-		bd := base.PromptTokensDetails
-		ad := add.PromptTokensDetails
-		if bd == nil {
-			bd = &schemas.ChatPromptTokensDetails{}
-		}
-		if ad == nil {
-			ad = &schemas.ChatPromptTokensDetails{}
-		}
-		merged.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-			TextTokens:        bd.TextTokens + ad.TextTokens,
-			AudioTokens:       bd.AudioTokens + ad.AudioTokens,
-			ImageTokens:       bd.ImageTokens + ad.ImageTokens,
-			CachedReadTokens:  bd.CachedReadTokens + ad.CachedReadTokens,
-			CachedWriteTokens: bd.CachedWriteTokens + ad.CachedWriteTokens,
-		}
-	}
-
-	// Merge completion token details
-	if base.CompletionTokensDetails != nil || add.CompletionTokensDetails != nil {
-		bd := base.CompletionTokensDetails
-		ad := add.CompletionTokensDetails
-		if bd == nil {
-			bd = &schemas.ChatCompletionTokensDetails{}
-		}
-		if ad == nil {
-			ad = &schemas.ChatCompletionTokensDetails{}
-		}
-		merged.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
-			TextTokens:               bd.TextTokens + ad.TextTokens,
-			AcceptedPredictionTokens: bd.AcceptedPredictionTokens + ad.AcceptedPredictionTokens,
-			AudioTokens:              bd.AudioTokens + ad.AudioTokens,
-			ReasoningTokens:          bd.ReasoningTokens + ad.ReasoningTokens,
-			RejectedPredictionTokens: bd.RejectedPredictionTokens + ad.RejectedPredictionTokens,
-		}
-		if bd.CitationTokens != nil || ad.CitationTokens != nil {
-			bct := 0
-			act := 0
-			if bd.CitationTokens != nil {
-				bct = *bd.CitationTokens
-			}
-			if ad.CitationTokens != nil {
-				act = *ad.CitationTokens
-			}
-			sum := bct + act
-			merged.CompletionTokensDetails.CitationTokens = &sum
-		}
-		if bd.NumSearchQueries != nil || ad.NumSearchQueries != nil {
-			bnsq := 0
-			ansq := 0
-			if bd.NumSearchQueries != nil {
-				bnsq = *bd.NumSearchQueries
-			}
-			if ad.NumSearchQueries != nil {
-				ansq = *ad.NumSearchQueries
-			}
-			sum := bnsq + ansq
-			merged.CompletionTokensDetails.NumSearchQueries = &sum
-		}
-		if bd.ImageTokens != nil || ad.ImageTokens != nil {
-			bit := 0
-			ait := 0
-			if bd.ImageTokens != nil {
-				bit = *bd.ImageTokens
-			}
-			if ad.ImageTokens != nil {
-				ait = *ad.ImageTokens
-			}
-			sum := bit + ait
-			merged.CompletionTokensDetails.ImageTokens = &sum
-		}
-	}
-
-	// Merge cost
-	if base.Cost != nil || add.Cost != nil {
-		bc := base.Cost
-		ac := add.Cost
-		if bc == nil {
-			bc = &schemas.BifrostCost{}
-		}
-		if ac == nil {
-			ac = &schemas.BifrostCost{}
-		}
-		merged.Cost = &schemas.BifrostCost{
-			InputTokensCost:     bc.InputTokensCost + ac.InputTokensCost,
-			OutputTokensCost:    bc.OutputTokensCost + ac.OutputTokensCost,
-			ReasoningTokensCost: bc.ReasoningTokensCost + ac.ReasoningTokensCost,
-			CitationTokensCost:  bc.CitationTokensCost + ac.CitationTokensCost,
-			SearchQueriesCost:   bc.SearchQueriesCost + ac.SearchQueriesCost,
-			RequestCost:         bc.RequestCost + ac.RequestCost,
-			TotalCost:           bc.TotalCost + ac.TotalCost,
-		}
-	}
-
-	return merged
 }
 
 // extractToolCalls extracts all tool calls from a chat response.

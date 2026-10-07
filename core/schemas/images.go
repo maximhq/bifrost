@@ -1,5 +1,10 @@
 package schemas
 
+import (
+	"bytes"
+	"fmt"
+)
+
 type ImageEventType string
 
 const (
@@ -124,7 +129,6 @@ func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 
 // getNumInputImagesSizeQualityAndAspectRatioFromRequest extracts request params for cost
 // calculation and logging. Quality is only returned when it is one of low, medium, high, auto.
-// AspectRatio is only carried by image generation requests.
 func getNumInputImagesSizeQualityAndAspectRatioFromRequest(req *BifrostRequest) (numInputImages int, size string, quality string, aspectRatio string) {
 	if req == nil {
 		return 0, "", "", ""
@@ -156,6 +160,9 @@ func getNumInputImagesSizeQualityAndAspectRatioFromRequest(req *BifrostRequest) 
 			}
 			if p.Quality != nil {
 				quality = normalizeImageQuality(*p.Quality)
+			}
+			if p.AspectRatio != nil {
+				aspectRatio = *p.AspectRatio
 			}
 		}
 	case req.ImageVariationRequest != nil:
@@ -214,7 +221,7 @@ type ImageUsage struct {
 	TotalTokens         int                `json:"total_tokens,omitempty"`
 	OutputTokens        int                `json:"output_tokens,omitempty"` // Always image tokens unless OutputTokensDetails is not nil
 	OutputTokensDetails *ImageTokenDetails `json:"output_tokens_details,omitempty"`
-	NumInputImages      int                `json:"-"` // Number of input images from the request (populated by Bifrost)
+	NumInputImages      int                `json:"-"`              // Number of input images from the request (populated by Bifrost)
 	Cost                *BifrostCost       `json:"cost,omitempty"` // Only for the providers which support cost calculation
 	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
 	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`
@@ -341,8 +348,34 @@ type ImageInput struct {
 	URL   string `json:"url,omitempty"` // alternative to Image; providers that require bytes reject it
 }
 
+// UnmarshalJSON accepts either the object form or a bare string, so images: ["https://..."] reads
+// the way input_images does on /v1/images/generations. A string lands in URL, the same field the
+// multipart image_url path fills. Marshalling always emits the object form.
+func (i *ImageInput) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		i.Image = nil
+		i.URL = ""
+		return nil
+	}
+
+	var s string
+	if err := Unmarshal(data, &s); err == nil {
+		i.Image = nil
+		i.URL = s
+		return nil
+	}
+	type imageInput ImageInput
+	var obj imageInput
+	if err := Unmarshal(data, &obj); err != nil {
+		return fmt.Errorf("image input is neither a string nor an object")
+	}
+	*i = ImageInput(obj)
+	return nil
+}
+
 type ImageEditParameters struct {
-	Type              *string                `json:"type,omitempty"`           // "inpainting", "outpainting", "background_removal", "remove_background", "erase_object", "recolor", "search_replace", "control_sketch", "control_structure", "style_guide", "style_transfer", "upscale", "upscale_fast", "upscale_creative", "upscale_conservative", "mask", "segmentation", "vectorize"
+	Type              *string                `json:"type,omitempty"`           // "inpainting", "outpainting", "background_removal", "remove_background", "erase_object", "recolor", "search_replace", "control_sketch", "control_structure", "style_guide", "style_transfer", "upscale", "upscale_fast", "upscale_creative", "upscale_conservative", "mask", "segmentation", "vectorize", "controlnet_preprocess"
 	Background        *string                `json:"background,omitempty"`     // "transparent", "opaque", "auto"
 	InputFidelity     *string                `json:"input_fidelity,omitempty"` // "low", "high"
 	Mask              []byte                 `json:"mask,omitempty"`
@@ -359,6 +392,7 @@ type ImageEditParameters struct {
 	NumInferenceSteps *int                   `json:"num_inference_steps,omitempty"` // number of inference steps
 	UpscaleFactor     *int                   `json:"upscale_factor,omitempty"`      // type "upscale": multiply each dimension by N
 	TargetMegapixels  *int                   `json:"target_megapixels,omitempty"`   // type "upscale": target output size; mutually exclusive with upscale_factor
+	AspectRatio       *string                `json:"aspect_ratio,omitempty"`        // aspect ratio of the edited image
 	ExtraParams       map[string]interface{} `json:"-"`
 }
 

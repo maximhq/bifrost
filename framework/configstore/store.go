@@ -21,6 +21,7 @@ type VirtualKeyQueryParams struct {
 	Search                             string
 	CustomerID                         string
 	TeamID                             string
+	BusinessUnitID                     string // Enterprise-only owner kind; a key names at most one owner, so it ORs with the other two
 	UserID                             string // Enterprise-only: filters to VKs assigned to this user; matches nothing in OSS
 	SortBy                             string // name, budget_spent, created_at, status (default: created_at)
 	Order                              string // asc, desc (default: asc)
@@ -32,12 +33,46 @@ type VirtualKeyQueryParams struct {
 
 // ModelConfigsQueryParams holds pagination, filtering, and search parameters for model configs queries.
 type ModelConfigsQueryParams struct {
-	Limit    int
-	Offset   int
-	Search   string
-	Scope    string // optional; filters to an exact scope value (e.g. "global", "virtual_key")
+	Limit  int
+	Offset int
+	Search string
+	// Scope optionally filters to an exact scope value (e.g. "global",
+	// "virtual_key").
+	//
+	// Deprecated: use Scopes, which can carry more than one. Kept so existing
+	// callers of this published module keep compiling and behaving identically; a
+	// value set here is OR-ed together with anything in Scopes.
+	Scope string
+	// Scopes optionally filters to one or more exact scope values. Several values
+	// are OR-ed, which lets a UI present one filter option covering scopes a user
+	// thinks of as the same thing — e.g. rows scoped to a user directly and rows
+	// materialized onto them from an access profile. Empty (with Scope also empty)
+	// means no scope filter.
+	Scopes   []string
 	ScopeID  string // optional; filters to an exact scope target (e.g. a virtual key or user ID)
 	Provider string // optional; filters to an exact provider value (e.g. "openai")
+}
+
+// effectiveScopes returns the scope values to filter on, merging the deprecated
+// single Scope with Scopes and dropping blanks and duplicates. Returns nil when
+// neither is set, meaning "no scope filter".
+func (p ModelConfigsQueryParams) effectiveScopes() []string {
+	seen := make(map[string]struct{}, len(p.Scopes)+1)
+	out := make([]string, 0, len(p.Scopes)+1)
+	for _, s := range append([]string{p.Scope}, p.Scopes...) {
+		if s == "" {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // SkillListQueryParams holds pagination, filtering, and search parameters for skill repository queries.
@@ -95,8 +130,15 @@ type MCPClientsQueryParams struct {
 	// Virtual-key access filter (OR semantics within the group). When both are
 	// set, a client matches if it is open to all VKs OR explicitly assigned to
 	// one of VirtualKeyIDs.
-	OnlyAllVirtualKeys bool     // include clients with allow_on_all_virtual_keys=true
-	VirtualKeyIDs      []string // include clients explicitly assigned to any of these VK IDs
+	OnlyAllowedByDefault bool     // include clients allowed by default (column allow_on_all_virtual_keys)
+	VirtualKeyIDs        []string // include clients explicitly assigned to any of these VK IDs
+}
+
+// VirtualMCPsQueryParams holds pagination and search parameters for Virtual MCP list queries.
+type VirtualMCPsQueryParams struct {
+	Limit  int
+	Offset int
+	Search string // matches name (case-insensitive)
 }
 
 // MCPLibraryQueryParams holds pagination, filtering, search, and sort
@@ -270,10 +312,10 @@ type ConfigStore interface {
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
 	// UpdateMCPClientTools is a targeted column update for
-	// discovered_tools_json/tool_name_mapping_json only — safe to call from
-	// a periodic background tool-sync without racing a concurrent full
-	// UpdateMCPClientConfig call over unrelated fields.
-	UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) error
+	// discovered_tools_json/tool_name_mapping_json/discovered_instructions only —
+	// safe to call from a periodic background tool-sync without racing a concurrent
+	// full UpdateMCPClientConfig call over unrelated fields.
+	UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
 
 	// MCP library catalog (synced + org-custom)
@@ -308,6 +350,11 @@ type ConfigStore interface {
 	GetComplexityAnalyzerConfig(ctx context.Context) (*ComplexityAnalyzerConfig, error)
 	// UpdateComplexityAnalyzerConfig persists the normalized analyzer config.
 	UpdateComplexityAnalyzerConfig(ctx context.Context, config *ComplexityAnalyzerConfig, tx ...*gorm.DB) error
+	// ResetComplexityAnalyzerConfig restores the tier boundaries and phrase lists from the
+	// supplied defaults, preserves every other section of the stored record, and returns what
+	// was persisted. Read and save share one transaction so a concurrent edit to a preserved
+	// section cannot be overwritten.
+	ResetComplexityAnalyzerConfig(ctx context.Context, defaults *ComplexityAnalyzerConfig) (*ComplexityAnalyzerConfig, error)
 
 	// Plugins CRUD
 	GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error)
@@ -320,6 +367,12 @@ type ConfigStore interface {
 	// Governance config CRUD
 	GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error)
 	GetVirtualKeysPaginated(ctx context.Context, params VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error)
+	// ListExpiredVirtualKeysForDeletion returns keys whose expiry has passed and whose
+	// delete_after_expire is true, or unset when includeUnset is true.
+	ListExpiredVirtualKeysForDeletion(ctx context.Context, now time.Time, includeUnset bool) ([]tables.TableVirtualKey, error)
+	// DeleteExpiredVirtualKey deletes the key only if it is still expired and eligible
+	// under the row lock, returning the deleted row, or nil when it no longer qualifies.
+	DeleteExpiredVirtualKey(ctx context.Context, id string, now time.Time, includeUnset bool) (*tables.TableVirtualKey, error)
 	GetRedactedVirtualKeys(ctx context.Context, ids []string) ([]tables.TableVirtualKey, error) // leave ids empty to get all
 	GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
 	GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error)
@@ -327,6 +380,33 @@ type ConfigStore interface {
 	CreateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	UpdateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	DeleteVirtualKey(ctx context.Context, id string, tx ...*gorm.DB) error
+	ReplaceVirtualKeyAgentGrants(ctx context.Context, virtualKeyID string, agentNames []string, tx ...*gorm.DB) error
+
+	// Agent Gateway registration CRUD. Declared on the interface (not just the
+	// RDB implementation) so wrappers that embed ConfigStore — like the
+	// enterprise config store — forward them and still satisfy agent.Store.
+	CreateAgentRegistration(ctx context.Context, registration *schemas.AgentRegistration) error
+	UpdateAgentRegistration(ctx context.Context, registration *schemas.AgentRegistration) error
+	ListAgentRegistrations(ctx context.Context) ([]schemas.AgentRegistration, error)
+	GetAgentRegistration(ctx context.Context, name string) (*schemas.AgentRegistration, error)
+	DeleteAgentRegistration(ctx context.Context, name string) error
+
+	// Agent Gateway push relay persistence, mirroring agent.PushStore for the
+	// same wrapper-forwarding reason as the registration CRUD above.
+	SaveAgentPushConfig(ctx context.Context, config *schemas.AgentPushConfig) error
+	BindAgentPushConfigTask(ctx context.Context, agentName, ingressTokenHash, pendingTaskID, taskID string) error
+	GetAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (*schemas.AgentPushConfig, error)
+	GetAgentPushConfigByIngressTokenHash(ctx context.Context, agentName, hash string) (*schemas.AgentPushConfig, error)
+	ListAgentPushConfigs(ctx context.Context, agentName, taskID string) ([]schemas.AgentPushConfig, error)
+	ListAgentPushConfigsPaginated(ctx context.Context, query schemas.AgentPushConfigQuery) ([]schemas.AgentPushConfig, int64, error)
+	ListAgentPushConfigAgentNames(ctx context.Context) ([]string, error)
+	DeleteAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (bool, error)
+	DeletePendingAgentPushConfig(ctx context.Context, agentName, ingressTokenHash, pendingTaskID string) (bool, error)
+	CreateAgentPushDeliveryIfNotExists(ctx context.Context, delivery *schemas.AgentPushDelivery) (bool, error)
+	ListDueAgentPushDeliveries(ctx context.Context, now time.Time, limit int) ([]schemas.AgentPushDelivery, error)
+	ClaimAgentPushDelivery(ctx context.Context, id, runnerID string, leaseUntil time.Time) (*schemas.AgentPushDelivery, error)
+	UpdateAgentPushDeliveryOutcome(ctx context.Context, delivery *schemas.AgentPushDelivery, runnerID string, leaseUntil time.Time) error
+	PruneAgentPushDeliveries(ctx context.Context, before time.Time) error
 
 	// Virtual key provider config CRUD
 	GetVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string) ([]tables.TableVirtualKeyProviderConfig, error)
@@ -344,10 +424,36 @@ type ConfigStore interface {
 	UpdateVirtualKeyMCPConfig(ctx context.Context, virtualKeyMCPConfig *tables.TableVirtualKeyMCPConfig, tx ...*gorm.DB) error
 	DeleteVirtualKeyMCPConfig(ctx context.Context, id uint, tx ...*gorm.DB) error
 
+	// GetVirtualMCPs returns every Virtual MCP definition (enabled and disabled), tools decoded, for
+	// the governance cache. GetVirtualMCPAssignments returns each VK's assigned definition IDs, keyed
+	// by VK row ID. Neither is DAC-scoped: holder grant data, not an admin catalog view.
+	GetVirtualMCPs(ctx context.Context) ([]tables.TableVirtualMCP, error)
+	GetVirtualMCPAssignments(ctx context.Context) (map[string][]uint, error)
+
+	// Virtual MCP CRUD. CreateVirtualMCP fills endpoint_slug from the name when unset and enforces
+	// its uniqueness; UpdateVirtualMCP never changes the slug (immutable after creation).
+	CreateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error
+	GetVirtualMCPByID(ctx context.Context, id uint) (*tables.TableVirtualMCP, error)
+	// GetVirtualMCPByName resolves the unique name a declaration refers to. Returns ErrNotFound
+	// when nothing matches.
+	GetVirtualMCPByName(ctx context.Context, name string) (*tables.TableVirtualMCP, error)
+	GetVirtualMCPsPaginated(ctx context.Context, params VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error)
+	UpdateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error
+	DeleteVirtualMCP(ctx context.Context, id uint) error
+	AttachVirtualMCPToVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error
+	DetachVirtualMCPFromVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error
+	GetVirtualKeyIDsForVirtualMCP(ctx context.Context, vmcpID uint) ([]string, error)
+	// GetVirtualKeyIDsForVirtualMCPs returns assigned virtual-key IDs for a set of Virtual MCPs in one
+	// query, grouped by Virtual MCP ID. Used by the list view to avoid a per-row lookup.
+	GetVirtualKeyIDsForVirtualMCPs(ctx context.Context, vmcpIDs []uint) (map[uint][]string, error)
+	// GetVirtualMCPIDsForVirtualKey returns the IDs of the Virtual MCPs a virtual key is assigned to,
+	// the reverse of GetVirtualKeyIDsForVirtualMCP, so the VK detail view can show its assignments.
+	GetVirtualMCPIDsForVirtualKey(ctx context.Context, virtualKeyID string) ([]uint, error)
+
 	// Team CRUD
 	GetTeams(ctx context.Context, customerID string) ([]tables.TableTeam, error)
 	GetTeamsPaginated(ctx context.Context, params TeamsQueryParams) ([]tables.TableTeam, int64, error)
-	GetTeam(ctx context.Context, id string) (*tables.TableTeam, error)
+	GetTeam(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableTeam, error)
 	GetTeamByName(ctx context.Context, name string, customerID string) (*tables.TableTeam, error)
 	GetTeamBySourceID(ctx context.Context, sourceID string) (*tables.TableTeam, error)
 	CreateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error
@@ -357,7 +463,7 @@ type ConfigStore interface {
 	// Customer CRUD
 	GetCustomers(ctx context.Context) ([]tables.TableCustomer, error)
 	GetCustomersPaginated(ctx context.Context, params CustomersQueryParams) ([]tables.TableCustomer, int64, error)
-	GetCustomer(ctx context.Context, id string) (*tables.TableCustomer, error)
+	GetCustomer(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableCustomer, error)
 	CreateCustomer(ctx context.Context, customer *tables.TableCustomer, tx ...*gorm.DB) error
 	UpdateCustomer(ctx context.Context, customer *tables.TableCustomer, tx ...*gorm.DB) error
 	DeleteCustomer(ctx context.Context, id string, tx ...*gorm.DB) error
@@ -404,7 +510,7 @@ type ConfigStore interface {
 
 	// Model config CRUD
 	GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
-	GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string) ([]tables.TableModelConfig, error)
+	GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string, tx ...*gorm.DB) ([]tables.TableModelConfig, error)
 	GetProviderGovernanceModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
 	GetModelConfigsPaginated(ctx context.Context, params ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error)
 	GetModelConfig(ctx context.Context, scope string, scopeID *string, modelName string, provider *string) (*tables.TableModelConfig, error)
@@ -415,6 +521,10 @@ type ConfigStore interface {
 	DeleteModelConfig(ctx context.Context, id string, tx ...*gorm.DB) error
 	// DeleteModelConfigsForScope deletes all model configs (and their owned budgets/rate-limits) for a scope owner. Must run inside the owner-delete transaction.
 	DeleteModelConfigsForScope(ctx context.Context, tx *gorm.DB, scope, scopeID string) error
+	// GetModelConfigsForScope loads all model configs (with Budgets/RateLimit) for a scope owner
+	// within the given transaction, so a caller mid-transaction sees its own uncommitted writes
+	// (e.g. deletions staged earlier in the same tx) rather than the last-committed state.
+	GetModelConfigsForScope(ctx context.Context, tx *gorm.DB, scope, scopeID string) ([]tables.TableModelConfig, error)
 
 	// Governance config CRUD
 	GetGovernanceConfig(ctx context.Context) (*GovernanceConfig, error)
@@ -539,6 +649,12 @@ type ConfigStore interface {
 	// of the given MCP client IDs in one query, keyed by MCPClientID. Not
 	// filtered by status; clients with no admin row are absent from the map.
 	GetAdminOauthTokensByMCPClientIDs(ctx context.Context, mcpClientIDs []string) (map[string]*tables.TableMCPOauthToken, error)
+	// GetSharedOauthTokensByConfigIDs is GetSharedOauthTokenByConfigID's batch
+	// counterpart: resolves the shared-mode token row for each of the given
+	// oauth config IDs in one query, keyed by OauthConfigID. Same
+	// active-first ordering, so a stale duplicate can't shadow the live row.
+	// Not filtered by status; configs with no shared row are absent.
+	GetSharedOauthTokensByConfigIDs(ctx context.Context, oauthConfigIDs []string) (map[string]*tables.TableMCPOauthToken, error)
 	// PromoteSharedOauthTokenToAdmin transactionally installs the config's
 	// fresh shared-mode token as the retained admin-mode discovery credential
 	// for mcpClientID: if an admin row already exists its credential fields
@@ -661,14 +777,18 @@ type ConfigStore interface {
 	// per-user-named methods on this merged table, see GetOauthUserTokenByMode's
 	// comment), this is not scoped away from 'shared' — the tokenID handed in
 	// always comes from an internal lookup already, never an arbitrary
-	// caller-supplied ID.
-	MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string) error
+	// caller-supplied ID. reason is recorded as the row's StatusReason (the
+	// provider's rejection, e.g. "provider rejected the refresh (HTTP 400,
+	// invalid_grant: Token has been expired or revoked)") so the UI and the
+	// client's connection-failure record can say what actually failed rather
+	// than only that the row is no longer usable.
+	MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string, reason string) error
 	// MarkTokensNeedsReauthByConfigID flips status to 'needs_reauth' on every
 	// token row bound to an OAuth config in one bulk UPDATE, with no
 	// auth_mode filter — rotating an oauth_configs row's client_id/client_secret
 	// invalidates every existing holder's cached credential (shared, per-user,
 	// vk, session, admin alike), not just the shared one.
-	MarkTokensNeedsReauthByConfigID(ctx context.Context, oauthConfigID string, tx ...*gorm.DB) error
+	MarkTokensNeedsReauthByConfigID(ctx context.Context, oauthConfigID string, reason string, tx ...*gorm.DB) error
 	// MarkAdminExchangeTokenNeedsReauthByMCPClientID flips status to
 	// 'needs_reauth' on a token_exchange client's retained admin bootstrap
 	// credential (auth_mode='admin', mcp_client_id=<id>, oauth_config_id='' —
@@ -681,7 +801,7 @@ type ConfigStore interface {
 	// cached in-memory only, never persisted (see GetExchangedAccessToken's
 	// doc comment) — the admin row is the only persisted state a
 	// token_exchange config edit can invalidate.
-	MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx context.Context, mcpClientID string) error
+	MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx context.Context, mcpClientID string, reason string) error
 	// RotateMCPOAuthConfig updates every field of an oauth_configs row in
 	// place when ANY of them differs from what's stored (client_id,
 	// client_secret, authorize_url, token_url, registration_url, resource,
@@ -805,7 +925,7 @@ type ConfigStore interface {
 	// dashboard edit, AP propagation, SCIM auto-assign). Orphans
 	// vk-keyed credentials whose MCP is no longer in the VK's effective
 	// allowlist (explicit per-VK row ∪ MCPs with
-	// AllowOnAllVirtualKeys=true) and reactivates orphaned rows when the
+	// AllowByDefault=true) and reactivates orphaned rows when the
 	// grant returns. Pending flow rows for lost grants are hard-deleted.
 	//
 	// Session-keyed rows are never touched — they carry no notion of
@@ -816,7 +936,7 @@ type ConfigStore interface {
 	ReconcileOauthAfterVKChange(ctx context.Context, vkID string) error
 	ReconcileMCPHeadersAfterVKChange(ctx context.Context, vkID string) error
 	// MCP-side variants: called when the change originates on the MCP
-	// client (vk_configs edit OR AllowOnAllVirtualKeys toggle). Each
+	// client (vk_configs edit OR AllowByDefault toggle). Each
 	// re-evaluates every VK that holds a credential for the changed MCP.
 	ReconcileOauthAfterMCPChange(ctx context.Context, mcpClientID string) error
 	ReconcileMCPHeadersAfterMCPChange(ctx context.Context, mcpClientID string) error
@@ -884,7 +1004,23 @@ type ConfigStore interface {
 	FinalizeCancelledSidekiqJob(ctx context.Context, id, runnerID, metadata string) error
 	ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error)
 	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
+	GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
+	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int) ([]tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
+
+	// Batch jobs - mutable coordination state for delayed batch accounting
+	UpsertProviderJob(ctx context.Context, job *tables.TableProviderJob) error
+	GetProviderJob(ctx context.Context, jobID string) (*tables.TableProviderJob, error)
+	// GetProviderJobsByIDs returns the provider jobs among the given stable ids
+	// that exist; ids with no row are simply absent from the result.
+	GetProviderJobsByIDs(ctx context.Context, jobIDs []string) ([]*tables.TableProviderJob, error)
+	ListDueProviderJobs(ctx context.Context, kind, provider string, now time.Time, limit int) ([]*tables.TableProviderJob, error)
+	ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error)
+	MarkProviderJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error
+	MarkProviderJobGovernanceReported(ctx context.Context, jobID, runnerID string) error
+	CompleteProviderJob(ctx context.Context, jobID, runnerID string) error
+	MarkProviderJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error
+	FailProviderJob(ctx context.Context, jobID, runnerID string, err error) error
 
 	// Webhook Endpoints
 	GetWebhookEndpoints(ctx context.Context) ([]tables.TableWebhookEndpoint, error)
@@ -909,10 +1045,12 @@ type ConfigStore interface {
 	DB() *gorm.DB
 
 	// ScopedDB returns the underlying DB bound to ctx with any
-	// QueryScope on ctx pre-applied. Use this in read paths that
+	// QueryScope on ctx pre-applied, or the caller's transaction when one is
+	// passed, so a read taken inside a transaction sees that transaction's own
+	// writes. The scope is applied either way. Use this in read paths that
 	// should respect caller-driven row visibility; use DB().WithContext(ctx)
 	// for writes and internal lookups that must bypass scoping.
-	ScopedDB(ctx context.Context) *gorm.DB
+	ScopedDB(ctx context.Context, tx ...*gorm.DB) *gorm.DB
 
 	// RunMigration opens a throwaway *gorm.DB against the same
 	// backing database, invokes fn with it, and closes the connection. Use
@@ -969,6 +1107,11 @@ type ConfigStore interface {
 	RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error
 	// RevokeOAuth2RefreshTokensByMode revokes all active tokens for a given mode.
 	RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error
+	// RevokeOAuth2GrantsBySubject revokes, in one transaction, every grant bound to
+	// one identity (bf_mode + bf_sub): its consented but not yet exchanged
+	// authorization codes and its active refresh tokens. Used when a virtual key
+	// rotates; pass tx to commit it together with the key update.
+	RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) error
 	// SweepOAuth2RefreshTokens deletes revoked tokens older than the given duration.
 	SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error)
 	// SweepOrphanedOAuth2Clients deletes registered clients that back no refresh

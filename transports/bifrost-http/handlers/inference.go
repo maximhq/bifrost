@@ -21,6 +21,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/tidwall/gjson"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -45,15 +46,17 @@ func forwardProviderHeadersFromContext(ctx *fasthttp.RequestCtx, bifrostCtx *sch
 
 // CompletionHandler manages HTTP requests for completion operations
 type CompletionHandler struct {
-	client *bifrost.Bifrost
-	config *lib.Config
+	modelsManager ModelsManager
+	client        *bifrost.Bifrost
+	config        *lib.Config
 }
 
 // NewInferenceHandler creates a new completion handler instance
-func NewInferenceHandler(client *bifrost.Bifrost, config *lib.Config) *CompletionHandler {
+func NewInferenceHandler(modelsManager ModelsManager, client *bifrost.Bifrost, config *lib.Config) *CompletionHandler {
 	return &CompletionHandler{
-		client: client,
-		config: config,
+		modelsManager: modelsManager,
+		client:        client,
+		config:        config,
 	}
 }
 
@@ -205,6 +208,9 @@ var embeddingParamsKnownFields = map[string]bool{
 	"fallbacks":       true,
 	"encoding_format": true,
 	"dimensions":      true,
+	"task_type":       true,
+	"title":           true,
+	"auto_truncate":   true,
 }
 
 var rerankParamsKnownFields = map[string]bool{
@@ -216,6 +222,14 @@ var rerankParamsKnownFields = map[string]bool{
 	"max_tokens_per_doc": true,
 	"priority":           true,
 	"return_documents":   true,
+	"next_token":         true,
+}
+
+var decisionParamsKnownFields = map[string]bool{
+	"model":     true,
+	"state":     true,
+	"questions": true,
+	"fallbacks": true,
 }
 
 var ocrParamsKnownFields = map[string]bool{
@@ -282,6 +296,7 @@ var imageEditParamsKnownFields = map[string]bool{
 	"image[]":             true,
 	"image_url":           true,
 	"image_url[]":         true,
+	"images":              true, // JSON body form of the above
 	"mask":                true,
 	"type":                true,
 	"background":          true,
@@ -299,6 +314,7 @@ var imageEditParamsKnownFields = map[string]bool{
 	"num_inference_steps": true,
 	"upscale_factor":      true,
 	"target_megapixels":   true,
+	"aspect_ratio":        true,
 	"stream":              true,
 }
 
@@ -326,6 +342,7 @@ var videoGenerationParamsKnownFields = map[string]bool{
 	"negative_prompt":   true,
 	"seed":              true,
 	"type":              true,
+	"output_format":     true,
 	"upscale_factor":    true,
 	"target_megapixels": true,
 	"video_uri":         true,
@@ -487,58 +504,52 @@ type VideoGenerationHTTPRequest struct {
 
 // UnmarshalJSON unmarshals the responses request input
 func (r *ResponsesRequestInput) UnmarshalJSON(data []byte) error {
-	var str string
-	if err := sonic.Unmarshal(data, &str); err == nil {
-		r.ResponsesRequestInputStr = &str
-		r.ResponsesRequestInputArray = nil
-		return nil
+	// Peek the first non-whitespace byte to select the decode path without a
+	// failed-attempt allocation. Strings and null use the string decode path;
+	// other values use the array path and preserve the original generic error.
+	for _, b := range data {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '"':
+			var str string
+			if err := sonic.Unmarshal(data, &str); err != nil {
+				return fmt.Errorf("invalid responses request input")
+			}
+			r.ResponsesRequestInputStr = &str
+			r.ResponsesRequestInputArray = nil
+			return nil
+		case 'n':
+			// null decodes to the empty string, matching what the previous
+			// try-string-first implementation produced.
+			var str string
+			if err := sonic.Unmarshal(data, &str); err != nil {
+				return fmt.Errorf("invalid responses request input")
+			}
+			r.ResponsesRequestInputStr = &str
+			r.ResponsesRequestInputArray = nil
+			return nil
+		}
+		break
 	}
 	var array []schemas.ResponsesMessage
-	if err := sonic.Unmarshal(data, &array); err == nil {
-		r.ResponsesRequestInputStr = nil
-		r.ResponsesRequestInputArray = array
-		return nil
+	if err := sonic.Unmarshal(data, &array); err != nil {
+		return fmt.Errorf("invalid responses request input")
 	}
-	return fmt.Errorf("invalid responses request input")
-}
-
-// UnmarshalJSON implements custom JSON unmarshalling for ResponsesRequest.
-// This is needed because ResponsesParameters has a custom UnmarshalJSON method,
-// which interferes with sonic's handling of the embedded BifrostParams struct.
-func (rr *ResponsesRequest) UnmarshalJSON(data []byte) error {
-	// First, unmarshal BifrostParams fields directly
-	type bifrostAlias BifrostParams
-	var bp bifrostAlias
-	if err := sonic.Unmarshal(data, &bp); err != nil {
-		return err
-	}
-	rr.BifrostParams = BifrostParams(bp)
-
-	// Unmarshal messages
-	var inputStruct struct {
-		Input ResponsesRequestInput `json:"input"`
-	}
-	if err := sonic.Unmarshal(data, &inputStruct); err != nil {
-		return err
-	}
-	rr.Input = inputStruct.Input
-
-	// Unmarshal ResponsesParameters (which has its own custom unmarshaller)
-	if rr.ResponsesParameters == nil {
-		rr.ResponsesParameters = &schemas.ResponsesParameters{}
-	}
-	if err := sonic.Unmarshal(data, rr.ResponsesParameters); err != nil {
-		return err
-	}
-
+	r.ResponsesRequestInputStr = nil
+	r.ResponsesRequestInputArray = array
 	return nil
 }
 
 // ResponsesRequest is a bifrost responses request
+//
+// Plain struct decoding handles all fields in one pass. Embed parameters by
+// value: Sonic's optdec skips null values reached through an embedded pointer,
+// which would retain earlier values when a duplicate parameter is set to null.
 type ResponsesRequest struct {
 	Input ResponsesRequestInput `json:"input"`
 	BifrostParams
-	*schemas.ResponsesParameters
+	schemas.ResponsesParameters
 }
 
 // CompactionHTTPRequest is a bifrost compaction request (subset of responses fields)
@@ -553,8 +564,79 @@ type CompactionHTTPRequest struct {
 }
 
 // EmbeddingRequest is a bifrost embedding request
+// EmbeddingRequestInput is a union of the input shapes /v1/embeddings accepts:
+//
+//	Str    → "input": "text"                              (single text shorthand)
+//	Strs   → "input": ["text1", "text2"]                   (multi-text shorthand)
+//	Tokens → "input": [15339, 1917]                        (single pre-tokenized input)
+//	TokenB → "input": [[15339, 1917], [9906]]               (several pre-tokenized inputs)
+//	Items  → "input": [[{"type":"text",...}], ...]         (multimodal parts)
+//	         "input": [{"content": [...], "params": {...}}] (per-item parameter overrides)
+//
+// The last two are both handled by EmbeddingInputItem, which accepts either shape per entry,
+// so one array may mix plain content entries and entries carrying their own params.
+type EmbeddingRequestInput struct {
+	Str          *string
+	Strs         []string
+	Tokens       []int
+	TokenBatches [][]int
+	Items        []schemas.EmbeddingInputItem
+}
+
+func (e *EmbeddingRequestInput) UnmarshalJSON(data []byte) error {
+	var str string
+	if err := sonic.Unmarshal(data, &str); err == nil {
+		e.Str = &str
+		return nil
+	}
+	var strs []string
+	if err := sonic.Unmarshal(data, &strs); err == nil {
+		e.Strs = strs
+		return nil
+	}
+	// Both token forms must precede Items: a bare number array would otherwise be read as
+	// an item list and fail to decode.
+	var tokens []int
+	if err := sonic.Unmarshal(data, &tokens); err == nil {
+		e.Tokens = tokens
+		return nil
+	}
+	var tokenBatches [][]int
+	if err := sonic.Unmarshal(data, &tokenBatches); err == nil {
+		e.TokenBatches = tokenBatches
+		return nil
+	}
+	return sonic.Unmarshal(data, &e.Items)
+}
+
+// toEmbeddingInput normalises every input variant into []EmbeddingInputItem.
+func (e *EmbeddingRequestInput) toEmbeddingInput() []schemas.EmbeddingInputItem {
+	switch {
+	case e.Str != nil:
+		t := *e.Str
+		return []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &t}}}}
+	case len(e.Strs) > 0:
+		items := make([]schemas.EmbeddingInputItem, len(e.Strs))
+		for i, str := range e.Strs {
+			sc := str
+			items[i] = schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &sc}}}
+		}
+		return items
+	case len(e.Tokens) > 0:
+		return []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeTokens, Tokens: e.Tokens}}}}
+	case len(e.TokenBatches) > 0:
+		items := make([]schemas.EmbeddingInputItem, len(e.TokenBatches))
+		for i, tokens := range e.TokenBatches {
+			items[i] = schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeTokens, Tokens: tokens}}}
+		}
+		return items
+	}
+	return e.Items
+}
+
+// EmbeddingRequest is a bifrost embedding request.
 type EmbeddingRequest struct {
-	Input *schemas.EmbeddingInput `json:"input"`
+	Input EmbeddingRequestInput `json:"input"`
 	BifrostParams
 	*schemas.EmbeddingParameters
 }
@@ -565,6 +647,13 @@ type RerankRequest struct {
 	Documents []schemas.RerankDocument `json:"documents"`
 	BifrostParams
 	*schemas.RerankParameters
+}
+
+// DecisionHandlerRequest is a bifrost decision request
+type DecisionHandlerRequest struct {
+	State     interface{}                         `json:"state"`
+	Questions map[string]schemas.DecisionQuestion `json:"questions"`
+	BifrostParams
 }
 
 // OCRHandlerRequest is a bifrost OCR request
@@ -646,19 +735,17 @@ func enableRawRequestResponseForContainer(bifrostCtx *schemas.BifrostContext) {
 	bifrostCtx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, true)
 }
 
-// parseFallbacks extracts fallbacks from string array and converts to Fallback
-// structs. Empty Provider is preserved so a plugin can re-route before dispatch.
+// parseFallbacks extracts fallbacks from string array and converts to Fallback structs
 func parseFallbacks(fallbackStrings []string) ([]schemas.Fallback, error) {
 	fallbacks := make([]schemas.Fallback, 0, len(fallbackStrings))
 	for _, fallback := range fallbackStrings {
 		fallbackProvider, fallbackModelName := schemas.ParseModelString(fallback, "")
-		if fallbackModelName == "" {
-			continue
+		if fallbackProvider != "" && fallbackModelName != "" {
+			fallbacks = append(fallbacks, schemas.Fallback{
+				Provider: fallbackProvider,
+				Model:    fallbackModelName,
+			})
 		}
-		fallbacks = append(fallbacks, schemas.Fallback{
-			Provider: fallbackProvider,
-			Model:    fallbackModelName,
-		})
 	}
 	return fallbacks, nil
 }
@@ -716,6 +803,7 @@ var PathToTypeMapping = map[string]schemas.RequestType{
 	"/v1/responses":              schemas.ResponsesRequest,
 	"/v1/embeddings":             schemas.EmbeddingRequest,
 	"/v1/rerank":                 schemas.RerankRequest,
+	"/v1/decisions":              schemas.DecisionRequest,
 	"/v1/ocr":                    schemas.OCRRequest,
 	"/v1/audio/speech":           schemas.SpeechRequest,
 	"/v1/audio/transcriptions":   schemas.TranscriptionRequest,
@@ -756,6 +844,9 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 
 	// Model endpoints
 	r.GET("/v1/models", lib.ChainMiddlewares(h.listModels, baseMiddlewares...))
+	// Catch-all so a model can be addressed the way it is everywhere else: "provider/model".
+	modelRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ModelRetrieveRequest)}, middlewares...)
+	r.GET("/v1/models/{model:*}", lib.ChainMiddlewares(h.modelRetrieve, modelRetrieveMW...))
 
 	// Completion endpoints (non-parameterized)
 	r.POST("/v1/completions", lib.ChainMiddlewares(h.textCompletion, baseMiddlewares...))
@@ -771,6 +862,7 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.GET("/v1/responses/{response_id}/input_items", lib.ChainMiddlewares(h.responsesInputItems, responsesInputItemsMW...))
 	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, baseMiddlewares...))
 	r.POST("/v1/rerank", lib.ChainMiddlewares(h.rerank, baseMiddlewares...))
+	r.POST("/v1/decisions", lib.ChainMiddlewares(h.evaluation, baseMiddlewares...))
 	r.POST("/v1/ocr", lib.ChainMiddlewares(h.ocr, baseMiddlewares...))
 	// ElevenLabs sound-effect models also flow through /v1/audio/speech; the
 	// provider routes them to /v1/sound-generation by model id, keeping SDK and
@@ -848,6 +940,17 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.DELETE("/v1/containers/{container_id}/files/{file_id}", lib.ChainMiddlewares(h.containerFileDelete, containerFileDeleteMW...))
 }
 
+// applyListModelsProviderFilter narrows the provider fan-out of a models listing to what the
+// request may reach. The rule belongs to whoever can answer what that is, shared with the
+// integration routes that list models; a handler wired without one leaves the fan-out alone,
+// because narrowing is an optimization over the answer and not the check that produces it.
+func (h *CompletionHandler) applyListModelsProviderFilter(bifrostCtx *schemas.BifrostContext) {
+	if h.modelsManager == nil {
+		return
+	}
+	h.modelsManager.NarrowListModelsProviders(bifrostCtx)
+}
+
 // listModels handles GET /v1/models - Process list models requests
 // If provider is not specified, lists all models from all configured providers
 func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
@@ -861,8 +964,8 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
-	if provider == "" && !h.applyListModelsVirtualKeyProviderFilter(ctx, bifrostCtx) {
-		return
+	if provider == "" {
+		h.applyListModelsProviderFilter(bifrostCtx)
 	}
 
 	var resp *schemas.BifrostListModelsResponse
@@ -917,6 +1020,81 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	}
 	// Send successful response
 	SendJSON(ctx, resp)
+}
+
+// modelRetrieve handles GET /v1/models/{model} - retrieve a single model's metadata
+func (h *CompletionHandler) modelRetrieve(ctx *fasthttp.RequestCtx) {
+	provider, model, err := modelRetrieveTarget(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	defer cancel() // Ensure cleanup on function exit
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.ModelRetrieveRequest(bifrostCtx, &schemas.BifrostModelRetrieveRequest{
+		Provider: provider,
+		Model:    model,
+	})
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	enrichModelRetrieveResponse(resp, h.config.ModelCatalog)
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
+	}
+	SendJSON(ctx, resp)
+}
+
+// modelRetrieveTarget resolves the provider and model a GET /v1/models/{model} request names.
+func modelRetrieveTarget(ctx *fasthttp.RequestCtx) (schemas.ModelProvider, string, error) {
+	rawModel, _ := ctx.UserValue("model").(string)
+	// The router hands the catch-all over still percent-encoded, and OpenAI SDKs send "provider%2Fmodel".
+	decodedModel, err := url.PathUnescape(rawModel)
+	if err != nil {
+		return "", "", errors.New("invalid model encoding")
+	}
+	rawModel = strings.Trim(strings.TrimSpace(decodedModel), "/")
+	if rawModel == "" {
+		return "", "", errors.New("model is required")
+	}
+
+	// ?provider= wins: ParseModelString only splits on a known provider, so a custom
+	// provider's name would otherwise be read as part of the model.
+	provider := schemas.ModelProvider(ctx.QueryArgs().Peek("provider"))
+	model := rawModel
+	if provider != "" {
+		model = strings.TrimPrefix(rawModel, string(provider)+"/")
+	} else {
+		provider, model = schemas.ParseModelString(rawModel, "")
+	}
+	if provider == "" {
+		return "", "", errors.New("provider is required: prefix the model with it or pass ?provider=")
+	}
+	return provider, model, nil
+}
+
+// enrichModelRetrieveResponse applies the same catalog metadata list models applies,
+// so one model reads the same either way.
+func enrichModelRetrieveResponse(resp *schemas.BifrostModelRetrieveResponse, catalog *modelcatalog.ModelCatalog) {
+	if resp == nil || catalog == nil {
+		return
+	}
+
+	provider, modelName := schemas.ParseModelString(resp.ID, "")
+	pricingEntry := catalog.GetPricingEntryForModel(modelName, provider)
+	if pricingEntry == nil && resp.Alias != nil {
+		pricingEntry = catalog.GetPricingEntryForModel(*resp.Alias, provider)
+	}
+	modelcatalog.ApplyModelInfo(&resp.Model, pricingEntry)
 }
 
 func enrichListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *modelcatalog.ModelCatalog) {
@@ -1042,7 +1220,11 @@ func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) 
 
 // chatCompletion handles POST /v1/chat/completions - Process chat completion requests
 func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
+	pt, ph := startTransportSpan(ctx, "request-unmarshal")
 	req, bifrostChatReq, err := prepareChatCompletionRequest(ctx, h.config)
+	if pt != nil {
+		pt.EndSpan(ph, schemas.SpanStatusOk, "")
+	}
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -1074,7 +1256,11 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Send successful response
+	mt, mh := startTransportSpan(ctx, "response-marshal")
 	SendJSON(ctx, resp)
+	if mt != nil {
+		mt.EndSpan(mh, schemas.SpanStatusOk, "")
+	}
 }
 
 // prepareResponsesRequest prepares a BifrostResponsesRequest from a ResponsesRequest
@@ -1085,9 +1271,6 @@ func prepareResponsesRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Res
 	}
 	if len(req.Input.ResponsesRequestInputArray) == 0 && req.Input.ResponsesRequestInputStr == nil {
 		return nil, nil, fmt.Errorf("input is required for responses")
-	}
-	if req.ResponsesParameters == nil {
-		req.ResponsesParameters = &schemas.ResponsesParameters{}
 	}
 	req.ResponsesParameters.ExtraParams = base.ExtraParams
 
@@ -1104,7 +1287,7 @@ func prepareResponsesRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Res
 		Provider:  base.Provider,
 		Model:     base.ModelName,
 		Input:     input,
-		Params:    req.ResponsesParameters,
+		Params:    &req.ResponsesParameters,
 		Fallbacks: base.Fallbacks,
 	}, nil
 }
@@ -1154,8 +1337,12 @@ func prepareEmbeddingRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Emb
 	if err != nil {
 		return nil, nil, err
 	}
-	if req.Input == nil || (req.Input.Text == nil && req.Input.Texts == nil && req.Input.Embedding == nil && req.Input.Embeddings == nil) {
+	contents := req.Input.toEmbeddingInput()
+	if len(contents) == 0 {
 		return nil, nil, fmt.Errorf("input is required for embeddings")
+	}
+	if err := schemas.ValidateEmbeddingInput(contents); err != nil {
+		return nil, nil, err
 	}
 	if req.EmbeddingParameters == nil {
 		req.EmbeddingParameters = &schemas.EmbeddingParameters{}
@@ -1164,7 +1351,7 @@ func prepareEmbeddingRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Emb
 	return req, &schemas.BifrostEmbeddingRequest{
 		Provider:  base.Provider,
 		Model:     base.ModelName,
-		Input:     req.Input,
+		Input:     contents,
 		Params:    req.EmbeddingParameters,
 		Fallbacks: base.Fallbacks,
 	}, nil
@@ -1215,8 +1402,8 @@ func prepareRerankRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Rerank
 		return nil, nil, fmt.Errorf("documents are required for rerank")
 	}
 	for i, doc := range req.Documents {
-		if strings.TrimSpace(doc.Text) == "" {
-			return nil, nil, fmt.Errorf("document text is required for rerank at index %d", i)
+		if strings.TrimSpace(doc.Text) == "" && len(doc.Data) == 0 {
+			return nil, nil, fmt.Errorf("document text or data is required for rerank at index %d", i)
 		}
 	}
 	if req.RerankParameters == nil {
@@ -1253,6 +1440,64 @@ func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
 	}
 
 	resp, bifrostErr := h.client.RerankRequest(bifrostCtx, bifrostRerankReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
+	}
+
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	// Send successful response
+	SendJSON(ctx, resp)
+}
+
+// prepareDecisionRequest prepares a BifrostDecisionRequest from the HTTP request body
+func prepareDecisionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*DecisionHandlerRequest, *schemas.BifrostDecisionRequest, error) {
+	req, base, err := prepareRequest[DecisionHandlerRequest](ctx, config, decisionParamsKnownFields)
+	if err != nil {
+		return nil, nil, err
+	}
+	// An explicit null state is SDK-valid and forwarded; only an absent key is
+	// rejected here.
+	if req.State == nil && !gjson.GetBytes(ctx.PostBody(), "state").Exists() {
+		return nil, nil, fmt.Errorf("state is required for decision")
+	}
+	if len(req.Questions) == 0 {
+		return nil, nil, fmt.Errorf("questions are required for decision")
+	}
+	return req, &schemas.BifrostDecisionRequest{
+		Provider:    base.Provider,
+		Model:       base.ModelName,
+		State:       req.State,
+		Questions:   req.Questions,
+		Fallbacks:   base.Fallbacks,
+		ExtraParams: base.ExtraParams,
+	}, nil
+}
+
+// evaluation handles POST /v1/decisions - Process decision requests
+func (h *CompletionHandler) evaluation(ctx *fasthttp.RequestCtx) {
+	_, bifrostDecisionReq, err := prepareDecisionRequest(ctx, h.config)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.DecisionRequest(bifrostCtx, bifrostDecisionReq)
 	if bifrostErr != nil {
 		forwardProviderHeadersFromContext(ctx, bifrostCtx)
 		SendBifrostError(ctx, bifrostErr)
@@ -1870,7 +2115,7 @@ func (h *CompletionHandler) handleStreamingTextCompletion(ctx *fasthttp.RequestC
 		return h.client.TextCompletionStreamRequest(bifrostCtx, req)
 	}
 
-	h.handleStreamingResponse(ctx, bifrostCtx, schemas.TextCompletionStreamRequest, false, getStream, cancel)
+	h.handleStreamingResponse(ctx, bifrostCtx, schemas.TextCompletionStreamRequest, getStream, cancel)
 }
 
 // handleStreamingChatCompletion handles streaming chat completion requests using Server-Sent Events (SSE)
@@ -1882,11 +2127,7 @@ func (h *CompletionHandler) handleStreamingChatCompletion(ctx *fasthttp.RequestC
 		return h.client.ChatCompletionStreamRequest(bifrostCtx, req)
 	}
 
-	includeUsage := req.Params != nil &&
-		req.Params.StreamOptions != nil &&
-		req.Params.StreamOptions.IncludeUsage != nil &&
-		*req.Params.StreamOptions.IncludeUsage
-	h.handleStreamingResponse(ctx, bifrostCtx, schemas.ChatCompletionStreamRequest, includeUsage, getStream, cancel)
+	h.handleStreamingResponse(ctx, bifrostCtx, schemas.ChatCompletionStreamRequest, getStream, cancel)
 }
 
 // handleStreamingResponses handles streaming responses requests using Server-Sent Events (SSE)
@@ -1898,7 +2139,7 @@ func (h *CompletionHandler) handleStreamingResponses(ctx *fasthttp.RequestCtx, r
 		return h.client.ResponsesStreamRequest(bifrostCtx, req)
 	}
 
-	h.handleStreamingResponse(ctx, bifrostCtx, schemas.ResponsesStreamRequest, false, getStream, cancel)
+	h.handleStreamingResponse(ctx, bifrostCtx, schemas.ResponsesStreamRequest, getStream, cancel)
 }
 
 // handleStreamingResponsesRetrieve handles streaming retrieval of a stored response (GET
@@ -1908,7 +2149,7 @@ func (h *CompletionHandler) handleStreamingResponsesRetrieve(ctx *fasthttp.Reque
 		return h.client.ResponsesRetrieveStreamRequest(bifrostCtx, req)
 	}
 
-	h.handleStreamingResponse(ctx, bifrostCtx, schemas.ResponsesRetrieveStreamRequest, false, getStream, cancel)
+	h.handleStreamingResponse(ctx, bifrostCtx, schemas.ResponsesRetrieveStreamRequest, getStream, cancel)
 }
 
 // handleStreamingSpeech handles streaming speech requests using Server-Sent Events (SSE)
@@ -1920,7 +2161,7 @@ func (h *CompletionHandler) handleStreamingSpeech(ctx *fasthttp.RequestCtx, req 
 		return h.client.SpeechStreamRequest(bifrostCtx, req)
 	}
 
-	h.handleStreamingResponse(ctx, bifrostCtx, schemas.SpeechStreamRequest, false, getStream, cancel)
+	h.handleStreamingResponse(ctx, bifrostCtx, schemas.SpeechStreamRequest, getStream, cancel)
 }
 
 // handleStreamingTranscriptionRequest handles streaming transcription requests using Server-Sent Events (SSE)
@@ -1932,14 +2173,15 @@ func (h *CompletionHandler) handleStreamingTranscriptionRequest(ctx *fasthttp.Re
 		return h.client.TranscriptionStreamRequest(bifrostCtx, req)
 	}
 
-	h.handleStreamingResponse(ctx, bifrostCtx, schemas.TranscriptionStreamRequest, false, getStream, cancel)
+	h.handleStreamingResponse(ctx, bifrostCtx, schemas.TranscriptionStreamRequest, getStream, cancel)
 }
 
 // handleStreamingResponse is a generic function to handle streaming responses using Server-Sent Events (SSE)
-// The cancel function is called ONLY when client disconnects are detected via write errors.
-// Bifrost handles cleanup internally for normal completion and errors, so we only cancel
-// upstream streams when write errors indicate the client has disconnected.
-func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, requestType schemas.RequestType, includeChatUsage bool, getStream func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError), cancel context.CancelFunc) {
+// The cancel function is called here only when client disconnects are detected via write errors;
+// a client that closes its socket before the first write is caught by the socket watcher started
+// in lib.ConvertToBifrostContext. Bifrost handles cleanup internally for normal completion and
+// errors, so we only cancel upstream streams when the client has disconnected.
+func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, requestType schemas.RequestType, getStream func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError), cancel context.CancelFunc) {
 	// Get the streaming channel — called BEFORE setting SSE headers so that
 	// provider errors return proper HTTP status codes + JSON content type.
 	stream, bifrostErr := getStream()
@@ -1995,6 +2237,11 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	// Producer goroutine: processes the stream channel, formats SSE events, sends to reader
 	go func() {
 		var transportLogs []schemas.PluginLogEntry
+		// Per-chunk transport-goroutine costs, stamped onto the root span at stream end so
+		// the overhead breakdown attributes the outbound relay (chunk marshal = transport
+		// CPU -> "convertor.stream-out"; client socket write -> "stream-client-write")
+		// instead of folding it into the residual bucket. Mirrors integrations/router.go.
+		var streamTransportCPUNs, streamClientWriteNs int64
 		completerRan := false
 		// runCompleter invokes the transport post-hook completer at most once.
 		// sendSSEOnError=true emits plugin errors as SSE "event: error" frames so the
@@ -2059,6 +2306,10 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			// lib.StopSSEHeartbeat's doc for the full ordering rationale.
 			lib.StopSSEHeartbeat(reader, heartbeatDone, heartbeatExited)
 			schemas.ReleaseHTTPRequest(httpReq)
+			// Stamp the outbound relay costs onto the root span before the trace completes
+			// below (traceCompleter), so they reach the overhead breakdown. Runs on every
+			// exit path (normal end, client disconnect, interceptor error).
+			bifrostCtx.StampStreamTransport(time.Duration(streamTransportCPUNs), time.Duration(streamClientWriteNs))
 			// Fallback: on early-return paths (client disconnect, interceptor error)
 			// we never reached the pre-[DONE] invocation, so run it now. Any error is
 			// logged server-side only — the stream is already closing.
@@ -2136,15 +2387,10 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				}
 			}
 
-			// Normalize the internal terminal chunk into the OpenAI wire contract
-			// immediately before SSE framing.
-			var chunkJSON, usageJSON []byte
-			var err error
-			if requestType == schemas.ChatCompletionStreamRequest && chunk.BifrostChatResponse != nil {
-				chunkJSON, usageJSON, err = marshalChatCompletionStreamEvents(chunk.BifrostChatResponse, includeChatUsage)
-			} else {
-				chunkJSON, err = sonic.Marshal(chunk)
-			}
+			// Convert response to JSON (transport-goroutine CPU).
+			cpuStart := time.Now()
+			chunkJSON, err := sonic.Marshal(chunk)
+			streamTransportCPUNs += time.Since(cpuStart).Nanoseconds()
 			if err != nil {
 				logger.Warn("Failed to marshal streaming response: %v", err)
 				continue
@@ -2169,18 +2415,15 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				}
 			}
 
-			if len(chunkJSON) > 0 && !reader.SendEvent(eventType, chunkJSON) {
+			writeStart := time.Now()
+			sent := reader.SendEvent(eventType, chunkJSON)
+			streamClientWriteNs += time.Since(writeStart).Nanoseconds()
+			if !sent {
 				cancel() // Client disconnected, cancel upstream stream
 				// Drain remaining chunks so the provider goroutine's defer
 				// (HandleStreamCancellation -> PostLLMHook -> storeOrEnqueueEntry) finishes
 				// before our own defer fires traceCompleter. Without this, Inject runs
 				// against an empty pendingLogsToInject and the cancellation log is orphaned.
-				for range stream {
-				}
-				return
-			}
-			if len(usageJSON) > 0 && !reader.SendEvent("", usageJSON) {
-				cancel()
 				for range stream {
 				}
 				return
@@ -2360,30 +2603,16 @@ func (h *CompletionHandler) handleStreamingImageGeneration(ctx *fasthttp.Request
 		return h.client.ImageGenerationStreamRequest(bifrostCtx, req)
 	}
 
-	h.handleStreamingResponse(ctx, bifrostCtx, schemas.ImageGenerationStreamRequest, false, getStream, cancel)
+	h.handleStreamingResponse(ctx, bifrostCtx, schemas.ImageGenerationStreamRequest, getStream, cancel)
 }
 
-// prepareImageEditRequest prepares a BifrostImageEditRequest from a multipart form
-func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*ImageEditHTTPRequest, *schemas.BifrostImageEditRequest, error) {
-	var req ImageEditHTTPRequest
-	form, err := ctx.MultipartForm()
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse multipart form: %v", err)
+// parseImageEditMultipartForm fills req from an OpenAI-style multipart image edit form. Uploaded
+// files and the image_url convenience fields both feed Images; scalars are converted here because
+// multipart carries every value as a string.
+func parseImageEditMultipartForm(form *multipart.Form, req *ImageEditHTTPRequest) error {
+	if modelValues := form.Value["model"]; len(modelValues) > 0 {
+		req.Model = modelValues[0]
 	}
-	modelValues := form.Value["model"]
-	if len(modelValues) == 0 || modelValues[0] == "" {
-		return nil, nil, fmt.Errorf("model is required")
-	}
-	req.Model = modelValues[0]
-	provider, modelName, err := resolveModelAndProvider(ctx, config, req.Model)
-	if err != nil {
-		return nil, nil, err
-	}
-	var editType string
-	if typeValues := form.Value["type"]; len(typeValues) > 0 && typeValues[0] != "" {
-		editType = typeValues[0]
-	}
-	promptValues := form.Value["prompt"]
 	var imageFiles []*multipart.FileHeader
 	if imageFilesArray := form.File["image[]"]; len(imageFilesArray) > 0 {
 		imageFiles = imageFilesArray
@@ -2396,9 +2625,6 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 	if len(imageURLs) == 0 {
 		imageURLs = form.Value["image_url"]
 	}
-	if len(imageFiles) == 0 && len(imageURLs) == 0 {
-		return nil, nil, fmt.Errorf("at least one image or image_url is required")
-	}
 	// Uploads keep their leading position so a request that sends no URL is ordered exactly as
 	// before: providers treat the first image as the primary one (Runware's seed image, Bedrock's
 	// style-transfer base), so the order is part of the contract.
@@ -2406,12 +2632,12 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 	for _, fh := range imageFiles {
 		f, err := fh.Open()
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to open uploaded file: %v", err)
+			return fmt.Errorf("failed to open uploaded file: %v", err)
 		}
 		fileData, err := io.ReadAll(f)
 		f.Close()
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to read uploaded file: %v", err)
+			return fmt.Errorf("failed to read uploaded file: %v", err)
 		}
 		images = append(images, schemas.ImageInput{Image: fileData})
 	}
@@ -2421,7 +2647,7 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 		}
 	}
 	prompt := ""
-	if len(promptValues) > 0 && promptValues[0] != "" {
+	if promptValues := form.Value["prompt"]; len(promptValues) > 0 && promptValues[0] != "" {
 		prompt = promptValues[0]
 	}
 	req.ImageEditInput = &schemas.ImageEditInput{
@@ -2429,10 +2655,13 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 		Prompt: prompt,
 	}
 	req.ImageEditParameters = &schemas.ImageEditParameters{}
+	if typeValues := form.Value["type"]; len(typeValues) > 0 && typeValues[0] != "" {
+		req.ImageEditParameters.Type = &typeValues[0]
+	}
 	if nValues := form.Value["n"]; len(nValues) > 0 && nValues[0] != "" {
 		n, err := strconv.Atoi(nValues[0])
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid n value: %v", err)
+			return fmt.Errorf("invalid n value: %v", err)
 		}
 		req.ImageEditParameters.N = &n
 	}
@@ -2445,7 +2674,7 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 	if partialImagesValues := form.Value["partial_images"]; len(partialImagesValues) > 0 && partialImagesValues[0] != "" {
 		partialImages, err := strconv.Atoi(partialImagesValues[0])
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid partial_images value: %v", err)
+			return fmt.Errorf("invalid partial_images value: %v", err)
 		}
 		req.ImageEditParameters.PartialImages = &partialImages
 	}
@@ -2461,35 +2690,35 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 	if numInferenceStepsValues := form.Value["num_inference_steps"]; len(numInferenceStepsValues) > 0 && numInferenceStepsValues[0] != "" {
 		numInferenceSteps, err := strconv.Atoi(numInferenceStepsValues[0])
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid num_inference_steps value: %v", err)
+			return fmt.Errorf("invalid num_inference_steps value: %v", err)
 		}
 		req.ImageEditParameters.NumInferenceSteps = &numInferenceSteps
 	}
 	if upscaleFactorValues := form.Value["upscale_factor"]; len(upscaleFactorValues) > 0 && upscaleFactorValues[0] != "" {
 		upscaleFactor, err := strconv.Atoi(upscaleFactorValues[0])
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid upscale_factor value: %v", err)
+			return fmt.Errorf("invalid upscale_factor value: %v", err)
 		}
 		req.ImageEditParameters.UpscaleFactor = &upscaleFactor
 	}
 	if targetMegapixelsValues := form.Value["target_megapixels"]; len(targetMegapixelsValues) > 0 && targetMegapixelsValues[0] != "" {
 		targetMegapixels, err := strconv.Atoi(targetMegapixelsValues[0])
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid target_megapixels value: %v", err)
+			return fmt.Errorf("invalid target_megapixels value: %v", err)
 		}
 		req.ImageEditParameters.TargetMegapixels = &targetMegapixels
 	}
 	if seedValues := form.Value["seed"]; len(seedValues) > 0 && seedValues[0] != "" {
 		seed, err := strconv.Atoi(seedValues[0])
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid seed value: %v", err)
+			return fmt.Errorf("invalid seed value: %v", err)
 		}
 		req.ImageEditParameters.Seed = &seed
 	}
 	if outputCompressionValues := form.Value["output_compression"]; len(outputCompressionValues) > 0 && outputCompressionValues[0] != "" {
 		outputCompression, err := strconv.Atoi(outputCompressionValues[0])
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid output_compression value: %v", err)
+			return fmt.Errorf("invalid output_compression value: %v", err)
 		}
 		req.ImageEditParameters.OutputCompression = &outputCompression
 	}
@@ -2502,29 +2731,18 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 	if userValues := form.Value["user"]; len(userValues) > 0 && userValues[0] != "" {
 		req.ImageEditParameters.User = &userValues[0]
 	}
-	if editType != "" {
-		req.ImageEditParameters.Type = &editType
-	}
 	if maskFiles := form.File["mask"]; len(maskFiles) > 0 {
 		maskFile := maskFiles[0]
 		f, err := maskFile.Open()
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to open mask file: %v", err)
+			return fmt.Errorf("failed to open mask file: %v", err)
 		}
 		maskData, err := io.ReadAll(f)
 		f.Close()
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to read mask file: %v", err)
+			return fmt.Errorf("failed to read mask file: %v", err)
 		}
 		req.ImageEditParameters.Mask = maskData
-	}
-	if req.ImageEditParameters.ExtraParams == nil {
-		req.ImageEditParameters.ExtraParams = make(map[string]interface{})
-	}
-	for key, value := range form.Value {
-		if len(value) > 0 && value[0] != "" && !imageEditParamsKnownFields[key] {
-			req.ImageEditParameters.ExtraParams[key] = value[0]
-		}
 	}
 	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
 		req.Fallbacks = fallbackValues
@@ -2533,6 +2751,70 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 		stream := streamValues[0] == "true"
 		req.Stream = &stream
 	}
+	return nil
+}
+
+// prepareImageEditRequest builds a BifrostImageEditRequest from either a multipart form (uploaded
+// image bytes, matching OpenAI's /v1/images/edits) or a JSON body (images referenced by URL or
+// base64 under "images"). JSON is the only form that carries typed provider-native extra params:
+// multipart values are always strings, so a nested object or a number reaches the provider with
+// its type intact only through the JSON body.
+func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*ImageEditHTTPRequest, *schemas.BifrostImageEditRequest, error) {
+	var req ImageEditHTTPRequest
+	var extraParams map[string]any
+
+	if isMultipartRequest(ctx) {
+		form, err := ctx.MultipartForm()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to parse multipart form: %v", err)
+		}
+		if err := parseImageEditMultipartForm(form, &req); err != nil {
+			return nil, nil, err
+		}
+		extraParams = make(map[string]any)
+		for key, value := range form.Value {
+			if len(value) > 0 && value[0] != "" && !imageEditParamsKnownFields[key] {
+				extraParams[key] = value[0]
+			}
+		}
+	} else {
+		if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+			return nil, nil, fmt.Errorf("Invalid request payload")
+		}
+		ep, epErr := extractExtraParams(ctx.PostBody(), imageEditParamsKnownFields)
+		if epErr != nil {
+			logger.Warn("Failed to extract extra params: %v", epErr)
+		} else {
+			extraParams = ep
+		}
+	}
+
+	if req.Model == "" {
+		return nil, nil, fmt.Errorf("model is required")
+	}
+	provider, modelName, err := resolveModelAndProvider(ctx, config, req.Model)
+	if err != nil {
+		return nil, nil, err
+	}
+	if req.ImageEditInput != nil {
+		// An entry carrying neither bytes nor a URL is meaningless to every provider, and JSON has
+		// several ways to produce one (null, {}, {"url":""}). Drop them the way the multipart path
+		// already drops empty image_url values, so the count below is the count that can be sent.
+		kept := req.ImageEditInput.Images[:0]
+		for _, img := range req.ImageEditInput.Images {
+			if len(img.Image) > 0 || strings.TrimSpace(img.URL) != "" {
+				kept = append(kept, img)
+			}
+		}
+		req.ImageEditInput.Images = kept
+	}
+	if req.ImageEditInput == nil || len(req.ImageEditInput.Images) == 0 {
+		return nil, nil, fmt.Errorf("at least one image or image_url is required")
+	}
+	if req.ImageEditParameters == nil {
+		req.ImageEditParameters = &schemas.ImageEditParameters{}
+	}
+	req.ImageEditParameters.ExtraParams = extraParams
 	fallbacks, err := parseFallbacks(req.Fallbacks)
 	if err != nil {
 		return nil, nil, err
@@ -2560,6 +2842,7 @@ func (h *CompletionHandler) imageEdit(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
 	// Handle streaming image edit
 	if req.Stream != nil && *req.Stream {
@@ -2594,7 +2877,7 @@ func (h *CompletionHandler) handleStreamingImageEditRequest(ctx *fasthttp.Reques
 		return h.client.ImageEditStreamRequest(bifrostCtx, req)
 	}
 
-	h.handleStreamingResponse(ctx, bifrostCtx, schemas.ImageEditStreamRequest, false, getStream, cancel)
+	h.handleStreamingResponse(ctx, bifrostCtx, schemas.ImageEditStreamRequest, getStream, cancel)
 }
 
 // prepareImageVariationRequest prepares a BifrostImageVariationRequest from a multipart form
@@ -3363,9 +3646,27 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		logger.Warn("Failed to extract extra params: %v", err)
 	}
 
+	// Model is optional at the batch level per OpenAI spec — it lives inside
+	// each JSONL request body. When absent, lift it from the first inline request
+	// so the sweeper has a fallback model for pricing lookups.
+	//
+	// Taking Requests[0] is deliberate, not a mixed-model hazard. It is only ever
+	// a fallback: accounting prefers the model echoed on each result row, and the
+	// providers where the fallback actually decides pricing run one model per job
+	// anyway — Gemini carries it in the URL (models/%s:batchGenerateContent) and
+	// Bedrock requires a job-level model. Leaving it unset when inline models
+	// differ would break Bedrock batch creation and make Gemini silently run its
+	// default model.
 	var model *string
 	if modelName != "" {
 		model = schemas.Ptr(modelName)
+	} else if len(req.Requests) > 0 {
+		for _, body := range []map[string]any{req.Requests[0].Body, req.Requests[0].Params} {
+			if m, ok := body["model"].(string); ok && m != "" {
+				model = schemas.Ptr(m)
+				break
+			}
+		}
 	}
 
 	// Build Bifrost batch create request

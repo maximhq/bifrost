@@ -1,9 +1,10 @@
 package bifrost
 
 import (
-	"fmt"
+	"bytes"
 	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -74,6 +75,19 @@ var unverifiablePayloadMarkers = []string{
 	"unrecognized prefix",
 }
 
+// unsupportedFieldMarkers are the ways an upstream says it does not accept the field at
+// all, as opposed to accepting it and failing to verify what arrived in it. Bedrock
+// Converse answers a replayed reasoning signature on a non-Anthropic model this way:
+// "This model doesn't support the reasoningContent.reasoningText.signature field. Remove
+// reasoningContent.reasoningText.signature and try again." That is what a mid-conversation
+// model switch earns -- a Claude-minted signature replayed onto Kimi, GLM or DeepSeek --
+// and the verdict matches an unverifiable payload: this model will never take the token,
+// so it earns the same fail-soft strip.
+var unsupportedFieldMarkers = []string{
+	"does not support",
+	"doesn't support",
+}
+
 // namesEncryptedReasoningField reports whether a lowercased error message points at
 // the field this request's encrypted reasoning was written into.
 func namesEncryptedReasoningField(message string) bool {
@@ -104,8 +118,83 @@ func containsAnyMarker(message string, markers []string) bool {
 	return false
 }
 
+// reasoningTokenWords are the family names every upstream uses when it refuses a
+// replayed reasoning token, whatever else the sentence says. OpenAI, Azure, xAI and
+// Bedrock's OpenAI-compatible surfaces say "encrypted content" or "encrypted
+// reasoning"; Bedrock Converse says "reasoningContent"; Anthropic says "thinking" and
+// "redacted_thinking"; Gemini and Vertex say "thought signature". These are the names
+// of the field, not the provider's verdict on it, which is why they hold still while
+// the verdict wording ("invalid", "corrupted", "not valid", "could not decrypt",
+// "different region") keeps changing.
+var reasoningTokenWords = []string{"encrypted", "reasoning", "thinking", "thought"}
+
+// reasoningConfigParams are request parameters that configure reasoning rather than
+// replay it. A 400 naming one is a configuration error -- an effort level or summary
+// mode the model does not take, a thinking budget outside Anthropic's documented
+// bounds, or a thinking mode the model has retired -- and the strip never touches
+// these parameters, so the retry would only earn the same 400.
+var reasoningConfigParams = []string{
+	"reasoning.effort",
+	"reasoning_effort",
+	"reasoning.summary",
+	"reasoning_summary",
+	"budget_tokens",
+	"thinking.type",
+	"thinking_budget",
+	"thinkingbudget",
+	"thinking_level",
+	"thinkinglevel",
+	"include_thoughts",
+	"includethoughts",
+}
+
+// shouldStripReasoningAfterClientError reports whether a failed attempt earns one more
+// try with the request's replayed reasoning tokens removed.
+//
+// The gate is a 400 whose message names a reasoning token, by family word alone. It
+// deliberately does not require the upstream's verdict wording: only Anthropic
+// documents its refusal text, and every mid-conversation provider or model switch
+// (bedrock to bedrock_mantle, Azure to Mantle, a per-turn router) produced a new
+// sentence per surface that the older verdict-based matcher missed, each time handing a
+// healable 400 straight to the client. Requiring the family word keeps an unrelated
+// 400 (context length, an unsupported parameter) from spending an upstream call that
+// would only return the same error.
+//
+// A 400 is the only class where the payload is the plausible cause: 401/403 are
+// identity, 404 is routing, 429 and 5xx are transient, and the ordinary retry classes
+// already own those. The caller pairs this with stripUnverifiableReasoning, which
+// returns false when the request carries no token, so the extra attempt is spent only
+// on requests that replay one. A 400 that names the family for another reason (a
+// missing thought_signature) costs one cheap call that is rejected before inference
+// and returns the same error; a successful response is never touched, because the
+// strip runs only after a refusal.
+//
+// Two exclusions are certain to earn the same 400 again. Anthropic's documented
+// "`thinking` or `redacted_thinking` blocks in the latest assistant message cannot be
+// modified": the strip drops those blocks. And a 400 that names a reasoning
+// configuration parameter (see reasoningConfigParams) but no replayed-token field:
+// the strip leaves the parameter in place.
+func shouldStripReasoningAfterClientError(err *schemas.BifrostError) bool {
+	if err == nil || err.Error == nil || err.StatusCode == nil || *err.StatusCode != 400 {
+		return false
+	}
+	message := strings.ToLower(err.Error.Message)
+	if strings.Contains(message, "cannot be modified") {
+		return false
+	}
+	if containsAnyMarker(message, reasoningConfigParams) && !namesEncryptedReasoningField(message) {
+		return false
+	}
+	return containsAnyMarker(message, reasoningTokenWords)
+}
+
 // isEncryptedReasoningRejection reports whether err is an upstream refusal to accept
-// replayed encrypted reasoning content.
+// replayed encrypted reasoning content, as far as the known phrasings go.
+//
+// It no longer gates the fail-soft retry; shouldStripReasoningAfterClientError does,
+// on status alone. This classifier labels the retry in logs and metrics, so an
+// operator can tell a recognised token refusal from a speculative strip after an
+// unrelated 400. A miss here costs a less specific log line, not a failed turn.
 //
 // encrypted_content is bound to the identity that minted it: the item id it was
 // issued with, the API key's organization, and the serving endpoint. A gateway
@@ -146,7 +235,18 @@ func isEncryptedReasoningRejection(err *schemas.BifrostError) bool {
 		return false
 	}
 
-	return namesEncryptedReasoningField(message) && containsAnyMarker(message, unverifiablePayloadMarkers)
+	// Bedrock runtime's OpenAI-compatible Responses endpoint uses validation_error
+	// for model/account-bound reasoning replay. Match its specific refusal rather
+	// than treating unrelated reasoning validation errors as recoverable.
+	if strings.Contains(message, "encrypted reasoning was created for a different account or model") {
+		return true
+	}
+
+	if !namesEncryptedReasoningField(message) {
+		return false
+	}
+	return containsAnyMarker(message, unverifiablePayloadMarkers) ||
+		containsAnyMarker(message, unsupportedFieldMarkers)
 }
 
 // encryptedReasoningCarriers returns the input array and raw body of the request
@@ -248,13 +348,58 @@ func stripChatUnverifiableReasoning(ctx *schemas.BifrostContext, req *schemas.Bi
 	rewritten := make([]schemas.ChatMessage, len(req.Input))
 	copy(rewritten, req.Input)
 
+	// Anthropic refuses a blanked signature wherever it appears, so there the detail is
+	// dropped whole rather than emptied (see dropsWholeReasoningBlocks).
+	dropWhole := dropsWholeReasoningBlocks(ctx, req.Model)
+
 	changed := false
 	for i := range rewritten {
+		// The chat analogue of the Responses call-id strip: the Gemini chat converter
+		// carries the thought signature inside tool_calls[].id as "<id>_ts_<signature>"
+		// and rebuilds it from there, so a history minted on the other platform has no
+		// reasoning detail to strip and the retry never fired. Cloned only when a strip
+		// is needed, so the caller's slices are never mutated.
+		if assistant := rewritten[i].ChatAssistantMessage; assistant != nil && len(assistant.ToolCalls) > 0 {
+			var cloned []schemas.ChatAssistantMessageToolCall
+			for j := range assistant.ToolCalls {
+				id := assistant.ToolCalls[j].ID
+				if id == nil {
+					continue
+				}
+				base := providerUtils.StripThoughtSignature(*id)
+				if base == *id {
+					continue
+				}
+				if cloned == nil {
+					cloned = make([]schemas.ChatAssistantMessageToolCall, len(assistant.ToolCalls))
+					copy(cloned, assistant.ToolCalls)
+				}
+				cloned[j].ID = &base
+			}
+			if cloned != nil {
+				assistantCopy := *assistant
+				assistantCopy.ToolCalls = cloned
+				rewritten[i].ChatAssistantMessage = &assistantCopy
+				changed = true
+			}
+		}
+		if tool := rewritten[i].ChatToolMessage; tool != nil && tool.ToolCallID != nil {
+			if base := providerUtils.StripThoughtSignature(*tool.ToolCallID); base != *tool.ToolCallID {
+				toolCopy := *tool
+				toolCopy.ToolCallID = &base
+				rewritten[i].ChatToolMessage = &toolCopy
+				changed = true
+			}
+		}
+
 		assistant := rewritten[i].ChatAssistantMessage
 		if assistant == nil || len(assistant.ReasoningDetails) == 0 {
 			continue
 		}
 		details, detailsChanged := stripChatReasoningDetails(assistant.ReasoningDetails)
+		if dropWhole {
+			details, detailsChanged = dropChatReasoningDetails(assistant.ReasoningDetails)
+		}
 		if !detailsChanged {
 			continue
 		}
@@ -297,15 +442,77 @@ func stripChatReasoningDetails(details []schemas.ChatReasoningDetails) ([]schema
 	return kept, true
 }
 
+// dropChatReasoningDetails removes every reasoning detail carrying an unverifiable
+// payload, reporting whether any were removed. Unlike stripChatReasoningDetails the
+// text does not survive: on Anthropic it is the thinking prose the refused signature
+// signed, and replaying it without a valid signature is itself a 400.
+func dropChatReasoningDetails(details []schemas.ChatReasoningDetails) ([]schemas.ChatReasoningDetails, bool) {
+	kept := make([]schemas.ChatReasoningDetails, 0, len(details))
+	changed := false
+	for _, detail := range details {
+		if detail.Signature != nil || detail.Data != nil {
+			changed = true
+			continue
+		}
+		kept = append(kept, detail)
+	}
+	if !changed {
+		return nil, false
+	}
+	return kept, true
+}
+
 // contentBlockReasoningCarriers name the ResponsesMessageContentBlock fields that can
 // hold a payload the next upstream cannot verify. Both are cleared in one pass: the
 // strip gets a single retry, so healing one field per attempt would need two upstream
 // calls to reach a payload the upstream accepts.
 var contentBlockReasoningCarriers = []string{"signature", "encrypted_content"}
 
+// dropsWholeReasoningBlocks reports whether the upstream this request is bound for
+// requires a replayed thinking block to be deleted outright rather than emptied.
+//
+// Anthropic verifies a thinking block's signature on every assistant turn it receives,
+// not only the latest, and answers a blanked one with "messages.N.content.M: Invalid
+// `signature` in `thinking` block". Clearing the field therefore turns a request the
+// API accepts into one it refuses -- measured against the live API on
+// claude-sonnet-4-5, claude-haiku-4-5 and claude-opus-5: the same history replays 200
+// untouched, 400 with signatures blanked, and 200 again with the blocks removed whole.
+// Removal is accepted on every turn including the latest, with tool_use present and
+// thinking still enabled, so no turn has to be spared and thinking need not be
+// disabled for the retry.
+//
+// Gated on the family rather than the provider key, because the behaviour follows the
+// model: Claude is served from Anthropic, Bedrock and Vertex alike. OpenAI keeps the
+// blanking path -- a reasoning summary without encrypted_content is legal there, and
+// dropping the item would throw away narrative the model can still use.
+func dropsWholeReasoningBlocks(ctx *schemas.BifrostContext, model string) bool {
+	return schemas.IsAnthropicModelFamily(ctx, model)
+}
+
+// dropReasoningContentBlocks removes every reasoning content block that carries an
+// unverifiable payload, reporting whether any were removed.
+func dropReasoningContentBlocks(content *schemas.ResponsesMessageContent) ([]schemas.ResponsesMessageContentBlock, bool) {
+	if content == nil || len(content.ContentBlocks) == 0 {
+		return nil, false
+	}
+	kept := make([]schemas.ResponsesMessageContentBlock, 0, len(content.ContentBlocks))
+	changed := false
+	for _, block := range content.ContentBlocks {
+		if block.Signature != nil || block.EncryptedContent != nil {
+			changed = true
+			continue
+		}
+		kept = append(kept, block)
+	}
+	if !changed {
+		return nil, false
+	}
+	return kept, true
+}
+
 // stripRawAnthropicChatThinking rewrites a buffered Anthropic Messages body so no
-// unverifiable thinking payload survives outside the one turn Anthropic protects,
-// reporting whether anything changed. Each surviving block keeps its original bytes
+// unverifiable thinking payload survives on any assistant turn, reporting whether
+// anything changed. Each surviving block keeps its original bytes
 // (minus the edited field) so fields Bifrost's schema does not model are not lost on
 // the way through.
 //
@@ -334,37 +541,26 @@ func stripRawAnthropicChatThinking(rawBody *[]byte) bool {
 		return false
 	}
 
-	// Anthropic verifies that the thinking and redacted_thinking blocks in the latest
-	// assistant message arrive exactly as it minted them: "Within the latest assistant
-	// message, the sequence of consecutive thinking blocks must match what the model
-	// generated in the original request: you can't rearrange, edit, or partially drop
-	// them. This includes redacted_thinking blocks." Blanking a signature there is an
-	// edit and dropping a redacted_thinking block is a partial drop, so a rewritten
-	// protected turn earns a second, different 400 -- "`thinking` or `redacted_thinking`
-	// blocks in the latest assistant message cannot be modified" -- and the client ends
-	// up with a more confusing error than the signature refusal the retry was spent on.
-	// Earlier turns carry no such rule ("Allowed: outside tool use, omit prior turns'
-	// thinking"), so they are still rewritten and the fail-soft still heals them.
+	// A thinking block is deleted, never emptied. Anthropic verifies the signature on
+	// every turn it appears in and answers a blanked one with "messages.N.content.M:
+	// Invalid `signature` in `thinking` block", so the rewrite that used to run here --
+	// blank the signature, keep the prose -- turned a request the API accepts into one
+	// it refuses. Removing the blocks is accepted on every turn including the latest,
+	// with tool_use present and thinking still enabled; measured against the live API on
+	// claude-sonnet-4-5, claude-haiku-4-5 and claude-opus-5.
 	// https://platform.claude.com/docs/en/build-with-claude/thinking#preserving-thinking-blocks
-	//
-	// The protected turn is the last message whose role is assistant, not the last
-	// element: a tool-result round trip ends on a user message, which is exactly the
-	// shape Anthropic documents this refusal against.
-	lastAssistantIndex := -1
-	for messageIndex, message := range messages.Array() {
-		if message.Get("role").String() == "assistant" {
-			lastAssistantIndex = messageIndex
-		}
-	}
-
+	// Each message is rewritten in its own JSON and the messages array is written back
+	// once. Addressing through the whole body (messages.<i>.content) would reserialise
+	// the entire request per changed message, making this O(messages x body).
+	// Pinned by TestStripRawAnthropicChatThinking_AllocationScaling.
 	changed := false
-	for messageIndex, message := range messages.Array() {
-		if messageIndex == lastAssistantIndex {
-			continue
-		}
+	var rebuilt [][]byte
+	for _, message := range messages.Array() {
+		messageRaw := []byte(message.Raw)
 		content := message.Get("content")
 		// The shorthand string form carries no blocks, so there is nothing to rewrite.
 		if !content.IsArray() {
+			rebuilt = append(rebuilt, messageRaw)
 			continue
 		}
 
@@ -380,13 +576,6 @@ func stripRawAnthropicChatThinking(rawBody *[]byte) bool {
 				if !block.Get("signature").Exists() {
 					break
 				}
-				updated, err := sjson.Set(block.Raw, "signature", "")
-				if err != nil {
-					// Leave the block untouched rather than corrupting it; the retry
-					// still helps if another turn carried the unverifiable payload.
-					break
-				}
-				kept = append(kept, updated)
 				messageChanged = true
 				continue
 			}
@@ -394,21 +583,44 @@ func stripRawAnthropicChatThinking(rawBody *[]byte) bool {
 		}
 
 		if !messageChanged || len(kept) == 0 {
+			rebuilt = append(rebuilt, messageRaw)
 			continue
 		}
-		updated, err := sjson.SetRawBytes(body, fmt.Sprintf("messages.%d.content", messageIndex), []byte("["+strings.Join(kept, ",")+"]"))
+		updated, err := sjson.SetRawBytes(messageRaw, "content", []byte("["+strings.Join(kept, ",")+"]"))
 		if err != nil {
+			rebuilt = append(rebuilt, messageRaw)
 			continue
 		}
-		body = updated
+		rebuilt = append(rebuilt, updated)
 		changed = true
 	}
 
 	if !changed {
 		return false
 	}
-	*rawBody = body
+	updated, err := sjson.SetRawBytes(body, "messages", joinRawJSONArray(rebuilt, len(body)))
+	if err != nil {
+		return false
+	}
+	*rawBody = updated
 	return true
+}
+
+// joinRawJSONArray concatenates pre-encoded JSON values into one array, so a batch of
+// element-local edits costs a single write of the enclosing document instead of one per
+// element.
+func joinRawJSONArray(parts [][]byte, sizeHint int) []byte {
+	var buf bytes.Buffer
+	buf.Grow(sizeHint)
+	buf.WriteByte('[')
+	for i, p := range parts {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		buf.Write(p)
+	}
+	buf.WriteByte(']')
+	return buf.Bytes()
 }
 
 // stripContentBlockReasoningPayloads returns the message's content blocks with every
@@ -493,22 +705,73 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 	}
 
 	input := *inputRef
+
+	// Anthropic refuses a blanked signature on every turn it appears in, so there the
+	// only rewrite it accepts is deleting the block (see dropsWholeReasoningBlocks).
+	targetModel := ""
+	switch {
+	case req.ResponsesRequest != nil:
+		targetModel = req.ResponsesRequest.Model
+	case req.CountTokensRequest != nil:
+		targetModel = req.CountTokensRequest.Model
+	case req.CompactionRequest != nil:
+		targetModel = req.CompactionRequest.Model
+	}
+	dropWhole := dropsWholeReasoningBlocks(ctx, targetModel)
+
 	stripped := make([]schemas.ResponsesMessage, 0, len(input))
 	changed := false
 
 	for _, message := range input {
 		messageChanged := false
 
+		// Gemini and Vertex mint no encrypted_content: the thought signature rides on the
+		// function call, and the converters carry it inside the call id as
+		// "<id>_ts_<signature>" and rebuild thoughtSignature from that suffix on the way
+		// back in. A history minted on the other platform therefore had nothing below to
+		// strip, the strip reported false, and the one fail-soft retry never fired: the
+		// "Corrupted thought signature." 400 reached the client. The suffix IS the token
+		// here, so it is dropped from the call and from its output (both strip to the same
+		// base id, which is what keeps them paired), and from an item id the streaming path
+		// built from the call id. A tool item is never an emptied reasoning item, so it is
+		// appended here rather than routed through the survival check below.
+		if message.ResponsesToolMessage != nil && message.ResponsesToolMessage.CallID != nil {
+			callID := *message.ResponsesToolMessage.CallID
+			if base := providerUtils.StripThoughtSignature(callID); base != callID {
+				toolCopy := *message.ResponsesToolMessage
+				toolCopy.CallID = &base
+				message.ResponsesToolMessage = &toolCopy
+				if message.ID != nil {
+					if baseID := providerUtils.StripThoughtSignature(*message.ID); baseID != *message.ID {
+						message.ID = &baseID
+					}
+				}
+				changed = true
+				stripped = append(stripped, message)
+				continue
+			}
+		}
+
 		if message.ResponsesReasoning != nil && message.ResponsesReasoning.EncryptedContent != nil {
 			reasoningCopy := *message.ResponsesReasoning
 			reasoningCopy.EncryptedContent = nil
+			if dropWhole {
+				// The summary is the visible half of the same block. Anthropic replays it
+				// as the thinking text the refused signature signed, so it cannot outlive
+				// the signature the way an OpenAI summary can.
+				reasoningCopy.Summary = nil
+			}
 			message.ResponsesReasoning = &reasoningCopy
 			messageChanged = true
 		}
 
 		// A thinking signature rides on the content block rather than the reasoning
 		// item, so a message can need the strip with encrypted_content already absent.
-		if blocks, ok := stripContentBlockReasoningPayloads(message.Content); ok {
+		blocks, ok := stripContentBlockReasoningPayloads(message.Content)
+		if dropWhole {
+			blocks, ok = dropReasoningContentBlocks(message.Content)
+		}
+		if ok {
 			contentCopy := *message.Content
 			contentCopy.ContentBlocks = blocks
 			message.Content = &contentCopy
@@ -527,11 +790,19 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 			message.ID = nil
 		}
 
-		// Only a reasoning item is dropped when nothing survives: an ordinary message
-		// that merely carried a signature still has its own content to say.
-		if message.ResponsesReasoning != nil &&
-			len(message.ResponsesReasoning.Summary) == 0 &&
-			(message.Content == nil || (len(message.Content.ContentBlocks) == 0 && message.Content.ContentStr == nil)) {
+		// An item the strip emptied is dropped rather than forwarded as a shell: providers
+		// reject an empty content array outright. Only items the strip actually touched
+		// reach here, so an untouched message keeps its own content either way.
+		//
+		// The test is what SURVIVES, not what the item is called. Gating on the reasoning
+		// shape missed both directions in turn: a reasoning-typed item whose payload rode
+		// on a content block (the Anthropic dialect, with ResponsesReasoning left nil) was
+		// forwarded empty, and so was a message-typed item whose content was nothing but
+		// signed reasoning blocks.
+		hasSummary := message.ResponsesReasoning != nil && len(message.ResponsesReasoning.Summary) > 0
+		hasContent := message.Content != nil &&
+			(len(message.Content.ContentBlocks) > 0 || message.Content.ContentStr != nil)
+		if !hasSummary && !hasContent {
 			continue
 		}
 		stripped = append(stripped, message)
@@ -570,6 +841,30 @@ func stripRawResponsesEncryptedContent(rawBody *[]byte, dropItemIDs bool) bool {
 		rest := item.Raw
 		itemChanged := false
 
+		// The raw analogue of the call-id strip on the typed path: a Gemini/Vertex thought
+		// signature lives in call_id (and in an item id built from it), not in any
+		// reasoning field. Rewritten in place and appended directly, since a tool item can
+		// never be an emptied reasoning item.
+		if callID := gjson.Get(rest, "call_id"); callID.Type == gjson.String {
+			if base := providerUtils.StripThoughtSignature(callID.Str); base != callID.Str {
+				updated, err := sjson.Set(rest, "call_id", base)
+				if err != nil {
+					items = append(items, item.Raw)
+					continue
+				}
+				if itemID := gjson.Get(updated, "id"); itemID.Type == gjson.String {
+					if baseID := providerUtils.StripThoughtSignature(itemID.Str); baseID != itemID.Str {
+						if withID, err := sjson.Set(updated, "id", baseID); err == nil {
+							updated = withID
+						}
+					}
+				}
+				changed = true
+				items = append(items, updated)
+				continue
+			}
+		}
+
 		if gjson.Get(rest, "encrypted_content").Exists() {
 			updated, err := sjson.Delete(rest, "encrypted_content")
 			if err != nil {
@@ -590,16 +885,31 @@ func stripRawResponsesEncryptedContent(rawBody *[]byte, dropItemIDs bool) bool {
 		// Deleting a field inside a block never reorders the content array, so the indices
 		// read before the deletes stay valid. A string-valued content yields a one-element
 		// array carrying neither field, and falls through untouched.
-		for blockIndex, block := range gjson.Get(rest, "content").Array() {
-			for _, field := range contentBlockReasoningCarriers {
-				if !gjson.Get(block.Raw, field).Exists() {
-					continue
+		// Each carrier is dropped from the block's own JSON and the content array is
+		// written back once. Deleting content.<i>.<field> through the whole item would
+		// reserialise it per block per carrier, making this O(blocks x item).
+		// Pinned by TestStripRawResponsesEncryptedContent_AllocationScaling.
+		if contentResult := gjson.Get(rest, "content"); contentResult.IsArray() {
+			var rebuiltBlocks [][]byte
+			contentChanged := false
+			for _, block := range contentResult.Array() {
+				blockRaw := []byte(block.Raw)
+				for _, field := range contentBlockReasoningCarriers {
+					if !gjson.GetBytes(blockRaw, field).Exists() {
+						continue
+					}
+					updated, err := sjson.DeleteBytes(blockRaw, field)
+					if err != nil {
+						continue
+					}
+					blockRaw, contentChanged = updated, true
 				}
-				updated, err := sjson.Delete(rest, fmt.Sprintf("content.%d.%s", blockIndex, field))
-				if err != nil {
-					continue
+				rebuiltBlocks = append(rebuiltBlocks, blockRaw)
+			}
+			if contentChanged {
+				if updated, err := sjson.SetRawBytes([]byte(rest), "content", joinRawJSONArray(rebuiltBlocks, len(rest))); err == nil {
+					rest, itemChanged = string(updated), true
 				}
-				rest, itemChanged = updated, true
 			}
 		}
 

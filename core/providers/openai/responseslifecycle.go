@@ -147,8 +147,12 @@ func (provider *OpenAIProvider) ResponsesRetrieve(ctx *schemas.BifrostContext, k
 	if req == nil || req.ResponseID == "" {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("response_id is required"))
 	}
+	escapedResponseID, idErr := providerUtils.EscapeResourceID(req.ResponseID, "response_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
-	path := "/v1/responses/" + url.PathEscape(req.ResponseID)
+	path := "/v1/responses/" + escapedResponseID
 	bodyBytes, latencyMs, headers, bifrostErr := provider.executeResponsesLifecycleUnary(
 		ctx, http.MethodGet, path, schemas.ResponsesRetrieveRequest, buildResponsesRetrieveQuery(req), key, nil)
 	if bifrostErr != nil {
@@ -158,7 +162,7 @@ func (provider *OpenAIProvider) ResponsesRetrieve(ctx *schemas.BifrostContext, k
 	response := &schemas.BifrostResponsesResponse{}
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	_, rawResponse, err := providerUtils.HandleProviderResponse(bodyBytes, response, nil, sendBackRawRequest, sendBackRawResponse)
+	_, rawResponse, err := providerUtils.HandleProviderResponseCtx(ctx, bodyBytes, response, nil, sendBackRawRequest, sendBackRawResponse)
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, nil, bodyBytes, sendBackRawRequest, sendBackRawResponse)
 	}
@@ -182,6 +186,10 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 	if req == nil || req.ResponseID == "" {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("response_id is required"))
 	}
+	escapedResponseID, idErr := providerUtils.EscapeResourceID(req.ResponseID, "response_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 	// This method is only reached for streamed retrieval; force the stream query param.
 	req.Stream = schemas.Ptr(true)
 
@@ -189,7 +197,7 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
-	fullURL := provider.buildRequestURL(ctx, "/v1/responses/"+url.PathEscape(req.ResponseID), schemas.ResponsesRetrieveStreamRequest)
+	fullURL := provider.buildRequestURL(ctx, "/v1/responses/"+escapedResponseID, schemas.ResponsesRetrieveStreamRequest)
 	if rawQuery := buildResponsesRetrieveQuery(req); rawQuery != "" {
 		fullURL = fullURL + "?" + rawQuery
 	}
@@ -275,10 +283,10 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		reader, drained := providerUtils.DrainNonSSEStreamReader(resp, reader)
-		if drained {
+		reader, nonSSE := providerUtils.DrainNonSSEStreamReader(resp, reader)
+		if nonSSE != nil {
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			providerUtils.ProcessAndSendError(ctx, postHookRunner, errors.New("provider returned non-SSE response for streaming request"), responseChan, provider.logger, postHookSpanFinalizer)
+			providerUtils.ProcessAndSendNonSSEStreamError(ctx, postHookRunner, nonSSE, responseChan, provider.logger, postHookSpanFinalizer)
 			return
 		}
 
@@ -307,7 +315,11 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 			jsonData := string(data)
 
 			var response schemas.BifrostResponsesStreamResponse
-			if err := sonic.UnmarshalString(jsonData, &response); err != nil {
+			// Time the retrieve-stream decode as the response-parse phase.
+			parseStart := time.Now()
+			err := sonic.UnmarshalString(jsonData, &response)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
+			if err != nil {
 				provider.logger.Warn("Failed to parse stream response: %v", err)
 				continue
 			}
@@ -364,8 +376,12 @@ func (provider *OpenAIProvider) ResponsesDelete(ctx *schemas.BifrostContext, key
 	if req == nil || req.ResponseID == "" {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("response_id is required"))
 	}
+	escapedResponseID, idErr := providerUtils.EscapeResourceID(req.ResponseID, "response_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
-	path := "/v1/responses/" + url.PathEscape(req.ResponseID)
+	path := "/v1/responses/" + escapedResponseID
 	bodyBytes, latencyMs, headers, bifrostErr := provider.executeResponsesLifecycleUnary(
 		ctx, http.MethodDelete, path, schemas.ResponsesDeleteRequest, "", key, nil)
 	if bifrostErr != nil {
@@ -396,8 +412,12 @@ func (provider *OpenAIProvider) ResponsesCancel(ctx *schemas.BifrostContext, key
 	if req == nil || req.ResponseID == "" {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("response_id is required"))
 	}
+	escapedResponseID, idErr := providerUtils.EscapeResourceID(req.ResponseID, "response_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
-	path := "/v1/responses/" + url.PathEscape(req.ResponseID) + "/cancel"
+	path := "/v1/responses/" + escapedResponseID + "/cancel"
 	bodyBytes, latencyMs, headers, bifrostErr := provider.executeResponsesLifecycleUnary(
 		ctx, http.MethodPost, path, schemas.ResponsesCancelRequest, "", key, nil)
 	if bifrostErr != nil {
@@ -432,8 +452,12 @@ func (provider *OpenAIProvider) ResponsesInputItems(ctx *schemas.BifrostContext,
 	if req == nil || req.ResponseID == "" {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("response_id is required"))
 	}
+	escapedResponseID, idErr := providerUtils.EscapeResourceID(req.ResponseID, "response_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
-	path := "/v1/responses/" + url.PathEscape(req.ResponseID) + "/input_items"
+	path := "/v1/responses/" + escapedResponseID + "/input_items"
 	bodyBytes, latencyMs, headers, bifrostErr := provider.executeResponsesLifecycleUnary(
 		ctx, http.MethodGet, path, schemas.ResponsesInputItemsRequest, buildResponsesInputItemsQuery(req), key, nil)
 	if bifrostErr != nil {

@@ -565,7 +565,7 @@ graph TB
 
 Bifrost exposes internal services to plugins as methods on the request context, so a plugin never has to be handed a service handle at construction time. The context carries a small interface handle; the implementation stays in Bifrost.
 
-- **Model catalog:** `ctx.GetModelInfo(provider, model)` returns pricing, context window and capability metadata; `ctx.CalculateCost(resp)` prices a completed response with governance overrides applied
+- **Model catalog:** `ctx.GetModelInfo(provider, model)` returns pricing, context window and capability metadata; `ctx.CalculateCost(resp)` prices a completed response with governance overrides applied; `ctx.CalculateCostBreakdown(resp)` returns that same price split into input, output and additional sides with per-category details (text, cache read, cache write, reasoning, guardrail, and so on)
 - **Tracing:** `ctx.SetTraceAttribute(key, value)` and the stream-control methods delegate to the active tracer
 - **Logging:** `ctx.Log(level, msg)` writes plugin-scoped entries collected per request
 

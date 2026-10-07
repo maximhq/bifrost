@@ -23,18 +23,22 @@ type opencodeProvider struct {
 	networkConfig       schemas.NetworkConfig
 	sendBackRawRequest  bool
 	sendBackRawResponse bool
+	// fallbackResponsesToChat routes Responses API calls through Chat
+	// Completions when the upstream gateway does not implement /v1/responses.
+	// Zen is the only such gateway today; Go serves /v1/responses natively.
+	fallbackResponsesToChat bool
 }
 
 // NewOpencodeZenProvider creates a new Opencode Zen provider instance.
 // Zen is the pay-as-you-go gateway at https://opencode.ai/zen/v1.
 func NewOpencodeZenProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*opencodeProvider, error) {
-	return newOpencodeProvider(config, schemas.OpencodeZen, "https://opencode.ai/zen", logger)
+	return newOpencodeProvider(config, schemas.OpencodeZen, "https://opencode.ai/zen", logger, true)
 }
 
 // NewOpencodeGoProvider creates a new Opencode Go provider instance.
 // Go is the subscription-based gateway at https://opencode.ai/zen/go/v1.
 func NewOpencodeGoProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*opencodeProvider, error) {
-	return newOpencodeProvider(config, schemas.OpencodeGo, "https://opencode.ai/zen/go", logger)
+	return newOpencodeProvider(config, schemas.OpencodeGo, "https://opencode.ai/zen/go", logger, false)
 }
 
 // newOpencodeProvider initializes the shared provider infrastructure.
@@ -43,6 +47,7 @@ func newOpencodeProvider(
 	providerKey schemas.ModelProvider,
 	defaultBaseURL string,
 	logger schemas.Logger,
+	fallbackResponsesToChat bool,
 ) (*opencodeProvider, error) {
 	config.CheckAndSetDefaults()
 
@@ -68,13 +73,14 @@ func newOpencodeProvider(
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &opencodeProvider{
-		providerKey:         providerKey,
-		logger:              logger,
-		client:              client,
-		streamingClient:     streamingClient,
-		networkConfig:       config.NetworkConfig,
-		sendBackRawRequest:  config.SendBackRawRequest,
-		sendBackRawResponse: config.SendBackRawResponse,
+		providerKey:             providerKey,
+		logger:                  logger,
+		client:                  client,
+		streamingClient:         streamingClient,
+		networkConfig:           config.NetworkConfig,
+		sendBackRawRequest:      config.SendBackRawRequest,
+		sendBackRawResponse:     config.SendBackRawResponse,
+		fallbackResponsesToChat: fallbackResponsesToChat,
 	}, nil
 }
 
@@ -154,17 +160,64 @@ func (p *opencodeProvider) ChatCompletionStream(ctx *schemas.BifrostContext, pos
 
 // Responses performs a responses request to the Opencode API.
 func (p *opencodeProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := p.ChatCompletion(ctx, key, request.ToChatRequest())
-	if err != nil {
-		return nil, err
+	if p.fallbackResponsesToChat {
+		chatResponse, err := p.ChatCompletion(ctx, key, request.ToChatRequest())
+		if err != nil {
+			return nil, err
+		}
+		return chatResponse.ToBifrostResponsesResponse(), nil
 	}
-	return chatResponse.ToBifrostResponsesResponse(), nil
+
+	return openai.HandleOpenAIResponsesRequest(
+		ctx,
+		p.client,
+		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		request,
+		openai.BearerAuthHeader(key),
+		p.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
+		p.providerKey,
+		nil,
+		parseOpencodeError,
+		nil,
+		p.logger,
+	)
 }
 
 // ResponsesStream performs a streaming responses request to the Opencode API.
 func (p *opencodeProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-	return p.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
+	if p.fallbackResponsesToChat {
+		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+		return p.ChatCompletionStream(
+			ctx,
+			postHookRunner,
+			postHookSpanFinalizer,
+			key,
+			request.ToChatRequest(),
+		)
+	}
+
+	return openai.HandleOpenAIResponsesStreaming(
+		ctx,
+		p.streamingClient,
+		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		request,
+		openai.BearerAuthHeader(key),
+		p.networkConfig.ExtraHeaders,
+		p.networkConfig.StreamIdleTimeoutInSeconds,
+		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
+		p.providerKey,
+		postHookRunner,
+		nil,
+		parseOpencodeError,
+		nil,
+		nil,
+		nil,
+		p.logger,
+		postHookSpanFinalizer,
+	)
 }
 
 // Embedding is not supported by Opencode.
@@ -175,6 +228,11 @@ func (p *opencodeProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Ke
 // Rerank is not supported by Opencode.
 func (p *opencodeProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, p.GetProviderKey())
+}
+
+// Decision is not supported by the opencode provider.
+func (p *opencodeProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, p.GetProviderKey())
 }
 
 // OCR is not supported by Opencode.
@@ -320,6 +378,11 @@ func (p *opencodeProvider) FileContent(_ *schemas.BifrostContext, _ []schemas.Ke
 // CountTokens is not supported by Opencode.
 func (p *opencodeProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, p.GetProviderKey())
+}
+
+// ModelRetrieve is not supported by Opencode.
+func (p *opencodeProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, p.GetProviderKey())
 }
 
 // Compaction is not supported by Opencode.

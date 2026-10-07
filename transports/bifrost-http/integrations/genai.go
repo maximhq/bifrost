@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/grant"
 
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/tidwall/gjson"
@@ -24,6 +25,8 @@ import (
 )
 
 const isGeminiEmbedContentRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-embed-content-request"
+
+const isGeminiBatchEmbedContentsRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-batch-embed-contents-request"
 
 const isGeminiVideoGenerationRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-video-generation-request"
 
@@ -81,13 +84,17 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			return requestType
 		},
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
-			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.EmbeddingRequest && ctx.Value(isGeminiEmbedContentRequestContextKey) != nil {
+			requestType, _ := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType)
+			if requestType == schemas.EmbeddingRequest && ctx.Value(isGeminiEmbedContentRequestContextKey) != nil {
 				return &gemini.GeminiEmbeddingRequest{}
 			}
-			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.VideoGenerationRequest && ctx.Value(isGeminiVideoGenerationRequestContextKey) != nil {
+			if requestType == schemas.EmbeddingRequest && ctx.Value(isGeminiBatchEmbedContentsRequestContextKey) != nil {
+				return &gemini.GeminiBatchEmbeddingRequest{}
+			}
+			if requestType == schemas.VideoGenerationRequest && ctx.Value(isGeminiVideoGenerationRequestContextKey) != nil {
 				return &gemini.GeminiVideoGenerationRequest{}
 			}
-			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.BatchCreateRequest && ctx.Value(isGeminiBatchCreateRequestContextKey) != nil {
+			if requestType == schemas.BatchCreateRequest && ctx.Value(isGeminiBatchCreateRequestContextKey) != nil {
 				return &gemini.GeminiBatchCreateRequest{}
 			}
 			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.CountTokensRequest {
@@ -140,6 +147,14 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 				return &schemas.BifrostRequest{
 					EmbeddingRequest: req.ToBifrostEmbeddingRequest(ctx),
 				}, nil
+			} else if geminiReq, ok := req.(*gemini.GeminiBatchEmbeddingRequest); ok {
+				// :batchEmbedContents is Gemini's multi-input embedding call, not a batch job.
+				// Each entry's own params ride along on its input item.
+				embReq, err := geminiReq.ToBifrostEmbeddingRequest(ctx)
+				if err != nil {
+					return nil, err
+				}
+				return &schemas.BifrostRequest{EmbeddingRequest: embReq}, nil
 			} else if geminiReq, ok := req.(*gemini.GeminiVideoGenerationRequest); ok {
 				// convert to bifrost video generation request
 				bifrostReq, err := geminiReq.ToBifrostVideoGenerationRequest(ctx)
@@ -160,29 +175,24 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 					provider = schemas.Gemini
 				}
 
-				// Convert Gemini batch request items directly to Bifrost format
+				// Convert Gemini batch request items directly to Bifrost format. Marshalling the
+				// parsed request preserves every modeled field (contents, generationConfig,
+				// safetySettings, systemInstruction, tools, toolConfig, cachedContent, labels)
+				// without hand-listing them, so new fields never silently drop.
 				var requests []schemas.BatchRequestItem
 				if geminiReq.Batch.InputConfig.Requests != nil && len(geminiReq.Batch.InputConfig.Requests.Requests) > 0 {
 					requests = make([]schemas.BatchRequestItem, len(geminiReq.Batch.InputConfig.Requests.Requests))
 					for i, geminiItem := range geminiReq.Batch.InputConfig.Requests.Requests {
-						requestMap := make(map[string]interface{})
-						if geminiItem.Request.Contents != nil {
-							requestMap["contents"] = geminiItem.Request.Contents
+						reqBytes, err := sonic.Marshal(geminiItem.Request)
+						if err != nil {
+							return nil, err
 						}
-						if geminiItem.Request.GenerationConfig != nil {
-							requestMap["generationConfig"] = geminiItem.Request.GenerationConfig
-						}
-						if len(geminiItem.Request.SafetySettings) > 0 {
-							requestMap["safetySettings"] = geminiItem.Request.SafetySettings
-						}
-						if geminiItem.Request.SystemInstruction != nil {
-							requestMap["systemInstruction"] = geminiItem.Request.SystemInstruction
+						body := map[string]interface{}{}
+						if err := sonic.Unmarshal(reqBytes, &body); err != nil {
+							return nil, err
 						}
 
-						requests[i] = schemas.BatchRequestItem{
-							CustomID: "",
-							Body:     requestMap,
-						}
+						requests[i] = schemas.BatchRequestItem{Body: body}
 						// Extract custom_id from metadata
 						if geminiItem.Metadata != nil && geminiItem.Metadata.Key != "" {
 							requests[i].CustomID = geminiItem.Metadata.Key
@@ -195,6 +205,11 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 					Model:          &geminiReq.Model,
 					Requests:       requests,
 					RawRequestBody: getGenAIRawRequestBody(ctx),
+				}
+
+				// Carry the caller-supplied display name (config.display_name) through.
+				if geminiReq.Batch.DisplayName != "" {
+					bifrostBatchReq.DisplayName = &geminiReq.Batch.DisplayName
 				}
 
 				// Handle file-based input
@@ -240,7 +255,13 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			return gemini.ToGeminiError(err)
 		},
 		StreamConfig: &StreamConfig{
-			HeartbeatFraming: lib.SSEHeartbeatDelimitedCommentBlock,
+			// No SSE heartbeat on this route. The official google-genai Python SDK (and
+			// LangChain's ChatGoogleGenerativeAI on top of it) json.loads every stream line
+			// that is not "data:" or blank, so a comment line in either framing aborts the
+			// stream with UnknownApiResponseError. The delimited block from PR 6252 only
+			// satisfied the JavaScript SDK. Disconnect detection here is therefore reactive
+			// only, the same trade-off the Bedrock route makes.
+			HeartbeatFraming: lib.SSEHeartbeatNone,
 			ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 				// Store state in context so it persists across chunks of the same stream
 				const stateKey = "gemini_stream_state"
@@ -258,6 +279,9 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 					return "", nil, nil
 				}
 				return "", geminiResponse, nil
+			},
+			SpeechStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostSpeechStreamResponse) (string, interface{}, error) {
+				return "", gemini.ToGeminiSpeechStreamResponse(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return gemini.ToGeminiError(err)
@@ -431,6 +455,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			if session.VirtualKey != "" {
 				if vk, ok := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string); !ok || vk == "" {
 					ctx.SetValue(schemas.BifrostContextKeyVirtualKey, session.VirtualKey)
+					lib.RecordCredential(ctx, grant.NewCredential(grant.CredentialVirtualKey, session.VirtualKey))
 				}
 			}
 
@@ -1045,11 +1070,8 @@ func createGenAIRerankRouteConfig(pathPrefix string) RouteConfig {
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if vertexReq, ok := req.(*vertex.VertexRankRequest); ok {
-				rerankRequest := vertexReq.ToBifrostRerankRequest(ctx)
-				// Ranked records are keyed by the caller's record ID, which only the document carries.
-				rerankRequest.Params.ReturnDocuments = new(true)
 				return &schemas.BifrostRequest{
-					RerankRequest: rerankRequest,
+					RerankRequest: vertexReq.ToBifrostRerankRequest(ctx),
 				}, nil
 			}
 			return nil, errors.New("invalid rerank request type")
@@ -1061,6 +1083,12 @@ func createGenAIRerankRouteConfig(pathPrefix string) RouteConfig {
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
+		},
+		// Resolve the provider from x-model-provider (Vertex by default) so the route can be
+		// served cross-provider like /cohere/v2/rerank and /bedrock/rerank.
+		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+			bifrostCtx.SetValue(bifrostContextKeyProvider, getProviderFromHeader(ctx, schemas.Vertex))
+			return nil
 		},
 	}
 }
@@ -1361,7 +1389,7 @@ func CreateGenAICachedContentRouteConfigs(pathPrefix string, handlerStore lib.Ha
 }
 
 // NewGenAIRouter creates a new GenAIRouter with the given bifrost client.
-func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *GenAIRouter {
+func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *GenAIRouter {
 	routes := CreateGenAIRouteConfigs("/genai")
 	routes = append(routes, CreateGenAIFileRouteConfigs("/genai", handlerStore)...)
 	routes = append(routes, CreateGenAIBatchRouteConfigs("/genai", handlerStore)...)
@@ -1369,7 +1397,7 @@ func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logg
 	routes = append(routes, CreateGenAICachedContentRouteConfigs("/genai", handlerStore)...)
 
 	return &GenAIRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
 	}
 }
 
@@ -1391,7 +1419,9 @@ func getLargeRequestTypeDetectionThreshold(ctx *fasthttp.RequestCtx) int64 {
 	return schemas.DefaultLargePayloadRequestThresholdBytes
 }
 
-// extractAndSetModelAndRequestType extracts model and request type from URL and request object and sets it in the request
+// extractAndSetModelAndRequestType derives GenAI routing flags and configures native Gemini passthrough.
+// GeminiGenerationRequest and GeminiCountTokensRequest also register a path-aware rewriter because
+// their raw bytes otherwise bypass runtime guardrail mutations made to the normalized request.
 func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	model := ctx.UserValue("model")
 	if model == nil {
@@ -1491,7 +1521,7 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 		}
 		if !r.IsEmbedding && explicitGemini {
 			setGenAIRawRequestBodyFromRequest(ctx, bifrostCtx)
-			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+			enableGenAIRawRequestBodyRedaction(bifrostCtx)
 		}
 
 		return nil
@@ -1501,10 +1531,15 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 		}
 		if explicitGemini {
 			setGenAIRawRequestBodyFromRequest(ctx, bifrostCtx)
-			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+			enableGenAIRawRequestBodyRedaction(bifrostCtx)
 		}
 		return nil
 	case *gemini.GeminiEmbeddingRequest:
+		if modelStr != "" {
+			r.Model = modelStr
+		}
+		return nil
+	case *gemini.GeminiBatchEmbeddingRequest:
 		if modelStr != "" {
 			r.Model = modelStr
 		}
@@ -1536,6 +1571,145 @@ func setGenAIRawRequestBodyFromRequest(ctx *fasthttp.RequestCtx, bifrostCtx *sch
 	if body := ctx.Request.Body(); len(body) > 0 {
 		bifrostCtx.SetValue(genAIRawRequestBodyContextKey, copyBytes(body))
 	}
+}
+
+// enableGenAIRawRequestBodyRedaction couples Gemini raw passthrough with its native content rewriter.
+// The two settings must travel together so provider-specific fields are preserved without bypassing runtime redaction.
+func enableGenAIRawRequestBodyRedaction(bifrostCtx *schemas.BifrostContext) {
+	bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	bifrostCtx.SetValue(
+		schemas.BifrostContextKeyRawRequestBodyTextRewriter,
+		schemas.RawRequestBodyTextRewriter(rewriteGenAIRawRequestBody),
+	)
+}
+
+// rewriteGenAIRawRequestBody applies runtime replacements only to Gemini fields mirrored as mutable normalized text.
+// Keeping the allowlist here preserves configuration and other native fields Guardrails did not inspect.
+func rewriteGenAIRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
+	return rewriteRawRequestTextFields(rawBody, replacements, collectGenAIRawRequestTextPaths)
+}
+
+// collectGenAIRawRequestTextPaths enumerates flat and countTokens-enveloped Gemini content fields.
+func collectGenAIRawRequestTextPaths(root gjson.Result, replacements map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	if err := collectGenAIGenerationTextPaths(&paths, root, "", replacements); err != nil {
+		return nil, err
+	}
+	for _, envelopeKey := range []string{"generateContentRequest", "generate_content_request"} {
+		envelope := root.Get(envelopeKey)
+		if !envelope.Exists() || envelope.Type == gjson.Null {
+			continue
+		}
+		if !envelope.IsObject() {
+			return nil, fmt.Errorf("raw Gemini countTokens envelope %q must be an object", envelopeKey)
+		}
+		if err := collectGenAIGenerationTextPaths(&paths, envelope, rawRequestObjectPath("", envelopeKey), replacements); err != nil {
+			return nil, err
+		}
+	}
+	return paths, nil
+}
+
+// collectGenAIGenerationTextPaths selects Gemini generation fields mirrored into mutable Bifrost request text.
+func collectGenAIGenerationTextPaths(paths *[]string, request gjson.Result, path string, replacements map[string]string) error {
+	if !request.IsObject() {
+		return fmt.Errorf("raw Gemini generation request at %q must be an object", path)
+	}
+	for _, systemKey := range []string{"systemInstruction", "system_instruction"} {
+		if err := collectGenAIContentTextPaths(
+			paths,
+			request.Get(systemKey),
+			rawRequestObjectPath(path, systemKey),
+			false,
+			replacements,
+		); err != nil {
+			return err
+		}
+	}
+
+	contents := request.Get("contents")
+	if contents.Exists() && contents.Type != gjson.Null {
+		if !contents.IsArray() {
+			return fmt.Errorf("raw Gemini contents at %q must be an array", rawRequestObjectPath(path, "contents"))
+		}
+		var collectErr error
+		contentsPath := rawRequestObjectPath(path, "contents")
+		contents.ForEach(func(index, content gjson.Result) bool {
+			collectErr = collectGenAIContentTextPaths(
+				paths,
+				content,
+				rawRequestArrayPath(contentsPath, int(index.Int())),
+				true,
+				replacements,
+			)
+			return collectErr == nil
+		})
+		if collectErr != nil {
+			return collectErr
+		}
+	}
+
+	instances := request.Get("instances")
+	if !instances.Exists() || instances.Type == gjson.Null {
+		return nil
+	}
+	if !instances.IsArray() {
+		return fmt.Errorf("raw Gemini instances at %q must be an array", rawRequestObjectPath(path, "instances"))
+	}
+	instancesPath := rawRequestObjectPath(path, "instances")
+	var collectErr error
+	instances.ForEach(func(index, instance gjson.Result) bool {
+		instancePath := rawRequestArrayPath(instancesPath, int(index.Int()))
+		collectErr = appendRawRequestStringPath(paths, instance.Get("prompt"), rawRequestObjectPath(instancePath, "prompt"))
+		return collectErr == nil
+	})
+	return collectErr
+}
+
+// collectGenAIContentTextPaths selects text parts and supported function-response JSON values from one Gemini content object.
+func collectGenAIContentTextPaths(paths *[]string, content gjson.Result, path string, includeFunctionResponses bool, replacements map[string]string) error {
+	if !content.Exists() || content.Type == gjson.Null {
+		return nil
+	}
+	if !content.IsObject() {
+		return fmt.Errorf("raw Gemini content at %q must be an object", path)
+	}
+	parts := content.Get("parts")
+	if !parts.Exists() || parts.Type == gjson.Null {
+		return nil
+	}
+	if !parts.IsArray() {
+		return fmt.Errorf("raw Gemini content parts at %q must be an array", rawRequestObjectPath(path, "parts"))
+	}
+
+	partsPath := rawRequestObjectPath(path, "parts")
+	var collectErr error
+	parts.ForEach(func(index, part gjson.Result) bool {
+		partPath := rawRequestArrayPath(partsPath, int(index.Int()))
+		if collectErr = appendRawRequestStringPath(paths, part.Get("text"), rawRequestObjectPath(partPath, "text")); collectErr != nil {
+			return false
+		}
+		if !includeFunctionResponses {
+			return true
+		}
+		functionResponse := part.Get("functionResponse")
+		if !functionResponse.Exists() || functionResponse.Type == gjson.Null {
+			return true
+		}
+		functionResponsePath := rawRequestObjectPath(partPath, "functionResponse")
+		if !functionResponse.IsObject() {
+			collectErr = fmt.Errorf("raw Gemini function response at %q must be an object", functionResponsePath)
+			return false
+		}
+		collectErr = appendRawRequestJSONLeafPaths(
+			paths,
+			functionResponse.Get("response"),
+			rawRequestObjectPath(functionResponsePath, "response"),
+			replacements,
+		)
+		return collectErr == nil
+	})
+	return collectErr
 }
 
 func copyBytes(in []byte) []byte {
@@ -1608,6 +1782,11 @@ func extractModelAndRequestType(ctx *fasthttp.RequestCtx) (string, schemas.Reque
 	}
 	if strings.HasSuffix(modelStr, ":embedContent") {
 		ctx.SetUserValue(isGeminiEmbedContentRequestContextKey, true)
+		return modelStr, schemas.EmbeddingRequest
+	}
+	if strings.HasSuffix(modelStr, ":batchEmbedContents") {
+		ctx.SetUserValue(isGeminiBatchEmbedContentsRequestContextKey, true)
+		return modelStr, schemas.EmbeddingRequest
 	}
 	if isEmbedding {
 		return modelStr, schemas.EmbeddingRequest
@@ -1806,15 +1985,19 @@ func isImageGenerationRequest(req *gemini.GeminiGenerationRequest) bool {
 // isImageEditRequest checks if the request is for image edit
 // Image edit is detected by:
 // 1. Model is an Imagen model and has reference images
-// 2. Inline image data present in the first content part and response modalities contain IMAGE
+// 2. Inline image data present in any content part and response modalities contain IMAGE
 func isImageEditRequest(req *gemini.GeminiGenerationRequest) bool {
 	if schemas.IsImagenModel(req.Model) && len(req.Instances) > 0 && req.Instances[0].ReferenceImages != nil {
 		return true
 	}
 
-	if len(req.Contents) > 0 && len(req.Contents[0].Parts) > 0 && req.Contents[0].Parts[0].InlineData != nil && strings.Contains(req.Contents[0].Parts[0].InlineData.MIMEType, "image") {
-		for _, modality := range req.GenerationConfig.ResponseModalities {
-			if modality == gemini.ModalityImage {
+	if !slices.Contains(req.GenerationConfig.ResponseModalities, gemini.ModalityImage) {
+		return false
+	}
+
+	for _, content := range req.Contents {
+		for _, part := range content.Parts {
+			if part != nil && part.InlineData != nil && strings.Contains(part.InlineData.MIMEType, "image") {
 				return true
 			}
 		}

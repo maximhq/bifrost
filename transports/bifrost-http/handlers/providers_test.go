@@ -10,9 +10,11 @@ import (
 	"testing"
 
 	"github.com/bytedance/sonic"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	governanceplugin "github.com/maximhq/bifrost/plugins/governance"
@@ -35,6 +37,33 @@ type mockModelsManager struct {
 	refreshKeyCalls      []providerKeyRef
 	refreshProviderCalls []schemas.ModelProvider
 	refreshErr           error
+	// access is what the request may reach; nil stands for a request with nothing resolved: no
+	// key presented, or a deployment without governance.
+	access       schemas.Access
+	resolveCalls int
+	narrowCalls  int
+}
+
+func (m *mockModelsManager) ResolveAccess(_ *schemas.BifrostContext) (schemas.Access, error) {
+	m.resolveCalls++
+	return m.access, nil
+}
+
+// NarrowListModelsProviders stands in for the server, which is what resolves access and narrows
+// the fan-out in production. Kept observable so a caller can assert it was asked; the rule itself
+// is the server's, and is exercised there and against a live deployment.
+func (m *mockModelsManager) NarrowListModelsProviders(bifrostCtx *schemas.BifrostContext) {
+	m.narrowCalls++
+	access, err := m.ResolveAccess(bifrostCtx)
+	if err != nil || access == nil {
+		return
+	}
+	granted := access.GrantedProvidersForModel("")
+	providers := make([]schemas.ModelProvider, 0, len(granted))
+	for _, provider := range granted {
+		providers = append(providers, schemas.ModelProvider(provider))
+	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, providers)
 }
 
 func (m *mockModelsManager) ReloadProvider(_ context.Context, provider schemas.ModelProvider) (*configstoreTables.TableProvider, error) {
@@ -93,6 +122,7 @@ func (m *mockModelsManager) RefreshLiveModelsForAllKeys(_ context.Context, provi
 func providerHandlerForTest(provider schemas.ModelProvider, keys []schemas.Key, filtered, unfiltered []string) *ProviderHandler {
 	return &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				provider: {
 					Keys: keys,
@@ -146,6 +176,512 @@ func TestAddProvider_ReloadsRuntimeEvenWhenModelDiscoveryIsSkipped(t *testing.T)
 	}
 	if _, exists := h.inMemoryStore.Providers["mock-openai"]; !exists {
 		t.Fatalf("expected provider to be added to in-memory store")
+	}
+}
+
+// TestAddProvider_CustomProviderBaseTypes pins which base_provider_type values
+// the provider API accepts: typesafe is a supported base, vertex is not.
+func TestAddProvider_CustomProviderBaseTypes(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	cases := []struct {
+		name       string
+		provider   schemas.ModelProvider
+		base       schemas.ModelProvider
+		wantStatus int
+	}{
+		{name: "typesafe base accepted", provider: "my-typesafe", base: schemas.Typesafe, wantStatus: fasthttp.StatusOK},
+		{name: "vertex base rejected", provider: "my-vertex", base: schemas.Vertex, wantStatus: fasthttp.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+				modelsManager: &mockModelsManager{},
+			}
+			body, err := sonic.Marshal(providerCreatePayload{
+				Provider:             tc.provider,
+				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: tc.base, IsKeyLess: true},
+			})
+			if err != nil {
+				t.Fatalf("failed to marshal request body: %v", err)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI("/api/providers")
+			ctx.Request.SetBody(body)
+
+			h.addProvider(ctx)
+
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			_, exists := h.inMemoryStore.Providers[tc.provider]
+			if exists != (tc.wantStatus == fasthttp.StatusOK) {
+				t.Fatalf("provider persisted=%v, want %v", exists, tc.wantStatus == fasthttp.StatusOK)
+			}
+		})
+	}
+}
+
+func TestAddProvider_RejectsBaseURLComponents(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	for _, suffix := range []string{"?x=", "?", "#ignored", "#"} {
+		t.Run(suffix, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+				modelsManager: &mockModelsManager{},
+			}
+			body, err := schemas.MarshalSorted(providerCreatePayload{
+				Provider:             "mock-openai",
+				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+				NetworkConfig:        &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1/base" + suffix},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetBody(body)
+			h.addProvider(ctx)
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), "base URL must not contain") {
+				t.Fatalf("expected base URL rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			if len(h.inMemoryStore.Providers) != 0 {
+				t.Fatal("invalid provider was persisted")
+			}
+		})
+	}
+}
+
+// The update path must reject the same base URL components as creation, before
+// saving or reloading the provider.
+func TestUpdateProvider_RejectsBaseURLComponents(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	const storedURL = "https://1.1.1.1/v1"
+	for _, suffix := range []string{"?x=", "?", "#ignored", "#"} {
+		t.Run(suffix, func(t *testing.T) {
+			customConfig := &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true}
+			modelsManager := &mockModelsManager{}
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{
+					ClientConfig: &configstore.ClientConfig{},
+					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+						"mock-openai": {
+							NetworkConfig:            &schemas.NetworkConfig{BaseURL: storedURL},
+							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+							CustomProviderConfig:     customConfig,
+						},
+					},
+				},
+				modelsManager: modelsManager,
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+
+			body, err := schemas.MarshalSorted(providerUpdatePayload{
+				NetworkConfig:            schemas.NetworkConfig{BaseURL: storedURL + suffix},
+				ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 2, BufferSize: 4},
+				CustomProviderConfig:     customConfig,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+			ctx.Request.SetRequestURI("/api/providers/mock-openai")
+			ctx.Request.SetBody(body)
+			ctx.SetUserValue("provider", "mock-openai")
+
+			h.updateProvider(ctx)
+
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), "base URL must not contain") {
+				t.Fatalf("expected base URL rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			stored := h.inMemoryStore.Providers["mock-openai"]
+			if stored.NetworkConfig.BaseURL != storedURL || stored.ConcurrencyAndBufferSize.Concurrency != 1 {
+				t.Fatalf("rejected update changed the stored provider: base_url=%q concurrency=%d", stored.NetworkConfig.BaseURL, stored.ConcurrencyAndBufferSize.Concurrency)
+			}
+			if len(modelsManager.reloadCalls) != 0 {
+				t.Fatalf("rejected update reloaded the provider: %v", modelsManager.reloadCalls)
+			}
+		})
+	}
+}
+
+// TestAddProvider_RejectsBaseURLWhenAuthBypassed covers the second route to the same
+// outcome as the Ollama key case: a custom provider's network_config.base_url + explicit
+// allow_private_network:true, which an unauthenticated caller could set together to
+// self-authorize its own destination past ValidateExternalURL's private-IP check.
+func TestAddProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		modelsManager: &mockModelsManager{},
+	}
+
+	body, err := sonic.Marshal(providerCreatePayload{
+		Provider: "mock-openai",
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+			IsKeyLess:        true,
+		},
+		NetworkConfig: &schemas.NetworkConfig{
+			BaseURL:             "http://169.254.169.254/",
+			AllowPrivateNetwork: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.SetBody(body)
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+
+	h.addProvider(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Fatalf("status got %d, want 403; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if _, exists := h.inMemoryStore.Providers["mock-openai"]; exists {
+		t.Fatalf("expected provider not to be persisted")
+	}
+}
+
+// TestAddProvider_RejectsAllowPrivateNetworkWhenAuthBypassed pins that opting a new provider
+// into private networks needs genuine auth even with no base URL: ConfigureDialer applies the
+// flag to key-level URLs (Ollama/SGL/VLLM), so it widens what those keys can reach.
+func TestAddProvider_RejectsAllowPrivateNetworkWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		modelsManager: &mockModelsManager{},
+	}
+
+	body, err := sonic.Marshal(providerCreatePayload{
+		Provider:      schemas.Ollama,
+		NetworkConfig: &schemas.NetworkConfig{AllowPrivateNetwork: true},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.SetBody(body)
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+
+	h.addProvider(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Fatalf("status got %d, want 403; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if _, exists := h.inMemoryStore.Providers[schemas.Ollama]; exists {
+		t.Fatalf("expected provider not to be persisted")
+	}
+}
+
+// TestProviderInterceptionGuardWhenAuthBypassed pins that the fail-open bypass cannot put a
+// third party between Bifrost and the provider without touching base_url: a caller-chosen
+// proxy plus a caller-trusted CA (or skipped verification) reads every provider credential
+// in flight. The UI echoes the stored proxy back redacted on every save, so that echo with an
+// unrelated edit must still go through.
+func TestProviderInterceptionGuardWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	const storedProxyURL = "http://10.0.0.5:3128"
+	const fakePEM = "-----BEGIN CERTIFICATE-----\nMIIBexample\n-----END CERTIFICATE-----\n"
+	cases := []struct {
+		name      string
+		create    bool
+		mutate    func(nc *schemas.NetworkConfig, proxy *schemas.ProxyConfig)
+		overrides map[schemas.RequestType]string
+		want403   bool
+	}{
+		{name: "update echoing redacted proxy, concurrency edit", mutate: func(*schemas.NetworkConfig, *schemas.ProxyConfig) {}, want403: false},
+		{name: "update proxy url", mutate: func(_ *schemas.NetworkConfig, p *schemas.ProxyConfig) {
+			p.URL = schemas.NewSecretVar("http://evil.example.com:8080")
+		}, want403: true},
+		{name: "update adding proxy ca_cert_pem", mutate: func(_ *schemas.NetworkConfig, p *schemas.ProxyConfig) { p.CACertPEM = schemas.NewSecretVar(fakePEM) }, want403: true},
+		{name: "update adding network ca_cert_pem", mutate: func(nc *schemas.NetworkConfig, _ *schemas.ProxyConfig) { nc.CACertPEM = schemas.NewSecretVar(fakePEM) }, want403: true},
+		{name: "update turning on insecure_skip_verify", mutate: func(nc *schemas.NetworkConfig, _ *schemas.ProxyConfig) { nc.InsecureSkipVerify = true }, want403: true},
+		{name: "create with proxy url", create: true, mutate: func(_ *schemas.NetworkConfig, p *schemas.ProxyConfig) {
+			p.URL = schemas.NewSecretVar("http://evil.example.com:8080")
+		}, want403: true},
+		{name: "create with insecure_skip_verify", create: true, mutate: func(nc *schemas.NetworkConfig, _ *schemas.ProxyConfig) { nc.InsecureSkipVerify = true }, want403: true},
+		// An absolute request_path_overrides value replaces the whole request URL and gets the
+		// key as a bearer token; a path-only override still goes to the stored base URL.
+		{name: "update adding absolute request path override", mutate: func(*schemas.NetworkConfig, *schemas.ProxyConfig) {},
+			overrides: map[schemas.RequestType]string{schemas.ChatCompletionRequest: "https://evil.example.com/v1/chat/completions"}, want403: true},
+		{name: "update adding path-only request path override", mutate: func(*schemas.NetworkConfig, *schemas.ProxyConfig) {},
+			overrides: map[schemas.RequestType]string{schemas.ChatCompletionRequest: "/v2/chat/completions"}, want403: false},
+		{name: "create with absolute request path override", create: true, mutate: func(*schemas.NetworkConfig, *schemas.ProxyConfig) {},
+			overrides: map[schemas.RequestType]string{schemas.ChatCompletionRequest: "https://evil.example.com/v1/chat/completions"}, want403: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			customConfig := &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true}
+			payloadCustomConfig := &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true, RequestPathOverrides: tc.overrides}
+			providers := map[schemas.ModelProvider]configstore.ProviderConfig{}
+			if !tc.create {
+				providers["mock-openai"] = configstore.ProviderConfig{
+					NetworkConfig:            &schemas.NetworkConfig{},
+					ProxyConfig:              &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(storedProxyURL)},
+					ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+					CustomProviderConfig:     customConfig,
+				}
+			}
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{ClientConfig: &configstore.ClientConfig{}, Providers: providers},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+
+			nc := schemas.NetworkConfig{}
+			proxy := schemas.ProxyConfig{Type: schemas.HTTPProxy}
+			if !tc.create {
+				redacted, err := h.inMemoryStore.GetProviderConfigRedacted("mock-openai")
+				if err != nil {
+					t.Fatalf("failed to get redacted config: %v", err)
+				}
+				proxy = *redacted.ProxyConfig
+			}
+			tc.mutate(&nc, &proxy)
+
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			var body []byte
+			var err error
+			if tc.create {
+				body, err = sonic.Marshal(providerCreatePayload{
+					Provider:                 "mock-openai",
+					NetworkConfig:            &nc,
+					ProxyConfig:              &proxy,
+					ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+					CustomProviderConfig:     payloadCustomConfig,
+				})
+				ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+				ctx.Request.SetRequestURI("/api/providers")
+			} else {
+				body, err = sonic.Marshal(providerUpdatePayload{
+					NetworkConfig:            nc,
+					ProxyConfig:              &proxy,
+					ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 2, BufferSize: 4},
+					CustomProviderConfig:     payloadCustomConfig,
+				})
+				ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+				ctx.Request.SetRequestURI("/api/providers/mock-openai")
+				ctx.SetUserValue("provider", "mock-openai")
+			}
+			if err != nil {
+				t.Fatalf("failed to marshal request body: %v", err)
+			}
+			ctx.Request.SetBody(body)
+
+			if tc.create {
+				h.addProvider(ctx)
+			} else {
+				h.updateProvider(ctx)
+			}
+
+			got403 := ctx.Response.StatusCode() == fasthttp.StatusForbidden
+			if got403 != tc.want403 {
+				t.Fatalf("got status %d, want403=%v; body=%s", ctx.Response.StatusCode(), tc.want403, ctx.Response.Body())
+			}
+			stored, exists := h.inMemoryStore.Providers["mock-openai"]
+			switch {
+			case tc.want403 && tc.create:
+				if exists {
+					t.Fatalf("expected provider not to be persisted after 403")
+				}
+			case tc.want403:
+				if got := stored.ProxyConfig.URL.GetValue(); got != storedProxyURL {
+					t.Fatalf("stored proxy url got %q, want %q", got, storedProxyURL)
+				}
+				if stored.ProxyConfig.CACertPEM.IsSet() || stored.NetworkConfig.CACertPEM.IsSet() || stored.NetworkConfig.InsecureSkipVerify {
+					t.Fatalf("expected TLS trust settings not to be persisted after 403")
+				}
+				if len(stored.CustomProviderConfig.RequestPathOverrides) != 0 {
+					t.Fatalf("expected request path overrides not to be persisted after 403, got %v", stored.CustomProviderConfig.RequestPathOverrides)
+				}
+			default:
+				if ctx.Response.StatusCode() != fasthttp.StatusOK {
+					t.Fatalf("got status %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+				}
+				if got := stored.ProxyConfig.URL.GetValue(); got != storedProxyURL {
+					t.Fatalf("echoed redacted proxy url was not restored: got %q", got)
+				}
+				if got := stored.ConcurrencyAndBufferSize.Concurrency; got != 2 {
+					t.Fatalf("stored concurrency got %d, want 2", got)
+				}
+			}
+		})
+	}
+}
+
+// TestUpdateProvider_RejectsBaseURLWhenAuthBypassed is the PUT-endpoint sibling of
+// TestAddProvider_RejectsBaseURLWhenAuthBypassed.
+func TestUpdateProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"mock-openai": {
+					CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+				},
+			},
+		},
+		modelsManager: &mockModelsManager{},
+	}
+
+	body, err := sonic.Marshal(struct {
+		Keys []schemas.Key `json:"keys"`
+		providerUpdatePayload
+	}{
+		providerUpdatePayload: providerUpdatePayload{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:             "http://169.254.169.254/",
+				AllowPrivateNetwork: true,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 1},
+			CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+	ctx.Request.SetRequestURI("/api/providers/mock-openai")
+	ctx.Request.SetBody(body)
+	ctx.SetUserValue("provider", "mock-openai")
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+
+	h.updateProvider(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Fatalf("status got %d, want 403; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if got := h.inMemoryStore.Providers["mock-openai"].NetworkConfig; got != nil && got.BaseURL == "http://169.254.169.254/" {
+		t.Fatalf("expected base URL not to be persisted")
+	}
+}
+
+// attachBifrostClient gives store a live Bifrost client backed by its own providers, so
+// handler tests can run past the provider reload that follows a successful save.
+func attachBifrostClient(t *testing.T, store *lib.Config) {
+	t.Helper()
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: lib.NewBaseAccount(store),
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("failed to init bifrost client: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	store.SetBifrostClient(client)
+}
+
+// TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed pins that the bypass
+// guard only fires when the dial target widens. The UI echoes the stored base URL on every
+// save, so an unchanged base URL with an unrelated edit (concurrency) must go through.
+// Turning allow_private_network on must not, with or without a base URL: ConfigureDialer
+// enforces that flag at connect time, both for the base URL (where DNS can move it to a
+// private IP) and for key-level URLs (Ollama/SGL/VLLM) when no base URL is set.
+func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	// An IP literal keeps ValidateExternalURL off DNS.
+	const storedURL = "https://1.1.1.1/v1"
+	cases := []struct {
+		name                string
+		storedBaseURL       string
+		storedAllowPrivate  bool
+		baseURL             string
+		allowPrivateNetwork bool
+		authenticated       bool // a real credential, not the fail-open bypass
+		wantStatus          int
+		wantConcurrency     int
+	}{
+		{name: "unchanged base url, concurrency edit", storedBaseURL: storedURL, baseURL: storedURL, allowPrivateNetwork: false, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
+		{name: "unchanged base url, allow_private_network turned on", storedBaseURL: storedURL, baseURL: storedURL, allowPrivateNetwork: true, wantStatus: fasthttp.StatusForbidden, wantConcurrency: 1},
+		{name: "no base url, concurrency edit", storedBaseURL: "", baseURL: "", allowPrivateNetwork: false, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
+		{name: "no base url, allow_private_network turned on", storedBaseURL: "", baseURL: "", allowPrivateNetwork: true, wantStatus: fasthttp.StatusForbidden, wantConcurrency: 1},
+		// Narrowing the dial target needs no authenticated request.
+		{name: "stored base url cleared", storedBaseURL: storedURL, baseURL: "", allowPrivateNetwork: false, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
+		{name: "stored allow_private_network turned off", storedBaseURL: storedURL, storedAllowPrivate: true, baseURL: storedURL, allowPrivateNetwork: false, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
+		// Widening is refused only for the bypass; any authenticated caller may widen.
+		{name: "authenticated base url change", storedBaseURL: storedURL, baseURL: "https://8.8.8.8/v1", authenticated: true, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
+		{name: "authenticated allow_private_network turned on", storedBaseURL: storedURL, baseURL: storedURL, allowPrivateNetwork: true, authenticated: true, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			customConfig := &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true}
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{
+					ClientConfig: &configstore.ClientConfig{},
+					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+						"mock-openai": {
+							NetworkConfig:            &schemas.NetworkConfig{BaseURL: tc.storedBaseURL, AllowPrivateNetwork: tc.storedAllowPrivate},
+							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+							CustomProviderConfig:     customConfig,
+						},
+					},
+				},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+
+			body, err := sonic.Marshal(providerUpdatePayload{
+				NetworkConfig:            schemas.NetworkConfig{BaseURL: tc.baseURL, AllowPrivateNetwork: tc.allowPrivateNetwork},
+				ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 2, BufferSize: 4},
+				CustomProviderConfig:     customConfig,
+			})
+			if err != nil {
+				t.Fatalf("failed to marshal request body: %v", err)
+			}
+
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+			ctx.Request.SetRequestURI("/api/providers/mock-openai")
+			ctx.Request.SetBody(body)
+			ctx.SetUserValue("provider", "mock-openai")
+			if !tc.authenticated {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
+
+			h.updateProvider(ctx)
+
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			stored := h.inMemoryStore.Providers["mock-openai"]
+			if got := stored.ConcurrencyAndBufferSize.Concurrency; got != tc.wantConcurrency {
+				t.Fatalf("stored concurrency got %d, want %d", got, tc.wantConcurrency)
+			}
+			if stored.NetworkConfig.AllowPrivateNetwork && tc.wantStatus == fasthttp.StatusForbidden {
+				t.Fatalf("expected allow_private_network not to be persisted")
+			}
+			if tc.wantStatus == fasthttp.StatusOK && (stored.NetworkConfig.BaseURL != tc.baseURL || stored.NetworkConfig.AllowPrivateNetwork != tc.allowPrivateNetwork) {
+				t.Fatalf("stored network config got base_url=%q allow_private_network=%v, want %q/%v", stored.NetworkConfig.BaseURL, stored.NetworkConfig.AllowPrivateNetwork, tc.baseURL, tc.allowPrivateNetwork)
+			}
+		})
 	}
 }
 
@@ -218,6 +754,7 @@ func TestUpdateProvider_RejectsKeysInBody(t *testing.T) {
 	}
 	h := &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI: {Keys: []schemas.Key{existingKey}},
 			},
@@ -330,6 +867,7 @@ func TestUpdateProvider_PassesThroughForEmptyOrAbsentKeys(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &ProviderHandler{
 				inMemoryStore: &lib.Config{
+					ClientConfig: &configstore.ClientConfig{},
 					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 						schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-existing"}}},
 					},
@@ -519,7 +1057,8 @@ func TestListModels_MarksDeprecatedModelsWithoutFiltering(t *testing.T) {
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("GET")
-	ctx.Request.SetRequestURI("/api/models?provider=openai&limit=10")
+	// Searched, because an unsearched listing drops deprecated models outright.
+	ctx.Request.SetRequestURI("/api/models?provider=openai&query=model&limit=10")
 
 	h.listModels(ctx)
 
@@ -533,7 +1072,7 @@ func TestListModels_MarksDeprecatedModelsWithoutFiltering(t *testing.T) {
 	}
 
 	if resp.Total != 3 {
-		t.Fatalf("expected total=3 (deprecated models are not filtered), got %d", resp.Total)
+		t.Fatalf("expected total=3 (a search does not filter deprecated models), got %d", resp.Total)
 	}
 	var deprecated *ModelResponse
 	for i := range resp.Models {
@@ -896,6 +1435,126 @@ func TestListModelDetails_IncludesPricing(t *testing.T) {
 	}
 	if resp.Models[0].CacheReadCost == nil || *resp.Models[0].CacheReadCost != 0.00000025 {
 		t.Fatalf("expected cache read cost 0.00000025, got %#v", resp.Models[0].CacheReadCost)
+	}
+}
+
+func TestListModelDetails_ResolvesCatalogPricing(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	togetherGLM := "zai-org/GLM-5.2"
+	azureGLM := "FW-GLM-5.2"
+	tests := []struct {
+		name        string
+		provider    schemas.ModelProvider
+		model       string
+		alias       *schemas.AliasConfig
+		pricingJSON string
+		inputCost   float64
+		outputCost  float64
+		cacheCost   float64
+	}{
+		{
+			name:     "Together catalog provider",
+			provider: schemas.ModelProvider("together"),
+			model:    "deepseek-ai/DeepSeek-V4-Flash-0731",
+			pricingJSON: `{"together_ai/deepseek-ai/DeepSeek-V4-Flash-0731": {
+				"provider": "together_ai", "mode": "chat",
+				"input_cost_per_token": 0.00000014, "output_cost_per_token": 0.00000028,
+				"cache_read_input_token_cost": 0.00000003
+			}}`,
+			inputCost:  0.00000014,
+			outputCost: 0.00000028,
+			cacheCost:  0.00000003,
+		},
+		{
+			name:     "Together alias",
+			provider: schemas.ModelProvider("together"),
+			model:    "glm-5-2",
+			alias:    &schemas.AliasConfig{ModelID: togetherGLM, ModelName: &togetherGLM},
+			pricingJSON: `{"together_ai/zai-org/GLM-5.2": {
+				"provider": "together_ai", "mode": "chat",
+				"input_cost_per_token": 0.0000014, "output_cost_per_token": 0.0000044,
+				"cache_read_input_token_cost": 0.00000026
+			}}`,
+			inputCost:  0.0000014,
+			outputCost: 0.0000044,
+			cacheCost:  0.00000026,
+		},
+		{
+			name:     "Azure alias",
+			provider: schemas.Azure,
+			model:    "glm-5-2",
+			alias:    &schemas.AliasConfig{ModelID: "glm-5-2", ModelName: &azureGLM},
+			pricingJSON: `{"azure/glm-5-2": {
+				"provider": "azure", "mode": "chat", "input_cost_per_token": 9
+			}, "azure/FW-GLM-5.2": {
+				"provider": "azure", "mode": "chat",
+				"input_cost_per_token": 0.00000154, "output_cost_per_token": 0.00000484,
+				"cache_read_input_token_cost": 0.00000015
+			}}`,
+			inputCost:  0.00000154,
+			outputCost: 0.00000484,
+			cacheCost:  0.00000015,
+		},
+		{
+			name:     "Azure alias with empty model name",
+			provider: schemas.Azure,
+			model:    "glm-5-2-empty-name",
+			alias:    &schemas.AliasConfig{ModelID: azureGLM, ModelName: schemas.Ptr("")},
+			pricingJSON: `{"azure/FW-GLM-5.2": {
+				"provider": "azure", "mode": "chat",
+				"input_cost_per_token": 0.00000154, "output_cost_per_token": 0.00000484,
+				"cache_read_input_token_cost": 0.00000015
+			}}`,
+			inputCost:  0.00000154,
+			outputCost: 0.00000484,
+			cacheCost:  0.00000015,
+		},
+		{
+			name:     "Azure alias falls back to alias key",
+			provider: schemas.Azure,
+			model:    "gpt-4o",
+			alias:    &schemas.AliasConfig{ModelID: "my-deployment-123"},
+			pricingJSON: `{"azure/gpt-4o": {
+				"provider": "azure", "mode": "chat",
+				"input_cost_per_token": 0.0000025, "output_cost_per_token": 0.00001,
+				"cache_read_input_token_cost": 0.00000025
+			}}`,
+			inputCost:  0.0000025,
+			outputCost: 0.00001,
+			cacheCost:  0.00000025,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			key := schemas.Key{ID: "key-a", Models: schemas.WhiteList{"*"}}
+			if test.alias != nil {
+				key.Aliases = schemas.KeyAliases{test.model: *test.alias}
+			}
+			catalog := modelCatalogForPricingJSON(t, []byte(test.pricingJSON))
+			catalog.SetKeyConfigForProvider(test.provider, []schemas.Key{key})
+			h := providerHandlerForTest(test.provider, []schemas.Key{key}, []string{test.model}, []string{test.model})
+			h.inMemoryStore.ModelCatalog = catalog
+
+			resp, _ := listModelDetailsForTest(t, h, "/api/models/details?provider="+string(test.provider)+"&limit=100")
+			if resp.Total != 1 || len(resp.Models) != 1 {
+				t.Fatalf("expected one model, got %#v", resp.Models)
+			}
+			model := resp.Models[0]
+			if model.Provider != string(test.provider) {
+				t.Fatalf("expected runtime provider %s, got %q", test.provider, model.Provider)
+			}
+			if model.InputCostPerToken == nil || *model.InputCostPerToken != test.inputCost {
+				t.Fatalf("expected input cost %g, got %#v", test.inputCost, model.InputCostPerToken)
+			}
+			if model.OutputCostPerToken == nil || *model.OutputCostPerToken != test.outputCost {
+				t.Fatalf("expected output cost %g, got %#v", test.outputCost, model.OutputCostPerToken)
+			}
+			if model.CacheReadCost == nil || *model.CacheReadCost != test.cacheCost {
+				t.Fatalf("expected cache read cost %g, got %#v", test.cacheCost, model.CacheReadCost)
+			}
+		})
 	}
 }
 
@@ -1278,15 +1937,158 @@ func TestParseVKValueFromRequest(t *testing.T) {
 	}
 }
 
-// TestListModels_VKFilterRestrictsToAllowedProviderAndModels verifies that when a
-// VK filter is active, only providers listed in VKProviderConfigs are returned and
-// only models passing AllowedModels are included.
+// accessForProviderPermits builds the access a key-authenticated caller carries, so these tests
+// express what the caller may reach rather than a copy of the key's rows.
+func accessForProviderPermits(permits ...schemas.ProviderPermit) schemas.Access {
+	permit := grant.NewPermit(grant.PermitVirtualKey, "vk-test", "Test VK", true, false, permits, nil)
+	return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+}
+
+// accessAllowingAllProviders builds the access a caller permitted every provider carries, the way
+// the governance store builds it: the providers its configs do not name are materialised onto the
+// permit, so the permit carries its whole grant and every consumer reads one list.
+func accessAllowingAllProviders(configured []string, permits ...schemas.ProviderPermit) schemas.Access {
+	permit := grant.NewPermit(grant.PermitVirtualKey, "vk-test", "Test VK", true, false,
+		governanceplugin.AppendAllProviderPermits(permits, configured), nil,
+		grant.WithAllowAllProviders(true))
+	return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+}
+
+// A caller permitted every provider is listed every provider, including ones it holds no provider
+// permit for. Narrowing to the permits it happens to hold would make the listing refuse what the
+// request path admits.
+func TestListModels_VKFilterListsProviderAllowedOnlyByAllowAll(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI:    {Keys: []schemas.Key{{ID: "key-a"}}},
+				schemas.Anthropic: {Keys: []schemas.Key{{ID: "key-b"}}},
+			},
+		},
+		modelsManager: &mockModelsManager{
+			filtered: map[schemas.ModelProvider][]string{
+				schemas.OpenAI:    {"gpt-4o"},
+				schemas.Anthropic: {"claude-haiku-4-5"},
+			},
+		},
+	}
+
+	query := modelListQuery{
+		Limit:       100,
+		HasVKFilter: true,
+		Access: accessAllowingAllProviders(
+			[]string{string(schemas.OpenAI), string(schemas.Anthropic)},
+			schemas.ProviderPermit{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}},
+		),
+	}
+	if !query.Access.IsProviderAllowed(string(schemas.Anthropic)) {
+		t.Fatal("control failed: allow-all must permit a provider it holds no permit for")
+	}
+
+	models, total, err := h.listManagementModels(query)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	names := map[string]bool{}
+	for _, m := range models {
+		names[m.Name] = true
+	}
+	if total != 2 || !names["gpt-4o"] || !names["claude-haiku-4-5"] {
+		t.Fatalf("expected both providers listed, got total=%d models=%#v", total, models)
+	}
+}
+
+// A blacklisted model is not listed. The listing answers the same question a request does, so a
+// model the caller would be refused is not advertised to them as available.
+func TestListModels_VKFilterHidesBlacklistedModel(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
+			},
+		},
+		modelsManager: &mockModelsManager{
+			filtered: map[schemas.ModelProvider][]string{
+				schemas.OpenAI: {"gpt-4o", "gpt-4o-mini"},
+			},
+		},
+	}
+
+	query := modelListQuery{
+		Limit:       100,
+		HasVKFilter: true,
+		Access: accessForProviderPermits(schemas.ProviderPermit{
+			Provider:          "openai",
+			AllowedModels:     schemas.WhiteList{"*"},
+			BlacklistedModels: []string{"gpt-4o-mini"},
+		}),
+	}
+
+	models, total, err := h.listManagementModels(query)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 || len(models) != 1 || models[0].Name != "gpt-4o" {
+		t.Fatalf("expected only gpt-4o, got total=%d models=%#v", total, models)
+	}
+}
+
+// Duplicate configs for one provider grant the union of what they allow, as they do on the
+// request path: the listing must not stop at the first config it finds.
+func TestListModels_VKFilterUnionsDuplicateProviderConfigs(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
+			},
+		},
+		modelsManager: &mockModelsManager{
+			filtered: map[schemas.ModelProvider][]string{
+				schemas.OpenAI: {"gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"},
+			},
+		},
+	}
+
+	query := modelListQuery{
+		Limit:       100,
+		HasVKFilter: true,
+		Access: accessForProviderPermits(
+			schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"gpt-4o"}},
+			schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"gpt-4o-mini"}},
+		),
+	}
+
+	models, total, err := h.listManagementModels(query)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	names := map[string]bool{}
+	for _, m := range models {
+		names[m.Name] = true
+	}
+	if total != 2 || !names["gpt-4o"] || !names["gpt-4o-mini"] || names["gpt-3.5-turbo"] {
+		t.Fatalf("expected gpt-4o and gpt-4o-mini only, got total=%d models=%#v", total, models)
+	}
+}
+
+// With a key presented, the listing returns only the providers the caller is granted, and only
+// the models those grants allow.
 func TestListModels_VKFilterRestrictsToAllowedProviderAndModels(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	// Two providers configured; VK only allows openai with specific models.
 	h := &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI:    {Keys: []schemas.Key{{ID: "key-a"}}},
 				schemas.Anthropic: {Keys: []schemas.Key{{ID: "key-b"}}},
@@ -1303,12 +2105,7 @@ func TestListModels_VKFilterRestrictsToAllowedProviderAndModels(t *testing.T) {
 	query := modelListQuery{
 		Limit:       100,
 		HasVKFilter: true,
-		VKProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
-			{
-				Provider:      "openai",
-				AllowedModels: schemas.WhiteList{"gpt-4o", "gpt-4o-mini"},
-			},
-		},
+		Access:      accessForProviderPermits(schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"gpt-4o", "gpt-4o-mini"}}),
 	}
 
 	models, total, err := h.listManagementModels(query)
@@ -1345,6 +2142,7 @@ func TestListModels_VKFilterAllowsAllModelsWithWildcard(t *testing.T) {
 
 	h := &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
 			},
@@ -1359,9 +2157,7 @@ func TestListModels_VKFilterAllowsAllModelsWithWildcard(t *testing.T) {
 	query := modelListQuery{
 		Limit:       100,
 		HasVKFilter: true,
-		VKProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
-			{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}},
-		},
+		Access:      accessForProviderPermits(schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"*"}}),
 	}
 
 	models, total, err := h.listManagementModels(query)
@@ -1381,6 +2177,7 @@ func TestListModels_VKFilterDeniesAllModelsWhenAllowedModelsEmpty(t *testing.T) 
 
 	h := &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
 			},
@@ -1395,9 +2192,7 @@ func TestListModels_VKFilterDeniesAllModelsWhenAllowedModelsEmpty(t *testing.T) 
 	query := modelListQuery{
 		Limit:       100,
 		HasVKFilter: true,
-		VKProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
-			{Provider: "openai", AllowedModels: schemas.WhiteList{}},
-		},
+		Access:      accessForProviderPermits(schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{}}),
 	}
 
 	models, total, err := h.listManagementModels(query)
@@ -1416,6 +2211,7 @@ func TestListModels_VKFilterNoProviderConfigsDeniesAll(t *testing.T) {
 
 	h := &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI:    {},
 				schemas.Anthropic: {},
@@ -1430,9 +2226,9 @@ func TestListModels_VKFilterNoProviderConfigsDeniesAll(t *testing.T) {
 	}
 
 	query := modelListQuery{
-		Limit:             100,
-		HasVKFilter:       true,
-		VKProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{}, // empty
+		Limit:       100,
+		HasVKFilter: true,
+		Access:      accessForProviderPermits(), // a caller granted no provider
 	}
 
 	models, total, err := h.listManagementModels(query)
@@ -1449,6 +2245,7 @@ func TestListModels_VKFilterBlockedExplicitProviderReturnsEmptyResult(t *testing
 
 	h := &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI:    {},
 				schemas.Anthropic: {},
@@ -1465,14 +2262,12 @@ func TestListModels_VKFilterBlockedExplicitProviderReturnsEmptyResult(t *testing
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=anthropic")
-	query, ok := h.parseModelListQuery(ctx, 5)
+	query, ok := h.parseModelListQuery(ctx, requestContextForTest(ctx), 5)
 	if !ok {
 		t.Fatalf("expected parseModelListQuery to succeed")
 	}
 	query.HasVKFilter = true
-	query.VKProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
-		{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}},
-	}
+	query.Access = accessForProviderPermits(schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"*"}})
 
 	models, total, err := h.listManagementModels(query)
 	if err != nil {
@@ -1483,33 +2278,92 @@ func TestListModels_VKFilterBlockedExplicitProviderReturnsEmptyResult(t *testing
 	}
 }
 
-func TestParseModelListQuery_VKWithoutDBStoreReturnsServiceUnavailable(t *testing.T) {
-	SetLogger(&mockLogger{})
+// requestContextForTest derives the request context a management route would hand to the query
+// parser, so the parse sees the presented key the same way it does in production.
+func requestContextForTest(ctx *fasthttp.RequestCtx) *schemas.BifrostContext {
+	bifrostCtx, _ := lib.ConvertToBifrostContext(ctx, &lib.Config{ClientConfig: &configstore.ClientConfig{}})
+	return bifrostCtx
+}
 
-	h := &ProviderHandler{
+// modelListQueryHandlerForTest builds a handler that answers a management model listing from
+// the given models manager.
+func modelListQueryHandlerForTest(manager *mockModelsManager) *ProviderHandler {
+	return &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI: {},
 			},
 		},
-		modelsManager: &mockModelsManager{
-			filtered: map[schemas.ModelProvider][]string{
-				schemas.OpenAI: {"gpt-4o", "gpt-4o-mini"},
-			},
-		},
+		modelsManager: manager,
 	}
+}
+
+// A key-authenticated management listing is filtered to what that request may reach, resolved
+// from the request itself rather than from the key's stored rows.
+func TestParseModelListQuery_VKAppliesResolvedAccess(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	access := accessForProviderPermits(schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"*"}})
+	manager := &mockModelsManager{access: access}
+	h := modelListQueryHandlerForTest(manager)
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models")
 	ctx.Request.Header.Set("x-bf-vk", "sk-bf-test-virtual-key")
 
-	query, ok := h.parseModelListQuery(ctx, 5)
-	if ok {
-		t.Fatalf("expected parseModelListQuery to fail without dbStore, got query=%#v", query)
+	query, ok := h.parseModelListQuery(ctx, requestContextForTest(ctx), 5)
+	if !ok {
+		t.Fatalf("expected parseModelListQuery to succeed")
 	}
-	if ctx.Response.StatusCode() != fasthttp.StatusServiceUnavailable {
-		t.Fatalf("expected 503 when dbStore is unavailable, got %d", ctx.Response.StatusCode())
+	if manager.resolveCalls != 1 {
+		t.Fatalf("resolve calls = %d, want 1", manager.resolveCalls)
+	}
+	if !query.HasVKFilter {
+		t.Fatal("expected the listing to be filtered")
+	}
+	if query.Access != access {
+		t.Fatalf("expected the resolved access to be carried on the query, got %#v", query.Access)
+	}
+}
+
+// What decides the filter is the answer, not the headers: the parse always asks, and filters
+// only when something was resolved. A request with no key and one whose key resolved to nothing
+// (unknown key, or a deployment without governance) are the same case, and the listing stays
+// unfiltered instead of narrowing to nothing or failing.
+func TestParseModelListQuery_LeavesListingUnfilteredWhenNothingResolved(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	for _, tc := range []struct {
+		name    string
+		vkValue string
+	}{
+		{name: "no key presented"},
+		{name: "key resolves to nothing", vkValue: "sk-bf-test-virtual-key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := &mockModelsManager{}
+			h := modelListQueryHandlerForTest(manager)
+
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("GET")
+			ctx.Request.SetRequestURI("/api/models")
+			if tc.vkValue != "" {
+				ctx.Request.Header.Set("x-bf-vk", tc.vkValue)
+			}
+
+			query, ok := h.parseModelListQuery(ctx, requestContextForTest(ctx), 5)
+			if !ok {
+				t.Fatalf("expected parseModelListQuery to succeed")
+			}
+			if manager.resolveCalls != 1 {
+				t.Fatalf("resolve calls = %d, want 1", manager.resolveCalls)
+			}
+			if query.HasVKFilter || query.Access != nil {
+				t.Fatalf("expected an unfiltered listing, got HasVKFilter=%v access=%#v", query.HasVKFilter, query.Access)
+			}
+		})
 	}
 }
 
@@ -1520,6 +2374,7 @@ func TestListModels_NoVKFilterReturnsAll(t *testing.T) {
 
 	h := &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI:    {},
 				schemas.Anthropic: {},
@@ -1661,6 +2516,142 @@ func TestListModels_KeyBlacklistIsCaseInsensitive(t *testing.T) {
 	for _, m := range resp.Models {
 		if strings.EqualFold(m.Name, "gpt-3.5-turbo") {
 			t.Fatalf("gpt-3.5-turbo should be blocked by blacklist, got %v", resp.Models)
+		}
+	}
+}
+
+func TestListModels_UnsearchedListingOmitsDeprecatedModels(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	models := []string{"old-a", "old-b", "current-a", "current-b"}
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+		"old-a": {"provider":"openai","mode":"chat","base_model":"old-a","is_deprecated":true},
+		"old-b": {"provider":"openai","mode":"chat","base_model":"old-b","is_deprecated":true},
+		"current-a": {"provider":"openai","mode":"chat","base_model":"current-a"},
+		"current-b": {"provider":"openai","mode":"chat","base_model":"current-b"}
+	}`))
+
+	resp := listModelsForTest(t, h, "/api/models?provider=openai&limit=10")
+
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2 (deprecated models dropped), got %d", resp.Total)
+	}
+	for _, model := range resp.Models {
+		if model.IsDeprecated {
+			t.Fatalf("unsearched listing should hold no deprecated models, got %#v", resp.Models)
+		}
+	}
+}
+
+func TestListModels_SearchIncludesDeprecatedModelsBelowLiveOnes(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	// The deprecated models sort first by name, so an unordered listing would lead with them.
+	models := []string{"gpt-old-a", "gpt-old-b", "gpt-zed"}
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+		"gpt-old-a": {"provider":"openai","mode":"chat","base_model":"gpt-old-a","is_deprecated":true},
+		"gpt-old-b": {"provider":"openai","mode":"chat","base_model":"gpt-old-b","is_deprecated":true},
+		"gpt-zed": {"provider":"openai","mode":"chat","base_model":"gpt-zed"}
+	}`))
+
+	resp := listModelsForTest(t, h, "/api/models?provider=openai&query=gpt&limit=10")
+
+	if resp.Total != 3 {
+		t.Fatalf("expected total=3 (a search keeps deprecated models), got %d", resp.Total)
+	}
+	if len(resp.Models) != 3 {
+		t.Fatalf("expected 3 models, got %#v", resp.Models)
+	}
+	if resp.Models[0].Name != "gpt-zed" {
+		t.Fatalf("expected the live model first, got %#v", resp.Models)
+	}
+	if !resp.Models[1].IsDeprecated || !resp.Models[2].IsDeprecated {
+		t.Fatalf("expected the deprecated models to sink to the end, got %#v", resp.Models)
+	}
+}
+
+func TestListModels_IncludeDeprecatedOptsOutOfHiding(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	models := []string{"old-a", "current-a"}
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+		"old-a": {"provider":"openai","mode":"chat","base_model":"old-a","is_deprecated":true},
+		"current-a": {"provider":"openai","mode":"chat","base_model":"current-a"}
+	}`))
+
+	resp := listModelsForTest(t, h, "/api/models?provider=openai&limit=10&include_deprecated=true")
+
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2 with include_deprecated=true, got %d", resp.Total)
+	}
+	if resp.Models[0].Name != "current-a" || !resp.Models[1].IsDeprecated {
+		t.Fatalf("expected the deprecated model kept but sunk, got %#v", resp.Models)
+	}
+}
+
+func TestListModelDetails_KeepsDeprecatedModelsWhenUnsearched(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	models := []string{"old-a", "current-a"}
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+		"old-a": {"provider":"openai","mode":"chat","base_model":"old-a","is_deprecated":true},
+		"current-a": {"provider":"openai","mode":"chat","base_model":"current-a"}
+	}`))
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models/details?provider=openai&limit=10")
+
+	h.listModelDetails(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListModelDetailsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	// The model catalog is an inventory, not a picker: it lists what exists, deprecated included.
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2, got %d", resp.Total)
+	}
+}
+
+func listModelsForTest(t *testing.T, h *ProviderHandler, uri string) ListModelsResponse {
+	t.Helper()
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI(uri)
+
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	return resp
+}
+
+func TestProviderBaseURLShape(t *testing.T) {
+	for _, raw := range []string{"https://user:pass@127.0.0.1/base", "https://127.0.0.1/base?", "https://127.0.0.1/base#", "https://127.0.0.1/base?q=1"} {
+		if validateProviderBaseURLShape(raw) == nil {
+			t.Errorf("accepted %q", raw)
+		}
+	}
+	for _, raw := range []string{"", "http://127.0.0.1:1234/v1", "https://example.com/nested/path", "https://example.com/a%3Fb%23c"} {
+		if err := validateProviderBaseURLShape(raw); err != nil {
+			t.Errorf("rejected %q: %v", raw, err)
 		}
 	}
 }

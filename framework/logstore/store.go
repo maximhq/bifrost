@@ -19,8 +19,44 @@ const (
 	LogStoreTypeClickHouse LogStoreType = "clickhouse"
 )
 
+// CostUpdate is the repriced cost for a single log row, applied in bulk by
+// BulkUpdateCost. It carries the per-category split alongside the total so a
+// reprice keeps the denormalized input/output/additional cost columns in sync
+// with the cost column (they otherwise go stale on recompute). Input + Output +
+// Additional == Total, mirroring schemas.BifrostCost.
+type CostUpdate struct {
+	Total      float64
+	Input      float64
+	Output     float64
+	Additional float64
+}
+
+// CostUpdateFromBreakdown builds a CostUpdate from a cost breakdown, falling back
+// to attributing an unsplit total to the input side (mirrors the SerializeFields
+// reconciliation for opaque provider totals).
+func CostUpdateFromBreakdown(bd *schemas.BifrostCost) CostUpdate {
+	if bd == nil {
+		return CostUpdate{}
+	}
+	u := CostUpdate{
+		Total:      bd.TotalCost,
+		Input:      bd.InputCost,
+		Output:     bd.OutputCost,
+		Additional: bd.AdditionalCost,
+	}
+	if u.Input == 0 && u.Output == 0 && u.Additional == 0 && u.Total > 0 {
+		u.Input = u.Total
+	}
+	return u
+}
+
 // LogStore is the interface for the log store.
 type LogStore interface {
+	// WarpConversationStore is Warp's saved-chat surface. Transcripts live here
+	// rather than in the config store because they are user-generated content
+	// that grows with use, not settings an install depends on.
+	WarpConversationStore
+
 	Ping(ctx context.Context) error
 	Create(ctx context.Context, entry *Log) error
 	CreateIfNotExists(ctx context.Context, entry *Log) error
@@ -83,6 +119,10 @@ type LogStore interface {
 	GetProviderThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderThroughputHistogramResult, error)
 	GetModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error)
 	GetUserRankings(ctx context.Context, filters SearchFilters) (*UserRankingResult, error)
+	// GetUserSpend returns each user's total cost inside the filter window in one
+	// query: no previous-period comparison, no ordering, no row limit. It is the cheap
+	// read for jobs that rank every user by spend.
+	GetUserSpend(ctx context.Context, filters SearchFilters) ([]UserSpendEntry, error)
 	GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error)
 	// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension (e.g., team_id, customer_id).
 	GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error)
@@ -95,7 +135,7 @@ type LogStore interface {
 	// timestamp but greater log ID are included to avoid skipping same-timestamp rows.
 	GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error)
 	Update(ctx context.Context, id string, entry any) error
-	BulkUpdateCost(ctx context.Context, updates map[string]float64) error
+	BulkUpdateCost(ctx context.Context, updates map[string]CostUpdate) error
 	Flush(ctx context.Context, since time.Time) error
 	Close(ctx context.Context) error
 	DeleteLog(ctx context.Context, id string) error
@@ -112,6 +152,8 @@ type LogStore interface {
 	GetDistinctAliases(ctx context.Context, limit int, query string) ([]string, error)
 	GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error)
 	GetDistinctRoutingEngines(ctx context.Context, limit int, query string) ([]string, error)
+	// GetDistinctToolCallNames returns distinct function names that responses called, for the "Tool calls" filter.
+	GetDistinctToolCallNames(ctx context.Context, limit int, query string) ([]string, error)
 	GetDistinctStopReasons(ctx context.Context, limit int, query string) ([]string, error)
 	// GetDistinctUserAgents returns distinct raw User-Agent strings from logs for the "App" filter.
 	GetDistinctUserAgents(ctx context.Context, limit int, query string) ([]string, error)
@@ -133,6 +175,9 @@ type LogStore interface {
 	GetMCPToolLogStats(ctx context.Context, filters MCPToolLogSearchFilters) (*MCPToolLogStats, error)
 	HasMCPToolLogs(ctx context.Context) (bool, error)
 	DeleteMCPToolLogs(ctx context.Context, ids []string) error
+	// DeleteMCPToolLogsBatch deletes up to batchSize MCP tool logs older than
+	// cutoff, oldest first, for the retention cleaner (see LogsCleaner).
+	DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 	FlushMCPToolLogs(ctx context.Context, since time.Time) error
 	GetAvailableToolNames(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error)
@@ -141,6 +186,26 @@ type LogStore interface {
 	// GetAvailableMCPApps returns distinct backend-detected app labels from MCP tool logs.
 	GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error)
+
+	// Agent Gateway log methods.
+	BatchCreateAgentLogsIfNotExists(ctx context.Context, entries []*AgentLog) ([]string, error)
+	// ReconcileAgentCorrelation fills missing task and context IDs from persisted
+	// rows related to the inserted entries. Existing values are never changed.
+	ReconcileAgentCorrelation(ctx context.Context, entries []*AgentLog) error
+	FindAgentLog(ctx context.Context, id string) (*AgentLog, error)
+	FindAgentLogsForDeletion(ctx context.Context, ids []string) ([]*AgentLog, error)
+	ListAgentLogHistory(ctx context.Context, filter AgentLogHistoryFilter, pagination PaginationOptions) (*AgentLogHistoryResult, error)
+	ListAgentLogOperations(ctx context.Context, filter AgentLogHistoryFilter, pagination PaginationOptions) (*AgentLogOperationResult, error)
+	FindAgentLogOperation(ctx context.Context, id string) (*AgentLogOperation, error)
+	GetAgentLogStats(ctx context.Context, filter AgentLogHistoryFilter) (*AgentLogStats, error)
+	GetAgentHistogram(ctx context.Context, filter AgentLogHistoryFilter, bucketSizeSeconds int64) (*AgentHistogramResult, error)
+	GetAgentFilterData(ctx context.Context, dimensions []string, limit int, query string) (*AgentFilterData, error)
+	UpdateAgentLog(ctx context.Context, id string, entry any) error
+	// DeleteAgentLogs deletes the identified rows together with every row sharing
+	// their request IDs, so an operation's correlated stream events never
+	// outlive the aggregate request row shown in the UI.
+	DeleteAgentLogs(ctx context.Context, ids []string) error
+	FlushAgentLogs(ctx context.Context, since time.Time) error
 
 	// Async Job methods
 	CreateAsyncJob(ctx context.Context, job *AsyncJob) error
@@ -152,7 +217,7 @@ type LogStore interface {
 	// Webhook Delivery methods
 	CreateWebhookDelivery(ctx context.Context, delivery *WebhookDelivery) error
 	FindWebhookDeliveryByID(ctx context.Context, id string) (*WebhookDelivery, error)
-	SearchWebhookDeliveries(ctx context.Context, endpointID string, pagination PaginationOptions) (*WebhookDeliverySearchResult, error)
+	SearchWebhookDeliveries(ctx context.Context, filters *WebhookDeliverySearchFilters, pagination PaginationOptions) (*WebhookDeliverySearchResult, error)
 	DeleteExpiredWebhookDeliveries(ctx context.Context) (int64, error)
 }
 

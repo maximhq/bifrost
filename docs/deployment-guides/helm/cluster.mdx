@@ -19,10 +19,14 @@ Cluster mode requires **PostgreSQL** as the storage backend. SQLite is single-no
 | Scenario | Recommendation |
 |----------|---------------|
 | Single replica | Not needed |
-| Multiple replicas, shared DB only | Optional - DB provides eventual consistency |
+| Multiple replicas, shared DB only | **Enable cluster mode** - the database is not polled for changes after startup, so config, virtual keys, routing rules, and RBAC written on one replica never reach the others without gossip/gRPC |
 | Multiple replicas with strict per-minute rate limiting | **Enable cluster mode** - in-memory counters are synced via gossip |
 | Geographic multi-region | Enable cluster mode with DNS or Consul discovery |
 | Serverless platforms without peer-to-peer networking (e.g. Cloud Run) | Use **broker mode** instead of gossip - see note below |
+
+<Warning>
+A shared PostgreSQL database alone does not keep replicas in sync. Each replica loads config into memory once at startup and never re-reads the database afterward, so changes made through the API or UI on one replica are invisible to the others until cluster mode (or a restart) propagates them. This applies to any multi-replica deployment, not just ones with strict rate limiting.
+</Warning>
 
 <Note>
 The Helm chart deploys the default **mesh** clustering, which needs nodes to

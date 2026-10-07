@@ -44,7 +44,7 @@ Before configuring overrides, Bifrost needs a pricing catalog to work from. By d
 }
 ```
 
-`file://` URLs are also supported for loading datasheets from the local filesystem:
+`file://` URLs are also supported in `config.json` for loading datasheets from the local filesystem (the Web UI and `PUT /api/config` accept `http(s)://` URLs only):
 
 ```json
 "pricing_url": "file:///opt/bifrost/pricing.json"
@@ -52,8 +52,8 @@ Before configuring overrides, Bifrost needs a pricing catalog to work from. By d
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `pricing_url` | string (URI) | No | built-in | URL of the pricing datasheet. Supports `http://`, `https://`, and `file://` |
-| `model_parameters_url` | string (URI) | No | built-in | URL of the model parameters datasheet. Supports `http://`, `https://`, and `file://` |
+| `pricing_url` | string (URI) | No | built-in | URL of the pricing datasheet. Supports `http://`, `https://`, and (in `config.json` only) `file://` |
+| `model_parameters_url` | string (URI) | No | built-in | URL of the model parameters datasheet. Supports `http://`, `https://`, and (in `config.json` only) `file://` |
 | `pricing_sync_interval` | integer | No | `86400` | Sync interval in seconds. Minimum `3600` (1 hour) |
 
 </Tab>
@@ -308,6 +308,8 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | `output_cost_per_token_batches` | Output token cost for batch requests |
 | `input_cost_per_token_priority` | Input token cost for priority requests |
 | `output_cost_per_token_priority` | Output token cost for priority requests |
+| `input_cost_per_token_ultrafast` | Input token cost for ultrafast requests |
+| `output_cost_per_token_ultrafast` | Output token cost for ultrafast requests |
 | `input_cost_per_token_flex` | Input token cost for flex requests |
 | `output_cost_per_token_flex` | Output token cost for flex requests |
 | `input_cost_per_token_fast` | Input token cost for fast-mode requests (flat across the full context window - no tiering) |
@@ -330,6 +332,8 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | `output_cost_per_token_above_272k_tokens` | Output cost above 272k context |
 | `output_cost_per_token_above_272k_tokens_priority` | Output cost above 272k context for priority requests |
 | `output_cost_per_token_flex_above_272k_tokens` | Output cost above 272k context for flex requests |
+| `input_cost_per_token_above_272k_tokens_ultrafast` | Input cost above 272k context for ultrafast requests |
+| `output_cost_per_token_above_272k_tokens_ultrafast` | Output cost above 272k context for ultrafast requests |
 | `input_cost_per_image_above_128k_tokens` | Input cost per image above 128k context |
 
 ### Cache costs
@@ -342,10 +346,12 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | `cache_read_input_token_cost_above_200k_tokens` | Cache read above 200k context |
 | `cache_read_input_token_cost_above_200k_tokens_priority` | Cache read above 200k context for priority requests |
 | `cache_read_input_token_cost_priority` | Priority cache read cost |
+| `cache_read_input_token_cost_ultrafast` | Ultrafast cache read cost |
 | `cache_read_input_token_cost_flex` | Flex cache read cost |
 | `cache_read_input_token_cost_above_272k_tokens` | Cache read above 272k context |
 | `cache_read_input_token_cost_above_272k_tokens_priority` | Cache read above 272k context for priority requests |
 | `cache_read_input_token_cost_flex_above_272k_tokens` | Cache read above 272k context for flex requests |
+| `cache_read_input_token_cost_above_272k_tokens_ultrafast` | Cache read above 272k context for ultrafast requests |
 | `cache_read_input_image_token_cost` | Cache read cost for image tokens |
 | `cache_creation_input_audio_token_cost` | Cache creation cost for audio tokens |
 | `cache_creation_input_token_cost_above_1hr` | Cache creation cost for 1hr+ TTL entries |
@@ -354,6 +360,9 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | `cache_creation_input_token_cost_flex` | Flex cache creation cost |
 | `cache_creation_input_token_cost_flex_above_272k_tokens` | Cache creation above 272k context for flex requests |
 | `cache_creation_input_token_cost_priority` | Priority cache creation cost |
+| `cache_creation_input_token_cost_above_272k_tokens_priority` | Cache creation above 272k context for priority (OpenAI Fast mode) requests |
+| `cache_creation_input_token_cost_ultrafast` | Ultrafast cache creation cost |
+| `cache_creation_input_token_cost_above_272k_tokens_ultrafast` | Cache creation above 272k context for ultrafast requests |
 | `cache_creation_input_token_cost_fast` | Cache creation cost for fast-mode requests (flat across the full context window - no tiering) |
 | `cache_creation_input_token_cost_above_1hr_fast` | Cache creation cost for fast-mode requests with 1hr+ TTL entries |
 | `cache_read_input_token_cost_fast` | Cache read cost for fast-mode requests (flat across the full context window - no tiering) |
@@ -374,6 +383,8 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | `output_cost_per_image_auto_quality` | Generated image - auto quality |
 | `output_cost_per_image_above_512_and_512_pixels` | Generated image at or above 512×512 |
 | `output_cost_per_image_above_1024_and_1024_pixels` | Generated image at or above 1024×1024 |
+| `output_cost_per_image_above_1024_and_1536_pixels` | Generated image at or above 1024×1536 |
+| `output_cost_per_image_above_1536_and_1024_pixels` | Generated image at or above 1536×1024 |
 | `output_cost_per_image_above_2048_and_2048_pixels` | Generated image at or above 2048×2048 |
 | `output_cost_per_image_above_4096_and_4096_pixels` | Generated image at or above 4096×4096 |
 | `output_cost_per_image_above_4_megapixels` | Generated image output at or above 4 megapixels |
@@ -384,6 +395,26 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | `output_cost_per_image_premium_image` | Generated image - premium image |
 | `output_cost_per_image_above_512_and_512_pixels_and_premium_image` | Generated image at or above 512×512, premium image |
 | `output_cost_per_image_above_1024_and_1024_pixels_and_premium_image` | Generated image at or above 1024×1024, premium image |
+| `output_cost_per_image_above_1024_and_1024_pixels_low_quality` | Generated image at or above 1024×1024, low quality |
+| `output_cost_per_image_above_1024_and_1536_pixels_low_quality` | Generated image at or above 1024×1536, low quality |
+| `output_cost_per_image_above_1536_and_1024_pixels_low_quality` | Generated image at or above 1536×1024, low quality |
+| `output_cost_per_image_above_1024_and_1024_pixels_medium_quality` | Generated image at or above 1024×1024, medium quality |
+| `output_cost_per_image_above_1024_and_1536_pixels_medium_quality` | Generated image at or above 1024×1536, medium quality |
+| `output_cost_per_image_above_1536_and_1024_pixels_medium_quality` | Generated image at or above 1536×1024, medium quality |
+| `output_cost_per_image_above_1024_and_1024_pixels_high_quality` | Generated image at or above 1024×1024, high quality |
+| `output_cost_per_image_above_1024_and_1536_pixels_high_quality` | Generated image at or above 1024×1536, high quality |
+| `output_cost_per_image_above_1536_and_1024_pixels_high_quality` | Generated image at or above 1536×1024, high quality |
+| `output_cost_per_image_above_1024_and_1024_pixels_standard_quality` | Generated image at or above 1024×1024, standard quality |
+| `output_cost_per_image_above_1024_and_1536_pixels_standard_quality` | Generated image at or above 1024×1536, standard quality |
+| `output_cost_per_image_above_1536_and_1024_pixels_standard_quality` | Generated image at or above 1536×1024, standard quality |
+
+<Info>The megapixel rates are available in **Bifrost v2.0.0 and above**.</Info>
+
+When several per-image rates could apply, the most specific one wins: a joint size and quality
+rate first, then a quality-only rate, then a size-only rate, then the flat `output_cost_per_image`.
+The 1024×1536 and 1536×1024 thresholds have the same pixel count, so they are matched on width
+and height rather than on the total. An image that clears both (width at least 1536 and height at
+least 1536) is billed at the 1536×1024 rate, which is checked first.
 
 ### Audio and video costs
 
@@ -396,14 +427,24 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | `output_cost_per_audio_token` | Cost per audio output token |
 | `output_cost_per_second` | Cost per second of audio output |
 | `output_cost_per_video_per_second` | Cost per second of video output |
+| `output_cost_per_video_per_second_480p` | Cost per second of 480p video output |
+| `output_cost_per_video_per_second_720p` | Cost per second of 720p video output |
+| `output_cost_per_video_per_second_1024p` | Cost per second of 1024p video output |
+| `output_cost_per_video_per_second_1080p` | Cost per second of 1080p video output |
+| `output_cost_per_video_per_second_4k` | Cost per second of 4K video output |
 | `input_cost_per_video_per_second_above_128k_tokens` | Video input cost above 128k context |
 | `input_cost_per_audio_per_second_above_128k_tokens` | Audio input cost above 128k context |
 
+The resolution-banded video rates are matched on the short edge of the generated video's size, so `1920x1080` and `1080x1920` both resolve to `output_cost_per_video_per_second_1080p`. A size matching no band falls back to `output_cost_per_video_per_second`, then `output_cost_per_second`. The resolved rate is multiplied by the number of clips the job returned.
+
 ### Other costs
+
+<Info>`input_cost_per_query` and `cost_per_request` are available in **Bifrost v2.0.0 and above**.</Info>
 
 | Field | Description |
 |-------|-------------|
-| `search_context_cost_per_query` | Cost per web search context query |
+| `web_search_cost_per_request` | Cost per server-side web search call, billed from `usage.tool_usage.web_search.num_requests` |
+| `input_cost_per_query` | Cost per rerank query. One query covers up to 100 document chunks, so a larger request bills as several. Does not apply to Vertex, which bills content-size-derived ranking units |
 | `code_interpreter_cost_per_session` | Cost per code interpreter session |
 | `inference_geo_us_multiplier` | Data-residency cost multiplier applied when a request is served from a US inference region |
 | `cost_per_request` | Flat fee added once per billed request, on top of any usage-based cost |
@@ -414,6 +455,47 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 |-------|-------------|
 | `ocr_cost_per_page` | Cost per page processed by OCR |
 | `annotation_cost_per_page` | Cost per annotated page |
+
+### Time-of-day costs
+
+Some providers bill the same model at different rates depending on when the request is made. DeepSeek, for example, charges half its normal rate outside a set of published peak windows.
+
+| Field | Description |
+|-------|-------------|
+| `off_peak_cost_multiplier` | Multiplier applied to every usage-based charge when the request falls outside `peak_hours`. Must be greater than `0` and at most `1` |
+| `peak_hours` | The recurring weekly windows during which the model is billed at its base rates |
+
+Three rules govern how this works:
+
+- **Base rates are the peak rates.** Every other cost field is the higher, peak-hour price, and `off_peak_cost_multiplier` discounts downward from it. A row that carries a schedule but no multiplier — or whose schedule cannot be evaluated — bills at the full base rate rather than silently under-billing.
+- **Both fields are required on the resolved row.** A multiplier with no schedule has no way to know when to apply, and a schedule with no multiplier has nothing to apply. An override may set one and inherit the other from the model's datasheet entry, so setting the multiplier alone still discounts when the datasheet already declares a schedule. It bills at the base rate only when neither the override nor the datasheet supplies the missing half.
+- **Flat fees are not discounted.** `cost_per_request`, `input_cost_per_query`, and `web_search_cost_per_request` are per-request and per-query charges rather than usage charges, so they are billed in full at any hour.
+
+`peak_hours` takes a timezone and a list of windows:
+
+```json
+{
+  "off_peak_cost_multiplier": 0.5,
+  "peak_hours": {
+    "timezone": "UTC",
+    "windows": [
+      { "days": [1, 2, 3, 4, 5], "start": "01:00", "end": "04:00" },
+      { "days": [1, 2, 3, 4, 5], "start": "06:00", "end": "10:00" }
+    ]
+  }
+}
+```
+
+- `timezone` is an IANA location name. Leave it empty for UTC.
+- `days` are weekday numbers, `0` = Sunday through `6` = Saturday.
+- `start` and `end` are `"HH:MM"` in the schedule's own timezone, covering the half-open interval `[start, end)` — a window ending at `04:00` does not include `04:00` itself, so adjacent windows never double-count.
+- An `end` less than or equal to `start` wraps past midnight. In that case `days` names the weekday the window *starts* on, so `Mon 22:00-02:00` also covers Tuesday's small hours.
+
+<Info>
+Peak vs off-peak is decided by the **request's start time**, not its completion time. This keeps pricing deterministic and reproducible, and makes streaming and non-streaming requests agree. A long stream that crosses a window boundary bills entirely at its start-time rate.
+</Info>
+
+The override UI exposes `off_peak_cost_multiplier` as a numeric field. `peak_hours` is a schedule object rather than a number, so it is edited through the API or the JSON patch editor; an existing schedule is preserved when you edit an override's other fields in the UI.
 
 ---
 
@@ -466,6 +548,34 @@ Override costs for a specific image model at global scope:
   "pattern": "dall-e-3",
   "request_types": ["image_generation"],
   "pricing_patch": "{\"output_cost_per_image_high_quality\":0.04,\"output_cost_per_image_medium_quality\":0.02}"
+}
+```
+
+### Halving costs outside peak hours
+
+Mirrors DeepSeek's published schedule: base rates are the peak prices, and everything outside Monday-Friday `01:00-04:00` and `06:00-10:00` UTC bills at half.
+
+```json
+{
+  "name": "DeepSeek peak/off-peak",
+  "scope_kind": "provider",
+  "provider_id": "deepseek",
+  "match_type": "wildcard",
+  "pattern": "deepseek-v4*",
+  "request_types": ["chat_completion"],
+  "pricing_patch": {
+    "input_cost_per_token": 0.00000044,
+    "cache_read_input_token_cost": 0.000000014,
+    "output_cost_per_token": 0.00000132,
+    "off_peak_cost_multiplier": 0.5,
+    "peak_hours": {
+      "timezone": "UTC",
+      "windows": [
+        { "days": [1, 2, 3, 4, 5], "start": "01:00", "end": "04:00" },
+        { "days": [1, 2, 3, 4, 5], "start": "06:00", "end": "10:00" }
+      ]
+    }
+  }
 }
 ```
 

@@ -34,7 +34,11 @@ export function partitionTabs({ itemWidths, containerWidth, moreButtonWidth, act
 	if (containerWidth <= 0) return allVisible();
 
 	const total = itemWidths.reduce((sum, width) => sum + width, 0);
-	if (total <= containerWidth) return allVisible();
+	// offsetWidth is a rounded integer, so a strip that divides the row exactly -
+	// `grid-cols-2` and friends - can measure up to half a pixel wider per trigger
+	// than the space it was given, and would collapse a tab that does fit. Allow
+	// that much slack; a strip that genuinely overflows does so by far more.
+	if (total <= containerWidth + itemWidths.length * 0.5) return allVisible();
 
 	// Overflowing, so the dropdown trigger is on screen and takes its own room.
 	const available = containerWidth - moreButtonWidth;

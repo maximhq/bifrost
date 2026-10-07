@@ -1,8 +1,78 @@
 ---
 title: "Plugin Migration Guide"
-description: "How to migrate your Bifrost plugins from v1.3.x to v1.4.x"
+description: "How to migrate your Bifrost plugins across HTTP transport hook changes"
 icon: "arrow-up-right-dots"
 ---
+
+## v1.x to v2.0: `HTTPTransportPreHook` moved after authentication
+
+In v1.x, `HTTPTransportPreHook` ran before the transport authenticated the request, so a plugin could
+put a credential on the request and have it authenticated. In v2.0 it runs **after** authentication, and
+a new `HTTPTransportPreAuthHook` occupies the earlier position.
+
+<Warning>
+If your plugin writes a credential - a virtual key, an `Authorization` header, an `x-api-key` - from
+`HTTPTransportPreHook`, that credential is now written after the point that authenticates it, and
+nothing errors either way. Where authentication rejects the request the hook never runs at all; where
+it permits the request the hook still runs and the header still reaches components downstream of it,
+so the plugin can appear to keep working on one deployment and stop on another. Move that work to
+`HTTPTransportPreAuthHook`.
+</Warning>
+
+### Does this affect my plugin?
+
+Two separate questions, and the answers differ.
+
+**Does it need the new method to compile?** Every Go implementation of `schemas.HTTPTransportPlugin`
+does, because `HTTPTransportPreAuthHook` is part of that interface. A plugin with nothing to do before
+authentication returns `(nil, nil)`. Native `.so` plugins are the exception: the symbol is looked up
+optionally, so a plugin that never exports it keeps loading and is skipped by the phase.
+
+**Does its behaviour need to move?** Only if it touches credentials. A plugin that logs, rewrites a
+body, adds a tracing header, or short-circuits on a business rule stays exactly where it is - and gains
+something: `HTTPTransportPreHook` now sees the resolved caller identity on `ctx`, because authentication
+has already run.
+
+### Migration
+
+Rename the function. The pre-auth phase receives the same `*HTTPRequest` - body included - and applies the same mutations, so nothing inside the hook has to change:
+
+**Before (v1.x):**
+
+```go
+func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	if userID := req.Headers["x-my-idp-user"]; userID != "" {
+		req.Headers["x-bf-vk"] = virtualKeyFor(userID)
+	}
+	return nil, nil
+}
+```
+
+**After (v2.0):**
+
+```go
+func HTTPTransportPreAuthHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	if userID := req.Headers["x-my-idp-user"]; userID != "" {
+		req.Headers["x-bf-vk"] = virtualKeyFor(userID)
+	}
+	return nil, nil
+}
+```
+
+A plugin may export both hooks. They are independent phases. `HTTPTransportPreAuthHook` runs once per
+request; `HTTPTransportPreHook` runs once per request too, but only for requests that reach it — a
+pre-auth hook that short-circuits, or authentication rejecting the request, skips it.
+
+### What the pre-auth phase does not give you
+
+| | `HTTPTransportPreAuthHook` | `HTTPTransportPreHook` |
+|---|---|---|
+| Runs | Before authentication | After authentication |
+| Caller identity on `ctx` | Not yet resolved | Resolved |
+| `req` shape | Headers, query, path params, body | Same |
+| Post-hook counterpart | None | `HTTPTransportPostHook` |
+| Runs for a request authentication rejects | Yes | No |
+| Mutating `req.Method` / `req.Path` | `409` | `409` |
 
 ## Overview
 

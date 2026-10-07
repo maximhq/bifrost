@@ -7,10 +7,10 @@
  * offset lands every menu on the same line, and a lone override would visibly
  * break the row.
  */
-export const TOPBAR_MENU_SIDE_OFFSET = 3;
 
 /** Path segments that are shouted rather than capitalised. */
 const titleAcronyms: Record<string, string> = {
+	a2a: "A2A",
 	ai: "AI",
 	api: "API",
 	llm: "LLM",
@@ -38,6 +38,7 @@ function formatTitlePart(part: string) {
  */
 const routeTitleOverrides: Record<string, string> = {
 	"/workspace/adaptive-routing/settings": "Adaptive Routing Settings",
+	"/workspace/agent-logs": "Agent Logs",
 	"/workspace/alerting/channels": "Alert Channels",
 	"/workspace/alerting/history": "Alert History",
 	"/workspace/alerting/rules": "Alert Rules",

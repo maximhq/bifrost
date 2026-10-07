@@ -50,12 +50,40 @@ func NewOAuth2IssuanceHandler(store *lib.Config, tempTokens *temptoken.Service, 
 	return &OAuth2IssuanceHandler{store: store, tempTokens: tempTokens, identityResolver: identityResolver}
 }
 
+// Bounds on the client-controlled free-text fields of the issuance endpoints.
+// Registration and authorization are anonymous and the backing columns are
+// unbounded text, so these caps are what keeps an unauthenticated caller from
+// parking request-body-sized payloads in the config store. They are enforced
+// before any row is written and sit well above what real clients send (the
+// longest pinned by regression tests is a 4096-char state and a 1024-char
+// client_name), so they bound abuse without constraining legitimate clients.
+const (
+	maxOAuth2ClientNameLen    = 2048
+	maxOAuth2ScopeLen         = 4096
+	maxOAuth2StateLen         = 8192
+	maxOAuth2CodeChallengeLen = 128
+	maxOAuth2RedirectURIs     = 32
+	maxOAuth2RedirectURILen   = 2048
+)
+
 // RegisterRoutes wires the three OAuth2 issuance routes.
 func (h *OAuth2IssuanceHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-	// These routes are public — no auth middleware applied.
+	// These routes are public — no auth middleware applied. Each handler 404s
+	// when MCP OAuth is disabled (see issuanceEnabled).
 	r.POST("/oauth2/register", h.handleRegister)
 	r.GET("/oauth2/authorize", h.handleAuthorize)
 	r.POST("/oauth2/token", h.handleToken)
+}
+
+// issuanceEnabled reports whether the authorization server is on, using the
+// same predicate as the discovery handler so that disabling MCP OAuth
+// (mcp_server_auth_mode=headers) disables the issuer and not just its metadata.
+// Every issuance handler returns 404 when this is false, matching discovery.
+func (h *OAuth2IssuanceHandler) issuanceEnabled() bool {
+	h.store.Mu.RLock()
+	enabled := h.store.ClientConfig.IsMCPOAuthDiscoveryEnabled()
+	h.store.Mu.RUnlock()
+	return enabled
 }
 
 // --- POST /oauth2/register (RFC 7591 DCR) ---
@@ -70,6 +98,10 @@ type dcrRequest struct {
 }
 
 func (h *OAuth2IssuanceHandler) handleRegister(ctx *fasthttp.RequestCtx) {
+	if !h.issuanceEnabled() {
+		ctx.SetStatusCode(fasthttp.StatusNotFound)
+		return
+	}
 	if h.store.ConfigStore == nil {
 		sendOAuthError(ctx, fasthttp.StatusServiceUnavailable, "server_error", "config store unavailable")
 		return
@@ -84,12 +116,28 @@ func (h *OAuth2IssuanceHandler) handleRegister(ctx *fasthttp.RequestCtx) {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_redirect_uri", "redirect_uris is required")
 		return
 	}
+	if len(req.RedirectURIs) > maxOAuth2RedirectURIs {
+		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_redirect_uri", fmt.Sprintf("at most %d redirect_uris are allowed", maxOAuth2RedirectURIs))
+		return
+	}
+	if len(req.ClientName) > maxOAuth2ClientNameLen {
+		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_client_metadata", fmt.Sprintf("client_name exceeds %d bytes", maxOAuth2ClientNameLen))
+		return
+	}
+	if len(req.Scope) > maxOAuth2ScopeLen {
+		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_client_metadata", fmt.Sprintf("scope exceeds %d bytes", maxOAuth2ScopeLen))
+		return
+	}
 	// Registration is public and unauthenticated, so reject dangerous schemes
 	// (javascript:, data:, etc.) here at the source. Only https is allowed, with
 	// http permitted exclusively for loopback addresses (RFC 9700 §4.1.3).
 	for _, uri := range req.RedirectURIs {
-		if !isAllowedRedirectScheme(uri) {
-			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_redirect_uri", "redirect_uris must use https (or http for loopback addresses)")
+		if len(uri) > maxOAuth2RedirectURILen {
+			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_redirect_uri", fmt.Sprintf("redirect_uri exceeds %d bytes", maxOAuth2RedirectURILen))
+			return
+		}
+		if !oauth2RedirectAllowed(h.store, uri) {
+			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_redirect_uri", "redirect_uri must be a valid local callback or an administrator-approved remote callback")
 			return
 		}
 	}
@@ -164,6 +212,10 @@ func (h *OAuth2IssuanceHandler) handleRegister(ctx *fasthttp.RequestCtx) {
 // --- GET /oauth2/authorize ---
 
 func (h *OAuth2IssuanceHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
+	if !h.issuanceEnabled() {
+		ctx.SetStatusCode(fasthttp.StatusNotFound)
+		return
+	}
 	if h.store.ConfigStore == nil {
 		sendOAuthError(ctx, fasthttp.StatusServiceUnavailable, "server_error", "config store unavailable")
 		return
@@ -178,7 +230,16 @@ func (h *OAuth2IssuanceHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 	resource := string(q.Peek("resource"))
 	scope := string(q.Peek("scope"))
 
-	// Validate client exists before using redirect_uri.
+	// Bound every parameter that ends up in the authorize-request row before
+	// touching the store. Answered directly (not via redirect) so an oversize
+	// value is neither persisted nor echoed back in a Location header.
+	if len(state) > maxOAuth2StateLen || len(scope) > maxOAuth2ScopeLen || len(codeChallenge) > maxOAuth2CodeChallengeLen {
+		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_request", "state, scope or code_challenge exceeds the maximum length")
+		return
+	}
+
+	// Validate client exists before using redirect_uri. No state is created until
+	// both the client and its redirect_uri have been verified.
 	client, err := h.store.ConfigStore.GetOAuth2ClientByClientID(ctx, clientID)
 	if err != nil || client == nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -190,7 +251,7 @@ func (h *OAuth2IssuanceHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Validate redirect_uri (loopback any-port per RFC 8252 §7.3).
-	if !matchRedirectURI(redirectURIRaw, client.RedirectURIs) {
+	if !oauth2RedirectAllowed(h.store, redirectURIRaw) || !matchRedirectURI(redirectURIRaw, client.RedirectURIs) {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_redirect_uri", "redirect_uri not registered for this client")
 		return
 	}
@@ -305,6 +366,10 @@ func (h *OAuth2IssuanceHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 // --- POST /oauth2/token ---
 
 func (h *OAuth2IssuanceHandler) handleToken(ctx *fasthttp.RequestCtx) {
+	if !h.issuanceEnabled() {
+		ctx.SetStatusCode(fasthttp.StatusNotFound)
+		return
+	}
 	if h.store.ConfigStore == nil {
 		sendOAuthError(ctx, fasthttp.StatusServiceUnavailable, "server_error", "config store unavailable")
 		return
@@ -356,7 +421,7 @@ func (h *OAuth2IssuanceHandler) handleTokenAuthCode(ctx *fasthttp.RequestCtx) {
 	// against the client's registered URIs at /oauth2/authorize), so per RFC 6749
 	// §4.1.3 the token request must present it and it must match exactly. Accepting
 	// a missing redirect_uri would let a code be exchanged outside its bound redirect.
-	if redirectURI == "" || req.RedirectURI != redirectURI {
+	if !oauth2RedirectAllowed(h.store, redirectURI) || req.RedirectURI != redirectURI {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "redirect_uri mismatch")
 		return
 	}
@@ -436,7 +501,7 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 
 	// VK identity cutoff (refresh side): when virtual-key identity has been
 	// disabled, vk-mode grants must not refresh. Live /mcp requests are already
-	// rejected at request time (see getMCPServerForRequest); denying refresh here
+	// rejected at request time (see MCPServerHandler.authenticate); denying refresh here
 	// closes the second path so a disabled grant can neither be used nor renewed.
 	// Gated on user identity being available, identical to the consent flow's
 	// availableModes — so this can never fire where vk is still the offered path.
@@ -671,7 +736,7 @@ var allowedPrivateUseRedirectSchemes = map[string]struct{}{
 // It is default-deny: any scheme not matching one of the above is rejected.
 func isAllowedRedirectScheme(candidate string) bool {
 	parsed, err := url.Parse(candidate)
-	if err != nil {
+	if err != nil || parsed.Hostname() == "" || parsed.Opaque != "" || parsed.User != nil || strings.ContainsAny(candidate, "#\\") {
 		return false
 	}
 	switch parsed.Scheme {
@@ -692,6 +757,9 @@ func isAllowedRedirectScheme(candidate string) bool {
 // matchRedirectURI validates redirect_uri against registered URIs.
 // For loopback addresses (localhost / 127.0.0.1 / [::1]), port is ignored per RFC 8252 §7.3.
 func matchRedirectURI(candidate string, registered []string) bool {
+	if !isAllowedRedirectScheme(candidate) {
+		return false
+	}
 	parsed, err := url.Parse(candidate)
 	if err != nil {
 		return false
@@ -705,7 +773,7 @@ func matchRedirectURI(candidate string, registered []string) bool {
 		}
 		if isLoopback && isLoopbackRedirectHost(rParsed.Hostname()) {
 			// Loopback: match scheme + host (without port) + path.
-			if parsed.Scheme == rParsed.Scheme && parsed.Path == rParsed.Path {
+			if parsed.Scheme == rParsed.Scheme && parsed.EscapedPath() == rParsed.EscapedPath() && parsed.RawQuery == rParsed.RawQuery && parsed.ForceQuery == rParsed.ForceQuery {
 				return true
 			}
 		} else {

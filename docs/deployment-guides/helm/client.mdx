@@ -249,7 +249,7 @@ bifrost:
 | `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` | Timeout per tool execution in seconds | `30` |
 | `bifrost.mcp.toolManagerConfig.codeModeBindingLevel` | Code mode binding level (`server` or `tool`) | `server` |
 | `bifrost.mcp.toolManagerConfig.disableAutoToolInject` | Disable automatic MCP tool injection | `false` |
-| `bifrost.mcp.toolSyncInterval` | Global tool sync interval as a Go duration string (for example `10m`). Use `0s` to use the runtime default (it does **not** disable sync). This differs from legacy `bifrost.client.mcpToolSyncInterval: 0`, which represented disabled behavior. | `10m` |
+| `bifrost.mcp.toolSyncInterval` | Global tool sync interval as a Go duration string in whole minutes (for example `10m`). Use `0s` to use the runtime default of 10 minutes; periodic sync cannot be turned off. Legacy `bifrost.client.mcpToolSyncInterval: 0` means the same default. | `10m` |
 
 ```yaml
 bifrost:

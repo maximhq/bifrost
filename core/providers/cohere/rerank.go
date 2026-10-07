@@ -5,7 +5,6 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
-	"gopkg.in/yaml.v3"
 )
 
 // ToCohereRerankRequest converts a Bifrost rerank request to Cohere format
@@ -19,10 +18,13 @@ func ToCohereRerankRequest(bifrostReq *schemas.BifrostRerankRequest) *CohereRera
 		Query: bifrostReq.Query,
 	}
 
-	// Cohere v2 expects documents as a list of strings.
-	documents := make([]string, len(bifrostReq.Documents))
+	documents := make([]CohereRerankDocument, len(bifrostReq.Documents))
 	for i, doc := range bifrostReq.Documents {
-		documents[i] = formatCohereRerankDocument(doc)
+		documents[i] = CohereRerankDocument{
+			Text:     rerankDocumentText(doc),
+			ID:       doc.ID,
+			Metadata: doc.Meta,
+		}
 	}
 	cohereReq.Documents = documents
 
@@ -30,6 +32,7 @@ func ToCohereRerankRequest(bifrostReq *schemas.BifrostRerankRequest) *CohereRera
 		cohereReq.TopN = bifrostReq.Params.TopN
 		cohereReq.MaxTokensPerDoc = bifrostReq.Params.MaxTokensPerDoc
 		cohereReq.Priority = bifrostReq.Params.Priority
+		cohereReq.ReturnDocuments = bifrostReq.Params.ReturnDocuments
 		cohereReq.ExtraParams = bifrostReq.Params.ExtraParams
 	}
 
@@ -51,10 +54,11 @@ func (req *CohereRerankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostConte
 		Params:   &schemas.RerankParameters{},
 	}
 
-	// Convert documents
 	for _, doc := range req.Documents {
 		bifrostReq.Documents = append(bifrostReq.Documents, schemas.RerankDocument{
-			Text: doc,
+			Text: doc.Text,
+			ID:   doc.ID,
+			Meta: doc.Metadata,
 		})
 	}
 
@@ -66,6 +70,9 @@ func (req *CohereRerankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostConte
 	}
 	if req.Priority != nil {
 		bifrostReq.Params.Priority = req.Priority
+	}
+	if req.ReturnDocuments != nil {
+		bifrostReq.Params.ReturnDocuments = req.ReturnDocuments
 	}
 	if req.ExtraParams != nil {
 		bifrostReq.Params.ExtraParams = req.ExtraParams
@@ -84,53 +91,24 @@ func (response *CohereRerankResponse) ToBifrostRerankResponse(documents []schema
 		ID: response.ID,
 	}
 
-	// Convert results
 	for _, result := range response.Results {
 		rerankResult := schemas.RerankResult{
 			Index:          result.Index,
 			RelevanceScore: result.RelevanceScore,
 		}
-
-		// Convert document if present
-		if len(result.Document) > 0 {
-			var docMap map[string]interface{}
-			if err := sonic.Unmarshal(result.Document, &docMap); err == nil {
-				doc := &schemas.RerankDocument{}
-				populated := false
-				if text, ok := docMap["text"].(string); ok {
-					doc.Text = text
-					populated = true
-				}
-				if id, ok := docMap["id"].(string); ok {
-					doc.ID = &id
-					populated = true
-				}
-				// Collect metadata: unwrap "metadata"/"meta" keys to avoid nesting
-				meta := make(map[string]interface{})
-				if rawMeta, ok := docMap["metadata"].(map[string]interface{}); ok {
-					for k, v := range rawMeta {
-						meta[k] = v
-					}
-				} else if rawMeta, ok := docMap["meta"].(map[string]interface{}); ok {
-					for k, v := range rawMeta {
-						meta[k] = v
-					}
-				}
-				for k, v := range docMap {
-					if k != "text" && k != "id" && k != "metadata" && k != "meta" {
-						meta[k] = v
-					}
-				}
-				if len(meta) > 0 {
-					doc.Meta = meta
-					populated = true
-				}
-				if populated {
-					rerankResult.Document = doc
-				}
+		if result.Index >= 0 && result.Index < len(documents) {
+			rerankResult.ID = documents[result.Index].ID
+		}
+		if result.Document != nil {
+			rerankResult.Document = &schemas.RerankDocument{
+				Text: result.Document.Text,
+				ID:   result.Document.ID,
+				Meta: result.Document.Metadata,
+			}
+			if rerankResult.ID == nil {
+				rerankResult.ID = result.Document.ID
 			}
 		}
-
 		bifrostResponse.Results = append(bifrostResponse.Results, rerankResult)
 	}
 	sort.SliceStable(bifrostResponse.Results, func(i, j int) bool {
@@ -172,12 +150,20 @@ func (response *CohereRerankResponse) ToBifrostRerankResponse(documents []schema
 				hasTokenUsage = true
 			}
 		}
-		if hasTokenUsage {
+
+		// Rerank bills in search units, not tokens; carry them so cost calculation has an input.
+		var searchUnits *int
+		if response.Meta.BilledUnits != nil && response.Meta.BilledUnits.SearchUnits != nil {
+			searchUnits = response.Meta.BilledUnits.SearchUnits
+		}
+
+		if hasTokenUsage || searchUnits != nil {
 			bifrostResponse.Usage = &schemas.BifrostLLMUsage{
 				PromptTokens:     promptTokens,
 				CompletionTokens: completionTokens,
 				TotalTokens:      promptTokens + completionTokens,
 			}
+			bifrostResponse.Usage.SearchUnits = searchUnits
 		}
 	}
 
@@ -195,47 +181,57 @@ func ToCohereRerankResponse(bifrostResp *schemas.BifrostRerankResponse) *CohereR
 		Results: make([]CohereRerankResult, 0, len(bifrostResp.Results)),
 	}
 
-	// Cohere v2 rerank results carry only the index and the score.
 	for _, result := range bifrostResp.Results {
-		cohereResp.Results = append(cohereResp.Results, CohereRerankResult{
+		cohereResult := CohereRerankResult{
 			Index:          result.Index,
 			RelevanceScore: result.RelevanceScore,
-		})
+		}
+		if result.Document != nil {
+			cohereResult.Document = &CohereRerankDocument{
+				Text:     rerankDocumentText(*result.Document),
+				ID:       result.Document.ID,
+				Metadata: result.Document.Meta,
+			}
+		}
+		cohereResp.Results = append(cohereResp.Results, cohereResult)
 	}
 
 	if bifrostResp.Usage != nil {
-		cohereResp.Meta = &CohereRerankMeta{
-			BilledUnits: &CohereBilledUnits{
-				InputTokens:  new(bifrostResp.Usage.PromptTokens),
-				OutputTokens: new(bifrostResp.Usage.CompletionTokens),
-			},
-			Tokens: &CohereTokenUsage{
-				InputTokens:  new(bifrostResp.Usage.PromptTokens),
-				OutputTokens: new(bifrostResp.Usage.CompletionTokens),
-			},
+		billedUnits := &CohereBilledUnits{}
+		hasBilledUnits := false
+		if bifrostResp.Usage.SearchUnits != nil {
+			billedUnits.SearchUnits = bifrostResp.Usage.SearchUnits
+			hasBilledUnits = true
+		}
+		if bifrostResp.Usage.PromptTokens > 0 || bifrostResp.Usage.CompletionTokens > 0 {
+			billedUnits.InputTokens = new(bifrostResp.Usage.PromptTokens)
+			billedUnits.OutputTokens = new(bifrostResp.Usage.CompletionTokens)
+			hasBilledUnits = true
+			cohereResp.Meta = &CohereRerankMeta{
+				Tokens: &CohereTokenUsage{
+					InputTokens:  new(bifrostResp.Usage.PromptTokens),
+					OutputTokens: new(bifrostResp.Usage.CompletionTokens),
+				},
+			}
+		}
+		if hasBilledUnits {
+			if cohereResp.Meta == nil {
+				cohereResp.Meta = &CohereRerankMeta{}
+			}
+			cohereResp.Meta.BilledUnits = billedUnits
 		}
 	}
 
 	return cohereResp
 }
 
-func formatCohereRerankDocument(doc schemas.RerankDocument) string {
-	if doc.ID == nil && len(doc.Meta) == 0 {
+// rerankDocumentText renders a document as the prose Cohere ranks. A structured body is encoded
+// so its content still reaches the ranker on a provider with no native JSON document support.
+func rerankDocumentText(doc schemas.RerankDocument) string {
+	if doc.Text != "" || len(doc.Data) == 0 {
 		return doc.Text
 	}
-
-	// Keep metadata/id available by encoding a structured string document.
-	documentPayload := map[string]interface{}{
-		"text": doc.Text,
-	}
-	if doc.ID != nil {
-		documentPayload["id"] = *doc.ID
-	}
-	if len(doc.Meta) > 0 {
-		documentPayload["metadata"] = doc.Meta
-	}
-
-	encoded, err := yaml.Marshal(documentPayload)
+	encoded, err := sonic.Marshal(doc.Data)
 	if err != nil {
 		return doc.Text
 	}

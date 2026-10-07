@@ -19,6 +19,7 @@ func clientHeaders() map[string][]string {
 		"anthropic-beta":    {"interleaved-thinking-2025-05-14"},
 		"anthropic-version": {"2023-06-01"},
 		"content-type":      {"text/plain"},
+		"accept-encoding":   {"gzip, deflate, br"},
 		"x-app":             {"cli"},
 		"x-stainless-lang":  {"js"},
 		"x-bf-vk":           {"sk-bf-must-never-leave-the-gateway"},
@@ -41,6 +42,7 @@ func TestSetPassthroughHeaders_ForwardsCallerCredentialButNotInternals(t *testin
 	forwarded := map[string]string{
 		"authorization":     "Bearer sk-ant-oat01-caller-token",
 		"anthropic-version": "2023-06-01",
+		"accept-encoding":   "gzip, deflate, br",
 		"x-app":             "cli",
 		"x-stainless-lang":  "js",
 	}
@@ -59,10 +61,69 @@ func TestSetPassthroughHeaders_ForwardsCallerCredentialButNotInternals(t *testin
 	if got := string(req.Header.Peek(AnthropicBetaHeader)); got != "" {
 		t.Errorf("anthropic-beta must be left to MergeBetaHeaders, got %q", got)
 	}
-	// Bifrost owns the body, so it owns Content-Type — a caller value must never override it,
-	// regardless of where callers invoke this relative to their own SetContentType.
-	if got := string(req.Header.Peek("Content-Type")); got != "" {
-		t.Errorf("caller Content-Type must not be forwarded, got %q", got)
+	// Bifrost owns the request body, so the caller cannot override its content type.
+	if got := string(req.Header.Peek("content-type")); got != "" {
+		t.Errorf("caller content-type must not be forwarded, got %q", got)
+	}
+}
+
+func TestSetPassthroughHeaders_FiltersAcceptEncodingToSupportedCodecs(t *testing.T) {
+	tests := []struct {
+		name        string
+		values      []string
+		streaming   bool
+		wantForward string
+	}{
+		{
+			name:        "supported list is preserved",
+			values:      []string{"gzip, deflate, br, zstd"},
+			wantForward: "gzip, deflate, br, zstd",
+		},
+		{
+			name:        "unsupported tokens and wildcard are removed",
+			values:      []string{"gzip, snappy;q=0.8", "br;q=0.5, *;q=0"},
+			wantForward: "gzip, br;q=0.5",
+		},
+		{
+			name:        "unsupported-only header pins identity",
+			values:      []string{"snappy"},
+			wantForward: "identity",
+		},
+		{
+			name:        "streaming keeps only incrementally decoded codecs",
+			values:      []string{"gzip, deflate, br, zstd"},
+			streaming:   true,
+			wantForward: "gzip",
+		},
+		{
+			// Dropping the header here would let the upstream answer in br, which the
+			// streaming decoder cannot handle.
+			name:        "streaming pins identity when no codec survives",
+			values:      []string{"br, zstd"},
+			streaming:   true,
+			wantForward: "identity",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughHeaders, map[string][]string{
+				"accept-encoding": tt.values,
+			})
+
+			req := fasthttp.AcquireRequest()
+			defer fasthttp.ReleaseRequest(req)
+			if tt.streaming {
+				providerUtils.SetPassthroughHeadersForStreaming(ctx, req, schemas.Anthropic, nil)
+			} else {
+				providerUtils.SetPassthroughHeaders(ctx, req, schemas.Anthropic, nil)
+			}
+
+			if got := string(req.Header.Peek("accept-encoding")); got != tt.wantForward {
+				t.Errorf("Accept-Encoding = %q, want %q", got, tt.wantForward)
+			}
+		})
 	}
 }
 

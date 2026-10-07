@@ -31,11 +31,19 @@ func HasAnthropicPassthroughUsage(event []byte) bool {
 		providerUtils.GetJSONField(event, "message.usage").Exists()
 }
 
+// ExtractAnthropicMessagesUsage parses usage from a non-streaming Messages response body.
+// Exported for callers whose path does not carry the /messages suffix ExtractAnthropicPassthroughUsage
+// dispatches on — e.g. Vertex's :rawPredict.
+func ExtractAnthropicMessagesUsage(body []byte) *schemas.BifrostPassthroughUsage {
+	return extractAnthropicMessagesUsage(body)
+}
+
 // buildAnthropicPassthroughUsage converts AnthropicUsage directly into BifrostPassthroughUsage.
 func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthroughUsage {
 	if au == nil {
 		return nil
 	}
+	au = billableAnthropicUsage(au)
 	totalInput := au.InputTokens + au.CacheReadInputTokens + au.CacheCreationInputTokens
 	total := totalInput + au.OutputTokens
 	if total == 0 {
@@ -67,6 +75,7 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 			NumSearchQueries: &n,
 		}
+		usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: n}}
 	}
 
 	// Extended-thinking tokens are already inside au.OutputTokens, so CompletionTokens
@@ -119,6 +128,8 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 	if u == nil {
 		return a.usage()
 	}
+
+	u = billableAnthropicUsage(u)
 
 	a.seen = true
 	c := &a.combined

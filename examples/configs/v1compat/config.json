@@ -48,7 +48,7 @@
         "connection_string": "http://localhost:3001",
         "auth_type": "none",
         "tools_to_execute": ["*"],
-        "allow_on_all_virtual_keys": false
+        "allow_by_default": false
       }
     ]
   },

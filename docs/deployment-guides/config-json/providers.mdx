@@ -50,13 +50,13 @@ Per-provider `network_config` options (applies to all standard providers):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `default_request_timeout_in_seconds` | integer | Per-request timeout |
+| `default_request_timeout_in_seconds` | integer | Per-request timeout. For streaming requests it bounds the connection, request write and wait for response headers; the body is governed by `stream_idle_timeout_in_seconds` |
 | `max_retries` | integer | Retry attempts on transient errors |
 | `retry_backoff_initial` | integer | Initial backoff in milliseconds |
 | `retry_backoff_max` | integer | Maximum backoff in milliseconds |
 | `max_conns_per_host` | integer | Max TCP connections to the provider endpoint (default: 5000) |
 | `extra_headers` | object | Static headers added to every provider request |
-| `stream_idle_timeout_in_seconds` | integer | Idle timeout per stream chunk (default: 60) |
+| `stream_idle_timeout_in_seconds` | integer | Idle timeout per stream chunk (default: 120) |
 | `insecure_skip_verify` | boolean | Disable TLS verification (last resort only) |
 | `ca_cert_pem` | string | PEM-encoded CA for self-signed or private CA endpoints |
 
@@ -66,6 +66,14 @@ Concurrency and buffering per provider:
 |-------|------|-------------|
 | `concurrency_and_buffer_size.concurrency` | integer | Max concurrent requests to this provider |
 | `concurrency_and_buffer_size.buffer_size` | integer | Request queue depth |
+
+Prompt-cache breakpoint injection per provider (see [Auto Prompt Caching](/features/prompt-caching)):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `prompt_cache.auto_inject` | boolean | Mark the first cacheable block when the caller sent no cache markers. Off by default |
+| `prompt_cache.ttl` | string | Lifetime for injected markers. Only `"1h"` is accepted; omit for the provider default |
+| `prompt_cache.cache_control_injection_points` | array | Target specific messages by `role` and/or `index`. Replaces the first-block strategy when set |
 
 ---
 
@@ -523,7 +531,7 @@ Set the top-level `value` to a Bedrock Mantle API key and leave the SigV4 creden
 
 ### Google Vertex AI
 
-Vertex requires `vertex_key_config` with `project_id` and `region`. Two auth modes:
+Vertex requires `vertex_key_config` with `project_id` and `region`. Three auth modes:
 
 <Tabs>
 <Tab title="Service Account Key">
@@ -579,7 +587,104 @@ When `auth_credentials` is omitted, Bifrost calls `google.FindDefaultCredentials
 ```
 
 </Tab>
+<Tab title="AWS Workload Identity (EKS)">
+
+When Bifrost runs on AWS, `aws_workload_identity` federates the workload's IAM role (EKS IRSA / Pod Identity, ECS task role, EC2 instance profile) into a GCP token through a Workload Identity Pool AWS provider. No service account key and no AWS access key are stored. See [AWS Workload Identity Federation](/providers/supported-providers/vertex#aws-workload-identity-federation) for the GCP and AWS setup.
+
+```json
+{
+  "providers": {
+    "vertex": {
+      "keys": [
+        {
+          "name": "vertex-eks",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "vertex_key_config": {
+            "project_id": "my-gcp-project",
+            "region": "us-central1",
+            "aws_workload_identity": {
+              "audience": "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/eks-pool/providers/aws",
+              "service_account_email": "bifrost-vertex@my-gcp-project.iam.gserviceaccount.com"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+Omit `service_account_email` to call Vertex AI as the federated principal directly. `aws_region` and `aws_role_arn` are optional overrides.
+
+</Tab>
 </Tabs>
+
+</Tab>
+
+<Tab title="Databricks">
+
+### Databricks
+
+Databricks keys carry a workspace URL and, optionally, an OAuth machine-to-machine service principal. Both Databricks inference surfaces are served by this one provider; `api_format` selects between them, and `auto` picks by model name.
+
+<Tabs>
+<Tab title="Personal Access Token">
+
+```json
+{
+  "providers": {
+    "databricks": {
+      "keys": [
+        {
+          "name": "databricks-main",
+          "value": "env.DATABRICKS_TOKEN",
+          "models": ["*"],
+          "weight": 1.0,
+          "databricks_key_config": {
+            "workspace_url": "env.DATABRICKS_WORKSPACE_URL",
+            "api_format": "auto"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="OAuth M2M (Service Principal)">
+
+Leave `value` unset. Bifrost mints and refreshes tokens from the workspace OIDC endpoint.
+
+```json
+{
+  "providers": {
+    "databricks": {
+      "keys": [
+        {
+          "name": "databricks-service-principal",
+          "models": ["*"],
+          "weight": 1.0,
+          "databricks_key_config": {
+            "workspace_url": "env.DATABRICKS_WORKSPACE_URL",
+            "api_format": "model_serving",
+            "client_id": "env.DATABRICKS_CLIENT_ID",
+            "client_secret": "env.DATABRICKS_CLIENT_SECRET",
+            "forward_gateway_tags": true
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+See [Databricks](/providers/supported-providers/databricks) for the full field reference.
 
 </Tab>
 

@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/examples/mcps/parallel-test-server
 
-go 1.26.6
+go 1.27.0
 
 require github.com/mark3labs/mcp-go v0.43.2
 

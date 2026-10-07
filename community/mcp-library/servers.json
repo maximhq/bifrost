@@ -2297,6 +2297,27 @@
         "automation"
       ],
       "icon_url": "https://xquik.com/icons/mcp/xquik.png"
+    },
+    {
+      "name": "Magic Hour",
+      "description": "Create and edit images, videos, and audio through Magic Hour's hosted Streamable HTTP MCP server.",
+      "category": "AI Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.magichour.ai/",
+      "auth_type": "per_user_headers",
+      "required_header_keys": [
+        "Authorization"
+      ],
+      "docs_url": "https://magichour.ai/mcp",
+      "publisher": "Magic Hour AI, Inc.",
+      "tags": [
+        "image-generation",
+        "video-generation",
+        "audio",
+        "media",
+        "hosted"
+      ],
+      "icon_url": "https://magichour.ai/logo.png"
     }
   ]
 }

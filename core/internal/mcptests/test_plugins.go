@@ -317,6 +317,7 @@ func (p *TestGovernancePlugin) createShortCircuit(toolName, message string) *sch
 type TestModifyRequestPlugin struct {
 	mu                 sync.RWMutex
 	argumentModifier   func(string) string
+	toolNameModifier   func(string) string
 	shouldModify       bool
 }
 
@@ -344,6 +345,14 @@ func (p *TestModifyRequestPlugin) SetArgumentModifier(modifier func(string) stri
 	p.argumentModifier = modifier
 }
 
+// SetToolNameModifier sets a function to rewrite the (prefixed) tool name of Chat
+// tool calls, modelling an operator plugin that redirects one tool to another.
+func (p *TestModifyRequestPlugin) SetToolNameModifier(modifier func(string) string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.toolNameModifier = modifier
+}
+
 // SetShouldModify sets whether to modify requests
 func (p *TestModifyRequestPlugin) SetShouldModify(should bool) {
 	p.mu.Lock()
@@ -356,7 +365,15 @@ func (p *TestModifyRequestPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *s
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	if !p.shouldModify || p.argumentModifier == nil {
+	if !p.shouldModify {
+		return req, nil, nil
+	}
+
+	if p.toolNameModifier != nil && req.ChatAssistantMessageToolCall != nil && req.ChatAssistantMessageToolCall.Function.Name != nil {
+		req.ChatAssistantMessageToolCall.Function.Name = new(p.toolNameModifier(*req.ChatAssistantMessageToolCall.Function.Name))
+	}
+
+	if p.argumentModifier == nil {
 		return req, nil, nil
 	}
 

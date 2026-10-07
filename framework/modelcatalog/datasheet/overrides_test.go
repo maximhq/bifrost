@@ -986,3 +986,190 @@ func TestCatalogPricingOverrides_ReturnsDeepCopies(t *testing.T) {
 	require.NotNil(t, priced.InputCostPerToken)
 	assert.Equal(t, 3.0, *priced.InputCostPerToken, "runtime pricing must survive a caller mutating a catalog result")
 }
+
+func TestPatchPricing_InputCostPerQuery(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:    "rerank-v3.5",
+		Provider: "cohere",
+		Mode:     "rerank",
+	}
+
+	patched := patchPricing(base, Options{
+		InputCostPerQuery: bifrost.Ptr(0.002),
+	})
+
+	require.NotNil(t, patched.InputCostPerQuery)
+	assert.Equal(t, 0.002, *patched.InputCostPerQuery)
+}
+
+func TestPatchPricing_WebSearchCostPerRequest(t *testing.T) {
+	base := configstoreTables.TableModelPricing{Model: "claude-haiku-4-5", Provider: "anthropic", Mode: "chat"}
+
+	patched := patchPricing(base, Options{WebSearchCostPerRequest: bifrost.Ptr(0.01)})
+	require.NotNil(t, patched.WebSearchCostPerRequest)
+	assert.Equal(t, 0.01, *patched.WebSearchCostPerRequest)
+}
+
+func TestPatchPricing_SizeAndQualityImageRates(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:    "gpt-image-1",
+		Provider: "openai",
+		Mode:     "image_generation",
+		OutputCostPerImageAbove1024x1024PixelsHighQuality: bifrost.Ptr(0.133),
+		OutputCostPerImageAbove1024x1536Pixels:            bifrost.Ptr(0.013),
+	}
+
+	patched := patchPricing(base, Options{
+		OutputCostPerImageAbove1024x1536Pixels:                bifrost.Ptr(0.015),
+		OutputCostPerImageAbove1536x1024Pixels:                bifrost.Ptr(0.016),
+		OutputCostPerImageAbove1024x1024PixelsLowQuality:      bifrost.Ptr(0.009),
+		OutputCostPerImageAbove1024x1536PixelsLowQuality:      bifrost.Ptr(0.013),
+		OutputCostPerImageAbove1536x1024PixelsLowQuality:      bifrost.Ptr(0.013),
+		OutputCostPerImageAbove1024x1024PixelsMediumQuality:   bifrost.Ptr(0.034),
+		OutputCostPerImageAbove1024x1536PixelsMediumQuality:   bifrost.Ptr(0.05),
+		OutputCostPerImageAbove1536x1024PixelsMediumQuality:   bifrost.Ptr(0.05),
+		OutputCostPerImageAbove1024x1536PixelsHighQuality:     bifrost.Ptr(0.2),
+		OutputCostPerImageAbove1536x1024PixelsHighQuality:     bifrost.Ptr(0.2),
+		OutputCostPerImageAbove1024x1024PixelsStandardQuality: bifrost.Ptr(0.009),
+		OutputCostPerImageAbove1024x1536PixelsStandardQuality: bifrost.Ptr(0.013),
+		OutputCostPerImageAbove1536x1024PixelsStandardQuality: bifrost.Ptr(0.013),
+	})
+
+	assert.Equal(t, 0.015, *patched.OutputCostPerImageAbove1024x1536Pixels)
+	assert.Equal(t, 0.016, *patched.OutputCostPerImageAbove1536x1024Pixels)
+	assert.Equal(t, 0.009, *patched.OutputCostPerImageAbove1024x1024PixelsLowQuality)
+	assert.Equal(t, 0.013, *patched.OutputCostPerImageAbove1024x1536PixelsLowQuality)
+	assert.Equal(t, 0.013, *patched.OutputCostPerImageAbove1536x1024PixelsLowQuality)
+	assert.Equal(t, 0.034, *patched.OutputCostPerImageAbove1024x1024PixelsMediumQuality)
+	assert.Equal(t, 0.05, *patched.OutputCostPerImageAbove1024x1536PixelsMediumQuality)
+	assert.Equal(t, 0.05, *patched.OutputCostPerImageAbove1536x1024PixelsMediumQuality)
+	assert.Equal(t, 0.2, *patched.OutputCostPerImageAbove1024x1536PixelsHighQuality)
+	assert.Equal(t, 0.2, *patched.OutputCostPerImageAbove1536x1024PixelsHighQuality)
+	assert.Equal(t, 0.009, *patched.OutputCostPerImageAbove1024x1024PixelsStandardQuality)
+	assert.Equal(t, 0.013, *patched.OutputCostPerImageAbove1024x1536PixelsStandardQuality)
+	assert.Equal(t, 0.013, *patched.OutputCostPerImageAbove1536x1024PixelsStandardQuality)
+
+	// Unpatched fields keep their base values.
+	assert.Equal(t, 0.133, *patched.OutputCostPerImageAbove1024x1024PixelsHighQuality)
+}
+
+func TestPatchPricing_VideoResolutionBandRates(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:                       "sora-2-pro",
+		Provider:                    "openai",
+		Mode:                        "video_generation",
+		OutputCostPerVideoPerSecond: bifrost.Ptr(0.30),
+	}
+
+	patched := patchPricing(base, Options{
+		OutputCostPerVideoPerSecond480p:  bifrost.Ptr(0.10),
+		OutputCostPerVideoPerSecond720p:  bifrost.Ptr(0.30),
+		OutputCostPerVideoPerSecond1024p: bifrost.Ptr(0.50),
+		OutputCostPerVideoPerSecond1080p: bifrost.Ptr(0.70),
+		OutputCostPerVideoPerSecond4k:    bifrost.Ptr(0.60),
+	})
+
+	assert.Equal(t, 0.10, *patched.OutputCostPerVideoPerSecond480p)
+	assert.Equal(t, 0.30, *patched.OutputCostPerVideoPerSecond720p)
+	assert.Equal(t, 0.50, *patched.OutputCostPerVideoPerSecond1024p)
+	assert.Equal(t, 0.70, *patched.OutputCostPerVideoPerSecond1080p)
+	assert.Equal(t, 0.60, *patched.OutputCostPerVideoPerSecond4k)
+
+	// Unpatched fields keep their base values.
+	assert.Equal(t, 0.30, *patched.OutputCostPerVideoPerSecond)
+}
+
+// TestPatchPricing_TimeOfDayFields covers the two peak/off-peak fields. The
+// multiplier rides the *float64 loop; PeakHours is patched separately because
+// it is a struct pointer, so both paths need pinning.
+func TestPatchPricing_TimeOfDayFields(t *testing.T) {
+	baseSchedule := &configstoreTables.PeakHoursSchedule{
+		Timezone: "UTC",
+		Windows: []configstoreTables.PeakHoursWindow{
+			{Days: []int{1, 2, 3, 4, 5}, Start: "01:00", End: "04:00"},
+		},
+	}
+	base := configstoreTables.TableModelPricing{
+		Model:                 "deepseek-v4-flash",
+		Provider:              "deepseek",
+		Mode:                  "chat",
+		OffPeakCostMultiplier: bifrost.Ptr(0.5),
+		PeakHours:             baseSchedule,
+	}
+
+	t.Run("both fields overridden", func(t *testing.T) {
+		newSchedule := &configstoreTables.PeakHoursSchedule{
+			Timezone: "Asia/Shanghai",
+			Windows: []configstoreTables.PeakHoursWindow{
+				{Days: []int{0, 6}, Start: "09:00", End: "18:00"},
+			},
+		}
+		patched := patchPricing(base, Options{
+			OffPeakCostMultiplier: bifrost.Ptr(0.75),
+			PeakHours:             newSchedule,
+		})
+		require.NotNil(t, patched.OffPeakCostMultiplier)
+		assert.Equal(t, 0.75, *patched.OffPeakCostMultiplier)
+		require.NotNil(t, patched.PeakHours)
+		assert.Equal(t, "Asia/Shanghai", patched.PeakHours.Timezone)
+		assert.Len(t, patched.PeakHours.Windows, 1)
+	})
+
+	t.Run("multiplier only keeps the datasheet schedule", func(t *testing.T) {
+		patched := patchPricing(base, Options{OffPeakCostMultiplier: bifrost.Ptr(0.9)})
+		require.NotNil(t, patched.OffPeakCostMultiplier)
+		assert.Equal(t, 0.9, *patched.OffPeakCostMultiplier)
+		require.NotNil(t, patched.PeakHours)
+		assert.Equal(t, "UTC", patched.PeakHours.Timezone)
+	})
+
+	t.Run("empty override leaves both intact", func(t *testing.T) {
+		patched := patchPricing(base, Options{})
+		require.NotNil(t, patched.OffPeakCostMultiplier)
+		assert.Equal(t, 0.5, *patched.OffPeakCostMultiplier)
+		require.NotNil(t, patched.PeakHours)
+		assert.Equal(t, "UTC", patched.PeakHours.Timezone)
+	})
+
+	t.Run("base is not mutated", func(t *testing.T) {
+		_ = patchPricing(base, Options{
+			OffPeakCostMultiplier: bifrost.Ptr(0.1),
+			PeakHours:             &configstoreTables.PeakHoursSchedule{Timezone: "UTC"},
+		})
+		assert.Equal(t, 0.5, *base.OffPeakCostMultiplier)
+		assert.Same(t, baseSchedule, base.PeakHours)
+	})
+}
+
+func TestPatchPricing_UltrafastAbove272kRates(t *testing.T) {
+	base := configstoreTables.TableModelPricing{Model: "gpt-6-astra", Provider: "openai", Mode: "responses"}
+
+	patched := patchPricing(base, Options{
+		InputCostPerTokenAbove272kTokensUltrafast:           bifrost.Ptr(0.00012),
+		OutputCostPerTokenAbove272kTokensUltrafast:          bifrost.Ptr(0.00045),
+		CacheReadInputTokenCostAbove272kTokensUltrafast:     bifrost.Ptr(0.000012),
+		CacheCreationInputTokenCostAbove272kTokensUltrafast: bifrost.Ptr(0.00015),
+	})
+	require.NotNil(t, patched.InputCostPerTokenAbove272kTokensUltrafast)
+	assert.Equal(t, 0.00012, *patched.InputCostPerTokenAbove272kTokensUltrafast)
+	require.NotNil(t, patched.OutputCostPerTokenAbove272kTokensUltrafast)
+	assert.Equal(t, 0.00045, *patched.OutputCostPerTokenAbove272kTokensUltrafast)
+	require.NotNil(t, patched.CacheReadInputTokenCostAbove272kTokensUltrafast)
+	assert.Equal(t, 0.000012, *patched.CacheReadInputTokenCostAbove272kTokensUltrafast)
+	require.NotNil(t, patched.CacheCreationInputTokenCostAbove272kTokensUltrafast)
+	assert.Equal(t, 0.00015, *patched.CacheCreationInputTokenCostAbove272kTokensUltrafast)
+}
+
+func TestPatchPricing_PriorityAbove272kCacheCreationRate(t *testing.T) {
+	base := configstoreTables.TableModelPricing{Model: "gpt-6-astra", Provider: "openai", Mode: "responses",
+		CacheCreationInputTokenCostPriority: bifrost.Ptr(0.000025)}
+
+	patched := patchPricing(base, Options{
+		CacheCreationInputTokenCostAbove272kTokensPriority: bifrost.Ptr(0.00005),
+	})
+	require.NotNil(t, patched.CacheCreationInputTokenCostAbove272kTokensPriority)
+	assert.Equal(t, 0.00005, *patched.CacheCreationInputTokenCostAbove272kTokensPriority)
+	// Untouched sibling survives the patch.
+	require.NotNil(t, patched.CacheCreationInputTokenCostPriority)
+	assert.Equal(t, 0.000025, *patched.CacheCreationInputTokenCostPriority)
+}

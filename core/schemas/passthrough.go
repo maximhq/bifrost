@@ -8,7 +8,7 @@ type BifrostPassthroughRequest struct {
 	RawQuery    string // raw query string, no "?"
 	UpstreamURL string // optional base URL override for host-backed passthrough routes
 	Body        []byte
-	SafeHeaders map[string]string // client headers, auth already stripped
+	SafeHeaders map[string]string // client headers; auth stripped unless the caller's OAuth/JWT bearer is the upstream credential (Anthropic sk-ant-oat, OpenAI JWT)
 }
 
 // BifrostPassthroughUsage carries usage data extracted by the provider at stream
@@ -17,7 +17,7 @@ type BifrostPassthroughRequest struct {
 type BifrostPassthroughUsage struct {
 	// Text / chat / responses / embeddings
 	LLMUsage     *BifrostLLMUsage
-	ServiceTier  *BifrostServiceTier // "priority" | "flex" | nil (default)
+	ServiceTier  *BifrostServiceTier // Served tier, e.g. "priority", "fast", "flex", or "ultrafast".
 	Speed        *string             // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
 	InferenceGeo *string             // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
 

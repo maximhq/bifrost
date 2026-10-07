@@ -170,4 +170,6 @@ type SpeechUsage struct {
 	// duration-based audio models (e.g. ElevenLabs sound effects) so per-second
 	// pricing can be applied; zero for token/character-billed TTS.
 	AudioSeconds int `json:"audio_seconds,omitempty"`
+	// Cost is the per-category cost breakdown, populated when pricing is available.
+	Cost *BifrostCost `json:"cost,omitempty"`
 }

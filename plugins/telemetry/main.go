@@ -18,6 +18,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/overhead"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -83,13 +84,17 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 		BasicAuth      *basicAuthStorage `json:"basic_auth,omitempty"`
 	}
 	type configStorage struct {
-		CustomLabels   []string            `json:"custom_labels,omitempty"`
-		MetricsEnabled *bool               `json:"metrics_enabled,omitempty"`
-		PushGateway    *pushGatewayStorage `json:"push_gateway,omitempty"`
+		CustomLabels             []string            `json:"custom_labels,omitempty"`
+		MetricsEnabled           *bool               `json:"metrics_enabled,omitempty"`
+		OverheadBreakdownEnabled *bool               `json:"overhead_breakdown_enabled,omitempty"`
+		UserLabelsEnabled        *bool               `json:"user_labels_enabled,omitempty"`
+		PushGateway              *pushGatewayStorage `json:"push_gateway,omitempty"`
 	}
 	storage := configStorage{
-		CustomLabels:   c.CustomLabels,
-		MetricsEnabled: c.MetricsEnabled,
+		CustomLabels:             c.CustomLabels,
+		MetricsEnabled:           c.MetricsEnabled,
+		OverheadBreakdownEnabled: c.OverheadBreakdownEnabled,
+		UserLabelsEnabled:        c.UserLabelsEnabled,
 	}
 	if c.PushGateway != nil {
 		pgw := &pushGatewayStorage{
@@ -166,7 +171,8 @@ type PrometheusPlugin struct {
 	HTTPResponseSizeBytes          *prometheus.HistogramVec
 	UpstreamRequestsTotal          *prometheus.CounterVec
 	UpstreamLatencySeconds         *prometheus.HistogramVec
-	OverheadLatencySeconds         *prometheus.HistogramVec
+	OverheadLatencyMicros          *prometheus.HistogramVec
+	OverheadComponentMicros        *prometheus.HistogramVec
 	SuccessRequestsTotal           *prometheus.CounterVec
 	ErrorRequestsTotal             *prometheus.CounterVec
 	InputTokensTotal               *prometheus.CounterVec
@@ -177,6 +183,10 @@ type PrometheusPlugin struct {
 	CacheWriteInputTokens5mTotal   *prometheus.CounterVec
 	CacheWriteInputTokens1hTotal   *prometheus.CounterVec
 	CostTotal                      *prometheus.CounterVec
+	RoutingEmbeddingRequestsTotal  *prometheus.CounterVec
+	RoutingEmbeddingCostTotal      *prometheus.CounterVec
+	RoutingLLMRequestsTotal        *prometheus.CounterVec
+	RoutingLLMCostTotal            *prometheus.CounterVec
 	StreamInterTokenLatencySeconds *prometheus.HistogramVec
 	StreamFirstTokenLatencySeconds *prometheus.HistogramVec
 	RequestRetries                 *prometheus.HistogramVec
@@ -201,6 +211,22 @@ type PrometheusPlugin struct {
 
 	// MetricsEnabled gates the /metrics scrape endpoint.
 	metricsEnabled atomic.Bool
+
+	// gates bifrost_overhead_component_microseconds. Off by default.
+	overheadBreakdownEnabled atomic.Bool
+	userLabelsEnabled        atomic.Bool
+	// PostLLMHook-resolved labels handed to Inject, keyed by trace ID (values are
+	// *pendingOverheadEntry). Inject drains them; sweepPendingOverheadLabels bounds it.
+	pendingOverheadLabels sync.Map
+	overheadSweepTicker   *time.Ticker
+	overheadSweepStop     chan struct{}
+	overheadSweepWG       sync.WaitGroup
+	overheadSweepOnce     sync.Once // Cleanup runs once; the plugin is registered under multiple types
+}
+
+type pendingOverheadEntry struct {
+	labels    []string
+	createdAt time.Time // for the sweeper's staleness check
 }
 
 type Config struct {
@@ -209,6 +235,12 @@ type Config struct {
 	PushGateway  *PushGatewayConfig `json:"push_gateway"`
 	// MetricsEnabled controls whether the /metrics scrape endpoint is served.
 	MetricsEnabled *bool `json:"metrics_enabled,omitempty"`
+	// Exports bifrost_overhead_component_microseconds. Off by default. Needs tracing on
+	// (the breakdown comes from completed trace spans).
+	OverheadBreakdownEnabled *bool `json:"overhead_breakdown_enabled,omitempty"`
+	// Adds user_id and user_name labels. Off by default: unbounded values
+	// multiply series, and Prometheus cannot drop a label afterwards.
+	UserLabelsEnabled *bool `json:"user_labels_enabled,omitempty"`
 }
 
 // Keep in sync with plugins/otel/metrics.go's identical arrays so the Prometheus
@@ -223,14 +255,14 @@ var (
 	}
 
 	// overheadLatencyBuckets: Bifrost's own processing cost, i.e. total minus time
-	// blocked on upstream sockets. A different scale entirely from upstream latency —
-	// healthy values are sub-millisecond to low tens of ms, dominated by request and
-	// response marshalling. Reusing upstreamLatencyBuckets would pile almost every
-	// request into the first two buckets and make regressions invisible. The long
-	// tail up to 30s exists to catch queue saturation and pathological payloads.
+	// blocked on upstream sockets, in microseconds. A different scale entirely from
+	// upstream latency: healthy values run from sub-millisecond to low tens of ms,
+	// dominated by request and response marshalling. Microseconds keep the fast,
+	// sub-millisecond common case as clean integers instead of tiny fractions. The
+	// tail up to 30_000_000us catches queue saturation and pathological payloads.
 	overheadLatencyBuckets = []float64{
-		.0001, .00025, .0005, .001, .0025, .005, .01, .025, .05, .1,
-		.25, .5, 1, 2.5, 5, 10, 30,
+		100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000,
+		250000, 500000, 1000000, 2500000, 5000000, 10000000, 30000000,
 	}
 
 	// firstTokenLatencyBuckets: TTFT. Bimodal - sub-second for fast streaming
@@ -257,30 +289,27 @@ var (
 )
 
 // Init creates a new PrometheusPlugin with initialized metrics.
-// defaultBifrostLabelNames is the canonical set of Prometheus labels attached to
-// bifrost.* metrics. It is a package var (not an Init local) so the connector-
-// parity conformance test can assert it against the shared enrichment registry
-// (core/schemas). Metric-tier dimensions only — no high-cardinality (user, arrays).
-var defaultBifrostLabelNames = []string{
-	"provider",
-	"model",
-	"alias",
-	"method",
-	"virtual_key_id",
-	"virtual_key_name",
-	"routing_engine_used",
-	"routing_rule_id",
-	"routing_rule_name",
-	"selected_key_id",
-	"selected_key_name",
-	"fallback_index",
-	"team_id",
-	"team_name",
-	"customer_id",
-	"customer_name",
-	"business_unit_id",
-	"business_unit_name",
-}
+// userLabelNames are the unbounded dimensions, added when user_labels_enabled is
+// set. Derived, so promoting a dimension to that tier needs no edit here.
+var userLabelNames = func() []string {
+	safe := map[string]bool{}
+	for _, n := range schemas.MetricSafeEnrichmentDimNames() {
+		safe[n] = true
+	}
+	var out []string
+	for _, n := range schemas.HighCardinalityMetricEnrichmentDimNames() {
+		if !safe[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}()
+
+// defaultBifrostLabelNames is derived from schemas.EnrichmentDims, not hand-listed
+// — the registry used to be advisory and each connector kept its own copy, which
+// is how Splunk fell 2 dimensions behind. Bounded dimensions only; the unbounded
+// ones are opt-in via user_labels_enabled.
+var defaultBifrostLabelNames = schemas.MetricSafeEnrichmentDimNames()
 
 // defaultMCPLabelNames is the label set for bifrost_mcp_* metrics: the MCP semconv
 // dimensions available in the hook plus the governance identity. No network_transport
@@ -298,11 +327,22 @@ var defaultMCPLabelNames = []string{
 	"customer_name",
 	"business_unit_id",
 	"business_unit_name",
+	"project_id",
+	"project_name",
 }
 
 // mcpOperationDurationBuckets: the OTel MCP semconv boundaries, matching plugins/otel
 // so both exporters report the same quantiles for the same operation.
 var mcpOperationDurationBuckets = []float64{0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300}
+
+// Values of the phase label on bifrost_routing_embedding_* counters: "request"
+// is a per-request classification embed (recorded through the routing metadata response
+// stamp), "warmup" is a boot/config-change exemplar embed (recorded via
+// ObserveWarmupRoutingEmbedding — no request or response exists for those).
+const (
+	routingEmbeddingPhaseRequest = "request"
+	routingEmbeddingPhaseWarmup  = "warmup"
+)
 
 func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (*PrometheusPlugin, error) {
 	if config == nil {
@@ -335,6 +375,11 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 
 	defaultHTTPLabels := []string{"path", "method", "status"}
 	defaultBifrostLabels := append([]string(nil), defaultBifrostLabelNames...)
+	userLabelsEnabled := config.UserLabelsEnabled != nil && *config.UserLabelsEnabled
+	if userLabelsEnabled {
+		defaultBifrostLabels = append(defaultBifrostLabels, userLabelNames...)
+		logger.Warn("telemetry plugin: user_labels_enabled multiplies metric series by end-user count; monitor Prometheus memory")
+	}
 
 	var filteredCustomLabels []string
 	if len(config.CustomLabels) > 0 {
@@ -345,6 +390,16 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 				logger.Info("custom label %s is already a default label, it will be ignored", label)
 			}
 		}
+	}
+
+	// bifrostLabels returns a freshly allocated base+extra+custom label set. Fresh
+	// every call: appending to a shared base writes into its spare capacity, so two
+	// metrics built from it would overwrite each other's names.
+	bifrostLabels := func(extra ...string) []string {
+		out := make([]string, 0, len(defaultBifrostLabels)+len(extra)+len(filteredCustomLabels))
+		out = append(out, defaultBifrostLabels...)
+		out = append(out, extra...)
+		return append(out, filteredCustomLabels...)
 	}
 
 	factory := promauto.With(registry)
@@ -393,7 +448,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_upstream_requests_total",
 			Help: "Total number of requests forwarded to upstream providers by Bifrost.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostUpstreamLatencySeconds := factory.NewHistogramVec(
@@ -402,19 +457,36 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Latency of requests forwarded to upstream providers by Bifrost.",
 			Buckets: upstreamLatencyBuckets, // Extended range for AI model inference times
 		},
-		append(append(defaultBifrostLabels, "is_success"), filteredCustomLabels...),
+		bifrostLabels("is_success"),
 	)
 
 	// Labelled without is_success: unlike upstream latency, overhead is dominated by
 	// payload marshalling and is not expected to differ between success and failure,
 	// and a failed request often has no response to marshal at all.
-	bifrostOverheadLatencySeconds := factory.NewHistogramVec(
+	bifrostOverheadLatencyMicros := factory.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "bifrost_overhead_latency_seconds",
-			Help:    "Latency added by Bifrost itself: total request time minus time blocked on upstream providers.",
+			Name:    "bifrost_overhead_latency_microseconds",
+			Help:    "Latency added by Bifrost itself, in microseconds: total request time minus time blocked on upstream providers.",
 			Buckets: overheadLatencyBuckets,
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
+	)
+
+	// Same overhead as above, split by overhead_component (the UI's categories; see
+	// framework/overhead). Same base labels + buckets, so the components sum to
+	// bifrost_overhead_latency_microseconds per label set. Observed only when enabled
+	// and the request is traced.
+	overheadComponentLabels := make([]string, 0, len(defaultBifrostLabels)+len(filteredCustomLabels)+1)
+	overheadComponentLabels = append(overheadComponentLabels, defaultBifrostLabels...)
+	overheadComponentLabels = append(overheadComponentLabels, filteredCustomLabels...)
+	overheadComponentLabels = append(overheadComponentLabels, "overhead_component")
+	bifrostOverheadComponentMicros := factory.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "bifrost_overhead_component_microseconds",
+			Help:    "Bifrost overhead latency broken down by internal component (overhead_component label), in microseconds. Off by default; enable with overhead_breakdown_enabled. Requires tracing to be active.",
+			Buckets: overheadLatencyBuckets,
+		},
+		overheadComponentLabels,
 	)
 
 	bifrostSuccessRequestsTotal := factory.NewCounterVec(
@@ -422,15 +494,19 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_success_requests_total",
 			Help: "Total number of successful requests forwarded to upstream providers by Bifrost.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
+	// status_code is the status the failure resolves to, not always the wire status:
+	// an error sent inside a committed stream reached the caller as a 200.
+	// Cardinality is bounded: error_type is near-determined by status_code for
+	// upstream failures, so it splits few series that were not already split.
 	bifrostErrorRequestsTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bifrost_error_requests_total",
-			Help: "Total number of error requests forwarded to upstream providers by Bifrost.",
+			Help: "Total number of failed requests, by effective status_code and normalized error_type.",
 		},
-		append(append(defaultBifrostLabels, "status_code"), filteredCustomLabels...),
+		bifrostLabels("status_code", "error_type"),
 	)
 
 	bifrostInputTokensTotal := factory.NewCounterVec(
@@ -438,7 +514,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_input_tokens_total",
 			Help: "Total number of input tokens forwarded to upstream providers by Bifrost.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostOutputTokensTotal := factory.NewCounterVec(
@@ -446,7 +522,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_output_tokens_total",
 			Help: "Total number of output tokens forwarded to upstream providers by Bifrost.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostCacheHitsTotal := factory.NewCounterVec(
@@ -454,7 +530,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cache_hits_total",
 			Help: "Total number of cache hits forwarded to upstream providers by Bifrost, separated by cache type (direct/semantic).",
 		},
-		append(append(defaultBifrostLabels, "cache_type"), filteredCustomLabels...),
+		bifrostLabels("cache_type"),
 	)
 
 	// Provider-side prompt cache tokens (Anthropic/OpenAI/Gemini prompt caching). Distinct
@@ -464,7 +540,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cache_read_input_tokens_total",
 			Help: "Total provider-side prompt-cache read (cached) input tokens. Billed at a reduced rate by the provider.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostCacheWriteInputTokensTotal := factory.NewCounterVec(
@@ -472,7 +548,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cache_write_input_tokens_total",
 			Help: "Total provider-side prompt-cache creation (write) input tokens.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostCacheWriteInputTokens5mTotal := factory.NewCounterVec(
@@ -480,7 +556,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cache_write_input_tokens_5m_total",
 			Help: "Provider-side prompt-cache write input tokens with a 5-minute TTL (Anthropic only). Subset of bifrost_cache_write_input_tokens_total — do not sum with it.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostCacheWriteInputTokens1hTotal := factory.NewCounterVec(
@@ -488,7 +564,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cache_write_input_tokens_1h_total",
 			Help: "Provider-side prompt-cache write input tokens with a 1-hour TTL (Anthropic only). Subset of bifrost_cache_write_input_tokens_total — do not sum with it.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostCostTotal := factory.NewCounterVec(
@@ -496,7 +572,51 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cost_total",
 			Help: "Total cost in USD for requests to upstream providers.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
+	)
+
+	// Routing-classification overhead (semantic complexity router embeddings).
+	// Standalone label set on purpose: these count Bifrost's own routing
+	// overhead, keyed by the embedding provider/model — not the request's — so
+	// the canonical defaultBifrostLabelNames (conformance-checked against
+	// schemas.EnrichmentDims) don't apply. phase distinguishes per-request
+	// classification embeds from warmup/boot exemplar embeds; summing over
+	// phase gives total routing overhead.
+	bifrostRoutingEmbeddingRequestsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_routing_embedding_requests_total",
+			Help: "Total number of embedding calls made by semantic routing, labeled by the embedding provider/model and phase (request classification vs warmup).",
+		},
+		[]string{"provider", "model", "phase"},
+	)
+
+	bifrostRoutingEmbeddingCostTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_routing_embedding_cost_total",
+			Help: "Total cost in USD of semantic routing embeddings, labeled by the embedding provider/model and phase (request classification vs warmup). Recorded regardless of whether the cost counts toward budgets.",
+		},
+		[]string{"provider", "model", "phase"},
+	)
+
+	// The llm classifier's counters are separate rather than a phase or
+	// mechanism label on the embedding pair above: they count chat
+	// completions, not embeddings, and folding them into embedding-named
+	// metrics would silently misdescribe what the provider billed. No phase
+	// label either — the llm classifier has no warmup.
+	bifrostRoutingLLMRequestsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_routing_llm_requests_total",
+			Help: "Total number of chat completions made by llm complexity routing, labeled by the classifier provider/model.",
+		},
+		[]string{"provider", "model"},
+	)
+
+	bifrostRoutingLLMCostTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_routing_llm_cost_total",
+			Help: "Total cost in USD of llm complexity routing completions, labeled by the classifier provider/model. Recorded regardless of whether the cost counts toward budgets.",
+		},
+		[]string{"provider", "model"},
 	)
 
 	bifrostStreamInterTokenLatencySeconds := factory.NewHistogramVec(
@@ -505,7 +625,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Latency of the intermediate tokens of a stream response.",
 			Buckets: interTokenLatencyBuckets,
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostStreamFirstTokenLatencySeconds := factory.NewHistogramVec(
@@ -514,7 +634,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Latency of the first token of a stream response.",
 			Buckets: firstTokenLatencyBuckets,
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostRequestRetries := factory.NewHistogramVec(
@@ -523,7 +643,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Number of retries used per request (observed once per request).",
 			Buckets: []float64{0, 1, 2, 3, 5, 10},
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	// bifrostKeyRotationEventsTotal counts key-swap events from the attempt trail.
@@ -534,7 +654,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	bifrostKeyRotationEventsTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bifrost_key_rotation_events_total",
-			Help: "Number of key rotations, broken down by provider, key, and failure reason. One increment per per-key failure (rate-limit/auth/billing/permission) that triggered a switch to a different key on the next retry.",
+			Help: "Number of key rotations, broken down by provider, key, and failure reason. One increment per per-key failure (rate limit, rejected credential, exhausted quota, model access, retired model, region block) that triggered a switch to a different key on the next retry.",
 		},
 		[]string{"provider", "requested_model", "key_id", "key_name", "fail_reason"},
 	)
@@ -580,7 +700,8 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		HTTPResponseSizeBytes:          httpResponseSizeBytes,
 		UpstreamRequestsTotal:          bifrostUpstreamRequestsTotal,
 		UpstreamLatencySeconds:         bifrostUpstreamLatencySeconds,
-		OverheadLatencySeconds:         bifrostOverheadLatencySeconds,
+		OverheadLatencyMicros:          bifrostOverheadLatencyMicros,
+		OverheadComponentMicros:        bifrostOverheadComponentMicros,
 		SuccessRequestsTotal:           bifrostSuccessRequestsTotal,
 		ErrorRequestsTotal:             bifrostErrorRequestsTotal,
 		InputTokensTotal:               bifrostInputTokensTotal,
@@ -591,6 +712,10 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		CacheWriteInputTokens5mTotal:   bifrostCacheWriteInputTokens5mTotal,
 		CacheWriteInputTokens1hTotal:   bifrostCacheWriteInputTokens1hTotal,
 		CostTotal:                      bifrostCostTotal,
+		RoutingEmbeddingRequestsTotal:  bifrostRoutingEmbeddingRequestsTotal,
+		RoutingEmbeddingCostTotal:      bifrostRoutingEmbeddingCostTotal,
+		RoutingLLMRequestsTotal:        bifrostRoutingLLMRequestsTotal,
+		RoutingLLMCostTotal:            bifrostRoutingLLMCostTotal,
 		StreamInterTokenLatencySeconds: bifrostStreamInterTokenLatencySeconds,
 		StreamFirstTokenLatencySeconds: bifrostStreamFirstTokenLatencySeconds,
 		RequestRetries:                 bifrostRequestRetries,
@@ -612,6 +737,20 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	}
 	plugin.metricsEnabled.Store(metricsEnabled)
 
+	// Opt-in: the per-component histogram multiplies overhead cardinality by component count.
+	if config.OverheadBreakdownEnabled != nil {
+		plugin.overheadBreakdownEnabled.Store(*config.OverheadBreakdownEnabled)
+	}
+	// Must match the label set built above, or Prometheus rejects every observation.
+	plugin.userLabelsEnabled.Store(userLabelsEnabled)
+	// Sweep the label handoff only when the breakdown is on (otherwise the map stays empty).
+	if plugin.overheadBreakdownEnabled.Load() {
+		plugin.overheadSweepStop = make(chan struct{})
+		plugin.overheadSweepTicker = time.NewTicker(time.Minute)
+		plugin.overheadSweepWG.Add(1)
+		go plugin.sweepPendingOverheadLabels()
+	}
+
 	// Start push gateway if configured
 	if config.PushGateway != nil && config.PushGateway.Enabled && config.PushGateway.PushGatewayURL.IsSet() {
 		if err := plugin.EnablePushGateway(config.PushGateway); err != nil {
@@ -626,6 +765,17 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 // metrics on this instance. Safe to call from request-handling goroutines.
 func (p *PrometheusPlugin) IsMetricsEnabled() bool {
 	return p.metricsEnabled.Load()
+}
+
+// IsOverheadBreakdownEnabled reports whether bifrost_overhead_component_microseconds is observed.
+func (p *PrometheusPlugin) IsOverheadBreakdownEnabled() bool {
+	return p.overheadBreakdownEnabled.Load()
+}
+
+// ConsumesOverheadSpans opts into the internal breakdown spans (schemas.OverheadSpanConsumer)
+// when enabled, so Inject can decompose overhead. When off, we take the stripped trace.
+func (p *PrometheusPlugin) ConsumesOverheadSpans() bool {
+	return p.overheadBreakdownEnabled.Load()
 }
 
 func (p *PrometheusPlugin) GetRegistry() *prometheus.Registry {
@@ -685,7 +835,14 @@ func (p *PrometheusPlugin) RedactConfig(raw map[string]any) (map[string]any, err
 	return result, nil
 }
 
-// HTTPTransportPreHook is not used for this plugin
+// HTTPTransportPreAuthHook is a no-op: this plugin does no credential work, so it has
+// nothing to do before the transport authenticates the request (HTTPTransportPlugin interface).
+func (*PrometheusPlugin) HTTPTransportPreAuthHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
+}
+
+// HTTPTransportPreHook stamps the start of the transport window used to measure
+// Bifrost's overhead. See HTTPTransportPostHook.
 func (p *PrometheusPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	ctx.SetValue(transportStartTimeKey, time.Now())
 	return nil, nil
@@ -693,9 +850,9 @@ func (p *PrometheusPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 
 // HTTPTransportPostHook records Bifrost's own overhead.
 //
-// This is the widest window the plugin can see — the middleware order is
-// Tracing.pre → TransportInterceptor.pre → handler → TransportInterceptor.post
-// → Tracing.defer — so it brackets request parsing, the full core pipeline and
+// This is the widest window the plugin can see: the middleware order is
+// Tracing.pre -> TransportInterceptor.pre -> handler -> TransportInterceptor.post
+// -> Tracing.defer, so it brackets request parsing, the full core pipeline and
 // response marshalling, matching what OTEL derives from the root span. Measuring
 // across PreLLMHook/PostLLMHook instead would miss the transport work, and
 // marshalling a large response body is a real part of the cost.
@@ -720,8 +877,73 @@ func (p *PrometheusPlugin) recordOverhead(ctx *schemas.BifrostContext, total tim
 		return
 	}
 	if overhead, ok := schemas.CalculateOverhead(ctx, total); ok {
-		p.OverheadLatencySeconds.WithLabelValues(labels...).Observe(overhead.Seconds())
+		p.OverheadLatencyMicros.WithLabelValues(labels...).Observe(float64(overhead) / float64(time.Microsecond))
 	}
+}
+
+// Inject (schemas.ObservabilityPlugin) records the per-component overhead histogram from
+// the completed trace, using labels PostLLMHook stashed in pendingOverheadLabels (so it
+// shares the scalar metric's labels plus overhead_component). The breakdown needs the
+// finalized span tree, which only exists here; the scalar overhead is recorded in HTTPTransportPostHook.
+func (p *PrometheusPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
+	if trace == nil {
+		return nil
+	}
+	// Always drain the handoff entry so a toggle flip mid-request can't leak it.
+	joinKey := trace.InternalID
+	if joinKey == "" {
+		joinKey = trace.TraceID
+	}
+	labelsVal, ok := p.pendingOverheadLabels.LoadAndDelete(joinKey)
+	if !ok || !p.overheadBreakdownEnabled.Load() {
+		return nil
+	}
+	entry, ok := labelsVal.(*pendingOverheadEntry)
+	if !ok || len(entry.labels) == 0 {
+		return nil
+	}
+	baseLabels := entry.labels
+	components := overhead.ComputeForMetrics(trace)
+	if len(components) == 0 {
+		return nil
+	}
+	for component, micros := range components {
+		labels := make([]string, 0, len(baseLabels)+1)
+		labels = append(labels, baseLabels...)
+		labels = append(labels, component)
+		p.OverheadComponentMicros.WithLabelValues(labels...).Observe(micros)
+	}
+	return nil
+}
+
+// Compile-time check that PrometheusPlugin implements ObservabilityPlugin, so
+// CollectObservabilityPlugins picks it up and the tracer delivers completed traces.
+var _ schemas.ObservabilityPlugin = (*PrometheusPlugin)(nil)
+
+// sweepPendingOverheadLabels evicts entries Inject never drained (the tracer drops a trace
+// when this plugin's inject semaphore is saturated), which would otherwise grow the map unbounded.
+func (p *PrometheusPlugin) sweepPendingOverheadLabels() {
+	defer p.overheadSweepWG.Done()
+	const ttl = 5 * time.Minute
+	for {
+		select {
+		case <-p.overheadSweepTicker.C:
+			cutoff := time.Now().Add(-ttl)
+			p.pendingOverheadLabels.Range(func(k, v any) bool {
+				if e, ok := v.(*pendingOverheadEntry); ok && e.createdAt.Before(cutoff) {
+					p.pendingOverheadLabels.Delete(k)
+				}
+				return true
+			})
+		case <-p.overheadSweepStop:
+			return
+		}
+	}
+}
+
+// HTTPTransportResponseHeadersHook leaves response headers unchanged.
+func (p *PrometheusPlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+	return nil
 }
 
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged
@@ -732,6 +954,27 @@ func (p *PrometheusPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 // PreRequestHook implements schemas.LLMPlugin (no-op — required for plugin indexing).
 func (p *PrometheusPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
 	return nil
+}
+
+// ObserveWarmupRoutingEmbedding records one warmup/boot embedding call made by
+// semantic routing (exemplar warmup has no request or response, so it cannot
+// ride the routing metadata stamp path that request-phase embeds use). The HTTP
+// server wires this into the governance plugin's warmup embed usage observer.
+// This method is telemetry-only; budget attribution for warmup (provider/model-
+// level budgets, gated on count_toward_budgets) happens inside governance.
+func (p *PrometheusPlugin) ObserveWarmupRoutingEmbedding(provider, model string, inputTokens int) {
+	p.RoutingEmbeddingRequestsTotal.WithLabelValues(provider, model, routingEmbeddingPhaseWarmup).Inc()
+	if p.pricingManager == nil {
+		return
+	}
+	call := schemas.BifrostRoutingCall{
+		ProviderUsed: &provider,
+		ModelUsed:    &model,
+		InputTokens:  &inputTokens,
+	}
+	if cost := p.pricingManager.CalculateRoutingCallCost(call, nil); cost > 0 {
+		p.RoutingEmbeddingCostTotal.WithLabelValues(provider, model, routingEmbeddingPhaseWarmup).Add(cost)
+	}
 }
 
 // PreLLMHook records the start time of the request in the context.
@@ -746,20 +989,12 @@ func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 // applyCustomLabels resolves each configured custom label into labelValues.
 // Resolution order (first match wins):
 //  1. x-bf-dim-* headers (canonical; BifrostContextKeyDimensions)
-//  2. x-bf-prom-* headers (deprecated; kept for backward compatibility)
-//  3. Direct BifrostContextKey lookup (Go SDK usage — documented API)
+//  2. Direct BifrostContextKey lookup (Go SDK usage — documented API)
 func (p *PrometheusPlugin) applyCustomLabels(ctx *schemas.BifrostContext, labelValues map[string]string) {
 	dims, _ := ctx.Value(schemas.BifrostContextKeyDimensions).(map[string]string)
-	requestHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
 	for _, key := range p.customLabels {
 		if dims != nil {
 			if v, ok := dims[key]; ok {
-				labelValues[key] = v
-				continue
-			}
-		}
-		if requestHeaders != nil {
-			if v, ok := requestHeaders["x-bf-prom-"+key]; ok {
 				labelValues[key] = v
 				continue
 			}
@@ -834,6 +1069,8 @@ func (p *PrometheusPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 		"customer_name":      bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName),
 		"business_unit_id":   bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitID),
 		"business_unit_name": bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitName),
+		"project_id":         bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID),
+		"project_name":       bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName),
 	}
 	p.applyCustomLabels(ctx, labelValues)
 
@@ -892,6 +1129,7 @@ func extractProviderCacheTokens(result *schemas.BifrostResponse) (read, write, w
 // It records:
 //   - Request latency
 //   - Total request count
+//
 // canonicalEntitySet resolves one entity dimension from context: plural arrays,
 // else scalar as a set of one, canonicalized.
 func canonicalEntitySet(ctx context.Context, idsKey, namesKey, scalarIDKey, scalarNameKey schemas.BifrostContextKey) (idsCSV, namesCSV string) {
@@ -935,11 +1173,16 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		p.logger.Warn("Warning: startTime not found in context for Prometheus PostLLMHook")
 		return result, bifrostErr, nil
 	}
+	// Capture the LLM-hook window synchronously, before the goroutine below and its
+	// cost/metric work can inflate it. Used for the SDK-path overhead metric.
+	llmHookWindow := time.Since(startTime)
 
 	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
 	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
 	routingRuleID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
 	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
+	complexityTier := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityTier)
+	complexityMechanism := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityMechanism)
 
 	selectedKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
 	selectedKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
@@ -959,27 +1202,40 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	teamIDs, teamNames := canonicalEntitySet(ctx, schemas.BifrostContextKeyGovernanceTeamIDs, schemas.BifrostContextKeyGovernanceTeamNames, schemas.BifrostContextKeyGovernanceTeamID, schemas.BifrostContextKeyGovernanceTeamName)
 	customerID, customerName := canonicalEntitySet(ctx, schemas.BifrostContextKeyGovernanceCustomerIDs, schemas.BifrostContextKeyGovernanceCustomerNames, schemas.BifrostContextKeyGovernanceCustomerID, schemas.BifrostContextKeyGovernanceCustomerName)
 	businessUnitID, businessUnitName := canonicalEntitySet(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitIDs, schemas.BifrostContextKeyGovernanceBusinessUnitNames, schemas.BifrostContextKeyGovernanceBusinessUnitID, schemas.BifrostContextKeyGovernanceBusinessUnitName)
+	// A request is scoped to at most one project, so there is no plural form to canonicalize.
+	projectID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID)
+	projectName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName)
+	app := schemas.DetectAppFromUserAgent(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserAgent))
 
 	// Extract ALL context values BEFORE spawning the goroutine.
 	labelValues := map[string]string{
-		"provider":            string(provider),
-		"model":               model,
-		"alias":               alias,
-		"method":              string(requestType),
-		"virtual_key_id":      virtualKeyID,
-		"virtual_key_name":    virtualKeyName,
-		"routing_engine_used": routingEngineUsed,
-		"routing_rule_id":     routingRuleID,
-		"routing_rule_name":   routingRuleName,
-		"selected_key_id":     selectedKeyID,
-		"selected_key_name":   selectedKeyName,
-		"fallback_index":      strconv.Itoa(fallbackIndex),
-		"team_id":             teamIDs,
-		"team_name":           teamNames,
-		"customer_id":         customerID,
-		"customer_name":       customerName,
-		"business_unit_id":    businessUnitID,
-		"business_unit_name":  businessUnitName,
+		"provider":             string(provider),
+		"app":                  app,
+		"model":                model,
+		"alias":                alias,
+		"method":               string(requestType),
+		"virtual_key_id":       virtualKeyID,
+		"virtual_key_name":     virtualKeyName,
+		"routing_engine_used":  routingEngineUsed,
+		"routing_rule_id":      routingRuleID,
+		"routing_rule_name":    routingRuleName,
+		"complexity_tier":      complexityTier,
+		"complexity_mechanism": complexityMechanism,
+		"selected_key_id":      selectedKeyID,
+		"selected_key_name":    selectedKeyName,
+		"fallback_index":       strconv.Itoa(fallbackIndex),
+		"team_id":              teamIDs,
+		"team_name":            teamNames,
+		"customer_id":          customerID,
+		"customer_name":        customerName,
+		"business_unit_id":     businessUnitID,
+		"business_unit_name":   businessUnitName,
+		"project_id":           projectID,
+		"project_name":         projectName,
+	}
+	if p.userLabelsEnabled.Load() {
+		labelValues["user_id"] = bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
+		labelValues["user_name"] = bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserName)
 	}
 
 	// Get all custom prometheus labels from context BEFORE the goroutine.
@@ -1007,11 +1263,12 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// final attempt's labels win.
 	if isStreamFinal {
 		ctx.SetValue(overheadLabelsKey, slices.Clone(promLabelValues))
-		// SDK caller — no transport hooks, so this window is all there is. Recorded
-		// synchronously so goroutine scheduler delay and the metric work below never
-		// inflate the observed overhead.
-		if _, viaTransport := ctx.Value(transportStartTimeKey).(time.Time); !viaTransport {
-			p.recordOverhead(ctx, time.Since(startTime))
+		// Hand these labels to Inject (keyed by trace ID) for the breakdown histogram.
+		// Only when enabled and traced, so nothing is stored (or leaks) otherwise.
+		if p.overheadBreakdownEnabled.Load() {
+			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+				p.pendingOverheadLabels.Store(traceID, &pendingOverheadEntry{labels: slices.Clone(promLabelValues), createdAt: time.Now()})
+			}
 		}
 	}
 
@@ -1041,15 +1298,18 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		}
 
 		// Emit one rotation counter increment per attempt that actually caused a key swap on the
-		// next try (per-key failure — rate-limit/auth/billing/permission — with retries remaining).
-		// Mark the key unhealthy on any failure, since key health is per-failure not per-rotation.
+		// next try (a per-key failure with a key left to move to). Mark the key unhealthy on any
+		// failure, since key health is per-failure not per-rotation, except when the failure says
+		// nothing about the key's health: a request for a model this key cannot reach, or a
+		// region block that may be the gateway's own location. The walk past those would
+		// otherwise mark every key in the pool down on one caller's typo or one blocked egress.
 		for _, record := range attemptTrail {
 			if record.TriggeredRotation && record.FailReason != nil {
 				p.KeyRotationEventsTotal.WithLabelValues(
 					string(provider), model, record.KeyID, record.KeyName, *record.FailReason,
 				).Inc()
 			}
-			if record.FailReason != nil {
+			if record.FailReason != nil && record.FailureClass != schemas.FailureClassModelAccess && record.FailureClass != schemas.FailureClassModelGone && record.FailureClass != schemas.FailureClassRegionBlocked {
 				p.ProviderKeyUp.WithLabelValues(string(provider), record.KeyID, record.KeyName).Set(0)
 			}
 		}
@@ -1067,11 +1327,15 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 		// Record latency
 		duration := time.Since(startTime).Seconds()
-		latencyLabelValues := make([]string, 0, len(promLabelValues)+1)
-		latencyLabelValues = append(latencyLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
-		latencyLabelValues = append(latencyLabelValues, strconv.FormatBool(bifrostErr == nil))            // is_success
-		latencyLabelValues = append(latencyLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
+		// Default labels, then is_success, then custom labels.
+		latencyLabelValues := spliceLabelValues(promLabelValues, len(p.defaultBifrostLabels), strconv.FormatBool(bifrostErr == nil))
 		p.UpstreamLatencySeconds.WithLabelValues(latencyLabelValues...).Observe(duration)
+
+		// SDK caller: no transport hooks fire, so this LLM-hook window is all there
+		// is to measure overhead against.
+		if _, viaTransport := ctx.Value(transportStartTimeKey).(time.Time); !viaTransport {
+			p.recordOverhead(ctx, llmHookWindow)
+		}
 
 		// Record cost using the dedicated cost counter
 		if cost > 0 {
@@ -1080,15 +1344,14 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 		// Record error and success counts
 		if bifrostErr != nil {
-			// Add status_code to label values (create new slice to avoid modifying original)
-			statusCode := "unknown"
-			if bifrostErr.StatusCode != nil {
-				statusCode = strconv.Itoa(*bifrostErr.StatusCode)
-			}
-			errorPromLabelValues := make([]string, 0, len(promLabelValues)+1)
-			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
-			errorPromLabelValues = append(errorPromLabelValues, statusCode)                                       // status_code
-			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
+			// Effective, not raw: an internal error has no StatusCode but still returns 500.
+			statusCode := strconv.Itoa(bifrostErr.EffectiveHTTPStatus())
+			// Same requestType that fills the `method` label, so verdict and labels
+			// cannot disagree. Never empty: bifrostErr is non-nil in this branch.
+			errorType := schemas.ClassifyErrorType(bifrostErr, requestType)
+
+			// Default labels, then status_code and error_type, then custom labels.
+			errorPromLabelValues := spliceLabelValues(promLabelValues, len(p.defaultBifrostLabels), statusCode, string(errorType))
 
 			p.ErrorRequestsTotal.WithLabelValues(errorPromLabelValues...).Inc()
 		} else {
@@ -1096,6 +1359,39 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		}
 
 		if result != nil {
+			// Record routing-classification overhead (always-on: independent of
+			// each call's count_toward_budgets flag, which only controls whether
+			// that call's cost also folds into bifrost_cost_total via
+			// CalculateCost). A request can carry both a semantic embed and an
+			// llm classification call, so every call is recorded rather than
+			// only the first or last.
+			extraFields := result.GetExtraFields()
+			if rd := extraFields.RoutingMetadata; rd != nil {
+				for _, call := range rd.Calls {
+					if call.ProviderUsed == nil || call.ModelUsed == nil {
+						continue
+					}
+					// A call carrying OutputTokens is an llm classification chat
+					// completion; without it, a semantic classification embed. The
+					// cost calculation branches on the same signal.
+					if call.OutputTokens != nil {
+						p.RoutingLLMRequestsTotal.WithLabelValues(*call.ProviderUsed, *call.ModelUsed).Inc()
+						if p.pricingManager != nil {
+							if llmCost := p.pricingManager.CalculateRoutingCallCost(call, pricingScopes); llmCost > 0 {
+								p.RoutingLLMCostTotal.WithLabelValues(*call.ProviderUsed, *call.ModelUsed).Add(llmCost)
+							}
+						}
+					} else {
+						p.RoutingEmbeddingRequestsTotal.WithLabelValues(*call.ProviderUsed, *call.ModelUsed, routingEmbeddingPhaseRequest).Inc()
+						if p.pricingManager != nil {
+							if embeddingCost := p.pricingManager.CalculateRoutingCallCost(call, pricingScopes); embeddingCost > 0 {
+								p.RoutingEmbeddingCostTotal.WithLabelValues(*call.ProviderUsed, *call.ModelUsed, routingEmbeddingPhaseRequest).Add(embeddingCost)
+							}
+						}
+					}
+				}
+			}
+
 			// Record input and output tokens
 			var inputTokens, outputTokens int
 
@@ -1166,18 +1462,14 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			}
 
 			// Record cache hits with cache type
-			extraFields := result.GetExtraFields()
 			if extraFields.CacheDebug != nil && extraFields.CacheDebug.CacheHit {
 				cacheType := "unknown"
 				if extraFields.CacheDebug.HitType != nil {
 					cacheType = *extraFields.CacheDebug.HitType
 				}
 
-				// Add cache_type to label values (create new slice to avoid modifying original)
-				cacheHitLabelValues := make([]string, 0, len(promLabelValues)+1)
-				cacheHitLabelValues = append(cacheHitLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
-				cacheHitLabelValues = append(cacheHitLabelValues, cacheType)                                        // cache_type
-				cacheHitLabelValues = append(cacheHitLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
+				// Default labels, then cache_type, then custom labels (clone so the original is untouched).
+				cacheHitLabelValues := spliceLabelValues(promLabelValues, len(p.defaultBifrostLabels), cacheType)
 
 				p.CacheHitsTotal.WithLabelValues(cacheHitLabelValues...).Inc()
 			}
@@ -1355,5 +1647,12 @@ func (p *PrometheusPlugin) doPush() {
 
 func (p *PrometheusPlugin) Cleanup() error {
 	p.DisablePushGateway()
+	if p.overheadSweepTicker != nil {
+		p.overheadSweepOnce.Do(func() {
+			p.overheadSweepTicker.Stop()
+			close(p.overheadSweepStop)
+			p.overheadSweepWG.Wait()
+		})
+	}
 	return nil
 }

@@ -31,7 +31,6 @@ video-generation:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
   get:
@@ -88,7 +87,6 @@ video-generation:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 video-by-id:
@@ -127,7 +125,6 @@ video-by-id:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
   delete:
@@ -165,7 +162,6 @@ video-by-id:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 video-download:
@@ -220,7 +216,6 @@ video-download:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 video-delete:
@@ -259,7 +254,6 @@ video-delete:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 video-remix:
@@ -306,6 +300,43 @@ video-remix:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+video-edit:
+  post:
+    operationId: videoEdit
+    summary: Edit a video
+    description: |
+      Edits an existing video - prompt-driven editing, upscaling, or background removal, selected
+      with `type`. Accepts either `application/json` (with the source as a provider-side ID or a
+      URL) or `multipart/form-data` (to upload the source as `video`). Like generation this is an
+      asynchronous operation that returns a job ID; poll the retrieve endpoint for completion.
+    tags:
+    - Videos
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/videos.yaml#/VideoEditRequest'
+        multipart/form-data:
+          schema:
+            $ref: '../../schemas/inference/videos.yaml#/VideoEditMultipartRequest'
+    responses:
+      '200':
+        description: |
+          Successful response. Returns a video job object with status information.
+          Poll the retrieve endpoint to check completion status.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/videos.yaml#/VideoGenerationResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

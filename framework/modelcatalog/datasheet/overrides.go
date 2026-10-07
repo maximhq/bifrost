@@ -478,6 +478,8 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.OutputCostPerToken, src: override.OutputCostPerToken},
 		{dst: &patched.InputCostPerTokenPriority, src: override.InputCostPerTokenPriority},
 		{dst: &patched.OutputCostPerTokenPriority, src: override.OutputCostPerTokenPriority},
+		{dst: &patched.InputCostPerTokenUltrafast, src: override.InputCostPerTokenUltrafast},
+		{dst: &patched.OutputCostPerTokenUltrafast, src: override.OutputCostPerTokenUltrafast},
 		{dst: &patched.InputCostPerTokenFlex, src: override.InputCostPerTokenFlex},
 		{dst: &patched.OutputCostPerTokenFlex, src: override.OutputCostPerTokenFlex},
 		{dst: &patched.InputCostPerTokenFast, src: override.InputCostPerTokenFast},
@@ -485,6 +487,11 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.InputCostPerVideoPerSecond, src: override.InputCostPerVideoPerSecond},
 		{dst: &patched.OutputCostPerVideoPerSecond, src: override.OutputCostPerVideoPerSecond},
 		{dst: &patched.OutputCostPerSecond, src: override.OutputCostPerSecond},
+		{dst: &patched.OutputCostPerVideoPerSecond480p, src: override.OutputCostPerVideoPerSecond480p},
+		{dst: &patched.OutputCostPerVideoPerSecond720p, src: override.OutputCostPerVideoPerSecond720p},
+		{dst: &patched.OutputCostPerVideoPerSecond1024p, src: override.OutputCostPerVideoPerSecond1024p},
+		{dst: &patched.OutputCostPerVideoPerSecond1080p, src: override.OutputCostPerVideoPerSecond1080p},
+		{dst: &patched.OutputCostPerVideoPerSecond4k, src: override.OutputCostPerVideoPerSecond4k},
 		{dst: &patched.InputCostPerAudioPerSecond, src: override.InputCostPerAudioPerSecond},
 		{dst: &patched.InputCostPerSecond, src: override.InputCostPerSecond},
 		{dst: &patched.InputCostPerAudioToken, src: override.InputCostPerAudioToken},
@@ -505,6 +512,8 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.OutputCostPerTokenAbove272kTokens, src: override.OutputCostPerTokenAbove272kTokens},
 		{dst: &patched.OutputCostPerTokenAbove272kTokensPriority, src: override.OutputCostPerTokenAbove272kTokensPriority},
 		{dst: &patched.OutputCostPerTokenFlexAbove272kTokens, src: override.OutputCostPerTokenFlexAbove272kTokens},
+		{dst: &patched.InputCostPerTokenAbove272kTokensUltrafast, src: override.InputCostPerTokenAbove272kTokensUltrafast},
+		{dst: &patched.OutputCostPerTokenAbove272kTokensUltrafast, src: override.OutputCostPerTokenAbove272kTokensUltrafast},
 		{dst: &patched.CacheCreationInputTokenCostAbove200kTokens, src: override.CacheCreationInputTokenCostAbove200kTokens},
 		{dst: &patched.CacheReadInputTokenCostAbove200kTokens, src: override.CacheReadInputTokenCostAbove200kTokens},
 		{dst: &patched.CacheReadInputTokenCost, src: override.CacheReadInputTokenCost},
@@ -513,16 +522,21 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.CacheCreationInputTokenCostAbove1hrAbove200kTokens, src: override.CacheCreationInputTokenCostAbove1hrAbove200kTokens},
 		{dst: &patched.CacheCreationInputAudioTokenCost, src: override.CacheCreationInputAudioTokenCost},
 		{dst: &patched.CacheReadInputTokenCostPriority, src: override.CacheReadInputTokenCostPriority},
+		{dst: &patched.CacheReadInputTokenCostUltrafast, src: override.CacheReadInputTokenCostUltrafast},
 		{dst: &patched.CacheReadInputTokenCostFlex, src: override.CacheReadInputTokenCostFlex},
 		{dst: &patched.CacheReadInputTokenCostAbove200kTokensPriority, src: override.CacheReadInputTokenCostAbove200kTokensPriority},
 		{dst: &patched.CacheReadInputTokenCostAbove272kTokens, src: override.CacheReadInputTokenCostAbove272kTokens},
 		{dst: &patched.CacheReadInputTokenCostAbove272kTokensPriority, src: override.CacheReadInputTokenCostAbove272kTokensPriority},
 
 		{dst: &patched.CacheReadInputTokenCostFlexAbove272kTokens, src: override.CacheReadInputTokenCostFlexAbove272kTokens},
+		{dst: &patched.CacheReadInputTokenCostAbove272kTokensUltrafast, src: override.CacheReadInputTokenCostAbove272kTokensUltrafast},
 		{dst: &patched.CacheCreationInputTokenCostAbove272kTokens, src: override.CacheCreationInputTokenCostAbove272kTokens},
 		{dst: &patched.CacheCreationInputTokenCostFlex, src: override.CacheCreationInputTokenCostFlex},
 		{dst: &patched.CacheCreationInputTokenCostFlexAbove272kTokens, src: override.CacheCreationInputTokenCostFlexAbove272kTokens},
 		{dst: &patched.CacheCreationInputTokenCostPriority, src: override.CacheCreationInputTokenCostPriority},
+		{dst: &patched.CacheCreationInputTokenCostAbove272kTokensPriority, src: override.CacheCreationInputTokenCostAbove272kTokensPriority},
+		{dst: &patched.CacheCreationInputTokenCostUltrafast, src: override.CacheCreationInputTokenCostUltrafast},
+		{dst: &patched.CacheCreationInputTokenCostAbove272kTokensUltrafast, src: override.CacheCreationInputTokenCostAbove272kTokensUltrafast},
 		{dst: &patched.CacheCreationInputTokenCostFast, src: override.CacheCreationInputTokenCostFast},
 		{dst: &patched.CacheCreationInputTokenCostAbove1hrFast, src: override.CacheCreationInputTokenCostAbove1hrFast},
 		{dst: &patched.CacheReadInputTokenCostFast, src: override.CacheReadInputTokenCostFast},
@@ -541,6 +555,20 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.OutputCostPerImageAbove512x512PixelsPremium, src: override.OutputCostPerImageAbove512x512PixelsPremium},
 		{dst: &patched.OutputCostPerImageAbove1024x1024Pixels, src: override.OutputCostPerImageAbove1024x1024Pixels},
 		{dst: &patched.OutputCostPerImageAbove1024x1024PixelsPremium, src: override.OutputCostPerImageAbove1024x1024PixelsPremium},
+		{dst: &patched.OutputCostPerImageAbove1024x1536Pixels, src: override.OutputCostPerImageAbove1024x1536Pixels},
+		{dst: &patched.OutputCostPerImageAbove1536x1024Pixels, src: override.OutputCostPerImageAbove1536x1024Pixels},
+		{dst: &patched.OutputCostPerImageAbove1024x1024PixelsLowQuality, src: override.OutputCostPerImageAbove1024x1024PixelsLowQuality},
+		{dst: &patched.OutputCostPerImageAbove1024x1536PixelsLowQuality, src: override.OutputCostPerImageAbove1024x1536PixelsLowQuality},
+		{dst: &patched.OutputCostPerImageAbove1536x1024PixelsLowQuality, src: override.OutputCostPerImageAbove1536x1024PixelsLowQuality},
+		{dst: &patched.OutputCostPerImageAbove1024x1024PixelsMediumQuality, src: override.OutputCostPerImageAbove1024x1024PixelsMediumQuality},
+		{dst: &patched.OutputCostPerImageAbove1024x1536PixelsMediumQuality, src: override.OutputCostPerImageAbove1024x1536PixelsMediumQuality},
+		{dst: &patched.OutputCostPerImageAbove1536x1024PixelsMediumQuality, src: override.OutputCostPerImageAbove1536x1024PixelsMediumQuality},
+		{dst: &patched.OutputCostPerImageAbove1024x1024PixelsHighQuality, src: override.OutputCostPerImageAbove1024x1024PixelsHighQuality},
+		{dst: &patched.OutputCostPerImageAbove1024x1536PixelsHighQuality, src: override.OutputCostPerImageAbove1024x1536PixelsHighQuality},
+		{dst: &patched.OutputCostPerImageAbove1536x1024PixelsHighQuality, src: override.OutputCostPerImageAbove1536x1024PixelsHighQuality},
+		{dst: &patched.OutputCostPerImageAbove1024x1024PixelsStandardQuality, src: override.OutputCostPerImageAbove1024x1024PixelsStandardQuality},
+		{dst: &patched.OutputCostPerImageAbove1024x1536PixelsStandardQuality, src: override.OutputCostPerImageAbove1024x1536PixelsStandardQuality},
+		{dst: &patched.OutputCostPerImageAbove1536x1024PixelsStandardQuality, src: override.OutputCostPerImageAbove1536x1024PixelsStandardQuality},
 		{dst: &patched.OutputCostPerImageAbove2048x2048Pixels, src: override.OutputCostPerImageAbove2048x2048Pixels},
 		{dst: &patched.OutputCostPerImageAbove4096x4096Pixels, src: override.OutputCostPerImageAbove4096x4096Pixels},
 		{dst: &patched.OutputCostPerImageAbove4Megapixels, src: override.OutputCostPerImageAbove4Megapixels},
@@ -550,6 +578,8 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.OutputCostPerImageAbove64Megapixels, src: override.OutputCostPerImageAbove64Megapixels},
 		{dst: &patched.CacheReadInputImageTokenCost, src: override.CacheReadInputImageTokenCost},
 		{dst: &patched.SearchContextCostPerQuery, src: override.SearchContextCostPerQuery},
+		{dst: &patched.WebSearchCostPerRequest, src: override.WebSearchCostPerRequest},
+		{dst: &patched.InputCostPerQuery, src: override.InputCostPerQuery},
 		{dst: &patched.CodeInterpreterCostPerSession, src: override.CodeInterpreterCostPerSession},
 		{dst: &patched.CostPerRequest, src: override.CostPerRequest},
 		{dst: &patched.OutputCostPerImageLowQuality, src: override.OutputCostPerImageLowQuality},
@@ -558,10 +588,17 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.OutputCostPerImageAutoQuality, src: override.OutputCostPerImageAutoQuality},
 		{dst: &patched.OCRCostPerPage, src: override.OCRCostPerPage},
 		{dst: &patched.AnnotationCostPerPage, src: override.AnnotationCostPerPage},
+		{dst: &patched.OffPeakCostMultiplier, src: override.OffPeakCostMultiplier},
 	} {
 		if field.src != nil {
 			*field.dst = field.src
 		}
+	}
+	// PeakHours is a struct pointer, not a *float64, so it cannot ride the
+	// loop above. Same nil-means-inherit semantics: an override that sets only
+	// the multiplier keeps the datasheet's schedule.
+	if override.PeakHours != nil {
+		patched.PeakHours = override.PeakHours
 	}
 	return patched
 }

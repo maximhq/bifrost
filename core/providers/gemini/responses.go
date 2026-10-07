@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // thoughtSignatureFromEncryptedContent converts a Responses-API
@@ -150,7 +152,7 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 		if err != nil {
 			return nil, err
 		}
-		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
+		geminiReq.ExtraParams = responsesExtraParamsWithoutGenerationConfigKeys(bifrostReq.Params.ExtraParams)
 		includeServerSideToolInvocations := bifrostReq.Params.IncludeServerSideToolInvocations != nil && *bifrostReq.Params.IncludeServerSideToolInvocations
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
@@ -309,11 +311,18 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 
 				return bifrostResp
 			}
+
+			// Surface truncation/filtering per the Responses contract; without Status a
+			// MAX_TOKENS turn is indistinguishable from a complete one.
+			bifrostResp.Status, bifrostResp.IncompleteDetails = geminiResponsesStatus(stopReason)
 		}
 
 		outputMessages := convertGeminiCandidatesToResponsesOutput(response.Candidates)
 		if len(outputMessages) > 0 {
 			bifrostResp.Output = outputMessages
+		}
+		if bifrostResp.Status != nil && *bifrostResp.Status == schemas.ResponsesResponseStatusIncomplete {
+			schemas.MarkTruncatedOutputItem(bifrostResp.Output)
 		}
 
 		// safetyRatings, avgLogprobs, and the native responseId have no field in Bifrost's
@@ -801,24 +810,7 @@ func buildGeminiTerminalCandidate(
 		},
 	}
 
-	// Determine finish reason: prefer StopReason (Bifrost canonical), fall back to IncompleteDetails
-	if bifrostResp.StopReason != nil {
-		candidate.FinishReason = ConvertBifrostFinishReasonToGemini(*bifrostResp.StopReason)
-	} else if bifrostResp.IncompleteDetails != nil {
-		// Match the schema's incomplete-reason vocabulary; a literal
-		// "max_tokens" never occurs here, so truncations reported OTHER
-		// instead of MAX_TOKENS (issue #5978).
-		switch bifrostResp.IncompleteDetails.Reason {
-		case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
-			candidate.FinishReason = FinishReasonMaxTokens
-		case schemas.ResponsesResponseIncompleteReasonContentFilter:
-			candidate.FinishReason = FinishReasonSafety
-		default:
-			candidate.FinishReason = FinishReasonOther
-		}
-	} else {
-		candidate.FinishReason = FinishReasonStop
-	}
+	candidate.FinishReason = geminiFinishReasonFromResponses(bifrostResp)
 
 	// Attach grounding metadata if web search was used
 	if lastWebSearchCall != nil {
@@ -837,6 +829,33 @@ func buildGeminiTerminalCandidate(
 	}
 
 	return candidate
+}
+
+// geminiFinishReasonFromResponses picks the Gemini finish reason for a terminal
+// Responses object: StopReason (Bifrost canonical) first, then IncompleteDetails, so
+// a truncation reported only via incomplete_details still surfaces as MAX_TOKENS.
+func geminiFinishReasonFromResponses(resp *schemas.BifrostResponsesResponse) FinishReason {
+	if resp.StopReason != nil {
+		return ConvertBifrostFinishReasonToGemini(*resp.StopReason)
+	}
+	if resp.IncompleteDetails != nil {
+		// Match the schema's incomplete-reason vocabulary; a literal
+		// "max_tokens" never occurs here, so truncations reported OTHER
+		// instead of MAX_TOKENS (issue #5978).
+		switch resp.IncompleteDetails.Reason {
+		case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
+			return FinishReasonMaxTokens
+		case schemas.ResponsesResponseIncompleteReasonContentFilter:
+			return FinishReasonSafety
+		default:
+			return FinishReasonOther
+		}
+	}
+	// Incomplete with no reason at all: OTHER is Gemini's "unknown reason", not a clean STOP.
+	if resp.Status != nil && *resp.Status == schemas.ResponsesResponseStatusIncomplete {
+		return FinishReasonOther
+	}
+	return FinishReasonStop
 }
 
 // extractGeminiSafetyRatings recovers []*SafetyRating from ProviderExtraFields["safetyRatings"].
@@ -949,6 +968,8 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 	// Skip lifecycle events that don't have corresponding Gemini equivalents
 	switch bifrostResp.Type {
 	case schemas.ResponsesStreamResponseTypePing,
+		schemas.ResponsesStreamResponseTypeSafeguardsUpdate,
+		schemas.ResponsesStreamResponseTypeProviderRawEvent,
 		schemas.ResponsesStreamResponseTypeCreated,
 		schemas.ResponsesStreamResponseTypeInProgress,
 		schemas.ResponsesStreamResponseTypeReasoningSummaryPartAdded,
@@ -985,11 +1006,19 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		}
 
 	case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta:
-		if bifrostResp.Delta != nil && *bifrostResp.Delta != "" {
-			candidate.Content.Parts = append(candidate.Content.Parts, &Part{
-				Text:    *bifrostResp.Delta,
-				Thought: true,
-			})
+		// A reasoning delta carries text, a replay signature, or both -- Anthropic and
+		// Bedrock send the signature on an event of its own, with no text.
+		signature := thoughtSignatureFromEncryptedContent(bifrostResp.Signature)
+		hasText := bifrostResp.Delta != nil && *bifrostResp.Delta != ""
+		if hasText || signature != nil {
+			// Text and signature go on ONE part: reuniting them reproduces Gemini's own
+			// part rather than splitting one thought in two. A signature with no text is
+			// the documented signature-only shape (see TestSignatureOnlyPartKeepsEmptyText).
+			thoughtPart := &Part{Thought: true, ThoughtSignature: signature}
+			if hasText {
+				thoughtPart.Text = *bifrostResp.Delta
+			}
+			candidate.Content.Parts = append(candidate.Content.Parts, thoughtPart)
 		}
 
 	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
@@ -1127,7 +1156,7 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		// Already handled via ContentPartAdded
 		return nil
 
-	case schemas.ResponsesStreamResponseTypeCompleted:
+	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
 		if bifrostResp.Response != nil {
 			// Set model version if available
 			if bifrostResp.Response.Model != "" {
@@ -1149,12 +1178,7 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 				}
 			}
 
-			// Derive finish reason from StopReason when present
-			if bifrostResp.Response.StopReason != nil {
-				candidate.FinishReason = ConvertBifrostFinishReasonToGemini(*bifrostResp.Response.StopReason)
-			} else {
-				candidate.FinishReason = FinishReasonStop
-			}
+			candidate.FinishReason = geminiFinishReasonFromResponses(bifrostResp.Response)
 
 			// Attach grounding metadata if we buffered web search data
 			if state.HasWebSearch && state.WebSearchCall != nil {
@@ -1231,6 +1255,11 @@ type GeminiResponsesStreamState struct {
 	ToolCallNames       map[int]string // Maps output_index to tool name
 	ToolArgumentBuffers map[int]string // Accumulates tool arguments as JSON
 
+	// OutputItems maps output_index to the completed output item, for response.completed's
+	// Output array. Recorded as items close, since an item closed mid-stream is not
+	// reconstructible from the remaining state at finish time.
+	OutputItems map[int]*schemas.ResponsesMessage
+
 	// Response metadata
 	MessageID  *string // Generated message ID
 	Model      *string // Model version
@@ -1242,6 +1271,11 @@ type GeminiResponsesStreamState struct {
 	// event's ProviderExtraFields for the reverse (Bifrost -> Gemini) conversion to restore.
 	SafetyRatings []*SafetyRating
 	AvgLogprobs   float64
+
+	// Finish reason from a chunk that could not close the stream (no item opened yet);
+	// FinalizeGeminiResponsesStream reports it instead of an unknown finish.
+	PendingFinishReason  FinishReason
+	PendingFinishMessage string
 
 	// Content tracking
 	HasStartedText     bool            // Whether we've started text content
@@ -1275,6 +1309,7 @@ var geminiResponsesStreamStatePool = sync.Pool{
 			ToolCallIDs:          make(map[int]string),
 			ToolCallNames:        make(map[int]string),
 			ToolArgumentBuffers:  make(map[int]string),
+			OutputItems:          make(map[int]*schemas.ResponsesMessage),
 			CurrentOutputIndex:   0,
 			TextOutputIndex:      -1,
 			CreatedAt:            int(time.Now().Unix()),
@@ -1326,6 +1361,11 @@ func (state *GeminiResponsesStreamState) flush() {
 	} else {
 		clear(state.ToolArgumentBuffers)
 	}
+	if state.OutputItems == nil {
+		state.OutputItems = make(map[int]*schemas.ResponsesMessage)
+	} else {
+		clear(state.OutputItems)
+	}
 	state.CurrentOutputIndex = 0
 	state.TextOutputIndex = -1
 	state.MessageID = nil
@@ -1333,6 +1373,8 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.ResponseID = nil
 	state.SafetyRatings = nil
 	state.AvgLogprobs = 0
+	state.PendingFinishReason = ""
+	state.PendingFinishMessage = ""
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedCompleted = false
@@ -1370,18 +1412,45 @@ func (state *GeminiResponsesStreamState) generateItemID(suffix string, outputInd
 	return fmt.Sprintf("%s_%d", suffix, outputIndex)
 }
 
+// recordGeminiOutputItems captures every output_item.done in a batch of emitted events
+// onto the state, keyed by output index, so closeGeminiOpenItems can rebuild
+// response.completed's Output array.
+//
+// Recording happens as items close rather than at finish: a text item closed mid-stream
+// has already had its TextBuffer consumed, so it cannot be reconstructed later. Scanning
+// the emitted batch keeps this to two call sites instead of one at each of the eleven
+// output_item.done emitters, so a new emitter cannot silently forget to register itself.
+//
+// The item is copied so a later mutation of the emitted event cannot reach into the
+// terminal response.
+func recordGeminiOutputItems(state *GeminiResponsesStreamState, responses []*schemas.BifrostResponsesStreamResponse) {
+	if state == nil {
+		return
+	}
+	for _, response := range responses {
+		if response == nil || response.Type != schemas.ResponsesStreamResponseTypeOutputItemDone {
+			continue
+		}
+		if response.Item == nil || response.OutputIndex == nil {
+			continue
+		}
+		item := *response.Item
+		state.OutputItems[*response.OutputIndex] = &item
+	}
+}
+
 // ToBifrostResponsesStream converts a Gemini stream event to Bifrost Responses Stream responses
 func (response *GenerateContentResponse) ToBifrostResponsesStream(sequenceNumber int, state *GeminiResponsesStreamState) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError) {
+	responses, bifrostErr := response.toBifrostResponsesStream(sequenceNumber, state)
+	recordGeminiOutputItems(state, responses)
+	return responses, bifrostErr
+}
+
+func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber int, state *GeminiResponsesStreamState) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError) {
 	var responses []*schemas.BifrostResponsesStreamResponse
 
 	// First event: Emit response.created and response.in_progress
 	if !state.HasEmittedCreated {
-		// Generate message ID
-		if state.MessageID == nil {
-			messageID := fmt.Sprintf("msg_%d", state.CreatedAt)
-			state.MessageID = &messageID
-		}
-
 		// Set model and response ID from Gemini
 		if response.ModelVersion != "" && state.Model == nil {
 			state.Model = &response.ModelVersion
@@ -1389,36 +1458,7 @@ func (response *GenerateContentResponse) ToBifrostResponsesStream(sequenceNumber
 		if response.ResponseID != "" && state.ResponseID == nil {
 			state.ResponseID = &response.ResponseID
 		}
-
-		// Emit response.created
-		createdResp := &schemas.BifrostResponsesResponse{
-			ID:        state.MessageID,
-			CreatedAt: state.CreatedAt,
-		}
-		if state.Model != nil {
-			createdResp.Model = *state.Model
-		}
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeCreated,
-			SequenceNumber: sequenceNumber + len(responses),
-			Response:       createdResp,
-		})
-		state.HasEmittedCreated = true
-
-		// Emit response.in_progress
-		inProgressResp := &schemas.BifrostResponsesResponse{
-			ID:        state.MessageID,
-			CreatedAt: state.CreatedAt,
-		}
-		if state.Model != nil {
-			inProgressResp.Model = *state.Model
-		}
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeInProgress,
-			SequenceNumber: sequenceNumber + len(responses),
-			Response:       inProgressResp,
-		})
-		state.HasEmittedInProgress = true
+		responses = append(responses, state.startEvents(sequenceNumber)...)
 	}
 
 	// Process candidates
@@ -1430,6 +1470,11 @@ func (response *GenerateContentResponse) ToBifrostResponsesStream(sequenceNumber
 				partResponses := processGeminiPart(part, state, sequenceNumber+len(responses))
 				responses = append(responses, partResponses...)
 			}
+		}
+
+		if candidate.FinishReason != "" {
+			state.PendingFinishReason = candidate.FinishReason
+			state.PendingFinishMessage = candidate.FinishMessage
 		}
 
 		// safetyRatings/avgLogprobs only arrive on the terminal chunk, alongside finishReason.
@@ -1455,6 +1500,9 @@ func (response *GenerateContentResponse) ToBifrostResponsesStream(sequenceNumber
 				)
 				responses = append(responses, webSearchResponses...)
 			}
+
+			// Record output items emitted so far in this frame before closing open items and building response.completed
+			recordGeminiOutputItems(state, responses)
 
 			// Close any open items
 			closeResponses := closeGeminiOpenItems(state, candidate.GroundingMetadata, response.UsageMetadata, sequenceNumber+len(responses), candidate.FinishReason, candidate.FinishMessage)
@@ -1501,10 +1549,6 @@ func processGeminiPart(part *Part, state *GeminiResponsesStreamState, sequenceNu
 		// Result of a server-side call; carries no data Bifrost models beyond its signature.
 		responses = append(responses, processGeminiThoughtSignaturePart(part, state, sequenceNumber)...)
 
-	case part.ThoughtSignature != nil:
-		// Encrypted reasoning content (thoughtSignature)
-		responses = append(responses, processGeminiThoughtSignaturePart(part, state, sequenceNumber)...)
-
 	case part.FunctionResponse != nil:
 		// Function response (tool result)
 		responses = append(responses, processGeminiFunctionResponsePart(part, state, sequenceNumber)...)
@@ -1514,6 +1558,9 @@ func processGeminiPart(part *Part, state *GeminiResponsesStreamState, sequenceNu
 	case part.FileData != nil:
 		// File data
 		responses = append(responses, processGeminiFileDataPart(part, state, sequenceNumber)...)
+	case part.ThoughtSignature != nil:
+		// Encrypted reasoning content (thoughtSignature)
+		responses = append(responses, processGeminiThoughtSignaturePart(part, state, sequenceNumber)...)
 	}
 
 	return responses
@@ -1615,6 +1662,19 @@ func processGeminiThoughtPart(part *Part, state *GeminiResponsesStreamState, seq
 	itemID := state.generateItemID("reasoning", outputIndex)
 	state.ItemIDs[outputIndex] = itemID
 
+	// Gemini hands over each thought part whole, so this item holds one summary block, at
+	// index 0. summary_index is required on every reasoning_summary_* event.
+	summaryIndex := 0
+	thoughtText := part.Text
+
+	// Gemini 3 puts a thoughtSignature on the thought part itself and requires it back on
+	// replay -- there is a finish reason for its absence -- so it has to travel with the
+	// text rather than being dropped, exactly as the non-streaming converter carries it.
+	var thoughtSignature *string
+	if len(part.ThoughtSignature) > 0 {
+		thoughtSignature = schemas.Ptr(base64.StdEncoding.EncodeToString(part.ThoughtSignature))
+	}
+
 	// Emit output_item.added for reasoning
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
@@ -1625,6 +1685,9 @@ func processGeminiThoughtPart(part *Part, state *GeminiResponsesStreamState, seq
 			ID:   &itemID,
 			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary: []schemas.ResponsesReasoningSummary{},
+			},
 		},
 	})
 
@@ -1634,38 +1697,63 @@ func processGeminiThoughtPart(part *Part, state *GeminiResponsesStreamState, seq
 		SequenceNumber: sequenceNumber + len(responses),
 		OutputIndex:    &outputIndex,
 		ItemID:         &itemID,
+		SummaryIndex:   &summaryIndex,
+		Part: &schemas.ResponsesMessageContentBlock{
+			Type: schemas.ResponsesOutputMessageContentTypeSummaryText,
+			Text: schemas.Ptr(""),
+		},
 	})
 
 	// Emit reasoning summary text delta with the thought content
-	if part.Text != "" {
-		text := part.Text
+	if thoughtText != "" {
+		text := thoughtText
 		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 			Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
 			SequenceNumber: sequenceNumber + len(responses),
 			OutputIndex:    &outputIndex,
 			ItemID:         &itemID,
+			SummaryIndex:   &summaryIndex,
 			Delta:          &text,
+			Signature:      thoughtSignature,
 		})
 	}
 
-	// Emit reasoning summary text done
+	// Emit reasoning summary text done, carrying the summary text in full
+	doneText := thoughtText
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone,
 		SequenceNumber: sequenceNumber + len(responses),
 		OutputIndex:    &outputIndex,
 		ItemID:         &itemID,
+		SummaryIndex:   &summaryIndex,
+		Text:           &doneText,
 	})
 
 	// Emit reasoning summary part done
+	partText := thoughtText
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryPartDone,
 		SequenceNumber: sequenceNumber + len(responses),
 		OutputIndex:    &outputIndex,
 		ItemID:         &itemID,
+		SummaryIndex:   &summaryIndex,
+		Part: &schemas.ResponsesMessageContentBlock{
+			Type: schemas.ResponsesOutputMessageContentTypeSummaryText,
+			Text: &partText,
+		},
 	})
 
-	// Emit output_item.done for reasoning
+	// Emit output_item.done for reasoning. The summary block the events above described
+	// rides on the item too -- it is what summary_index resolves against, and the only
+	// place the thought text reaches response.completed's output.
 	statusCompleted := "completed"
+	itemSummary := []schemas.ResponsesReasoningSummary{}
+	if thoughtText != "" {
+		itemSummary = append(itemSummary, schemas.ResponsesReasoningSummary{
+			Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+			Text: thoughtText,
+		})
+	}
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
 		SequenceNumber: sequenceNumber + len(responses),
@@ -1677,7 +1765,8 @@ func processGeminiThoughtPart(part *Part, state *GeminiResponsesStreamState, seq
 			Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 			Status: &statusCompleted,
 			ResponsesReasoning: &schemas.ResponsesReasoning{
-				Summary: []schemas.ResponsesReasoningSummary{},
+				Summary:          itemSummary,
+				EncryptedContent: thoughtSignature,
 			},
 		},
 	})
@@ -1979,6 +2068,7 @@ func processGeminiInlineDataPart(part *Part, state *GeminiResponsesStreamState, 
 	if block == nil {
 		return responses
 	}
+	applyGeminiThoughtSignatureToContentBlock(block, part)
 
 	// Create new output item for the inline data
 	outputIndex := state.nextOutputIndex()
@@ -2057,6 +2147,7 @@ func processGeminiFileDataPart(part *Part, state *GeminiResponsesStreamState, se
 	if block == nil {
 		return responses
 	}
+	applyGeminiThoughtSignatureToContentBlock(block, part)
 
 	// Create new output item for the file data
 	outputIndex := state.nextOutputIndex()
@@ -2348,10 +2439,28 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 		applyGeminiSearchQueryResponsesUsage(bifrostUsage, groundingMetadata, *state.Model)
 	}
 
+	// Capture the items this function just closed, alongside those recorded as they
+	// closed mid-stream, so the Output array below covers the whole turn.
+	recordGeminiOutputItems(state, responses)
+
 	completedResp := &schemas.BifrostResponsesResponse{
 		ID:        state.MessageID,
 		CreatedAt: state.CreatedAt,
 		Usage:     bifrostUsage,
+	}
+
+	// Populate the Output array from the accumulated items. OpenAI's Responses
+	// contract requires response.completed to carry the full output, and clients
+	// (notably the OpenAI Agents SDK) build the finished turn from it rather than
+	// from the deltas. Walk output indices in order so the array matches the order
+	// the items were streamed in.
+	if len(state.OutputItems) > 0 {
+		completedResp.Output = make([]schemas.ResponsesMessage, 0, len(state.OutputItems))
+		for i := 0; i < state.CurrentOutputIndex; i++ {
+			if item, exists := state.OutputItems[i]; exists && item != nil {
+				completedResp.Output = append(completedResp.Output, *item)
+			}
+		}
 	}
 	if usage != nil {
 		if t := mapGeminiTrafficTypeToBifrost(usage.TrafficType); t != nil {
@@ -2374,7 +2483,21 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 		if isErrorFinishReason(finishReason) {
 			failedStatus := "failed"
 			completedResp.Status = &failedStatus
+		} else {
+			completedResp.Status, completedResp.IncompleteDetails = geminiResponsesStatus(stopReason)
 		}
+	} else {
+		// The upstream stream ended without ever sending a finishReason (e.g. thinking
+		// exhausted the budget and Gemini returned an empty body): not a clean finish.
+		// The reason is unknown, so incomplete_details stays nil.
+		completedResp.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+	}
+
+	// A truncated or filtered turn terminates with response.incomplete, not response.completed.
+	terminalType := schemas.ResponsesStreamResponseTypeCompleted
+	if completedResp.Status != nil && *completedResp.Status == schemas.ResponsesResponseStatusIncomplete {
+		terminalType = schemas.ResponsesStreamResponseTypeIncomplete
+		schemas.MarkTruncatedOutputItem(completedResp.Output)
 	}
 
 	// safetyRatings, avgLogprobs, and the native responseId have no field in Bifrost's
@@ -2395,7 +2518,7 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 	}
 
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeCompleted,
+		Type:           terminalType,
 		SequenceNumber: sequenceNumber + len(responses),
 		Response:       completedResp,
 	})
@@ -2405,9 +2528,48 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 	return responses
 }
 
-// FinalizeGeminiResponsesStream finalizes the stream by closing any open items and emitting completed event
+// startEvents emits response.created and response.in_progress, once per stream.
+func (state *GeminiResponsesStreamState) startEvents(sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
+	if state.HasEmittedCreated {
+		return nil
+	}
+	if state.MessageID == nil {
+		messageID := fmt.Sprintf("msg_%d", state.CreatedAt)
+		state.MessageID = &messageID
+	}
+	var responses []*schemas.BifrostResponsesStreamResponse
+	for _, eventType := range []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeCreated,
+		schemas.ResponsesStreamResponseTypeInProgress,
+	} {
+		resp := &schemas.BifrostResponsesResponse{
+			ID:        state.MessageID,
+			CreatedAt: state.CreatedAt,
+		}
+		if state.Model != nil {
+			resp.Model = *state.Model
+		}
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           eventType,
+			SequenceNumber: sequenceNumber + len(responses),
+			Response:       resp,
+		})
+	}
+	state.HasEmittedCreated = true
+	state.HasEmittedInProgress = true
+	return responses
+}
+
+// FinalizeGeminiResponsesStream finalizes the stream by closing any open items and emitting
+// the terminal event. It reports a finishReason seen on a chunk that could not close the
+// stream; if none ever arrived, the terminal is response.incomplete. A stream that produced
+// no chunk at all still opens with response.created / response.in_progress.
 func FinalizeGeminiResponsesStream(state *GeminiResponsesStreamState, usage *GenerateContentResponseUsageMetadata, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
-	return closeGeminiOpenItems(state, nil, usage, sequenceNumber, "", "")
+	var responses []*schemas.BifrostResponsesStreamResponse
+	if !state.HasEmittedCompleted {
+		responses = append(responses, state.startEvents(sequenceNumber)...)
+	}
+	return append(responses, closeGeminiOpenItems(state, nil, usage, sequenceNumber+len(responses), state.PendingFinishReason, state.PendingFinishMessage)...)
 }
 
 // convertGeminiSystemInstructionToResponsesMessage converts Gemini SystemInstruction to a system role message
@@ -2468,16 +2630,41 @@ func stripFunctionResponseMediaRefs(response json.RawMessage) string {
 		return string(response)
 	}
 
-	cleaned := []byte(response)
+	// Rebuild the object in one pass rather than deleting key by key: every
+	// providerUtils.DeleteJSONField reserialises the whole document, so N media refs
+	// cost N copies of it. Pinned by TestStripFunctionResponseMediaRefs_AllocationScaling.
+	//
+	// ForEach, not Map(): Map() returns a Go map whose iteration order is randomised,
+	// which would make the surviving keys come out in a different order on every call
+	// and break byte stability for anything downstream that hashes or caches this.
+	// ForEach walks the document in source order, so survivors keep their positions
+	// exactly as the per-key delete left them.
+	var rebuilt bytes.Buffer
+	rebuilt.Grow(len(response))
+	rebuilt.WriteByte('{')
 	remaining := 0
-	for key, value := range root.Map() {
+	dropped := 0
+	root.ForEach(func(key, value gjson.Result) bool {
 		if value.IsObject() && value.Get("$ref").Exists() {
-			if updated, err := providerUtils.DeleteJSONField(cleaned, key); err == nil {
-				cleaned = updated
-			}
-			continue
+			dropped++
+			return true
 		}
+		if remaining > 0 {
+			rebuilt.WriteByte(',')
+		}
+		rebuilt.WriteString(key.Raw)
+		rebuilt.WriteByte(':')
+		rebuilt.WriteString(value.Raw)
 		remaining++
+		return true
+	})
+	rebuilt.WriteByte('}')
+
+	// Nothing dropped means the per-key delete would have been a no-op, so hand back
+	// the caller's bytes untouched rather than a re-serialised equivalent.
+	cleaned := []byte(response)
+	if dropped > 0 {
+		cleaned = rebuilt.Bytes()
 	}
 
 	if remaining == 0 {
@@ -2598,6 +2785,7 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 						case p.FileData != nil:
 							block = convertGeminiFileDataToContentBlock(p.FileData)
 						}
+						applyGeminiPartMediaResolution(block, p.MediaResolution)
 						if block != nil {
 							blocks = append(blocks, *block)
 						}
@@ -2668,6 +2856,7 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 			case part.InlineData != nil:
 				// Handle inline data (images, audio, files)
 				block := convertGeminiInlineDataToContentBlock(part.InlineData)
+				applyGeminiPartMediaResolution(block, part.MediaResolution)
 				if block != nil {
 					msg := schemas.ResponsesMessage{
 						Role: role,
@@ -2682,6 +2871,7 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 			case part.FileData != nil:
 				// Handle file data (URI-based)
 				block := convertGeminiFileDataToContentBlock(part.FileData)
+				applyGeminiPartMediaResolution(block, part.MediaResolution)
 				if block != nil {
 					msg := schemas.ResponsesMessage{
 						Role: role,
@@ -2697,6 +2887,21 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 	}
 
 	return messages
+}
+
+// applyGeminiPartMediaResolution copies a part's per-part media resolution onto the content
+// block that part became. Only inlineData/fileData parts carry one: it describes how the input
+// media is tokenized, so a text, thought or functionCall part has nothing to resolve. Callers
+// therefore stamp only the media branches, mirroring the outbound guard in
+// convertContentBlockToGeminiPart.
+func applyGeminiPartMediaResolution(block *schemas.ResponsesMessageContentBlock, mr *PartMediaResolution) {
+	if block == nil || mr == nil {
+		return
+	}
+	block.MediaResolution = &schemas.MediaResolution{Level: mr.Level}
+	if mr.NumTokens != nil {
+		block.MediaResolution.NumTokens = new(*mr.NumTokens)
+	}
 }
 
 // convertGeminiInlineDataToContentBlock converts Gemini inline data (blob) to content block
@@ -2763,6 +2968,14 @@ func convertGeminiInlineDataToContentBlock(blob *Blob) *schemas.ResponsesMessage
 			Filename: &filename,
 		},
 	}
+}
+
+func applyGeminiThoughtSignatureToContentBlock(block *schemas.ResponsesMessageContentBlock, part *Part) {
+	if block == nil || part == nil || len(part.ThoughtSignature) == 0 {
+		return
+	}
+	signature := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
+	block.Signature = &signature
 }
 
 // convertGeminiFileDataToContentBlock converts Gemini file data (URI) to content block
@@ -3829,41 +4042,66 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		}
 	}
 
+	// Read-only: the request's ExtraParams are shared across retry and fallback
+	// attempts, and this conversion runs once per attempt. Deleting consumed keys
+	// here made the second attempt lose mediaResolution, topK, penalties and stop
+	// sequences. The consumed keys are filtered out when the outbound ExtraParams
+	// are built (see responsesExtraParamsWithoutGenerationConfigKeys).
 	if params.ExtraParams != nil {
 		if topK, ok := params.ExtraParams["top_k"]; ok {
-			delete(params.ExtraParams, "top_k")
 			if val, success := schemas.SafeExtractInt(topK); success {
 				config.TopK = schemas.Ptr(val)
 			}
 		}
 		if frequencyPenalty, ok := params.ExtraParams["frequency_penalty"]; ok {
-			delete(params.ExtraParams, "frequency_penalty")
 			if val, success := schemas.SafeExtractFloat64(frequencyPenalty); success {
 				config.FrequencyPenalty = schemas.Ptr(val)
 			}
 		}
 		if presencePenalty, ok := params.ExtraParams["presence_penalty"]; ok {
-			delete(params.ExtraParams, "presence_penalty")
 			if val, success := schemas.SafeExtractFloat64(presencePenalty); success {
 				config.PresencePenalty = schemas.Ptr(val)
 			}
 		}
 		if stopSequences, ok := params.ExtraParams["stop_sequences"]; ok {
-			delete(params.ExtraParams, "stop_sequences")
 			if val, success := schemas.SafeExtractStringSlice(stopSequences); success {
 				config.StopSequences = val
 			}
 		}
 		if mediaResolution, ok := params.ExtraParams["media_resolution"]; ok {
-			delete(params.ExtraParams, "media_resolution")
 			if val, success := schemas.SafeExtractString(mediaResolution); success {
 				config.MediaResolution = val
 			}
 		}
-
 	}
 
 	return config, nil
+}
+
+// responsesGenerationConfigExtraParamKeys lists the ExtraParams keys that
+// convertParamsToGenerationConfigResponses maps into generationConfig. They must
+// not also be merged verbatim into the wire body: Gemini rejects unknown
+// snake_case top-level fields.
+var responsesGenerationConfigExtraParamKeys = []string{
+	"top_k",
+	"frequency_penalty",
+	"presence_penalty",
+	"stop_sequences",
+	"media_resolution",
+}
+
+// responsesExtraParamsWithoutGenerationConfigKeys returns the ExtraParams to
+// forward on the wire, without the keys already mapped into generationConfig.
+// It always returns a copy (nil stays nil): the caller later removes
+// safety_settings and cached_content from the outbound map, and aliasing the
+// source map would drop those keys from the Bifrost request for the next
+// retry/fallback attempt.
+func responsesExtraParamsWithoutGenerationConfigKeys(extraParams map[string]interface{}) map[string]interface{} {
+	filtered := maps.Clone(extraParams)
+	maps.DeleteFunc(filtered, func(key string, _ interface{}) bool {
+		return slices.Contains(responsesGenerationConfigExtraParamKeys, key)
+	})
+	return filtered
 }
 
 // modelSupportsToolCombination reports whether a model can accept built-in tools (Google
@@ -3921,7 +4159,7 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerS
 	hasFunctionTool := false
 
 	for _, tool := range tools {
-		if tool.Type == schemas.ResponsesToolTypeFunction && tool.ResponsesToolFunction != nil && tool.Name != nil {
+		if tool.Type == schemas.ResponsesToolTypeFunction && tool.Name != nil {
 			hasFunctionTool = true
 			break
 		}
@@ -3931,27 +4169,27 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerS
 
 	for _, tool := range tools {
 		if tool.Type == schemas.ResponsesToolTypeFunction {
-			// Extract function information from ResponsesExtendedTool
-			if tool.ResponsesToolFunction != nil {
-				if tool.Name != nil && tool.ResponsesToolFunction != nil {
-					funcDecl := &FunctionDeclaration{
-						Name: *tool.Name,
-						Description: func() string {
-							if tool.Description != nil {
-								return *tool.Description
-							}
-							return ""
-						}(),
-					}
-					if tool.ResponsesToolFunction.Parameters != nil {
-						raw, err := providerUtils.MarshalSorted(tool.ResponsesToolFunction.Parameters)
-						if err != nil {
-							return []Tool{}, fmt.Errorf("marshal tool %q parameters: %w", *tool.Name, err)
+			// A function tool declared without a schema (e.g. an Anthropic tool with no
+			// input_schema) has a nil ResponsesToolFunction; it is still a callable tool, so it is
+			// declared by name and description alone, which Gemini accepts.
+			if tool.Name != nil {
+				funcDecl := &FunctionDeclaration{
+					Name: *tool.Name,
+					Description: func() string {
+						if tool.Description != nil {
+							return *tool.Description
 						}
-						funcDecl.ParametersJSONSchema = json.RawMessage(raw)
-					}
-					functionDeclarations = append(functionDeclarations, funcDecl)
+						return ""
+					}(),
 				}
+				if tool.ResponsesToolFunction != nil && tool.ResponsesToolFunction.Parameters != nil {
+					raw, err := providerUtils.MarshalSorted(tool.ResponsesToolFunction.Parameters)
+					if err != nil {
+						return []Tool{}, fmt.Errorf("marshal tool %q parameters: %w", *tool.Name, err)
+					}
+					funcDecl.ParametersJSONSchema = json.RawMessage(raw)
+				}
+				functionDeclarations = append(functionDeclarations, funcDecl)
 			}
 		}
 		if tool.Type == schemas.ResponsesToolTypeWebSearch && !dropGoogleSearch {
@@ -4074,6 +4312,127 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 // responses, where a tool returns images/files nested in functionResponse.parts). provider
 // distinguishes Vertex AI from the Gemini Developer API, which differ in how multimodal
 // function responses must be referenced (see the FunctionCallOutput handling below).
+// isAssistantPrefillMessage reports whether msg is a plain assistant text turn -- the shape
+// Claude Code sends as a prefill, and the only trailing model turn that is safe to drop.
+//
+// Reasoning items and function calls are deliberately excluded even though they also render as
+// role:"model". Gemini's thinking guide requires thought blocks to survive replay verbatim ("You
+// MUST always resend all thought blocks exactly as they were received from the model",
+// https://ai.google.dev/gemini-api/docs/thinking), and a trailing function call is a turn the
+// caller still owes a functionResponse for -- neither is a prefill, and silently deleting either
+// would corrupt the history rather than repair it.
+func isAssistantPrefillMessage(msg *schemas.ResponsesMessage) bool {
+	if msg.Role == nil || *msg.Role != schemas.ResponsesInputMessageRoleAssistant {
+		return false
+	}
+	if msg.ResponsesToolMessage != nil || msg.ResponsesReasoning != nil {
+		return false
+	}
+	if msg.Type != nil && *msg.Type != schemas.ResponsesMessageTypeMessage {
+		return false
+	}
+	// The type and the standalone-reasoning check above are not sufficient: a turn typed
+	// "message" can still smuggle thought history in through its content blocks. A
+	// reasoning block becomes Part{Thought: true}, and a plain TEXT block carrying a
+	// signature becomes Part.ThoughtSignature -- both in convertContentBlockToGeminiPart.
+	// Either one makes the turn history Gemini requires replayed verbatim, not a prefill.
+	//
+	// So the allowance is a whitelist rather than a blacklist: only unsigned text blocks
+	// qualify, and any other block type (reasoning, refusal, compaction, fallback, image,
+	// file) disqualifies the turn. Erring this way costs at most an untrimmed turn --
+	// which Gemini answers with the 400 the caller already had -- while the opposite
+	// error silently deletes history and is unrecoverable.
+	if msg.Content != nil {
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Signature != nil {
+				return false
+			}
+			switch block.Type {
+			case schemas.ResponsesInputMessageContentBlockTypeText,
+				schemas.ResponsesOutputMessageContentTypeText:
+			default:
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// trimTrailingAssistantPrefill drops the trailing run of assistant prefill turns so the
+// conversation ends on a user turn. Returns messages unchanged when the model declares prefill
+// support via the datasheet (ModelCaps.SupportsAssistantPrefill), which no Gemini model does
+// today -- the hook exists so a future model can opt back in without a code change.
+func trimTrailingAssistantPrefill(messages []schemas.ResponsesMessage, caps schemas.ModelCaps) []schemas.ResponsesMessage {
+	if caps.SupportsAssistantPrefill(false) {
+		return messages
+	}
+	trimmed := len(messages)
+	for trimmed > 0 && isAssistantPrefillMessage(&messages[trimmed-1]) {
+		trimmed--
+	}
+	return messages[:trimmed]
+}
+
+// inlineGeminiSystemReminder renders a mid-conversation role:"system" turn as a user turn wrapped
+// in the <system-reminder> envelope Claude Code uses, keeping it at its original position in the
+// conversation.
+//
+// Gemini has no message-level system role -- Content.role must be "user" or "model" -- so such a
+// turn has to become one or the other. The alternative, hoisting it into systemInstruction, is
+// what this replaces: systemInstruction renders ahead of every message, so a reminder that
+// arrives at turn 40 is presented as though it had been said at turn 0, and growing that block
+// mid-conversation invalidates the cached prefix behind it. This mirrors Bedrock's
+// convertBifrostSystemReminderToBedrockUserMessage and the native Anthropic fallback in
+// inlineMidConversationSystem, both of which measured the hoist as a prompt-cache collapse.
+//
+// The trade is the same one those converters accepted: a user turn is not the operator channel a
+// system turn is, so instruction adherence is weaker. The text originates from the caller's own
+// system role, so nothing attacker-controlled is laundered by the change.
+//
+// Returns nil when the message yields no text, so the caller skips the append.
+func inlineGeminiSystemReminder(msg *schemas.ResponsesMessage, allowedImageURLSchemes ...string) (*Content, error) {
+	if msg.Content == nil {
+		return nil, nil
+	}
+
+	wrap := func(text string) string {
+		return "<system-reminder>\n" + text + "\n</system-reminder>\n"
+	}
+
+	content := &Content{Role: "user"}
+	// ContentStr and ContentBlocks are mutually exclusive sources: whenever ContentStr is
+	// non-nil it is the sole source, matching convertBifrostSystemReminderToBedrockUserMessage.
+	// Gating the block loop on a non-EMPTY string instead would let a caller that set
+	// ContentStr to "" fall through and have its blocks read as well, emitting the reminder
+	// from a source the caller did not select.
+	if msg.Content.ContentStr != nil {
+		if *msg.Content.ContentStr != "" {
+			content.Parts = append(content.Parts, &Part{Text: wrap(*msg.Content.ContentStr)})
+		}
+	} else {
+		for _, block := range msg.Content.ContentBlocks {
+			part, err := convertContentBlockToGeminiPart(block, allowedImageURLSchemes...)
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert system message content block: %w", err)
+			}
+			if part == nil {
+				continue
+			}
+			// Only text is wrapped; a non-text block (image, file) has no envelope to carry and is
+			// passed through as-is rather than dropped.
+			if part.Text != "" {
+				part.Text = wrap(part.Text)
+			}
+			content.Parts = append(content.Parts, part)
+		}
+	}
+
+	if len(content.Parts) == 0 {
+		return nil, nil
+	}
+	return content, nil
+}
+
 func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage, model string, provider schemas.ModelProvider, allowedImageURLSchemes ...string) ([]Content, *Content, error) {
 	if len(allowedImageURLSchemes) == 0 {
 		allowedImageURLSchemes = defaultGeminiImageURLSchemes
@@ -4081,6 +4440,20 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 
 	isVertex := provider == schemas.Vertex
 	caps := schemas.ResolveModelCaps(provider, model)
+
+	// Gemini rejects a conversation whose final turn is role:"model" -- generateContent answers
+	// 400 with "Please ensure that multiturn requests ends with a user role or a function
+	// response". Content.role is documented as "Must be either 'user' or 'model'", and Gemini
+	// exposes no assistant-prefill mechanism to continue from, so a trailing model turn has no
+	// valid meaning on this wire at all.
+	//
+	// Claude Code routinely ends its message array with an assistant prefill, so /anthropic
+	// traffic pointed at Gemini/Vertex fails on every such turn. Bedrock trims the same shape in
+	// ToBedrockResponsesRequest; this is that trim for Gemini. The gate differs: Bedrock keys on
+	// IsAnthropicModelFamily because a Bedrock target may be a Claude model, which is never true
+	// here, so the default is a flat false and only a datasheet record can turn it back on.
+	messages = trimTrailingAssistantPrefill(messages, caps)
+
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(messages) == 1 && messages[0].Role != nil && (*messages[0].Role == schemas.ResponsesInputMessageRoleSystem || *messages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
 		content := Content{Role: "user"}
@@ -4127,8 +4500,33 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 	// Track consecutive function call output messages to group them for parallel function calling
 	// According to Gemini docs, all function responses must be in a single message
 	var pendingFunctionResponseParts []*Part
+	// CallIDs of the function calls emitted since the last flush, in order. Vertex strips
+	// FunctionCall.ID / FunctionResponse.ID and pairs results with calls by position, so each
+	// batch of responses is reordered to follow the calls before it is flushed.
+	var pendingFunctionCallIDs []string
+	flushFunctionResponses := func() {
+		contents = append(contents, Content{
+			Parts: orderFunctionResponsesByCallID(pendingFunctionResponseParts, pendingFunctionCallIDs),
+			Role:  "user", // Function responses use "user" role in Gemini
+		})
+		pendingFunctionResponseParts = nil
+		pendingFunctionCallIDs = nil
+	}
+
+	// Set once the leading system prompt ends (first non-system message). Only the leading run is
+	// hoisted into systemInstruction; a system turn that arrives after the conversation has
+	// started is inlined in place instead -- see inlineGeminiSystemReminder.
+	seenNonSystemMessage := false
 
 	for i, msg := range messages {
+		isSystemMessage := msg.Role != nil &&
+			(*msg.Role == schemas.ResponsesInputMessageRoleSystem || *msg.Role == schemas.ResponsesInputMessageRoleDeveloper)
+		// Recorded before the branches below, all of which `continue`, so a reasoning or tool
+		// item still closes the leading system run.
+		if !isSystemMessage {
+			seenNonSystemMessage = true
+		}
+
 		// Standalone reasoning messages carry the model's thought blocks. Their
 		// SIGNATURE is picked up by the look-ahead on the preceding function
 		// call, so only the text is emitted here - sending the signature again
@@ -4171,8 +4569,27 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 			continue
 		}
 
-		// Handle system messages separately
-		if msg.Role != nil && (*msg.Role == schemas.ResponsesInputMessageRoleSystem || *msg.Role == schemas.ResponsesInputMessageRoleDeveloper) {
+		// A mid-conversation system turn is inlined at its original position as a user turn.
+		// Hoisting it would move it ahead of the whole conversation and invalidate the cached
+		// prefix behind it.
+		if isSystemMessage && seenNonSystemMessage {
+			inlined, err := inlineGeminiSystemReminder(&msg, allowedImageURLSchemes...)
+			if err != nil {
+				return nil, nil, err
+			}
+			if inlined != nil {
+				// Flush first: the reminder is a user turn of its own and must not be filed
+				// behind function responses that precede it.
+				if len(pendingFunctionResponseParts) > 0 {
+					flushFunctionResponses()
+				}
+				contents = append(contents, *inlined)
+			}
+			continue
+		}
+
+		// Handle the leading system prompt separately
+		if isSystemMessage {
 			if systemInstruction == nil {
 				systemInstruction = &Content{}
 			}
@@ -4206,11 +4623,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 		// If we have pending function responses and current message is NOT a function output,
 		// flush the pending responses as a single Content (for parallel function calling)
 		if len(pendingFunctionResponseParts) > 0 && !isFunctionOutput {
-			contents = append(contents, Content{
-				Parts: pendingFunctionResponseParts,
-				Role:  "user", // Function responses use "user" role in Gemini
-			})
-			pendingFunctionResponseParts = nil
+			flushFunctionResponses()
 		}
 
 		// Handle regular messages
@@ -4267,6 +4680,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						}
 						// Keep the full CallID as-is (don't strip thought signature)
 						part.FunctionCall.ID = *msg.ResponsesToolMessage.CallID
+						pendingFunctionCallIDs = append(pendingFunctionCallIDs, part.FunctionCall.ID)
 					}
 					if thoughtSig != "" {
 						var err error
@@ -4309,12 +4723,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 
 					// Extract output from ResponsesToolMessage.Output
 					if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
-						output := *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
-						if json.Valid([]byte(output)) {
-							responseMap["output"] = json.RawMessage(output)
-						} else {
-							responseMap["output"] = output
-						}
+						responseMap["output"] = geminiFunctionOutputValue(*msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr)
 					} else if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
 						// Handle structured output blocks (e.g. from the OpenAI/Anthropic Responses API
 						// format where output is an array of content blocks like
@@ -4361,12 +4770,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 							}
 						}
 						if len(textParts) > 0 {
-							combined := strings.Join(textParts, "\n")
-							if json.Valid([]byte(combined)) {
-								responseMap["output"] = json.RawMessage(combined)
-							} else {
-								responseMap["output"] = combined
-							}
+							responseMap["output"] = geminiFunctionOutputValue(strings.Join(textParts, "\n"))
 						} else if len(funcMediaParts) > 0 {
 							// Media-only result: the content lives in parts. We intentionally emit
 							// {"output": ""} rather than leaving response as {} — an empty object would
@@ -4377,12 +4781,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						}
 					} else if msg.Content != nil && msg.Content.ContentStr != nil {
 						// Fallback to Content.ContentStr for backward compatibility
-						output := *msg.Content.ContentStr
-						if json.Valid([]byte(output)) {
-							responseMap["output"] = json.RawMessage(output)
-						} else {
-							responseMap["output"] = output
-						}
+						responseMap["output"] = geminiFunctionOutputValue(*msg.Content.ContentStr)
 					}
 
 					// Prefer the declared tool name; fallback to callIDToName lookup, then raw CallID
@@ -4408,11 +4807,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 
 					// If this is the last message, flush pending responses
 					if i == len(messages)-1 && len(pendingFunctionResponseParts) > 0 {
-						contents = append(contents, Content{
-							Parts: pendingFunctionResponseParts,
-							Role:  "user",
-						})
-						pendingFunctionResponseParts = nil
+						flushFunctionResponses()
 					}
 
 					continue // Skip normal content handling
@@ -4452,8 +4847,63 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 	return contents, systemInstruction, nil
 }
 
-// convertContentBlockToGeminiPart converts a content block to Gemini part
+// orderFunctionResponsesByCallID returns the function response parts reordered to follow the
+// order of callIDs (the CallIDs of the preceding function calls). Vertex drops the ids and pairs
+// responses with calls by position, so results returned out of call order would be mis-paired.
+// The sort is stable: responses whose ID matches no call keep their relative order at the end.
+func orderFunctionResponsesByCallID(parts []*Part, callIDs []string) []*Part {
+	if len(parts) < 2 || len(callIDs) == 0 {
+		return parts
+	}
+	rank := make(map[string]int, len(callIDs))
+	for i, id := range callIDs {
+		if _, seen := rank[id]; !seen {
+			rank[id] = i
+		}
+	}
+	rankOf := func(p *Part) int {
+		if p != nil && p.FunctionResponse != nil {
+			if r, ok := rank[p.FunctionResponse.ID]; ok {
+				return r
+			}
+		}
+		return len(callIDs)
+	}
+	ordered := slices.Clone(parts)
+	slices.SortStableFunc(ordered, func(a, b *Part) int { return rankOf(a) - rankOf(b) })
+	return ordered
+}
+
+// convertContentBlockToGeminiPart converts a content block to Gemini part, re-attaching any
+// per-part media resolution the block carries.
 func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock, allowedImageURLSchemes ...string) (*Part, error) {
+	part, err := buildGeminiPartFromContentBlock(block, allowedImageURLSchemes...)
+	if err != nil || part == nil {
+		return part, err
+	}
+	if block.Signature != nil && len(part.ThoughtSignature) == 0 {
+		if signature, decodeErr := base64.StdEncoding.DecodeString(*block.Signature); decodeErr == nil {
+			part.ThoughtSignature = signature
+		}
+	}
+
+	// Only a media part can carry a resolution. The text, reasoning, refusal and compaction
+	// branches below all produce text-only parts, and Gemini rejects mediaResolution there, so
+	// the guard is on what the part became rather than on the block type it came from.
+	// The value is rebuilt rather than aliased: the same Bifrost request is converted once per
+	// retry and per fallback attempt, so no attempt may hand a later one a shared pointer.
+	if block.MediaResolution != nil && (part.InlineData != nil || part.FileData != nil) {
+		part.MediaResolution = &PartMediaResolution{Level: block.MediaResolution.Level}
+		if n := block.MediaResolution.NumTokens; n != nil {
+			part.MediaResolution.NumTokens = new(*n)
+		}
+	}
+
+	return part, nil
+}
+
+// buildGeminiPartFromContentBlock maps a content block onto the matching Gemini part shape.
+func buildGeminiPartFromContentBlock(block schemas.ResponsesMessageContentBlock, allowedImageURLSchemes ...string) (*Part, error) {
 	if len(allowedImageURLSchemes) == 0 {
 		allowedImageURLSchemes = defaultGeminiImageURLSchemes
 	}

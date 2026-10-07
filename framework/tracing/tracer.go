@@ -3,6 +3,7 @@ package tracing
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,28 +15,51 @@ import (
 )
 
 const (
-	// maxConcurrentInjectsPerPlugin bounds how many traces may sit inside a single
-	// observability connector's Inject at once. A connector pointed at a wrong or
-	// black-holed endpoint blocks on network I/O while pinning a full trace snapshot;
-	// uncapped that is one goroutine and one snapshot per request, whose heap and
-	// scheduler pressure starves the rest of the process — notably the logging
-	// plugin's single DB batch writer, whose queue then drops rows silently.
+	// defaultSemaphoreSize bounds how many traces may sit inside a single observability
+	// connector's Inject at once when its PluginConfig doesn't set semaphore_size. A
+	// connector pointed at a wrong or black-holed endpoint blocks on network I/O while
+	// pinning a full trace snapshot; uncapped that is one goroutine and one snapshot per
+	// request, whose heap and scheduler pressure starves the rest of the process —
+	// notably the logging plugin's single DB batch writer, whose queue then drops rows
+	// silently.
 	// Each connector gets its own budget so a stalled one cannot crowd out a healthy one.
-	maxConcurrentInjectsPerPlugin = 1024
+	defaultSemaphoreSize = 10000
+
+	// defaultInjectTimeout bounds a single Inject call when its PluginConfig doesn't set
+	// inject_timeout. Paired with the per-plugin semaphore, this is what actually
+	// releases a slot when a connector hangs — the semaphore alone only limits how many
+	// hung calls can pile up, not how long each does.
+	defaultInjectTimeout = 5 * time.Second
 
 	// flushStopTimeout bounds how long Stop waits for in-flight trace exports, so a
 	// hung collector cannot block shutdown or a config reload.
 	flushStopTimeout = 10 * time.Second
 )
 
-// obsPluginSlot pairs an observability plugin with its own concurrency budget and
-// drop counter. Isolating the budget per connector is what keeps a misconfigured
-// exporter from consuming the capacity that healthy connectors need.
+// obsPluginSlot pairs an observability plugin with its own concurrency budget, inject
+// timeout, and drop counter. Isolating the budget per connector is what keeps a
+// misconfigured exporter from consuming the capacity that healthy connectors need.
 type obsPluginSlot struct {
-	plugin  schemas.ObservabilityPlugin
-	name    string
-	sem     chan struct{}
-	dropped atomic.Int64
+	plugin        schemas.ObservabilityPlugin
+	name          string
+	sem           chan struct{}
+	injectTimeout time.Duration
+	dropped       atomic.Int64
+}
+
+// resolveObservabilityLimits applies the tracer defaults to whatever limits a plugin's
+// generic PluginConfig declared (see schemas.PluginConfig.SemaphoreSize/InjectTimeout).
+// A zero field means "unset", not "zero" — it falls back to the default rather than
+// producing a zero-size semaphore or an immediately-expiring timeout.
+func resolveObservabilityLimits(limits schemas.ObservabilityLimits) (semSize int, injectTimeout time.Duration) {
+	semSize, injectTimeout = defaultSemaphoreSize, defaultInjectTimeout
+	if limits.SemaphoreSize > 0 {
+		semSize = limits.SemaphoreSize
+	}
+	if limits.InjectTimeout > 0 {
+		injectTimeout = limits.InjectTimeout
+	}
+	return semSize, injectTimeout
 }
 
 // Tracer implements schemas.Tracer using TraceStore.
@@ -49,26 +73,38 @@ type Tracer struct {
 	logger            schemas.Logger
 	obsPlugins        atomic.Pointer[[]*obsPluginSlot]
 	cachedHdrPatterns atomic.Pointer[[]string]
+	cachedDemand      atomic.Pointer[TraceDemand]
 	flushWG           sync.WaitGroup
+	// Trace IDs whose completion the HTTP side must skip because a worker still owns them.
+	deferredCompletions sync.Map
 }
 
 // NewTracer creates a new Tracer wrapping the given TraceStore.
 // The accumulator is embedded for centralized streaming chunk accumulation.
 // The pricingManager is used for cost calculation in span attributes.
 func NewTracer(store *TraceStore, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) *Tracer {
-	return &Tracer{
+	t := &Tracer{
 		store:          store,
 		accumulator:    streaming.NewAccumulator(pricingManager, logger),
 		pricingManager: pricingManager,
 		logger:         logger,
 		obsPlugins:     atomic.Pointer[[]*obsPluginSlot]{},
 	}
+	// The store sweeps expired traces but cannot export them; route them here so a
+	// completion that never arrived still reaches the connectors.
+	if store != nil {
+		store.onExpire = t.FlushExpiredTrace
+	}
+	return t
 }
 
-// SetObservabilityPlugins updates the plugins that receive completed traces.
+// SetObservabilityPlugins updates the plugins that receive completed traces. limits is
+// keyed by plugin name (GetName()), sourced from each plugin's generic PluginConfig
+// (schemas.PluginConfig.SemaphoreSize/InjectTimeout) — a plugin absent from the map, or
+// with unset fields, gets the tracer's defaults.
 // It also precomputes the deduplicated, normalized union of request-header patterns
 // requested by those plugins so the per-request capture path is a single atomic load.
-func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugin) {
+func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugin, limits map[string]schemas.ObservabilityLimits) {
 	if t == nil {
 		return
 	}
@@ -86,10 +122,12 @@ func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugi
 			continue
 		}
 		seenPlugins[name] = struct{}{}
+		semSize, injectTimeout := resolveObservabilityLimits(limits[name])
 		slots = append(slots, &obsPluginSlot{
-			plugin: plugin,
-			name:   name,
-			sem:    make(chan struct{}, maxConcurrentInjectsPerPlugin),
+			plugin:        plugin,
+			name:          name,
+			sem:           make(chan struct{}, semSize),
+			injectTimeout: injectTimeout,
 		})
 	}
 	t.obsPlugins.Store(&slots)
@@ -111,7 +149,90 @@ func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugi
 		}
 	}
 	t.cachedHdrPatterns.Store(&patterns)
+
+	demand := TraceDemand{Any: len(slots) > 0}
+	for _, plugin := range obsPlugins {
+		if plugin == nil {
+			continue
+		}
+		// Unstated demand is full demand: a connector that says nothing is
+		// assumed to read everything, so adding this cannot silently starve one.
+		if c, ok := plugin.(interface{ ConsumesContent() bool }); !ok || c.ConsumesContent() {
+			demand.Content = true
+		}
+		// Plugin spans reach a connector either as exported spans or through the
+		// overhead breakdown. A connector that declares neither is assumed to
+		// export them.
+		if c, ok := plugin.(interface{ ConsumesPluginSpans() bool }); !ok || c.ConsumesPluginSpans() {
+			demand.PluginSpans = true
+		} else if c, ok := plugin.(schemas.OverheadSpanConsumer); ok && c.ConsumesOverheadSpans() {
+			demand.PluginSpans = true
+		}
+		if c, ok := plugin.(schemas.RawPayloadConsumer); ok && c.ConsumesRawPayloads() {
+			demand.RawPayloads = true
+		}
+	}
+	t.cachedDemand.Store(&demand)
 }
+
+// spanBuildOptions derives the per-request build options from connector demand,
+// so message content is summarized and marshalled only when something reads it.
+func (t *Tracer) spanBuildOptions() SpanBuildOptions {
+	d := t.Demand()
+	return SpanBuildOptions{WantContent: d.Content, WantRawPayloads: d.RawPayloads}
+}
+
+// wantsSpanKind reports whether any connector consumes spans of this kind. A
+// plugin hook span is ~12 of the 14 spans a request creates and exists only to
+// be exported, so it is not worth creating when nothing reads it.
+//
+// Callers already handle the ("", nil) return that an absent trace produces, so
+// skipping here needs no change at the call sites.
+func (t *Tracer) wantsSpanKind(kind schemas.SpanKind) bool {
+	if kind != schemas.SpanKindPlugin {
+		return true
+	}
+	return t.Demand().PluginSpans
+}
+
+// TraceDemand is the union of what the attached connectors read. It is computed
+// once at registration and loaded atomically, so the per-request path never
+// rebuilds it.
+//
+// Producing what nobody consumes is the single largest cost in the tracing path:
+// with no connector attached the trace was still deep-cloned for export, and
+// message content was still summarized and marshalled.
+type TraceDemand struct {
+	// Any is false when no observability plugin is attached at all.
+	Any bool
+	// Content is true when at least one connector reads message content.
+	Content bool
+	// PluginSpans is true when at least one connector exports plugin hook spans
+	// or decomposes them into an overhead breakdown.
+	PluginSpans bool
+	// RawPayloads is true only when a connector explicitly asks; unstated means false.
+	RawPayloads bool
+}
+
+// Demand returns the connector demand union.
+//
+// Before SetObservabilityPlugins has run, demand is unknown rather than absent,
+// so full demand is returned: a request in flight during boot must not lose
+// attributes or spans that a connector registered a moment later would have
+// wanted. Declaring an empty plugin set is what expresses "nothing is listening".
+func (t *Tracer) Demand() TraceDemand {
+	if t == nil {
+		return fullTraceDemand
+	}
+	if d := t.cachedDemand.Load(); d != nil {
+		return *d
+	}
+	return fullTraceDemand
+}
+
+// fullTraceDemand is the fail-safe: produce everything when demand is unknown.
+// RawPayloads stays false: opt-in, so "unknown" cannot mean "build them".
+var fullTraceDemand = TraceDemand{Any: true, Content: true, PluginSpans: true}
 
 // ShouldCaptureRequestHeaders reports whether any observability plugin has opted into
 // request-header capture (by implementing RequestHeaderPatterns). Derived from the cached
@@ -141,7 +262,10 @@ func (t *Tracer) SetTraceRequestHeaders(traceID string, headers map[string]strin
 		return
 	}
 	patterns := t.CollectRequestHeaderPatterns()
-	matched := schemas.FilterHeaders(headers, patterns)
+	// Redact credential-bearing headers once, here at the single capture point, so
+	// every connector reading trace.RequestHeaders (Datadog, OTEL, BigQuery, Kafka,
+	// Pub/Sub) exports redacted values even under a broad pattern like "*".
+	matched := schemas.RedactSensitiveHeaders(schemas.FilterHeaders(headers, patterns))
 	if len(matched) == 0 {
 		return
 	}
@@ -191,10 +315,15 @@ func (t *Tracer) ReleaseTrace(trace *schemas.Trace) {
 }
 
 // spanHandle is the concrete implementation of schemas.SpanHandle for Tracer.
-// It contains the trace and span IDs needed to reference the span in the store.
+// It carries the trace and span IDs plus a direct pointer to the span. The pointer
+// lets EndSpan/SetAttribute/SpanFromHandle skip the GetTrace + linear GetSpan lookup
+// on the hot path (a request creates dozens of spans, and the scan was O(n) per end,
+// i.e. O(n^2) per request). The ID fields remain as a fallback for handles created
+// without a span pointer, and so the handle stays valid if the pointer is ever nil.
 type spanHandle struct {
 	traceID string
 	spanID  string
+	span    *schemas.Span
 }
 
 // StartSpan creates a new span as a child of the current span in context.
@@ -224,6 +353,9 @@ func (t *Tracer) StartSpanID(ctx context.Context, name string, kind schemas.Span
 	if traceID == "" {
 		return "", nil
 	}
+	if !t.wantsSpanKind(kind) {
+		return "", nil
+	}
 
 	// Get parent span ID from context - first check for existing span in this service
 	parentSpanID, _ := ctx.Value(schemas.BifrostContextKeySpanID).(string)
@@ -243,13 +375,20 @@ func (t *Tracer) StartSpanID(ctx context.Context, name string, kind schemas.Span
 	if span == nil {
 		return "", nil
 	}
-	return span.SpanID, &spanHandle{traceID: traceID, spanID: span.SpanID}
+	return span.SpanID, &spanHandle{traceID: traceID, spanID: span.SpanID, span: span}
 }
 
 // EndSpan completes a span with the given status and message.
 func (t *Tracer) EndSpan(handle schemas.SpanHandle, status schemas.SpanStatus, statusMsg string) {
 	h, ok := handle.(*spanHandle)
 	if !ok || h == nil {
+		return
+	}
+	// Fast path: end via the cached pointer, skipping the trace + linear span lookup.
+	// EndIfMatch guards against a pooled span that ReleaseTrace/TTL cleanup recycled
+	// out from under this handle; on a miss we fall back to the by-ID lookup, which
+	// no-ops safely when the trace is gone.
+	if h.span != nil && h.span.EndIfMatch(h.spanID, status, statusMsg) {
 		return
 	}
 	t.store.EndSpan(h.traceID, h.spanID, status, statusMsg, nil)
@@ -259,6 +398,12 @@ func (t *Tracer) EndSpan(handle schemas.SpanHandle, status schemas.SpanStatus, s
 func (t *Tracer) SetAttribute(handle schemas.SpanHandle, key string, value any) {
 	h, ok := handle.(*spanHandle)
 	if !ok || h == nil {
+		return
+	}
+	// Fast path: the cached pointer avoids the trace + linear span lookup.
+	// SetAttributeIfMatch guards against a recycled pooled span; on a miss we fall
+	// back to the by-ID lookup, which no-ops safely when the trace is gone.
+	if h.span != nil && h.span.SetAttributeIfMatch(h.spanID, key, value) {
 		return
 	}
 	trace := t.store.GetTrace(h.traceID)
@@ -278,6 +423,12 @@ func (t *Tracer) SpanFromHandle(handle schemas.SpanHandle) *schemas.Span {
 	h, ok := handle.(*spanHandle)
 	if !ok || h == nil {
 		return nil
+	}
+	// Return the cached pointer only if it still refers to this handle's span;
+	// MatchesID rejects a span the pool recycled to another trace, falling back to
+	// the by-ID lookup (nil when the trace is gone).
+	if h.span != nil && h.span.MatchesID(h.spanID) {
+		return h.span
 	}
 	trace := t.store.GetTrace(h.traceID)
 	if trace == nil {
@@ -300,12 +451,16 @@ func (t *Tracer) GetSpanHandleByID(traceID string, spanID *string) schemas.SpanH
 		if trace.RootSpan == nil {
 			return nil
 		}
-		return &spanHandle{traceID: traceID, spanID: trace.RootSpan.SpanID}
+		return &spanHandle{traceID: traceID, spanID: trace.RootSpan.SpanID, span: trace.RootSpan}
 	}
-	if *spanID == "" || trace.GetSpan(*spanID) == nil {
+	if *spanID == "" {
 		return nil
 	}
-	return &spanHandle{traceID: traceID, spanID: *spanID}
+	span := trace.GetSpan(*spanID)
+	if span == nil {
+		return nil
+	}
+	return &spanHandle{traceID: traceID, spanID: *spanID, span: span}
 }
 
 // AddEvent adds a timestamped event to the span identified by the handle.
@@ -343,8 +498,20 @@ func (t *Tracer) PopulateLLMRequestAttributes(handle schemas.SpanHandle, req *sc
 		return
 	}
 
-	attrs := PopulateRequestAttributes(req)
-	span.SetAttributes(attrs)
+	// The typed record is the source of truth; the attribute map is rendered
+	// from it so both paths cannot drift. Connectors read span.LLM directly as
+	// they migrate off the map.
+	llm := BuildLLMSpanData(req, nil, nil, t.spanBuildOptions())
+	span.LLM = llm
+	// Rendering the record into the attribute map is only worth doing when a
+	// connector will read it; it is the single largest allocation left on the
+	// path. The typed record is always attached, so a connector registered
+	// mid-flight still finds the data, just not the map form.
+	var attrs map[string]any
+	if t.Demand().Any {
+		attrs = llm.Attributes()
+		span.SetAttributes(attrs)
+	}
 
 	// Propagate input messages and request model to root span so observability backends (e.g. Langfuse)
 	// can display Input and model name at the top-level trace without requiring users to drill into llm.call.
@@ -390,8 +557,30 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	if span == nil {
 		return
 	}
-	respAttrs := PopulateResponseAttributes(resp)
+	// Hold the payload rather than re-reading span.LLM below: ReleaseTrace resets a
+	// pooled span mid-call, nils the field, and the later derefs would panic.
+	llm := span.EnsureLLMIfMatch(h.spanID)
+	if llm == nil {
+		return
+	}
+	ApplyResponse(llm, resp, err, t.spanBuildOptions())
+	var respAttrs map[string]any
+	if t.Demand().Any {
+		respAttrs = llm.ResponseAttributes()
+	}
+	// A cancelled stream arrives here with an accumulated response whose usage
+	// is missing the final chunk, so its aggregate token counts read zero. When
+	// the error carries the authoritative BilledUsage, drop those zeros from
+	// the response side: PopulateErrorAttributes gates its own emissions on
+	// > 0, so a zero stamped here would survive the merge and turn "not
+	// recorded" into a false zero on the span.
+	billed := err != nil && err.ExtraFields.BilledUsage != nil
 	for k, v := range respAttrs {
+		if billed && (k == schemas.AttrInputTokens || k == schemas.AttrOutputTokens || k == schemas.AttrTotalTokens) {
+			if n, ok := v.(int); ok && n == 0 {
+				continue
+			}
+		}
 		if k == schemas.AttrFinishReasons {
 			// Spec: gen_ai.response.finish_reasons (string[]) belongs on the GenAI (llm.call) span.
 			span.SetAttribute(schemas.AttrFinishReasons, v)
@@ -405,6 +594,23 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	}
 	span.SetAttributes(PopulateErrorAttributes(err))
 
+	// Not in PopulateErrorAttributes: that sees only the error, whose
+	// ExtraFields.RequestType is empty until the request settles.
+	// Prefer the typed record; fall back to the attribute for spans whose request
+	// side was never populated (a failure before dispatch).
+	requestType := string(llm.RequestType)
+	if requestType == "" {
+		if raw, ok := span.GetAttribute(schemas.AttrLegacyRequestType); ok {
+			requestType, _ = raw.(string)
+		}
+	}
+	if requestType != "" {
+		if errorType := schemas.ClassifyErrorType(err, schemas.RequestType(requestType)); errorType != "" {
+			// Plain string: readers assert .(string); a defined type is dropped.
+			span.SetAttribute(schemas.AttrBifrostErrorType, string(errorType))
+		}
+	}
+
 	// Enrichment dimensions derivable only post-response, attached here so every
 	// connector reads them from one place (see core/schemas EnrichmentDims):
 	//   - alias: the originally requested model when it differs from the resolved
@@ -417,14 +623,67 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 			span.SetAttribute(schemas.AttrBifrostAlias, ef.OriginalModelRequested)
 		}
 	}
+	// Recorded on the typed dimensions as well as the attribute keys, so a
+	// connector reading span.Enrichment sees the same post-response values.
 	if engines, ok := ctx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string); ok && len(engines) > 0 {
+		span.EnsureEnrichment().RoutingEnginesUsed = engines
 		span.SetAttribute(schemas.AttrBifrostRoutingEngineUsed, strings.Join(engines, ","))
 	}
+	if tier, ok := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier).(string); ok && tier != "" {
+		span.EnsureEnrichment().ComplexityTier = tier
+		span.SetAttribute(schemas.AttrBifrostComplexityTier, tier)
+	}
+	if mechanism, ok := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism).(string); ok && mechanism != "" {
+		span.EnsureEnrichment().ComplexityMechanism = mechanism
+		span.SetAttribute(schemas.AttrBifrostComplexityMechanism, mechanism)
+	}
+	if score, ok := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityScore).(float64); ok {
+		span.EnsureEnrichment().ComplexityScore = &score
+		span.SetAttribute(schemas.AttrBifrostComplexityScore, score)
+	}
 
-	// Populate cost attribute using pricing manager
-	if t.pricingManager != nil && resp != nil {
-		cost := t.pricingManager.CalculateCost(resp, modelcatalog.PricingLookupScopesFromContext(ctx, string(resp.GetExtraFields().Provider)))
-		span.SetAttribute(schemas.AttrUsageCost, cost)
+	// Populate cost using the pricing manager. BilledUsage wins when it is
+	// present: it is what the provider actually charged for a failed or cancelled
+	// turn. A cancelled stream still yields a non-nil accumulated response (see
+	// providers/utils, which passes both accumulatedResp and err), but that
+	// response is missing the final usage chunk, so pricing it would report 0.
+	priceable := t.pricingManager != nil && t.Demand().Any
+	if priceable && err != nil && err.ExtraFields.BilledUsage != nil {
+		// Core calls BifrostError.PopulateExtraFields around RunPostLLMHooks, so
+		// Provider / RequestType / the model fields are always set here.
+		ef := err.ExtraFields
+		model := ef.ResolvedModelUsed
+		if model == "" {
+			model = ef.OriginalModelRequested
+		}
+		cost := t.pricingManager.CalculateCostForUsage(
+			ef.BilledUsage,
+			ef.Provider,
+			model,
+			ef.RequestType,
+			modelcatalog.PricingLookupScopesFromContext(ctx, string(ef.Provider)),
+		)
+		// When the catalog cannot price the model, fall back to the cost the
+		// provider itself reported (deep-copied into BilledUsage by
+		// attachBilledUsageFromContext) rather than discarding it.
+		if cost == 0 && ef.BilledUsage.Cost != nil {
+			cost = ef.BilledUsage.Cost.TotalCost
+		}
+		// Guarded write: a resp == nil failure emitted no cost attribute before
+		// this path existed, and consumers rely on distinguishing "no cost
+		// recorded" from a genuine zero (see plugins/logging, which guards the
+		// same way).
+		if cost > 0 {
+			span.SetAttribute(schemas.AttrUsageCost, cost)
+		}
+	} else if priceable && resp != nil {
+		scopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(resp.GetExtraFields().Provider))
+		if breakdown := t.pricingManager.CalculateCostBreakdown(resp, scopes); breakdown != nil {
+			llm.Cost = breakdown
+			span.SetAttributes(schemas.CostAttributes(breakdown))
+		} else {
+			span.SetAttribute(schemas.AttrUsageCost, 0.0)
+		}
 	}
 
 	// Propagate output messages, response model, and finish reasons to root span so observability backends (e.g. Langfuse)
@@ -458,6 +717,80 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 			rootSpan.SetAttribute(schemas.AttrFinishReasons, v)
 		}
 	}
+}
+
+// Marks a trace as still being written by a worker, so the HTTP side skips
+// CompleteAndFlushTrace. The stored channel closes once the transport has attached its
+// own logs, which the worker waits for.
+func (t *Tracer) DeferTraceCompletion(traceID string) {
+	if t == nil || traceID == "" {
+		return
+	}
+	t.deferredCompletions.LoadOrStore(traceID, make(chan struct{}))
+}
+
+// Reports that the transport is done, releasing the worker to complete the trace.
+// Idempotent: the defer can run more than once.
+func (t *Tracer) SignalTransportHandoff(traceID string) {
+	if t == nil || traceID == "" {
+		return
+	}
+	if v, ok := t.deferredCompletions.Load(traceID); ok {
+		if ch, ok := v.(chan struct{}); ok {
+			select {
+			case <-ch: // already signalled
+			default:
+				close(ch)
+			}
+		}
+	}
+}
+
+// AwaitTransportHandoff blocks until the transport has handed the trace over.
+func (t *Tracer) AwaitTransportHandoff(traceID string) {
+	if t == nil || traceID == "" {
+		return
+	}
+	t.awaitTransportHandoff(traceID, transportHandoffBudget)
+}
+
+// Only has to cover a transport that died before reaching its defer.
+const transportHandoffBudget = 5 * time.Second
+
+// Normally already closed, since the transport defer runs as soon as the handler returns.
+func (t *Tracer) awaitTransportHandoff(traceID string, budget time.Duration) {
+	v, ok := t.deferredCompletions.Load(traceID)
+	if !ok {
+		return
+	}
+	ch, ok := v.(chan struct{})
+	if !ok {
+		return
+	}
+	select {
+	case <-ch:
+	case <-time.After(budget):
+		if t.logger != nil {
+			t.logger.Warn("tracing: transport never handed off trace %s; completing without its plugin logs", traceID)
+		}
+	}
+}
+
+// Reports whether a worker still owns this trace.
+func (t *Tracer) IsTraceCompletionDeferred(traceID string) bool {
+	if t == nil || traceID == "" {
+		return false
+	}
+	_, ok := t.deferredCompletions.Load(traceID)
+	return ok
+}
+
+// Drops the marker once the worker has completed the trace.
+func (t *Tracer) ClearTraceCompletionDeferral(traceID string) {
+	if t == nil || traceID == "" {
+		return
+	}
+	t.deferredCompletions.Delete(traceID)
 }
 
 // StoreDeferredSpan stores a span handle for later completion (used for streaming requests).
@@ -558,6 +891,14 @@ func (t *Tracer) ClearPausedStreamBuffer(traceID string) error {
 		return nil
 	}
 	return t.accumulator.ClearPausedStreamBuffer(traceID)
+}
+
+// TransformPausedStreamBuffer forwards atomic rewrites of paused client chunks to the streaming accumulator.
+func (t *Tracer) TransformPausedStreamBuffer(traceID string, transform schemas.PausedStreamBufferTransform) error {
+	if t == nil || t.accumulator == nil {
+		return errors.New("stream accumulator is not configured")
+	}
+	return t.accumulator.TransformPausedStreamBuffer(traceID, transform)
 }
 
 // EndStream terminates the streaming response. Any buffered chunks are flushed
@@ -811,11 +1152,36 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 	if strings.TrimSpace(traceID) == "" {
 		return
 	}
+	traceID = strings.TrimSpace(traceID)
+
+	// Nothing is listening: end the trace and return it to the pool, skipping the
+	// redaction pass, the export snapshot and the flush goroutine. The snapshot
+	// alone is ~half of all allocations in the process, and it used to run
+	// whether or not a connector existed to receive it.
+	var slots []*obsPluginSlot
+	if loaded := t.obsPlugins.Load(); loaded != nil {
+		slots = *loaded
+	}
+	if len(slots) == 0 {
+		if completedTrace := t.EndTrace(traceID); completedTrace != nil {
+			t.ReleaseTrace(completedTrace)
+		}
+		return
+	}
+
 	t.flushWG.Go(func() {
-		completedTrace := t.EndTrace(strings.TrimSpace(traceID))
+		completedTrace := t.EndTrace(traceID)
 		if completedTrace == nil {
 			return
 		}
+		t.exportAndRelease(completedTrace, slots)
+	})
+}
+
+// exportAndRelease snapshots an ended trace, fans it out to every connector, and
+// returns it to the pool. Shared by the normal completion path and the TTL sweep.
+func (t *Tracer) exportAndRelease(completedTrace *schemas.Trace, slots []*obsPluginSlot) {
+	{
 		// Defer release so the pooled trace is returned even if a plugin panics;
 		// otherwise an unrecovered panic in this detached goroutine leaks the
 		// trace object and takes down the whole process.
@@ -836,10 +1202,12 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 		// so every trace connector sees the same value on the root span.
 		exportTrace.StampOverheadDuration()
 
-		var slots []*obsPluginSlot
-		if loaded := t.obsPlugins.Load(); loaded != nil {
-			slots = *loaded
-		}
+		// Connectors receive a copy with the internal overhead-breakdown spans stripped
+		// so they don't inflate span volume in OTEL/Datadog/etc.; only plugins that opt
+		// in via OverheadSpanConsumer (the logging plugin, which needs them to compute
+		// the breakdown) get the full trace. Computed once; returns exportTrace unchanged
+		// when there are no breakdown spans to strip.
+		connectorTrace := exportTrace.WithoutOverheadBreakdownSpans()
 
 		// Fan out rather than iterate: every connector receives the trace on its own
 		// goroutine, so a connector doing blocking network I/O can never delay another.
@@ -858,7 +1226,7 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 				// the logging itself a second source of load.
 				if n := slot.dropped.Add(1); (n == 1 || n%1000 == 0) && t.logger != nil {
 					t.logger.Warn("observability plugin %s saturated at %d concurrent injects, skipped trace %s (%d skipped so far)",
-						slot.name, maxConcurrentInjectsPerPlugin, exportTrace.TraceID, n)
+						slot.name, cap(slot.sem), exportTrace.TraceID, n)
 				}
 				continue
 			}
@@ -873,15 +1241,61 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 						t.logger.Error("observability plugin %s panicked during trace injection: %v", slot.name, r)
 					}
 				}()
-				if err := slot.plugin.Inject(context.Background(), exportTrace); err != nil && t.logger != nil {
-					t.logger.Warn("observability plugin %s failed to inject trace: %v", slot.name, err)
+				injectCtx, cancel := context.WithTimeout(context.Background(), slot.injectTimeout)
+				defer cancel()
+				// Opt-in consumers (the logging plugin) get the full trace incl. overhead
+				// breakdown spans; every other connector gets the stripped copy.
+				traceForPlugin := connectorTrace
+				if consumer, ok := slot.plugin.(schemas.OverheadSpanConsumer); ok && consumer.ConsumesOverheadSpans() {
+					traceForPlugin = exportTrace
+				}
+				if err := slot.plugin.Inject(injectCtx, traceForPlugin); err != nil && t.logger != nil {
+					if errors.Is(err, context.DeadlineExceeded) {
+						t.logger.Warn("observability plugin %s timed out injecting trace %s after %s", slot.name, exportTrace.TraceID, slot.injectTimeout)
+					} else {
+						t.logger.Warn("observability plugin %s failed to inject trace: %v", slot.name, err)
+					}
 				}
 			}(slot)
 		}
 		// Join before the deferred ReleaseTrace runs: connectors read exportTrace, and
 		// the pooled trace it was snapshotted from must not be recycled underneath them.
 		wg.Wait()
-	})
+
+		// Every connector has returned, so the snapshot's spans can be recycled.
+		// This assumes Inject does not retain the trace past its return; the
+		// built-in connectors all convert or marshal synchronously.
+		exportTrace.ReleaseSnapshot()
+	}
+}
+
+// FlushExpiredTrace exports a trace the TTL sweep is about to discard. A trace only
+// expires when its completion never arrived, so dropping it unexported would hide the
+// request from every connector while billing still recorded it.
+func (t *Tracer) FlushExpiredTrace(trace *schemas.Trace) {
+	if t == nil || trace == nil {
+		return
+	}
+	t.deferredCompletions.Delete(trace.TraceID)
+	// Spans left open would export with a zero EndTime, so close them as timed out.
+	now := time.Now()
+	if trace.EndTime.IsZero() {
+		trace.EndTime = now
+	}
+	for _, span := range trace.Spans {
+		if span != nil {
+			span.EndIfOpen(now, schemas.SpanStatusError, "trace expired before completion")
+		}
+	}
+	var slots []*obsPluginSlot
+	if loaded := t.obsPlugins.Load(); loaded != nil {
+		slots = *loaded
+	}
+	if len(slots) == 0 {
+		t.ReleaseTrace(trace)
+		return
+	}
+	t.flushWG.Go(func() { t.exportAndRelease(trace, slots) })
 }
 
 // ObservabilityDropCounts returns, per observability plugin name, how many traces were

@@ -169,12 +169,8 @@ func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// Routed identity after provider headers so a chained upstream's x-bifrost-* can't overwrite it.
 	lib.ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, bifrostErr.ExtraFields)
 
-	// Set the HTTP status code from the provider error
-	if bifrostErr.StatusCode != nil {
-		ctx.SetStatusCode(*bifrostErr.StatusCode)
-	} else {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-	}
+	// Same ladder as the unary path, so streaming can't change the status.
+	ctx.SetStatusCode(bifrostErr.EffectiveHTTPStatus())
 	ctx.SetContentType("application/json")
 
 	// Always use the route-level ErrorConverter (not StreamConfig.ErrorConverter) because
@@ -214,19 +210,7 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 	// Routed identity after provider headers so a chained upstream's x-bifrost-* can't overwrite it.
 	lib.ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, bifrostErr.ExtraFields)
 
-	if bifrostErr.StatusCode != nil {
-		ctx.SetStatusCode(*bifrostErr.StatusCode)
-	} else if !bifrostErr.IsBifrostError {
-		ctx.SetStatusCode(fasthttp.StatusBadRequest)
-	} else {
-		if bifrostErr.Error != nil &&
-			(bifrostErr.Error.Message == bifrost.ProviderAutoResolveErrorMessage ||
-				bifrostErr.Error.Message == bifrost.ModelAutoResolveErrorMessage) {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-		} else {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		}
-	}
+	ctx.SetStatusCode(bifrostErr.EffectiveHTTPStatus())
 	ctx.SetContentType("application/json")
 
 	// Marshal the error for response and log the error for diagnostics
@@ -368,6 +352,10 @@ func (g *GenericRouter) extractAndParseFallbacks(ctx *schemas.BifrostContext, re
 		if bifrostReq.RerankRequest != nil {
 			bifrostReq.RerankRequest.Fallbacks = parsedFallbacks
 		}
+	case schemas.DecisionRequest:
+		if bifrostReq.DecisionRequest != nil {
+			bifrostReq.DecisionRequest.Fallbacks = parsedFallbacks
+		}
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		if bifrostReq.SpeechRequest != nil {
 			bifrostReq.SpeechRequest.Fallbacks = parsedFallbacks
@@ -473,12 +461,31 @@ func isAnthropicAPIKeyAuth(ctx *fasthttp.RequestCtx) bool {
 	}
 	// Check for OAuth token in Authorization header
 	if authHeader := string(ctx.Request.Header.Peek("Authorization")); authHeader != "" {
-		if strings.HasPrefix(strings.ToLower(authHeader), "bearer sk-ant-oat") {
+		if isAnthropicOAuthBearer(authHeader) {
 			return false // OAuth mode, NOT API
 		}
 	}
 	// Default to API mode
 	return true
+}
+
+// isAnthropicOAuthBearer reports whether the Authorization header value carries an
+// Anthropic OAuth access token (e.g. Claude Code's "Bearer sk-ant-oat01-...").
+func isAnthropicOAuthBearer(authHeader string) bool {
+	return strings.HasPrefix(strings.ToLower(authHeader), "bearer sk-ant-oat")
+}
+
+// isJWTBearer reports whether the Authorization header value carries a JWT bearer
+// token (three dot-separated segments, first one a base64url JSON header starting
+// with "eyJ"), e.g. ChatGPT/Codex OAuth access tokens. Plain "Bearer sk-..." API
+// keys and Bifrost virtual keys do not match.
+func isJWTBearer(authHeader string) bool {
+	const prefix = "bearer "
+	if len(authHeader) <= len(prefix) || !strings.EqualFold(authHeader[:len(prefix)], prefix) {
+		return false
+	}
+	parts := strings.Split(strings.TrimSpace(authHeader[len(prefix):]), ".")
+	return len(parts) == 3 && strings.HasPrefix(parts[0], "eyJ") && parts[1] != "" && parts[2] != ""
 }
 
 // resolveLargePayloadMetadata returns metadata from the sync context key,
@@ -531,6 +538,24 @@ func getProviderFromHeader(ctx *fasthttp.RequestCtx, defaultProvider schemas.Mod
 		return defaultProvider
 	}
 	return schemas.ModelProvider(providerHeader)
+}
+
+// getPassthroughProvider resolves the provider for a passthrough request from the
+// x-model-provider header, falling back to defaultProvider when the header is absent. On the
+// catch-all passthrough routes the header picks which key pool and upstream a caller-shaped
+// path is dispatched to, so it must match the route's resolved provider before anything is looked up.
+func getPassthroughProvider(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (schemas.ModelProvider, error) {
+	providerHeader := string(ctx.Request.Header.Peek("x-model-provider"))
+	if providerHeader == "" {
+		return defaultProvider, nil
+	}
+	if !schemas.IsKnownProvider(providerHeader) {
+		return "", fmt.Errorf("unknown provider %q in x-model-provider header", providerHeader)
+	}
+	if schemas.ModelProvider(providerHeader) != defaultProvider {
+		return "", fmt.Errorf("provider does not match the passthrough route: expected %s", defaultProvider)
+	}
+	return schemas.ModelProvider(providerHeader), nil
 }
 
 func RegisterKVDecoders(store *kvstore.Store) {

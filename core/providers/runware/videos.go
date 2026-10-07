@@ -39,19 +39,21 @@ func ToRunwareVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 		IncludeCost:    new(true),
 	}
 
-	// Image-to-video derives its dimensions from the reference image, and many models reject
-	// width/height outright once a frame image is present, so the default is skipped there. Models
-	// that mandate explicit dimensions keep it, and an explicit size always wins (applied below).
-	isImageToVideo := isVideo && bifrostReq.Input.InputReference != nil && *bifrostReq.Input.InputReference != ""
+	caps := schemas.ResolveModelCaps(schemas.Runware, bifrostReq.Model)
+	hasInputReference := bifrostReq.Input.InputReference != nil && *bifrostReq.Input.InputReference != ""
 
-	// Runware requires explicit width/height for video and rejects square sizes on some models;
-	// default to 16:9 1080p when no size is given. Non-video task types do not use width/height.
-	if isVideo && (!isImageToVideo || runwareVideoRequiresDimensions(bifrostReq.Model)) {
+	// Only a handful of video models mark width and height required; the rest either derive them
+	// from the reference image or reject them outright, and a fifth of them declare no height at
+	// all. Defaulting them everywhere broke those models, so the default is now applied only where
+	// the schema demands it. An explicit size still wins, and is applied below.
+	if isVideo && runwareVideoRequiresDimensions(bifrostReq.Model) {
 		request.Width = new(defaultRunwareVideoWidth)
 		request.Height = new(defaultRunwareVideoHeight)
 	}
 
-	if bifrostReq.Input.Prompt != "" {
+	// Runware rejects a 3D task that carries both an input image and a prompt, so image-to-3D drops
+	// the prompt: the image is the subject, and /videos callers naturally send one anyway.
+	if bifrostReq.Input.Prompt != "" && !(taskType == taskType3DInference && hasInputReference) {
 		request.PositivePrompt = &bifrostReq.Input.Prompt
 	}
 
@@ -70,8 +72,17 @@ func ToRunwareVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 		}
 		switch {
 		case taskType != taskType3DInference:
-			request.Inputs = &RunwareInputs{FrameImages: []RunwareFrameImage{{Image: sanitizedURL, Frame: new("first")}}}
-		case uses3DImageArrayInput(bifrostReq.Model):
+			// Most video models anchor the reference to a frame, but some declare no frameImages at
+			// all and reject it, taking the image under their own key instead.
+			switch runwareVideoInputFormFor(caps) {
+			case runwareVideoInputReferenceImages:
+				request.Inputs = &RunwareInputs{ReferenceImages: []string{sanitizedURL}}
+			case runwareVideoInputImage:
+				request.Inputs = &RunwareInputs{Image: &sanitizedURL}
+			default:
+				request.Inputs = &RunwareInputs{FrameImages: []RunwareFrameImage{{Image: sanitizedURL, Frame: new("first")}}}
+			}
+		case uses3DImageArrayInput(caps):
 			request.Inputs = &RunwareInputs{Images: []string{sanitizedURL}}
 		default:
 			request.Inputs = &RunwareInputs{Image: &sanitizedURL}
@@ -113,12 +124,15 @@ func ToRunwareVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 		}
 		request.UpscaleFactor = params.UpscaleFactor
 		request.TargetMegapixels = params.TargetMegapixels
-		// The /videos schema carries no output_format, so the container (MP4/WEBM/MOV) is only
-		// selectable through extra params. Video background removal needs an alpha-capable one.
-		if v, ok := schemas.SafeExtractStringPointer(request.ExtraParams["outputFormat"]); ok {
-			if format := runwareOutputFormat(v); format != nil {
-				delete(request.ExtraParams, "outputFormat")
-				request.OutputFormat = format
+		// Video background removal needs an alpha-capable container, so the format matters here.
+		// The provider-native spelling stays accepted for callers who already use it.
+		request.OutputFormat = runwareOutputFormat(params.OutputFormat)
+		if request.OutputFormat == nil {
+			if v, ok := schemas.SafeExtractStringPointer(request.ExtraParams["outputFormat"]); ok {
+				if format := runwareOutputFormat(v); format != nil {
+					delete(request.ExtraParams, "outputFormat")
+					request.OutputFormat = format
+				}
 			}
 		}
 	}
@@ -184,13 +198,14 @@ func ToRunwareVideoEditRequest(bifrostReq *schemas.BifrostVideoEditRequest) (*Ru
 	return request, nil
 }
 
-// runwareVideoInput resolves the source video to the reference Runware expects. IDs and URLs pass
-// through untouched; raw bytes become a base64 data URI, which Runware decodes even though its
-// published schema advertises only UUID and URL for inputs.video.
+// runwareVideoInput resolves the source video to the reference Runware expects. URLs pass through
+// untouched and raw bytes become a base64 data URI, which Runware decodes even though its published
+// schema advertises only UUID and URL for inputs.video. An ID sheds the ":runware" suffix Bifrost
+// stamps on the IDs it hands out, so a video from a previous job can be fed straight back in.
 func runwareVideoInput(video schemas.VideoInput) string {
 	switch {
 	case video.ID != "":
-		return video.ID
+		return providerUtils.StripVideoIDProviderSuffix(video.ID, schemas.Runware)
 	case video.URL != "":
 		return video.URL
 	case len(video.Video) > 0:

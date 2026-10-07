@@ -44,8 +44,30 @@ func TestToBedrockRerankRequest(t *testing.T) {
 	fields := req.RerankingConfiguration.BedrockRerankingConfiguration.ModelConfiguration.AdditionalModelRequestFields
 	require.NotNil(t, fields)
 	assert.Equal(t, maxTokensPerDoc, fields["max_tokens_per_doc"])
-	assert.Equal(t, priority, fields["priority"])
 	assert.Equal(t, "END", fields["truncate"])
+
+	// Bedrock rejects the whole request on an unknown additional field: COHERE_RERANK allows
+	// only max_tokens_per_doc. Forwarding priority 400s a request that succeeds on Cohere.
+	assert.NotContains(t, fields, "priority",
+		"priority has no Bedrock equivalent and must be dropped, not forwarded")
+}
+
+func TestToBedrockRerankRequestNextToken(t *testing.T) {
+	req, err := ToBedrockRerankRequest(&schemas.BifrostRerankRequest{
+		Model:     "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0",
+		Query:     "capital of france",
+		Documents: []schemas.RerankDocument{{Text: "Paris is the capital of France."}},
+		Params:    &schemas.RerankParameters{NextToken: schemas.Ptr("cursor-1")},
+	}, "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0")
+	require.NoError(t, err)
+
+	// nextToken is a top-level request field. Landing in additionalModelRequestFields instead
+	// makes Bedrock reject the request outright.
+	require.NotNil(t, req.NextToken)
+	assert.Equal(t, "cursor-1", *req.NextToken)
+	assert.NotContains(t,
+		req.RerankingConfiguration.BedrockRerankingConfiguration.ModelConfiguration.AdditionalModelRequestFields,
+		"next_token")
 }
 
 func TestBedrockRerankResponseToBifrostRerankResponse(t *testing.T) {
@@ -146,14 +168,14 @@ func TestBedrockRerankRequestToBifrostRerankRequest(t *testing.T) {
 				Type: bedrockRerankSourceTypeInline,
 				InlineDocumentSource: BedrockRerankInlineSource{
 					Type:         bedrockRerankInlineDocumentTypeText,
-					TextDocument: BedrockRerankTextValue{Text: "Paris is the capital of France."},
+					TextDocument: &BedrockRerankTextValue{Text: "Paris is the capital of France."},
 				},
 			},
 			{
 				Type: bedrockRerankSourceTypeInline,
 				InlineDocumentSource: BedrockRerankInlineSource{
 					Type:         bedrockRerankInlineDocumentTypeText,
-					TextDocument: BedrockRerankTextValue{Text: "Berlin is the capital of Germany."},
+					TextDocument: &BedrockRerankTextValue{Text: "Berlin is the capital of Germany."},
 				},
 			},
 		},

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
@@ -64,6 +65,9 @@ func (h *WebhookHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.POST("/api/webhooks/{id}/rotate-secret", lib.ChainMiddlewares(h.rotateWebhookEndpointSecret, middlewares...))
 	r.POST("/api/webhooks/{id}/test", lib.ChainMiddlewares(h.testWebhookEndpoint, middlewares...))
 	r.GET("/api/webhooks/{id}/deliveries", lib.ChainMiddlewares(h.listWebhookDeliveries, middlewares...))
+	// Static "deliveries" sibling of the {id} wildcard, as with the redeliver
+	// route below. Cross-endpoint and filterable, unlike the per-endpoint route.
+	r.GET("/api/webhooks/deliveries", lib.ChainMiddlewares(h.searchWebhookDeliveries, middlewares...))
 	r.POST("/api/webhooks/deliveries/{id}/redeliver", lib.ChainMiddlewares(h.redeliverWebhook, middlewares...))
 }
 
@@ -123,6 +127,41 @@ func redactedWebhookEndpoint(endpoint *configstoreTables.TableWebhookEndpoint) *
 }
 
 // storeAvailable guards every route against a disabled config store.
+// requireGenuineAuthForPrivateNetworkEndpoint rejects a create/update that
+// makes Bifrost deliver to a loopback or private-network receiver when the
+// caller was only let through by the fail-open bypass (dashboard auth
+// disabled/unconfigured), not by a real credential. allow_private_network is
+// a legitimate setting for a real admin; the problem is that anyone on the
+// network could otherwise choose an internal destination for the gateway's
+// outbound POSTs - the same rule requireGenuineAuthForEndpointChange applies
+// to provider keys. existing is the stored endpoint on update and nil on
+// create; an update that keeps the stored private URL passes, so bypassed
+// callers can still edit events, headers and retry settings. On rejection
+// this sends the response and returns true.
+func requireGenuineAuthForPrivateNetworkEndpoint(ctx *fasthttp.RequestCtx, existing, next *configstoreTables.TableWebhookEndpoint) bool {
+	if !isAuthBypassed(ctx) || !next.AllowPrivateNetwork {
+		return false
+	}
+	if existing != nil && existing.AllowPrivateNetwork && existing.URL == next.URL {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, "Registering a webhook endpoint that allows private-network delivery requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.")
+	return true
+}
+
+// requireGenuineAuthForPrivateNetworkDelivery is the per-request twin of
+// requireGenuineAuthForPrivateNetworkEndpoint for caller-triggered deliveries
+// (test fire, redeliver) to an endpoint that allows private-network delivery.
+// Scheduled deliveries are unaffected. On rejection this sends the response
+// and returns true.
+func requireGenuineAuthForPrivateNetworkDelivery(ctx *fasthttp.RequestCtx, endpoint *configstoreTables.TableWebhookEndpoint, action string) bool {
+	if !endpoint.AllowPrivateNetwork || !isAuthBypassed(ctx) {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("unauthenticated callers cannot %s webhook endpoints that allow private-network delivery; set an admin password to allow this", action))
+	return true
+}
+
 func (h *WebhookHandler) storeAvailable(ctx *fasthttp.RequestCtx) bool {
 	if h.store == nil || h.store.ConfigStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "Config store is not available")
@@ -232,6 +271,9 @@ func (h *WebhookHandler) createWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
+	if requireGenuineAuthForPrivateNetworkEndpoint(ctx, nil, endpoint) {
+		return
+	}
 	if err := h.store.ConfigStore.CreateWebhookEndpoint(ctx, endpoint); err != nil {
 		if errors.Is(err, configstore.ErrAlreadyExists) {
 			SendError(ctx, fasthttp.StatusConflict, "A webhook endpoint with this name already exists")
@@ -273,13 +315,12 @@ func (h *WebhookHandler) updateWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 	// Masked header values round-tripped from a read are placeholders, not
 	// real values — restore the stored value so an edit that touches other
 	// fields cannot corrupt the headers.
-	if len(req.Headers) > 0 {
-		if existing, ok := h.store.WebhookEndpointByID(id); ok {
-			for name, value := range req.Headers {
-				if value.IsMaskedPlaceholder() {
-					if stored, found := existing.Headers[name]; found {
-						req.Headers[name] = stored
-					}
+	existing, hasExisting := h.store.WebhookEndpointByID(id)
+	if len(req.Headers) > 0 && hasExisting {
+		for name, value := range req.Headers {
+			if value.IsMaskedPlaceholder() {
+				if stored, found := existing.Headers[name]; found {
+					req.Headers[name] = stored
 				}
 			}
 		}
@@ -287,6 +328,12 @@ func (h *WebhookHandler) updateWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 	endpoint := req.toTable(id)
 	if err := endpoint.Validate(); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	if !hasExisting {
+		existing = nil
+	}
+	if requireGenuineAuthForPrivateNetworkEndpoint(ctx, existing, endpoint) {
 		return
 	}
 	if err := h.store.ConfigStore.UpdateWebhookEndpoint(ctx, endpoint); err != nil {
@@ -398,6 +445,16 @@ func (h *WebhookHandler) testWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Webhook endpoint is disabled")
 		return
 	}
+	// An endpoint registered with allow_private_network may point at a
+	// loopback or private-network receiver, and this response reports that
+	// receiver's status. For a caller let through only because dashboard auth
+	// is unconfigured (BifrostContextKeyAuthBypassed) that is a probe of the
+	// gateway's own network, so the test fire requires a real credential - the
+	// same scoping rejectPrivateMCPTargetIfAuthBypassed applies to MCP
+	// clients. Public endpoints and scheduled deliveries are unaffected.
+	if requireGenuineAuthForPrivateNetworkDelivery(ctx, endpoint, "test") {
+		return
+	}
 	// The event to sample is optional; it defaults to the endpoint's first
 	// subscription and must be one the endpoint would actually receive.
 	event := endpoint.Events[0]
@@ -461,9 +518,112 @@ func (h *WebhookHandler) listWebhookDeliveries(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	limit, offset = ClampPaginationParams(limit, offset)
-	result, err := h.store.LogsStore.SearchWebhookDeliveries(ctx, id, logstore.PaginationOptions{Limit: limit, Offset: offset})
+	filters := &logstore.WebhookDeliverySearchFilters{EndpointIDs: []string{id}}
+	result, err := h.store.LogsStore.SearchWebhookDeliveries(ctx, filters, logstore.PaginationOptions{Limit: limit, Offset: offset})
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to list webhook deliveries: %v", err))
+		return
+	}
+	SendJSON(ctx, result)
+}
+
+// parseWebhookDeliveryFilters reads the delivery-history filters off the query
+// string. `period` (e.g. "1h") wins over an explicit start_time/end_time pair,
+// mirroring parseMCPFiltersAndPagination.
+func parseWebhookDeliveryFilters(ctx *fasthttp.RequestCtx) (*logstore.WebhookDeliverySearchFilters, error) {
+	filters := &logstore.WebhookDeliverySearchFilters{}
+	if endpointIDs := string(ctx.QueryArgs().Peek("endpoint_ids")); endpointIDs != "" {
+		filters.EndpointIDs = parseCommaSeparated(endpointIDs)
+	}
+	if events := string(ctx.QueryArgs().Peek("events")); events != "" {
+		filters.Events = parseCommaSeparated(events)
+	}
+	if outcomes := string(ctx.QueryArgs().Peek("outcomes")); outcomes != "" {
+		filters.Outcomes = parseCommaSeparated(outcomes)
+	}
+	if statusClass := string(ctx.QueryArgs().Peek("status_class")); statusClass != "" {
+		for _, class := range parseCommaSeparated(statusClass) {
+			switch class {
+			case logstore.WebhookDeliveryStatusClass2xx,
+				logstore.WebhookDeliveryStatusClass4xx,
+				logstore.WebhookDeliveryStatusClass5xx,
+				logstore.WebhookDeliveryStatusClassNone:
+				filters.StatusClass = append(filters.StatusClass, class)
+			default:
+				return nil, fmt.Errorf("invalid status_class value %q: must be one of 2xx, 4xx, 5xx, none", class)
+			}
+		}
+	}
+	filters.RequestID = string(ctx.QueryArgs().Peek("request_id"))
+	filters.DeliveryID = string(ctx.QueryArgs().Peek("delivery_id"))
+
+	var startTimeErr, endTimeErr error
+	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
+		t, err := time.Parse(time.RFC3339Nano, startTime)
+		if err != nil {
+			startTimeErr = fmt.Errorf("invalid start_time format: %w", err)
+		} else {
+			filters.StartTime = &t
+		}
+	}
+	if endTime := string(ctx.QueryArgs().Peek("end_time")); endTime != "" {
+		t, err := time.Parse(time.RFC3339Nano, endTime)
+		if err != nil {
+			endTimeErr = fmt.Errorf("invalid end_time format: %w", err)
+		} else {
+			filters.EndTime = &t
+		}
+	}
+	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
+		if start, end := ResolvePeriod(period); start != nil {
+			filters.StartTime = start
+			filters.EndTime = end
+			startTimeErr = nil
+			endTimeErr = nil
+		}
+	}
+	if startTimeErr != nil {
+		return nil, startTimeErr
+	}
+	if endTimeErr != nil {
+		return nil, endTimeErr
+	}
+	return filters, nil
+}
+
+// searchWebhookDeliveries returns one page of delivery history across every
+// endpoint the filters select, newest first. It backs the dedicated deliveries
+// page; the per-endpoint listWebhookDeliveries above backs the endpoint sheet.
+func (h *WebhookHandler) searchWebhookDeliveries(ctx *fasthttp.RequestCtx) {
+	if !h.storeAvailable(ctx) {
+		return
+	}
+	if h.store.LogsStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "Logs store is not available")
+		return
+	}
+	filters, err := parseWebhookDeliveryFilters(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	limit, offset := 0, 0
+	if limitStr := string(ctx.QueryArgs().Peek("limit")); limitStr != "" {
+		if limit, err = strconv.Atoi(limitStr); err != nil || limit < 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, "Invalid limit parameter: must be a non-negative number")
+			return
+		}
+	}
+	if offsetStr := string(ctx.QueryArgs().Peek("offset")); offsetStr != "" {
+		if offset, err = strconv.Atoi(offsetStr); err != nil || offset < 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, "Invalid offset parameter: must be a non-negative number")
+			return
+		}
+	}
+	limit, offset = ClampPaginationParams(limit, offset)
+	result, err := h.store.LogsStore.SearchWebhookDeliveries(ctx, filters, logstore.PaginationOptions{Limit: limit, Offset: offset})
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to search webhook deliveries: %v", err))
 		return
 	}
 	SendJSON(ctx, result)
@@ -500,6 +660,11 @@ func (h *WebhookHandler) redeliverWebhook(ctx *fasthttp.RequestCtx) {
 	}
 	if endpoint.Disabled {
 		SendError(ctx, fasthttp.StatusBadRequest, "The endpoint this delivery belongs to is disabled")
+		return
+	}
+	// A replay is a caller-triggered delivery, so it carries the same
+	// private-network scoping as the test fire.
+	if requireGenuineAuthForPrivateNetworkDelivery(ctx, endpoint, "redeliver to") {
 		return
 	}
 	// Same id as the original delivery: the webhook-id header stays stable,

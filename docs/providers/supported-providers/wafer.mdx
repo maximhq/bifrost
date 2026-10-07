@@ -97,13 +97,13 @@ case schemas.Wafer:
 
 Wafer supports OpenAI-compatible chat completion parameters. For the full parameter reference and message conversion behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
 
-Available chat models include `glm-5.2` and `kimi-k2.6`.
+Bifrost serves every model Wafer exposes, for example `GLM-5.2`, `Kimi-K3`, and `DeepSeek-V4-Flash-0731-Fast`. Call [List Models](#4-list-models) for the current catalog.
 
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "wafer/glm-5.2",
+    "model": "wafer/GLM-5.2",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```

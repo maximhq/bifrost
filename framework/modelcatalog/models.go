@@ -19,6 +19,7 @@ import (
 var providersWithPartialListModels = map[schemas.ModelProvider]bool{
 	schemas.Perplexity: true,
 	schemas.Vertex:     true,
+	schemas.Runware:    true,
 }
 
 // GetModelsForProvider returns the effective allowed model set for the
@@ -86,7 +87,7 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 			out = append(out, alias)
 		}
 		for _, m := range e.Allowed {
-			if m == "*" || blacklisted.IsBlocked(m) {
+			if m == "*" || schemas.IsRegexEntry(m) || blacklisted.IsBlocked(m) {
 				continue
 			}
 			if _, ok := seen[m]; ok {
@@ -174,6 +175,7 @@ func (mc *ModelCatalog) catalogGeneration() uint64 {
 func (mc *ModelCatalog) initCaches() {
 	mc.providersForModel = newProvidersForModelCache(mc)
 	mc.modelsForProvider = newModelsForProviderCache(mc)
+	mc.maxOutputTokens = gencache.New[int](mc.catalogGeneration, catalogMemoMaxEntries)
 }
 
 // Clone-on-return: the resolver sorts the result in place.
@@ -318,8 +320,8 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 		return false
 	}
 
-	// Bare-name match needs no catalog access and covers most allowlists.
-	if slices.Contains(allowedModels, model) {
+	// Bare-name match (exact or regex:) needs no catalog access and covers most allowlists.
+	if allowedModels.Contains(model) {
 		return true
 	}
 
@@ -376,8 +378,34 @@ func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, m
 	switch provider {
 	case schemas.Groq, schemas.Replicate, schemas.Perplexity, schemas.OpenRouter:
 		return mc.refineNestedProviderModel(provider, model)
+	case schemas.Databricks:
+		return refineDatabricksModel(model), nil
 	}
 	return model, nil
+}
+
+// Mirrors Databricks model refinement:
+// - Catalog-qualified names (2+ dots) and `databricks-*` endpoints pass through.
+// - Other names get the `system.ai.` prefix.
+// - A single dot is treated as a version separator (e.g. `gpt-5.5`).
+//
+// Aliases and explicit `api_format` are handled by the provider and are not visible here.
+func refineDatabricksModel(model string) string {
+	const (
+		// defaultCatalogPrefix is the Unity Catalog prefix under which Databricks publishes
+		// its ready-to-use AI Gateway models.
+		defaultCatalogPrefix = "system.ai."
+		// modelServingEndpointPrefix is the naming convention for Databricks pay-per-token
+		// Foundation Model endpoints, which live on Model Serving and take a bare name.
+		modelServingEndpointPrefix = "databricks-"
+	)
+	if model == "" || strings.Count(model, ".") >= 2 {
+		return model
+	}
+	if strings.HasPrefix(strings.ToLower(model), modelServingEndpointPrefix) {
+		return model
+	}
+	return defaultCatalogPrefix + model
 }
 
 // refineNestedProviderModel resolves provider-native model slugs such as

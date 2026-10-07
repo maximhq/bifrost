@@ -64,7 +64,7 @@ func makeTestLog(id string) *logstore.Log {
 // recover and persist all of them.
 func TestCleanupDrainsRecoveredBatchNoDrops(t *testing.T) {
 	rec := &recordingStore{LogStore: newTestStore(t)}
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -106,7 +106,7 @@ func TestCleanupDrainsCombinedQueueAndBatchNoDrops(t *testing.T) {
 		LogStore: newTestStore(t),
 		delay:    25 * time.Millisecond, // slow store keeps batchWriter busy so the channel buffer fills
 	}
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -141,7 +141,7 @@ func TestCleanupDrainsCombinedQueueAndBatchNoDrops(t *testing.T) {
 // subsequent enqueues are dropped at the source and do not panic.
 func TestCleanupRejectsNewSendsAfterClosed(t *testing.T) {
 	rec := &recordingStore{LogStore: newTestStore(t)}
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -178,7 +178,7 @@ func TestCleanupRejectsNewSendsAfterClosed(t *testing.T) {
 // call must be a no-op rather than re-cancelling, re-closing channels, or
 // panicking.
 func TestCleanupIsIdempotent(t *testing.T) {
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -191,7 +191,7 @@ func TestCleanupIsIdempotent(t *testing.T) {
 }
 
 func TestWriterConfigDefaultsAndInitOverrides(t *testing.T) {
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -215,7 +215,7 @@ func TestWriterConfigDefaultsAndInitOverrides(t *testing.T) {
 		WriteQueueCapacity:       11,
 		DeferredUsageConcurrency: 2,
 	}
-	plugin, err = Init(context.Background(), &Config{Writer: writer}, testLogger{}, newTestStore(t), nil, nil)
+	plugin, err = Init(context.Background(), &Config{Writer: writer}, testLogger{}, newTestStore(t), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() with writer error = %v", err)
 	}

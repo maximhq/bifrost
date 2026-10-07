@@ -77,6 +77,8 @@ type OCRPage struct {
 type OCRUsageInfo struct {
 	PagesProcessed int `json:"pages_processed"`
 	DocSizeBytes   int `json:"doc_size_bytes"`
+	// Cost is the per-category cost breakdown, populated when pricing is available.
+	Cost *BifrostCost `json:"cost,omitempty"`
 }
 
 // BifrostOCRResponse represents the response from an OCR request.

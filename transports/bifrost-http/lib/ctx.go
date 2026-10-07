@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -87,15 +88,91 @@ func ParseSessionIDFromBaggage(header string) string {
 		if key != "session-id" || value == "" {
 			continue
 		}
-		if len(value) > 255 {
+		sessionID, ok := schemas.NormalizeSessionID(value)
+		if !ok {
 			if logger != nil {
-				logger.Warn("session-id exceeds 255 chars, ignoring: length=%d, prefix=%s", len(value), value[:255])
+				// Length only, never the value: baggage is caller-controlled.
+				logger.Warn("baggage session-id exceeds %d runes, ignoring: length=%d", schemas.MaxSessionIDLength, utf8.RuneCountInString(value))
 			}
 			continue
 		}
-		return value
+		return sessionID
 	}
 	return ""
+}
+
+// ResolveHarnessSessionID returns the first non-empty header from
+// schemas.HarnessSessionHeaders, in that list's priority order. Coding harnesses
+// (Claude Code, Codex CLI, OpenCode) already send a session identifier on every
+// request under their own header name; honoring it means their traffic gets key
+// stickiness and OTEL session grouping without the caller setting x-bf-session-id.
+//
+// headers must be keyed by lowercased header name. Values are trimmed and
+// rejected past schemas.MaxSessionIDLength so no ingestion path can plant an
+// oversized KV lookup key or trace attribute. Callers are responsible for
+// preferring an explicit x-bf-session-id over this result.
+func ResolveHarnessSessionID(headers map[string]string) string {
+	if len(headers) == 0 {
+		return ""
+	}
+	for _, name := range schemas.HarnessSessionHeaders {
+		raw := headers[name]
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		sessionID, ok := schemas.NormalizeSessionID(raw)
+		if !ok {
+			if logger != nil {
+				// Don't echo the value: harness session headers are caller-controlled.
+				logger.Warn("%s exceeds %d runes, ignoring: length=%d", name, schemas.MaxSessionIDLength, utf8.RuneCountInString(strings.TrimSpace(raw)))
+			}
+			continue
+		}
+		return sessionID
+	}
+	return ""
+}
+
+// ResolveSessionIDFromHeaders returns the session ID for a request from a
+// lowercased header map. An explicit x-bf-session-id decides the outcome
+// whenever the caller sends one: if it is valid it wins, and if it is oversized
+// the request gets no session at all rather than silently adopting a harness
+// header, because substituting a different session identity for the one the
+// caller asked for is worse than having none. Only when no explicit header is
+// present do the harness headers apply.
+func ResolveSessionIDFromHeaders(headers map[string]string) string {
+	if raw := headers["x-bf-session-id"]; strings.TrimSpace(raw) != "" {
+		sessionID, ok := schemas.NormalizeSessionID(raw)
+		if !ok {
+			if logger != nil {
+				// Length only, never the value: x-bf-session-id is caller-controlled.
+				logger.Warn("x-bf-session-id exceeds %d runes, ignoring: length=%d", schemas.MaxSessionIDLength, utf8.RuneCountInString(strings.TrimSpace(raw)))
+			}
+			return ""
+		}
+		return sessionID
+	}
+	return ResolveHarnessSessionID(headers)
+}
+
+// ResolveSessionIDFromRequest is ResolveSessionIDFromHeaders for callers that
+// hold a fasthttp header rather than the lowercased header map
+// ConvertToBifrostContext builds, notably the tracing middleware, which runs
+// before context conversion.
+//
+// Keys are lowercased during iteration rather than read with Peek so the result
+// never depends on fasthttp header-name normalization, which does not fold the
+// underscore forms Codex CLI still sends.
+func ResolveSessionIDFromRequest(h *fasthttp.RequestHeader) string {
+	if h == nil {
+		return ""
+	}
+	headers := make(map[string]string, h.Len())
+	h.All()(func(key, value []byte) bool {
+		headers[strings.ToLower(string(key))] = string(value)
+		return true
+	})
+	return ResolveSessionIDFromHeaders(headers)
 }
 
 // ConvertToBifrostContext converts a FastHTTP RequestCtx to a Bifrost context,
@@ -109,8 +186,9 @@ func ParseSessionIDFromBaggage(header string) string {
 //   - The prefix is stripped and the remainder becomes the dimension key.
 //   - Example: 'x-bf-dim-environment' with value 'production' stores {"environment": "production"}.
 //
-// 1a. Prometheus Headers (x-bf-prom-*) [DEPRECATED — use x-bf-dim-* instead]:
-//   - All headers prefixed with 'x-bf-prom-' are still accepted for backward compatibility.
+// 1a. Prometheus Headers (x-bf-prom-*) [REMOVED — use x-bf-dim-* instead]:
+//   - No longer consumed by anything. Still swallowed here so they neither leak
+//     into unified dimensions nor get forwarded to the provider.
 //
 // 2. Maxim Tracing Headers (x-bf-maxim-*):
 //   - Specifically handles 'x-bf-maxim-traceID' and 'x-bf-maxim-generationID'
@@ -135,7 +213,9 @@ func ParseSessionIDFromBaggage(header string) string {
 //
 // 6. Cancellable Context:
 //   - Creates a cancellable context that can be used to cancel upstream requests when clients disconnect
-//   - This is critical for streaming requests where write errors indicate client disconnects
+//   - A watcher peeks at the client socket and cancels the context when the client closes it
+//     before anything was written back (silent upstream, retry backoff), see clientdisconnect.go
+//   - Streaming handlers additionally cancel when an SSE write fails
 //   - Also useful for non-streaming requests to allow provider-level cancellation
 //
 // 7. Extra Headers (x-bf-eh-*):
@@ -144,11 +224,14 @@ func ParseSessionIDFromBaggage(header string) string {
 //   - This allows callers to send arbitrary context metadata without needing to extend the public schema
 //
 // 8. Session Stickiness Headers:
-//   - x-bf-session-id: Session identifier for key binding (reuse same key across requests)
+//   - x-bf-session-id: Session identifier for key binding (reuse same key across requests).
+//     When absent, falls back to the coding-harness session headers listed in
+//     schemas.HarnessSessionHeaders (Claude Code, Codex CLI, OpenCode).
 //   - x-bf-session-ttl: Per-request TTL override (duration string e.g. "30m" or seconds integer)
 //
 // 9. Raw Capture Headers (per-request override of provider config; accepts "true" or "false"):
 //   - x-bf-send-back-raw-request: include raw provider request in the BifrostResponse returned to the caller
+//   - x-bf-prompt-cache-auto-inject: override prompt_cache.auto_inject for this request
 //   - x-bf-send-back-raw-response: include raw provider response in the BifrostResponse returned to the caller
 //   - x-bf-store-raw-request-response: capture raw request/response for logging only (stripped from client response)
 
@@ -170,6 +253,18 @@ func ParseSessionIDFromBaggage(header string) string {
 //	// session stickiness, and extra headers
 
 func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*schemas.BifrostContext, context.CancelFunc) {
+	// "transport-context" overhead phase: building the request-scoped BifrostContext —
+	// child-context alloc, request-id resolution, and the full request-header iteration
+	// that populates dimensions/tags/mcp-header maps. It runs inside the root http.request
+	// span but on no phase span, so it would otherwise fold into the residual "core"
+	// bucket. The tracer + root span live on the fasthttp ctx (set by TracingMiddleware),
+	// so this parents to the root span. Nil-safe when no trace is active.
+	if t, ok := ctx.UserValue(schemas.BifrostContextKeyTracer).(schemas.Tracer); ok && t != nil {
+		if _, h := t.StartSpanID(ctx, "transport-context", schemas.SpanKindInternal); h != nil {
+			defer t.EndSpan(h, schemas.SpanStatusOk, "")
+		}
+	}
+
 	var matcher *HeaderMatcher
 	mcpHeaderCombinedAllowlist := schemas.WhiteList{}
 	allowPerRequestStorageOverride := false
@@ -189,7 +284,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			cancel = existingCancel
 		} else {
 			// Create one cancellable child context and promote it as the shared context.
+			// A context seeded by a transport hook (large-payload detection) takes this
+			// path, so the client socket is watched here too; the branch above, where a
+			// cancel func already exists, means a watcher is already running.
 			bifrostCtx, cancel = schemas.NewBifrostContextWithCancel(existing)
+			startClientDisconnectWatcher(ctx.Conn(), bifrostCtx, cancel)
 			ctx.SetUserValue(FastHTTPUserValueBifrostContext, bifrostCtx)
 			ctx.SetUserValue(FastHTTPUserValueBifrostCancel, cancel)
 		}
@@ -207,6 +306,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			_ = ctx.Done()
 		}()
 		bifrostCtx, cancel = schemas.NewBifrostContextWithCancel(parent)
+		// Cancel the request when the client closes its socket while the handler
+		// is still waiting on core; fasthttp offers no per-request Done (#7035).
+		startClientDisconnectWatcher(ctx.Conn(), bifrostCtx, cancel)
 		ctx.SetUserValue(FastHTTPUserValueBifrostContext, bifrostCtx)
 		ctx.SetUserValue(FastHTTPUserValueBifrostCancel, cancel)
 	}
@@ -219,6 +321,16 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			requestID = uuid.New().String()
 		}
 		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	}
+	// The request-id above may be caller-supplied (x-request-id), so it cannot be
+	// trusted as a billing-idempotency identity: two unrelated requests sharing a
+	// chosen ID would collide on the billing key and the second would settle for
+	// free. The nonce is minted here, never read from any header, and mixed into
+	// the governance billing key so that key is unforgeable. Preserved when
+	// already present so both terminal paths of one physical call (success vs
+	// cancellation) read the same value and still dedupe against each other.
+	if existingNonce, ok := bifrostCtx.Value(schemas.BifrostContextKeyBillingNonce).(string); !ok || existingNonce == "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyBillingNonce, uuid.New().String())
 	}
 	// Populating all user values from the request context
 	ctx.VisitUserValuesAll(func(key, value any) {
@@ -284,8 +396,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			return true
 		}
 		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-prom-"); ok && labelName != "" {
-			// x-bf-prom-* is Prometheus-only and must not flow into unified dimensions
-			// (logs/OTEL/Maxim/etc). Prometheus plugin reads headers directly.
+			// x-bf-prom-* is a removed legacy prefix. Swallow it so it neither flows
+			// into unified dimensions (logs/OTEL/Maxim/etc) nor is forwarded upstream.
 			return true
 		}
 		// Checking for maxim headers
@@ -336,16 +448,17 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		// Handle MCP session ID header (x-bf-mcp-session-id): a client-issued
 		// opaque identifier used for session-mode per-user OAuth flows. Any
 		// non-empty string the caller can re-present on subsequent /mcp calls.
-		// 255-char cap matches ParseSessionIDFromBaggage so both ingestion
-		// paths reject oversized lookup keys consistently.
+		// schemas.NormalizeSessionID applies the same cap as every other session
+		// ingestion path, so none of them can accept a lookup key the others reject.
 		if keyStr == "x-bf-mcp-session-id" {
-			if v := strings.TrimSpace(string(value)); v != "" {
-				if len(v) > 255 {
-					// Don't echo any of the value — x-bf-mcp-session-id is a
+			if raw := strings.TrimSpace(string(value)); raw != "" {
+				v, ok := schemas.NormalizeSessionID(raw)
+				if !ok {
+					// Don't echo any of the value: x-bf-mcp-session-id is a
 					// re-presentable lookup key for session-mode OAuth; the
 					// length alone is enough for debugging.
 					if logger != nil {
-						logger.Warn("x-bf-mcp-session-id exceeds 255 chars, ignoring: length=%d (skipped last %d chars)", len(v), len(v)-255)
+						logger.Warn("x-bf-mcp-session-id exceeds %d runes, ignoring: length=%d", schemas.MaxSessionIDLength, utf8.RuneCountInString(raw))
 					}
 					return true
 				}
@@ -446,11 +559,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			return true
 		}
-		// Session stickiness: session ID for key binding
+		// Session stickiness: session ID for key binding. Consumed here so the
+		// header is not forwarded to the provider by the direct-forwarding path
+		// below; the value itself is resolved once after this loop, by the same
+		// function the tracing middleware calls, so the two cannot disagree.
 		if keyStr == "x-bf-session-id" {
-			if valueStr := strings.TrimSpace(string(value)); valueStr != "" {
-				bifrostCtx.SetValue(schemas.BifrostContextKeySessionID, valueStr)
-			}
 			return true
 		}
 		// Session stickiness: per-request TTL override (duration string or seconds integer)
@@ -466,6 +579,20 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			if err == nil && ttlDuration > 0 {
 				bifrostCtx.SetValue(schemas.BifrostContextKeySessionTTL, ttlDuration)
+			}
+			return true
+		}
+		// Session affinity: whether this request lets its session decide where it goes.
+		if keyStr == "x-bf-session-affinity" {
+			switch strings.ToLower(strings.TrimSpace(string(value))) {
+			case "on", "true", "1":
+				bifrostCtx.SetValue(schemas.BifrostContextKeySessionAffinity, true)
+			case "off", "false", "0":
+				bifrostCtx.SetValue(schemas.BifrostContextKeySessionAffinity, false)
+			default:
+				if logger != nil {
+					logger.Warn("x-bf-session-affinity is not on or off, ignoring")
+				}
 			}
 			return true
 		}
@@ -539,6 +666,16 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			return true
 		}
+		// Per-request override of prompt_cache.auto_inject. Fully overrides the
+		// provider config for this request in both directions, so a caller can opt a
+		// single request in without changing config, or opt one out when the provider
+		// has it on. The model capability gate still applies.
+		if keyStr == "x-bf-prompt-cache-auto-inject" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyPromptCacheAutoInject, b)
+			}
+			return true
+		}
 		if keyStr == "x-bf-send-back-raw-response" {
 			if b, err := strconv.ParseBool(string(value)); err == nil {
 				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, b)
@@ -579,12 +716,16 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatConvertChatToResponses)
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatShouldDropParams)
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatShouldConvertParams)
+			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatAzureDeepseek)
+			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses)
 			valueStr := strings.TrimSpace(string(value))
 			if valueStr == "true" {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertTextToChat, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertChatToResponses, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses, true)
 			} else if strings.HasPrefix(valueStr, "[") {
 				var features []string
 				if err := json.Unmarshal([]byte(valueStr), &features); err == nil {
@@ -593,6 +734,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertChatToResponses, true)
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses, true)
 					} else {
 						for _, f := range features {
 							switch f {
@@ -604,6 +747,10 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
 							case "should_convert_params":
 								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
+							case "azure_deepseek":
+								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
+							case "force_reasoning_only_models_to_responses":
+								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses, true)
 							}
 						}
 					}
@@ -642,6 +789,21 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		return true
 	})
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
+
+	// Session stickiness: an explicit x-bf-session-id wins, otherwise the
+	// harness's own session header applies, so Claude Code / Codex CLI /
+	// OpenCode traffic gets key stickiness without the caller renaming anything.
+	//
+	// This deliberately runs after the header loop rather than inside it: that
+	// loop is a single pass with early returns, and header order is not
+	// guaranteed, so a harness header arriving first would otherwise beat
+	// x-bf-session-id. allHeaders is already built and already lowercased, so
+	// this costs no extra header iteration, and routing both the explicit and
+	// the harness case through one resolver keeps stickiness and the OTEL
+	// session.id trace attribute in agreement.
+	if sessionID := ResolveSessionIDFromHeaders(allHeaders); sessionID != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeySessionID, sessionID)
+	}
 
 	// Collect all request query params for downstream use (e.g., governance routing CEL rules
 	// that read params["..."]). Keys are lowercased for case-insensitive lookup.
@@ -711,6 +873,10 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		}
 	}
+
+	// Everything the middlewares and the headers can say about who this request is now sits on the
+	// context, so this is where it is settled onto the request's grant.
+	SettleIdentity(bifrostCtx)
 
 	return bifrostCtx, cancel
 }

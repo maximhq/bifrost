@@ -7,7 +7,9 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-// Video requests keep the videoInference task type and the 16:9 1080p width/height defaults.
+// Video requests keep the videoInference task type. Width and height are left to Runware unless
+// the model's schema marks them required: a fifth of the video models declare no height at all and
+// reject the pair outright, so defaulting it everywhere made them unusable.
 func TestToRunwareVideoGenerationRequest_VideoDefaults(t *testing.T) {
 	req := &schemas.BifrostVideoGenerationRequest{
 		Model: "klingai:kling-video@3-pro",
@@ -21,11 +23,18 @@ func TestToRunwareVideoGenerationRequest_VideoDefaults(t *testing.T) {
 	if out.TaskType != taskTypeVideoInference {
 		t.Fatalf("taskType = %q, want %q", out.TaskType, taskTypeVideoInference)
 	}
-	if out.Width == nil || out.Height == nil {
-		t.Fatalf("video request must set width/height, got width=%v height=%v", out.Width, out.Height)
+	if out.Width != nil || out.Height != nil {
+		t.Fatalf("a model that does not require dimensions must not get defaults, got %v x %v", out.Width, out.Height)
 	}
-	if *out.Width != defaultRunwareVideoWidth || *out.Height != defaultRunwareVideoHeight {
-		t.Fatalf("default size = %dx%d, want %dx%d", *out.Width, *out.Height, defaultRunwareVideoWidth, defaultRunwareVideoHeight)
+
+	// An explicit size is still honoured.
+	req.Params = &schemas.VideoGenerationParameters{Size: "1280x720"}
+	sized, err := ToRunwareVideoGenerationRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sized.Width == nil || *sized.Width != 1280 || sized.Height == nil || *sized.Height != 720 {
+		t.Fatalf("explicit size not applied, got %v x %v", sized.Width, sized.Height)
 	}
 }
 
@@ -222,9 +231,9 @@ func TestToRunwareVideoGenerationRequest_VideoURIOnly(t *testing.T) {
 	}
 }
 
-// The /videos schema has no output_format, so the container is selected through extra params and
-// normalised to Runware's uppercase enum. Video background removal is rejected unless it gets an
-// alpha-capable container, so this is the only way to reach it.
+// output_format is typed on the generation path, matching the edit path and both image paths, and is
+// normalised to Runware's uppercase enum. The provider-native spelling stays accepted for callers
+// who already use it. Video background removal is rejected without an alpha-capable container.
 func TestToRunwareVideoGenerationRequest_OutputFormat(t *testing.T) {
 	out, err := ToRunwareVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
 		Model: "bria:51@1",
@@ -242,6 +251,21 @@ func TestToRunwareVideoGenerationRequest_OutputFormat(t *testing.T) {
 	}
 	if _, ok := out.ExtraParams["outputFormat"]; ok {
 		t.Fatalf("outputFormat should be consumed from ExtraParams, got %+v", out.ExtraParams)
+	}
+
+	typed, err := ToRunwareVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Model: "bria:51@1",
+		Input: &schemas.VideoGenerationInput{VideoURI: new("https://assets.runware.ai/clip.mp4")},
+		Params: &schemas.VideoGenerationParameters{
+			Type:         new("background_removal"),
+			OutputFormat: new("webm"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if typed.OutputFormat == nil || *typed.OutputFormat != "WEBM" {
+		t.Fatalf("typed output_format = %v, want WEBM", typed.OutputFormat)
 	}
 }
 
@@ -624,8 +648,9 @@ func TestToRunwareVideoGenerationRequest_ImageToVideoOmitsDimensions(t *testing.
 	}
 }
 
-// Text-to-video is unaffected: those models accept width/height and many need them.
-func TestToRunwareVideoGenerationRequest_TextToVideoKeepsDimensions(t *testing.T) {
+// Only the models whose schema marks dimensions required get the defaults; text-to-video on any
+// other model leaves them to Runware.
+func TestToRunwareVideoGenerationRequest_TextToVideoOmitsDimensions(t *testing.T) {
 	out, err := ToRunwareVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
 		Model: "klingai:kling-video@3-pro",
 		Input: &schemas.VideoGenerationInput{Prompt: "a red bird flying"},
@@ -633,8 +658,19 @@ func TestToRunwareVideoGenerationRequest_TextToVideoKeepsDimensions(t *testing.T
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out.Width == nil || out.Height == nil {
-		t.Fatalf("text-to-video must keep the width/height defaults, got %v x %v", out.Width, out.Height)
+	if out.Width != nil || out.Height != nil {
+		t.Fatalf("text-to-video must not force dimensions, got %v x %v", out.Width, out.Height)
+	}
+
+	required, err := ToRunwareVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Model: "vidu:4@2",
+		Input: &schemas.VideoGenerationInput{Prompt: "a red bird flying"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if required.Width == nil || required.Height == nil {
+		t.Fatalf("a model that requires dimensions must still get the defaults, got %v x %v", required.Width, required.Height)
 	}
 }
 
@@ -674,5 +710,148 @@ func TestToRunwareVideoGenerationRequest_ExplicitSizeWinsOnImageToVideo(t *testi
 	}
 	if out.Width == nil || out.Height == nil || *out.Width != 1280 || *out.Height != 720 {
 		t.Fatalf("explicit size must be honoured, got %v x %v", out.Width, out.Height)
+	}
+}
+
+// Runware rejects a 3D task carrying both an input image and a prompt, so image-to-3D drops the
+// prompt while text-to-3D keeps it.
+func TestToRunwareVideoGenerationRequest_3DPromptExclusivity(t *testing.T) {
+	reference := "https://example.com/a.jpg"
+	out, err := ToRunwareVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Model:  "tencent:hunyuan-3d@3.1-rapid",
+		Input:  &schemas.VideoGenerationInput{Prompt: "a ceramic teapot", InputReference: &reference},
+		Params: &schemas.VideoGenerationParameters{Type: new("3d")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.PositivePrompt != nil {
+		t.Fatalf("prompt must be dropped for image-to-3D, got %q", *out.PositivePrompt)
+	}
+	if out.Inputs == nil || out.Inputs.Image == nil {
+		t.Fatalf("expected inputs.image, got %+v", out.Inputs)
+	}
+
+	textOnly, err := ToRunwareVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Model:  "tripo:v3.1@0",
+		Input:  &schemas.VideoGenerationInput{Prompt: "a ceramic teapot"},
+		Params: &schemas.VideoGenerationParameters{Type: new("3d")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if textOnly.PositivePrompt == nil || *textOnly.PositivePrompt != "a ceramic teapot" {
+		t.Fatalf("text-to-3D must keep its prompt, got %+v", textOnly)
+	}
+}
+
+// Image-to-video is unaffected: the prompt rides along with the frame image.
+func TestToRunwareVideoGenerationRequest_ImageToVideoKeepsPrompt(t *testing.T) {
+	reference := "https://example.com/a.jpg"
+	out, err := ToRunwareVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Model: "klingai:5@3",
+		Input: &schemas.VideoGenerationInput{Prompt: "pan across the scene", InputReference: &reference},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.PositivePrompt == nil || *out.PositivePrompt != "pan across the scene" {
+		t.Fatalf("image-to-video must keep its prompt, got %+v", out)
+	}
+	if out.Inputs == nil || len(out.Inputs.FrameImages) != 1 {
+		t.Fatalf("expected inputs.frameImages, got %+v", out.Inputs)
+	}
+}
+
+// Bifrost stamps ":runware" on the video IDs it returns, so an ID fed straight back into an edit
+// must shed the suffix before it reaches Runware, which only accepts the bare UUID.
+func TestToRunwareVideoEditRequest_StripsProviderSuffix(t *testing.T) {
+	out, err := ToRunwareVideoEditRequest(&schemas.BifrostVideoEditRequest{
+		Model: "bria:51@1",
+		Input: &schemas.VideoEditInput{
+			Video: schemas.VideoInput{ID: "45959864-08d7-4582-8b77-fc47503f9136:runware"},
+		},
+		Params: &schemas.VideoEditParameters{Type: new("background_removal")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Inputs == nil || out.Inputs.Video == nil {
+		t.Fatalf("expected inputs.video, got %+v", out.Inputs)
+	}
+	if *out.Inputs.Video != "45959864-08d7-4582-8b77-fc47503f9136" {
+		t.Fatalf("provider suffix not stripped: %q", *out.Inputs.Video)
+	}
+
+	// A URL that happens to contain a colon must survive untouched.
+	urlOut, err := ToRunwareVideoEditRequest(&schemas.BifrostVideoEditRequest{
+		Model: "bria:51@1",
+		Input: &schemas.VideoEditInput{Video: schemas.VideoInput{URL: "https://example.com/clip.mp4"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if *urlOut.Inputs.Video != "https://example.com/clip.mp4" {
+		t.Fatalf("url mangled: %q", *urlOut.Inputs.Video)
+	}
+}
+
+// A fifth of the video models declare no frameImages and reject it; the reference image goes to
+// whichever key their schema does declare.
+func TestToRunwareVideoGenerationRequest_ReferenceInputForms(t *testing.T) {
+	for _, tc := range []struct {
+		model string
+		check func(*testing.T, *RunwareInputs)
+	}{
+		{"klingai:kling-video@2.6-standard", func(t *testing.T, in *RunwareInputs) {
+			if in == nil || len(in.ReferenceImages) != 1 || len(in.FrameImages) != 0 {
+				t.Fatalf("expected inputs.referenceImages, got %+v", in)
+			}
+		}},
+		{"creatify:aurora@fast", func(t *testing.T, in *RunwareInputs) {
+			if in == nil || in.Image == nil || len(in.FrameImages) != 0 {
+				t.Fatalf("expected inputs.image, got %+v", in)
+			}
+		}},
+		{"klingai:kling-video@3-pro", func(t *testing.T, in *RunwareInputs) {
+			if in == nil || len(in.FrameImages) != 1 {
+				t.Fatalf("expected inputs.frameImages, got %+v", in)
+			}
+		}},
+	} {
+		out, err := ToRunwareVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+			Model: tc.model,
+			Input: &schemas.VideoGenerationInput{
+				Prompt:         "slow camera pan",
+				InputReference: new("https://assets.runware.ai/a.jpg"),
+			},
+		})
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", tc.model, err)
+		}
+		tc.check(t, out.Inputs)
+	}
+}
+
+// The video reference key and the 3D input arity resolve the same way: datasheet first, table
+// second.
+func TestToRunwareVideoGenerationRequest_CatalogOverridesTable(t *testing.T) {
+	withCaps(t, &schemas.ModelCapabilities{
+		FieldNames: map[string]string{schemas.LogicalFieldInputImage: "referenceImages"},
+	})
+
+	// klingai:kling-video@3-pro is a frameImages model in the table.
+	out, err := ToRunwareVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Model: "klingai:kling-video@3-pro",
+		Input: &schemas.VideoGenerationInput{
+			Prompt:         "slow camera pan",
+			InputReference: new("https://assets.runware.ai/a.jpg"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Inputs == nil || len(out.Inputs.ReferenceImages) != 1 || len(out.Inputs.FrameImages) != 0 {
+		t.Fatalf("datasheet should have moved the reference to referenceImages, got %+v", out.Inputs)
 	}
 }

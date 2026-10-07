@@ -34,18 +34,17 @@ USE_NODE = NVM_SH="$${NVM_DIR:-$$HOME/.nvm}/nvm.sh"; \
 	[ -s "$$NVM_SH" ] || NVM_SH="$$(brew --prefix nvm 2>/dev/null)/nvm.sh"; \
 	if [ -s "$$NVM_SH" ]; then . "$$NVM_SH" >/dev/null && nvm install >/dev/null 2>&1 && nvm use >/dev/null 2>&1; fi
 
-# Loads secrets into the current recipe shell. Infisical is the default source (Reads
-# USE_INFISICAL env var):
-#   USE_INFISICAL=0|n|N|no|NO|false|FALSE  -> source ./.env instead (explicit opt-out)
-#   anything else (including unset)        -> source secrets from Infisical (`infisical export --path <p>`)
+# Loads secrets into the current recipe shell. Reads USE_INFISICAL env var:
+#   USE_INFISICAL=1|y|Y|yes|YES|true|TRUE  -> source secrets from Infisical (`infisical export --path <p>`)
+#   anything else                          -> source ./.env
 # Honors INFISICAL_PATH (default /local) when sourcing from Infisical.
 # After invoking `$(EXPOSE_ENV);`, all subsequent commands inherit the secrets
 # - no per-command prefix needed.
 # Use as: `$(EXPOSE_ENV); <your command>`
 define EXPOSE_ENV
 	case "$$USE_INFISICAL" in \
-		0|n|N|no|NO|false|FALSE) USE_INFISICAL_RESOLVED=0 ;; \
-		*) USE_INFISICAL_RESOLVED=1 ;; \
+		1|y|Y|yes|YES|true|TRUE) USE_INFISICAL_RESOLVED=1 ;; \
+		*) USE_INFISICAL_RESOLVED=0 ;; \
 	esac; \
 	if [ "$$USE_INFISICAL_RESOLVED" = "1" ]; then \
 		if ! which infisical > /dev/null 2>&1; then \
@@ -68,7 +67,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
+.PHONY: test-memory all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-a11y-audit run-e2e-ui run-e2e-headed run-e2e-api run-mcp-codemode-test run-warp-test format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
 
 all: help
 
@@ -229,9 +228,9 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 	$(ECHO) "$(YELLOW)Starting UI development server...$(NC)"; \
 	$(USE_NODE); if [ -n "$(DISABLE_PROFILER)" ]; then \
 		$(ECHO) "$(CYAN)DevProfiler disabled for testing$(NC)"; \
-		(cd ui && BIFROST_DISABLE_PROFILER=1 npm run dev) & \
+		(cd ui && BIFROST_PORT=$(PORT) BIFROST_DISABLE_PROFILER=1 npm run dev) & \
 	else \
-		(cd ui && npm run dev) & \
+		(cd ui && BIFROST_PORT=$(PORT) npm run dev) & \
 	fi; \
 	ui_pid="$$!"; \
 	$(ECHO) "$(YELLOW)[make dev] UI dev server started with pid $$ui_pid$(NC)"; \
@@ -315,9 +314,9 @@ dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve)
 	$(ECHO) "$(YELLOW)Starting UI development server...$(NC)"; \
 	$(USE_NODE); if [ -n "$(DISABLE_PROFILER)" ]; then \
 		$(ECHO) "$(CYAN)DevProfiler disabled for testing$(NC)"; \
-		(cd ui && BIFROST_DISABLE_PROFILER=1 npm run dev) & \
+		(cd ui && BIFROST_PORT=$(PORT) BIFROST_DISABLE_PROFILER=1 npm run dev) & \
 	else \
-		(cd ui && npm run dev) & \
+		(cd ui && BIFROST_PORT=$(PORT) npm run dev) & \
 	fi; \
 	ui_pid="$$!"; \
 	$(ECHO) "$(YELLOW)[make dev-pulse] UI dev server started with pid $$ui_pid$(NC)"; \
@@ -435,7 +434,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.26.6-alpine3.23@sha256:e57c41c1d5864341031181b0db34b9a537bb5773eb6428e4e5bdaea0f9135406 \
+				golang:1.27.0-alpine3.24@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -X main.Version=v$(VERSION)' \
@@ -452,7 +451,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.26.6-alpine3.23@sha256:e57c41c1d5864341031181b0db34b9a537bb5773eb6428e4e5bdaea0f9135406 \
+				golang:1.27.0-alpine3.24@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -extldflags "-static" -X main.Version=v$(VERSION)' \
@@ -615,7 +614,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
 	fi; \
 	if [ -n "$(PROVIDER)" ]; then \
-		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/openrouter/OpenRouter/i; s/sgl/SGL/i; s/xai/XAI/i; s/vllm/VLLM/i'); \
+		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/openrouter/OpenRouter/i; s/sgl/SGL/i; s/xai/XAI/i; s/vllm/VLLM/i; s/githubcopilot/GithubCopilot/i'); \
 		if [ -n "$(TESTCASE)" ]; then \
 			CLEAN_TESTCASE="$(TESTCASE)"; \
 			CLEAN_TESTCASE=$${CLEAN_TESTCASE#Test$${PROVIDER_TEST_NAME}/}; \
@@ -853,6 +852,29 @@ test-plugins: install-gotestsum ## Run plugin tests
 		SUMMARY_LABEL="Plugin" \
 		SUMMARY_STRIP="plugin-" \
 		SUMMARY_FILES="$(TEST_REPORTS_DIR)/plugin-*.xml"
+
+test-memory: install-gotestsum ## Run memory-regression tests (allocation scaling + coverage gate)
+	@$(ECHO) "$(GREEN)Running memory regression tests...$(NC)"
+	@$(ECHO) "$(CYAN)Asserts allocation grows with input size, not its square, and that every$(NC)"
+	@$(ECHO) "$(CYAN)loop-bound raw-JSON mutation in core/providers has been classified.$(NC)"
+	@mkdir -p $(TEST_REPORTS_DIR)
+	@rc=0; \
+	for mod in core transports; do \
+		pkgs=$$(cd $$mod && grep -rl "_AllocationScaling\|_Retention" --include="*_test.go" . 2>/dev/null | xargs -n1 dirname | sort -u); \
+		if [ "$$mod" = "core" ]; then pkgs="./internal/memtest $$(echo "$$pkgs" | grep -v '^./internal/memtest$$')"; fi; \
+		[ -z "$$(echo $$pkgs)" ] && continue; \
+		$(ECHO) "$(CYAN)$$mod:$(NC)"; \
+		for p in $$pkgs; do $(ECHO) "  $$p"; done; \
+		( cd $$mod && gotestsum \
+			--format=$(GOTESTSUM_FORMAT) \
+			--junitfile=$(CURDIR)/$(TEST_REPORTS_DIR)/memory-$$mod.xml \
+			-- -timeout 15m -count=1 \
+			-run '_AllocationScaling|_Retention|TestEveryLoopBoundJSONMutationIsReviewed|TestCoveredSitesHaveARealTest' \
+			$$pkgs ) || rc=1; \
+	done; \
+	exit $$rc
+	@$(ECHO) ""
+	@$(ECHO) "$(CYAN)JUnit XML report saved to $(TEST_REPORTS_DIR)/memory-*.xml$(NC)"
 
 test-framework: install-gotestsum ## Run framework tests
 	@$(EXPOSE_ENV); \
@@ -1447,24 +1469,24 @@ test-integrations-py: ## Run Python integration tests (Usage: make test-integrat
 			if [ -n "$(TESTCASE)" ]; then \
 				$(ECHO) "$(CYAN)Running $(INTEGRATION) integration test: $(TESTCASE)...$(NC)"; \
 				if [[ "$(TESTCASE)" == *::* ]]; then \
-					uv run pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+					uv run --frozen pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 				else \
-					uv run pytest tests/test_$(INTEGRATION).py -k "$(TESTCASE)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+					uv run --frozen pytest tests/test_$(INTEGRATION).py -k "$(TESTCASE)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 				fi; \
 			elif [ -n "$(PATTERN)" ]; then \
 				$(ECHO) "$(CYAN)Running $(INTEGRATION) integration tests matching '$(PATTERN)'...$(NC)"; \
-				uv run pytest tests/test_$(INTEGRATION).py -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				uv run --frozen pytest tests/test_$(INTEGRATION).py -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			else \
 				$(ECHO) "$(CYAN)Running $(INTEGRATION) integration tests...$(NC)"; \
-				uv run pytest tests/test_$(INTEGRATION).py $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				uv run --frozen pytest tests/test_$(INTEGRATION).py $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			fi; \
 		else \
 			if [ -n "$(PATTERN)" ]; then \
 				$(ECHO) "$(CYAN)Running all integration tests matching '$(PATTERN)'...$(NC)"; \
-				uv run pytest -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				uv run --frozen pytest -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			else \
 				$(ECHO) "$(CYAN)Running all integration tests...$(NC)"; \
-				uv run pytest $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				uv run --frozen pytest $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			fi; \
 		fi; \
 	fi; \
@@ -1595,6 +1617,113 @@ test-integrations-ts: ## Run TypeScript integration tests (Usage: make test-inte
 		$(ECHO) "$(GREEN)✓ TypeScript integration tests complete$(NC)"; \
 	fi
 
+test-integrations: ## Run Python + TypeScript SDK integration tests in parallel, one process per test file, against one shared gateway (Usage: make test-integrations [JOBS=30] [INTEGRATION=openai] [BUILD=1] [PORT=8080])
+	@: "Delegates to the CI script rather than reimplementing the fan-out. That script already"; \
+	: "throttles both suites against one gateway, group-kills descendants on cancellation, and"; \
+	: "replays each file's buffered log in order - see .github/workflows/scripts/test-integrations.sh."; \
+	: ""; \
+	: "Bash check first, before EXPOSE_ENV: an unusable shell should cost milliseconds rather"; \
+	: "than an Infisical round trip. This recipe shell is the same /usr/bin/env bash the"; \
+	: "script's shebang resolves, so BASH_VERSINFO here is what the script will see. The script"; \
+	: "rejects old shells too; this only adds the remedy and names the sequential fallback."; \
+	if [ "$${BASH_VERSINFO[0]}" -lt 5 ] || { [ "$${BASH_VERSINFO[0]}" -eq 5 ] && [ "$${BASH_VERSINFO[1]}" -lt 1 ]; }; then \
+		$(ECHO) "$(RED)Error: bash 5.1+ required (the fan-out uses 'wait -f -n -p'), found $$BASH_VERSION$(NC)"; \
+		$(ECHO) "$(YELLOW)macOS ships bash 3.2. Install a newer one and put it ahead of /bin in PATH:$(NC)"; \
+		$(ECHO) "$(CYAN)  brew install bash$(NC)"; \
+		$(ECHO) "$(YELLOW)Or run the suites sequentially: make test-integrations-py && make test-integrations-ts$(NC)"; \
+		exit 1; \
+	fi; \
+	SCRIPT=.github/workflows/scripts/test-integrations.sh; \
+	if [ ! -x "$$SCRIPT" ]; then \
+		$(ECHO) "$(RED)Error: $$SCRIPT is missing or not executable$(NC)"; \
+		exit 1; \
+	fi; \
+	$(EXPOSE_ENV); \
+	$(USE_NODE); \
+	TEST_HOST="$${HOST:-localhost}"; \
+	TEST_PORT="$${PORT:-8080}"; \
+	: "Gateway: reuse one that is already serving this port, matching test-integrations-py"; \
+	: "and -ts. The script cannot work this out for itself - it starts its own gateway"; \
+	: "unconditionally, and its readiness loop curls /health before checking whether its own"; \
+	: "child survived, so an existing server would answer for it while the real child died"; \
+	: "unable to bind. SKIP_GATEWAY_START=1 makes that explicit instead of accidental, and"; \
+	: "leaves the reused server running at the end - we did not start it."; \
+	: ""; \
+	: "Probed after EXPOSE_ENV because .env may set PORT."; \
+	REUSING=0; \
+	if curl -sf --connect-timeout 2 --max-time 5 "http://$$TEST_HOST:$$TEST_PORT/health" > /dev/null 2>&1; then \
+		REUSING=1; \
+		export SKIP_GATEWAY_START=1; \
+		$(ECHO) "$(GREEN)Reusing the gateway already serving http://$$TEST_HOST:$$TEST_PORT$(NC)"; \
+		$(ECHO) "$(YELLOW)  Its config is whatever that server was started with. These suites expect$(NC)"; \
+		$(ECHO) "$(YELLOW)  -app-dir tests/integrations/python (35 providers plus the vk-test virtual$(NC)"; \
+		$(ECHO) "$(YELLOW)  key); started elsewhere, expect config-shaped failures.$(NC)"; \
+	elif command -v nc > /dev/null 2>&1 && nc -z -w 1 "$$TEST_HOST" "$$TEST_PORT" 2>/dev/null; then \
+		: "Listening but not answering /health - not a gateway, and we cannot bind either."; \
+		$(ECHO) "$(RED)Error: $$TEST_HOST:$$TEST_PORT is in use but does not answer /health$(NC)"; \
+		$(ECHO) "$(YELLOW)Something that is not a Bifrost gateway holds the port, and this target$(NC)"; \
+		$(ECHO) "$(YELLOW)cannot start its own there.$(NC)"; \
+		$(ECHO) "$(CYAN)Stop it, or: make test-integrations PORT=8081$(NC)"; \
+		exit 1; \
+	else \
+		$(ECHO) "$(CYAN)No gateway on $$TEST_HOST:$$TEST_PORT - starting one (-app-dir tests/integrations/python)$(NC)"; \
+	fi; \
+	JOBS_VAL="$${JOBS:-$(JOBS)}"; JOBS_VAL="$${JOBS_VAL:-30}"; \
+	: "Default 30 against 15 test files total (9 Python + 6 TypeScript) means every file"; \
+	: "launches at once - the cap is a ceiling for the day the suites grow, not a throttle"; \
+	: "today. What it stops protecting is provider quota: every test spends a real billed"; \
+	: "call, and conftest.py marks every test flaky(reruns=3), so one failure costs up to"; \
+	: "four. Lower it (JOBS=4, what release-pipeline.yml pins) if a run starts drawing 429s."; \
+	: "The script validates this too; checked here so the message names JOBS, which is what"; \
+	: "the caller actually typed, rather than INTEGRATION_TEST_MAX_PARALLEL."; \
+	case "$$JOBS_VAL" in \
+		''|*[!0-9]*|0) \
+			$(ECHO) "$(RED)Error: JOBS must be a positive integer, got '$$JOBS_VAL'$(NC)"; \
+			exit 1 ;; \
+	esac; \
+	: "Build: reuse tmp/bifrost-http when present, BUILD=1 forces the script's own"; \
+	: "'make LOCAL=1 build'. Not a prerequisite on 'build': that pulls in build-ui and is"; \
+	: ".PHONY, so every run would rebuild the whole Next.js UI before any test could start,"; \
+	: "and no SDK integration test touches the UI. The mtime is printed because silently"; \
+	: "reusing a weeks-old binary is the obvious hazard of defaulting to skip."; \
+	if [ "$$REUSING" = "1" ]; then \
+		: "No binary needed: we are attaching to a gateway, not starting one. The script"; \
+		: "skips its own build under SKIP_GATEWAY_START and never looks for tmp/bifrost-http."; \
+		$(ECHO) "$(CYAN)Skipping build - attaching to the running gateway$(NC)"; \
+	elif [ -n "$(BUILD)" ]; then \
+		$(ECHO) "$(YELLOW)BUILD=1: rebuilding UI and bifrost-http first (slow)$(NC)"; \
+	elif [ -x tmp/bifrost-http ]; then \
+		export SKIP_GATEWAY_BUILD=1; \
+		$(ECHO) "$(GREEN)Reusing tmp/bifrost-http (built $$(date -r tmp/bifrost-http '+%Y-%m-%d %H:%M' 2>/dev/null || echo unknown))$(NC)"; \
+		$(ECHO) "$(YELLOW)Stale? Rebuild with: make test-integrations BUILD=1$(NC)"; \
+	else \
+		$(ECHO) "$(YELLOW)No tmp/bifrost-http yet - building it, UI included (slow)$(NC)"; \
+	fi; \
+	: "One process per test FILE, deliberately, not pytest-xdist. tests/test_langchain.py,"; \
+	: "test_litellm.py and test_pydanticai.py each carry an autouse fixture that overwrites"; \
+	: "OPENAI_API_KEY and friends in os.environ with dummy values and restores only the base"; \
+	: "URLs, never the keys. Any xdist mode lets one worker take several files in sequence, so"; \
+	: "the dummies leak forward - and tests/test_google.py:753 builds a genai.Client that talks"; \
+	: "to Google directly rather than through the gateway, where a dummy key is a hard auth"; \
+	: "failure. Process-per-file is a correctness requirement here, which is why pytest-xdist"; \
+	: "stays unused despite being a declared dependency."; \
+	if [ -n "$(INTEGRATION)" ]; then \
+		export INTEGRATION_TEST_FILTER="$(INTEGRATION)"; \
+		$(ECHO) "$(CYAN)Integration filter: $(INTEGRATION)$(NC)"; \
+	fi; \
+	export INTEGRATION_TEST_MAX_PARALLEL="$$JOBS_VAL"; \
+	: "So the script's markdown failure report lands wherever the Go targets put theirs."; \
+	export TEST_REPORTS_DIR="$(TEST_REPORTS_DIR)"; \
+	export PORT="$$TEST_PORT"; \
+	export HOST="$$TEST_HOST"; \
+	: "The TS suite runs against the Python app-dir on purpose - one shared gateway, and"; \
+	: "python/config.json's providers are a superset of typescript/config.json's. CI has run"; \
+	: "it this way since release-pipeline.yml adopted --parallel-files."; \
+	$(ECHO) "$(GREEN)Running Python + TypeScript integration tests$(NC)"; \
+	$(ECHO) "$(CYAN)  Gateway:  http://$$TEST_HOST:$$TEST_PORT (app-dir tests/integrations/python)$(NC)"; \
+	$(ECHO) "$(CYAN)  Parallel: up to $$JOBS_VAL concurrent test files across both suites$(NC)"; \
+	"$$SCRIPT" --parallel-files
+
 install-playwright: ## Install Playwright test dependencies
 	@$(ECHO) "$(GREEN)Installing Playwright dependencies...$(NC)"
 	@which node > /dev/null || ($(ECHO) "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
@@ -1631,6 +1760,12 @@ run-e2e: install-playwright ## Run E2E tests (Usage: make run-e2e [FLOW=provider
 	@$(ECHO) ""
 	@$(ECHO) "$(GREEN)E2E tests complete$(NC)"
 	@$(ECHO) "$(CYAN)View HTML report: cd tests/e2e && npx playwright show-report$(NC)"
+
+run-a11y-audit: install-playwright ## Scan every UI route with axe-core and report accessibility coverage (Usage: make run-a11y-audit [ROUTES=logs,providers] [MIN_SCORE=80])
+	@$(ECHO) "$(GREEN)Running accessibility audit...$(NC)"
+	@cd tests/e2e && A11Y_ROUTES="$(ROUTES)" A11Y_MIN_SCORE="$(MIN_SCORE)" npx playwright test --config=playwright.a11y.config.ts
+	@$(ECHO) "$(CYAN)Report: tests/e2e/a11y-report/summary.md$(NC)"
+	@$(ECHO) "$(CYAN)Static JSX checks: cd ui && npm run lint:a11y$(NC)"
 
 run-e2e-ui: install-playwright ## Run E2E tests in interactive UI mode
 	@$(EXPOSE_ENV); \
@@ -1672,6 +1807,35 @@ run-e2e-api: install-newman ## Run E2E API management tests (/api/* and /health)
 		exit 1; \
 	fi; \
 	cd tests/e2e/api && "$$BASH4" ./runners/run-newman-api-tests.sh --all-reports
+
+run-mcp-codemode-test: install-newman ## Run the hermetic MCP Code Mode E2E suite (no API keys, no paid calls). Builds tmp/bifrost-http from local code unless BINARY is given (Usage: make run-mcp-codemode-test [BINARY=path/to/bifrost-http])
+	@BINARY="$(BINARY)"; \
+	if [ -z "$$BINARY" ]; then \
+		$(MAKE) build LOCAL=1 || exit 1; \
+		BINARY=tmp/bifrost-http; \
+	fi; \
+	if [ ! -x "$$BINARY" ]; then \
+		$(ECHO) "$(RED)Error: bifrost-http binary not found or not executable: $$BINARY$(NC)"; \
+		exit 1; \
+	fi; \
+	BINARY="$$(cd "$$(dirname "$$BINARY")" && pwd)/$$(basename "$$BINARY")"; \
+	$(ECHO) "$(GREEN)Running MCP Code Mode E2E tests against $$BINARY...$(NC)"; \
+	./tests/e2e/api/runners/individual/run-newman-mcp-codemode-tests.sh --binary "$$BINARY"
+
+run-warp-test: install-newman ## Run the Warp E2E suite: boots Bifrost on a throwaway Postgres DB, seeds it (tests/cmd/seed/warpseed) and asks Warp questions with a live model. Needs OPENAI_API_KEY (or WARP_UPSTREAM_BIFROST=<url> to use a running Bifrost's key), Postgres and Weaviate (tests/docker-compose.yml). Builds tmp/bifrost-http unless BINARY is given (Usage: make run-warp-test [BINARY=path/to/bifrost-http] [FOLDER="Guardrails"] [WARP_UPSTREAM_BIFROST=http://localhost:8080] [WEAVIATE_HOST=localhost:9000] [POSTGRES_PORT=5432] [USE_INFISICAL=1])
+	@$(EXPOSE_ENV); \
+	BINARY="$(BINARY)"; \
+	if [ -z "$$BINARY" ]; then \
+		$(MAKE) build LOCAL=1 || exit 1; \
+		BINARY=tmp/bifrost-http; \
+	fi; \
+	if [ ! -x "$$BINARY" ]; then \
+		$(ECHO) "$(RED)Error: bifrost-http binary not found or not executable: $$BINARY$(NC)"; \
+		exit 1; \
+	fi; \
+	BINARY="$$(cd "$$(dirname "$$BINARY")" && pwd)/$$(basename "$$BINARY")"; \
+	$(ECHO) "$(GREEN)Running Warp E2E tests against $$BINARY...$(NC)"; \
+	./tests/e2e/api/runners/individual/run-newman-warp-tests.sh --binary "$$BINARY" $(if $(FOLDER),--folder "$(FOLDER)",)
 
 # Quick start with example config
 quick-start: ## Quick start with example config and maxim plugin
@@ -1816,6 +1980,42 @@ test-cli: install-gotestsum ## Run CLI tests
 # the single most important line in the output.
 CLI_HARNESS_FILTER = awk '/^=== /||/^[ \t]*--- (PASS|FAIL|SKIP)[: ]/||/^(PASS|FAIL)$$/||/^ok[ \t]/||/^FAIL\t/||/unsupported for /||/not configured in bifrost/{next} {print; fflush()}'
 
+test-live: install-gotestsum ## Run GPT Live e2e tests against a running gateway (Usage: make test-live [TESTCASE=TestName|PATTERN=substring] [LIVE_UPSTREAM=fake|real] [BIFROST_BASE_URL=http://localhost:8080]; fake mode: start the gateway with APP_DIR=$$(pwd)/tests/live)
+	@$(EXPOSE_ENV); \
+	$(ECHO) "$(GREEN)Running GPT Live e2e tests ($${LIVE_UPSTREAM:-fake} upstream)...$(NC)"; \
+	mkdir -p $(TEST_REPORTS_DIR); \
+	if [ -n "$(PATTERN)" ] && [ -n "$(TESTCASE)" ]; then \
+		$(ECHO) "$(RED)Error: PATTERN and TESTCASE are mutually exclusive$(NC)"; exit 1; \
+	fi; \
+	RUN_FLAG=""; \
+	if [ -n "$(TESTCASE)" ]; then RUN_FLAG="-run ^$(TESTCASE)$$"; elif [ -n "$(PATTERN)" ]; then RUN_FLAG="-run .*$(PATTERN).*"; \
+	elif [ "$${LIVE_UPSTREAM:-fake}" = "real" ]; then RUN_FLAG="-run ^Test(Real|SDK)"; fi; \
+	REPORT_FILE="$(TEST_REPORTS_DIR)/live.xml"; \
+	cd tests/live && GOWORK=off gotestsum \
+		--format=$(GOTESTSUM_FORMAT) \
+		--junitfile=../../$$REPORT_FILE \
+		-- -v -timeout 900s $$RUN_FLAG; \
+	STATUS=$$?; \
+	cd ../..; \
+	$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+	exit $$STATUS
+
+test-live-long: install-gotestsum ## Run the long GPT Live sessions: 17 min on the fake, 15 min per transport on the real upstream (Usage: make test-live-long [TESTCASE=TestName] [LIVE_UPSTREAM=fake|real] [BIFROST_BASE_URL=http://localhost:8080])
+	@$(EXPOSE_ENV); \
+	$(ECHO) "$(GREEN)Running long GPT Live sessions ($${LIVE_UPSTREAM:-fake} upstream)...$(NC)"; \
+	mkdir -p $(TEST_REPORTS_DIR); \
+	RUN_FLAG="-run Long"; \
+	if [ -n "$(TESTCASE)" ]; then RUN_FLAG="-run ^$(TESTCASE)$$"; fi; \
+	REPORT_FILE="$(TEST_REPORTS_DIR)/live-long.xml"; \
+	cd tests/live && LIVE_LONG=1 GOWORK=off gotestsum \
+		--format=$(GOTESTSUM_FORMAT) \
+		--junitfile=../../$$REPORT_FILE \
+		-- -v -timeout 90m $$RUN_FLAG; \
+	STATUS=$$?; \
+	cd ../..; \
+	$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+	exit $$STATUS
+
 run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non-interactive, multi-turn JSON streams). Prints one line per cell plus a progress table; MIRROR=1 adds the raw CLI stream, VERBOSE=1 adds go test -v. Usage: make run-cli-harness-test [TESTCASE='TestCLIs/...'] [CLI=claude|codex|opencode] [PROVIDER=openai|anthropic|azure|gemini|bedrock|vertex] [MODEL=<id-substring>] [SCENARIO=simple-chat|conversation-memory|...] [PARALLEL=4] [BASE_URL=http://localhost:8080] [API_KEY=...] [TIMEOUT=60m] [MIRROR=1] [VERBOSE=1] [QUIET=1]
 	@$(EXPOSE_ENV); \
 	$(ECHO) "$(GREEN)Running CLI harness E2E tests...$(NC)"; \
@@ -1886,6 +2086,16 @@ test-harness-runner-lib: ## Run the provider-harness runner unit tests (tests/e2
 	if [ "$$RC" -ne 0 ]; then $(ECHO) "$(RED)harness runner lib tests failed$(NC)"; else $(ECHO) "$(GREEN)harness runner lib tests passed$(NC)"; fi; \
 	exit $$RC
 
+# Video bills at SETTLEMENT, minutes after the POST returns, so neither newman
+# (no way to wait for an out-of-band row) nor a Go test (no provider) can check
+# the figure. This runner does the whole submit -> poll -> settle -> assert loop.
+run-video-costing-test: ## Verify async video jobs bill correctly against real providers (Usage: make run-video-costing-test ARGS="--group Runware --seed-pricing"). Needs a running Bifrost with video provider keys.
+	@$(ECHO) "$(GREEN)Running video costing checks...$(NC)"
+	@$(USE_NODE); cd tests/e2e/api && node runners/run-video-costing.mjs $(ARGS)
+
+list-video-costing-cases: ## List the video costing cases and which checklist line each covers. No network, no Bifrost.
+	@$(USE_NODE); cd tests/e2e/api && node runners/run-video-costing.mjs --list
+
 # Named target rather than documentation telling people to type SMOKE=1: a smoke
 # set nobody can invoke in one word does not get used before a release.
 smoke-provider-harness-test: ## Run the curated ~100-request provider-harness smoke set (tests/e2e/api/collections/smoke-manifest.json). Same flags as run-provider-harness-test; equivalent to SMOKE=1.
@@ -1899,7 +2109,7 @@ NEWMAN_HTMLEXTRA_VERSION ?= 1.23.1
 # Every provider fork the harness knows how to run. Also the provider set the
 # status table lists, including the deferred cache-parity pass, so it lives in
 # one place rather than being restated per newman invocation.
-HARNESS_PROVIDERS := openai anthropic bedrock gemini vertex azure passthrough openrouter
+HARNESS_PROVIDERS := openai anthropic bedrock bedrock_mantle gemini vertex azure passthrough openrouter huggingface groq xai mistral cohere deepseek
 
 # Second parallelism axis. Each provider fork is sharded again by modality class so the run is not
 # bound by one provider's whole sequential item list: openai alone is ~1264 requests, and its
@@ -1970,14 +2180,14 @@ install-newman: ## Install newman + htmlextra reporter if not already installed 
 	@$(USE_NODE); npm list -g newman-reporter-htmlextra > /dev/null 2>&1 || ([ -n "$$CI" ] || $(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION)...$(NC)"; npm install -g newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION))
 	@[ -n "$$CI" ] || $(ECHO) "$(GREEN)Newman + htmlextra are ready$(NC)"
 
-run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough|openrouter, FEATURE="<kw>" or FEATURE="<kw1>,<kw2>" (AND across substrings; matches request name/URL/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. SKIP_STREAM_CANCEL=1 skips stream cancellation probes. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PROVIDER=anthropic] [FEATURE="web search"] [FEATURE="cross-cut,structured output"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
+run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough|openrouter|huggingface, FEATURE="<kw>" or FEATURE="<kw1>,<kw2>" (AND across substrings; matches request name/URL/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. SKIP_STREAM_CANCEL=1 skips stream cancellation probes. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PROVIDER=anthropic] [FEATURE="web search"] [FEATURE="cross-cut,structured output"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
 	@if [ -n "$(HELP)" ]; then \
 		printf '\n%s\n' "$(CYAN)run-provider-harness-test - Bifrost provider harness runner$(NC)"; \
 		printf '%s\n\n' "Runs the Bifrost provider-harness Postman collection through newman, with optional filtering."; \
 		printf '%s\n\n' "Includes §8 Criss-Cross: endpoint-shape × model-provider × modality matrix (chat, streaming, embeddings, audio, image gen, tools, vision, JSON, reasoning)."; \
 		printf '%s\n' "$(YELLOW)PARAMETERS$(NC)"; \
 		printf '  %-18s %s\n' "HELP=1"          "Print this help and exit (no Bifrost or network activity)."; \
-		printf '  %-18s %s\n' "PROVIDER=<name>" "Filter requests by provider. One of: openai, anthropic, bedrock, gemini, vertex, azure, passthrough, openrouter."; \
+		printf '  %-18s %s\n' "PROVIDER=<name>" "Filter requests by provider. One of: $(HARNESS_PROVIDERS)."; \
 		printf '  %-18s %s\n' ""                "  Matches via PROVIDER_KEYWORDS in tests/e2e/api/runners/filter-collection.mjs (loose name/body substring)."; \
 		printf '  %-18s %s\n' "FEATURE=\"<kw>\""  "Filter by case-insensitive keyword(s) against the full request JSON (name + URL + body + ancestor folder names)."; \
 		printf '  %-18s %s\n' ""                "  Single: FEATURE=\"web search\". Multi-keyword AND (comma-separated): FEATURE=\"cross-cut,structured output\"."; \
@@ -2001,12 +2211,12 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "INCLUDE_PREVIEW=1" "Run [PREVIEW]-tagged requests (account/region-scoped: vector stores, cached content, MCP servers, preview-model deployments). Off by default."; \
 		printf '  %-18s %s\n' "INCLUDE_SKIP=1"   "Run [SKIP]-tagged criss-cross cells (provider+modality pairs that return NewUnsupportedOperationError by design, e.g., anthropic embeddings, bedrock audio). Off by default."; \
 		printf '  %-18s %s\n' "SMOKE=1"          "Run only the curated smoke set in tests/e2e/api/collections/smoke-manifest.json (~100 requests"; \
-		printf '  %-18s %s\n' ""                "  across all 8 providers) instead of the full ~1900-request sweep. SMOKE=<path> uses a different manifest."; \
+		printf '  %-18s %s\n' ""                "  across all $(words $(HARNESS_PROVIDERS)) providers) instead of the full ~1900-request sweep. SMOKE=<path> uses a different manifest."; \
 		printf '  %-18s %s\n' ""                "  Rows are matched by (folder, name) against the AUGMENTED collection, which is the only way to reach the"; \
 		printf '  %-18s %s\n' ""                "  generated cache-parity rows - they do not exist in provider-harness.json and cannot be tagged in place."; \
 		printf '  %-18s %s\n' ""                "  Forces the deferred cache-parity pass ON: a third of the smoke set is cache parity, and the default"; \
 		printf '  %-18s %s\n' ""                "  deferral only fires on an unfiltered run. Composes with PROVIDER; RERUN_FAILED wins and skips the defer."; \
-		printf '  %-18s %s\n' "PARALLEL=0"       "Disable per-provider parallelism (default: ON). When ON, forks one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure) concurrently; reports merged into tmp/newman-report.json. The htmlextra report is only emitted in sequential mode (PARALLEL=0)."; \
+		printf '  %-18s %s\n' "PARALLEL=0"       "Disable per-provider parallelism (default: ON). When ON, forks one newman per provider ($(HARNESS_PROVIDERS)) concurrently; reports merged into tmp/newman-report.json. The htmlextra report is only emitted in sequential mode (PARALLEL=0)."; \
 		printf '  %-18s %s\n' "CLASS_SHARDS=0"  "Collapse the second parallelism axis. By default each provider fork is sharded again by modality"; \
 		printf '  %-18s %s\n' ""                "  class (streaming, tools, chat, reasoning, json, vision, other, audio, embeddings, image-gen) so the"; \
 		printf '  %-18s %s\n' ""                "  run is not bound by one provider's whole sequential list - openai alone is ~1264 requests and its"; \
@@ -2032,6 +2242,12 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "HARNESS_JOBS=N"  "Cap on concurrently running newman shards (default 100). The grid is ~168 live cells with sub-shards"; \
 		printf '  %-18s %s\n' ""                "  on, so the cap does block - which is why HARNESS_CLASSES is ordered slowest-first, to keep the long"; \
 		printf '  %-18s %s\n' ""                "  shards holding slots from the start. Lower it if a provider starts returning 429s."; \
+		printf '  %-18s %s\n' "HARNESS_MAX_REQUESTS=N" ""; \
+		printf '  %-18s %s\n' ""                "  Approved ceiling on paid requests for this run. Checked with each newman launch's EXACT filtered"; \
+		printf '  %-18s %s\n' ""                "  request count (main shards, 429 replays, the deferred cache-parity pass, sequential mode) before it"; \
+		printf '  %-18s %s\n' ""                "  starts: a launch that would cross the cap is refused, so the live total never exceeds N. Running"; \
+		printf '  %-18s %s\n' ""                "  shards drain and the report merges as usual; the target exits 3. Stream-cancellation probes are"; \
+		printf '  %-18s %s\n' ""                "  never sent under a cap (their count is not known up front). Unset = no cap (default)."; \
 		printf '  %-18s %s\n' "RETRY_429=N"     "Max transient-failure retry attempts per shard (default 3; 0 disables). Covers 429 plus the two"; \
 		printf '  %-18s %s\n' ""                "  overload codes - 503 (OpenAI 'engine is currently overloaded') and 529 (Anthropic"; \
 		printf '  %-18s %s\n' ""                "  overloaded_error, which is its whole equivalent of 503; its error table has no 503). Other 5xx"; \
@@ -2043,6 +2259,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' ""                "  Retry reports merge LAST, so a successful attempt supersedes its own failure in tmp/newman-report.json."; \
 		printf '  %-18s %s\n' "SHARD_LINES=0"  "Drop the per-shard completion lines (<shard> N total/pass/fail) and show only the provider table."; \
 		printf '  %-18s %s\n' "SKIP_STREAM_CANCEL=1" "Skip the post-Newman stream-abort probes that verify server-side cancellation on client disconnect."; \
+		printf '  %-18s %s\n' "NONSTREAM_TRIALS=6" "Non-streaming abort trials per provider in those probes; every trial must leave a terminal log row (#6972). Default 6."; \
+		printf '  %-18s %s\n' "HARNESS_SERVER_CWD" "Server working directory for relative logs_store SQLite paths (default: transports/bifrost-http, matching make dev). BIFROST_LOGS_DB_URL overrides config resolution."; \
 		printf '  %-18s %s\n' "DB_VERIFY=0"      "Disable the dbverify reporter (ON by default). When on, [Costing]/[Accounting] requests assert the logs DB cost matches the getbifrost.ai/datasheet-computed cost (resolves DB from APP_DIR/config.json or BIFROST_LOGS_DB_URL); skips gracefully if no logs DB is reachable."; \
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_BUCKET" "Env-sourced (.env/Infisical): GCS bucket for Vertex file ops (forwarded to Newman as vertexGcsBucket)."; \
@@ -2147,6 +2365,26 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		if [ "$$HARNESS_QUIET" = "1" ] || [ "$$MONITOR_LIVE" = "1" ]; then "$$@" >> "$$QUIET_LOG" 2>&1; \
 		else "$$@"; fi; \
 	}; \
+	: "HARNESS_MAX_REQUESTS is the approved paid-request ceiling for this run. Every newman"; \
+	: "launch below passes its exact filtered request count here first; a launch that would"; \
+	: "cross the cap is refused and later launches are refused too, so the live total is"; \
+	: "bounded by construction rather than estimated from the preflight. Shards already"; \
+	: "running drain normally and the report still merges; the target then exits 3."; \
+	BUDGET_USED=0; BUDGET_EXCEEDED=0; \
+	: "tmp/harness-budget-used mirrors BUDGET_USED so a COMPAT=both parent can hand the"; \
+	: "remaining budget to its second sub-run instead of letting both spend the full cap."; \
+	mkdir -p tmp; printf '0' > tmp/harness-budget-used; \
+	budget_ok() { \
+		if [ -z "$(HARNESS_MAX_REQUESTS)" ]; then return 0; fi; \
+		if [ "$$BUDGET_EXCEEDED" = "1" ] || [ $$((BUDGET_USED + $$1)) -gt "$(HARNESS_MAX_REQUESTS)" ]; then \
+			BUDGET_EXCEEDED=1; \
+			say "$(RED)[$$2] not launched: $$1 request(s) would push the total to $$((BUDGET_USED + $$1)), past HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS) (launched so far: $$BUDGET_USED)$(NC)"; \
+			return 1; \
+		fi; \
+		BUDGET_USED=$$((BUDGET_USED + $$1)); \
+		printf '%s' "$$BUDGET_USED" > tmp/harness-budget-used; \
+		return 0; \
+	}; \
 	start_monitor() { \
 		if [ -f tmp/harness-monitor.pid ]; then return 0; fi; \
 		if [ "$$HARNESS_QUIET" != "1" ] && [ ! -t 1 ]; then return 0; fi; \
@@ -2190,10 +2428,20 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	if [ "$(COMPAT)" = "both" ]; then \
 		mkdir -p tmp; \
 		say "$(CYAN)COMPAT=both: running harness with compat OFF then ON (sub-runs forced CI=1 to skip the interactive viewer)...$(NC)"; \
+		: "Both sub-runs share one HARNESS_MAX_REQUESTS: the second gets what the first left."; \
+		BOTH_REMAINING="$(HARNESS_MAX_REQUESTS)"; BOTH_USED=0; \
 		for mode in off on; do \
+			if [ -n "$$BOTH_REMAINING" ] && [ "$$BOTH_REMAINING" -le 0 ]; then \
+				say "$(RED)compat $$mode not run: HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS) already spent by the earlier sub-run ($$BOTH_USED launched)$(NC)"; \
+				BOTH_RC=3; continue; \
+			fi; \
 			say "$(CYAN)=== Harness run: compat $$mode ===$(NC)"; \
-			$(MAKE) run-provider-harness-test COMPAT=$$mode CI=1; \
+			$(MAKE) run-provider-harness-test COMPAT=$$mode CI=1 HARNESS_MAX_REQUESTS="$$BOTH_REMAINING"; \
 			RC=$$?; \
+			if [ -n "$$BOTH_REMAINING" ]; then \
+				SUB_USED="$$(cat tmp/harness-budget-used 2>/dev/null || echo 0)"; \
+				BOTH_USED=$$((BOTH_USED + SUB_USED)); BOTH_REMAINING=$$((BOTH_REMAINING - SUB_USED)); \
+			fi; \
 			mv -f tmp/newman-report.json "tmp/newman-report-compat-$$mode.json" 2>/dev/null || true; \
 			mv -f tmp/newman-report.html "tmp/newman-report-compat-$$mode.html" 2>/dev/null || true; \
 			mv -f tmp/harness-failures.md "tmp/harness-failures-compat-$$mode.md" 2>/dev/null || true; \
@@ -2232,10 +2480,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	if [ "$(DB_VERIFY)" != "0" ] && [ "$$E2E_DEPS_READY" = "1" ]; then \
 		DBVERIFY_READY=1; \
 		DBVERIFY_REPORTER=",dbverify"; \
-		LOGS_DB_VAL="$${BIFROST_LOGS_DB_URL:-sqlite://$(CURDIR)/$$APP_DIR_VAL/logs.db}"; \
+		LOGS_DB_VAL="$$(node tests/e2e/api/lib/logs-db-url.js "$$APP_DIR_VAL/config.json" "$(or $(HARNESS_SERVER_CWD),$(CURDIR)/transports/bifrost-http)")"; \
 		export BIFROST_LOGS_DB_URL="$$LOGS_DB_VAL"; \
 		DBVERIFY_ARGS="--reporter-dbverify-config $$APP_DIR_VAL/config.json"; \
-		say "$(CYAN)dbverify reporter enabled (logs DB: $$LOGS_DB_VAL). Set DB_VERIFY=0 to disable.$(NC)"; \
+		say "$(CYAN)dbverify reporter enabled (logs DB resolved from configuration or BIFROST_LOGS_DB_URL). Set DB_VERIFY=0 to disable.$(NC)"; \
 	fi; \
 	TOKEN_PARITY_REPORTER=""; \
 	CACHE_PARITY_REPORTER=""; \
@@ -2331,6 +2579,14 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			exit 1; \
 		fi; \
 	fi; \
+	: "Rows that assert on extra_fields.raw_request send x-bf-send-back-raw-*; core ignores those"; \
+	: "headers unless client_config.allow_per_request_raw_override is on. The harness config.json"; \
+	: "already enables it for a gateway we start ourselves; an already-running one may not have it."; \
+	say "$(CYAN)Ensuring allow_per_request_raw_override is on (x-bf-send-back-raw-* headers)...$(NC)"; \
+	BIFROST_BASE_URL="$$BASE_URL_VAL" node tests/e2e/api/runners/set-raw-override-config.mjs enable || { \
+		say "$(RED)Could not enable allow_per_request_raw_override; raw_request assertions would fail. Set BIFROST_E2E_AUTH_HEADER if auth is on.$(NC)"; \
+		exit 1; \
+	}; \
 	say "$(CYAN)Augmenting provider harness with generated streaming/thinking cases...$(NC)"; \
 	: "VERTEX_ACCESS_TOKEN_VAL is exported so the token-parity matrix can skip the Vertex"; \
 	: "direct legs when gcloud could not mint a token, instead of emitting cells that post an"; \
@@ -2362,9 +2618,26 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		if [ "$$IS_DEFERRED" = "1" ]; then PICK_SAW_DEFERRED=1; \
 		else MAIN_FEATURES="$${MAIN_FEATURES:+$$MAIN_FEATURES,}$$k"; fi; \
 	done; \
+	: "Two separate decisions. CACHE_PASS: do the cache-parity rows run at all (in their own"; \
+	: "sequential newman). CARVE_OUT: are they kept out of the parallel forks. They used to be one"; \
+	: "flag, and that is how a menu pick without cache-parity ran every cache anchor anyway: the"; \
+	: "pick is an OR of modality aliases, 'chat' matches any request carrying messages, so the"; \
+	: "anchors rode in as chat rows - once per fork, and cost-sliced away from their write rounds."; \
+	: "Those rows are per-process state twice over (the collection-level pre-request script mints"; \
+	: "{{pcNonce}} once per newman process, and the rounds hand their counters to each other through"; \
+	: "collectionVariables), so a read round in a different process than its write round starts"; \
+	: "cold, writes again, and fails on read=0 for a reason that has nothing to do with the cache."; \
 	if [ -n "$$PICKED_FEATURES" ]; then \
+		: "The menu is the one place a deselected cache-parity means: do not run them anywhere."; \
 		CACHE_PASS=$$PICK_SAW_DEFERRED; \
 	elif [ -z "$(RERUN_FAILED)" ] && [ -z "$(FOLDER)" ] && [ -z "$(FEATURE)" ]; then \
+		CACHE_PASS=1; \
+	elif [ "$(or $(PARALLEL),1)" != "0" ]; then \
+		: "FEATURE/FOLDER/RERUN_FAILED are predicates that may well select cache rows. In parallel"; \
+		: "mode those rows must not be forked, so the cache pass runs them - ANDed with the same"; \
+		: "predicate, so it replays only what the scope selected, and skips itself when that is none."; \
+		: "PARALLEL=0 is one process in collection order, where a cell's rounds already share a"; \
+		: "nonce, so it keeps the row-level selection in the main pass."; \
 		CACHE_PASS=1; \
 	fi; \
 	if [ "$$CACHE_PASS" = "1" ] && [ -n "$$PICKED_FEATURES" ] && [ -z "$$MAIN_FEATURES" ]; then SKIP_MAIN=1; fi; \
@@ -2379,13 +2652,26 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	: "cache-parity rows out of the main pass via EXCLUDE_FLAG and then never replay them, silently"; \
 	: "dropping the third of the smoke set that exists to catch a dropped cache breakpoint."; \
 	if [ -n "$${SMOKE_MANIFEST:-}" ] && [ -z "$(RERUN_FAILED)" ]; then CACHE_PASS=1; SKIP_MAIN=0; fi; \
+	: "Computed last, after SMOKE has had its say: a parallel run always carves the cache rows out"; \
+	: "of the forks, whether or not a cache pass follows (a deselected menu pick: neither)."; \
+	CARVE_OUT=$$CACHE_PASS; \
+	if [ "$(or $(PARALLEL),1)" != "0" ]; then CARVE_OUT=1; fi; \
 	EXCLUDE_FLAG=""; \
-	if [ "$$CACHE_PASS" = "1" ]; then \
+	if [ "$$CARVE_OUT" = "1" ]; then \
 		EXCLUDE_FLAG="--exclude-feature-any cache-parity"; \
-		say "$(CYAN)cache-parity deferred to a sequential pass after the main run (its rows match every provider fork, so running them in the parallel pass would repeat each request once per fork).$(NC)"; \
+		if [ "$$CACHE_PASS" = "1" ]; then \
+			say "$(CYAN)cache-parity deferred to a sequential pass after the main run (its rows are per-process state, so the parallel forks would slice a cell's rounds apart and repeat each request once per fork).$(NC)"; \
+		else \
+			say "$(CYAN)cache-parity not selected - its rows are kept out of the parallel forks and do not run.$(NC)"; \
+		fi; \
 	fi; \
 	FEATURE_ANY_FLAG=""; \
 	if [ -n "$$MAIN_FEATURES" ]; then FEATURE_ANY_FLAG="--feature-any $$MAIN_FEATURES"; fi; \
+	: "The main pass merges its shards over tmp/newman-report.json before the cache pass runs, so"; \
+	: "a rerun's selection for that pass is read from a snapshot taken now. Dot-prefixed so the"; \
+	: "tmp/newman-report-*.json merge glob never sweeps it in."; \
+	rm -f tmp/.newman-report-prior.json; \
+	if [ -n "$(RERUN_FAILED)" ] && [ -f tmp/newman-report.json ]; then cp -f tmp/newman-report.json tmp/.newman-report-prior.json; fi; \
 	if [ "$$SKIP_MAIN" != "1" ] && { [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(FOLDER)" ] || [ -n "$(RERUN_FAILED)" ] || [ -n "$$MAIN_FEATURES" ] || [ -n "$$EXCLUDE_FLAG" ] || [ -n "$$SMOKE_MANIFEST" ]; }; then \
 		say "$(CYAN)Filtering collection (provider=$(PROVIDER), feature=$(FEATURE), folder=$(FOLDER), feature-any=$$MAIN_FEATURES, exclude=$${EXCLUDE_FLAG:+cache-parity}, smoke=$${SMOKE_MANIFEST:--}, rerun-failed=$(RERUN_FAILED))...$(NC)"; \
 		$(USE_NODE); run_quiet node tests/e2e/api/runners/filter-collection.mjs \
@@ -2410,7 +2696,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		: > tmp/newman-cli.log; \
 		NEWMAN_EXIT=0; \
 	elif [ "$$PARALLEL_VAL" != "0" ] && [ -n "$$PARALLEL_VAL" ]; then \
-		say "$(CYAN)Parallel mode (default): forking one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure, passthrough, openrouter) x modality class x sub-shard, slowest class first. Set PARALLEL=0 to disable, SUBSHARDS=0 to drop the sub-shard axis, CLASS_SHARDS=0 for one fork per provider.$(NC)"; \
+		say "$(CYAN)Parallel mode (default): forking one newman per provider ($(HARNESS_PROVIDERS)) x modality class x sub-shard, slowest class first. Set PARALLEL=0 to disable, SUBSHARDS=0 to drop the sub-shard axis, CLASS_SHARDS=0 for one fork per provider.$(NC)"; \
 		: "harness-filtered-*.json is cleaned here too, not just the reports. The monitor derives"; \
 		: "each provider's denominator by summing the leaves of every shard collection it finds in"; \
 		: "tmp/, so a previous run with a wider FEATURE/FOLDER scope leaves shard files this run"; \
@@ -2509,6 +2795,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
 				$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
 				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
+				$${AWS_S3_BUCKET:+--env-var "awsS3Bucket=$$AWS_S3_BUCKET"} \
 				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
 				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
 				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
@@ -2523,6 +2810,16 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				--reporters cli,json$$DBVERIFY_REPORTER$$TOKEN_PARITY_REPORTER $$DBVERIFY_ARGS \
 				$${TOKEN_PARITY_REPORTER:+--reporter-token-parity-out "tmp/harness-token-parity-$$NS_SHARD.json"} \
 				--reporter-json-export "$$NS_REPORT" 2>&1 | sed "s/^/[$$NS_PROV] /"; \
+			NS_RC=$$?; \
+			: "Assertions have already run against the full response, so the stored copy of large bodies"; \
+			: "(image/audio Buffers, ~4 JSON chars per byte) is dead weight: image-gen shards alone were 1.3GB."; \
+			: "Slim the report in place with the merge program (idempotent; same trimming the final merge did)."; \
+			: "Serialized with flock because slimming a big report takes several GB and shards finish together."; \
+			: "Only reports over 20MB are touched, and a failed slim leaves the original untouched."; \
+			if command -v jq >/dev/null 2>&1 && command -v flock >/dev/null 2>&1 && [ -f tmp/newman-merge.jq ] && [ "$$(stat -c %s "$$NS_REPORT" 2>/dev/null || echo 0)" -gt 20971520 ]; then \
+				flock tmp/.slim.lock sh -c 'jq -c -s -f tmp/newman-merge.jq "$$1" > "$$1.slim" && [ -s "$$1.slim" ] && mv -f "$$1.slim" "$$1" || rm -f "$$1.slim"' _ "$$NS_REPORT"; \
+			fi; \
+			return $$NS_RC; \
 		}; \
 		LAUNCHED=0; \
 		: "A shard whose filter step fails never reaches tmp/parallel-pids, so the verdict loop"; \
@@ -2569,6 +2866,9 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				rm -f "tmp/harness-filtered-$$SHARD.json"; \
 				continue; \
 			fi; \
+			: "A refused shard must not leave its filtered file behind: the status table counts"; \
+			: "every tmp/harness-filtered-*.json as planned work, so it would show rows that never ran."; \
+			budget_ok "$$P_ITEM_COUNT" "$$SHARD" || { rm -f "tmp/harness-filtered-$$SHARD.json"; continue; }; \
 			: "Block until a slot frees. 'wait -n' reaps one arbitrary child, which is why shard"; \
 			: "exit codes are recorded by the subshell into tmp/parallel-exit-<shard> instead of"; \
 			: "being collected later with 'wait <pid>' - that pid may already have been reaped here."; \
@@ -2585,6 +2885,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		done; \
 		done; \
 		if [ "$$LAUNCHED" -eq 0 ]; then \
+			if [ "$$BUDGET_EXCEEDED" = "1" ]; then \
+				say "$(RED)Aborted before any launch: every shard would exceed HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS). Raise the cap or narrow PROVIDER/FEATURE.$(NC)"; \
+				exit 3; \
+			fi; \
 			say "$(RED)No provider runs were launched. Check PROVIDER/FEATURE/FOLDER filters.$(NC)"; \
 			exit 1; \
 		fi; \
@@ -2645,7 +2949,9 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 					say "$(YELLOW)[$$rs] retry filter failed - keeping the original verdict$(NC)"; \
 					continue; \
 				fi; \
-				[ "$$(grep -c '"request":' "$$RETRY_COLL" 2>/dev/null || echo 0)" -eq 0 ] && continue; \
+				RETRY_COUNT="$$(grep -c '"request":' "$$RETRY_COLL" 2>/dev/null || true)"; RETRY_COUNT="$${RETRY_COUNT:-0}"; \
+				[ "$$RETRY_COUNT" -eq 0 ] && continue; \
+				budget_ok "$$RETRY_COUNT" "$$rs-retry$$RETRY_ATTEMPT" || { rm -f "$$RETRY_COLL"; continue; }; \
 				while [ "$$(shard_jobs)" -ge "$$JOBS_CAP" ]; do wait -n 2>/dev/null || true; done; \
 				( \
 					newman_shard "$$rs-retry$$RETRY_ATTEMPT" "$$RETRY_COLL" "tmp/newman-report-$$rs-retry$$RETRY_ATTEMPT.json" "$$rp"; \
@@ -2690,7 +2996,26 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			: "its own successful retry. Main reports first, then retries in attempt order."; \
 			MERGE_MAIN="$$(ls tmp/newman-report-*.json 2>/dev/null | grep -v -e '-retry[0-9]*\.json$$' | sort)"; \
 			MERGE_RETRY="$$(ls tmp/newman-report-*-retry*.json 2>/dev/null | sort -V)"; \
-			jq -s -f tmp/newman-merge.jq $$MERGE_MAIN $$MERGE_RETRY > tmp/newman-report.json || say "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
+			: "Two stages: one jq -s over every shard (~3.6GB) gets OOM-killed, and the > redirect had"; \
+			: "already truncated newman-report.json to 0 bytes, so every reader died on 'Unexpected end of"; \
+			: "JSON input'. The merge program is idempotent, so slim each shard alone first (peak = the"; \
+			: "largest shard) and slurp only the slimmed copies, order preserved. Output lands in a temp"; \
+			: "file and is moved into place only on success, so a failed merge never leaves an empty report."; \
+			rm -rf tmp/.merge-slim; mkdir -p tmp/.merge-slim; \
+			MERGE_SLIM=""; MERGE_OK=1; MERGE_N=0; \
+			for f in $$MERGE_MAIN $$MERGE_RETRY; do \
+				MERGE_N=$$((MERGE_N + 1)); \
+				o="$$(printf 'tmp/.merge-slim/%04d.json' $$MERGE_N)"; \
+				jq -c -s -f tmp/newman-merge.jq "$$f" > "$$o" || { MERGE_OK=0; say "$(YELLOW)Slimming $$f failed$(NC)"; break; }; \
+				MERGE_SLIM="$$MERGE_SLIM $$o"; \
+			done; \
+			if [ "$$MERGE_OK" = "1" ] && jq -c -s -f tmp/newman-merge.jq $$MERGE_SLIM > tmp/.newman-report-merged.json; then \
+				mv -f tmp/.newman-report-merged.json tmp/newman-report.json; \
+			else \
+				rm -f tmp/.newman-report-merged.json; \
+				say "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
+			fi; \
+			rm -rf tmp/.merge-slim; \
 			rm -f tmp/.newman-report.slim.json; \
 			cat tmp/newman-cli-*.log > tmp/newman-cli.log 2>/dev/null || true; \
 		else \
@@ -2715,6 +3040,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	else \
 		SEQ_PROVIDERS="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
 		: > tmp/newman-cli.log; \
+		SEQ_COUNT="$$(grep -c '"request":' "$$COLLECTION_FILE" 2>/dev/null || true)"; SEQ_COUNT="$${SEQ_COUNT:-0}"; \
+		if budget_ok "$$SEQ_COUNT" main; then \
 		add_pass "$$(printf '{"t":"pass","id":"main","mode":"sequential","log":"tmp/newman-cli.log","collection":"%s"}' "$$COLLECTION_FILE")"; \
 		newman run "$$COLLECTION_FILE" \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
@@ -2725,6 +3052,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
 				$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
 				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
+				$${AWS_S3_BUCKET:+--env-var "awsS3Bucket=$$AWS_S3_BUCKET"} \
 				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
 				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
 				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
@@ -2744,10 +3072,11 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				--reporter-htmlextra-darkTheme > tmp/newman-cli.log 2>&1; \
 		NEWMAN_EXIT=$$?; \
 		end_pass main; \
+		else NEWMAN_EXIT=0; fi; \
 		if [ "$$HARNESS_MONITORED" != "1" ] && [ "$$HARNESS_QUIET" != "1" ]; then cat tmp/newman-cli.log; fi; \
 		if command -v jq >/dev/null 2>&1 && [ -f tmp/newman-report.json ]; then \
 			say "$(CYAN)Sanitizing tmp/newman-report.json (newman embeds the whole parent folder in every failure)...$(NC)"; \
-			jq -s -f tmp/newman-merge.jq tmp/newman-report.json > tmp/.newman-report-sanitized.json \
+			jq -c -s -f tmp/newman-merge.jq tmp/newman-report.json > tmp/.newman-report-sanitized.json \
 				&& mv -f tmp/.newman-report-sanitized.json tmp/newman-report.json \
 				&& rm -f tmp/.newman-report.slim.json \
 				|| { rm -f tmp/.newman-report-sanitized.json; say "$(YELLOW)Report sanitize failed; tmp/newman-report.json left as-is (may exceed the viewer's 512MB parse limit).$(NC)"; }; \
@@ -2756,15 +3085,25 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	if [ "$$CACHE_PASS" = "1" ]; then \
 		say "$(CYAN)Cache parity pass (sequential, single newman - these rows match every provider fork)...$(NC)"; \
 		rm -f tmp/harness-cache-filtered.json; \
+		: "cache-parity is the AND selector, so a FEATURE predicate narrows it: FEATURE is appended,"; \
+		: "not replaced, and 'cache-parity,gemini' stays narrower than 'cache-parity'. A menu pick"; \
+		: "is deliberately NOT forwarded - this pass only runs on the menu path when cache-parity"; \
+		: "itself was picked, and then every cache row is wanted, not the ones that also look like"; \
+		: "'streaming'."; \
+		CACHE_FEATURE="cache-parity"; \
+		if [ -n "$(FEATURE)" ]; then CACHE_FEATURE="cache-parity,$(FEATURE)"; fi; \
 		$(USE_NODE); run_quiet node tests/e2e/api/runners/filter-collection.mjs \
 			--source tmp/harness-augmented.json \
 			--out tmp/harness-cache-filtered.json \
-			--feature-any cache-parity \
-			$(if $(FEATURE),--feature "$(FEATURE)",) \
+			--feature "$$CACHE_FEATURE" \
 			$(if $(FOLDER),--folder "$(FOLDER)",) \
 			$${SMOKE_MANIFEST:+--smoke "$$SMOKE_MANIFEST"} \
+			$(if $(RERUN_FAILED),--rerun-failed --report tmp/.newman-report-prior.json,) \
 			$(if $(PROVIDER),--provider $(PROVIDER),) || { say "$(RED)Cache parity filter step failed$(NC)"; }; \
-		if [ -f tmp/harness-cache-filtered.json ]; then \
+		CACHE_COUNT="$$(grep -c '"request":' tmp/harness-cache-filtered.json 2>/dev/null || true)"; CACHE_COUNT="$${CACHE_COUNT:-0}"; \
+		if [ "$$CACHE_COUNT" -eq 0 ]; then \
+			say "$(CYAN)Cache parity pass: the scope selects no cache-parity row - nothing to replay.$(NC)"; \
+		elif [ -f tmp/harness-cache-filtered.json ] && budget_ok "$$CACHE_COUNT" cache-parity; then \
 			CACHE_PROVIDERS="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
 			: > tmp/newman-cli-cache-parity.log; \
 			add_pass '{"t":"pass","id":"cache-parity","mode":"sequential","log":"tmp/newman-cli-cache-parity.log","collection":"tmp/harness-cache-filtered.json"}'; \
@@ -2795,7 +3134,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			if [ "$$HARNESS_MONITORED" != "1" ] && [ "$$HARNESS_QUIET" != "1" ]; then cat tmp/newman-cli-cache-parity.log; fi; \
 			if [ "$$CACHE_EXIT" -ne 0 ]; then NEWMAN_EXIT=$$((NEWMAN_EXIT+1)); fi; \
 			if command -v jq >/dev/null 2>&1 && [ -f tmp/newman-report-cache-parity.json ]; then \
-				jq -s -f tmp/newman-merge.jq tmp/newman-report.json tmp/newman-report-cache-parity.json > tmp/newman-report-combined.json \
+				jq -c -s -f tmp/newman-merge.jq tmp/newman-report.json tmp/newman-report-cache-parity.json > tmp/newman-report-combined.json \
 					&& mv tmp/newman-report-combined.json tmp/newman-report.json \
 					|| say "$(YELLOW)Cache pass report merge failed; it remains at tmp/newman-report-cache-parity.json$(NC)"; \
 			fi; \
@@ -2807,11 +3146,16 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	: "prints normally to a restored main screen."; \
 	say "$(GREEN)Newman finished. Reports: tmp/newman-report.{json,html} + tmp/newman-cli.log$(NC)"; \
 	STREAM_CANCEL_EXIT=0; \
-	if [ -z "$(SKIP_STREAM_CANCEL)" ] && [ -z "$(RERUN_FAILED)" ] && [ "$(PROVIDER)" != "passthrough" ] && { [ -z "$(FOLDER)" ] || printf '%s' "$(FOLDER)" | grep -qi 'stream'; }; then \
+	if [ -n "$(HARNESS_MAX_REQUESTS)" ]; then \
+		say "$(YELLOW)Skipping stream cancellation probes: their request count is not known before they run, so they are never sent under HARNESS_MAX_REQUESTS.$(NC)"; \
+	elif [ -z "$(SKIP_STREAM_CANCEL)" ] && [ -z "$(RERUN_FAILED)" ] && [ "$(PROVIDER)" != "passthrough" ] && { [ -z "$(FOLDER)" ] || printf '%s' "$(FOLDER)" | grep -qi 'stream'; }; then \
 		say "$(CYAN)Running stream cancellation probes...$(NC)"; \
 		$(USE_NODE); node tests/e2e/api/runners/run-stream-cancellation.mjs \
 			--base-url "$$BASE_URL_VAL" \
+			--config "$$APP_DIR_VAL/config.json" \
+			--server-working-dir "$(or $(HARNESS_SERVER_CWD),$(CURDIR)/transports/bifrost-http)" \
 			$(if $(PROVIDER),--provider "$(PROVIDER)",) \
+			$(if $(NONSTREAM_TRIALS),--nonstream-trials "$(NONSTREAM_TRIALS)",) \
 			--out tmp/stream-cancel-report.json > tmp/stream-cancel-cli.log 2>&1; \
 		STREAM_CANCEL_EXIT=$$?; \
 		if [ "$$HARNESS_QUIET" != "1" ]; then cat tmp/stream-cancel-cli.log; fi; \
@@ -2863,6 +3207,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		else \
 			say "$(GREEN)Viewer closed.$(NC)"; \
 		fi; \
+	fi; \
+	if [ "$$BUDGET_EXCEEDED" = "1" ]; then \
+		say "$(RED)Aborted: HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS) reached; $$BUDGET_USED request(s) were launched. The provider table above is the actual total.$(NC)"; \
+		exit 3; \
 	fi; \
 	if [ "$$NEWMAN_EXIT" -ne 0 ]; then exit $$NEWMAN_EXIT; fi; \
 	exit $$STREAM_CANCEL_EXIT

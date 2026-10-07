@@ -30,6 +30,9 @@ func InferPluginTypes(plugin schemas.BasePlugin) []schemas.PluginType {
 	if _, ok := plugin.(schemas.MCPPlugin); ok {
 		types = append(types, schemas.PluginTypeMCP)
 	}
+	if _, ok := plugin.(schemas.A2APlugin); ok {
+		types = append(types, schemas.PluginTypeA2A)
+	}
 	if _, ok := plugin.(schemas.HTTPTransportPlugin); ok {
 		types = append(types, schemas.PluginTypeHTTP)
 	}
@@ -70,6 +73,12 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 				if extraConfig.MetricsEnabled != nil {
 					telConfig.MetricsEnabled = extraConfig.MetricsEnabled
 				}
+				if extraConfig.OverheadBreakdownEnabled != nil {
+					telConfig.OverheadBreakdownEnabled = extraConfig.OverheadBreakdownEnabled
+				}
+				if extraConfig.UserLabelsEnabled != nil {
+					telConfig.UserLabelsEnabled = extraConfig.UserLabelsEnabled
+				}
 			}
 		}
 		return telemetry.Init(telConfig, bifrostConfig.ModelCatalog, logger)
@@ -87,7 +96,7 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 				bifrostConfig.LogsStoreConfig.ObjectStorage != nil
 		}
 		return logging.Init(ctx, loggingConfig, logger, bifrostConfig.LogsStore,
-			bifrostConfig.ModelCatalog, bifrostConfig.MCPCatalog)
+			bifrostConfig.ConfigStore, bifrostConfig.ModelCatalog, bifrostConfig.MCPCatalog)
 
 	case governance.PluginName:
 		governanceConfig, err := MarshalPluginConfig[governance.Config](pluginConfig)
@@ -95,15 +104,27 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			return nil, fmt.Errorf("failed to marshal governance plugin config: %w", err)
 		}
 		inMemoryStore := &GovernanceInMemoryStore{Config: bifrostConfig}
-		return governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore,
+		governancePlugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore,
 			bifrostConfig.GovernanceConfig, bifrostConfig.ModelCatalog,
 			bifrostConfig.MCPCatalog, inMemoryStore)
+		if err != nil {
+			return nil, err
+		}
+		governancePlugin.StartResetWorkers(ctx)
+		return governancePlugin, nil
 
 	case routing.PluginName:
 		routingConfig, err := MarshalPluginConfig[routing.Config](pluginConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal routing plugin config: %w", err)
 		}
+		if routingConfig == nil {
+			routingConfig = &routing.Config{}
+		}
+		// Session complexity state uses the same process-wide store as core
+		// session routing. The field is runtime-only and is never persisted in
+		// plugin configuration.
+		routingConfig.KVStore = bifrostConfig.KVStore
 		// Routing rules read the virtual key and its live budget/rate-limit usage, so the
 		// governance plugin must already be registered when this runs.
 		governancePlugin, err := lib.FindPluginAs[governance.BaseGovernancePlugin](bifrostConfig, governancePluginNameFromContext(ctx))
@@ -274,10 +295,12 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	// 8. Compat (if any compat feature is enabled in ClientConfig)
 	cc := s.Config.ClientConfig.Compat
 	compatCfg := &compat.Config{
-		ConvertTextToChat:      cc.ConvertTextToChat,
-		ConvertChatToResponses: cc.ConvertChatToResponses,
-		ShouldDropParams:       cc.ShouldDropParams,
-		ShouldConvertParams:    cc.ShouldConvertParams,
+		ConvertTextToChat:                   cc.ConvertTextToChat,
+		ConvertChatToResponses:              cc.ConvertChatToResponses,
+		ShouldDropParams:                    cc.ShouldDropParams,
+		ShouldConvertParams:                 cc.ShouldConvertParams,
+		AzureDeepseek:                       cc.AzureDeepseek,
+		ForceReasoningOnlyModelsToResponses: cc.ForceReasoningOnlyModelsToResponses,
 	}
 	s.registerPluginWithStatus(ctx, compat.PluginName, nil, compatCfg, false)
 	s.Config.SetPluginOrderInfo(compat.PluginName, builtinPlacement, schemas.Ptr(8))

@@ -562,13 +562,49 @@ resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas
 
 **Available Extra Parameters:**
 
-- `guardrailConfig` - Bedrock guardrail configuration with `guardrailIdentifier`, `guardrailVersion`, `trace`
+- `guardrailConfig` - Bedrock guardrail configuration with `guardrailIdentifier`, `guardrailVersion`, `trace`, `streamProcessingMode`, and `tagSuffix` (see [Selective guardrail evaluation](#selective-guardrail-evaluation))
 - `performanceConfig` - Performance optimization with `latency` ("optimized" or "standard")
 - `additionalModelRequestFieldPaths` - Pass-through for model-specific fields not in standard schema
 - `promptVariables` - Variables for prompt templates (if using prompt caching)
 - `requestMetadata` - Custom metadata for request tracking
 
+### Selective Guardrail Evaluation
+
+By default a guardrail evaluates the whole request: system prompt, conversation history, and any scaffolding an agent framework injects. AWS lets you scope evaluation to specific content in two ways, and Bifrost supports both and translates between them, so either form works whether the request is served upstream by Converse or by InvokeModel.
+
+**Guard markers (Converse `guardContent`).** Mark a text or image block with `guard_content` on the Bifrost Responses or Chat Completions API, or send a native Converse `guardContent` block (text or image) on `/bedrock/model/{modelId}/converse`. Once any block is marked, AWS evaluates only the marked blocks. Qualifiers are forwarded verbatim. A guarded image must be inline `png` or `jpeg` bytes, which is all AWS assesses; any other format is rejected rather than silently left unguarded.
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "input": [
+      {"role": "system", "content": [
+        {"type": "input_text", "text": "You are a helpful assistant."}
+      ]},
+      {"role": "user", "content": [
+        {"type": "input_text", "text": "London is the capital of the UK.", "guard_content": {"qualifiers": ["grounding_source"]}},
+        {"type": "input_text", "text": "Some additional background information."},
+        {"type": "input_text", "text": "What is the capital of the UK?", "guard_content": {"qualifiers": ["query"]}}
+      ]}
+    ],
+    "guardrailConfig": {"guardrailIdentifier": "guardrail-id", "guardrailVersion": "1", "trace": "enabled"}
+  }'
+```
+
+**Input tags (InvokeModel `tagSuffix`).** Wrap the content to evaluate in `<amazon-bedrock-guardrails-guardContent_{suffix}>...</amazon-bedrock-guardrails-guardContent_{suffix}>` and set `guardrailConfig.tagSuffix` (or the native `amazon-bedrock-guardrailConfig.tagSuffix` field on `/bedrock/model/{modelId}/invoke`). When Bifrost serves the request through Converse, the tagged spans become `guardContent` blocks and `tagSuffix` is dropped, because Converse has no such field. When it serves the request through InvokeModel, guard markers are rendered as tags and `amazon-bedrock-guardrailConfig` is added to the body; if you set no `tagSuffix`, Bifrost draws a random one per request as AWS recommends.
+
+On `/bedrock/model/{modelId}/invoke` and `/invoke-with-response-stream`, name the guardrail the AWS-native way with the `X-Amzn-Bedrock-GuardrailIdentifier`, `X-Amzn-Bedrock-GuardrailVersion` and `X-Amzn-Bedrock-Trace` request headers; Bifrost reads them into the same guardrail configuration. The reply reports the outcome the way InvokeModel does: `amazon-bedrock-guardrailAction` (`INTERVENED` or `NONE`) whenever a guardrail assessed the request, and `amazon-bedrock-trace` when the trace was enabled. On the streaming route both ride beside the last chunk. A guarded image cannot be expressed as an input tag, so on the InvokeModel path it is sent as an ordinary image. A `tagSuffix` outside AWS's 1 to 20 alphanumeric characters is rejected with a 400 on every path.
+
+Markers and tags are Bedrock-specific. On a fallback to another provider the marked text is sent as ordinary text.
+
 ### Cache Control
+
+Bifrost can also add the marker for clients that send none. Set
+`prompt_cache.auto_inject` on the provider and the first cacheable block is marked
+automatically, which Bedrock receives as a `cachePoint`. See
+[Prompt caching](/features/prompt-caching).
 
 Prompt caching is supported via cache control directives:
 

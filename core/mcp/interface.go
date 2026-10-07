@@ -4,6 +4,7 @@ package mcp
 
 import (
 	"context"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -19,10 +20,18 @@ type MCPManagerInterface interface {
 	// GetAvailableTools returns all available MCP tools for the given context
 	GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool
 
+	// GetAggregatedServerInstructions returns the upstream `instructions` of every client
+	// the context may see, aggregated into one labeled, size-bounded block.
+	GetAggregatedServerInstructions(ctx context.Context) string
+
 	// UpdateToolManagerConfig updates the configuration for the tool manager.
 	// DisableAutoToolInject in the config controls auto injection — pass the
 	// current value whenever only other fields change so it is never silently reset.
 	UpdateToolManagerConfig(config *schemas.MCPToolManagerConfig)
+
+	// UpdateToolSyncInterval replaces the global tool sync interval at runtime
+	// and re-times the periodic checkers of clients that follow it.
+	UpdateToolSyncInterval(interval time.Duration)
 
 	// Agent Mode Operations
 	// CheckAndExecuteAgentForChatRequest handles agent mode for Chat Completions API.
@@ -71,7 +80,7 @@ type MCPManagerInterface interface {
 	// discovery, and the periodic checker's own refresh. core/mcp has no DB
 	// access; this is the seam the transport layer persists through. Pass
 	// nil to clear a previously registered callback.
-	SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string))
+	SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string))
 
 	// AddClient adds a new MCP client with the given configuration
 	AddClient(ctx context.Context, config *schemas.MCPClientConfig) error
@@ -94,6 +103,12 @@ type MCPManagerInterface interface {
 	// ReconnectClient reconnects an MCP client by ID
 	ReconnectClient(id string) error
 
+	// RefreshClientTools re-discovers a client's tools from its upstream
+	// server now rather than at the connection checker's next tick, and
+	// returns how many tools it is serving afterwards. Unlike
+	// ReconnectClient, it applies to per-call clients too.
+	RefreshClientTools(ctx context.Context, clientID string) (int, error)
+
 	// CloseAndMarkNeedsReauth closes a shared client's live upstream
 	// connection and flips it to needs_reauth, without attempting a new
 	// dial. Used after OAuth credential rotation.
@@ -108,15 +123,15 @@ type MCPManagerInterface interface {
 	// VerifyHeadersConnection creates a temporary MCP connection using a set of
 	// caller-supplied header values to verify connectivity and discover tools.
 	// The connection is closed after verification.
-	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, error)
+	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error)
 
 	// VerifyPerUserOAuthConnection creates a temporary MCP connection using a
 	// test access token to verify connectivity and discover tools. The connection
 	// is closed after verification.
-	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error)
+	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, string, error)
 
-	// SetClientTools updates the tool map and name mapping for an existing client.
-	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
+	// SetClientTools updates the tool map, name mapping and server instructions for an existing client.
+	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string)
 
 	// Tool Registration
 	// RegisterTool registers a local tool with the MCP server

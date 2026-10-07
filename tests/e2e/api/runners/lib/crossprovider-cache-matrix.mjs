@@ -58,12 +58,15 @@
 // indistinguishable from the bug this suite hunts. Segments are therefore sized against the
 // WORST floor in the matrix (4096), not the target model's, which is why {{cachePrefix}} (~5.9K
 // tokens) is used whole and never sliced. Four segments puts each cell near 24K tokens.
+// Opus 5 uses a shorter visitor-guide fixture above its 512-token floor; its four
+// distinct sections preserve the conversation and breakpoint coverage.
 //
 // COST/CONCURRENCY: run this folder with PARALLEL=0. The harness forks one newman per provider,
 // and these rows match six of them (openai/anthropic/gemini/vertex/bedrock/azure), so a default
 // parallel run would execute every request up to six times over.
 
 import { createHash } from "node:crypto";
+import { libraryReference } from "./fixtures/library-cache-reference.mjs";
 
 const J = (v) => JSON.stringify(v);
 
@@ -177,13 +180,17 @@ const salt = (cellId) => `[cache-matrix cell ${cellId} run {{pcNonce}}]\n\n${SEG
 // bedrock/openai.gpt-oss-120b-1:0 is NOT here: it 404s against this account, which is also why
 // the collection's bedrockOpenaiModel default was retargeted to the OpenAI-family-on-Bedrock id.
 //
-// That default is the INFERENCE PROFILE, global.openai.gpt-5.6-sol, not the bare model id. The
-// bare id reaches Converse but is refused before inference: "Invocation of model ID
-// openai.gpt-5.6-sol with on-demand throughput isn't supported. Retry your request with the ID or
-// ARN of an inference profile that contains this model." The profile form answers normally. The
-// cells below route through Bifrost, which resolves the profile itself, so they read either way -
-// the token-parity matrix's DIRECT leg calls bedrock-runtime converse with this value verbatim
-// and does not.
+// Which form of the id is correct depends on the ENDPOINT, not on the caller, and the two forms
+// are mutually exclusive (model-card-openai-gpt-56-sol.html, "Programmatic Access"):
+//   bedrock-runtime  in-region "Not supported"; requires us.openai.gpt-5.6-sol or
+//                    global.openai.gpt-5.6-sol (Converse is a supported API there)
+//   bedrock-mantle   Geo and Global "Not supported"; requires the bare openai.gpt-5.6-sol
+// So there is no single value both legs can share. bedrockOpenaiModel holds the bare id, used by
+// anything that goes through Bifrost - its `bedrock` provider routes all OpenAI-family models to
+// mantle, where a profile-prefixed id 404s. bedrockOpenaiDirectModel holds the global profile,
+// used only by the token-parity matrix's DIRECT leg, which calls bedrock-runtime converse.
+// (An earlier note here claimed Bifrost resolves the profile itself so the cells read either way;
+// it does not - that assumption is what made those parity rows 404.)
 // ---------------------------------------------------------------------------------------------
 const CELLS = [
   // --- Anthropic API, Claude family: latest through several generations back -----------------
@@ -252,11 +259,14 @@ const ARMS = [
 // only family routed here.
 function anthropicBody(cell, arm, cellId) {
   const cc = { type: "ephemeral" };
+  const reference = cell.model === "anthropic/claude-opus-5" ? libraryReference : null;
+  const question = reference ? "Where does the Thursday book group meet?" : QUESTION;
+  const reminder = reference ? "This week, the Thursday book group has moved to the Cedar study room upstairs. The starting time is unchanged." : REMINDER;
   const messages = [
-    { role: "user", content: [{ type: "text", text: `${SEG}\n\nDocument A. Reply ${ACK}` }] },
-    { role: "assistant", content: [{ type: "text", text: ACK }] },
-    { role: "user", content: [{ type: "text", text: `${SEG}\n\nDocument B. Reply ${ACK}` }] },
-    { role: "assistant", content: [{ type: "text", text: ACK }] },
+    { role: "user", content: [{ type: "text", text: reference ? `${reference.rooms}\n\nHow long does a study room reservation last?` : `${SEG}\n\nDocument A. Reply ${ACK}` }] },
+    { role: "assistant", content: [{ type: "text", text: reference ? "A study room reservation lasts one hour." : ACK }] },
+    { role: "user", content: [{ type: "text", text: reference ? `${reference.events}\n\nWhen are the family story sessions?` : `${SEG}\n\nDocument B. Reply ${ACK}` }] },
+    { role: "assistant", content: [{ type: "text", text: reference ? "Family story sessions take place on Saturday mornings." : ACK }] },
   ];
 
   if (arm.midconv) {
@@ -271,12 +281,12 @@ function anthropicBody(cell, arm, cellId) {
     // get hoisted instead and never surface the error, which makes the failure look
     // model-specific when it is really placement-specific. Trailing the user turn satisfies
     // both clauses on every provider in this matrix.
-    messages.push({ role: "user", content: [{ type: "text", text: QUESTION }] });
-    messages.push({ role: "system", content: [{ type: "text", text: REMINDER, cache_control: cc }] });
+    messages.push({ role: "user", content: [{ type: "text", text: question }] });
+    messages.push({ role: "system", content: [{ type: "text", text: reminder, cache_control: cc }] });
   } else {
     messages.push({
       role: "user",
-      content: [{ type: "text", text: REMINDER, cache_control: cc }, { type: "text", text: QUESTION }],
+      content: [{ type: "text", text: reminder, cache_control: cc }, { type: "text", text: question }],
     });
   }
 
@@ -284,8 +294,8 @@ function anthropicBody(cell, arm, cellId) {
     model: cell.model,
     max_tokens: maxTokensFor(cell),
     system: [
-      { type: "text", text: salt(cellId), cache_control: cc },
-      { type: "text", text: SEG, cache_control: cc },
+      { type: "text", text: reference ? `Visitor guide edition {{pcNonce}}-${createHash("sha256").update(cellId).digest("hex").slice(0, 12)}.\n\n${reference.welcome}` : salt(cellId), cache_control: cc },
+      { type: "text", text: reference ? reference.borrowing : SEG, cache_control: cc },
     ],
     messages,
   };
@@ -381,21 +391,45 @@ function round1Script(cell, cellId) {
 ${EXTRACT[cell.shape]}
 ${HIT_RATE}
 pm.test(${J(`Cache matrix [${cellId}] round 1 (write) succeeds`)}, function () {
-  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);
+  if (pm.response.code !== 200) throw new Error('request failed: HTTP ' + pm.response.code + ': ' + pm.response.text());
+  if (j.stop_reason === 'refusal') {
+    throw new Error('provider refused the cache fixture: ' + JSON.stringify(j.stop_details || {}));
+  }
+${cell.model === "anthropic/claude-opus-5" ? `  var answer = (j.content || []).filter(function (block) { return block.type === 'text'; }).map(function (block) { return block.text || ''; }).join(' ');
+  if (!/cedar/i.test(answer)) throw new Error('expected the updated book-group location (Cedar study room), got: ' + answer);` : ""}
 });
 if (pm.response.code < 400) {
+  pm.collectionVariables.set(${J(`cm_${cellId}_write`)}, JSON.stringify({ read: read, write: write, uncached: uncached }));
   console.log('[cache-matrix] ' + ${J(cellId)} + ' round1(write) ' + detail);
 }`.trim();
 }
 
 // Terminal round for an EXPLICIT-breakpoint cell: deterministic, so assert the floor.
+//
+// Round 1's counters are read back first. The number matters to the message (a miss with a
+// round-1 write the size of the prompt is a perturbed prefix, not a dropped breakpoint), and the
+// read is the only thing that ties this request to round 1: nothing in this body names the write
+// round, so a selection that keeps round 2 without round 1 (--rerun-failed, a cost slice) would
+// run it alone in a process with its own pcNonce and fail on read=0 for a reason unrelated to
+// the cache. filter-collection.mjs follows collectionVariables.get() in scripts to pull producers
+// in, so this line is what keeps the pair in one newman process.
 function round2Script(cell, arm, cellId) {
   const label = `${cell.model} / ${arm.key}`;
   return `
 ${EXTRACT[cell.shape]}
 ${HIT_RATE}
+var r1 = JSON.parse(pm.collectionVariables.get(${J(`cm_${cellId}_write`)}) || 'null');
+pm.test(${J(`Cache matrix [${label}] round 1 (write) ran first in this process`)}, function () {
+  pm.expect(r1, 'round 1 recorded no counters - the write round was filtered out, skipped, or ran in another newman process (each process salts with its own pcNonce), so this read started cold').to.not.equal(null);
+});
+if (r1) { detail = detail + ' (round 1 wrote ' + r1.write + ')'; }
 pm.test(${J(`Cache matrix [${label}] round 2 (read) succeeds`)}, function () {
-  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);
+  if (pm.response.code !== 200) throw new Error('request failed: HTTP ' + pm.response.code + ': ' + pm.response.text());
+  if (j.stop_reason === 'refusal') {
+    throw new Error('provider refused the cache fixture: ' + JSON.stringify(j.stop_details || {}));
+  }
+${cell.model === "anthropic/claude-opus-5" ? `  var answer = (j.content || []).filter(function (block) { return block.type === 'text'; }).map(function (block) { return block.text || ''; }).join(' ');
+  if (!/cedar/i.test(answer)) throw new Error('expected the updated book-group location (Cedar study room), got: ' + answer);` : ""}
 });
 if (pm.response.code < 400) {
   console.log('CACHE_MATRIX_REPORT', JSON.stringify({
@@ -431,7 +465,12 @@ function implicitRoundScript(cell, arm, cellId, round, isLast) {
 ${EXTRACT[cell.shape]}
 ${HIT_RATE}
 pm.test(${J(`Cache matrix [${label}] round ${round} succeeds`)}, function () {
-  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);
+  if (pm.response.code !== 200) throw new Error('request failed: HTTP ' + pm.response.code + ': ' + pm.response.text());
+  if (j.stop_reason === 'refusal') {
+    throw new Error('provider refused the cache fixture: ' + JSON.stringify(j.stop_details || {}));
+  }
+${cell.model === "anthropic/claude-opus-5" ? `  var answer = (j.content || []).filter(function (block) { return block.type === 'text'; }).map(function (block) { return block.text || ''; }).join(' ');
+  if (!/cedar/i.test(answer)) throw new Error('expected the updated book-group location (Cedar study room), got: ' + answer);` : ""}
 });
 if (pm.response.code < 400) {
   var series = [];
