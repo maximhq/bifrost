@@ -1784,6 +1784,7 @@ storage:
     #   protocol: "native"    # Options: native, http (default: native)
     #   secure: false         # Enable TLS
     #   dialTimeout: 10000    # Connection dial timeout in milliseconds
+    #   maxQuerySize: 16777216  # ClickHouse max_query_size in bytes; raise it if team-scoped reads fail with "Max query size exceeded"
     #   cluster: ""           # Optional cluster name; runs DDL ON CLUSTER with replicated engines
     # Async writer queue and batch tuning. Omitted fields use Bifrost defaults.
     # writer:
