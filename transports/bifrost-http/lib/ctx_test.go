@@ -345,6 +345,38 @@ func TestConvertToBifrostContext_CompatHeaderForceReasoningOnlyToResponses(t *te
 	}
 }
 
+// TestConvertToBifrostContext_KeyPinHeaders pins how the caller's key pins reach core: x-bf-api-key
+// names a key and x-bf-api-key-id identifies one, each trimmed, and a blank value pins nothing, so
+// a client that always sends the header empty is not refused for a key that does not exist.
+func TestConvertToBifrostContext_KeyPinHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		headers  map[string]string
+		wantName any
+		wantID   any
+	}{
+		{"a key name", map[string]string{"x-bf-api-key": " prod-key "}, "prod-key", nil},
+		{"a key id", map[string]string{"x-bf-api-key-id": " key-uuid "}, nil, "key-uuid"},
+		{"both", map[string]string{"x-bf-api-key": "prod-key", "x-bf-api-key-id": "key-uuid"}, "prod-key", "key-uuid"},
+		{"blank values", map[string]string{"x-bf-api-key": "   ", "x-bf-api-key-id": ""}, nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			for k, v := range tc.headers {
+				ctx.Request.Header.Set(k, v)
+			}
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+			defer cancel()
+			if got := bifrostCtx.Value(schemas.BifrostContextKeyAPIKeyName); got != tc.wantName {
+				t.Fatalf("key name pin = %#v, want %#v", got, tc.wantName)
+			}
+			if got := bifrostCtx.Value(schemas.BifrostContextKeyAPIKeyID); got != tc.wantID {
+				t.Fatalf("key id pin = %#v, want %#v", got, tc.wantID)
+			}
+		})
+	}
+}
+
 func TestConvertToBifrostContext_EmptyBaggageSessionIDIgnored(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("baggage", "session-id=   ")
