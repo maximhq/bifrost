@@ -288,6 +288,35 @@
           "      pm.expect(__v, 'missing ' + __h + ' on ' + __p).to.be.a('string').and.to.have.length.above(0);",
           "    });",
           "  });",
+          "  // Where the request was sent, not only that it was answered: a model carrying a provider prefix",
+          "  // asks for that provider, and x-bifrost-routing-info-requested-provider must name it whatever",
+          "  // routing rules, load balancing, sessions or fallbacks did afterwards. The model is read from the",
+          "  // JSON or multipart body, or from the path on the Gemini-shaped routes, up to the last colon since",
+          "  // a Bedrock id can contain one. Only standard provider names count as a prefix: a namespaced",
+          "  // model such as meta-llama/Llama-3.1-8B names no provider, and a custom provider is not known here.",
+          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'typesafe'];",
+          "  var __model = null;",
+          "  try {",
+          "    var __raw = pm.request && pm.request.body && pm.request.body.mode === 'raw' ? pm.request.body.raw : '';",
+          "    var __body = __raw ? JSON.parse(pm.variables.replaceIn(__raw)) : null;",
+          "    if (__body && typeof __body.model === 'string') { __model = __body.model; }",
+          "  } catch (e) { __model = null; }",
+          "  if (__model === null && pm.request && pm.request.body && pm.request.body.mode === 'formdata' && pm.request.body.formdata) {",
+          "    pm.request.body.formdata.each(function (__field) {",
+          "      if (__model === null && __field && __field.key === 'model' && !__field.disabled) { __model = pm.variables.replaceIn(String(__field.value)); }",
+          "    });",
+          "  }",
+          "  if (__model === null) {",
+          "    var __pathModel = __p.match(/\\/models\\/(.+):[A-Za-z]+$/);",
+          "    if (__pathModel) { try { __model = decodeURIComponent(__pathModel[1]); } catch (e) { __model = __pathModel[1]; } }",
+          "  }",
+          "  var __slash = typeof __model === 'string' ? __model.indexOf('/') : -1;",
+          "  if (__slash > 0 && __standard.indexOf(__model.slice(0, __slash)) !== -1) {",
+          "    var __prefix = __model.slice(0, __slash);",
+          "    pm.test('Routed-identity header names the requested provider: ' + __prefix, function () {",
+          "      pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-provider'), 'the model ' + __model + ' asks for ' + __prefix + ' on ' + __p).to.eql(__prefix);",
+          "    });",
+          "  }",
           "})();",
           "// Streaming terminator contract for OpenAI-shaped completion streams (#7065).",
           "// Bifrost writes a single `data: [DONE]` as the LAST frame of every successful",
@@ -217037,6 +217066,418 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"bifrost-harness-catalog-unserved-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "181. The x-model-provider header: passthrough routing and the Anthropic file and batch routes (model-provider-header)",
+      "description": "Wire-level pins for routing chosen by the x-model-provider header rather than by a model prefix. On the catch-all passthrough routes the header picks the provider whose key pool and upstream a caller-shaped request is sent to; on the Anthropic file and batch routes it picks the provider the operation runs against. Folder 9 covers only the refusals on the passthrough routes.\n\nRows: (1) /openai_passthrough with x-model-provider naming a run-scoped OpenAI-backed provider with a live key is served by that provider on its own key, and the log row records the passthrough there; (2) the same with a provider holding a dead key returns that provider's 401, while the request without the header is served by the route's own provider, so the header and not the route chose the keys; (3) and (4) an unknown provider on the Anthropic files and message batches routes is refused with 400 naming it. Each passthrough row deletes the provider it made. Run with FEATURE=\"model-provider-header\".",
+      "item": [
+        {
+          "name": "openai x-model-provider sends a passthrough request to the provider it names, on that provider's keys - model-provider-header",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-mph-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// The log row is written by the batching writer, so it is polled until it has settled.",
+                  "function logRow(reqId, cb) {",
+                  "  var tries = 0;",
+                  "  (function poll() {",
+                  "    pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(reqId), method: 'GET' }, function (err, res) {",
+                  "      var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "      if (j && j.status && j.status !== 'processing') { return cb(j); }",
+                  "      if (++tries < 15) { return setTimeout(poll, 1000); }",
+                  "      cb(null);",
+                  "    });",
+                  "  })();",
+                  "}",
+                  "function cleanup(state) {",
+                  "  if (!state.provider) { return; }",
+                  "  call('DELETE', '/api/providers/' + encodeURIComponent(state.provider), null, function (res) { expectOk('cleanup: run-scoped provider deleted', res); });",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { provider: PREFIX + 'live-' + run, reqId: 'model-provider-header-' + Date.now() + '-' + Math.floor(Math.random() * 1e9) };",
+                  "state.key = state.provider + '-key';",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function () { sweep(); }); }",
+                  "    call('POST', '/api/providers', { provider: state.provider, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) {",
+                  "      if (!expectOk('setup: created the run-scoped provider', res)) { return; }",
+                  "      call('POST', '/api/providers/' + encodeURIComponent(state.provider) + '/keys', { name: state.key, value: 'env.OPENAI_API_KEY', models: ['*'], weight: 1 }, function (r2) {",
+                  "        if (!expectOk('setup: created its live key', r2)) { return; }",
+                  "        pm.collectionVariables.set('mph1' + 'State', JSON.stringify(state));",
+                  "        pm.collectionVariables.set('mph1' + 'Provider', state.provider);",
+                  "        pm.collectionVariables.set('mph1' + 'ReqId', state.reqId);",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-mph-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// The log row is written by the batching writer, so it is polled until it has settled.",
+                  "function logRow(reqId, cb) {",
+                  "  var tries = 0;",
+                  "  (function poll() {",
+                  "    pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(reqId), method: 'GET' }, function (err, res) {",
+                  "      var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "      if (j && j.status && j.status !== 'processing') { return cb(j); }",
+                  "      if (++tries < 15) { return setTimeout(poll, 1000); }",
+                  "      cb(null);",
+                  "    });",
+                  "  })();",
+                  "}",
+                  "function cleanup(state) {",
+                  "  if (!state.provider) { return; }",
+                  "  call('DELETE', '/api/providers/' + encodeURIComponent(state.provider), null, function (res) { expectOk('cleanup: run-scoped provider deleted', res); });",
+                  "}",
+                  "var state = JSON.parse(pm.collectionVariables.get('mph1' + 'State') || '{}');",
+                  "var text = pm.response.text();",
+                  "var h = function (name) { return pm.response.headers.get(name); };",
+                  "pm.test('the provider the header named served, on its own key', function () {",
+                  "  pm.expect(h('x-bifrost-provider'), text.slice(0, 400)).to.eql(state.provider);",
+                  "  pm.expect(h('x-bifrost-routing-info-requested-provider'), text.slice(0, 400)).to.eql(state.provider);",
+                  "  pm.expect(h('x-bifrost-routing-info-key'), text.slice(0, 400)).to.eql(state.key);",
+                  "});",
+                  "logRow(state.reqId, function (j) {",
+                  "  pm.test('the log row records a passthrough served by that provider and key', function () {",
+                  "    pm.expect(j, 'log ' + state.reqId + ' never settled').to.be.an('object');",
+                  "    pm.expect(j.object).to.eql('passthrough');",
+                  "    pm.expect(j.provider).to.eql(state.provider);",
+                  "    pm.expect(j.selected_key_name).to.eql(state.key);",
+                  "  });",
+                  "  cleanup(state);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "{{mph1Provider}}"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{mph1ReqId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] openai a passthrough request x-model-provider sends to a provider with a dead key gets that provider's refusal - model-provider-header",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-mph-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// The log row is written by the batching writer, so it is polled until it has settled.",
+                  "function logRow(reqId, cb) {",
+                  "  var tries = 0;",
+                  "  (function poll() {",
+                  "    pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(reqId), method: 'GET' }, function (err, res) {",
+                  "      var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "      if (j && j.status && j.status !== 'processing') { return cb(j); }",
+                  "      if (++tries < 15) { return setTimeout(poll, 1000); }",
+                  "      cb(null);",
+                  "    });",
+                  "  })();",
+                  "}",
+                  "function cleanup(state) {",
+                  "  if (!state.provider) { return; }",
+                  "  call('DELETE', '/api/providers/' + encodeURIComponent(state.provider), null, function (res) { expectOk('cleanup: run-scoped provider deleted', res); });",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { provider: PREFIX + 'dead-' + run, reqId: 'model-provider-header-' + Date.now() + '-' + Math.floor(Math.random() * 1e9) };",
+                  "state.key = state.provider + '-key';",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function () { sweep(); }); }",
+                  "    call('POST', '/api/providers', { provider: state.provider, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) {",
+                  "      if (!expectOk('setup: created the run-scoped provider', res)) { return; }",
+                  "      call('POST', '/api/providers/' + encodeURIComponent(state.provider) + '/keys', { name: state.key, value: 'sk-harness-mph-invalid', models: ['*'], weight: 1 }, function (r2) {",
+                  "        if (!expectOk('setup: created its dead key', r2)) { return; }",
+                  "        pm.collectionVariables.set('mph2' + 'State', JSON.stringify(state));",
+                  "        pm.collectionVariables.set('mph2' + 'Provider', state.provider);",
+                  "        pm.collectionVariables.set('mph2' + 'ReqId', state.reqId);",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-mph-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// The log row is written by the batching writer, so it is polled until it has settled.",
+                  "function logRow(reqId, cb) {",
+                  "  var tries = 0;",
+                  "  (function poll() {",
+                  "    pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(reqId), method: 'GET' }, function (err, res) {",
+                  "      var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "      if (j && j.status && j.status !== 'processing') { return cb(j); }",
+                  "      if (++tries < 15) { return setTimeout(poll, 1000); }",
+                  "      cb(null);",
+                  "    });",
+                  "  })();",
+                  "}",
+                  "function cleanup(state) {",
+                  "  if (!state.provider) { return; }",
+                  "  call('DELETE', '/api/providers/' + encodeURIComponent(state.provider), null, function (res) { expectOk('cleanup: run-scoped provider deleted', res); });",
+                  "}",
+                  "var state = JSON.parse(pm.collectionVariables.get('mph2' + 'State') || '{}');",
+                  "var text = pm.response.text();",
+                  "var h = function (name) { return pm.response.headers.get(name); };",
+                  "pm.test('the named provider tried its own dead key, and its upstream refusal came back', function () {",
+                  "  var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "  pm.expect(h('x-bifrost-provider'), text.slice(0, 400)).to.eql(state.provider);",
+                  "  pm.expect(h('x-bifrost-routing-info-key'), text.slice(0, 400)).to.eql(state.key);",
+                  "  pm.expect((j.error || {}).code, text.slice(0, 400)).to.eql('invalid_api_key');",
+                  "});",
+                  "pm.sendRequest({ url: BASE + '/openai_passthrough/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":3}) } }, function (err, res) {",
+                  "  pm.test('without the header the same request is served by the route\\u2019s own provider', function () {",
+                  "    pm.expect(res && res.code, err ? String(err) : res.text()).to.eql(200);",
+                  "    pm.expect(res.headers.get('x-bifrost-provider'), res.text().slice(0, 400)).to.eql('openai');",
+                  "  });",
+                  "  cleanup(state);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "{{mph2Provider}}"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{mph2ReqId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai an unknown x-model-provider on the Anthropic files route is refused - model-provider-header",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the unknown provider is refused by name on the files route', function () {",
+                  "  var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "  pm.expect((j.error || {}).type, pm.response.text()).to.eql('invalid_request_error');",
+                  "  pm.expect((j.error || {}).message, pm.response.text()).to.include('bifrost-harness-unknown-provider').and.to.include('not found');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "bifrost-harness-unknown-provider"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai an unknown x-model-provider on the Anthropic message batches route is refused - model-provider-header",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the unknown provider is refused by name on the message batches route', function () {",
+                  "  var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "  pm.expect((j.error || {}).type, pm.response.text()).to.eql('invalid_request_error');",
+                  "  pm.expect((j.error || {}).message, pm.response.text()).to.include('bifrost-harness-unknown-provider').and.to.include('not found');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "bifrost-harness-unknown-provider"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "batches"
+              ]
             }
           }
         }
