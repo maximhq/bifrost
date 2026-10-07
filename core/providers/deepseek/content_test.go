@@ -182,6 +182,22 @@ func TestResponses_AnthropicEndpointRejectsDocumentBeforeEgress(t *testing.T) {
 	}
 	assertUnsupportedDocument(t, bifrostErr)
 
+	// An untyped document lands on "document" the same way, since that is the
+	// egress converter's own default for an empty type.
+	untyped := &schemas.BifrostResponsesRequest{Provider: schemas.DeepSeek, Model: "deepseek-v4-pro",
+		Input: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:                &webFetchCallID,
+				ResponsesWebFetchCall: &schemas.ResponsesWebFetchCall{Document: &schemas.ResponsesWebFetchDocument{}},
+			},
+		}}}
+	resp, bifrostErr = provider.Responses(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), documentKey(), untyped)
+	if resp != nil {
+		t.Fatalf("an untyped web_fetch document produced a response")
+	}
+	assertUnsupportedDocument(t, bifrostErr)
+
 	if got := atomic.LoadInt32(&hits); got != 0 {
 		t.Fatalf("upstream received %d request(s); want 0", got)
 	}
@@ -210,5 +226,53 @@ func TestResponsesStream_AnthropicEndpointRejectsDocumentBeforeEgress(t *testing
 	assertUnsupportedDocument(t, bifrostErr)
 	if got := atomic.LoadInt32(&hits); got != 0 {
 		t.Fatalf("upstream received %d request(s); want 0", got)
+	}
+}
+
+// TestResponses_AnthropicEndpointForwardsTextualWebFetchResults is the other
+// half of the web-fetch guard: it must refuse only what the egress actually
+// emits as a document block.
+//
+// convertBifrostWebFetchCallToAnthropicBlocks passes a web-fetch document's own
+// type through and defaults only an empty one to "document", so a document
+// declaring "text" becomes a text block -- which DeepSeek's Anthropic-compatible
+// API serves. Refusing it on the strength of the field's NAME would cost the
+// caller a request the provider would have answered, and send an unnecessary
+// fallback.
+func TestResponses_AnthropicEndpointForwardsTextualWebFetchResults(t *testing.T) {
+	t.Parallel()
+	var hits int32
+	server := countingAnthropicServer(&hits)
+	defer server.Close()
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	callID := "call_wf_text"
+	request := &schemas.BifrostResponsesRequest{Provider: schemas.DeepSeek, Model: "deepseek-v4-pro",
+		Input: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: &callID,
+				ResponsesWebFetchCall: &schemas.ResponsesWebFetchCall{
+					URL: schemas.Ptr("https://example.com/page"),
+					Document: &schemas.ResponsesWebFetchDocument{
+						Type: "text",
+						Text: schemas.Ptr("the page as plain text"),
+					},
+				},
+			},
+		}}}
+
+	resp, bifrostErr := provider.Responses(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), documentKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("a textual web_fetch result was refused: %v", bifrostErr.Error.Message)
+	}
+	if resp == nil {
+		t.Fatal("expected a response for a textual web_fetch result")
+	}
+	if got := atomic.LoadInt32(&hits); got != 1 {
+		t.Fatalf("upstream received %d request(s); want 1", got)
 	}
 }
