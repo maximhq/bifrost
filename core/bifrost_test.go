@@ -3806,6 +3806,8 @@ func TestReleaseChannelMessage_ClearsPooledReferences(t *testing.T) {
 	}
 	msg := b.getChannelMessage(req)
 	msg.Context = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	msg.requestScoped = true
+	msg.requestScopedKey = schemas.Key{ID: "scoped", Value: *schemas.NewSecretVar("sk-scoped")}
 
 	// Simulate an undelivered response and error sitting in the channels.
 	respCh := msg.Response
@@ -3817,6 +3819,9 @@ func TestReleaseChannelMessage_ClearsPooledReferences(t *testing.T) {
 
 	if msg.ChatRequest != nil || msg.RequestType != "" {
 		t.Error("releaseChannelMessage should zero the embedded BifrostRequest")
+	}
+	if msg.requestScoped || msg.requestScopedKey.ID != "" || msg.requestScopedKey.Value.GetValue() != "" {
+		t.Error("releaseChannelMessage should clear the request-scoped key")
 	}
 	if msg.Context != nil {
 		t.Error("releaseChannelMessage should clear the Context reference")
@@ -4712,17 +4717,6 @@ func TestSDKFidelityDecisionRequestNullStateReachesProvider(t *testing.T) {
 	}
 }
 
-// requestScopedTestConfig is the configuration request-scoped provider instances are built with.
-func requestScopedTestConfig(allowPrivateNetwork bool) *schemas.ProviderConfig {
-	networkConfig := schemas.DefaultNetworkConfig
-	networkConfig.AllowPrivateNetwork = allowPrivateNetwork
-	networkConfig.LoopbackIsPrivate = true
-	return &schemas.ProviderConfig{
-		NetworkConfig:            networkConfig,
-		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 1},
-	}
-}
-
 // TestRequestScopedProviderInstances builds every schemas.RequestScopedProvider implementer the
 // way request-scoped attempts do and pins that ForRequest returns the receiver without
 // allocating when there is no base URL, copies it for a base URL, and that the instance reaches
@@ -4783,7 +4777,7 @@ func TestRequestScopedProviderInstances(t *testing.T) {
 			}
 			key := tt.key(server.URL)
 			for _, allowPrivateNetwork := range []bool{true, false} {
-				instance, err := b.createBaseProvider(tt.provider, requestScopedTestConfig(allowPrivateNetwork))
+				instance, err := b.createBaseProvider(tt.provider, requestScopedProviderConfig(allowPrivateNetwork))
 				if err != nil {
 					t.Fatalf("createBaseProvider: %v", err)
 				}
@@ -4904,7 +4898,7 @@ func TestRequestScopedProviderRules(t *testing.T) {
 	b := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			instance, err := b.createBaseProvider(tt.provider, requestScopedTestConfig(false))
+			instance, err := b.createBaseProvider(tt.provider, requestScopedProviderConfig(false))
 			if err != nil {
 				t.Fatalf("createBaseProvider: %v", err)
 			}
@@ -4924,12 +4918,812 @@ func TestRequestScopedProviderRules(t *testing.T) {
 	// These fall back to ambient credentials or cache tokens per credential, so none of them
 	// can be configured per request.
 	for _, provider := range []schemas.ModelProvider{schemas.Vertex, schemas.BedrockMantle, schemas.Databricks, schemas.GithubCopilot} {
-		instance, err := b.createBaseProvider(provider, requestScopedTestConfig(false))
+		instance, err := b.createBaseProvider(provider, requestScopedProviderConfig(false))
 		if err != nil {
 			t.Fatalf("createBaseProvider(%s): %v", provider, err)
 		}
 		if _, ok := instance.(schemas.RequestScopedProvider); ok {
 			t.Errorf("%s must not implement schemas.RequestScopedProvider", provider)
 		}
+	}
+}
+
+// requestScopedTestPlugin gives requests request-scoped configuration: configure runs in
+// PreRequestHook and attempt in PreLLMHook with the attempt's fallback index. It records the
+// errors PostLLMHook observes.
+type requestScopedTestPlugin struct {
+	configure func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest)
+	attempt   func(fallbackIndex int, req *schemas.BifrostRequest)
+
+	mu         sync.Mutex
+	postErrors []string
+}
+
+func (p *requestScopedTestPlugin) GetName() string { return "request-scoped-test" }
+func (p *requestScopedTestPlugin) Cleanup() error  { return nil }
+func (p *requestScopedTestPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	if p.configure != nil {
+		p.configure(ctx, req)
+	}
+	return nil
+}
+func (p *requestScopedTestPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if p.attempt != nil {
+		fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
+		p.attempt(fallbackIndex, req)
+	}
+	return req, nil, nil
+}
+func (p *requestScopedTestPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if bifrostErr != nil && bifrostErr.Error != nil {
+		p.mu.Lock()
+		p.postErrors = append(p.postErrors, requestScopedErrorText(bifrostErr))
+		p.mu.Unlock()
+	}
+	return resp, bifrostErr, nil
+}
+
+// requestScopedErrorText is an error's message followed by its underlying error, where dial
+// failures carry their reason.
+func requestScopedErrorText(err *schemas.BifrostError) string {
+	if err == nil || err.Error == nil {
+		return ""
+	}
+	if err.Error.Error != nil {
+		return err.Error.Message + ": " + err.Error.Error.Error()
+	}
+	return err.Error.Message
+}
+
+// observedErrors returns the errors PostLLMHook has observed so far.
+func (p *requestScopedTestPlugin) observedErrors() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.postErrors...)
+}
+
+// mustConfigureOpenAI gives req request-scoped OpenAI configuration and fails the test on error.
+func mustConfigureOpenAI(t *testing.T, req *schemas.BifrostRequest, key, baseURL string) {
+	t.Helper()
+	if err := req.UpdateProviderKey(schemas.OpenAI, schemas.Key{Value: *schemas.NewSecretVar(key)}); err != nil {
+		t.Errorf("UpdateProviderKey: %v", err)
+	}
+	if err := req.UpdateProviderBaseURL(schemas.OpenAI, baseURL); err != nil {
+		t.Errorf("UpdateProviderBaseURL: %v", err)
+	}
+	if err := req.UpdateProviderAllowPrivateNetwork(schemas.OpenAI, true); err != nil {
+		t.Errorf("UpdateProviderAllowPrivateNetwork: %v", err)
+	}
+}
+
+// requestScopedTestCall is one upstream request the test server received.
+type requestScopedTestCall struct {
+	path, auth string
+}
+
+// requestScopedTestServer answers OpenAI chat, responses, embeddings and model listing in JSON
+// or SSE, and records the path and credential of every request.
+func requestScopedTestServer(t *testing.T) (*httptest.Server, func() []requestScopedTestCall) {
+	t.Helper()
+	var mu sync.Mutex
+	var calls []requestScopedTestCall
+	chatStream := sseHandler(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+	responsesStream := func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range []string{
+			`{"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","created_at":1,"status":"in_progress","model":"m","output":[]}}`,
+			`{"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"hello"}`,
+			`{"type":"response.completed","sequence_number":2,"response":{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"m","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		} {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", event)
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		calls = append(calls, requestScopedTestCall{path: r.URL.Path, auth: r.Header.Get("Authorization")})
+		mu.Unlock()
+		stream := strings.Contains(string(body), `"stream":true`)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/chat/completions") && stream:
+			chatStream(w, r)
+		case strings.HasSuffix(r.URL.Path, "/v1/chat/completions"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"id":"c1","object":"chat.completion","created":1,"model":"m",`+
+				`"choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],`+
+				`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		case strings.HasSuffix(r.URL.Path, "/v1/responses") && stream:
+			responsesStream(w)
+		case strings.HasSuffix(r.URL.Path, "/v1/responses"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"m",`+
+				`"output":[{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"hello","annotations":[]}]}],`+
+				`"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+		case strings.HasSuffix(r.URL.Path, "/v1/embeddings"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"model":"m","usage":{"prompt_tokens":1,"total_tokens":1}}`)
+		case strings.HasSuffix(r.URL.Path, "/v1/models"):
+			openAIStyleModelsHandler("m")(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, func() []requestScopedTestCall {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]requestScopedTestCall(nil), calls...)
+	}
+}
+
+// newRequestScopedTestClient starts a client with plugin and the given account and KV store.
+func newRequestScopedTestClient(t *testing.T, account schemas.Account, plugin schemas.LLMPlugin, kvStore schemas.KVStore) *Bifrost {
+	t.Helper()
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		KVStore:    kvStore,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	return client
+}
+
+// requestScopedChat is a minimal chat request for provider and model.
+func requestScopedChat(provider schemas.ModelProvider, model string, fallbacks ...schemas.Fallback) *schemas.BifrostChatRequest {
+	content := "hello"
+	return &schemas.BifrostChatRequest{
+		Provider:  provider,
+		Model:     model,
+		Input:     []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}}},
+		Params:    &schemas.ChatParameters{},
+		Fallbacks: fallbacks,
+	}
+}
+
+// drainStream reads a stream to its end and returns the error chunks it carried.
+func drainStream(stream chan *schemas.BifrostStreamChunk) []string {
+	var errs []string
+	for chunk := range stream {
+		if chunk.BifrostError != nil && chunk.BifrostError.Error != nil {
+			errs = append(errs, chunk.BifrostError.Error.Message)
+		}
+	}
+	return errs
+}
+
+// countingAccount counts provider config lookups on top of MockAccount.
+type countingAccount struct {
+	*MockAccount
+	configLookups atomic.Int64
+}
+
+func (a *countingAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	a.configLookups.Add(1)
+	return a.MockAccount.GetConfigForProvider(provider)
+}
+
+// TestRequestScopedConfiguration_UnconfiguredProvider sends each kind of request to a provider the
+// account does not configure, with the credential and endpoint supplied by a plugin.
+func TestRequestScopedConfiguration_UnconfiguredProvider(t *testing.T) {
+	server, calls := requestScopedTestServer(t)
+	plugin := &requestScopedTestPlugin{configure: func(_ *schemas.BifrostContext, req *schemas.BifrostRequest) {
+		mustConfigureOpenAI(t, req, "sk-scoped", server.URL)
+	}}
+	client := newRequestScopedTestClient(t, NewMockAccount(), plugin, nil)
+	input := "hello"
+
+	tests := []struct {
+		name string
+		path string
+		call func(ctx *schemas.BifrostContext) *schemas.BifrostError
+	}{
+		{"chat", "/v1/chat/completions", func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, err := client.ChatCompletionRequest(ctx, requestScopedChat(schemas.OpenAI, "m"))
+			return err
+		}},
+		{"chat stream", "/v1/chat/completions", func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+			stream, err := client.ChatCompletionStreamRequest(ctx, requestScopedChat(schemas.OpenAI, "m"))
+			if err != nil {
+				return err
+			}
+			if errs := drainStream(stream); len(errs) > 0 {
+				t.Errorf("stream errors: %v", errs)
+			}
+			return nil
+		}},
+		{"responses", "/v1/responses", func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, err := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "m",
+				Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: &input}}}})
+			return err
+		}},
+		{"responses stream", "/v1/responses", func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+			stream, err := client.ResponsesStreamRequest(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "m",
+				Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: &input}}}})
+			if err != nil {
+				return err
+			}
+			if errs := drainStream(stream); len(errs) > 0 {
+				t.Errorf("stream errors: %v", errs)
+			}
+			return nil
+		}},
+		{"embedding", "/v1/embeddings", func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, err := client.EmbeddingRequest(ctx, &schemas.BifrostEmbeddingRequest{Provider: schemas.OpenAI, Model: "m",
+				Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &input}}}}})
+			return err
+		}},
+		{"list models", "/v1/models", func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, err := client.ListModelsRequest(ctx, &schemas.BifrostListModelsRequest{Provider: schemas.OpenAI})
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := len(calls())
+			if err := tt.call(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)); err != nil {
+				t.Fatalf("request failed: %s", err.GetErrorString())
+			}
+			got := calls()[before:]
+			if len(got) != 1 || got[0].path != tt.path || got[0].auth != "Bearer sk-scoped" {
+				t.Fatalf("upstream calls = %+v, want one %s call with the request-scoped key", got, tt.path)
+			}
+		})
+	}
+}
+
+// TestRequestScopedConfiguration_LeavesNoState pins that request-scoped attempts register no
+// provider, queue or worker, never consult the account, and leave nothing for session affinity,
+// however many distinct credentials and endpoints they carry.
+func TestRequestScopedConfiguration_LeavesNoState(t *testing.T) {
+	server, calls := requestScopedTestServer(t)
+	plugin := &requestScopedTestPlugin{configure: func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
+		n := ctx.Value(schemas.BifrostContextKeySessionID).(string)
+		mustConfigureOpenAI(t, req, "sk-"+n, server.URL+"/"+n)
+	}}
+	account := &countingAccount{MockAccount: NewMockAccount()}
+	kvStore := newMockKVStore()
+	client := newRequestScopedTestClient(t, account, plugin, kvStore)
+
+	for i := range 50 {
+		n := fmt.Sprintf("caller-%d", i)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeySessionID, n)
+		if i%2 == 0 {
+			if _, err := client.ChatCompletionRequest(ctx, requestScopedChat(schemas.OpenAI, "m")); err != nil {
+				t.Fatalf("request %d: %s", i, err.GetErrorString())
+			}
+		} else {
+			stream, err := client.ChatCompletionStreamRequest(ctx, requestScopedChat(schemas.OpenAI, "m"))
+			if err != nil {
+				t.Fatalf("request %d: %s", i, err.GetErrorString())
+			}
+			drainStream(stream)
+		}
+		if got := calls()[i]; got.path != "/"+n+"/v1/chat/completions" || got.auth != "Bearer sk-"+n {
+			t.Fatalf("request %d reached %+v", i, got)
+		}
+	}
+
+	countEntries := func(m *sync.Map) int {
+		n := 0
+		m.Range(func(_, _ any) bool { n++; return true })
+		return n
+	}
+	if n := countEntries(&client.requestQueues); n != 0 {
+		t.Errorf("%d provider queues were created", n)
+	}
+	if n := countEntries(&client.waitGroups); n != 0 {
+		t.Errorf("%d worker groups were created", n)
+	}
+	if providers := client.providers.Load(); providers != nil && len(*providers) != 0 {
+		t.Errorf("%d providers were registered", len(*providers))
+	}
+	if instances := client.requestScopedProviders.Load(); instances == nil || len(*instances) != 1 {
+		t.Errorf("want exactly one request-scoped instance for one provider and policy, got %v", instances)
+	}
+	if n := account.KeyLookupCount(schemas.OpenAI); n != 0 {
+		t.Errorf("the account was asked for keys %d times", n)
+	}
+	if n := account.configLookups.Load(); n != 0 {
+		t.Errorf("the account was asked for provider config %d times", n)
+	}
+	kvStore.mu.RLock()
+	defer kvStore.mu.RUnlock()
+	if len(kvStore.data) != 0 {
+		t.Errorf("session affinity stored %d entries", len(kvStore.data))
+	}
+}
+
+// TestRequestScopedConfiguration_NoGoroutineLeak pins that request-scoped attempts, which run in
+// the caller's goroutine, start nothing that outlives them.
+func TestRequestScopedConfiguration_NoGoroutineLeak(t *testing.T) {
+	server, _ := requestScopedTestServer(t)
+	plugin := &requestScopedTestPlugin{configure: func(_ *schemas.BifrostContext, req *schemas.BifrostRequest) {
+		mustConfigureOpenAI(t, req, "sk-scoped", server.URL)
+	}}
+	client := newRequestScopedTestClient(t, NewMockAccount(), plugin, nil)
+	run := func() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, err := client.ChatCompletionRequest(ctx, requestScopedChat(schemas.OpenAI, "m")); err != nil {
+			t.Fatalf("request: %s", err.GetErrorString())
+		}
+		stream, err := client.ChatCompletionStreamRequest(ctx, requestScopedChat(schemas.OpenAI, "m"))
+		if err != nil {
+			t.Fatalf("stream request: %s", err.GetErrorString())
+		}
+		drainStream(stream)
+	}
+	// Warm up: the first request builds the instance and opens the pooled connection.
+	run()
+	memtest.AssertNoGoroutineLeak(t, func() {
+		for range 10 {
+			run()
+		}
+	})
+}
+
+// reorderingAffinity moves the last route of every chain to the front and counts how often it
+// is consulted.
+type reorderingAffinity struct {
+	resolves, observes atomic.Int64
+}
+
+func (a *reorderingAffinity) ResolveRoute(_ *schemas.BifrostContext, _ schemas.Route, chain []schemas.Route) []schemas.Route {
+	a.resolves.Add(1)
+	return append([]schemas.Route{chain[len(chain)-1]}, chain[:len(chain)-1]...)
+}
+func (a *reorderingAffinity) ResolveKey(*schemas.BifrostContext, schemas.ModelProvider, string, []schemas.Key) (schemas.Key, bool) {
+	return schemas.Key{}, false
+}
+func (a *reorderingAffinity) Observe(*schemas.BifrostContext, schemas.Route, schemas.RouteOutcome) {
+	a.observes.Add(1)
+}
+
+// TestRequestScopedConfiguration_SkipsSessionAffinity pins that session affinity neither reroutes
+// nor learns from a request carrying request-scoped configuration: its routes are the plugin's.
+func TestRequestScopedConfiguration_SkipsSessionAffinity(t *testing.T) {
+	server, calls := requestScopedTestServer(t)
+	affinity := &reorderingAffinity{}
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: NewMockAccount(),
+		LLMPlugins: []schemas.LLMPlugin{&requestScopedTestPlugin{configure: func(_ *schemas.BifrostContext, req *schemas.BifrostRequest) {
+			mustConfigureOpenAI(t, req, "sk-scoped", server.URL)
+		}}},
+		SessionAffinity: affinity,
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer client.Shutdown()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeySessionID, "session-1")
+	if _, err := client.ChatCompletionRequest(ctx, requestScopedChat(schemas.OpenAI, "m", schemas.Fallback{Provider: schemas.Anthropic, Model: "claude"})); err != nil {
+		t.Fatalf("request: %s", err.GetErrorString())
+	}
+	if got := calls(); len(got) != 1 {
+		t.Fatalf("upstream calls = %+v, want the request-scoped primary only", got)
+	}
+	if n, m := affinity.resolves.Load(), affinity.observes.Load(); n != 0 || m != 0 {
+		t.Fatalf("session affinity was consulted: %d route resolutions, %d observations", n, m)
+	}
+}
+
+// TestRequestScopedConfiguration_ReleasesOverride pins that nothing Bifrost keeps holds a
+// request's provider configuration, and with it the credential, once the request is over.
+func TestRequestScopedConfiguration_ReleasesOverride(t *testing.T) {
+	server, _ := requestScopedTestServer(t)
+	var captured *schemas.ProviderOverride
+	plugin := &requestScopedTestPlugin{configure: func(_ *schemas.BifrostContext, req *schemas.BifrostRequest) {
+		mustConfigureOpenAI(t, req, "sk-released", server.URL)
+		captured = req.ProviderOverrideFor(schemas.OpenAI)
+	}}
+	client := newRequestScopedTestClient(t, NewMockAccount(), plugin, nil)
+
+	// A pooled request drops its overrides rather than keeping their backing array for reuse.
+	pooled := &schemas.BifrostRequest{}
+	mustConfigureOpenAI(t, pooled, "sk-pooled", server.URL)
+	resetBifrostRequest(pooled)
+	if pooled.ProviderOverrides != nil {
+		t.Fatal("resetBifrostRequest kept the request's provider overrides")
+	}
+
+	for _, stream := range []bool{false, true} {
+		memtest.AssertReleased(t, fmt.Sprintf("the provider override (stream=%v)", stream), func() *schemas.ProviderOverride {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if stream {
+				ch, err := client.ChatCompletionStreamRequest(ctx, requestScopedChat(schemas.OpenAI, "m"))
+				if err != nil {
+					t.Fatalf("stream request: %s", err.GetErrorString())
+				}
+				drainStream(ch)
+			} else if _, err := client.ChatCompletionRequest(ctx, requestScopedChat(schemas.OpenAI, "m")); err != nil {
+				t.Fatalf("request: %s", err.GetErrorString())
+			}
+			override := captured
+			captured = nil
+			return override
+		})
+	}
+}
+
+// TestRequestScopedConfiguration_PerAttemptCredentials sets credentials from PreLLMHook per
+// attempt: two attempts against the same provider type use different keys and endpoints, a
+// fallback to another provider uses its own, and a fallback to an unconfigured provider without
+// request-scoped configuration fails closed without reaching anything.
+func TestRequestScopedConfiguration_PerAttemptCredentials(t *testing.T) {
+	type seen struct {
+		mu   sync.Mutex
+		keys []string
+	}
+	record := func(s *seen, status int, body func(w http.ResponseWriter, r *http.Request)) *httptest.Server {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			s.mu.Lock()
+			s.keys = append(s.keys, r.Header.Get("Authorization")+r.Header.Get("x-api-key"))
+			s.mu.Unlock()
+			if status != http.StatusOK {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				_, _ = fmt.Fprint(w, `{"error":{"message":"upstream failed","type":"server_error"}}`)
+				return
+			}
+			body(w, r)
+		}))
+		t.Cleanup(server.Close)
+		return server
+	}
+	var seenA, seenB, seenC seen
+	serverA := record(&seenA, http.StatusInternalServerError, nil)
+	serverB := record(&seenB, http.StatusInternalServerError, nil)
+	serverC := record(&seenC, http.StatusOK, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"hello"}],`+
+			`"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	})
+
+	plugin := &requestScopedTestPlugin{attempt: func(fallbackIndex int, req *schemas.BifrostRequest) {
+		switch fallbackIndex {
+		case 0:
+			mustConfigureOpenAI(t, req, "sk-a", serverA.URL)
+		case 1:
+			mustConfigureOpenAI(t, req, "sk-b", serverB.URL)
+		case 3:
+			if err := req.UpdateProviderKey(schemas.Anthropic, schemas.Key{Value: *schemas.NewSecretVar("sk-c")}); err != nil {
+				t.Errorf("UpdateProviderKey: %v", err)
+			}
+			if err := req.UpdateProviderBaseURL(schemas.Anthropic, serverC.URL); err != nil {
+				t.Errorf("UpdateProviderBaseURL: %v", err)
+			}
+			if err := req.UpdateProviderAllowPrivateNetwork(schemas.Anthropic, true); err != nil {
+				t.Errorf("UpdateProviderAllowPrivateNetwork: %v", err)
+			}
+		}
+	}}
+	client := newRequestScopedTestClient(t, NewMockAccount(), plugin, nil)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, err := client.ChatCompletionRequest(ctx, requestScopedChat(schemas.OpenAI, "model-a",
+		schemas.Fallback{Provider: schemas.OpenAI, Model: "model-b"},
+		schemas.Fallback{Provider: schemas.Groq, Model: "unconfigured"},
+		schemas.Fallback{Provider: schemas.Anthropic, Model: "claude-test"},
+	))
+	if err != nil {
+		t.Fatalf("request: %s", err.GetErrorString())
+	}
+	if resp.ExtraFields.RoutingInfo.Provider != schemas.Anthropic {
+		t.Fatalf("served by %s, want the anthropic fallback", resp.ExtraFields.RoutingInfo.Provider)
+	}
+	for _, tc := range []struct {
+		name string
+		seen *seen
+		want string
+	}{{"first openai attempt", &seenA, "Bearer sk-a"}, {"second openai attempt", &seenB, "Bearer sk-b"}, {"anthropic fallback", &seenC, "sk-c"}} {
+		tc.seen.mu.Lock()
+		if len(tc.seen.keys) != 1 || tc.seen.keys[0] != tc.want {
+			t.Errorf("%s sent credentials %q, want exactly [%q]", tc.name, tc.seen.keys, tc.want)
+		}
+		tc.seen.mu.Unlock()
+	}
+	if errs := plugin.observedErrors(); !slices.ContainsFunc(errs, func(e string) bool { return strings.Contains(e, "failed to get config for provider groq") }) {
+		t.Errorf("the unconfigured fallback must fail through the post-hooks, observed %q", errs)
+	}
+}
+
+// TestRequestScopedConfiguration_OverridesConfiguredProvider pins that request-scoped
+// configuration replaces a configured provider's keys and endpoint for the request.
+func TestRequestScopedConfiguration_OverridesConfiguredProvider(t *testing.T) {
+	configured, configuredCalls := requestScopedTestServer(t)
+	scoped, scopedCalls := requestScopedTestServer(t)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, configured.URL)
+	plugin := &requestScopedTestPlugin{configure: func(_ *schemas.BifrostContext, req *schemas.BifrostRequest) {
+		mustConfigureOpenAI(t, req, "sk-scoped", scoped.URL)
+	}}
+	client := newRequestScopedTestClient(t, account, plugin, nil)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, err := client.ChatCompletionRequest(ctx, requestScopedChat(schemas.OpenAI, "m")); err != nil {
+		t.Fatalf("request: %s", err.GetErrorString())
+	}
+	if got := scopedCalls(); len(got) != 1 || got[0].auth != "Bearer sk-scoped" {
+		t.Errorf("request-scoped endpoint saw %+v", got)
+	}
+	if got := configuredCalls(); len(got) != 0 {
+		t.Errorf("configured endpoint was reached: %+v", got)
+	}
+	if n := account.KeyLookupCount(schemas.OpenAI); n != 0 {
+		t.Errorf("configured keys were looked up %d times", n)
+	}
+	if selected, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); selected != requestScopedKeyID {
+		t.Errorf("selected key ID = %q, want %q for a key without an ID", selected, requestScopedKeyID)
+	}
+}
+
+// TestRequestScopedConfiguration_FailsClosed pins that configuration Bifrost cannot serve without
+// ambient credentials or a permitted destination fails the attempt, and that the post-hooks see
+// the failure.
+func TestRequestScopedConfiguration_FailsClosed(t *testing.T) {
+	server, calls := requestScopedTestServer(t)
+	tests := []struct {
+		name      string
+		provider  schemas.ModelProvider
+		configure func(req *schemas.BifrostRequest) error
+		attempt   func(req *schemas.BifrostRequest)
+		wantErr   string
+	}{
+		{name: "provider without support", provider: schemas.Vertex, configure: func(req *schemas.BifrostRequest) error {
+			return req.UpdateProviderKey(schemas.Vertex, schemas.Key{Value: *schemas.NewSecretVar("token")})
+		}, wantErr: "does not support request-scoped configuration"},
+		{name: "unknown provider", provider: "not-a-provider", configure: func(req *schemas.BifrostRequest) error {
+			return req.UpdateProviderKey("not-a-provider", schemas.Key{Value: *schemas.NewSecretVar("k")})
+		}, wantErr: "unsupported provider"},
+		{name: "base URL the provider cannot honor", provider: schemas.VLLM, configure: func(req *schemas.BifrostRequest) error {
+			return req.UpdateProviderBaseURL(schemas.VLLM, "https://vllm.example.com")
+		}, wantErr: "vllm_key_config.url"},
+		{name: "loopback without private networks", provider: schemas.OpenAI, configure: func(req *schemas.BifrostRequest) error {
+			return req.UpdateProviderBaseURL(schemas.OpenAI, server.URL)
+		}, wantErr: "private IP 127.0.0.1"},
+		{name: "RFC 1918 without private networks", provider: schemas.OpenAI, configure: func(req *schemas.BifrostRequest) error {
+			return req.UpdateProviderBaseURL(schemas.OpenAI, "http://10.0.0.1:8000")
+		}, wantErr: "private IP 10.0.0.1"},
+		{name: "link-local with private networks", provider: schemas.OpenAI, configure: func(req *schemas.BifrostRequest) error {
+			if err := req.UpdateProviderAllowPrivateNetwork(schemas.OpenAI, true); err != nil {
+				return err
+			}
+			return req.UpdateProviderBaseURL(schemas.OpenAI, "http://169.254.169.254")
+		}, wantErr: "link-local IP 169.254.169.254"},
+		{name: "override removed in PreLLMHook", provider: schemas.OpenAI, configure: func(req *schemas.BifrostRequest) error {
+			return req.UpdateProviderBaseURL(schemas.OpenAI, server.URL)
+		}, attempt: func(req *schemas.BifrostRequest) { req.ProviderOverrides = nil }, wantErr: "failed to get config for provider openai"},
+	}
+	for _, tt := range tests {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%v", tt.name, stream), func(t *testing.T) {
+				plugin := &requestScopedTestPlugin{configure: func(_ *schemas.BifrostContext, req *schemas.BifrostRequest) {
+					if err := tt.configure(req); err != nil {
+						t.Errorf("configure: %v", err)
+					}
+				}}
+				if tt.attempt != nil {
+					plugin.attempt = func(_ int, req *schemas.BifrostRequest) { tt.attempt(req) }
+				}
+				client := newRequestScopedTestClient(t, NewMockAccount(), plugin, nil)
+				before := len(calls())
+
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				var bifrostErr *schemas.BifrostError
+				if stream {
+					var ch chan *schemas.BifrostStreamChunk
+					if ch, bifrostErr = client.ChatCompletionStreamRequest(ctx, requestScopedChat(tt.provider, "m")); ch != nil {
+						if errs := drainStream(ch); len(errs) > 0 {
+							bifrostErr = &schemas.BifrostError{Error: &schemas.ErrorField{Message: errs[0]}}
+						}
+					}
+				} else {
+					_, bifrostErr = client.ChatCompletionRequest(ctx, requestScopedChat(tt.provider, "m"))
+				}
+				if !strings.Contains(requestScopedErrorText(bifrostErr), tt.wantErr) {
+					t.Fatalf("error = %v, want one containing %q", bifrostErr, tt.wantErr)
+				}
+				if errs := plugin.observedErrors(); !slices.ContainsFunc(errs, func(e string) bool { return strings.Contains(e, tt.wantErr) }) {
+					t.Errorf("PostLLMHook did not observe the failure, saw %q", errs)
+				}
+				if got := calls()[before:]; len(got) != 0 {
+					t.Errorf("upstream was reached: %+v", got)
+				}
+			})
+		}
+	}
+}
+
+// TestRequestScopedConfiguration_Slots pins that request-scoped attempts on one instance are
+// bounded: with every slot taken an attempt waits until one frees up or its context ends, or
+// fails at once when excess requests are dropped.
+func TestRequestScopedConfiguration_Slots(t *testing.T) {
+	server, calls := requestScopedTestServer(t)
+	plugin := &requestScopedTestPlugin{configure: func(_ *schemas.BifrostContext, req *schemas.BifrostRequest) {
+		mustConfigureOpenAI(t, req, "sk-scoped", server.URL)
+	}}
+	client := newRequestScopedTestClient(t, NewMockAccount(), plugin, nil)
+	instance, err := client.getRequestScopedProvider(requestScopedClass{provider: schemas.OpenAI, allowPrivateNetwork: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range cap(instance.slots) {
+		instance.slots <- struct{}{}
+	}
+
+	// Waits, and gives up when the context ends.
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 50*time.Millisecond)
+	_, bifrostErr := client.ChatCompletionRequest(ctx, requestScopedChat(schemas.OpenAI, "m"))
+	cancel()
+	if bifrostErr == nil || !strings.Contains(bifrostErr.GetErrorString(), "request-scoped slot") {
+		t.Fatalf("error = %v, want a timeout waiting for a slot", bifrostErr)
+	}
+
+	// Drops at once.
+	client.dropExcessRequests.Store(true)
+	_, bifrostErr = client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), requestScopedChat(schemas.OpenAI, "m"))
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("error = %v, want 503 for a dropped request", bifrostErr)
+	}
+	client.dropExcessRequests.Store(false)
+
+	// Proceeds once a slot frees up.
+	done := make(chan *schemas.BifrostError, 1)
+	go func() {
+		_, err := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), requestScopedChat(schemas.OpenAI, "m"))
+		done <- err
+	}()
+	<-instance.slots
+	if err := <-done; err != nil {
+		t.Fatalf("request after a slot freed up: %s", err.GetErrorString())
+	}
+	if len(calls()) != 1 {
+		t.Fatalf("upstream calls = %d, want 1", len(calls()))
+	}
+	if len(instance.slots) != cap(instance.slots)-1 {
+		t.Fatalf("the attempt did not return its slot: %d of %d taken", len(instance.slots), cap(instance.slots))
+	}
+}
+
+// TestRequestScopedConfiguration_InstanceLookupAllocations pins that finding the instance for a
+// request-scoped attempt allocates nothing once it exists.
+func TestRequestScopedConfiguration_InstanceLookupAllocations(t *testing.T) {
+	client := newRequestScopedTestClient(t, NewMockAccount(), &requestScopedTestPlugin{}, nil)
+	class := requestScopedClass{provider: schemas.OpenAI, allowPrivateNetwork: true}
+	if _, err := client.getRequestScopedProvider(class); err != nil {
+		t.Fatal(err)
+	}
+	if allocs := testing.AllocsPerRun(100, func() {
+		if _, err := client.getRequestScopedProvider(class); err != nil {
+			t.Fatal(err)
+		}
+	}); allocs != 0 {
+		t.Errorf("getRequestScopedProvider for an existing instance: %v allocs, want 0", allocs)
+	}
+}
+
+// BenchmarkRequestScopedChatCompletion compares a chat completion against a configured provider
+// with the same request carrying request-scoped configuration, unary and streamed, end to end
+// against a local server.
+func BenchmarkRequestScopedChatCompletion(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), `"stream":true`) {
+			sseHandler(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}`)(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 4, 16, server.URL)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{ID: "k", Value: *schemas.NewSecretVar("sk"), Models: schemas.WhiteList{"*"}, Weight: 1}})
+	clients := []struct {
+		name   string
+		client func() (*Bifrost, error)
+	}{
+		{"configured", func() (*Bifrost, error) {
+			return Init(context.Background(), schemas.BifrostConfig{Account: account, LLMPlugins: []schemas.LLMPlugin{&requestScopedTestPlugin{}}, Logger: NewDefaultLogger(schemas.LogLevelError)})
+		}},
+		{"request-scoped", func() (*Bifrost, error) {
+			plugin := &requestScopedTestPlugin{configure: func(_ *schemas.BifrostContext, req *schemas.BifrostRequest) {
+				_ = req.UpdateProviderKey(schemas.OpenAI, schemas.Key{Value: *schemas.NewSecretVar("sk")})
+				_ = req.UpdateProviderBaseURL(schemas.OpenAI, server.URL)
+				_ = req.UpdateProviderAllowPrivateNetwork(schemas.OpenAI, true)
+			}}
+			return Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), LLMPlugins: []schemas.LLMPlugin{plugin}, Logger: NewDefaultLogger(schemas.LogLevelError)})
+		}},
+	}
+	for _, c := range clients {
+		client, err := c.client()
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.Run(c.name+"/unary", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), requestScopedChat(schemas.OpenAI, "m")); err != nil {
+					b.Fatal(err.GetErrorString())
+				}
+			}
+		})
+		b.Run(c.name+"/stream", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				stream, err := client.ChatCompletionStreamRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), requestScopedChat(schemas.OpenAI, "m"))
+				if err != nil {
+					b.Fatal(err.GetErrorString())
+				}
+				drainStream(stream)
+			}
+		})
+		client.Shutdown()
+	}
+}
+
+// requestScopedCallerKey carries a test goroutine's identity to the plugin.
+type requestScopedCallerKey struct{}
+
+// TestRequestScopedConfiguration_Concurrent runs request-scoped requests from many goroutines,
+// each with its own credential and endpoint, and pins that no credential reaches another's
+// endpoint. Run with -race.
+func TestRequestScopedConfiguration_Concurrent(t *testing.T) {
+	var mismatches atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		caller, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+		if r.Header.Get("Authorization") != "Bearer sk-"+caller {
+			mismatches.Add(1)
+		}
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), `"stream":true`) {
+			sseHandler(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}`)(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+	plugin := &requestScopedTestPlugin{configure: func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
+		caller := ctx.Value(requestScopedCallerKey{}).(string)
+		mustConfigureOpenAI(t, req, "sk-"+caller, server.URL+"/"+caller)
+	}}
+	client := newRequestScopedTestClient(t, NewMockAccount(), plugin, nil)
+
+	var wg sync.WaitGroup
+	for g := range 64 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 8 {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(requestScopedCallerKey{}, fmt.Sprintf("g%d-%d", g, i))
+				if i%2 == 0 {
+					if _, err := client.ChatCompletionRequest(ctx, requestScopedChat(schemas.OpenAI, "m")); err != nil {
+						t.Errorf("goroutine %d: %s", g, err.GetErrorString())
+					}
+					continue
+				}
+				stream, err := client.ChatCompletionStreamRequest(ctx, requestScopedChat(schemas.OpenAI, "m"))
+				if err != nil {
+					t.Errorf("goroutine %d: %s", g, err.GetErrorString())
+					continue
+				}
+				drainStream(stream)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := mismatches.Load(); n != 0 {
+		t.Fatalf("%d requests reached an endpoint with another request's credential", n)
 	}
 }

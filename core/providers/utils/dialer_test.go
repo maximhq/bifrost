@@ -345,14 +345,14 @@ func TestConfigureDialerFor_LoopbackIsPrivate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			conn.Close()
+			_ = conn.Close()
 		}
 	}()
 
@@ -375,7 +375,7 @@ func TestConfigureDialerFor_LoopbackIsPrivate(t *testing.T) {
 			client := tt.build(&fasthttp.Client{ReadTimeout: time.Second})
 			conn, err := client.Dial(ln.Addr().String())
 			if conn != nil {
-				conn.Close()
+				_ = conn.Close()
 			}
 			if tt.wantErr {
 				if err == nil || !strings.Contains(err.Error(), "private IP") {
