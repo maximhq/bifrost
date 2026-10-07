@@ -445,9 +445,49 @@ func applyBifrostEmbeddingParams(params *schemas.EmbeddingParameters, req Gemini
 	return params
 }
 
+// geminiEmbeddingEntriesToBifrost converts requests[] entries to input items. Gemini keeps each
+// entry's params; other providers take one parameter block, so the first entry's params apply.
+func geminiEmbeddingEntriesToBifrost(entries []GeminiEmbeddingRequest, provider schemas.ModelProvider) ([]schemas.EmbeddingInputItem, *schemas.EmbeddingParameters, error) {
+	perItem := provider == schemas.Gemini
+	items := make([]schemas.EmbeddingInputItem, 0, len(entries))
+	for _, entry := range entries {
+		content, err := geminiContentToEmbeddingContent(entry.Content)
+		if err != nil {
+			return nil, nil, err
+		}
+		item := schemas.EmbeddingInputItem{Content: content}
+		if perItem {
+			item.Params = applyBifrostEmbeddingParams(nil, entry)
+		}
+		items = append(items, item)
+	}
+	if perItem {
+		return items, nil, nil
+	}
+	return items, applyBifrostEmbeddingParams(nil, entries[0]), nil
+}
+
+// ToBifrostEmbeddingRequest converts a single :embedContent request; its params are request-level.
+func (r *GeminiEmbeddingRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostContext) (*schemas.BifrostEmbeddingRequest, error) {
+	if r == nil {
+		return nil, providerUtils.InvalidRequestErrorf("embedding request is empty")
+	}
+	content, err := geminiContentToEmbeddingContent(r.Content)
+	if err != nil {
+		return nil, fmt.Errorf("error converting embedding content: %w", err)
+	}
+	provider, model := schemas.ParseModelString(r.Model, "")
+	return &schemas.BifrostEmbeddingRequest{
+		Provider:  provider,
+		Model:     model,
+		Fallbacks: schemas.ParseFallbacks(r.Fallbacks),
+		Input:     []schemas.EmbeddingInputItem{{Content: content}},
+		Params:    applyBifrostEmbeddingParams(nil, *r),
+	}, nil
+}
+
 // ToBifrostEmbeddingRequest converts a GeminiBatchEmbeddingRequest (the :batchEmbedContents
-// wire format) to a Bifrost embedding request. Each entry's own taskType/title/dimensions
-// are kept as that input item's Params.
+// wire format) to a Bifrost embedding request.
 func (r *GeminiBatchEmbeddingRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostContext) (*schemas.BifrostEmbeddingRequest, error) {
 	if r == nil || len(r.Requests) == 0 {
 		return nil, providerUtils.InvalidRequestErrorf("batch embedding request is empty")
@@ -455,25 +495,18 @@ func (r *GeminiBatchEmbeddingRequest) ToBifrostEmbeddingRequest(ctx *schemas.Bif
 
 	provider, model := schemas.ParseModelString(r.Model, "")
 
-	bifrostReq := &schemas.BifrostEmbeddingRequest{
+	items, params, err := geminiEmbeddingEntriesToBifrost(r.Requests, provider)
+	if err != nil {
+		return nil, fmt.Errorf("error converting embedding content: %w", err)
+	}
+
+	return &schemas.BifrostEmbeddingRequest{
 		Provider:  provider,
 		Model:     model,
 		Fallbacks: schemas.ParseFallbacks(nil),
-		Input:     make([]schemas.EmbeddingInputItem, 0, len(r.Requests)),
-	}
-
-	for _, req := range r.Requests {
-		content, err := geminiContentToEmbeddingContent(req.Content)
-		if err != nil {
-			return nil, fmt.Errorf("error converting embedding content: %w", err)
-		}
-		bifrostReq.Input = append(bifrostReq.Input, schemas.EmbeddingInputItem{
-			Content: content,
-			Params:  applyBifrostEmbeddingParams(nil, req),
-		})
-	}
-
-	return bifrostReq, nil
+		Input:     items,
+		Params:    params,
+	}, nil
 }
 
 // ToBifrostEmbeddingRequest converts a GeminiGenerationRequest to BifrostEmbeddingRequest format.
@@ -494,18 +527,12 @@ func (request *GeminiGenerationRequest) ToBifrostEmbeddingRequest(ctx *schemas.B
 	}
 
 	if len(request.Requests) > 0 {
-		items := make([]schemas.EmbeddingInputItem, 0, len(request.Requests))
-		for _, req := range request.Requests {
-			content, err := geminiContentToEmbeddingContent(req.Content)
-			if err != nil {
-				return nil
-			}
-			items = append(items, schemas.EmbeddingInputItem{
-				Content: content,
-				Params:  applyBifrostEmbeddingParams(nil, req),
-			})
+		items, params, err := geminiEmbeddingEntriesToBifrost(request.Requests, provider)
+		if err != nil {
+			return nil
 		}
 		bifrostReq.Input = items
+		bifrostReq.Params = params
 		return bifrostReq
 	}
 
