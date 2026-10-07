@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -13,12 +15,237 @@ import (
 	"testing"
 	"time"
 
+	protocol "github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAddClientSharedHTTPHandshake(t *testing.T) {
+	// These cases change the package retry config, so neither the parent nor
+	// its subtests may run in parallel. Preserve the normal error classifier.
+	original := ConnectRetryConfig
+	ConnectRetryConfig.MaxRetries = 2
+	ConnectRetryConfig.InitialBackoff = time.Millisecond
+	ConnectRetryConfig.MaxBackoff = time.Millisecond
+	t.Cleanup(func() { ConnectRetryConfig = original })
+
+	t.Run("recovers after initialized notification 503", func(t *testing.T) {
+		fixture := &sharedHTTPHandshakeFixture{initializedFailures: 1, initializedStatus: http.StatusServiceUnavailable}
+		manager, config := newSharedHTTPHandshakeManager(t, context.Background(), fixture)
+
+		err := manager.AddClient(context.Background(), config)
+		t.Logf("handshake requests: %+v", fixture.snapshot())
+		require.NoError(t, err, "a transient notification failure must retry the handshake with a fresh session")
+		assertSharedHTTPHandshakeHealthy(t, manager, config)
+		require.NoError(t, manager.Cleanup())
+		assert.Equal(t, []sharedHTTPHandshakeRequest{
+			{method: "initialize"},
+			{method: "notifications/initialized", session: "session-1", protocol: protocol.LATEST_PROTOCOL_VERSION},
+			{method: http.MethodDelete, session: "session-1", protocol: protocol.LATEST_PROTOCOL_VERSION},
+			{method: "initialize"},
+			{method: "notifications/initialized", session: "session-2", protocol: protocol.LATEST_PROTOCOL_VERSION},
+			{method: "tools/list", session: "session-2", protocol: protocol.LATEST_PROTOCOL_VERSION},
+			{method: http.MethodDelete, session: "session-2", protocol: protocol.LATEST_PROTOCOL_VERSION},
+		}, fixture.snapshot(), "discard the incomplete session before retrying, and retain only the healthy session until cleanup")
+	})
+
+	t.Run("recovers after initialize response 503", func(t *testing.T) {
+		fixture := &sharedHTTPHandshakeFixture{initializeFailures: 1}
+		manager, config := newSharedHTTPHandshakeManager(t, context.Background(), fixture)
+
+		require.NoError(t, manager.AddClient(context.Background(), config))
+		assertSharedHTTPHandshakeHealthy(t, manager, config)
+		require.NoError(t, manager.Cleanup())
+		assert.Equal(t, []sharedHTTPHandshakeRequest{
+			{method: "initialize"},
+			{method: "initialize"},
+			{method: "notifications/initialized", session: "session-1", protocol: protocol.LATEST_PROTOCOL_VERSION},
+			{method: "tools/list", session: "session-1", protocol: protocol.LATEST_PROTOCOL_VERSION},
+			{method: http.MethodDelete, session: "session-1", protocol: protocol.LATEST_PROTOCOL_VERSION},
+		}, fixture.snapshot())
+	})
+
+	t.Run("does not retry permanent notification failure", func(t *testing.T) {
+		fixture := &sharedHTTPHandshakeFixture{initializedFailures: 1, initializedStatus: http.StatusUnauthorized}
+		manager, config := newSharedHTTPHandshakeManager(t, context.Background(), fixture)
+
+		err := manager.AddClient(context.Background(), config)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "401")
+		assert.Nil(t, manager.GetClientByName(config.Name), "failed AddClient must not retain a ghost client")
+		assert.Equal(t, []sharedHTTPHandshakeRequest{
+			{method: "initialize"},
+			{method: "notifications/initialized", session: "session-1", protocol: protocol.LATEST_PROTOCOL_VERSION},
+			{method: http.MethodDelete, session: "session-1", protocol: protocol.LATEST_PROTOCOL_VERSION},
+		}, fixture.snapshot(), "permanent failures stop after one attempt and close the allocated session")
+	})
+
+	t.Run("bounds transient attempts", func(t *testing.T) {
+		fixture := &sharedHTTPHandshakeFixture{initializeFailures: ConnectRetryConfig.MaxRetries + 1}
+		manager, config := newSharedHTTPHandshakeManager(t, context.Background(), fixture)
+
+		err := manager.AddClient(context.Background(), config)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "503")
+		assert.Nil(t, manager.GetClientByName(config.Name))
+		assert.Equal(t, []sharedHTTPHandshakeRequest{
+			{method: "initialize"}, {method: "initialize"}, {method: "initialize"},
+		}, fixture.snapshot(), "the whole handshake has one initial attempt and MaxRetries retries")
+	})
+
+	t.Run("manager cancellation stops handshake and closes session", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		fixture := &sharedHTTPHandshakeFixture{notificationStarted: make(chan struct{}, 1)}
+		manager, config := newSharedHTTPHandshakeManager(t, ctx, fixture)
+		t.Cleanup(cancel)
+		result := make(chan error, 1)
+		go func() { result <- manager.AddClient(context.Background(), config) }()
+
+		select {
+		case <-fixture.notificationStarted:
+		case <-time.After(5 * time.Second):
+			t.Fatal("initialized notification was not reached")
+		}
+		cancel()
+		select {
+		case err := <-result:
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "context canceled")
+		case <-time.After(5 * time.Second):
+			t.Fatal("AddClient did not return after manager cancellation")
+		}
+		assert.Nil(t, manager.GetClientByName(config.Name))
+		assert.Equal(t, []sharedHTTPHandshakeRequest{
+			{method: "initialize"},
+			{method: "notifications/initialized", session: "session-1", protocol: protocol.LATEST_PROTOCOL_VERSION},
+			{method: http.MethodDelete, session: "session-1", protocol: protocol.LATEST_PROTOCOL_VERSION},
+		}, fixture.snapshot(), "cancellation must not start another attempt or leak the partial session")
+	})
+}
+
+func newSharedHTTPHandshakeManager(t *testing.T, ctx context.Context, fixture *sharedHTTPHandshakeFixture) (*MCPManager, *schemas.MCPClientConfig) {
+	t.Helper()
+	server := httptest.NewServer(fixture)
+	t.Cleanup(server.Close)
+	manager := NewMCPManager(ctx, schemas.MCPConfig{ToolSyncInterval: time.Hour}, nil, &MockLogger{}, nil)
+	// Register after server.Close so session DELETEs finish while the server is live.
+	t.Cleanup(func() { require.NoError(t, manager.Cleanup()) })
+	return manager, &schemas.MCPClientConfig{
+		ID: "shared-http", Name: "sharedHTTP", AuthType: schemas.MCPAuthTypeNone,
+		ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(server.URL),
+		NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
+	}
+}
+
+func assertSharedHTTPHandshakeHealthy(t *testing.T, manager *MCPManager, config *schemas.MCPClientConfig) {
+	t.Helper()
+	state := manager.GetClientByName(config.Name)
+	require.NotNil(t, state)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, state.State)
+	require.NotNil(t, state.Conn)
+	assert.Nil(t, state.LastFailure)
+	assert.Equal(t, "Use echo carefully.", state.ServerInstructions)
+	require.Len(t, state.ToolMap, 1)
+	tool, found := state.ToolMap[config.Name+"-echo"]
+	require.True(t, found)
+	require.NotNil(t, tool.Function)
+	assert.Equal(t, config.Name+"-echo", tool.Function.Name)
+	assert.Equal(t, "echo", state.ToolNameMapping["echo"])
+}
+
+type sharedHTTPHandshakeRequest struct {
+	method   string
+	session  string
+	protocol string
+}
+
+// A stateful server allocates a session during initialize and rejects a second
+// initialize carrying that session. This exposes clients that retry only the
+// protocol call after a later handshake stage has already mutated the transport.
+type sharedHTTPHandshakeFixture struct {
+	mu                  sync.Mutex
+	requests            []sharedHTTPHandshakeRequest
+	sessions            int
+	initializeFailures  int
+	initializedFailures int
+	initializedStatus   int
+	notificationStarted chan struct{}
+}
+
+func (f *sharedHTTPHandshakeFixture) snapshot() []sharedHTTPHandshakeRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]sharedHTTPHandshakeRequest(nil), f.requests...)
+}
+
+func (f *sharedHTTPHandshakeFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	request := sharedHTTPHandshakeRequest{
+		session: r.Header.Get("Mcp-Session-Id"), protocol: r.Header.Get("MCP-Protocol-Version"),
+	}
+	var message struct {
+		Method string          `json:"method"`
+		ID     json.RawMessage `json:"id"`
+	}
+	if r.Method == http.MethodDelete {
+		request.method = http.MethodDelete
+	} else {
+		if err := json.NewDecoder(r.Body).Decode(&message); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		request.method = message.Method
+	}
+	f.mu.Lock()
+	f.requests = append(f.requests, request)
+	if request.method == "notifications/initialized" && f.notificationStarted != nil {
+		f.mu.Unlock()
+		f.notificationStarted <- struct{}{}
+		<-r.Context().Done()
+		return
+	}
+	defer f.mu.Unlock()
+	switch request.method {
+	case http.MethodDelete:
+		w.WriteHeader(http.StatusOK)
+	case "initialize":
+		if request.session != "" {
+			http.Error(w, "session already initialized; create a fresh session", http.StatusBadRequest)
+			return
+		}
+		if f.initializeFailures > 0 {
+			f.initializeFailures--
+			http.Error(w, "temporary upstream failure", http.StatusServiceUnavailable)
+			return
+		}
+		f.sessions++
+		w.Header().Set("Mcp-Session-Id", fmt.Sprintf("session-%d", f.sessions))
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":%q,"capabilities":{"tools":{}},"serverInfo":{"name":"stateful-fixture","version":"1.0"},"instructions":"Use echo carefully."}}`, message.ID, protocol.LATEST_PROTOCOL_VERSION); err != nil {
+			return
+		}
+	case "notifications/initialized":
+		if f.initializedFailures > 0 {
+			f.initializedFailures--
+			http.Error(w, "upstream rejected initialized notification", f.initializedStatus)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	case "tools/list":
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","description":"Echo","inputSchema":{"type":"object"}}]}}`, message.ID); err != nil {
+			return
+		}
+	default:
+		w.WriteHeader(http.StatusAccepted)
+	}
+}
 
 func TestCreateSTDIOConnectionAllowsInlineEnvAssignments(t *testing.T) {
 	t.Parallel()
