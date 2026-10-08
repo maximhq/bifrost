@@ -749,16 +749,18 @@ func (m *Manager) Update(ctx context.Context, name string, req UpdateRequest) (s
 			}
 			submitted.Headers[name] = storedValue
 		}
+		// Only a masked placeholder means "keep the stored credential"; an
+		// env/vault reference is a new value and is written as submitted.
 		if submitted.OAuth != nil {
 			if stored == nil || stored.OAuth == nil {
-				if (submitted.OAuth.ClientID != nil && submitted.OAuth.ClientID.IsRedacted()) || (submitted.OAuth.ClientSecret != nil && submitted.OAuth.ClientSecret.IsRedacted()) {
+				if submitted.OAuth.ClientID.IsMaskedPlaceholder() || submitted.OAuth.ClientSecret.IsMaskedPlaceholder() {
 					return nil, errors.New("cannot preserve missing upstream OAuth credentials")
 				}
 			} else {
-				if submitted.OAuth.ClientID != nil && submitted.OAuth.ClientID.IsRedacted() {
+				if submitted.OAuth.ClientID.IsMaskedPlaceholder() {
 					submitted.OAuth.ClientID = stored.OAuth.ClientID
 				}
-				if submitted.OAuth.ClientSecret != nil && submitted.OAuth.ClientSecret.IsRedacted() {
+				if submitted.OAuth.ClientSecret.IsMaskedPlaceholder() {
 					submitted.OAuth.ClientSecret = stored.OAuth.ClientSecret
 				}
 			}
