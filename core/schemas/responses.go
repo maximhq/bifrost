@@ -568,6 +568,11 @@ type ResponsesParameters struct {
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
+
+	// BedrockOutputConfig carries the native top-level Converse outputConfig
+	// through the provider-neutral Responses conversion without exposing an
+	// AWS-only field to other providers' wire serializers.
+	BedrockOutputConfig json.RawMessage `json:"-"`
 }
 
 type ResponsesStreamOptions struct {

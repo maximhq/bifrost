@@ -1,11 +1,91 @@
 package semanticcache
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// TestResponsesAPIBedrockOutputConfigCacheIsolation keeps native Converse
+// structured outputs separate even though their config is hidden from JSON.
+func TestResponsesAPIBedrockOutputConfigCacheIsolation(t *testing.T) {
+	plugin := &Plugin{config: &Config{}}
+	schemaA := json.RawMessage(`{"textFormat":{"type":"json_schema","structure":{"jsonSchema":{"name":"answer","schema":"{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}}}"}}}}`)
+	schemaB := json.RawMessage(`{"textFormat":{"type":"json_schema","structure":{"jsonSchema":{"name":"answer","schema":"{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"integer\"}}}"}}}}`)
+
+	for _, requestType := range []schemas.RequestType{schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest} {
+		t.Run(string(requestType), func(t *testing.T) {
+			identity := func(config json.RawMessage, extra map[string]interface{}) (string, string) {
+				t.Helper()
+				req := &schemas.BifrostRequest{
+					RequestType: requestType,
+					ResponsesRequest: &schemas.BifrostResponsesRequest{
+						Provider: schemas.Bedrock,
+						Model:    "amazon.nova-pro-v1:0",
+						Input: []schemas.ResponsesMessage{{
+							Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+							Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Return an answer.")},
+						}},
+						Params: &schemas.ResponsesParameters{BedrockOutputConfig: config, ExtraParams: extra},
+					},
+				}
+				metadata, err := plugin.buildRequestMetadataForCaching(nil, req)
+				if err != nil {
+					t.Fatalf("buildRequestMetadataForCaching failed: %v", err)
+				}
+				paramsHash, err := hashMap(metadata)
+				if err != nil {
+					t.Fatalf("hashMap failed: %v", err)
+				}
+				requestHash, err := plugin.generateRequestHash(req, metadata)
+				if err != nil {
+					t.Fatalf("generateRequestHash failed: %v", err)
+				}
+				cacheID, err := plugin.generateDirectCacheID(req.ResponsesRequest.Provider, req.ResponsesRequest.Model, "same-bucket", requestHash, paramsHash)
+				if err != nil {
+					t.Fatalf("generateDirectCacheID failed: %v", err)
+				}
+				return paramsHash, cacheID
+			}
+
+			tests := []struct {
+				name       string
+				a, b       json.RawMessage
+				extraA     map[string]interface{}
+				extraB     map[string]interface{}
+				wantShared bool
+			}{
+				{name: "different schemas", a: schemaA, b: schemaB},
+				{name: "schema vs unset", a: schemaA},
+				{name: "schema vs explicit null", a: schemaA, b: json.RawMessage(`null`)},
+				{name: "explicit null vs unset", a: json.RawMessage(`null`)},
+				{name: "identical schema", a: schemaA, b: append(json.RawMessage(nil), schemaA...), wantShared: true},
+				{name: "empty vs unset", a: json.RawMessage{}, wantShared: true},
+				{name: "extra params cannot shadow native config", a: schemaA, b: schemaB, extraA: map[string]interface{}{"bedrock_output_config": json.RawMessage(`null`)}, extraB: map[string]interface{}{"bedrock_output_config": json.RawMessage(`null`)}},
+				{name: "native vs extra-only config", a: schemaA, extraB: map[string]interface{}{"bedrock_output_config": schemaA}},
+				{name: "extra params remain significant", a: schemaA, b: schemaA, extraA: map[string]interface{}{"bedrock_output_config": schemaA}, extraB: map[string]interface{}{"bedrock_output_config": schemaB}},
+				{name: "extra null vs absent", a: schemaA, b: schemaA, extraB: map[string]interface{}{"bedrock_output_config": nil}},
+				{name: "explicit null vs unset with extra", a: json.RawMessage(`null`), extraA: map[string]interface{}{"bedrock_output_config": schemaA}, extraB: map[string]interface{}{"bedrock_output_config": schemaA}},
+				{name: "empty vs unset with extra", a: json.RawMessage{}, extraA: map[string]interface{}{"bedrock_output_config": schemaA}, extraB: map[string]interface{}{"bedrock_output_config": schemaA}, wantShared: true},
+			}
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					hashA, idA := identity(tt.a, tt.extraA)
+					hashB, idB := identity(tt.b, tt.extraB)
+					t.Logf("params_hash: %s vs %s; direct cache ID: %s vs %s", hashA, hashB, idA, idB)
+					if shared := hashA == hashB; shared != tt.wantShared {
+						t.Errorf("params_hash shared = %v, want %v", shared, tt.wantShared)
+					}
+					if shared := idA == idB; shared != tt.wantShared {
+						t.Errorf("direct cache ID shared = %v, want %v", shared, tt.wantShared)
+					}
+				})
+			}
+		})
+	}
+}
 
 // TestResponsesAPIBasicFunctionality tests the core caching functionality with Responses API
 func TestResponsesAPIBasicFunctionality(t *testing.T) {

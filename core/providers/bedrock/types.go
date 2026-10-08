@@ -108,6 +108,7 @@ type BedrockConverseRequest struct {
 	PromptVariables                   map[string]BedrockPromptVariable `json:"promptVariables,omitempty"`                   // Prompt variables for prompt management
 	RequestMetadata                   map[string]string                `json:"requestMetadata,omitempty"`                   // Request metadata
 	ServiceTier                       *BedrockServiceTier              `json:"serviceTier,omitempty"`                       // Service tier configuration (note: camelCase in both request and response)
+	OutputConfig                      json.RawMessage                  `json:"outputConfig,omitempty"`                      // Native Converse structured-output configuration
 	Stream                            bool                             `json:"-"`                                           // Whether streaming is requested (internal, not in JSON)
 
 	// Extra params for advanced use cases
@@ -140,6 +141,7 @@ var bedrockConverseRequestKnownFields = map[string]bool{
 	"promptVariables":                   true,
 	"requestMetadata":                   true,
 	"serviceTier":                       true,
+	"outputConfig":                      true,
 	"stream":                            true,
 	"extra_params":                      true,
 	"fallbacks":                         true,

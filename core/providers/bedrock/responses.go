@@ -2172,6 +2172,9 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 		Params:    &schemas.ResponsesParameters{},
 		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
+	if len(request.OutputConfig) > 0 {
+		bifrostReq.Params.BedrockOutputConfig = append(json.RawMessage(nil), request.OutputConfig...)
+	}
 
 	// Convert messages using the new conversion method
 	convertedMessages := ConvertBedrockMessagesToBifrostMessages(ctx, request.Messages, request.System, false)
@@ -2542,6 +2545,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 	bedrockReq := &BedrockConverseRequest{
 		ModelID: bifrostReq.Model,
+	}
+	if bifrostReq.Params != nil && len(bifrostReq.Params.BedrockOutputConfig) > 0 {
+		bedrockReq.OutputConfig = append(json.RawMessage(nil), bifrostReq.Params.BedrockOutputConfig...)
 	}
 
 	// map bifrost messages to bedrock messages using the new conversion method
