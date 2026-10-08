@@ -345,18 +345,29 @@ func (s *Store) GetSupportedParameters(model string) []string {
 	// row in the sheet omits "temperature", so resolving to one is what lets it
 	// be dropped before Bedrock rejects the request.
 	//
-	// The exact key is the first candidate, so a model that resolves today
-	// resolves to the same row.
+	// Exact key first, and only build candidates on a miss. The compat plugin
+	// calls this on every request when parameter dropping is on, and
+	// modelParameterCandidates walks every supportedParams key to collect
+	// suffix matches -- turning a map lookup into a map-wide scan for models
+	// that already resolve would be a poor trade for a fallback.
+	s.mu.RLock()
+	params, ok := s.supportedParams[model]
+	s.mu.RUnlock()
+	if ok {
+		return append([]string(nil), params...)
+	}
+
 	for _, candidate := range s.modelParameterCandidates(model) {
+		if candidate == model {
+			continue
+		}
 		s.mu.RLock()
 		params, ok := s.supportedParams[candidate]
 		s.mu.RUnlock()
 		if !ok {
 			continue
 		}
-		out := make([]string, len(params))
-		copy(out, params)
-		return out
+		return append([]string(nil), params...)
 	}
 	return nil
 }
