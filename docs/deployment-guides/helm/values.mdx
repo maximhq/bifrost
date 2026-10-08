@@ -193,6 +193,35 @@ tolerations:
     effect: "NoSchedule"
 ```
 
+**Spreading replicas across zones and nodes**
+
+`topologySpreadConstraints` is rendered into the Bifrost pod spec (Deployment or StatefulSet) to spread replicas across nodes or zones, which reduces the chance that losing one takes every replica down. Unlike a required pod anti-affinity rule, it still lets you run more replicas than you have nodes. It does not guarantee a spread: `ScheduleAnyway` only prefers one, and `DoNotSchedule` without `minDomains` can still place every replica in the only eligible domain.
+
+```yaml
+topologySpreadConstraints:
+  # Hard rule: zone replica counts may differ by at most 1. A pod stays Pending rather than break it.
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+  # Soft rule: prefer spreading across nodes, but never block scheduling.
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+```
+
+| Field | Description |
+|-------|-------------|
+| `maxSkew` | Maximum difference in Bifrost pods between any two domains (required, at least `1`) |
+| `topologyKey` | Node label that defines a domain, e.g. `topology.kubernetes.io/zone` or `kubernetes.io/hostname` (required) |
+| `whenUnsatisfiable` | `DoNotSchedule` keeps the pod Pending rather than break the skew; `ScheduleAnyway` only prefers spreading (required) |
+| `labelSelector` | Pods counted per domain. Omit it and the chart fills in this release's server pod labels, so only Bifrost's own replicas are counted. An explicit selector, including `{}` (every pod in the namespace), is kept as written |
+| `minDomains` | Minimum number of eligible domains. Requires `whenUnsatisfiable: DoNotSchedule`; the chart rejects it with `ScheduleAnyway` |
+| `matchLabelKeys`, `nodeAffinityPolicy`, `nodeTaintsPolicy` | Passed through unchanged; see the [Kubernetes docs](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/) |
+
+<Note>
+With `DoNotSchedule`, a domain whose nodes are cordoned or tainted still counts toward the skew (the default `nodeTaintsPolicy: Ignore`), so scaling up can leave pods Pending. Use `ScheduleAnyway`, or set `nodeTaintsPolicy: Honor`, when that is not what you want.
+</Note>
+
 ### Extra Environment Variables
 
 Three ways to inject env vars:
