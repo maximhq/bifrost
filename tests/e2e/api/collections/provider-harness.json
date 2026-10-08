@@ -211873,6 +211873,365 @@
           }
         }
       ]
+    },
+    {
+      "name": "177. Fallbacks across drop-in routes, request types and governance refusals (fallback-coverage)",
+      "description": "Request-level fallbacks beyond /v1 chat. Each row's primary fails for free on a model the provider does not have, or is refused by governance, and an openai/gpt-4o-mini fallback serves. The x-bifrost-routing-info-provider, x-bifrost-routing-info-is-fallback and x-bifrost-fallback-index headers must name the fallback.\n\nRows: (1) an unconfigured fallback (fireworks) is skipped and the next one serves as fallback 2, the skipped slot keeping its place; (2) /anthropic fails over and answers in the Messages shape; (3) the same while streaming; (4) /bedrock Converse fails over; (5) a primary the virtual key does not allow is refused by governance and still falls back, with none of the primary provider's headers on the answer; (6) embeddings fail over; (7) a streaming /v1/responses request fails over. Run with FEATURE=\"fallback-coverage\".",
+      "item": [
+        {
+          "name": "openai an unconfigured fallback is skipped and the next one serves, keeping its place in the chain - fallback-coverage",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var h = function (name) { return pm.response.headers.get(name); };",
+                  "pm.test('the openai fallback served as fallback 2', function () {",
+                  "  pm.expect(h('x-bifrost-routing-info-provider'), pm.response.text().slice(0, 400)).to.eql('openai');",
+                  "  pm.expect(h('x-bifrost-routing-info-is-fallback'), pm.response.text().slice(0, 400)).to.eql('true');",
+                  "  pm.expect(h('x-bifrost-fallback-index'), pm.response.text().slice(0, 400)).to.eql('2');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/bifrost-harness-missing-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3,\n  \"fallbacks\": [\n    \"fireworks/accounts/fireworks/models/llama-v3p1-8b-instruct\",\n    \"openai/gpt-4o-mini\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "openai the /anthropic route fails over from a missing Claude model to an openai fallback - fallback-coverage",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var h = function (name) { return pm.response.headers.get(name); };",
+                  "pm.test('the openai fallback served', function () {",
+                  "  pm.expect(h('x-bifrost-routing-info-provider'), pm.response.text().slice(0, 400)).to.eql('openai');",
+                  "  pm.expect(h('x-bifrost-routing-info-is-fallback'), pm.response.text().slice(0, 400)).to.eql('true');",
+                  "});",
+                  "pm.test('the fallback answer comes back in the Anthropic Messages shape', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.type, pm.response.text()).to.eql('message');",
+                  "  pm.expect(j.content, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-harness-missing-model\",\n  \"max_tokens\": 8,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"fallbacks\": [\n    \"openai/gpt-4o-mini\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "openai the /anthropic route fails over while streaming, and the stream's headers name the fallback - fallback-coverage",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var h = function (name) { return pm.response.headers.get(name); };",
+                  "pm.test('the openai fallback served', function () {",
+                  "  pm.expect(h('x-bifrost-routing-info-provider'), pm.response.text().slice(0, 400)).to.eql('openai');",
+                  "  pm.expect(h('x-bifrost-routing-info-is-fallback'), pm.response.text().slice(0, 400)).to.eql('true');",
+                  "});",
+                  "pm.test('the fallback stream completes in the Anthropic event shape', function () {",
+                  "  pm.expect(pm.response.text()).to.include('message_stop');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-harness-missing-model\",\n  \"max_tokens\": 8,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"fallbacks\": [\n    \"openai/gpt-4o-mini\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "openai the /bedrock Converse route fails over from a missing model to an openai fallback - fallback-coverage",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var h = function (name) { return pm.response.headers.get(name); };",
+                  "pm.test('the openai fallback served', function () {",
+                  "  pm.expect(h('x-bifrost-routing-info-provider'), pm.response.text().slice(0, 400)).to.eql('openai');",
+                  "  pm.expect(h('x-bifrost-routing-info-is-fallback'), pm.response.text().slice(0, 400)).to.eql('true');",
+                  "});",
+                  "pm.test('the fallback answer comes back in the Converse shape', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(((j.output || {}).message || {}).content, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/bifrost.harness-missing-model-v1:0/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "bifrost.harness-missing-model-v1:0",
+                "converse"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 8\n  },\n  \"fallbacks\": [\n    \"openai/gpt-4o-mini\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "openai a primary refused by governance still falls back to a provider the virtual key allows - fallback-coverage",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'run-' + Date.now();",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: 'harness-fallback-coverage-vk-' + run, provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }] }) } }, function (err, res) {",
+                  "  var vk = {}; try { vk = (res.json() || {}).virtual_key || {}; } catch (e) { vk = {}; }",
+                  "  pm.test('setup: created a virtual key that allows openai only', function () { pm.expect(res && res.code, err ? String(err) : res.text()).to.eql(200); });",
+                  "  pm.collectionVariables.set('fbcVKID', vk.id || '');",
+                  "  pm.collectionVariables.set('fbcVKValue', (vk.value && typeof vk.value === 'object') ? vk.value.value : (vk.value || 'missing'));",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var h = function (name) { return pm.response.headers.get(name); };",
+                  "pm.test('the openai fallback served as fallback 1', function () {",
+                  "  pm.expect(h('x-bifrost-routing-info-provider'), pm.response.text().slice(0, 400)).to.eql('openai');",
+                  "  pm.expect(h('x-bifrost-routing-info-is-fallback'), pm.response.text().slice(0, 400)).to.eql('true');",
+                  "  pm.expect(h('x-bifrost-fallback-index'), pm.response.text().slice(0, 400)).to.eql('1');",
+                  "});",
+                  "pm.test('the refused primary never reached Anthropic, so none of its headers ride along', function () {",
+                  "  pm.expect(pm.response.headers.get('anthropic-organization-id')).to.equal(undefined);",
+                  "  pm.expect(pm.response.headers.get('request-id')).to.equal(undefined);",
+                  "});",
+                  "var vkID = pm.collectionVariables.get('fbcVKID');",
+                  "if (vkID) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + vkID, method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup: virtual key deleted', function () { pm.expect(res && res.code, err ? String(err) : res.text()).to.eql(200); });",
+                  "  });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{fbcVKValue}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3,\n  \"fallbacks\": [\n    \"openai/gpt-4o-mini\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "openai an embeddings request fails over from a missing model to an openai fallback - fallback-coverage",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var h = function (name) { return pm.response.headers.get(name); };",
+                  "pm.test('the openai fallback served as fallback 1', function () {",
+                  "  pm.expect(h('x-bifrost-routing-info-provider'), pm.response.text().slice(0, 400)).to.eql('openai');",
+                  "  pm.expect(h('x-bifrost-routing-info-is-fallback'), pm.response.text().slice(0, 400)).to.eql('true');",
+                  "  pm.expect(h('x-bifrost-fallback-index'), pm.response.text().slice(0, 400)).to.eql('1');",
+                  "});",
+                  "pm.test('the fallback returns an embedding', function () {",
+                  "  pm.expect(((pm.response.json().data || [])[0] || {}).embedding, pm.response.text().slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/bifrost-harness-missing-embedding\",\n  \"input\": \"Hello world\",\n  \"fallbacks\": [\n    \"openai/text-embedding-3-small\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "openai a streaming /v1/responses request fails over and its headers name the fallback - fallback-coverage",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var h = function (name) { return pm.response.headers.get(name); };",
+                  "pm.test('the openai fallback served as fallback 1', function () {",
+                  "  pm.expect(h('x-bifrost-routing-info-provider'), pm.response.text().slice(0, 400)).to.eql('openai');",
+                  "  pm.expect(h('x-bifrost-routing-info-is-fallback'), pm.response.text().slice(0, 400)).to.eql('true');",
+                  "  pm.expect(h('x-bifrost-fallback-index'), pm.response.text().slice(0, 400)).to.eql('1');",
+                  "});",
+                  "pm.test('the fallback stream completes', function () {",
+                  "  pm.expect(pm.response.text()).to.include('response.completed');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/bifrost-harness-missing-model\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 16,\n  \"stream\": true,\n  \"fallbacks\": [\n    \"openai/gpt-4o-mini\"\n  ]\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }
