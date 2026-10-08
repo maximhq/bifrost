@@ -12,6 +12,7 @@ type timeBoundSide int
 const (
 	lowerTimeBound timeBoundSide = iota // timestamp >= bound
 	upperTimeBound                      // timestamp <= bound
+	cursorTimeBound                     // a stored row's own timestamp, compared with =, < and >
 )
 
 // timestampBound returns the placeholder and argument for comparing the
@@ -20,7 +21,9 @@ const (
 // start, so ClickHouse binds epoch milliseconds instead. The column is
 // DateTime64(3), so a bound inside a millisecond must round toward the range:
 // an inclusive lower bound rounds up (truncating would admit rows before t) and
-// an inclusive upper bound rounds down. Every other dialect binds the time as is.
+// an inclusive upper bound rounds down. A cursor is a row's own stored
+// timestamp, already whole milliseconds, so it is bound unrounded. Every other
+// dialect binds the time as is.
 func timestampBound(dialect string, t time.Time, side timeBoundSide) (string, any) {
 	if dialect == "clickhouse" {
 		ms := t.UnixMilli()
