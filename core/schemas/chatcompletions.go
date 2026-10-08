@@ -1966,13 +1966,15 @@ type BifrostLLMUsage struct {
 	StateTokensDropped *int     `json:"state_tokens_dropped,omitempty"`
 	Truncated          *bool    `json:"truncated,omitempty"`
 	TruncatedQuestions []string `json:"truncated_questions,omitempty"`
-	// Served Anthropic tier (fast mode / data residency), carried internally so
-	// cancel/timeout billing (which reads a bare usage via BilledUsage) can apply
-	// the tier multiplier. json:"-" keeps them out of every serialized usage payload.
-	Speed        *string `json:"-"`
-	InferenceGeo *string `json:"-"`
+	// Served Anthropic tier (service tier / fast mode / data residency), carried
+	// internally so the billing of a failed stream (which reads a bare usage via
+	// BilledUsage) can apply the tier multiplier. json:"-" keeps them out of every
+	// serialized usage payload.
+	ServiceTier  *BifrostServiceTier `json:"-"`
+	Speed        *string             `json:"-"`
+	InferenceGeo *string             `json:"-"`
 	// Model that actually served the turn after a server-side fallback handoff.
-	// Carried here for the same reason as the two above: the bare-usage billing path
+	// Carried here for the same reason as the three above: the bare-usage billing path
 	// (CalculateCostForUsage) never sees RoutingInfo, so without it a fallback-served
 	// turn is priced at the requested model's rates.
 	ServerSideFallbackModel *string `json:"-"`
