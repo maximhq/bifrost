@@ -43,7 +43,7 @@ const edgeTypes = { rfChain: RfChainEdge };
 export function RoutingTreeView() {
 	const isMobile = useIsMobile();
 	const navigate = useNavigate();
-	const { data, isLoading, isError } = useGetRoutingRulesQuery({ limit: 500 });
+	const { data, isLoading, isError } = useGetRoutingRulesQuery();
 	const rules = data?.rules ?? [];
 
 	// ── Position persistence ───────────────────────────────────────────────
