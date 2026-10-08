@@ -65,21 +65,47 @@ export function evalChainCondition(cond: string, vars: Record<string, string>): 
 	return null; // too complex — skip
 }
 
+/**
+ * Check whether an expression is fully enclosed in matching outer parentheses.
+ * Tracks single, double, and triple quotes as well as backslash escapes so
+ * parentheses within string literals do not alter depth tracking.
+ *
+ * @param s - The CEL expression to inspect.
+ * @returns True if the expression is enclosed in matching outer parentheses.
+ */
 function isWrappedInParens(s: string): boolean {
 	if (!s.startsWith("(") || !s.endsWith(")")) return false;
 	let d = 0;
-	let inQuote: '"' | "'" | null = null;
+	let inQuote: '"""' | "'''" | '"' | "'" | null = null;
+
 	for (let i = 0; i < s.length; i++) {
 		const ch = s[i];
 		if (ch === "\\" && inQuote !== null && i + 1 < s.length) {
 			i++;
 			continue;
 		}
-		if (ch === '"' || ch === "'") {
-			if (inQuote === null) inQuote = ch;
-			else if (inQuote === ch) inQuote = null;
+
+		if (inQuote === null) {
+			if (s.slice(i, i + 3) === '"""' || s.slice(i, i + 3) === "'''") {
+				inQuote = s.slice(i, i + 3) as '"""' | "'''";
+				i += 2;
+				continue;
+			}
+			if (ch === '"' || ch === "'") {
+				inQuote = ch;
+				continue;
+			}
+		} else if (inQuote === '"""' || inQuote === "'''") {
+			if (s.slice(i, i + 3) === inQuote) {
+				inQuote = null;
+				i += 2;
+				continue;
+			}
+		} else if (ch === inQuote) {
+			inQuote = null;
 			continue;
 		}
+
 		if (inQuote !== null) continue;
 
 		if (ch === "(") d++;
@@ -89,13 +115,22 @@ function isWrappedInParens(s: string): boolean {
 	return d === 0;
 }
 
+/**
+ * Split an expression on a top-level binary operator (&& or ||).
+ * Ignores operator occurrences inside parentheses, brackets, or string literals
+ * (single, double, triple quotes, and backslash escapes).
+ *
+ * @param expr - The CEL expression to split.
+ * @param op - The operator to split on ("&&" | "||").
+ * @returns An array of expression clauses.
+ */
 function splitOn(expr: string, op: "&&" | "||"): string[] {
 	const trimmed = expr.trim();
 	const s = isWrappedInParens(trimmed) ? trimmed.slice(1, -1) : trimmed;
 	const parts: string[] = [];
 	let depth = 0,
 		current = "";
-	let inQuote: '"' | "'" | null = null;
+	let inQuote: '"""' | "'''" | '"' | "'" | null = null;
 
 	for (let i = 0; i < s.length; i++) {
 		const ch = s[i];
@@ -104,12 +139,35 @@ function splitOn(expr: string, op: "&&" | "||"): string[] {
 			i++;
 			continue;
 		}
-		if (ch === '"' || ch === "'") {
-			if (inQuote === null) inQuote = ch;
-			else if (inQuote === ch) inQuote = null;
+
+		if (inQuote === null) {
+			if (s.slice(i, i + 3) === '"""' || s.slice(i, i + 3) === "'''") {
+				const triple = s.slice(i, i + 3) as '"""' | "'''";
+				inQuote = triple;
+				current += triple;
+				i += 2;
+				continue;
+			}
+			if (ch === '"' || ch === "'") {
+				inQuote = ch;
+				current += ch;
+				continue;
+			}
+		} else if (inQuote === '"""' || inQuote === "'''") {
+			if (s.slice(i, i + 3) === inQuote) {
+				current += inQuote;
+				inQuote = null;
+				i += 2;
+				continue;
+			}
+			current += ch;
+			continue;
+		} else if (ch === inQuote) {
+			inQuote = null;
 			current += ch;
 			continue;
 		}
+
 		if (inQuote !== null) {
 			current += ch;
 			continue;
@@ -132,15 +190,25 @@ function splitOn(expr: string, op: "&&" | "||"): string[] {
 	return parts;
 }
 
-/** Cartesian product of two arrays of string arrays. */
+/**
+ * Cartesian product of two arrays of string arrays.
+ *
+ * @param a - First array of string arrays.
+ * @param b - Second array of string arrays.
+ * @returns Combined Cartesian product array.
+ */
 function cartesian(a: string[][], b: string[][]): string[][] {
 	const result: string[][] = [];
 	for (const x of a) for (const y of b) result.push([...x, ...y]);
 	return result;
 }
 
-/** Expand a CEL string into one or more condition lists, fanning out on OR.
- *  Handles nested disjunctions such as `a && (b || c)` → [["a","b"],["a","c"]].
+/**
+ * Expand a CEL string into one or more condition lists, fanning out on OR.
+ * Handles nested disjunctions such as `a && (b || c)` → [["a","b"],["a","c"]].
+ *
+ * @param cel - The raw CEL expression to expand.
+ * @returns An array of condition paths representing Disjunctive Normal Form clauses.
  */
 export function expandCEL(cel: string): string[][] {
 	const trimmed = cel?.trim() || "";
@@ -179,13 +247,17 @@ export function expandCEL(cel: string): string[][] {
 
 /**
  * Normalize a CEL condition token for trie key comparison.
- * Collapses whitespace around operators outside quoted strings so "a == b" and "a==b" are the same key.
+ * Collapses whitespace around operators outside quoted strings so "a == b" and "a==b" are the same key,
+ * while preserving the exact literal content inside single, double, or triple quotes.
+ *
+ * @param cond - The CEL condition clause to normalize.
+ * @returns Normalized condition string with canonical whitespace.
  */
 export function normalizeCond(cond: string): string {
 	const trimmed = cond.trim();
 	let result = "";
 	let current = "";
-	let inQuote: '"' | "'" | null = null;
+	let inQuote: '"""' | "'''" | '"' | "'" | null = null;
 
 	const flushNonQuoted = () => {
 		if (current) {
@@ -201,19 +273,37 @@ export function normalizeCond(cond: string): string {
 			i++;
 			continue;
 		}
-		if (ch === '"' || ch === "'") {
-			if (inQuote === null) {
+
+		if (inQuote === null) {
+			if (trimmed.slice(i, i + 3) === '"""' || trimmed.slice(i, i + 3) === "'''") {
+				flushNonQuoted();
+				const triple = trimmed.slice(i, i + 3) as '"""' | "'''";
+				inQuote = triple;
+				result += triple;
+				i += 2;
+				continue;
+			}
+			if (ch === '"' || ch === "'") {
 				flushNonQuoted();
 				inQuote = ch;
 				result += ch;
-			} else if (inQuote === ch) {
-				inQuote = null;
-				result += ch;
-			} else {
-				result += ch;
+				continue;
 			}
+		} else if (inQuote === '"""' || inQuote === "'''") {
+			if (trimmed.slice(i, i + 3) === inQuote) {
+				result += inQuote;
+				inQuote = null;
+				i += 2;
+				continue;
+			}
+			result += ch;
+			continue;
+		} else if (ch === inQuote) {
+			inQuote = null;
+			result += ch;
 			continue;
 		}
+
 		if (inQuote !== null) {
 			result += ch;
 		} else {

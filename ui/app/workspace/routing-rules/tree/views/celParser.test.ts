@@ -123,5 +123,13 @@ describe("celParser - Bug Fix Cases (Quoted Literals & Escape Handling)", () => 
 				[`model == "he said 'hello'"`, "provider == 'openai'"],
 			]);
 		});
+
+		it("handles triple-quoted strings with nested quotes and operators", () => {
+			expect(expandCEL('model == """He said "x || y" today""" && provider == "openai"')).toEqual([
+				['model == """He said "x || y" today"""', 'provider == "openai"'],
+			]);
+			expect(normalizeCond('model == """He said "a > b" today"""')).toBe('model == """He said "a > b" today"""');
+			expect(expandCEL("model == '''He said 'x && y' today'''")).toEqual([["model == '''He said 'x && y' today'''"]]);
+		});
 	});
 });
