@@ -422,7 +422,7 @@ The Agent API replaces `model` selection with `preset` values (`fast`, `low`, `m
 curl -X POST http://localhost:8080/v1/responses \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "openai/gpt-5.6-sol",
+    "model": "perplexity/openai/gpt-5.6-sol",
     "input": "What is NVIDIA trading at right now?",
     "preset": "high",
     "max_steps": 5,
