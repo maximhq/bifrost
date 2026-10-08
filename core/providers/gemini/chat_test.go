@@ -1,10 +1,17 @@
 package gemini_test
 
 import (
+	"context"
+	"encoding/json"
+	"io"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -544,4 +551,221 @@ func TestToGeminiChatCompletionRequest_ToolResultRefKeyStaysOpaque(t *testing.T)
 		resp := functionResponse(t, build(&schemas.ChatMessageContent{ContentStr: schemas.Ptr(plainOutput)}))
 		assert.JSONEq(t, plainOutput, string(resp), "plain JSON tool output must still be forwarded as a structured object")
 	})
+}
+
+// This is the client request from #8149. Its signature is a byte-preservation
+// fixture, not a token whose validity has been checked by a live Gemini model.
+const googleThoughtSignatureReplayPayload = `{
+ "model":"gemini/gemini-2.5-flash","max_tokens":50,
+ "tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}],
+ "messages":[
+  {"role":"user","content":"weather in Paris?"},
+  {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function",
+     "function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"},
+     "extra_content":{"google":{"thought_signature":"AQJyZWFsLXNpZ25hdHVyZS1ieXRlcwM="}}}]},
+  {"role":"tool","tool_call_id":"call_1","content":"sunny"}]}`
+
+func googleThoughtSignatureReplayRequest(t *testing.T) *schemas.BifrostChatRequest {
+	t.Helper()
+	var inbound struct {
+		Model    string                `json:"model"`
+		Messages []schemas.ChatMessage `json:"messages"`
+	}
+	require.NoError(t, schemas.Unmarshal([]byte(googleThoughtSignatureReplayPayload), &inbound))
+	var params schemas.ChatParameters
+	require.NoError(t, schemas.Unmarshal([]byte(googleThoughtSignatureReplayPayload), &params))
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.Gemini,
+		Model:    strings.TrimPrefix(inbound.Model, "gemini/"),
+		Input:    inbound.Messages,
+		Params:   &params,
+	}
+}
+
+func TestGeminiChatClientThoughtSignatureReplay(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.Gemini, schemas.Vertex} {
+		t.Run(string(provider), func(t *testing.T) {
+			request := googleThoughtSignatureReplayRequest(t)
+			request.Provider = provider
+			before, err := schemas.Marshal(request)
+			require.NoError(t, err)
+			var upstream *gemini.GeminiGenerationRequest
+			if provider == schemas.Vertex {
+				upstream, err = gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(nil, request, "http", "https", "gs")
+			} else {
+				upstream, err = gemini.ToGeminiChatCompletionRequest(nil, request)
+			}
+			require.NoError(t, err)
+			wire, err := schemas.Marshal(upstream)
+			require.NoError(t, err)
+			assert.Equal(t, "AQJyZWFsLXNpZ25hdHVyZS1ieXRlcwM=", gjson.GetBytes(wire, "contents.1.parts.0.thoughtSignature").String())
+			assert.Equal(t, "call_1", gjson.GetBytes(wire, "contents.1.parts.0.functionCall.id").String())
+			assert.Equal(t, "get_weather", gjson.GetBytes(wire, "contents.2.parts.0.functionResponse.name").String())
+			after, err := schemas.Marshal(request)
+			require.NoError(t, err)
+			assert.Equal(t, before, after, "retries must see the original input and metadata")
+		})
+	}
+}
+
+func TestGeminiChatClientThoughtSignatureFallbacks(t *testing.T) {
+	const sentinel = "skip_thought_signature_validator"
+	extra := json.RawMessage(`{"google":{"thought_signature":"+/8="}}`)
+	for _, tc := range []struct {
+		name          string
+		id            string
+		reasoning     *string
+		extra         json.RawMessage
+		wantSignature []byte
+	}{
+		{name: "valid standard base64", id: "call_1", extra: extra, wantSignature: []byte{0xfb, 0xff}},
+		{name: "unpadded standard base64", id: "call_1", extra: json.RawMessage(`{"google":{"thought_signature":"+/8"}}`), wantSignature: []byte{0xfb, 0xff}},
+		{name: "padded URL base64", id: "call_1", extra: json.RawMessage(`{"google":{"thought_signature":"-_8="}}`), wantSignature: []byte{0xfb, 0xff}},
+		{name: "unpadded URL base64", id: "call_1", extra: json.RawMessage(`{"google":{"thought_signature":"-_8"}}`), wantSignature: []byte{0xfb, 0xff}},
+		{name: "embedded ID takes priority", id: "call_1_ts_AQID", reasoning: schemas.Ptr("BAUG"), extra: extra, wantSignature: []byte{1, 2, 3}},
+		{name: "reasoning takes priority", id: "call_1", reasoning: schemas.Ptr("BAUG"), extra: extra, wantSignature: []byte{4, 5, 6}},
+		{name: "invalid ID recovers metadata", id: "call_1_ts_!", extra: extra, wantSignature: []byte{0xfb, 0xff}},
+		{name: "invalid reasoning recovers metadata", id: "call_1", reasoning: schemas.Ptr("!"), extra: extra, wantSignature: []byte{0xfb, 0xff}},
+		{name: "nil metadata", id: "call_1", wantSignature: []byte(sentinel)},
+		{name: "null metadata", id: "call_1", extra: json.RawMessage(`null`), wantSignature: []byte(sentinel)},
+		{name: "empty object", id: "call_1", extra: json.RawMessage(`{}`), wantSignature: []byte(sentinel)},
+		{name: "other provider", id: "call_1", extra: json.RawMessage(`{"other":{"thought_signature":"AQID"}}`), wantSignature: []byte(sentinel)},
+		{name: "null signature", id: "call_1", extra: json.RawMessage(`{"google":{"thought_signature":null}}`), wantSignature: []byte(sentinel)},
+		{name: "empty signature", id: "call_1", extra: json.RawMessage(`{"google":{"thought_signature":""}}`), wantSignature: []byte(sentinel)},
+		{name: "base64 without bytes", id: "call_1", extra: json.RawMessage(`{"google":{"thought_signature":"\n"}}`), wantSignature: []byte(sentinel)},
+		{name: "invalid base64", id: "call_1", extra: json.RawMessage(`{"google":{"thought_signature":"!"}}`), wantSignature: []byte(sentinel)},
+		{name: "numeric signature", id: "call_1", extra: json.RawMessage(`{"google":{"thought_signature":1234}}`), wantSignature: []byte(sentinel)},
+		{name: "boolean signature", id: "call_1", extra: json.RawMessage(`{"google":{"thought_signature":true}}`), wantSignature: []byte(sentinel)},
+		{name: "array signature", id: "call_1", extra: json.RawMessage(`{"google":{"thought_signature":["AQID"]}}`), wantSignature: []byte(sentinel)},
+		{name: "object signature", id: "call_1", extra: json.RawMessage(`{"google":{"thought_signature":{"value":"AQID"}}}`), wantSignature: []byte(sentinel)},
+		{name: "malformed metadata", id: "call_1", extra: json.RawMessage(`{"google":{"thought_signature":"AQID"}`), wantSignature: []byte(sentinel)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := googleThoughtSignatureReplayRequest(t)
+			assistant := request.Input[1].ChatAssistantMessage
+			assistant.ToolCalls[0].ID = schemas.Ptr(tc.id)
+			assistant.ToolCalls[0].ExtraContent = tc.extra
+			if tc.reasoning != nil {
+				assistant.ReasoningDetails = []schemas.ChatReasoningDetails{{
+					ID:        schemas.Ptr("tool_call_call_1"),
+					Type:      schemas.BifrostReasoningDetailsTypeEncrypted,
+					Signature: tc.reasoning,
+				}}
+			}
+			upstream, err := gemini.ToGeminiChatCompletionRequest(nil, request)
+			require.NoError(t, err)
+			require.Len(t, upstream.Contents, 3)
+			require.Len(t, upstream.Contents[1].Parts, 1)
+			assert.Equal(t, tc.wantSignature, upstream.Contents[1].Parts[0].ThoughtSignature)
+			assert.Equal(t, tc.extra, assistant.ToolCalls[0].ExtraContent)
+		})
+	}
+}
+
+func TestGeminiChatClientThoughtSignatureMultipleCalls(t *testing.T) {
+	request := googleThoughtSignatureReplayRequest(t)
+	assistant := request.Input[1].ChatAssistantMessage
+	assistant.ToolCalls = append(assistant.ToolCalls, schemas.ChatAssistantMessageToolCall{
+		ID:   schemas.Ptr("call_2"),
+		Type: schemas.Ptr("function"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{
+			Name:      schemas.Ptr("get_weather"),
+			Arguments: `{"city":"London"}`,
+		},
+		ExtraContent: json.RawMessage(`{"google":{"thought_signature":"+/8="}}`),
+	})
+	request.Input = append(request.Input, schemas.ChatMessage{
+		Role:            schemas.ChatMessageRoleTool,
+		ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_2")},
+		Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("rainy")},
+	})
+	upstream, err := gemini.ToGeminiChatCompletionRequest(nil, request)
+	require.NoError(t, err)
+	require.Len(t, upstream.Contents[1].Parts, 2)
+	wire, err := schemas.Marshal(upstream)
+	require.NoError(t, err)
+	assert.Equal(t, "AQJyZWFsLXNpZ25hdHVyZS1ieXRlcwM=", gjson.GetBytes(wire, "contents.1.parts.0.thoughtSignature").String())
+	assert.Equal(t, "+/8=", gjson.GetBytes(wire, "contents.1.parts.1.thoughtSignature").String())
+	assert.Equal(t, "call_2", upstream.Contents[1].Parts[1].FunctionCall.ID)
+	// Decoding produces owned bytes even if the caller recycles its raw metadata.
+	for i := range assistant.ToolCalls[1].ExtraContent {
+		assistant.ToolCalls[1].ExtraContent[i] = ' '
+	}
+	assert.Equal(t, []byte{0xfb, 0xff}, upstream.Contents[1].Parts[1].ThoughtSignature)
+}
+
+func TestGeminiChatClientThoughtSignatureHTTPReplay(t *testing.T) {
+	const fixtureResponse = `{"candidates":[{"content":{"role":"model","parts":[{"text":"sunny"}]},"finishReason":"STOP"}],"responseId":"fixture","modelVersion":"gemini-2.5-flash","usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`
+	for _, streaming := range []bool{false, true} {
+		name := "unary"
+		if streaming {
+			name = "stream"
+		}
+		t.Run(name, func(t *testing.T) {
+			type recordedRequest struct {
+				path string
+				body []byte
+				err  error
+			}
+			recorded := make(chan recordedRequest, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				recorded <- recordedRequest{path: r.URL.Path, body: body, err: err}
+				if streaming {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: "+fixtureResponse+"\n\n")
+				} else {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, fixtureResponse)
+				}
+			}))
+			defer server.Close()
+			provider := gemini.NewGeminiProvider(&schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL + "/v1beta", AllowPrivateNetwork: true},
+			}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			parent, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+			key := schemas.Key{Value: *schemas.NewSecretVar("local-fixture-key")}
+			request := googleThoughtSignatureReplayRequest(t)
+			if streaming {
+				postHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					return result, err
+				}
+				chunks, bifrostErr := provider.ChatCompletionStream(ctx, postHook, func(context.Context) {}, key, request)
+				require.Nil(t, bifrostErr)
+				count := 0
+			readStream:
+				for {
+					select {
+					case chunk, open := <-chunks:
+						if !open {
+							break readStream
+						}
+						require.Nil(t, chunk.BifrostError)
+						count++
+					case <-parent.Done():
+						t.Fatal("local fixture stream did not finish")
+					}
+				}
+				assert.Positive(t, count)
+			} else {
+				response, bifrostErr := provider.ChatCompletion(ctx, key, request)
+				require.Nil(t, bifrostErr)
+				require.NotNil(t, response)
+			}
+			select {
+			case got := <-recorded:
+				require.NoError(t, got.err)
+				endpoint := ":generateContent"
+				if streaming {
+					endpoint = ":streamGenerateContent"
+				}
+				assert.Equal(t, "/v1beta/models/gemini-2.5-flash"+endpoint, got.path)
+				assert.Equal(t, "AQJyZWFsLXNpZ25hdHVyZS1ieXRlcwM=", gjson.GetBytes(got.body, "contents.1.parts.0.thoughtSignature").String())
+			case <-parent.Done():
+				t.Fatal("local fixture did not record the request")
+			}
+		})
+	}
 }

@@ -2426,6 +2426,10 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 					}
 
 					if part.ThoughtSignature == nil {
+						part.ThoughtSignature = thoughtSignatureFromExtraContent(toolCall.ExtraContent)
+					}
+
+					if part.ThoughtSignature == nil {
 						part.ThoughtSignature = []byte(skipThoughtSignatureValidator)
 					}
 
@@ -3109,6 +3113,23 @@ func extractFunctionResponseOutput(funcResp *FunctionResponse) string {
 
 	// If no "output" key or unmarshal failed, return raw JSON
 	return string(funcResp.Response)
+}
+
+// thoughtSignatureFromExtraContent decodes the Google signature carried by
+// OpenAI-compatible clients, without retaining or mutating their raw metadata.
+func thoughtSignatureFromExtraContent(extra json.RawMessage) []byte {
+	if !gjson.ValidBytes(extra) {
+		return nil
+	}
+	signature := providerUtils.GetJSONField(extra, "google.thought_signature")
+	if signature.Type != gjson.String || signature.Str == "" {
+		return nil
+	}
+	decoded, err := decodeBase64StringToBytes(signature.Str)
+	if err != nil || len(decoded) == 0 {
+		return nil
+	}
+	return decoded
 }
 
 // decodeBase64StringToBytes decodes a base64-encoded string into raw bytes.

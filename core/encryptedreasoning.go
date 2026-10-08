@@ -354,27 +354,32 @@ func stripChatUnverifiableReasoning(ctx *schemas.BifrostContext, req *schemas.Bi
 
 	changed := false
 	for i := range rewritten {
-		// The chat analogue of the Responses call-id strip: the Gemini chat converter
-		// carries the thought signature inside tool_calls[].id as "<id>_ts_<signature>"
-		// and rebuilds it from there, so a history minted on the other platform has no
-		// reasoning detail to strip and the retry never fired. Cloned only when a strip
-		// is needed, so the caller's slices are never mutated.
+		// Gemini Chat accepts signatures embedded in call IDs or carried in client
+		// metadata. Strip both carriers so the retry cannot recover a refused token
+		// from extra_content after clearing the ID or reasoning details.
 		if assistant := rewritten[i].ChatAssistantMessage; assistant != nil && len(assistant.ToolCalls) > 0 {
 			var cloned []schemas.ChatAssistantMessageToolCall
 			for j := range assistant.ToolCalls {
-				id := assistant.ToolCalls[j].ID
-				if id == nil {
+				call := assistant.ToolCalls[j]
+				idChanged := false
+				if call.ID != nil {
+					if base := providerUtils.StripThoughtSignature(*call.ID); base != *call.ID {
+						call.ID = &base
+						idChanged = true
+					}
+				}
+				extra, extraChanged := stripChatToolCallExtraThoughtSignature(call.ExtraContent)
+				if !idChanged && !extraChanged {
 					continue
 				}
-				base := providerUtils.StripThoughtSignature(*id)
-				if base == *id {
-					continue
+				if extraChanged {
+					call.ExtraContent = extra
 				}
 				if cloned == nil {
 					cloned = make([]schemas.ChatAssistantMessageToolCall, len(assistant.ToolCalls))
 					copy(cloned, assistant.ToolCalls)
 				}
-				cloned[j].ID = &base
+				cloned[j] = call
 			}
 			if cloned != nil {
 				assistantCopy := *assistant
@@ -414,6 +419,23 @@ func stripChatUnverifiableReasoning(ctx *schemas.BifrostContext, req *schemas.Bi
 	}
 	req.Input = rewritten
 	return true
+}
+
+func stripChatToolCallExtraThoughtSignature(extra []byte) ([]byte, bool) {
+	const path = "google.thought_signature"
+	if !gjson.ValidBytes(extra) || !providerUtils.JSONFieldExists(extra, path) {
+		return nil, false
+	}
+	// Work on owned bytes; unrelated Google fields and provider metadata survive.
+	rewritten := bytes.Clone(extra)
+	for providerUtils.JSONFieldExists(rewritten, path) {
+		next, err := providerUtils.DeleteJSONField(rewritten, path)
+		if err != nil || bytes.Equal(next, rewritten) {
+			return nil, false
+		}
+		rewritten = next
+	}
+	return rewritten, true
 }
 
 // stripChatReasoningDetails returns the details with every signature and encrypted
