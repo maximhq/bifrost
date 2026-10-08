@@ -194,7 +194,7 @@ The fixture's verdict logic is pure and covered offline by
 `runners/lib/anthropic-request-surface.test.mjs` (`make test-harness-runner-lib`),
 which drives every case three ways: the request the caller sent is accepted, each
 single-field drift off it is rejected, and the body upstream forwards today is
-rejected for exactly the seven cases above. The same file drives the fixture's
+rejected for exactly the four cases above. The same file drives the fixture's
 HTTP handler directly, with no port bound, so an unknown or malformed request
 target is answered 404 rather than thrown on — a throw there rejects the async
 listener's promise, answers nothing, and takes the fixture down mid-folder.
