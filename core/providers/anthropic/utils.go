@@ -1183,7 +1183,7 @@ func IsSonnet55Plus(model string) bool {
 	return strings.Contains(m, "sonnet-5-5") || strings.Contains(m, "sonnet-5.5")
 }
 
-// IsHaiku55Plus returns true for Cluade Haiku 5.5, matching the
+// IsHaiku55Plus returns true for Claude Haiku 5.5, matching the
 // Bedrock/Vertex/date-suffixed forms. Haiku 5.5 rejects extended thinking with a
 // 400 ("thinking.type.enabled" is not supported for this model) - adaptive
 // thinking with output_config.effort is the thinking-on mode.

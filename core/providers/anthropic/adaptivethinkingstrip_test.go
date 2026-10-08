@@ -327,7 +327,7 @@ func TestAdaptiveThinkingOnPreAdaptiveModels(t *testing.T) {
 		}
 	})
 
-	t.Run("raw_body_keeps_haiku_5_adaptive_and_effort", func(t *testing.T) {
+	t.Run("raw_body_keeps_haiku_5_5_adaptive_and_effort", func(t *testing.T) {
 		body := []byte(`{"model":"claude-haiku-5-5","max_tokens":128000,"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}`)
 		result, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, "claude-haiku-5-5")
 		if err != nil {
@@ -340,7 +340,7 @@ func TestAdaptiveThinkingOnPreAdaptiveModels(t *testing.T) {
 			t.Errorf("output_config.effort = %q, want \"medium\" kept; body: %s", got, result)
 		}
 	})
-	
+
 	t.Run("raw_body_leaves_non_claude_models", func(t *testing.T) {
 		body := []byte(`{"model":"deepseek-chat","max_tokens":8192,"thinking":{"type":"adaptive"}}`)
 		result, err := StripUnsupportedFieldsFromRawBody(body, schemas.DeepSeek, "deepseek-chat")

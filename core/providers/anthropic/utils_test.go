@@ -2740,10 +2740,12 @@ func TestIsSonnet5Plus(t *testing.T) {
 	}
 }
 
+// TestIsHaiku55Plus pins the Haiku 5.5 predicate. It must NOT match Haiku 5,
+// "haiku-4-5" or "3-5-haiku"
 func TestIsHaiku55Plus(t *testing.T) {
 	tests := []struct {
-		model		string
-		expected	bool
+		model    string
+		expected bool
 	}{
 		{"claude-haiku-5-5", true},
 		{"claude-haiku-5.5", true},
@@ -2751,12 +2753,15 @@ func TestIsHaiku55Plus(t *testing.T) {
 		{"Claude-Haiku-5-5", true},
 		{"global.anthropic.claude-haiku-5-5", true},
 		{"claude-haiku-5-5@20260801", true},
+		{"anthropic.claude-haiku-5-5-v1", true}
 		// Must NOT match older Haikus or other families.
 		{"claude-haiku-5", false},
 		{"claude-haiku-5-20260101", false},
 		{"claude-haiku-4-5", false},
-		{"claude-sonnet-5", false},
-		{"claude-fable-5", false},
+		{"claude-haiku-4-5-20251001", false},
+		{"claude-3-5-haiku-20241022", false},
+		{"claude-sonnet-5-5", false},
+		{"claude-opus-5-5", false}
 		{"", false},
 		{"some-non-claude-model", false},
 	}
@@ -2769,6 +2774,7 @@ func TestIsHaiku55Plus(t *testing.T) {
 		})
 	}
 }
+
 // TestIsOpus5Plus pins the Opus 5 predicate. Opus 5 shares Opus 4.8's request
 // surface (adaptive-only thinking, temperature/top_p/top_k removed, fast mode,
 // effort, mid-conversation system). The "opus-5" substring must NOT match
