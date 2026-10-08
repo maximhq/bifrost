@@ -109,8 +109,11 @@ describe("isRequestTypeDisabled", () => {
 		expect(isRequestTypeDisabled("anthropic", "live")).toBe(true);
 	});
 
+	it("offers decisions on an openai base, which serves them natively on /v1/decisions", () => {
+		expect(isRequestTypeDisabled("openai", "decisions")).toBe(false);
+	});
+
 	it("keeps decisions off for bases that do not serve them natively", () => {
-		expect(isRequestTypeDisabled("openai", "decisions")).toBe(true);
 		expect(isRequestTypeDisabled("anthropic", "decisions")).toBe(true);
 	});
 

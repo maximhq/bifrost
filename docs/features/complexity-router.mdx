@@ -7,7 +7,7 @@ icon: "sliders"
 
 ## Overview
 
-The Complexity Router assigns incoming requests a **Simple**, **Medium**, or **Complex** tier. Choose either a **decision model** (Typesafe Jev by default, or another decision model such as Laya, Nimble, or Clef), which judges how much reasoning a request needs against tier definitions you can tune, or **Semantic**, which matches requests against reference phrases you write for each tier. The result is exposed as a flat string variable (`complexity_tier`) in Bifrost's CEL routing engine, so you can write routing rules like:
+The Complexity Router assigns incoming requests a **Simple**, **Medium**, or **Complex** tier. Choose either a **decision model** (Typesafe Jev by default, or another decision model such as OpenAI's gpt-6-luna, Laya, Nimble, or Clef), which judges how much reasoning a request needs against tier definitions you can tune, or **Semantic**, which matches requests against reference phrases you write for each tier. The result is exposed as a flat string variable (`complexity_tier`) in Bifrost's CEL routing engine, so you can write routing rules like:
 
 ```cel
 complexity_tier == "COMPLEX"
@@ -30,7 +30,7 @@ The older lexical keyword scorer is retired. See [Lexical keyword classifier (re
 |---|---|---|
 | **How it decides** | A decision model reads the request and picks the tier whose [definition, signals, and examples](#tier-guidance) fit it best | The request is embedded and takes the tier of its nearest [reference phrase](#reference-phrases) |
 | **What you maintain** | Nothing to start. Optionally, a definition plus up to 12 signals and 12 examples per tier | Reference phrases for each tier (150 shipped, up to 750) |
-| **Requires** | A provider serving the decision model: [Typesafe](/providers/supported-providers/typesafe) by default, or a [custom TypeSafe-based provider](/providers/supported-providers/typesafe#custom-typesafe-providers) for Laya, Nimble, or Clef | An embedding provider and model with an enabled key; optionally a vector store |
+| **Requires** | A provider serving the decision model: [Typesafe](/providers/supported-providers/typesafe) by default, [OpenAI](/providers/supported-providers/openai) for its decision models, or a [custom TypeSafe-based provider](/providers/supported-providers/typesafe#custom-typesafe-providers) for Laya, Nimble, or Clef | An embedding provider and model with an enabled key; optionally a vector store |
 | **Per-request cost** | One decision call (Typesafe Jev typically 600–800 ms) | One embedding call plus a vector lookup, usually much faster than a decision call |
 | **Warmup** | None | Reference phrases are embedded in the background after each change |
 | **Handles unseen request shapes** | Yes: it judges the work, not similarity to a known phrase | Only as well as your phrases cover them; can [fall back](#fallback-classifiers) to the decision model or an LLM |
@@ -63,16 +63,17 @@ The decision model runs through the provider and model in the `decision` block: 
 
 #### Choosing the decision model
 
-Typesafe Jev, Laya, Nimble, and Clef can classify. In the UI you pick the provider and choose from the models it offers. In the API and `config.json`, set `decision.provider` and `decision.model` together, or omit both for Typesafe Jev:
+Typesafe Jev, OpenAI's decision models, Laya, Nimble, and Clef can classify. In the UI you pick the provider and choose from the models it offers. In the API and `config.json`, set `decision.provider` and `decision.model` together, or omit both for Typesafe Jev:
 
 | Model | Provider setup | `model` |
 |---|---|---|
 | Typesafe Jev (default) | The built-in `typesafe` provider, or `openrouter` | `jev-latest`, or a pinned version |
+| OpenAI decision models | The built-in `openai` provider, or a custom provider with `base_provider_type: openai` | `gpt-6-luna`; the UI lists only models whose datasheet marks them as serving decisions |
 | Laya | A custom provider with `base_provider_type: typesafe` pointing at your `laya-serve` server | `english`, `multilingual`, or `typed-decisions` |
 | Nimble | A custom provider with `base_provider_type: typesafe` pointing at your Nimble deployment | `nimble-latest` |
 | Clef | A custom provider with `base_provider_type: typesafe` and a full-URL `decisions` override to Cloudflare Workers AI | `clef` or `clef-flash`, matching the model in the override URL |
 
-Classification runs through Bifrost's decisions API (`/v1/decisions`) and reaches the provider's System One endpoint: `/v1/systemone` on Typesafe, Laya, Nimble, and Ollama-served Clef, or the full URL in the provider's `decisions` override for Cloudflare Clef. See [Custom TypeSafe Providers](/providers/supported-providers/typesafe#custom-typesafe-providers) for each setup. The question, rules, and tier guidance are the same for every model, but classification quality differs:
+Classification runs through Bifrost's decisions API (`/v1/decisions`) and reaches the provider's decisions endpoint: OpenAI's `/v1/decisions`, `/v1/systemone` on Typesafe, Laya, Nimble, and Ollama-served Clef, or the full URL in the provider's `decisions` override for Cloudflare Clef. See [Custom TypeSafe Providers](/providers/supported-providers/typesafe#custom-typesafe-providers) for each setup. The question, rules, and tier guidance are the same for every model, but classification quality differs:
 
 - **Context window.** Every tier's definition, signals, and examples are sent with each request. Laya's `english` checkpoint reads 512 tokens and truncates the rest, so long guidance or history can be cut; truncation shows up in the decision's `usage.truncated`. Prefer short guidance, or the `multilingual` checkpoint (1,024 tokens).
 - **Cold starts.** A self-hosted model that scales to zero can exceed the timeout on its first request after idling, so that request falls through.
@@ -306,7 +307,7 @@ Navigate to **Models > Complexity Router** in the sidebar. On **Classifier**, ch
 
 - **Tier guidance**: each tier's card shows its definition, **Signals**, and **Examples**, pre-filled with the shipped defaults. Select the pencil icon to edit a definition. Type a signal or example and press Enter to add it, or select **×** to remove it. The counter shows how many of the 12 allowed entries are in use. A reset icon appears beside any field you have changed and restores that field alone.
 - **Restore defaults**, in the page footer, resets all three tiers to the shipped guidance.
-- **Edit model configuration**, in the header, opens **Model configuration**. Pick the **Provider** first: Typesafe or OpenRouter for Jev, or the custom provider serving Laya, Nimble, or Clef. **Model** follows the provider: Jev releases to search (default `jev-latest`); for Clef, the model named by the provider's Cloudflare URL, filled in for you; for a self-hosted provider, the models it lists, or the Laya and Nimble checkpoints when it lists none. The sheet also holds **Max messages to send** (`previous_message_count`) and **Classification timeout (ms)**. Credentials come from the selected provider. If it is missing, failing its checks, or has no enabled key (and is not keyless), the page shows a warning with a link to fix it.
+- **Edit model configuration**, in the header, opens **Model configuration**. Pick the **Provider** first: Typesafe or OpenRouter for Jev, OpenAI or a custom OpenAI-based provider for OpenAI's decision models, or the custom provider serving Laya, Nimble, or Clef. **Model** follows the provider: Jev releases to search (default `jev-latest`); for OpenAI, its decision models (default `gpt-6-luna`); for Clef, the model named by the provider's Cloudflare URL, filled in for you; for a self-hosted provider, the models it lists, or the Laya and Nimble checkpoints when it lists none. The sheet also holds **Max messages to send** (`previous_message_count`) and **Classification timeout (ms)**. Credentials come from the selected provider. If it is missing, failing its checks, or has no enabled key (and is not keyless), the page shows a warning with a link to fix it.
 
 **Semantic configuration** (shown under [Reference phrases](#reference-phrases))
 
@@ -436,7 +437,7 @@ Because the update replaces the whole configuration, leaving out `decision.crite
 </Tab>
 <Tab title="config.json">
 
-For the decision model as the primary classifier, keep the existing `governance.complexity_analyzer_config` path. Omit `provider` and `model` to use `typesafe`/`jev-latest`; set both to use another decision model, for example a custom provider serving Laya, Nimble, or Clef:
+For the decision model as the primary classifier, keep the existing `governance.complexity_analyzer_config` path. Omit `provider` and `model` to use `typesafe`/`jev-latest`; set both to use another decision model, for example OpenAI's `gpt-6-luna` on the `openai` provider, or a custom provider serving Laya, Nimble, or Clef:
 
 ```json
 {
@@ -515,8 +516,8 @@ For Semantic with an LLM fallback, use this configuration. To use the decision m
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `classifier` | string | `semantic` | Primary classifier: `semantic` or `decision`. A saved semantic block remains available when the decision model is selected, but is not used by decision-model primary requests |
-| `decision.provider` | string | `typesafe` | Provider serving the decision model: `typesafe`, `openrouter`, or a custom provider with `base_provider_type: typesafe`. Set together with `decision.model`; omit both for the default |
-| `decision.model` | string | `jev-latest` | Decision model on that provider, e.g. `nimble-latest`, `english` (Laya), or `clef`. Set together with `decision.provider` |
+| `decision.provider` | string | `typesafe` | Provider serving the decision model: `typesafe`, `openrouter`, `openai` or a custom provider with `base_provider_type: openai` (with a decision model such as `gpt-6-luna`), or a custom provider with `base_provider_type: typesafe`. Set together with `decision.model`; omit both for the default |
+| `decision.model` | string | `jev-latest` | Decision model on that provider, e.g. `gpt-6-luna` (OpenAI), `nimble-latest`, `english` (Laya), or `clef`. Set together with `decision.provider` |
 | `decision.previous_message_count` | integer | `1` | Number of preceding user messages sent with the current request, from `0` to `5`; assistant messages are excluded |
 | `decision.timeout` | duration | `1.5s` | Maximum wait for one decision-model request. Accepts a duration string or milliseconds as a number |
 | `decision.criteria.<TIER>.definition` | string | Shipped definition | Replaces the tier's definition (max 500 characters). `<TIER>` is `SIMPLE`, `MEDIUM`, or `COMPLEX` |
