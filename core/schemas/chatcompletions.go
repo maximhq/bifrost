@@ -429,11 +429,12 @@ type MCPToolAnnotations struct {
 //   - On unmarshal, tolerantly accept whatever JSON shape comes in, then
 //     normalize the decoded struct so downstream code sees a canonical shape.
 type ChatTool struct {
-	Type         ChatToolType        `json:"type"`
-	Function     *ChatToolFunction   `json:"function,omitempty"`      // Function definition (shape 1)
-	Custom       *ChatToolCustom     `json:"custom,omitempty"`        // Custom tool definition (shape 2)
-	CacheControl *CacheControl       `json:"cache_control,omitempty"` // Cache control for the tool
-	Annotations  *MCPToolAnnotations `json:"-"`                       // MCP tool annotations (Bifrost-internal, never forwarded to providers)
+	Type          ChatToolType        `json:"type"`
+	Function      *ChatToolFunction   `json:"function,omitempty"`      // Function definition (shape 1)
+	Custom        *ChatToolCustom     `json:"custom,omitempty"`        // Custom tool definition (shape 2)
+	CacheControl  *CacheControl       `json:"cache_control,omitempty"` // Cache control for the tool
+	MCPToolSchema *MCPToolSchema      `json:"-"`                       // Original input/output schemas, only for MCP gateway discovery
+	Annotations   *MCPToolAnnotations `json:"-"`                       // MCP tool annotations (Bifrost-internal, never forwarded to providers)
 
 	// Anthropic-native tool flags promoted to the neutral layer. All optional;
 	// ignored by providers that don't support them. Gating per ProviderFeatures

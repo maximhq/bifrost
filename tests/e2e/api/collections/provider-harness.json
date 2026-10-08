@@ -208536,6 +208536,71 @@
           }
         }
       ]
+    },
+    {
+      "name": "183. MCP schema projection (PR #7894)",
+      "description": "Requires the loopback MCP fixture tests/e2e/api/fixtures/mcp-schema-server.py registered as schema_projection. Checks the actual OpenAI-bound JSON after MCP discovery, not client-supplied function definitions. Before the fix boolean/union schemas cause failed discovery or empty provider types. With INCLUDE_PREVIEW=1 every error and every missing fixture tool fails; no tools are executed.",
+      "item": [
+        {
+          "name": "[PREVIEW] openai/gpt-4o-mini MCP schema projection - PR #7894",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('schema projection survives discovery and reaches OpenAI', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  var rr = (j.extra_fields || {}).raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr, 'enable send_back_raw_request').to.be.an('object');",
+                  "  var tools = rr.tools || [];",
+                  "  ['boolean_schema', 'union_schema', 'untyped_schema'].forEach(function (name) {",
+                  "    var matches = tools.filter(function (t) { return t.function && t.function.name === 'schema_projection-' + name; });",
+                  "    pm.expect(matches.length, 'missing discovered fixture tool: ' + name).to.equal(1);",
+                  "    pm.expect(matches[0].function.parameters.type).to.equal('object');",
+                  "    pm.expect(JSON.stringify(matches[0])).to.not.include('_bifrost_mcp');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "schema_projection"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"tool_choice\": \"none\"\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }

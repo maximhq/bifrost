@@ -443,22 +443,32 @@ func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *serve
 		// Map Bifrost annotations back to MCP tool annotations
 		var toolAnnotation mcp.ToolAnnotation
 		if tool.Annotations != nil {
+			annotations := tool.Annotations.Clone()
 			toolAnnotation = mcp.ToolAnnotation{
-				Title:           tool.Annotations.Title,
-				ReadOnlyHint:    tool.Annotations.ReadOnlyHint,
-				DestructiveHint: tool.Annotations.DestructiveHint,
-				IdempotentHint:  tool.Annotations.IdempotentHint,
-				OpenWorldHint:   tool.Annotations.OpenWorldHint,
+				Title:           annotations.Title,
+				ReadOnlyHint:    annotations.ReadOnlyHint,
+				DestructiveHint: annotations.DestructiveHint,
+				IdempotentHint:  annotations.IdempotentHint,
+				OpenWorldHint:   annotations.OpenWorldHint,
 			}
 		}
 
 		// Register tool with the server
-		mcpServer.AddTool(mcp.Tool{
+		mcpTool := mcp.Tool{
 			Name:        toolName,
 			Description: description,
 			InputSchema: inputSchema,
 			Annotations: toolAnnotation,
-		}, handler)
+		}
+		if metadata := tool.MCPToolSchema.Clone(); metadata != nil {
+			// Raw schemas must not coexist with a typed Type in mcp-go.
+			if metadata.InputSchema != nil {
+				mcpTool.InputSchema = mcp.ToolInputSchema{}
+				mcpTool.RawInputSchema = metadata.InputSchema
+			}
+			mcpTool.RawOutputSchema = metadata.OutputSchema
+		}
+		mcpServer.AddTool(mcpTool, handler)
 	}
 	return mcpServer
 }
