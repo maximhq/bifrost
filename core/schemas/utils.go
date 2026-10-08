@@ -2524,6 +2524,26 @@ func IsOpus55Plus(model string) bool {
 	return strings.Contains(m, "5-5") || strings.Contains(m, "5.5")
 }
 
+// openAIDecisionModelPrefixes are the model families OpenAI serves on its
+// POST /v1/decisions endpoint. They back DefaultSupportsDecisions for
+// deployments without the datasheet; with it, the supports_decisions row
+// decides.
+var openAIDecisionModelPrefixes = []string{"gpt-6-luna"}
+
+// DefaultSupportsDecisions is the name-based fallback for
+// ModelCaps.SupportsDecisions, used when the datasheet says nothing: true for
+// a model family OpenAI serves on its decisions endpoint. Dated snapshots
+// share their family's prefix.
+func DefaultSupportsDecisions(model string) bool {
+	model = strings.TrimPrefix(strings.ToLower(model), "openai/")
+	for _, prefix := range openAIDecisionModelPrefixes {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // DefaultSupportsForcedToolChoice is the name-based fallback for
 // ModelCaps.SupportsForcedToolChoice, used when the datasheet says nothing.
 func DefaultSupportsForcedToolChoice(model string) bool {

@@ -31,6 +31,21 @@ func DecisionLevelDescription(index int, level schemas.DecisionLevel) interface{
 	return map[string]interface{}{"label": level.Label, "description": description}
 }
 
+// DecisionScoreLegend builds a score answer's legend, level index ->
+// description, from the question's levels, so every provider that does not
+// return a legend of its own (OpenAI, emulation) carries the same one
+// Typesafe's models send. Nil for a question without levels.
+func DecisionScoreLegend(question schemas.DecisionQuestion) map[string]any {
+	if len(question.Levels) == 0 {
+		return nil
+	}
+	legend := make(map[string]any, len(question.Levels))
+	for i, level := range question.Levels {
+		legend[strconv.Itoa(i)] = DecisionLevelDescription(i, level)
+	}
+	return legend
+}
+
 // DecisionChoiceForKey returns the value of the question's choice keyed key,
 // so a boolean choice answers with its boolean, or key as a string when no
 // choice matches.

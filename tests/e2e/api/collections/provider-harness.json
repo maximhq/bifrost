@@ -76,6 +76,10 @@
           "    if (j.answers && typeof j.answers === 'object' && !Array.isArray(j.answers)) {",
           "        shape = 'decisions';",
           "        hasContent = Object.keys(j.answers).length > 0;",
+          "    } else if (Array.isArray(j.answers) && j.answers.length > 0 && j.answers[0] && typeof j.answers[0].type === 'string') {",
+          "        // The normalized and OpenAI-compatible decisions bodies answer as an ordered list of typed answers.",
+          "        shape = 'decisions-ordered';",
+          "        hasContent = true;",
           "    } else if (j.message && typeof j.message === 'object' && (j.message.content !== undefined || Array.isArray(j.message.tool_calls))) {",
           "        shape = 'cohere-v2-chat';",
           "        var cohereContent = j.message.content;",
@@ -162036,7 +162040,7 @@
           "response": []
         },
         {
-          "name": "/v1/decisions - unsupported kind rejected with 400 - typesafe/jev-1.13.0",
+          "name": "[EXPECT-400] /v1/decisions - unsupported kind rejected with 400 - typesafe/jev-1.13.0",
           "event": [
             {
               "listen": "test",
@@ -217414,6 +217418,553 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "184. Normalized decision request on /v1/decisions (decisions-normalized)",
+      "description": "Pins the normalized /v1/decisions body (PR #8181): input plus an ordered list of typed questions (predicate, choice, score), answered as an ordered list. Covers every question type including boolean choices and an unnamed question, text, structured and message inputs, the same body served by chat emulation, a stray state next to input being ignored (Typesafe receives the input as its state), and the rejection of an image sent to a Typesafe model, which cannot read it. The deprecated map form stays covered by folders 106-108.",
+      "item": [
+        {
+          "name": "/v1/decisions - normalized body, every question type answered in order - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('normalized decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('one typed answer per question, in question order', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(6);",
+                  "    var a = body.answers;",
+                  "    ['is_frustrated', 'wants_refund', 'category', 'escalate', 'urgency'].forEach(function (name, i) {",
+                  "        pm.expect(a[i].name, 'answer ' + i).to.eql(name);",
+                  "    });",
+                  "    pm.expect(a[0].type).to.eql('predicate');",
+                  "    pm.expect(a[0].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[1].type).to.eql('predicate');",
+                  "    pm.expect(a[1].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[2].type).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(a[2].choice);",
+                  "    pm.expect(a[3].type).to.eql('choice');",
+                  "    pm.expect([true, false]).to.include(a[3].choice);",
+                  "    pm.expect(a[4].type).to.eql('score');",
+                  "    pm.expect(a[4].score).to.be.within(0, 2);",
+                  "    pm.expect(a[5].type).to.eql('predicate');",
+                  "    pm.expect(a[5].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[5], 'unnamed answer carries a name').to.not.have.property('name');",
+                  "});",
+                  "pm.test('served by typesafe/jev-1.13.0', function () {",
+                  "    var routing = (body.extra_fields || {}).routing_info || {};",
+                  "    pm.expect(routing.provider, 'routing: ' + JSON.stringify(body.extra_fields)).to.eql('typesafe');",
+                  "    pm.expect(routing.model).to.eql('jev-1.13.0');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Does the customer want a refund?\",\n      \"criteria\": {\n        \"true\": \"asks for money back\",\n        \"false\": \"no refund mentioned\"\n      }\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges and refunds\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\"\n        }\n      ]\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"escalate\",\n      \"instructions\": \"Should this be escalated to a manager?\",\n      \"choices\": [\n        {\n          \"value\": true,\n          \"description\": \"yes\"\n        },\n        {\n          \"value\": false,\n          \"description\": \"no\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"levels\": [\n        {\n          \"label\": \"low\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"medium\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"high\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    },\n    {\n      \"type\": \"predicate\",\n      \"instructions\": \"Is the message written in English?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - structured input becomes the state - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('structured input accepted', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].name).to.eql('is_frustrated');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": {\n    \"ticket\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n    \"channel\": \"email\",\n    \"previous_contacts\": 2\n  },\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - message input - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('message input accepted', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].name).to.eql('is_frustrated');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\"\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - normalized body through chat emulation - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('emulated decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('one typed answer per question, in question order', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(6);",
+                  "    var a = body.answers;",
+                  "    ['is_frustrated', 'wants_refund', 'category', 'escalate', 'urgency'].forEach(function (name, i) {",
+                  "        pm.expect(a[i].name, 'answer ' + i).to.eql(name);",
+                  "    });",
+                  "    pm.expect(a[0].type).to.eql('predicate');",
+                  "    pm.expect(a[0].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[1].type).to.eql('predicate');",
+                  "    pm.expect(a[1].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[2].type).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(a[2].choice);",
+                  "    pm.expect(a[3].type).to.eql('choice');",
+                  "    pm.expect([true, false]).to.include(a[3].choice);",
+                  "    pm.expect(a[4].type).to.eql('score');",
+                  "    pm.expect(a[4].score).to.be.within(0, 2);",
+                  "    pm.expect(a[5].type).to.eql('predicate');",
+                  "    pm.expect(a[5].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[5], 'unnamed answer carries a name').to.not.have.property('name');",
+                  "});",
+                  "pm.test('served by openai/gpt-4o-mini', function () {",
+                  "    var routing = (body.extra_fields || {}).routing_info || {};",
+                  "    pm.expect(routing.provider, 'routing: ' + JSON.stringify(body.extra_fields)).to.eql('openai');",
+                  "    pm.expect(routing.model).to.eql('gpt-4o-mini');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Does the customer want a refund?\",\n      \"criteria\": {\n        \"true\": \"asks for money back\",\n        \"false\": \"no refund mentioned\"\n      }\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges and refunds\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\"\n        }\n      ]\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"escalate\",\n      \"instructions\": \"Should this be escalated to a manager?\",\n      \"choices\": [\n        {\n          \"value\": true,\n          \"description\": \"yes\"\n        },\n        {\n          \"value\": false,\n          \"description\": \"no\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"levels\": [\n        {\n          \"label\": \"low\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"medium\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"high\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    },\n    {\n      \"type\": \"predicate\",\n      \"instructions\": \"Is the message written in English?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - a state sent next to input is ignored - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the normalized body is served', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('answered as an ordered list, not the map form', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});",
+                  "pm.test('Typesafe receives the input as its state, never the stray state', function () {",
+                  "    var rr = (body.extra_fields || {}).raw_request;",
+                  "    if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    pm.expect(rr, 'raw request: ' + JSON.stringify(body.extra_fields)).to.be.an('object');",
+                  "    pm.expect(rr.state).to.eql(JSON.parse(pm.request.body.raw).input);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"state\": \"A stale state that must not be sent.\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] /v1/decisions - image input rejected by a Typesafe model - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('an image is rejected rather than dropped', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "    pm.expect(pm.response.text()).to.include(\"image\");",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is a screenshot of my bill.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "185. OpenAI native decisions on /v1/decisions (openai-decisions)",
+      "description": "Pins OpenAI's decisions endpoint behind /v1/decisions (PR #8191): openai/gpt-6-luna, gated by the supports_decisions capability, answers the normalized body and the deprecated map form natively, reads image input, and serves as the fallback for an image a Typesafe model rejects. A chat model on the same provider (gpt-4o-mini) keeps answering through emulation; folder 184 pins that.",
+      "item": [
+        {
+          "name": "/v1/decisions - normalized body, every question type answered in order - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('native decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('one typed answer per question, in question order', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(6);",
+                  "    var a = body.answers;",
+                  "    ['is_frustrated', 'wants_refund', 'category', 'escalate', 'urgency'].forEach(function (name, i) {",
+                  "        pm.expect(a[i].name, 'answer ' + i).to.eql(name);",
+                  "    });",
+                  "    pm.expect(a[0].type).to.eql('predicate');",
+                  "    pm.expect(a[0].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[1].type).to.eql('predicate');",
+                  "    pm.expect(a[1].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[2].type).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(a[2].choice);",
+                  "    pm.expect(a[3].type).to.eql('choice');",
+                  "    pm.expect([true, false]).to.include(a[3].choice);",
+                  "    pm.expect(a[4].type).to.eql('score');",
+                  "    pm.expect(a[4].score).to.be.within(0, 2);",
+                  "    pm.expect(a[5].type).to.eql('predicate');",
+                  "    pm.expect(a[5].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[5], 'unnamed answer carries a name').to.not.have.property('name');",
+                  "});",
+                  "pm.test('served by openai/gpt-6-luna', function () {",
+                  "    var routing = (body.extra_fields || {}).routing_info || {};",
+                  "    pm.expect(routing.provider, 'routing: ' + JSON.stringify(body.extra_fields)).to.eql('openai');",
+                  "    pm.expect(routing.model).to.eql('gpt-6-luna');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Does the customer want a refund?\",\n      \"criteria\": {\n        \"true\": \"asks for money back\",\n        \"false\": \"no refund mentioned\"\n      }\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges and refunds\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\"\n        }\n      ]\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"escalate\",\n      \"instructions\": \"Should this be escalated to a manager?\",\n      \"choices\": [\n        {\n          \"value\": true,\n          \"description\": \"yes\"\n        },\n        {\n          \"value\": false,\n          \"description\": \"no\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"levels\": [\n        {\n          \"label\": \"low\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"medium\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"high\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    },\n    {\n      \"type\": \"predicate\",\n      \"instructions\": \"Is the message written in English?\"\n    }\n  ],\n  \"safety_identifier\": \"harness-user-1\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - deprecated map form answered keyed by name - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('map form served by OpenAI', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('answers keyed by question name with kind and value', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('object').and.not.an('array');",
+                  "    pm.expect(body.answers.is_frustrated.kind).to.eql('noul');",
+                  "    pm.expect(body.answers.is_frustrated.value).to.be.within(0, 1);",
+                  "    pm.expect(body.answers.category.kind).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(body.answers.category.value);",
+                  "    pm.expect(body.answers.urgency.kind).to.eql('score');",
+                  "    pm.expect(body.answers.urgency.value).to.be.within(0, 2);",
+                  "    pm.expect(body.answers.urgency.legend, 'score legend rebuilt from the criteria: ' + JSON.stringify(body.answers.urgency)).to.eql({ '0': 'can wait a week', '1': 'should be answered soon', '2': 'needs a reply today' });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"state\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges and refunds\",\n        \"bug\": \"product defects\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered soon\",\n        \"needs a reply today\"\n      ]\n    }\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - image input read natively - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('image input accepted', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].name).to.eql('is_frustrated');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is a screenshot of my bill.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - image rejected by Typesafe falls back to openai/gpt-6-luna - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the fallback serves the image', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].name).to.eql('is_frustrated');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});",
+                  "pm.test('served by openai/gpt-6-luna', function () {",
+                  "    var routing = (body.extra_fields || {}).routing_info || {};",
+                  "    pm.expect(routing.provider, 'routing: ' + JSON.stringify(body.extra_fields)).to.eql('openai');",
+                  "    pm.expect(routing.model).to.eql('gpt-6-luna');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"fallbacks\": [\n    \"openai/gpt-6-luna\"\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is a screenshot of my bill.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
         }
       ]
     },

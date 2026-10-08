@@ -245,3 +245,28 @@ func TestDecisionAnswersKeepOrderAndVariants(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, body, string(out))
 }
+
+// TestSupportsDecisions pins the decisions capability: a datasheet row decides
+// in either direction, and with no row the name-based fallback serves OpenAI's
+// decisions families (dated snapshots and the openai/ prefix included).
+func TestSupportsDecisions(t *testing.T) {
+	assert.True(t, DefaultSupportsDecisions("gpt-6-luna"))
+	assert.True(t, DefaultSupportsDecisions("openai/gpt-6-luna-2026-09-01"))
+	assert.False(t, DefaultSupportsDecisions("gpt-4o-mini"))
+
+	yes, no := true, false
+	SetCapabilityResolver(func(_ ModelProvider, model string) *ModelCapabilities {
+		switch model {
+		case "gpt-7-decider":
+			return &ModelCapabilities{SupportsDecisions: &yes}
+		case "gpt-6-luna":
+			return &ModelCapabilities{SupportsDecisions: &no}
+		}
+		return nil
+	})
+	t.Cleanup(func() { SetCapabilityResolver(nil) })
+
+	assert.True(t, ResolveModelCaps(OpenAI, "gpt-7-decider").SupportsDecisions(DefaultSupportsDecisions("gpt-7-decider")))
+	assert.False(t, ResolveModelCaps(OpenAI, "gpt-6-luna").SupportsDecisions(DefaultSupportsDecisions("gpt-6-luna")))
+	assert.True(t, ResolveModelCaps(OpenAI, "gpt-6-luna-2026-09-01").SupportsDecisions(DefaultSupportsDecisions("gpt-6-luna-2026-09-01")), "no row: the fallback decides")
+}
