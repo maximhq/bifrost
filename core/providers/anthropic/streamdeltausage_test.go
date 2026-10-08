@@ -1348,9 +1348,43 @@ func TestPromptUsageLedgerIsReleasedOnDelivery(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("the request context never observed its parent's cancellation")
 		}
+		// The sweep is throttled to once per interval, so clear the throttle to
+		// make the next open sweep now rather than waiting the interval out.
+		anthropicStreamDeltaPromptUsageLastSweep.Store(0)
 		openAnthropicStreamDeltaPromptUsageLedger(schemas.NewBifrostContext(t.Context(), schemas.NoDeadline))
 		if loadAnthropicStreamDeltaPromptUsageLedger(id) != nil {
 			t.Fatal("a finished request's readings were not swept: the store would grow without bound")
+		}
+	})
+
+	t.Run("the sweep is throttled off the stream-open path", func(t *testing.T) {
+		// The scan is O(in-flight streams) and read-locks each owner, so it must
+		// not run on every open. A ledger the throttle skips is collected by the
+		// next sweep -- the consumer's own release is what the correctness of
+		// this store rests on, not the backstop.
+		parent, cancel := context.WithCancel(context.Background())
+		ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+		openAnthropicStreamDeltaPromptUsageLedger(ctx)
+		id, _ := ctx.Value(schemas.BifrostContextKeyAnthropicStreamDeltaPromptUsage).(string)
+		cancel()
+		select {
+		case <-ctx.Done():
+		case <-time.After(2 * time.Second):
+			t.Fatal("the request context never observed its parent's cancellation")
+		}
+
+		// A sweep just ran (the open above), so the next open must not scan.
+		anthropicStreamDeltaPromptUsageLastSweep.Store(time.Now().UnixNano())
+		openAnthropicStreamDeltaPromptUsageLedger(schemas.NewBifrostContext(t.Context(), schemas.NoDeadline))
+		if loadAnthropicStreamDeltaPromptUsageLedger(id) == nil {
+			t.Fatal("the sweep ran on an open inside the throttle interval")
+		}
+
+		// And it is genuinely only deferred, not skipped.
+		anthropicStreamDeltaPromptUsageLastSweep.Store(0)
+		openAnthropicStreamDeltaPromptUsageLedger(schemas.NewBifrostContext(t.Context(), schemas.NoDeadline))
+		if loadAnthropicStreamDeltaPromptUsageLedger(id) != nil {
+			t.Fatal("the deferred sweep never collected the finished request")
 		}
 	})
 

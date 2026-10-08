@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -180,11 +181,34 @@ func openAnthropicStreamDeltaPromptUsageLedger(ctx *schemas.BifrostContext) *ant
 	return ledger
 }
 
+// anthropicStreamDeltaPromptUsageLastSweep is the UnixNano time of the last
+// sweep, and the throttle that keeps the backstop off the hot path.
+var anthropicStreamDeltaPromptUsageLastSweep atomic.Int64
+
+// anthropicStreamDeltaPromptUsageSweepInterval bounds how often the store is
+// scanned. A ledger the sweep misses is collected by the next one, so the only
+// cost of waiting is a finished request's one entry living a second longer.
+const anthropicStreamDeltaPromptUsageSweepInterval = time.Second
+
 // sweepFinishedAnthropicStreamDeltaPromptUsageLedgers drops the readings of any
 // request that has finished. A context that is Done can have no frame left to
 // render, so its readings cannot still be needed; one that is not Done is left
 // alone however old it looks, because a slow stream is not a finished one.
+//
+// Throttled, because it runs from the stream-open path: the scan is O(in-flight
+// streams) and takes a read lock on each owner's error mutex, so running it on
+// every open makes the cost opens-per-second times concurrent-streams on the
+// shared streaming path. It is only a backstop -- the consumer releases its own
+// ledger at the terminal frame or through ReleaseStreamPromptUsage -- so at most
+// once per interval is enough. The CAS means a burst of concurrent opens
+// performs one scan between them, not one each.
 func sweepFinishedAnthropicStreamDeltaPromptUsageLedgers() {
+	now := time.Now().UnixNano()
+	last := anthropicStreamDeltaPromptUsageLastSweep.Load()
+	if now-last < int64(anthropicStreamDeltaPromptUsageSweepInterval) ||
+		!anthropicStreamDeltaPromptUsageLastSweep.CompareAndSwap(last, now) {
+		return
+	}
 	anthropicStreamDeltaPromptUsageLedgers.Range(func(key, value any) bool {
 		ledger, _ := value.(*anthropicStreamDeltaPromptUsageLedger)
 		if ledger == nil || ledger.owner == nil || ledger.owner.Err() != nil {
