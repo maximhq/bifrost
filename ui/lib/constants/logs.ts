@@ -64,6 +64,7 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"ollama",
 	"openai",
 	"openrouter",
+	"parasail",
 	"sgl",
 	"vertex",
 	"vllm",
@@ -74,6 +75,7 @@ export const Statuses = ["success", "error", "processing", "cancelled"] as const
 
 export const RequestTypes = [
 	"list_models",
+	"model_retrieve",
 	"text_completion",
 	"text_completion_stream",
 	"chat_completion",
@@ -138,6 +140,10 @@ export const RequestTypes = [
 	"websocket_responses",
 	"realtime",
 	"realtime.turn",
+	// GPT Live: one row per session, delegations inside it; a recording download is its own row
+	"live",
+	"live.session",
+	"live_content",
 ] as const;
 
 export const ProviderLabels: Record<ProviderName, string> = {
@@ -287,6 +293,7 @@ export const RequestTypeLabels = {
 
 	// Request Types
 	list_models: "List Models",
+	model_retrieve: "Retrieve Model",
 	text_completion: "Text",
 	text_completion_stream: "Text Stream",
 	chat_completion: "Chat",
@@ -358,6 +365,9 @@ export const RequestTypeLabels = {
 	websocket_responses: "WebSocket Responses",
 	realtime: "Realtime",
 	"realtime.turn": "Realtime Turn",
+	live: "Live",
+	"live.session": "Live Session",
+	live_content: "Live Recording",
 } as const;
 
 export const RequestTypeColors = {
@@ -375,6 +385,7 @@ export const RequestTypeColors = {
 
 	// Request Types
 	list_models: "bg-green-100 text-green-800",
+	model_retrieve: "bg-green-100 text-green-800",
 	text_completion: "bg-green-100 text-green-800",
 	text_completion_stream: "bg-amber-100 text-amber-800",
 
@@ -449,6 +460,9 @@ export const RequestTypeColors = {
 	websocket_responses: "bg-teal-100 text-teal-800",
 	realtime: "bg-indigo-100 text-indigo-800",
 	"realtime.turn": "bg-cyan-100 text-cyan-800",
+	live: "bg-violet-100 text-violet-800",
+	"live.session": "bg-violet-100 text-violet-800",
+	live_content: "bg-blue-100 text-blue-800",
 } as const;
 
 export const RoutingEngineUsedLabels = {

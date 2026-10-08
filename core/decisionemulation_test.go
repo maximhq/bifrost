@@ -1,6 +1,7 @@
 package bifrost
 
 import (
+	"context"
 	"math"
 	"reflect"
 	"strings"
@@ -278,5 +279,40 @@ func TestEmulateDecisionToolChoicePerSurface(t *testing.T) {
 				t.Errorf("tool_choice = %+v, want %q", choice, tc.want)
 			}
 		})
+	}
+}
+
+// TestEmulateDecisionRefusesPassthroughExtensions pins #7599's "never text-only"
+// rule: when native extensions (e.g. images) were asked to reach the wire, an
+// emulating chat model refuses instead of silently answering without them.
+func TestEmulateDecisionRefusesPassthroughExtensions(t *testing.T) {
+	provider := &decisionEmulationProvider{response: emulationFunctionCallResponse(`{"approve": {"value": 0.9, "confidence": 0.8}}`)}
+	req := &schemas.BifrostDecisionRequest{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o-mini",
+		State:       "Describe this photo.",
+		Questions:   map[string]schemas.DecisionQuestion{"approve": {Kind: schemas.DecisionKindNoul, Instructions: "Approve?"}},
+		ExtraParams: map[string]interface{}{"images": []string{"data:image/png;base64,iVBORw0KGgo="}},
+	}
+
+	var b Bifrost
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	_, bifrostErr := b.emulateDecisionViaResponses(ctx, provider, schemas.Key{}, req)
+	if bifrostErr == nil {
+		t.Fatal("expected refusal when extensions must reach the wire")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 || !strings.Contains(bifrostErr.Error.Message, "images") {
+		t.Errorf("unexpected refusal: %+v", bifrostErr)
+	}
+	if provider.lastRequest != nil {
+		t.Error("the emulating model must not be called")
+	}
+
+	// Without the passthrough flag the extras were never promised to the wire;
+	// emulation proceeds as before.
+	plain := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, bifrostErr := b.emulateDecisionViaResponses(plain, provider, schemas.Key{}, req); bifrostErr != nil {
+		t.Fatalf("unexpected error without passthrough: %v", bifrostErr)
 	}
 }

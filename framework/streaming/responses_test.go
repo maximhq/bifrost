@@ -575,3 +575,161 @@ func TestBuildResponsesMessageItemDoneKeepsStreamedText(t *testing.T) {
 	require.NotNil(t, msgs[0].Content.ContentBlocks[0].Text)
 	require.Equal(t, "hello world", *msgs[0].Content.ContentBlocks[0].Text)
 }
+
+// Only output_item.done carries a custom_tool_call's `input`, so the accumulator
+// must take that item wholesale.
+func TestBuildResponsesMessagePreservesCustomToolCallInput(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	const input = `{"cmd":"whoami","max_output_tokens":1000}`
+
+	shell := schemas.ResponsesMessage{
+		ID:   schemas.Ptr("ctc_1"),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeCustomToolCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("call_1"),
+			Name:   schemas.Ptr("exec_command"),
+		},
+	}
+	complete := shell
+	complete.ResponsesToolMessage = &schemas.ResponsesToolMessage{
+		CallID:                  schemas.Ptr("call_1"),
+		Name:                    schemas.Ptr("exec_command"),
+		ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: input},
+	}
+
+	chunks := []*ResponsesStreamChunk{
+		{ChunkIndex: 0, StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &shell}},
+		{ChunkIndex: 1, StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:   schemas.ResponsesStreamResponseTypeCustomToolCallInputDelta,
+			ItemID: schemas.Ptr("ctc_1"), Delta: schemas.Ptr(`{"cmd":"who`)}},
+		{ChunkIndex: 2, StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:   schemas.ResponsesStreamResponseTypeCustomToolCallInputDone,
+			ItemID: schemas.Ptr("ctc_1"), Input: schemas.Ptr(input)}},
+		{ChunkIndex: 3, StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeOutputItemDone, Item: &complete}},
+	}
+
+	msgs := acc.buildCompleteMessageFromResponsesStreamChunks(chunks)
+	if len(msgs) != 1 {
+		t.Fatalf("want 1 message, got %d: %+v", len(msgs), msgs)
+	}
+	tm := msgs[0].ResponsesToolMessage
+	if tm == nil || tm.ResponsesCustomToolCall == nil {
+		t.Fatalf("custom tool call lost: %+v", msgs[0])
+	}
+	if tm.ResponsesCustomToolCall.Input != input {
+		t.Fatalf("input = %q, want %q", tm.ResponsesCustomToolCall.Input, input)
+	}
+}
+
+
+// TestBuildResponsesMessageKeepsShellCallPayload covers a streamed shell turn.
+// The item deep copy lists every action variant by hand, so a missing shell
+// branch left the assembled log row with an empty action and no commands.
+func TestBuildResponsesMessageKeepsShellCallPayload(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	chunks := []*ResponsesStreamChunk{
+		{
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeOutputItemAdded,
+				Item: &schemas.ResponsesMessage{
+					ID:     schemas.Ptr("shc_1"),
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeShellCall),
+					Status: schemas.Ptr("in_progress"),
+				},
+			},
+		},
+		{
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:         schemas.ResponsesStreamResponseTypeShellCallCommandDone,
+				Command:      schemas.Ptr("ls -la"),
+				CommandIndex: schemas.Ptr(0),
+			},
+		},
+		{
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeOutputItemDone,
+				Item: &schemas.ResponsesMessage{
+					ID:     schemas.Ptr("shc_1"),
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeShellCall),
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("call_1"),
+						Action: &schemas.ResponsesToolMessageActionStruct{
+							ResponsesShellToolCallAction: &schemas.ResponsesShellToolCallAction{
+								Commands:  []string{"ls -la"},
+								TimeoutMS: schemas.Ptr(5000),
+							},
+						},
+						CreatedBy: schemas.Ptr("asst_1"),
+						ResponsesShellCall: &schemas.ResponsesShellCall{
+							Environment: &schemas.ResponsesShellCallEnvironment{
+								Type:        "container_reference",
+								ContainerID: schemas.Ptr("cntr_1"),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	for i, c := range chunks {
+		c.ChunkIndex = i
+	}
+
+	msgs := acc.buildCompleteMessageFromResponsesStreamChunks(chunks)
+	require.Len(t, msgs, 1)
+	require.NotNil(t, msgs[0].ResponsesToolMessage)
+	action := msgs[0].ResponsesToolMessage.Action
+	require.NotNil(t, action)
+	require.NotNil(t, action.ResponsesShellToolCallAction)
+	require.Equal(t, []string{"ls -la"}, action.ResponsesShellToolCallAction.Commands)
+	require.Equal(t, 5000, *action.ResponsesShellToolCallAction.TimeoutMS)
+
+	// The action must marshal — an empty action struct errors, which used to fail
+	// the whole log write for a streamed shell call.
+	_, err := schemas.Marshal(msgs[0])
+	require.NoError(t, err)
+
+	shellCall := msgs[0].ResponsesToolMessage.ResponsesShellCall
+	require.NotNil(t, shellCall)
+	require.NotNil(t, shellCall.Environment)
+	require.Equal(t, "cntr_1", *shellCall.Environment.ContainerID)
+	require.Equal(t, "asst_1", *msgs[0].ResponsesToolMessage.CreatedBy)
+}
+
+// TestBuildResponsesMessageKeepsShellCallOutput checks the client-sent output
+// items survive accumulation with their outcomes.
+func TestBuildResponsesMessageKeepsShellCallOutput(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	chunks := []*ResponsesStreamChunk{{
+		ChunkIndex: 0,
+		StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeOutputItemDone,
+			Item: &schemas.ResponsesMessage{
+				ID:   schemas.Ptr("shco_1"),
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeShellCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("call_1"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesShellCallOutput: []schemas.ResponsesShellCallOutputContent{{
+							Stdout:  "hello\n",
+							Outcome: schemas.ResponsesShellCallOutcome{Type: "exit", ExitCode: schemas.Ptr(0)},
+						}},
+					},
+					ResponsesShellCall: &schemas.ResponsesShellCall{MaxOutputLength: schemas.Ptr(1000)},
+				},
+			},
+		},
+	}}
+
+	msgs := acc.buildCompleteMessageFromResponsesStreamChunks(chunks)
+	require.Len(t, msgs, 1)
+	output := msgs[0].ResponsesToolMessage.Output
+	require.NotNil(t, output)
+	require.Len(t, output.ResponsesShellCallOutput, 1)
+	require.Equal(t, "hello\n", output.ResponsesShellCallOutput[0].Stdout)
+	require.Equal(t, 0, *output.ResponsesShellCallOutput[0].Outcome.ExitCode)
+	require.Equal(t, 1000, *msgs[0].ResponsesToolMessage.ResponsesShellCall.MaxOutputLength)
+}

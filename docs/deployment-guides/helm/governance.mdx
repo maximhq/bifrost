@@ -390,9 +390,38 @@ bifrost:
 
 ## Complexity Router Configuration
 
-If you use `complexity_tier` in routing rules, configure the semantic embedding model and seed its reference phrases from Helm. The chart renders this block to `governance.complexity_analyzer_config` in `config.json`.
+If you use `complexity_tier` in routing rules, choose a decision model or Semantic as the primary classifier in Helm. The chart renders this block to `governance.complexity_analyzer_config` in `config.json`. The decision model is Typesafe Jev by default, or any decision model reachable through `/v1/decisions` (for example Laya, Nimble, or Clef served by a custom provider with `base_provider_type: typesafe`); it uses that provider's enabled key. Semantic needs an embedding provider and reference phrases.
 
-Omit this block, or leave `complexityAnalyzerConfig: null`, to leave semantic complexity classification disabled. To enable it from Helm, provide the `semantic` block and all three keyword lists. In the default split mode, the supplied phrases merge with the stored built-in defaults; with `sourceOfTruth: config.json`, the supplied lists are the complete phrase set.
+Omit this block, or leave `complexityAnalyzerConfig: null`, to leave complexity classification disabled. To enable it, supply all three `keywords` lists. They are required by the current config shape even when the decision model is primary, though it does not use the phrases. In the default split mode, supplied phrases merge with stored built-in defaults; with `sourceOfTruth: config.json`, the supplied lists are the complete phrase set.
+
+For a decision model as the primary classifier:
+
+```yaml
+bifrost:
+  governance:
+    complexityAnalyzerConfig:
+      classifier: decision
+      decision:
+        provider: typesafe             # Optional: omit provider and model for typesafe/jev-latest
+        model: jev-latest              # e.g. nimble-latest on a custom "nimble" provider
+        previous_message_count: 1
+        timeout: "1.5s"
+        criteria:                      # Optional: omit to use the shipped tier guidance
+          COMPLEX:
+            definition: "Advanced expertise combined with substantial reasoning, design, or changes that must stay consistent across several components."
+      session:
+        enabled: true
+      keywords:
+        simple_keywords: ["fix the grammar in this sentence."]
+        medium_keywords: ["apply a standard method to this technical question."]
+        complex_keywords: ["design a solution under several competing constraints."]
+```
+
+`decision.provider` and `decision.model` are set together; omit both to use `typesafe`/`jev-latest`. `decision.previous_message_count` accepts 0 to 5 earlier user messages in addition to the current request. Decision-model usage counts toward request cost and budgets.
+
+`decision.criteria` optionally overrides the tier guidance the decision model classifies against. Its keys are `SIMPLE`, `MEDIUM`, and `COMPLEX`, each with an optional `definition` (max 500 characters), `signals`, and `examples` (each max 12 items of 300 characters). A supplied list replaces the whole default list, and anything omitted uses the shipped default. See [Tier guidance](/features/complexity-router#tier-guidance) for the defaults and how to write your own. To use the decision model after an inconclusive semantic result, keep the semantic configuration below, set `semantic.fallback: decision`, and optionally include the `decision` settings above.
+
+For Semantic as the primary classifier:
 
 ```yaml
 bifrost:
@@ -414,10 +443,10 @@ bifrost:
         complex_keywords: ["balance testing, prescribing rules, and staffing against rising resistant infections."]
 ```
 
-`session.enabled` is optional and defaults to `false`. When enabled, an identified session retains its highest observed tier for 24 hours of inactivity; normally sequential turns can escalate while lower proposals keep the stored tier. Overlapping requests for the same session are best-effort and resolve by last writer wins. The lifetime is built in and is separate from provider prompt-cache TTLs.
+`session.enabled` is optional and defaults to `false` for both classifiers. When enabled, an identified session retains its highest observed tier for 24 hours of inactivity; normally sequential turns can escalate while lower proposals keep the stored tier. Overlapping requests for the same session are best-effort and resolve by last writer wins. The lifetime is built in and is separate from provider prompt-cache TTLs.
 
 <Note>
-In the default split mode, runtime UI and API edits are preserved while the matching Helm-rendered section is unchanged. When Helm changes a section, keyword lists are merged additively with stored runtime phrases (union with duplicates removed), and the semantic block is replaced as one unit. Use `bifrost.sourceOfTruth: config.json` only when Helm should replace stored governance state. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for the full startup rules.
+In the default split mode, runtime UI and API edits are preserved while the matching Helm-rendered section is unchanged. When Helm changes a section, keyword lists are merged additively with stored runtime phrases (union with duplicates removed), and the semantic block is replaced as one unit. Use `bifrost.sourceOfTruth: config.json` only when Helm should replace stored config state. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for the full startup rules.
 </Note>
 
 <Note>

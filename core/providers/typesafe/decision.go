@@ -51,12 +51,14 @@ func validStructuredValue(value interface{}) bool {
 
 // ToTypesafeDecisionRequest converts a Bifrost decision request into
 // Typesafe's native systemone shape. Unsupported kinds and malformed criteria
-// are rejected rather than silently approximated.
+// are rejected rather than silently approximated. Validation is never
+// stricter than the official SDKs' types: null state, null or absent
+// instructions, and null descriptions are forwarded for the endpoint to judge.
 func ToTypesafeDecisionRequest(request *schemas.BifrostDecisionRequest) (*TypesafeDecisionRequest, error) {
 	if len(request.Questions) == 0 {
 		return nil, providerUtils.InvalidRequestErrorf("decision request requires at least one question")
 	}
-	if !validStructuredValue(request.State) {
+	if !isJSONNull(request.State) && !validStructuredValue(request.State) {
 		return nil, providerUtils.InvalidRequestErrorf("state must be a string, object, or array")
 	}
 
@@ -70,9 +72,10 @@ func ToTypesafeDecisionRequest(request *schemas.BifrostDecisionRequest) (*Typesa
 	}
 
 	return &TypesafeDecisionRequest{
-		State:     request.State,
-		Model:     request.Model,
-		Questions: questions,
+		State:       request.State,
+		Model:       request.Model,
+		Questions:   questions,
+		ExtraParams: request.ExtraParams,
 	}, nil
 }
 
@@ -82,14 +85,15 @@ func toTypesafeQuestion(name string, question schemas.DecisionQuestion) (*Typesa
 	if !ok {
 		return nil, providerUtils.InvalidRequestErrorf("question %q has unsupported kind %q; expected noul, choice, or score", name, question.Kind)
 	}
-	if question.Instructions == nil {
-		return nil, providerUtils.InvalidRequestErrorf("question %q has no instructions", name)
+	// Instructions are optional in the SDK types (noul() defaults them to
+	// null); whether criteria alone suffice is the endpoint's rule, not ours.
+	native := TypesafeQuestion{Type: nativeType}
+	if !isJSONNull(question.Instructions) {
+		if !validStructuredValue(question.Instructions) {
+			return nil, providerUtils.InvalidRequestErrorf("question %q instructions must be a string, object, or array", name)
+		}
+		native.Instructions = question.Instructions
 	}
-	if !validStructuredValue(question.Instructions) {
-		return nil, providerUtils.InvalidRequestErrorf("question %q instructions must be a string, object, or array", name)
-	}
-
-	native := TypesafeQuestion{Type: nativeType, Instructions: question.Instructions}
 
 	switch question.Kind {
 	case schemas.DecisionKindNoul:
@@ -116,13 +120,13 @@ func toTypesafeQuestion(name string, question schemas.DecisionQuestion) (*Typesa
 }
 
 // noulCriteria validates optional noul criteria: a map whose only keys are
-// "true" and "false", each described by a string, object, or array. Passed
-// through losslessly.
+// "true" and "false", each described by a string, object, or array, or null
+// when a side needs no description. Passed through losslessly.
 func noulCriteria(name string, criteria interface{}) (interface{}, error) {
-	if criteria == nil {
+	if isJSONNull(criteria) {
 		return nil, nil
 	}
-	m, err := criteriaAsMap(name, criteria, false)
+	m, err := criteriaAsMap(name, criteria, true)
 	if err != nil {
 		return nil, err
 	}
@@ -155,9 +159,9 @@ func choiceCriteria(name string, criteria interface{}) (map[string]any, error) {
 }
 
 // scoreCriteria validates the ordered array of 2-10 level descriptions, each
-// a string, object, or array, preserved losslessly. Go SDK callers supply
-// []string; HTTP JSON decoding supplies []interface{} - both are the same
-// ordered array on the wire.
+// a string, object, or array, or null for an undescribed level, preserved
+// losslessly. Go SDK callers supply []string; HTTP JSON decoding supplies
+// []interface{} - both are the same ordered array on the wire.
 func scoreCriteria(name string, criteria interface{}) (interface{}, error) {
 	var levels []any
 	switch typed := criteria.(type) {
@@ -186,7 +190,7 @@ func scoreCriteria(name string, criteria interface{}) (interface{}, error) {
 		return nil, providerUtils.InvalidRequestErrorf("question %q score criteria must have between %d and %d levels, got %d", name, typesafeMinScoreLevels, typesafeMaxScoreLevels, len(levels))
 	}
 	for i, level := range levels {
-		if !validStructuredValue(level) {
+		if !isJSONNull(level) && !validStructuredValue(level) {
 			return nil, providerUtils.InvalidRequestErrorf("question %q score criteria level %d must be a string, object, or array", name, i)
 		}
 	}
@@ -195,8 +199,8 @@ func scoreCriteria(name string, criteria interface{}) (interface{}, error) {
 
 // criteriaAsMap normalizes a criteria value into map[string]any, rejecting
 // non-map shapes. Each description must serialize to a string, object, or
-// array; null is additionally allowed when allowNull is set (choice options
-// that need no extra detail). Descriptions are carried losslessly.
+// array; null is additionally allowed when allowNull is set (a label that
+// needs no extra detail). Descriptions are carried losslessly.
 func criteriaAsMap(name string, criteria interface{}, allowNull bool) (map[string]any, error) {
 	var m map[string]any
 	switch typed := criteria.(type) {
@@ -266,10 +270,15 @@ func ToBifrostDecisionResponse(resp *TypesafeDecisionResponse, request *schemas.
 		}
 
 		answer := schemas.DecisionAnswer{
-			Kind:          question.Kind,
-			Confidence:    native.Confidence,
-			Probabilities: native.Probabilities,
-			Legend:        native.Legend,
+			Kind:                question.Kind,
+			Confidence:          native.Confidence,
+			Probabilities:       native.Probabilities,
+			Legend:              native.Legend,
+			AnswerConfidence:    native.AnswerConfidence,
+			Action:              native.Action,
+			Abstention:          native.Abstention,
+			AbstentionThreshold: native.AbstentionThreshold,
+			LowConfidence:       native.LowConfidence,
 		}
 		switch question.Kind {
 		case schemas.DecisionKindNoul:
@@ -297,25 +306,51 @@ func ToBifrostDecisionResponse(resp *TypesafeDecisionResponse, request *schemas.
 	response := &schemas.BifrostDecisionResponse{
 		Model:   resp.Model,
 		Answers: answers,
+		Routing: resp.Routing,
 	}
 	if resp.Usage != nil {
 		response.Usage = &schemas.BifrostLLMUsage{
-			PromptTokens:     resp.Usage.InputTokens,
-			CompletionTokens: resp.Usage.OutputTokens,
-			TotalTokens:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			PromptTokens:       resp.Usage.InputTokens,
+			CompletionTokens:   resp.Usage.OutputTokens,
+			TotalTokens:        resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			StateTokens:        resp.Usage.StateTokens,
+			StateTokensDropped: resp.Usage.StateTokensDropped,
+			Truncated:          resp.Usage.Truncated,
+			TruncatedQuestions: resp.Usage.TruncatedQuestions,
 		}
 	}
 	return response, nil
 }
 
+// unwrapResultEnvelope returns the systemone body inside a Cloudflare Workers AI
+// REST envelope ({"result": {...}, "success": true, ...}), which serves
+// Jev-compatible models such as Clef. failed is true when the envelope declares
+// success:false, even on HTTP 200, so the caller can surface errors[] instead of
+// parsing an empty or partial result. A body that already carries "answers" is
+// returned as is and never failed, so plain systemone endpoints are unaffected.
+func unwrapResultEnvelope(body []byte) (inner []byte, failed bool) {
+	if gjson.GetBytes(body, "answers").Exists() {
+		return body, false
+	}
+	if gjson.GetBytes(body, "success").Type == gjson.False {
+		return body, true
+	}
+	if result := gjson.GetBytes(body, "result"); result.IsObject() {
+		return []byte(result.Raw), false
+	}
+	return body, false
+}
+
 // ToBifrostDecisionRequest converts a native systemone request into the
 // shared decision shape. Question identifiers become answer field names; the
-// native type vocabulary is identical to the Bifrost kind vocabulary.
+// native type vocabulary is identical to the Bifrost kind vocabulary. An
+// explicit null state is SDK-valid and forwarded; only an absent state is
+// rejected locally.
 func (req *TypesafeDecisionRequest) ToBifrostDecisionRequest(ctx *schemas.BifrostContext) (*schemas.BifrostDecisionRequest, error) {
 	if req == nil {
 		return nil, providerUtils.InvalidRequestErrorf("request body is required")
 	}
-	if req.State == nil {
+	if req.State == nil && !req.stateSet {
 		return nil, providerUtils.InvalidRequestErrorf("state is required")
 	}
 	if len(req.Questions) == 0 {
@@ -334,10 +369,11 @@ func (req *TypesafeDecisionRequest) ToBifrostDecisionRequest(ctx *schemas.Bifros
 	}
 
 	return &schemas.BifrostDecisionRequest{
-		Provider:  provider,
-		Model:     model,
-		State:     req.State,
-		Questions: questions,
+		Provider:    provider,
+		Model:       model,
+		State:       req.State,
+		Questions:   questions,
+		ExtraParams: req.ExtraParams,
 	}, nil
 }
 
@@ -352,9 +388,14 @@ func ToTypesafeNativeDecisionResponse(resp *schemas.BifrostDecisionResponse) (*T
 	answers := make(map[string]TypesafeAnswer, len(resp.Answers))
 	for name, answer := range resp.Answers {
 		native := TypesafeAnswer{
-			Confidence:    answer.Confidence,
-			Probabilities: answer.Probabilities,
-			Legend:        answer.Legend,
+			Confidence:          answer.Confidence,
+			Probabilities:       answer.Probabilities,
+			Legend:              answer.Legend,
+			AnswerConfidence:    answer.AnswerConfidence,
+			Action:              answer.Action,
+			Abstention:          answer.Abstention,
+			AbstentionThreshold: answer.AbstentionThreshold,
+			LowConfidence:       answer.LowConfidence,
 		}
 		switch answer.Kind {
 		case schemas.DecisionKindNoul:
@@ -387,11 +428,16 @@ func ToTypesafeNativeDecisionResponse(resp *schemas.BifrostDecisionResponse) (*T
 	native := &TypesafeDecisionResponse{
 		Model:   resp.Model,
 		Answers: answers,
+		Routing: resp.Routing,
 	}
 	if resp.Usage != nil {
 		native.Usage = &TypesafeUsage{
-			InputTokens:  resp.Usage.PromptTokens,
-			OutputTokens: resp.Usage.CompletionTokens,
+			InputTokens:        resp.Usage.PromptTokens,
+			OutputTokens:       resp.Usage.CompletionTokens,
+			StateTokens:        resp.Usage.StateTokens,
+			StateTokensDropped: resp.Usage.StateTokensDropped,
+			Truncated:          resp.Usage.Truncated,
+			TruncatedQuestions: resp.Usage.TruncatedQuestions,
 		}
 	}
 	return native, nil

@@ -2,18 +2,22 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/framework/warp"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -284,6 +288,44 @@ func TestWarpBackfillStatusWithoutIDFallsBackToLatestJob(t *testing.T) {
 	require.Contains(t, string(statusCtx.Response.Body()), `"id":"job-new"`)
 }
 
+// A finished backfill describes the embedding space it ran under. After the
+// embedding model was changed and saved, the settings page still showed the
+// old run as "Completed" over a full progress bar, beside a space nothing has
+// been indexed into - and the Start button stayed disabled for that window as
+// "already fully indexed". A job frozen against another space is not the
+// current state of this one, so the id-less read answers idle instead. A job
+// that is still running is shown regardless: it needs its cancel action.
+func TestWarpBackfillStatusHidesJobFromAnotherEmbeddingSpace(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	jobs.latest = &tables.TableSidekiqJob{
+		ID: "job-old-space", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusCompleted,
+		Metadata: `{"config_signature":"6:openai|17:text-embedding-ada|4:1536|8:WarpLogs|","scanned":100,"total":100,"indexed":100}`,
+	}
+	statusCtx := adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
+	require.Contains(t, string(statusCtx.Response.Body()), `"status":"idle"`)
+	require.NotContains(t, string(statusCtx.Response.Body()), "job-old-space")
+
+	// The same job under the space the deployment is configured with now.
+	metadata, err := handler.service.BuildBackfillJobMeta(context.Background(), time.Unix(1, 0), time.Unix(2, 0), false)
+	require.NoError(t, err)
+	jobs.latest.Metadata = metadata
+	statusCtx = adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Contains(t, string(statusCtx.Response.Body()), `"id":"job-old-space"`)
+
+	// A running job from another space is still the current job.
+	jobs.inFlight = &tables.TableSidekiqJob{
+		ID: "job-running", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning,
+		Metadata: `{"config_signature":"6:openai|17:text-embedding-ada|4:1536|8:WarpLogs|"}`,
+	}
+	statusCtx = adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Contains(t, string(statusCtx.Response.Body()), `"id":"job-running"`)
+}
+
 func TestWarpBackfillStatusWithoutAnyJobIsIdle(t *testing.T) {
 	handler, _, cleanup := newBackfillTestHandler(t)
 	defer cleanup()
@@ -311,6 +353,185 @@ func TestWarpSnapshotCarriesQueryScope(t *testing.T) {
 	carried(nil)
 	require.True(t, applied, "the snapshot must carry the request's own scope, not a fresh one")
 	require.Equal(t, "u-1", snapshot.Value(schemas.BifrostContextKeyUserID))
+}
+
+// Warp's model calls go through the gateway client in-process, so no HTTP
+// transport settles who they are - and governance refuses a request that
+// carries no grant. The snapshot must carry a grant settled from the dashboard
+// request, attributed to the user who asked, or every chat fails with "request
+// carries no grant".
+func TestWarpSnapshotCarriesSettledGrant(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+	ctx.SetUserValue(schemas.BifrostContextKeyUserEmail, "u1@example.com")
+
+	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	require.NoError(t, err)
+	defer cancel()
+	g := warp.NewGrantFromContext(snapshot)
+	require.NotNil(t, g, "a turn without a grant is refused by governance on its first model call")
+	require.NotNil(t, g.Identity(), "the grant's identity must be settled, not left open")
+	require.NotNil(t, g.Identity().User())
+	require.Equal(t, "u-1", g.Identity().User().ID)
+
+	// A deployment with no auth still settles an identity - "nobody" - which is
+	// distinct from never having been settled.
+	anonymous, cancelAnonymous, err := snapshotWarpContext(&fasthttp.RequestCtx{}, time.Second)
+	require.NoError(t, err)
+	defer cancelAnonymous()
+	require.NotNil(t, warp.NewGrantFromContext(anonymous))
+	require.NotNil(t, warp.NewGrantFromContext(anonymous).Identity())
+}
+
+// Governance stamps the caller's name, teams and customer only while resolving
+// a grant, once per grant. Each of Warp's model calls must therefore settle its
+// own grant, still attributed to the user who asked, even after fasthttp has
+// recycled the request the values came from.
+func TestWarpSnapshotSettlesAFreshGrantPerCall(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+	ctx.SetUserValue(schemas.BifrostContextKeyUserName, "Suresh")
+
+	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	require.NoError(t, err)
+	defer cancel()
+	ctx.ResetUserValues()
+
+	first, second := warp.NewGrantFromContext(snapshot), warp.NewGrantFromContext(snapshot)
+	require.NotSame(t, first, second, "a shared grant is resolved on the first call only")
+	for _, g := range []schemas.Grant{first, second} {
+		require.Equal(t, "u-1", g.Identity().User().ID)
+		require.Equal(t, "Suresh", g.Identity().User().Name)
+	}
+}
+
+// A virtual key arrives as a request header, never as a user value, so the
+// grant must read it from the headers the way lib.ConvertToBifrostContext does
+// - otherwise a dashboard request that presents a key settles as the session
+// alone and governance never sees the key.
+func TestWarpSnapshotGrantCarriesHeaderVirtualKey(t *testing.T) {
+	for name, set := range map[string]func(*fasthttp.RequestHeader){
+		"x-bf-vk":              func(h *fasthttp.RequestHeader) { h.Set("x-bf-vk", "sk-bf-abc") },
+		"authorization bearer": func(h *fasthttp.RequestHeader) { h.Set("Authorization", "Bearer sk-bf-abc") },
+		"x-api-key":            func(h *fasthttp.RequestHeader) { h.Set("x-api-key", "sk-bf-abc") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			set(&ctx.Request.Header)
+			ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+
+			snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+			require.NoError(t, err)
+			defer cancel()
+			identity := warp.NewGrantFromContext(snapshot).Identity()
+			require.NotNil(t, identity)
+			require.Equal(t, "sk-bf-abc", identity.Credential().Value)
+			require.Equal(t, "u-1", identity.User().ID, "the session's user is kept alongside the key")
+		})
+	}
+
+	// A bearer that is not a virtual key (a dashboard session token) is not one.
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("Authorization", "Bearer session-token")
+	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	require.NoError(t, err)
+	defer cancel()
+	require.Empty(t, warp.NewGrantFromContext(snapshot).Identity().Credential().Value)
+}
+
+// The grant the snapshot settles and the admission Warp asks for only matter
+// together: governance admits a user nothing grants access to because Warp's
+// context asks it to, and only for the identity the dashboard request settled.
+// So the whole path is driven here - the dashboard request's snapshot, Warp's
+// own model-call context, and the governance pre-hook the gateway client would
+// run on it - rather than each half against a hand-built stand-in for the other.
+// A grant the snapshot drops, settles without its user, or settles past a
+// presented key breaks the chat or widens it, and either shows up here.
+func TestWarpChatGovernsTheDashboardCallerEndToEnd(t *testing.T) {
+	store, err := governance.NewLocalGovernanceStore(context.Background(), &mockLogger{}, nil, &configstore.GovernanceConfig{}, nil, nil)
+	require.NoError(t, err)
+	isVkMandatory := false
+	plugin, err := governance.InitFromStore(context.Background(), &governance.Config{IsVkMandatory: &isVkMandatory},
+		&mockLogger{}, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	// govern is the gateway client as far as governance is concerned: it runs
+	// the pre-hook on the context it is handed and stops at a refusal.
+	govern := func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: req})
+		require.NoError(t, err)
+		if shortCircuit != nil {
+			return nil, shortCircuit.Error
+		}
+		return &schemas.BifrostResponsesResponse{}, nil
+	}
+	chat := func(t *testing.T, ctx *fasthttp.RequestCtx) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		t.Helper()
+		snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+		require.NoError(t, err)
+		defer cancel()
+		// The agent runs after the handler returns, so the request is gone by
+		// the time the model is called.
+		ctx.ResetUserValues()
+		ctx.Request.Reset()
+		return warp.NewChat(govern, &schemas.WarpConfig{}, "conv-1")(snapshot,
+			&schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o"})
+	}
+	signedIn := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+		ctx.SetUserValue(schemas.BifrostContextKeyAuthCredential, grant.NewCredential(grant.CredentialSessionToken, "session-token"))
+		return ctx
+	}
+	requireAccessNotFound := func(t *testing.T, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		require.NotNil(t, bifrostErr)
+		require.NotNil(t, bifrostErr.StatusCode)
+		require.Equal(t, 401, *bifrostErr.StatusCode)
+		require.Contains(t, bifrostErr.Error.Message, "access not found")
+	}
+
+	t.Run("a signed-in user with no access profile is served", func(t *testing.T) {
+		response, bifrostErr := chat(t, signedIn())
+
+		require.Nil(t, bifrostErr, "a profile-less user must not be refused: %+v", bifrostErr)
+		require.NotNil(t, response)
+	})
+
+	t.Run("the same grant is refused off Warp's path", func(t *testing.T) {
+		// The control: it is Warp's model-call context that admits the user, not
+		// the grant, so the same settled grant on any other request is still
+		// held to an access it does not have.
+		snapshot, cancel, err := snapshotWarpContext(signedIn(), time.Second)
+		require.NoError(t, err)
+		defer cancel()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		defer ctx.Cancel()
+		ctx.SetGrant(warp.NewGrantFromContext(snapshot))
+
+		_, bifrostErr := govern(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o"})
+
+		requireAccessNotFound(t, bifrostErr)
+	})
+
+	t.Run("a presented virtual key that resolves to nothing is still refused", func(t *testing.T) {
+		ctx := signedIn()
+		ctx.Request.Header.Set("x-bf-vk", "sk-bf-nobody")
+
+		_, bifrostErr := chat(t, ctx)
+
+		requireAccessNotFound(t, bifrostErr)
+	})
+
+	t.Run("an anonymous dashboard request is served as a key-less one", func(t *testing.T) {
+		// No auth on the deployment: nothing was presented, so there is nothing
+		// to admit and nothing to refuse.
+		response, bifrostErr := chat(t, &fasthttp.RequestCtx{})
+
+		require.Nil(t, bifrostErr, "%+v", bifrostErr)
+		require.NotNil(t, response)
+	})
 }
 
 // A scope that was set on the request but cannot be carried over is the
@@ -514,6 +735,30 @@ func TestWarpBackfillStatusKeepsRealTimestamps(t *testing.T) {
 	}
 }
 
+// The job's embedding spend travels from its checkpoint to the status payload
+// the backfill panel renders; a cost the deployment cannot price stays absent
+// rather than arriving as 0, which would read as free.
+func TestWarpBackfillStatusCarriesEmbeddingSpend(t *testing.T) {
+	priced := warpBackfillStatusFromRow(&tables.TableSidekiqJob{
+		ID: "job-1", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning,
+		Metadata: `{"total":10,"scanned":4,"embedding_tokens":1200,"embedding_cost":0.000024}`,
+	})
+	require.Equal(t, int64(1200), priced.EmbeddingTokens)
+	require.NotNil(t, priced.EmbeddingCost)
+	require.InDelta(t, 0.000024, *priced.EmbeddingCost, 1e-12)
+
+	unpriced := warpBackfillStatusFromRow(&tables.TableSidekiqJob{
+		ID: "job-2", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning,
+		Metadata: `{"total":10,"scanned":4,"embedding_tokens":1200}`,
+	})
+	encoded, err := sonic.Marshal(unpriced)
+	require.NoError(t, err)
+	var shape map[string]any
+	require.NoError(t, sonic.Unmarshal(encoded, &shape))
+	require.Equal(t, float64(1200), shape["embedding_tokens"])
+	require.NotContains(t, shape, "embedding_cost")
+}
+
 // A malformed time range is a bad request whether or not a job is running.
 //
 // startBackfill checked for an active job before BuildBackfillJobMeta, which is
@@ -699,4 +944,167 @@ func TestWarpRoutesAre404WhileFeatureFlagIsOff(t *testing.T) {
 	ctx := serve("POST", "/api/warp/chat", `{"messages":[{"role":"user","content":"hi"}]}`)
 	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(),
 		"with the flag on the request must reach the handler, which reports the missing log store")
+}
+
+type fakeVKModelConfigReader struct{ configs []tables.TableModelConfig }
+
+func (f fakeVKModelConfigReader) GetModelConfigsByScopeAndScopeIDs(context.Context, string, []string, ...*gorm.DB) ([]tables.TableModelConfig, error) {
+	return f.configs, nil
+}
+
+// The decorator Warp is handed is the same set of overlays the dashboard's key
+// pages apply: the external budget resolver for a managed key, then the
+// assignee. Its output names what governs the key so the answer can say
+// "access profile admin" rather than presenting the profile's budget as the
+// key's own, and it fails rather than serving a bare row when a resolver does.
+func TestWarpVirtualKeyDecoratorOverlaysTheDashboardResolvers(t *testing.T) {
+	external := func(_ context.Context, vk *tables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+		if vk.ID != "vk-managed" {
+			return nil, nil
+		}
+		return &ExternalQuotaBudgetResult{
+			Managed:     true,
+			UsageUserID: "u-vrinda",
+			Budgets: []SourcedBudget{
+				{TableBudget: tables.TableBudget{ID: "b-global", MaxLimit: 450}, SourceRef: tables.SourceRef{SourceType: "access_profile", SourceName: "admin"}},
+				{TableBudget: tables.TableBudget{ID: "b-provider", MaxLimit: 20}, SourceRef: tables.SourceRef{SourceType: "access_profile", SourceName: "admin"}},
+			},
+			RateLimit: &tables.TableRateLimit{ID: "rl-global", RequestMaxLimit: int64Ptr(1000)},
+		}, nil
+	}
+	assignees := func(_ context.Context, ids []string) (map[string]*tables.AssignedUser, error) {
+		return map[string]*tables.AssignedUser{"vk-managed": {ID: "u-vrinda", Name: "Vrinda", Email: "vrinda@example.com"}}, nil
+	}
+	decorate := warpVirtualKeyDecorator(fakeVKModelConfigReader{}, WarpResolvers{ExternalQuotaBudgets: external, VirtualKeyAssignees: assignees})
+
+	managed := &tables.TableVirtualKey{ID: "vk-managed"}
+	governedBy, err := decorate(context.Background(), managed)
+	require.NoError(t, err)
+	require.Equal(t, []string{"access profile admin"}, governedBy, "one source named once, however many budgets it contributed")
+	require.True(t, managed.IsAccessProfileManaged)
+	require.Len(t, managed.Budgets, 2)
+	require.NotNil(t, managed.RateLimit)
+	require.Equal(t, "Vrinda", managed.AssignedUser.Name)
+
+	// A key the resolver has nothing on keeps its own rows and names no source.
+	standalone := &tables.TableVirtualKey{ID: "vk-own", Budgets: []tables.TableBudget{{ID: "b-own", MaxLimit: 10}}}
+	governedBy, err = decorate(context.Background(), standalone)
+	require.NoError(t, err)
+	require.Empty(t, governedBy)
+	require.False(t, standalone.IsAccessProfileManaged)
+	require.Len(t, standalone.Budgets, 1)
+
+	// No resolvers at all is the OSS build: the row is read as is.
+	governedBy, err = warpVirtualKeyDecorator(fakeVKModelConfigReader{}, WarpResolvers{})(context.Background(), &tables.TableVirtualKey{ID: "vk-own"})
+	require.NoError(t, err)
+	require.Empty(t, governedBy)
+
+	// A failing resolver is an error, not a silently bare key.
+	broken := func(context.Context, *tables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+		return nil, errors.New("governance store down")
+	}
+	_, err = warpVirtualKeyDecorator(fakeVKModelConfigReader{}, WarpResolvers{ExternalQuotaBudgets: broken})(context.Background(), &tables.TableVirtualKey{ID: "vk-managed"})
+	require.ErrorContains(t, err, "governance store down")
+}
+
+func int64Ptr(v int64) *int64 { return &v }
+
+// warpModelsHandler serves chat over a config that exposes one model beside the
+// default, and records where each model call was addressed.
+func warpModelsHandler(calls *[]schemas.BifrostResponsesRequest) *WarpHandler {
+	additional := `[{"provider":"anthropic","model":"claude-sonnet-5","api_key_id":"key-anthropic"}]`
+	store := &recordingWarpStore{row: &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o", AdditionalModels: &additional,
+		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small", EmbeddingDimension: 1536,
+		LogVectorStoreNamespace: schemas.WarpDefaultLogVectorStoreNamespace,
+	}}
+	chat := func(_ context.Context, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		*calls = append(*calls, *request)
+		// The turn ends on this error; the test only needs to see the address.
+		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "scripted stop"}}
+	}
+	return &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithLogReader(handlerBackfillReader{}), warp.WithChatFunc(chat))}
+}
+
+// The models an operator exposes are part of the config wire shape in both
+// directions: the panel's switcher is built from the read, and the settings
+// page writes the list back whole.
+func TestWarpConfigRoundTripsAdditionalModels(t *testing.T) {
+	store := &recordingWarpStore{}
+	handler := &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithVectorStore(handlerVectorStore{}))}
+	ctx := adminCtx(`{"enabled":true,"provider":"openai","model":"gpt-4o","additional_models":[{"provider":"anthropic","model":"claude-sonnet-5","api_key_id":"key-anthropic"},{"provider":"openai","model":"gpt-4o-mini"}],"embedding_provider":"openai","embedding_model":"text-embedding-3-small","embedding_dimension":1536,"log_vector_store_namespace":"BifrostWarpLogs"}`)
+	handler.putConfig(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	ctx = &fasthttp.RequestCtx{}
+	handler.getConfig(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	var body struct {
+		Provider         string              `json:"provider"`
+		Model            string              `json:"model"`
+		AdditionalModels []schemas.WarpModel `json:"additional_models"`
+	}
+	require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &body))
+	require.Equal(t, "gpt-4o", body.Model)
+	require.Equal(t, []schemas.WarpModel{
+		{Provider: schemas.Anthropic, Model: "claude-sonnet-5", APIKeyID: "key-anthropic"},
+		{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+	}, body.AdditionalModels)
+
+	// A repeated pair is a validation failure like any other: 400, nothing stored.
+	ctx = adminCtx(`{"enabled":true,"provider":"openai","model":"gpt-4o","additional_models":[{"provider":"openai","model":"gpt-4o"}],"embedding_provider":"openai","embedding_model":"text-embedding-3-small","embedding_dimension":1536,"log_vector_store_namespace":"BifrostWarpLogs"}`)
+	handler.putConfig(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	require.Contains(t, string(ctx.Response.Body()), "already listed")
+	require.Len(t, store.upserted, 1)
+}
+
+// Adding or removing an exposed model is a config write, so it sits behind the
+// same admin gate as the rest: a caller with neither local admin nor an RBAC
+// role cannot change which models Warp offers.
+func TestWarpConfigPutRefusesModelChangesFromNonAdmins(t *testing.T) {
+	store := &recordingWarpStore{}
+	handler := &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithVectorStore(handlerVectorStore{}))}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"enabled":true,"provider":"openai","model":"gpt-4o","additional_models":[{"provider":"anthropic","model":"claude-sonnet-5"}],"embedding_provider":"openai","embedding_model":"text-embedding-3-small","embedding_dimension":1536,"log_vector_store_namespace":"BifrostWarpLogs"}`)
+	handler.putConfig(ctx)
+	require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode())
+	require.Empty(t, store.upserted)
+}
+
+// The chat body names the model to run on, and the handler addresses the turn
+// to it - or to the default when the body names none.
+func TestWarpChatRunsOnTheRequestedModel(t *testing.T) {
+	for name, test := range map[string]struct {
+		body         string
+		wantProvider schemas.ModelProvider
+		wantModel    string
+	}{
+		"default":    {`{"messages":[{"role":"user","content":"hi"}],"stream":false}`, schemas.OpenAI, "gpt-4o"},
+		"additional": {`{"messages":[{"role":"user","content":"hi"}],"provider":"anthropic","model":"claude-sonnet-5","stream":false}`, schemas.Anthropic, "claude-sonnet-5"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls []schemas.BifrostResponsesRequest
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetBodyString(test.body)
+			warpModelsHandler(&calls).chat(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			require.NotEmpty(t, calls)
+			require.Equal(t, test.wantProvider, calls[0].Provider)
+			require.Equal(t, test.wantModel, calls[0].Model)
+		})
+	}
+}
+
+// The model in a chat body is client-sent. One the operator did not expose is
+// a 400 that reaches no model - the caller is not an admin here, which is the
+// point: using Warp never widens what it may run on.
+func TestWarpChatRefusesAModelThatIsNotExposed(t *testing.T) {
+	var calls []schemas.BifrostResponsesRequest
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"messages":[{"role":"user","content":"hi"}],"provider":"openai","model":"gpt-5","stream":false}`)
+	warpModelsHandler(&calls).chat(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	require.Contains(t, string(ctx.Response.Body()), "model is not available for warp")
+	require.Empty(t, calls)
 }

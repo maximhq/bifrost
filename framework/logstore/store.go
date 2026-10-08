@@ -175,6 +175,9 @@ type LogStore interface {
 	GetMCPToolLogStats(ctx context.Context, filters MCPToolLogSearchFilters) (*MCPToolLogStats, error)
 	HasMCPToolLogs(ctx context.Context) (bool, error)
 	DeleteMCPToolLogs(ctx context.Context, ids []string) error
+	// DeleteMCPToolLogsBatch deletes up to batchSize MCP tool logs older than
+	// cutoff, oldest first, for the retention cleaner (see LogsCleaner).
+	DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 	FlushMCPToolLogs(ctx context.Context, since time.Time) error
 	GetAvailableToolNames(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error)
@@ -183,6 +186,27 @@ type LogStore interface {
 	// GetAvailableMCPApps returns distinct backend-detected app labels from MCP tool logs.
 	GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error)
+
+	// Agent Gateway log methods.
+	BatchCreateAgentLogsIfNotExists(ctx context.Context, entries []*AgentLog) ([]string, error)
+	// ReconcileAgentCorrelation fills missing task and context IDs from persisted
+	// rows related to the inserted entries. Existing values are never changed.
+	ReconcileAgentCorrelation(ctx context.Context, entries []*AgentLog) error
+	FindAgentLog(ctx context.Context, id string) (*AgentLog, error)
+	FindAgentLogsForDeletion(ctx context.Context, ids []string) ([]*AgentLog, error)
+	ListAgentLogHistory(ctx context.Context, filter AgentLogHistoryFilter, pagination PaginationOptions) (*AgentLogHistoryResult, error)
+	ListAgentLogOperations(ctx context.Context, filter AgentLogHistoryFilter, pagination PaginationOptions) (*AgentLogOperationResult, error)
+	FindAgentLogOperation(ctx context.Context, id string) (*AgentLogOperation, error)
+	GetAgentLogStats(ctx context.Context, filter AgentLogHistoryFilter) (*AgentLogStats, error)
+	GetAgentHistogram(ctx context.Context, filter AgentLogHistoryFilter, bucketSizeSeconds int64) (*AgentHistogramResult, error)
+	GetAgentTopAgents(ctx context.Context, filter AgentLogHistoryFilter, limit int) (*AgentTopAgentsResult, error)
+	GetAgentFilterData(ctx context.Context, dimensions []string, limit int, query string) (*AgentFilterData, error)
+	UpdateAgentLog(ctx context.Context, id string, entry any) error
+	// DeleteAgentLogs deletes the identified rows together with every row sharing
+	// their request IDs, so an operation's correlated stream events never
+	// outlive the aggregate request row shown in the UI.
+	DeleteAgentLogs(ctx context.Context, ids []string) error
+	FlushAgentLogs(ctx context.Context, since time.Time) error
 
 	// Async Job methods
 	CreateAsyncJob(ctx context.Context, job *AsyncJob) error
@@ -247,7 +271,7 @@ func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (Lo
 			_ = inner.Close(ctx)
 			return nil, fmt.Errorf("failed to ping object store: %w", err)
 		}
-		return newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger, config.ObjectStorageExcludeFields), nil
+		return newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger, config.ObjectStorageExcludeFields, config.ObjectStorageExcludeRequestTypes), nil
 	}
 	return inner, nil
 }

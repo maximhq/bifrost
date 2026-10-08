@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
@@ -61,6 +63,7 @@ var bedrockInvokeRequestKnownFields = map[string]bool{
 	"normalize": true, "dimensions": true,
 	"embedding_types": true, "embeddingTypes": true,
 	"output_dimension": true, "inputs": true,
+	"inputImage": true, "embeddingConfig": true,
 	// Internal
 	"stream": true, "extra_params": true,
 }
@@ -316,9 +319,10 @@ func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
 	}
 
 	// Cohere embedding: text-only (texts), image-only (images), or mixed (inputs).
+	// Titan multimodal embedding sends inputImage, with inputText optional.
 	// Use model ID to identify embed models, then check for any non-empty payload field.
 	if strings.Contains(strings.ToLower(modelID), "embed") {
-		for _, field := range []string{"texts", "images", "inputs"} {
+		for _, field := range []string{"texts", "images", "inputs", "inputImage"} {
 			if node, _ := sonic.Get(body, field); node.Exists() {
 				if raw, err := node.Raw(); err == nil && raw != "null" && raw != "[]" {
 					return schemas.EmbeddingRequest
@@ -337,6 +341,8 @@ func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
 			return schemas.ImageVariationRequest
 		case TaskTypeInpainting, TaskTypeOutpainting, TaskTypeBackgroundRemoval:
 			return schemas.ImageEditRequest
+		case TaskTypeSingleEmbedding:
+			return schemas.EmbeddingRequest
 		}
 	}
 
@@ -381,6 +387,119 @@ func (r *BedrockInvokeRequest) IsCohereCommandRRequest() bool {
 
 // ToBedrockConverseRequest converts the invoke request to BedrockConverseRequest
 // so we can reuse ToBifrostResponsesRequest() for messages-based requests.
+// InvokeModel guardrail request headers, the AWS-native way to name a guardrail on the
+// InvokeModel and InvokeModelWithResponseStream APIs (Converse takes a body field instead).
+const (
+	GuardrailIdentifierHeader = guardrailIdentifierHeader
+	GuardrailVersionHeader    = guardrailVersionHeader
+	GuardrailTraceHeader      = guardrailTraceHeader
+)
+
+// ApplyGuardrailHeaders records the X-Amzn-Bedrock-Guardrail* request headers of an
+// InvokeModel ingress call on the request, as the Converse-shaped guardrailConfig extra
+// param that ToBedrockConverseRequest lifts into the typed config. AWS requires both the
+// identifier and the version, so one without the other is ignored. Header values win over a
+// body guardrailConfig, which is a Bifrost extension AWS itself never reads.
+func (r *BedrockInvokeRequest) ApplyGuardrailHeaders(identifier, version, trace string) {
+	if identifier == "" || version == "" {
+		return
+	}
+	if r.ExtraParams == nil {
+		r.ExtraParams = make(map[string]interface{}, 1)
+	} else {
+		// The map may be shared with other in-process requests, so this one gets its own copy.
+		r.ExtraParams = maps.Clone(r.ExtraParams)
+	}
+	config, _ := extraParamObject(r.ExtraParams["guardrailConfig"])
+	if config == nil {
+		config = make(map[string]interface{}, 3)
+	} else {
+		// A decoded map is the caller's own, possibly shared across requests, so write to a copy.
+		config = maps.Clone(config)
+	}
+	config["guardrailIdentifier"] = identifier
+	config["guardrailVersion"] = version
+	if trace != "" {
+		// The InvokeModel header takes ENABLED/DISABLED/ENABLED_FULL; Converse only accepts lowercase.
+		config["trace"] = strings.ToLower(trace)
+	}
+	r.ExtraParams["guardrailConfig"] = config
+}
+
+// liftInvokeGuardrailConfig folds guardrail fields that an InvokeModel body carries as
+// unknown top-level keys into the typed Converse GuardrailConfig, which is the only form
+// the Bedrock -> Bifrost converter reads (it never forwards arbitrary extra params).
+// amazon-bedrock-guardrailConfig is AWS's own InvokeModel field (tagSuffix,
+// streamProcessingMode); a Converse-shaped guardrailConfig is how an invoke client names
+// the guardrail through Bifrost, since the X-Amzn-Bedrock-Guardrail* request headers are
+// not read on this route. Either field may arrive as a decoded map (in-process) or as raw
+// JSON (HTTP ingress).
+func liftInvokeGuardrailConfig(req *BedrockConverseRequest) {
+	if req == nil || len(req.ExtraParams) == 0 {
+		return
+	}
+	config := req.GuardrailConfig
+	if raw, ok := extraParamObject(req.ExtraParams["guardrailConfig"]); ok {
+		delete(req.ExtraParams, "guardrailConfig")
+		if config == nil {
+			config = &BedrockGuardrailConfig{}
+		}
+		if value, ok := raw["guardrailIdentifier"].(string); ok {
+			config.GuardrailIdentifier = value
+		}
+		if value, ok := raw["guardrailVersion"].(string); ok {
+			config.GuardrailVersion = value
+		}
+		if value, ok := raw["trace"].(string); ok && value != "" {
+			config.Trace = &value
+		}
+		if value, ok := raw["streamProcessingMode"].(string); ok && value != "" {
+			config.StreamProcessingMode = &value
+		}
+		if value, ok := raw["tagSuffix"].(string); ok && value != "" {
+			config.TagSuffix = value
+		}
+	}
+	if raw, ok := extraParamObject(req.ExtraParams["amazon-bedrock-guardrailConfig"]); ok {
+		delete(req.ExtraParams, "amazon-bedrock-guardrailConfig")
+		if config == nil {
+			config = &BedrockGuardrailConfig{}
+		}
+		if value, ok := raw["tagSuffix"].(string); ok && value != "" {
+			config.TagSuffix = value
+		}
+		if value, ok := raw["streamProcessingMode"].(string); ok && value != "" {
+			config.StreamProcessingMode = &value
+		}
+	}
+	req.GuardrailConfig = config
+	if len(req.ExtraParams) == 0 {
+		req.ExtraParams = nil
+	}
+}
+
+// extraParamObject returns an extra param that is a JSON object, whether it was decoded
+// already (in-process callers) or captured as raw JSON by UnmarshalJSON (HTTP ingress).
+func extraParamObject(value any) (map[string]interface{}, bool) {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		return v, v != nil
+	case json.RawMessage:
+		var out map[string]interface{}
+		if err := sonic.Unmarshal(v, &out); err != nil || out == nil {
+			return nil, false
+		}
+		return out, true
+	case []byte:
+		var out map[string]interface{}
+		if err := sonic.Unmarshal(v, &out); err != nil || out == nil {
+			return nil, false
+		}
+		return out, true
+	}
+	return nil, false
+}
+
 func (r *BedrockInvokeRequest) ToBedrockConverseRequest() *BedrockConverseRequest {
 	converseReq := &BedrockConverseRequest{
 		ModelID:     r.ModelID,
@@ -391,6 +510,8 @@ func (r *BedrockInvokeRequest) ToBedrockConverseRequest() *BedrockConverseReques
 
 	// Convert system field: interface{} → []BedrockSystemMessage
 	converseReq.System = r.parseSystemMessages()
+
+	liftInvokeGuardrailConfig(converseReq)
 
 	// Handle InferenceConfig: if Nova-style InferenceConfig is set, use it directly.
 	// Otherwise, build from top-level fields.
@@ -538,9 +659,65 @@ func (r *BedrockInvokeRequest) ToBifrostTextCompletionRequest(ctx *schemas.Bifro
 	return textReq.ToBifrostTextCompletionRequest(ctx)
 }
 
+// novaSingleEmbeddingMediaPart maps one of Nova's native media objects back onto a
+// canonical media part. The format travels as a media type, which the outbound converter
+// turns into the same format name again.
+func novaSingleEmbeddingMediaPart(kind, format string, source BedrockNovaEmbeddingSource) (*schemas.EmbeddingMediaPart, error) {
+	media := &schemas.EmbeddingMediaPart{}
+	if mediaType, ok := novaEmbeddingMediaTypes[format]; ok {
+		media.MIMEType = &mediaType
+	}
+	switch {
+	case source.Bytes != nil:
+		bytesCopy := *source.Bytes
+		media.Data = &bytesCopy
+	case source.S3Location != nil:
+		uri := source.S3Location.URI
+		media.URL = &uri
+	default:
+		return nil, providerUtils.InvalidRequestErrorf("singleEmbeddingParams.%s.source carries neither bytes nor s3Location", kind)
+	}
+	return media, nil
+}
+
+// novaSingleEmbeddingParamsToContent maps Nova's one-modality params object onto the
+// canonical content parts.
+func novaSingleEmbeddingParamsToContent(params *BedrockNovaSingleEmbeddingParams) (schemas.EmbeddingContent, error) {
+	switch {
+	case params.Text != nil:
+		// A text source is S3-only on Nova and a canonical text part holds a string, so
+		// there is nowhere to put it; the value form is the one that round-trips.
+		if params.Text.Value == nil {
+			return nil, providerUtils.InvalidRequestErrorf("singleEmbeddingParams.text requires value; an S3 text source is not supported here")
+		}
+		value := *params.Text.Value
+		return schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &value}}, nil
+	case params.Image != nil:
+		media, err := novaSingleEmbeddingMediaPart("image", params.Image.Format, params.Image.Source)
+		if err != nil {
+			return nil, err
+		}
+		return schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeImage, Image: media}}, nil
+	case params.Audio != nil:
+		media, err := novaSingleEmbeddingMediaPart("audio", params.Audio.Format, params.Audio.Source)
+		if err != nil {
+			return nil, err
+		}
+		return schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeAudio, Audio: media}}, nil
+	case params.Video != nil:
+		media, err := novaSingleEmbeddingMediaPart("video", params.Video.Format, params.Video.Source)
+		if err != nil {
+			return nil, err
+		}
+		return schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeVideo, Video: media}}, nil
+	default:
+		return nil, providerUtils.InvalidRequestErrorf("singleEmbeddingParams carries no text, image, audio or video")
+	}
+}
+
 // ToBifrostEmbeddingRequest converts the invoke request to a BifrostEmbeddingRequest.
-// Handles both Titan (inputText) and Cohere (texts) embedding formats.
-func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostContext) *schemas.BifrostEmbeddingRequest {
+// Handles the Titan (inputText), Cohere (texts) and Nova (singleEmbeddingParams) formats.
+func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostContext) (*schemas.BifrostEmbeddingRequest, error) {
 	modelID := r.ModelID
 	if unescaped, err := url.PathUnescape(r.ModelID); err == nil {
 		modelID = unescaped
@@ -551,12 +728,67 @@ func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostCon
 		Model:    model,
 	}
 
-	if r.InputText != "" {
-		req.Input = &schemas.EmbeddingInput{Text: &r.InputText}
+	var contents []schemas.EmbeddingInputItem
+	if r.SingleEmbeddingParams != nil {
+		content, err := novaSingleEmbeddingParamsToContent(r.SingleEmbeddingParams)
+		if err != nil {
+			return nil, err
+		}
+		contents = append(contents, schemas.EmbeddingInputItem{Content: content})
+	} else if r.InputText != "" || r.InputImage != "" {
+		// Titan's single-item shape: inputText and inputImage describe one input, so they
+		// aggregate into one content list rather than two separate items.
+		var content schemas.EmbeddingContent
+		if r.InputText != "" {
+			inputText := r.InputText
+			content = append(content, schemas.EmbeddingContentPart{Type: schemas.EmbeddingContentPartTypeText, Text: &inputText})
+		}
+		if r.InputImage != "" {
+			inputImage := r.InputImage
+			content = append(content, schemas.EmbeddingContentPart{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &inputImage}})
+		}
+		contents = append(contents, schemas.EmbeddingInputItem{Content: content})
 	} else if len(r.Texts) > 0 {
-		req.Input = &schemas.EmbeddingInput{Texts: r.Texts}
+		for _, t := range r.Texts {
+			text := t
+			contents = append(contents, schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{
+				{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
+			}})
+		}
 	}
-	// image-only (r.Images) or mixed (r.Inputs): req.Input stays nil; data flows via ExtraParams
+	for _, img := range r.Images {
+		imgCopy := img
+		contents = append(contents, schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{
+			{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &imgCopy}},
+		}})
+	}
+	for i, input := range r.Inputs {
+		content := make(schemas.EmbeddingContent, 0, len(input.Content))
+		for j, block := range input.Content {
+			switch block.Type {
+			case "text":
+				if block.Text == nil {
+					return nil, providerUtils.InvalidRequestErrorf("inputs[%d].content[%d]: text block missing text", i, j)
+				}
+				t := *block.Text
+				content = append(content, schemas.EmbeddingContentPart{Type: schemas.EmbeddingContentPartTypeText, Text: &t})
+			case "image_url":
+				if block.ImageURL == nil {
+					return nil, providerUtils.InvalidRequestErrorf("inputs[%d].content[%d]: image_url block missing image_url", i, j)
+				}
+				u := block.ImageURL.URL
+				content = append(content, schemas.EmbeddingContentPart{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: &u}})
+			default:
+				return nil, providerUtils.InvalidRequestErrorf("inputs[%d].content[%d]: unsupported embedding block type %q", i, j, block.Type)
+			}
+		}
+		if len(content) > 0 {
+			contents = append(contents, schemas.EmbeddingInputItem{Content: content})
+		}
+	}
+	if len(contents) > 0 {
+		req.Input = contents
+	}
 
 	extraParams := make(map[string]interface{})
 	// Forward known embedding-only params into ExtraParams so the provider can pick them up
@@ -584,15 +816,38 @@ func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostCon
 	if r.MaxTokens != nil {
 		extraParams["max_tokens"] = *r.MaxTokens
 	}
+	// Nova's required knobs live inside singleEmbeddingParams, whose other fields the
+	// content conversion above already consumed.
+	if r.SingleEmbeddingParams != nil {
+		if r.SingleEmbeddingParams.EmbeddingPurpose != "" {
+			extraParams[BedrockNovaExtraParamEmbeddingPurpose] = string(r.SingleEmbeddingParams.EmbeddingPurpose)
+		}
+		if r.SingleEmbeddingParams.Text != nil && r.SingleEmbeddingParams.Text.TruncationMode != "" {
+			extraParams[BedrockNovaExtraParamTruncationMode] = string(r.SingleEmbeddingParams.Text.TruncationMode)
+		}
+		if r.SingleEmbeddingParams.Video != nil && r.SingleEmbeddingParams.Video.EmbeddingMode != "" {
+			extraParams[BedrockNovaExtraParamEmbeddingMode] = string(r.SingleEmbeddingParams.Video.EmbeddingMode)
+		}
+		if r.SingleEmbeddingParams.Image != nil && r.SingleEmbeddingParams.Image.DetailLevel != nil {
+			extraParams[BedrockNovaExtraParamDetailLevel] = string(*r.SingleEmbeddingParams.Image.DetailLevel)
+		}
+	}
 	// Merge any remaining extra params from the request
 	for k, v := range r.ExtraParams {
 		extraParams[k] = v
 	}
 
-	// output_dimension maps to Dimensions; prefer OutputDimension over Dimensions
+	// output_dimension maps to Dimensions; prefer OutputDimension over Dimensions.
+	// Titan's multimodal models carry the same value under embeddingConfig instead.
 	dimensions := r.Dimensions
 	if r.OutputDimension != nil {
 		dimensions = r.OutputDimension
+	}
+	if r.EmbeddingConfig != nil && r.EmbeddingConfig.OutputEmbeddingLength != nil {
+		dimensions = r.EmbeddingConfig.OutputEmbeddingLength
+	}
+	if r.SingleEmbeddingParams != nil && r.SingleEmbeddingParams.EmbeddingDimension != nil {
+		dimensions = r.SingleEmbeddingParams.EmbeddingDimension
 	}
 	params := &schemas.EmbeddingParameters{
 		Dimensions: dimensions,
@@ -602,7 +857,7 @@ func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostCon
 	}
 	req.Params = params
 
-	return req
+	return req, nil
 }
 
 // ToBifrostImageGenerationRequest converts the invoke request to a BifrostImageGenerationRequest.
@@ -1037,12 +1292,24 @@ func cacheControlTTLFromJSON(cacheControl gjson.Result) *string {
 }
 
 // convertAnthropicTools converts Anthropic-format tools to Bedrock ToolConfig.
+// BedrockContextKeyAnthropicInvokeIngress marks a request that arrived on the
+// InvokeModel-shaped ingress (/bedrock/model/{id}/invoke and its stream sibling).
+// The transport sets it; responsesUsesAnthropicInvokePath reads it to send
+// Anthropic-family requests with thinking on to InvokeModel upstream, because
+// Converse TokenUsage carries no thinking-token breakdown (#7649). Requests
+// from every other ingress keep their Converse routing.
+const BedrockContextKeyAnthropicInvokeIngress schemas.BifrostContextKey = "bedrock-anthropic-invoke-ingress"
+
 // Anthropic tools are: [{"name": "...", "description": "...", "input_schema": {...}}]
 func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 	toolsSlice, ok := r.Tools.([]interface{})
 	if !ok || len(toolsSlice) == 0 {
 		return nil
 	}
+
+	// The legacy opt-in is the fine-grained-tool-streaming beta alone, which
+	// applies to every custom tool; carry it as the per-tool flag.
+	fineGrained := r.hasAnthropicBetaPrefix(anthropic.AnthropicEagerInputStreamingBetaHeaderPrefix)
 
 	var bedrockTools []BedrockTool
 	for _, toolIface := range toolsSlice {
@@ -1097,6 +1364,11 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 		if deferLoading, ok := toolMap["defer_loading"].(bool); ok {
 			spec.DeferLoading = new(deferLoading)
 		}
+		if eager, ok := toolMap["eager_input_streaming"].(bool); ok {
+			spec.EagerInputStreaming = new(eager)
+		} else if fineGrained {
+			spec.EagerInputStreaming = new(true)
+		}
 
 		bedrockTools = append(bedrockTools, BedrockTool{ToolSpec: spec})
 
@@ -1129,6 +1401,30 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 	}
 
 	return toolConfig
+}
+
+// hasAnthropicBetaPrefix reports whether the body's anthropic_beta (a string
+// or an array of strings) lists a beta starting with prefix.
+func (r *BedrockInvokeRequest) hasAnthropicBetaPrefix(prefix string) bool {
+	var betas []string
+	switch v := r.AnthropicBeta.(type) {
+	case string:
+		betas = strings.Split(v, ",")
+	case []string:
+		betas = v
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				betas = append(betas, s)
+			}
+		}
+	}
+	for _, beta := range betas {
+		if strings.HasPrefix(strings.TrimSpace(beta), prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // convertAnthropicToolChoice converts Anthropic-format tool_choice to Bedrock ToolChoice.
@@ -1189,6 +1485,43 @@ func ToBedrockInvokeMessagesResponse(ctx *schemas.BifrostContext, resp *schemas.
 
 	// Default: Anthropic Messages API format (most common InvokeModel + messages use case)
 	return toBedrockInvokeAnthropicResponse(resp, model), nil
+}
+
+// bedrockInvokeGuardrailFields renders the guardrail outcome the way InvokeModel reports
+// it: amazon-bedrock-guardrailAction ("INTERVENED" or "NONE") whenever a guardrail
+// assessed the request, and amazon-bedrock-trace when the caller enabled the trace. The
+// Converse upstream carries the same assessment in trace.guardrail, which the provider
+// stores under ProviderExtraFields["trace"]; without it only an intervention is
+// reportable, from the stop reason.
+func bedrockInvokeGuardrailFields(resp *schemas.BifrostResponsesResponse) (string, json.RawMessage) {
+	if resp == nil {
+		return "", nil
+	}
+	// A native InvokeModel upstream already reported its outcome in AWS's own shape.
+	nativeAction, _ := resp.ProviderExtraFields[anthropic.BedrockInvokeGuardrailActionKey].(string)
+	nativeTrace, _ := resp.ProviderExtraFields[anthropic.BedrockInvokeGuardrailTraceKey].(json.RawMessage)
+	if nativeAction != "" || len(nativeTrace) > 0 {
+		return nativeAction, nativeTrace
+	}
+
+	var trace *BedrockConverseTrace
+	if resp.ProviderExtraFields != nil {
+		trace = extractBedrockTrace(resp.ProviderExtraFields["trace"])
+	}
+	var rawTrace json.RawMessage
+	if trace != nil {
+		if raw, err := providerUtils.MarshalSorted(trace); err == nil {
+			rawTrace = raw
+		}
+	}
+	intervened := resp.StopReason != nil && *resp.StopReason == "guardrail_intervened"
+	switch {
+	case intervened:
+		return "INTERVENED", rawTrace
+	case trace != nil && trace.Guardrail != nil:
+		return "NONE", rawTrace
+	}
+	return "", rawTrace
 }
 
 func ToBedrockInvokeImagesResponse(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error) {
@@ -1255,10 +1588,43 @@ func ToBedrockEmbeddingInvokeResponse(ctx *schemas.BifrostContext, resp *schemas
 		}
 	}
 
-	if schemas.IsCohereModelFamily(ctx, model) {
+	// Nova labels every vector with the modality it came from, and its separate video
+	// mode returns two for one input, so neither of the other envelopes fits.
+	if schemas.IsNovaModelFamily(ctx, model) {
+		return toBedrockNovaEmbeddingInvokeResponse(resp), nil
+	}
+
+	// The Titan envelope holds a single input's vectors. A response covering several
+	// inputs — reachable when the invoke route fronts a non-Titan provider — only fits
+	// the multi-embedding envelope; forcing it into Titan's drops all but one vector.
+	if schemas.IsCohereModelFamily(ctx, model) || bedrockDistinctEmbeddingInputs(resp.Data) > 1 {
 		return toBedrockCohereEmbeddingInvokeResponse(resp), nil
 	}
 	return toBedrockTitanEmbeddingInvokeResponse(resp, tokenCount), nil
+}
+
+// toBedrockNovaEmbeddingInvokeResponse rebuilds the Nova invoke envelope. Nova reports
+// its token count in a response header rather than the body, so nothing carries it here.
+func toBedrockNovaEmbeddingInvokeResponse(resp *schemas.BifrostEmbeddingResponse) *BedrockNovaEmbeddingResponse {
+	out := &BedrockNovaEmbeddingResponse{Embeddings: make([]BedrockNovaEmbedding, 0, len(resp.Data))}
+	for _, d := range resp.Data {
+		out.Embeddings = append(out.Embeddings, BedrockNovaEmbedding{
+			Embedding:     d.Embedding.EmbeddingArray,
+			EmbeddingType: novaEmbeddingTypes[d.Modality],
+		})
+	}
+	return out
+}
+
+// bedrockDistinctEmbeddingInputs counts the inputs a response covers. Titan's typed
+// responses carry several entries for one input (float plus binary), so the index — not
+// the entry count — decides whether the Titan envelope fits.
+func bedrockDistinctEmbeddingInputs(data []schemas.EmbeddingData) int {
+	seen := make(map[int]struct{}, len(data))
+	for _, d := range data {
+		seen[d.Index] = struct{}{}
+	}
+	return len(seen)
 }
 
 // toBedrockTitanEmbeddingInvokeResponse rebuilds the Titan invoke envelope from the
@@ -1369,6 +1735,7 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 	} else {
 		result.Model = model
 	}
+	result.GuardrailAction, result.Trace = bedrockInvokeGuardrailFields(resp)
 
 	// Convert output items to Anthropic content blocks
 	for _, item := range resp.Output {
@@ -1534,9 +1901,33 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 			CacheReadInputTokens:     usage.CacheReadInputTokens,
 			CacheCreationInputTokens: usage.CacheWriteInputTokens,
 		}
+		// Thinking tokens are already inside OutputTokens on both sides, so only the
+		// breakdown is added; OutputTokens is left untouched (#7649).
+		if thinking, ok := invokeThinkingTokens(resp.Usage); ok {
+			result.Usage.OutputTokensDetails = &BedrockInvokeMessagesOutputTokensDetails{ThinkingTokens: thinking}
+		}
 	}
 
 	return result
+}
+
+// invokeThinkingTokens returns the extended-thinking token count Bifrost holds for a
+// response and whether a thinking breakdown is present at all. The Bedrock InvokeModel
+// upstream path fills OutputTokensDetails through the shared anthropic handlers,
+// including Anthropic's explicit thinking_tokens: 0 when adaptive thinking chose not to
+// think - that zero must reach the client (#7649). Converse never reports the figure,
+// so Converse-backed responses carry no details and the Anthropic-shaped egress omits
+// output_tokens_details exactly as Anthropic does for non-thinking responses. Details
+// that only carry web-search counts are not a thinking breakdown either.
+func invokeThinkingTokens(usage *schemas.ResponsesResponseUsage) (int, bool) {
+	if usage == nil || usage.OutputTokensDetails == nil {
+		return 0, false
+	}
+	details := usage.OutputTokensDetails
+	if details.ReasoningTokens == 0 && details.NumSearchQueries != nil {
+		return 0, false
+	}
+	return details.ReasoningTokens, true
 }
 
 // toBedrockInvokeAI21Response converts BifrostResponsesResponse to AI21 Jamba format.
@@ -1638,6 +2029,9 @@ func ToBedrockInvokeMessagesStreamResponse(ctx *schemas.BifrostContext, resp *sc
 
 	bedrockEvent := &BedrockStreamEvent{
 		InvokeModelRawChunks: rawChunks,
+	}
+	if resp.Type == schemas.ResponsesStreamResponseTypeCompleted || resp.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+		bedrockEvent.InvokeModelGuardrailAction, bedrockEvent.InvokeModelTrace = bedrockInvokeGuardrailFields(resp.Response)
 	}
 
 	return "", bedrockEvent, nil
@@ -1785,6 +2179,9 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 				}
 				if usage.CacheWriteInputTokens > 0 {
 					usageMap["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
+				}
+				if thinking, ok := invokeThinkingTokens(resp.Response.Usage); ok {
+					usageMap["output_tokens_details"] = map[string]interface{}{"thinking_tokens": thinking}
 				}
 				msgStart["message"].(map[string]interface{})["usage"] = usageMap
 			}
@@ -1957,11 +2354,21 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 		// Skip — the content_block_stop is emitted on OutputItemDone
 		return nil, nil
 
-	case schemas.ResponsesStreamResponseTypeCompleted:
+	// response.incomplete is terminal too: a truncated or filtered turn must still close
+	// with message_delta + message_stop, or the client never sees the stop reason.
+	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
 		// Emit message_delta + message_stop as two separate events
 		stopReason := "end_turn"
 		if resp.Response != nil && resp.Response.IncompleteDetails != nil {
-			stopReason = resp.Response.IncompleteDetails.Reason
+			// Translate the Responses vocabulary into Anthropic stop reasons.
+			switch resp.Response.IncompleteDetails.Reason {
+			case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
+				stopReason = "max_tokens"
+			case schemas.ResponsesResponseIncompleteReasonContentFilter:
+				stopReason = "refusal"
+			default:
+				stopReason = resp.Response.IncompleteDetails.Reason
+			}
 		}
 
 		// Build message_delta event
@@ -1988,6 +2395,10 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 			}
 			if usage.CacheWriteInputTokens > 0 {
 				usageMap["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
+			}
+			// Native Anthropic reports the thinking breakdown on message_delta (#7649).
+			if thinking, ok := invokeThinkingTokens(resp.Response.Usage); ok {
+				usageMap["output_tokens_details"] = map[string]interface{}{"thinking_tokens": thinking}
 			}
 			messageDelta["usage"] = usageMap
 		}

@@ -161,20 +161,14 @@ func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// Forward provider response headers from context so streaming error responses include them
 	if bifrostCtx != nil {
 		if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-			for key, value := range headers {
-				ctx.Response.Header.Set(key, value)
-			}
+			lib.ForwardProviderResponseHeaders(ctx, headers)
 		}
 	}
 	// Routed identity after provider headers so a chained upstream's x-bifrost-* can't overwrite it.
 	lib.ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, bifrostErr.ExtraFields)
 
-	// Set the HTTP status code from the provider error
-	if bifrostErr.StatusCode != nil {
-		ctx.SetStatusCode(lib.NormalizeJSONErrorStatus(*bifrostErr.StatusCode))
-	} else {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-	}
+	// Same ladder as the unary path, so streaming can't change the status.
+	ctx.SetStatusCode(bifrostErr.EffectiveHTTPStatus())
 	ctx.SetContentType("application/json")
 
 	// Always use the route-level ErrorConverter (not StreamConfig.ErrorConverter) because
@@ -206,27 +200,13 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 	// Forward provider response headers from context so error responses include them
 	if bifrostCtx != nil {
 		if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-			for key, value := range headers {
-				ctx.Response.Header.Set(key, value)
-			}
+			lib.ForwardProviderResponseHeaders(ctx, headers)
 		}
 	}
 	// Routed identity after provider headers so a chained upstream's x-bifrost-* can't overwrite it.
 	lib.ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, bifrostErr.ExtraFields)
 
-	if bifrostErr.StatusCode != nil {
-		ctx.SetStatusCode(lib.NormalizeJSONErrorStatus(*bifrostErr.StatusCode))
-	} else if !bifrostErr.IsBifrostError {
-		ctx.SetStatusCode(fasthttp.StatusBadRequest)
-	} else {
-		if bifrostErr.Error != nil &&
-			(bifrostErr.Error.Message == bifrost.ProviderAutoResolveErrorMessage ||
-				bifrostErr.Error.Message == bifrost.ModelAutoResolveErrorMessage) {
-			ctx.SetStatusCode(fasthttp.StatusBadRequest)
-		} else {
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		}
-	}
+	ctx.SetStatusCode(bifrostErr.EffectiveHTTPStatus())
 	ctx.SetContentType("application/json")
 
 	// Marshal the error for response and log the error for diagnostics
@@ -280,10 +260,10 @@ func (g *GenericRouter) tryStreamLargeResponse(ctx *fasthttp.RequestCtx, bifrost
 	// Forward provider response headers before streaming — providers store them in
 	// context via BifrostContextKeyProviderResponseHeaders, but some early-return
 	// branches in the router skip the common footer that normally forwards them.
+	// The x-bifrost-* names written above are skipped, so a chained upstream's own
+	// cannot replace them.
 	if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-		for key, value := range headers {
-			ctx.Response.Header.Set(key, value)
-		}
+		lib.ForwardProviderResponseHeaders(ctx, headers)
 	}
 	if g.streamLargeResponse(ctx, bifrostCtx) {
 		ctx.SetUserValue(lib.FastHTTPUserValueLargeResponseMode, true)
@@ -554,6 +534,24 @@ func getProviderFromHeader(ctx *fasthttp.RequestCtx, defaultProvider schemas.Mod
 		return defaultProvider
 	}
 	return schemas.ModelProvider(providerHeader)
+}
+
+// getPassthroughProvider resolves the provider for a passthrough request from the
+// x-model-provider header, falling back to defaultProvider when the header is absent. On the
+// catch-all passthrough routes the header picks which key pool and upstream a caller-shaped
+// path is dispatched to, so it must match the route's resolved provider before anything is looked up.
+func getPassthroughProvider(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (schemas.ModelProvider, error) {
+	providerHeader := string(ctx.Request.Header.Peek("x-model-provider"))
+	if providerHeader == "" {
+		return defaultProvider, nil
+	}
+	if !schemas.IsKnownProvider(providerHeader) {
+		return "", fmt.Errorf("unknown provider %q in x-model-provider header", providerHeader)
+	}
+	if schemas.ModelProvider(providerHeader) != defaultProvider {
+		return "", fmt.Errorf("provider does not match the passthrough route: expected %s", defaultProvider)
+	}
+	return schemas.ModelProvider(providerHeader), nil
 }
 
 func RegisterKVDecoders(store *kvstore.Store) {

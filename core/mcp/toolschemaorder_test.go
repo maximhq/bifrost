@@ -134,7 +134,7 @@ func TestComputeToolsHash_StableAcrossRediscovery(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		mcpTool := decodeSchemaOrderTool(t, "search", schemaOrderInputSchema)
 		tools := map[string]schemas.ChatTool{"search": convertMCPToolToBifrostSchema(&mcpTool, defaultLogger)}
-		got := computeToolsHash(tools, mapping)
+		got := computeToolsHash(tools, mapping, "")
 		if i == 0 {
 			want = got
 			continue
@@ -170,7 +170,7 @@ func TestPerformCheck_RepeatedSyncs_ToolSchemaBytesStable(t *testing.T) {
 	manager.clientMap[config.ID] = state
 
 	callCount := 0
-	manager.SetToolsChangeCallback(func(string, string, map[string]schemas.ChatTool, map[string]string) {
+	manager.SetToolsChangeCallback(func(string, string, map[string]schemas.ChatTool, map[string]string, string) {
 		callCount++
 	})
 

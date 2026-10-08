@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -76,6 +77,9 @@ type RDBLogStore struct {
 	// Self-heal state for the matview read path (see matviewheal.go).
 	matViewHealInFlight    atomic.Bool
 	matViewHealLastAttempt atomic.Int64 // unix nanos of the last repair attempt
+	// matViewRefreshTimeout bounds a self-heal refresh the same way a periodic
+	// tick is bounded. Zero means unbounded (maintenance not configured).
+	matViewRefreshTimeout time.Duration
 }
 
 // generateBucketTimestamps generates all bucket timestamps for a time range.
@@ -185,10 +189,24 @@ func teamOrBUFanoutFrom(idCol string) (string, bool) {
 // this team consume", not "how does org spend divide". DimensionRankingResult
 // reports TotalActualRequests alongside TotalAttributedRequests so the UI can
 // show both. User and virtual key have no array column and stay single-owner.
+//
+// Rows the caller may read but whose id on the dimension it may not be shown
+// (see applyDimensionCeiling) collapse into a second synthetic "Other" entry,
+// so the rollup reconciles to the caller's totals without naming the entity.
 const (
 	unassignedDimensionID   = "unassigned"
 	unassignedDimensionName = "Unassigned"
+	otherDimensionID        = "other"
+	otherDimensionName      = "Other"
 )
+
+// UnassignedDimensionID is the id of the synthetic Unassigned ranking bucket,
+// so callers that decorate rankings can tell it apart from a real entity.
+const UnassignedDimensionID = unassignedDimensionID
+
+// OtherDimensionID is the id of the synthetic Other ranking bucket that holds
+// the caller's rows whose entity it may not be shown.
+const OtherDimensionID = otherDimensionID
 
 // isBucketedDimension reports whether a scalar id column is a rollup dimension
 // that uses the Unassigned bucket: rows with no owner collapse into a synthetic
@@ -275,6 +293,25 @@ func (src dimensionReadSource) base(db *gorm.DB) *gorm.DB {
 	return tx
 }
 
+func (s *RDBLogStore) applyAgentContextFilter(baseQuery *gorm.DB, agentNames []string, startTime, endTime *time.Time) *gorm.DB {
+	if len(agentNames) == 0 {
+		return baseQuery
+	}
+
+	contexts := s.ScopedDB(baseQuery.Statement.Context).
+		Model(&AgentLog{}).
+		Distinct("context_id").
+		Where("agent_name IN ?", agentNames).
+		Where("context_id IS NOT NULL AND context_id <> ''")
+	if startTime != nil {
+		contexts = contexts.Where("timestamp >= ?", *startTime)
+	}
+	if endTime != nil {
+		contexts = contexts.Where("timestamp <= ?", *endTime)
+	}
+	return baseQuery.Where("session_id IN (?)", contexts)
+}
+
 // applyFilters applies search filters to a GORM query. Callers are
 // responsible for starting from ScopedDB(ctx) when row visibility
 // should be respected; this helper only adds the per-call filter
@@ -305,8 +342,14 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.ComplexityMechanisms) > 0 {
 		baseQuery = baseQuery.Where("complexity_mechanism IN ?", filters.ComplexityMechanisms)
 	}
+	if len(filters.AgentNames) > 0 {
+		baseQuery = s.applyAgentContextFilter(baseQuery, filters.AgentNames, filters.StartTime, filters.EndTime)
+	}
 	if filters.SessionID != "" {
 		baseQuery = baseQuery.Where("session_id = ?", filters.SessionID)
+	}
+	if filters.AgentCorrelationID != "" {
+		baseQuery = baseQuery.Where("agent_correlation_id = ?", filters.AgentCorrelationID)
 	}
 	if len(filters.Objects) > 0 {
 		baseQuery = baseQuery.Where("object_type IN ?", filters.Objects)
@@ -666,8 +709,27 @@ func (s *RDBLogStore) CreateIfNotExists(ctx context.Context, entry *Log) error {
 	}).Create(entry).Error
 }
 
+// maxInsertBindParams caps the bind parameters of one multi-row INSERT. SQLite
+// allows 32,766 per statement and Postgres 65,535 (the Bind message counts them in
+// an Int16), so the lower limit, minus headroom, keeps both dialects safe.
+const maxInsertBindParams = 30000
+
+// insertBatchSize returns how many rows of model fit in one multi-row INSERT under
+// maxInsertBindParams, and the column count it used. A `logs` row binds about 117
+// columns, so the writer's 1000-row batch would otherwise bind about 117k parameters
+// and be rejected by both Postgres and SQLite.
+func insertBatchSize(db *gorm.DB, model any) (int, int) {
+	stmt := &gorm.Statement{DB: db}
+	if err := stmt.Parse(model); err != nil || len(stmt.Schema.DBNames) == 0 {
+		return 100, 0
+	}
+	columns := len(stmt.Schema.DBNames)
+	return max(1, maxInsertBindParams/columns), columns
+}
+
 // BatchCreateIfNotExists inserts multiple log entries in a single transaction.
-// Uses ON CONFLICT DO NOTHING for idempotency.
+// Uses ON CONFLICT DO NOTHING for idempotency. Entries are written in chunks
+// sized by insertBatchSize so no single INSERT exceeds the parameter limit.
 func (s *RDBLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*Log) error {
 	if len(entries) == 0 {
 		return nil
@@ -676,10 +738,11 @@ func (s *RDBLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*Log
 	if s.db.Dialector.Name() == "postgres" {
 		db = db.Omit("inc_number")
 	}
+	batchSize, _ := insertBatchSize(s.db, &Log{})
 	return db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
 		DoNothing: true,
-	}).Create(&entries).Error
+	}).CreateInBatches(&entries, batchSize).Error
 }
 
 // Ping checks if the database is reachable.
@@ -927,8 +990,16 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 }
 
 // SearchLogsForBilling searches with the billing projection.
+//
+// With pagination.OmitBillingPayloads the modality payload columns come back
+// NULL, so a large page holds only scalar pricing inputs; the caller re-reads
+// each row for which BillingPayloadRequired is true before pricing it.
 func (s *RDBLogStore) SearchLogsForBilling(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error) {
-	result, err := s.searchLogs(ctx, filters, pagination, s.billingSelectColumns())
+	columns := s.billingSelectColumns()
+	if pagination.OmitBillingPayloads {
+		columns = billingScalarSelectColumns()
+	}
+	result, err := s.searchLogs(ctx, filters, pagination, columns)
 	if err != nil || result == nil {
 		return result, err
 	}
@@ -1004,31 +1075,42 @@ func stripNonBillingPayloadBytes(l *Log) {
 	l.ImageGenerationOutput = ""
 }
 
-// searchLogs runs scoped log searches with the requested projection.
-func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions, selectColumns string) (*SearchResult, error) {
-	// Build order clause up front (needed by the data goroutine).
+// logsOrderClause is the ORDER BY searchLogs applies for a sort field and
+// direction. The cost and latency DESC clauses are matched by the
+// idx_logs_*_desc_nulls_last performance indexes on Postgres; change them
+// together or the sort falls back to a full scan.
+func logsOrderClause(sortBy, order string) string {
 	direction := "DESC"
-	if pagination.Order == "asc" {
+	if order == "asc" {
 		direction = "ASC"
 	}
 
-	var orderClause string
-	switch pagination.SortBy {
+	switch sortBy {
 	case "timestamp":
 		// id breaks ties. Timestamps collide readily under load, and callers that
 		// page by (timestamp, offset) - Warp's backfill cursor among them - skip or
 		// repeat rows whenever equal-timestamp rows come back in a different order
-		// between calls. The session query below already orders this way.
-		orderClause = "timestamp " + direction + ", id " + direction
+		// between calls. The session query in searchLogs already orders this way.
+		return "timestamp " + direction + ", id " + direction
+	// cost and latency are NULL on requests that never produced them - a
+	// failure has no cost - and a missing value is not the largest or the
+	// smallest one. Postgres sorts NULLs first under DESC and SQLite under
+	// ASC, so without NULLS LAST "most expensive" led with failed requests.
 	case "latency":
-		orderClause = "latency " + direction + ", id " + direction
+		return "latency " + direction + " NULLS LAST, id " + direction
 	case "tokens":
-		orderClause = "total_tokens " + direction + ", id " + direction
+		return "total_tokens " + direction + ", id " + direction
 	case "cost":
-		orderClause = "cost " + direction + ", id " + direction
+		return "cost " + direction + " NULLS LAST, id " + direction
 	default:
-		orderClause = "timestamp " + direction + ", id " + direction
+		return "timestamp " + direction + ", id " + direction
 	}
+}
+
+// searchLogs runs scoped log searches with the requested projection.
+func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions, selectColumns string) (*SearchResult, error) {
+	// Build order clause up front (needed by the data goroutine).
+	orderClause := logsOrderClause(pagination.SortBy, pagination.Order)
 
 	limit := pagination.Limit
 	if limit <= 0 || limit > defaultMaxSearchLimit {
@@ -1044,27 +1126,30 @@ func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pag
 
 	g, gCtx := errgroup.WithContext(ctx)
 
-	g.Go(func() error {
-		// Pagination total count uses the same time-window hybrid as
-		// /api/logs/stats: short windows go raw so the count stays consistent
-		// with the (always-raw) row list rendered alongside it. Long windows
-		// keep the matview win because raw COUNT over multi-day ranges is the
-		// expensive path.
-		if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
-			c, err := s.getCountFromMatView(gCtx, filters)
-			if !s.fallBackToRaw(err) {
-				totalCount = c
-				return err
+	if !pagination.SkipCount {
+		g.Go(func() error {
+			// Pagination total count uses the same time-window hybrid as
+			// /api/logs/stats: short windows go raw so the count stays consistent
+			// with the (always-raw) row list rendered alongside it. Long windows
+			// keep the matview win because raw COUNT over multi-day ranges is the
+			// expensive path.
+			if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
+				c, err := s.getCountFromMatView(gCtx, filters)
+				if !s.fallBackToRaw(err) {
+					totalCount = c
+					return err
+				}
 			}
-		}
-		countQuery := s.scopedLogsDB(gCtx).Model(&Log{})
-		countQuery = s.applyFilters(countQuery, filters)
-		return countQuery.Count(&totalCount).Error
-	})
+			countQuery := s.scopedLogsDB(gCtx).Model(&Log{})
+			countQuery = s.applyFilters(countQuery, filters)
+			return countQuery.Count(&totalCount).Error
+		})
+	}
 
 	g.Go(func() error {
 		dataQuery := s.scopedLogsDB(gCtx).Model(&Log{})
 		dataQuery = s.applyFilters(dataQuery, filters)
+		dataQuery = applyKeysetCursor(dataQuery, pagination)
 		dataQuery = dataQuery.Order(orderClause).Select(selectColumns).Limit(limit)
 		if pagination.Offset > 0 {
 			dataQuery = dataQuery.Offset(pagination.Offset)
@@ -1109,6 +1194,24 @@ func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pag
 		},
 		HasLogs: hasLogs,
 	}, nil
+}
+
+// applyKeysetCursor restricts query to rows strictly after the pagination
+// cursor in (timestamp, id) order. It applies only when SortBy is timestamp
+// (or the default) and both cursor fields are set. The direction follows
+// pagination.Order, the same rule logsOrderClause applies to the ORDER BY.
+func applyKeysetCursor(query *gorm.DB, pagination PaginationOptions) *gorm.DB {
+	if pagination.AfterTimestamp == nil || pagination.AfterID == "" {
+		return query
+	}
+	if pagination.SortBy != "" && pagination.SortBy != "timestamp" {
+		return query
+	}
+	ts := *pagination.AfterTimestamp
+	if pagination.Order != "asc" {
+		return query.Where("(timestamp < ? OR (timestamp = ? AND id < ?))", ts, ts, pagination.AfterID)
+	}
+	return query.Where("(timestamp > ? OR (timestamp = ? AND id > ?))", ts, ts, pagination.AfterID)
 }
 
 // attachChildAggregates populates ChildCount/ChildrenCost/ChildrenTokens on the
@@ -1412,7 +1515,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"selected_key_id", "selected_key_name",
 		"virtual_key_id", "virtual_key_name",
 		"routing_engines_used", "tool_call_names", "routing_rule_id", "routing_rule_name",
-		"complexity_tier", "complexity_mechanism", "session_id",
+		"complexity_tier", "complexity_mechanism", "session_id", "agent_correlation_id",
 		"user_id", "user_name", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
 		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",
@@ -1570,6 +1673,30 @@ func (s *RDBLogStore) billingSelectColumns() string {
 		))
 	}
 	return strings.Join(cols, ", ")
+}
+
+// billingScalarSelectColumns returns the billing projection with every modality
+// payload column replaced by NULL, for pages that must not materialize payloads.
+func billingScalarSelectColumns() string {
+	cols := make([]string, 0, len(billingScalarColumns)+len(billingPayloadColumns))
+	cols = append(cols, billingScalarColumns...)
+	payloadCols := make([]string, 0, len(billingPayloadColumns))
+	for col := range billingPayloadColumns {
+		payloadCols = append(payloadCols, col)
+	}
+	sort.Strings(payloadCols)
+	for _, col := range payloadCols {
+		cols = append(cols, "NULL AS "+col)
+	}
+	return strings.Join(cols, ", ")
+}
+
+// BillingPayloadRequired reports whether a log of this object type is priced
+// from a modality payload column (audio, image, video, OCR output). Such a row
+// read with PaginationOptions.OmitBillingPayloads must be re-read with the full
+// billing projection before it is priced.
+func BillingPayloadRequired(objectType string) bool {
+	return billingPayloadColumnFor(objectType) != ""
 }
 
 // billingPayloadColumnFor returns the payload column an object_type bills on, or ""
@@ -2315,6 +2442,7 @@ func (s *RDBLogStore) GetModelHistogram(ctx context.Context, filters SearchFilte
 	baseQuery := s.scopedLogsDB(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
+	baseQuery = baseQuery.Where("model IS NOT NULL AND model != ''")
 
 	// Query grouped by bucket and model with status counts
 	var results []struct {
@@ -2986,7 +3114,10 @@ func (s *RDBLogStore) GetUserRankings(ctx context.Context, filters SearchFilters
 			for i, r := range currentResults {
 				userIDs[i] = r.UserID
 			}
-			prevQuery = prevQuery.Where("user_id IN ?", userIDs)
+			// One bind for the whole list: in export mode (no ranking limit)
+			// the list can exceed the per-statement parameter limit.
+			inClause, inArg := queryscope.InStrings(prevQuery, "user_id", userIDs)
+			prevQuery = prevQuery.Where(inClause, inArg)
 		}
 
 		var prevResults []struct {
@@ -3186,13 +3317,7 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		currentQuery = currentQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
 	}
 
-	var currentResults []struct {
-		ID            string          `gorm:"column:id"`
-		Name          string          `gorm:"column:name"`
-		TotalRequests int64           `gorm:"column:total_requests"`
-		TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
-		TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
-	}
+	var currentResults []dimensionRankingRow
 
 	if err := applyRankingLimit(currentQuery.
 		Select(selectClause).
@@ -3206,7 +3331,12 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		return nil, fmt.Errorf("failed to get dimension rankings for %s: %w", dimension, err)
 	}
 
-	if len(currentResults) == 0 {
+	hidden, hasHidden, err := s.hiddenDimensionTotals(ctx, src, idCol, filters)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get hidden dimension totals for %s: %w", dimension, err)
+	}
+
+	if len(currentResults) == 0 && !hasHidden {
 		return &DimensionRankingResult{
 			Rankings:  []DimensionRankingWithTrend{},
 			Dimension: dimension,
@@ -3236,13 +3366,11 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		requestCounts.AttributedRequests = total
 
 		if src.FannedOut {
+			// No ceiling: the attributions the caller may not be shown are in the
+			// Other row, so this still equals the sum of every ranking row.
 			attributedQuery := src.base(s.scopedLogsDB(ctx))
 			attributedQuery = s.applyFilters(attributedQuery, filters)
 			attributedQuery = attributedQuery.Where("status IN ?", terminalLogStatuses)
-			// Same ceiling as the rankings themselves: this total is the sum of
-			// the rows above, so counting attributions the caller may not be
-			// shown would make it disagree with them.
-			attributedQuery = applyDimensionCeiling(ctx, attributedQuery, src, idCol)
 			var attributed int64
 			if err := attributedQuery.Count(&attributed).Error; err != nil {
 				return nil, fmt.Errorf("failed to get attributed dimension ranking totals for %s: %w", dimension, err)
@@ -3276,7 +3404,10 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 			for i, r := range currentResults {
 				ids[i] = r.ID
 			}
-			prevQuery = prevQuery.Where(fmt.Sprintf("%s IN ?", groupExpr), ids)
+			// One bind for the whole list: in export mode (no ranking limit)
+			// the list can exceed the per-statement parameter limit.
+			inClause, inArg := queryscope.InStrings(prevQuery, groupExpr, ids)
+			prevQuery = prevQuery.Where(inClause, inArg)
 		}
 
 		var prevResults []struct {
@@ -3293,11 +3424,15 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 			COALESCE(SUM(cost), 0) as total_cost
 		`, groupExpr)
 
-		if err := prevQuery.
-			Select(prevSelect).
-			Group(groupExpr).
-			Find(&prevResults).Error; err != nil {
-			return nil, fmt.Errorf("failed to get previous period dimension rankings: %w", err)
+		// With no visible row there are no ids to narrow this to, and only Other's
+		// previous total (read below) is needed.
+		if len(currentResults) > 0 {
+			if err := prevQuery.
+				Select(prevSelect).
+				Group(groupExpr).
+				Find(&prevResults).Error; err != nil {
+				return nil, fmt.Errorf("failed to get previous period dimension rankings: %w", err)
+			}
 		}
 
 		for _, r := range prevResults {
@@ -3307,6 +3442,38 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 				TotalTokens:   r.TotalTokens.Int64,
 				TotalCost:     r.TotalCost.Float64,
 			}
+		}
+
+		if hasHidden {
+			prevHidden, ok, err := s.hiddenDimensionTotals(ctx, src, idCol, prevFilters)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get previous period hidden dimension totals for %s: %w", dimension, err)
+			}
+			if ok {
+				prevMap[otherDimensionID] = DimensionRankingEntry{
+					ID:            otherDimensionID,
+					TotalRequests: prevHidden.TotalRequests,
+					TotalTokens:   prevHidden.TotalTokens.Int64,
+					TotalCost:     prevHidden.TotalCost.Float64,
+				}
+			}
+		}
+	}
+
+	if hasHidden {
+		currentResults = append(currentResults, dimensionRankingRow{
+			ID:            otherDimensionID,
+			Name:          otherDimensionName,
+			TotalRequests: hidden.TotalRequests,
+			TotalTokens:   hidden.TotalTokens,
+			TotalCost:     hidden.TotalCost,
+		})
+		sort.SliceStable(currentResults, func(i, j int) bool {
+			return currentResults[i].TotalRequests > currentResults[j].TotalRequests
+		})
+		// Other competes for the top-N like any row, so the limit still holds.
+		if limit := filters.EffectiveRankingLimit(defaultMaxRankingsLimit); limit > 0 && len(currentResults) > limit {
+			currentResults = currentResults[:limit]
 		}
 	}
 
@@ -4660,6 +4827,14 @@ var metadataSystemKeys = map[string]struct{}{
 	"isAsyncRequest": {},
 }
 
+// isMetadataSystemKey reports whether a metadata key is the system's rather than the caller's, and
+// so stays out of the filter data. Every key under schemas.LoadBalancerMetadataPrefix is: it is
+// the router's own record of an attempt, not caller metadata.
+func isMetadataSystemKey(key string) bool {
+	_, isSystem := metadataSystemKeys[key]
+	return isSystem || strings.HasPrefix(key, schemas.LoadBalancerMetadataPrefix)
+}
+
 const (
 	// maxMetadataRows is the maximum number of recent rows to scan for metadata keys.
 	maxMetadataRows = 1000
@@ -4699,7 +4874,7 @@ func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, qu
 			continue
 		}
 		for key, val := range parsed {
-			if _, isSystem := metadataSystemKeys[key]; isSystem {
+			if isMetadataSystemKey(key) {
 				continue
 			}
 			if !isValidMetadataKey(key) {
@@ -4822,26 +4997,46 @@ func (s *RDBLogStore) FindAllDistinct(ctx context.Context, query any, fields ...
 	return logs, nil
 }
 
-// DeleteLogsBatch deletes logs older than the cutoff time in batches.
+// DeleteLogsBatch deletes up to batchSize logs whose created_at is older than
+// cutoff, oldest first, in one statement. The cutoff column is created_at, the
+// same retention semantics as before; ordering by it lets each batch walk
+// idx_logs_created_at from its low end instead of scanning for matches.
 func (s *RDBLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error) {
-	// First, select the IDs of logs to delete with proper LIMIT
-	var ids []string
-	if err := s.db.WithContext(ctx).
-		Model(&Log{}).
-		Select("id").
-		Where("created_at < ?", cutoff).
-		Limit(batchSize).
-		Pluck("id", &ids).Error; err != nil {
-		return 0, err
-	}
+	return s.deleteExpiredBatch(ctx, "logs", "created_at", cutoff, batchSize)
+}
 
-	// If no IDs found, return early
-	if len(ids) == 0 {
+// DeleteMCPToolLogsBatch deletes up to batchSize MCP tool logs whose timestamp
+// is older than cutoff, oldest first, in one statement through the timestamp
+// index (idx_mcp_logs_timestamp on Postgres). Before this, mcp_tool_logs had
+// no time-based retention at all.
+//
+// ClickHouse is not handled here: the embedded RDB statement shape is not valid
+// there, so the call is a no-op until ClickHouseLogStore overrides it with a
+// lightweight delete (the same shape as its DeleteLogsBatch).
+func (s *RDBLogStore) DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error) {
+	if s.db.Dialector.Name() == "clickhouse" {
 		return 0, nil
 	}
+	return s.deleteExpiredBatch(ctx, "mcp_tool_logs", "timestamp", cutoff, batchSize)
+}
 
-	// Delete the selected IDs
-	result := s.db.WithContext(ctx).Where("id IN ?", ids).Delete(&Log{})
+// deleteExpiredBatch deletes the oldest batchSize rows of table whose column is
+// before cutoff. table and column are internal constants, never user input.
+//
+// Postgres and SQLite delete by primary key from an ordered, limited subquery
+// on the indexed column. MySQL rejects LIMIT inside an IN subquery, so it uses
+// its single-table DELETE ... ORDER BY ... LIMIT form instead.
+func (s *RDBLogStore) deleteExpiredBatch(ctx context.Context, table, column string, cutoff time.Time, batchSize int) (int64, error) {
+	if batchSize <= 0 {
+		return 0, nil
+	}
+	var stmt string
+	if s.db.Dialector.Name() == "mysql" {
+		stmt = fmt.Sprintf("DELETE FROM %s WHERE %s < ? ORDER BY %s LIMIT ?", table, column, column)
+	} else {
+		stmt = fmt.Sprintf("DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE %s < ? ORDER BY %s LIMIT ?)", table, table, column, column)
+	}
+	result := s.db.WithContext(ctx).Exec(stmt, cutoff, batchSize)
 	if result.Error != nil {
 		return 0, result.Error
 	}
@@ -4916,6 +5111,15 @@ func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSear
 	if len(filters.LLMRequestIDs) > 0 {
 		baseQuery = baseQuery.Where("llm_request_id IN ?", filters.LLMRequestIDs)
 	}
+	if len(filters.AgentNames) > 0 {
+		baseQuery = s.applyAgentContextFilter(baseQuery, filters.AgentNames, filters.StartTime, filters.EndTime)
+	}
+	if filters.SessionID != "" {
+		baseQuery = baseQuery.Where("session_id = ?", filters.SessionID)
+	}
+	if filters.AgentCorrelationID != "" {
+		baseQuery = baseQuery.Where("agent_correlation_id = ?", filters.AgentCorrelationID)
+	}
 	if len(filters.UserAgents) > 0 {
 		baseQuery = baseQuery.Where("user_agent IN ?", filters.UserAgents)
 	}
@@ -4952,21 +5156,687 @@ func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSear
 	return baseQuery
 }
 
+// BatchCreateAgentLogsIfNotExists inserts A2A records idempotently and returns the inserted IDs.
+func (s *RDBLogStore) BatchCreateAgentLogsIfNotExists(ctx context.Context, entries []*AgentLog) ([]string, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	inserted := make([]string, 0, len(entries))
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, entry := range entries {
+			if entry == nil {
+				continue
+			}
+			result := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoNothing: true}).Create(entry)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 1 {
+				inserted = append(inserted, entry.ID)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return inserted, nil
+}
+
+// ReconcileAgentCorrelation fills missing correlation values from persisted A2A
+// rows. Request-scoped facts are applied first, then context IDs are propagated
+// across rows for the same task. Both updates are fill-only.
+func (s *RDBLogStore) ReconcileAgentCorrelation(ctx context.Context, entries []*AgentLog) error {
+	type correlationKey struct {
+		agent string
+		id    string
+	}
+	requestKeys := make(map[correlationKey]struct{})
+	taskKeys := make(map[correlationKey]struct{})
+	for _, entry := range entries {
+		if entry == nil || entry.AgentName == "" {
+			continue
+		}
+		if entry.RequestID != "" {
+			requestKeys[correlationKey{agent: entry.AgentName, id: entry.RequestID}] = struct{}{}
+		}
+		if entry.TaskID != nil && *entry.TaskID != "" {
+			taskKeys[correlationKey{agent: entry.AgentName, id: *entry.TaskID}] = struct{}{}
+		}
+	}
+
+	db := s.db.WithContext(ctx)
+	for key := range requestKeys {
+		for _, column := range []string{"task_id", "context_id"} {
+			query := fmt.Sprintf(`UPDATE agent_logs AS target
+SET %s = (
+	SELECT source.%s FROM agent_logs AS source
+	WHERE source.agent_name = target.agent_name
+		AND source.request_id = target.request_id
+		AND source.%s IS NOT NULL AND source.%s <> ''
+	ORDER BY source.timestamp, source.id
+	LIMIT 1
+)
+WHERE target.agent_name = ? AND target.request_id = ?
+	AND (target.%s IS NULL OR target.%s = '')
+	AND EXISTS (
+		SELECT 1 FROM agent_logs AS source
+		WHERE source.agent_name = target.agent_name
+			AND source.request_id = target.request_id
+			AND source.%s IS NOT NULL AND source.%s <> ''
+	)`, column, column, column, column, column, column, column, column)
+			if err := db.Exec(query, key.agent, key.id).Error; err != nil {
+				return err
+			}
+		}
+
+		var taskIDs []string
+		if err := db.Model(&AgentLog{}).
+			Where("agent_name = ? AND request_id = ? AND task_id IS NOT NULL AND task_id <> ''", key.agent, key.id).
+			Distinct().Pluck("task_id", &taskIDs).Error; err != nil {
+			return err
+		}
+		for _, taskID := range taskIDs {
+			taskKeys[correlationKey{agent: key.agent, id: taskID}] = struct{}{}
+		}
+	}
+
+	for key := range taskKeys {
+		query := `UPDATE agent_logs AS target
+SET context_id = (
+	SELECT source.context_id FROM agent_logs AS source
+	WHERE source.agent_name = target.agent_name
+		AND source.task_id = target.task_id
+		AND source.context_id IS NOT NULL AND source.context_id <> ''
+	ORDER BY source.timestamp, source.id
+	LIMIT 1
+)
+WHERE target.agent_name = ? AND target.task_id = ?
+	AND (target.context_id IS NULL OR target.context_id = '')
+	AND EXISTS (
+		SELECT 1 FROM agent_logs AS source
+		WHERE source.agent_name = target.agent_name
+			AND source.task_id = target.task_id
+			AND source.context_id IS NOT NULL AND source.context_id <> ''
+	)`
+		if err := db.Exec(query, key.agent, key.id).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *RDBLogStore) FindAgentLog(ctx context.Context, id string) (*AgentLog, error) {
+	var entry AgentLog
+	if err := s.ScopedDB(ctx).Where("id = ?", id).First(&entry).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &entry, nil
+}
+
+func (s *RDBLogStore) ListAgentLogHistory(ctx context.Context, filter AgentLogHistoryFilter, pagination PaginationOptions) (*AgentLogHistoryResult, error) {
+	if pagination.Limit <= 0 || pagination.Limit > AgentLogHistoryMaxLimit {
+		return nil, fmt.Errorf("logstore: Agent history limit must be between 1 and %d", AgentLogHistoryMaxLimit)
+	}
+	if pagination.Offset < 0 {
+		return nil, fmt.Errorf("logstore: Agent history offset must be non-negative")
+	}
+
+	query := s.applyAgentHistoryFilters(s.ScopedDB(ctx).Model(&AgentLog{}), filter)
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, err
+	}
+	pagination.TotalCount = total
+	rows := []AgentLogSummary{}
+	// Only timestamp and latency are sortable; id breaks ties so paging is stable.
+	direction := "DESC"
+	if pagination.Order == "asc" {
+		direction = "ASC"
+	}
+	orderClause := "timestamp " + direction + ", id " + direction
+	if pagination.SortBy == "latency" {
+		orderClause = "latency " + direction + " NULLS LAST, id " + direction
+	}
+	inputPreview := fmt.Sprintf("substr(request_body, 1, %d) AS input", maxA2APayloadPreviewRunes)
+	if err := query.Select("id", "timestamp", "record_kind", "operation", "status", "agent_name", "user_id", "user_name", "virtual_key_id", "virtual_key_name", "team_id", "team_name", "team_ids", "team_names", "customer_id", "customer_name", "customer_ids", "customer_names", "business_unit_id", "business_unit_name", "business_unit_ids", "business_unit_names", "project_id", "project_name", "budget_ids", "rate_limit_ids", "request_id", "trace_id", "task_id", "context_id", "message_id", "request_message_id", "response_message_id", "artifact_id", "push_config_id", "delivery_id", "attempt_id", "event_sequence", "event_type", "task_state", "downstream_transport", "upstream_transport", "latency", "upstream_latency", "overhead_latency", "overhead_breakdown", "content_type", inputPreview).Order(orderClause).Offset(pagination.Offset).Limit(pagination.Limit).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		deserializeAgentSummaryGovernance(&rows[i])
+	}
+	return &AgentLogHistoryResult{Logs: rows, Pagination: pagination}, nil
+}
+
+// ListAgentLogOperations returns a bounded page of request rows with correlated events.
+func (s *RDBLogStore) ListAgentLogOperations(ctx context.Context, filter AgentLogHistoryFilter, pagination PaginationOptions) (*AgentLogOperationResult, error) {
+	filter.RecordKind = []string{"request"}
+	history, err := s.ListAgentLogHistory(ctx, filter, pagination)
+	if err != nil {
+		return nil, err
+	}
+	if len(history.Logs) == 0 {
+		return &AgentLogOperationResult{Logs: []AgentLogOperation{}, Pagination: history.Pagination}, nil
+	}
+
+	requestIDs := make([]string, 0, len(history.Logs))
+	for _, row := range history.Logs {
+		requestIDs = append(requestIDs, row.RequestID)
+	}
+	var rows []AgentLog
+	if err := s.ScopedDB(ctx).
+		Where("request_id IN ?", requestIDs).
+		Order("timestamp ASC, id ASC").
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return buildAgentLogOperations(history.Logs, rows, history.Pagination), nil
+}
+
+// FindAgentLogOperation returns the request operation containing the identified row.
+func (s *RDBLogStore) FindAgentLogOperation(ctx context.Context, id string) (*AgentLogOperation, error) {
+	entry, err := s.FindAgentLog(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	var rows []AgentLog
+	if err := s.ScopedDB(ctx).
+		Where("request_id = ?", entry.RequestID).
+		Order("timestamp ASC, id ASC").
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		if rows[i].RecordKind == "request" {
+			operation := newAgentLogOperation(&rows[i], rows)
+			return &operation, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+// buildAgentLogOperations preserves page order while grouping scoped event rows under requests.
+func buildAgentLogOperations(summaries []AgentLogSummary, rows []AgentLog, pagination PaginationOptions) *AgentLogOperationResult {
+	rowsByRequestID := make(map[string][]AgentLog, len(summaries))
+	requestsByID := make(map[string]*AgentLog, len(summaries))
+	for i := range rows {
+		row := &rows[i]
+		rowsByRequestID[row.RequestID] = append(rowsByRequestID[row.RequestID], *row)
+		if row.RecordKind == "request" {
+			requestsByID[row.ID] = row
+		}
+	}
+	operations := make([]AgentLogOperation, 0, len(summaries))
+	for _, summary := range summaries {
+		request := requestsByID[summary.ID]
+		if request == nil {
+			continue
+		}
+		operations = append(operations, newAgentLogOperation(request, rowsByRequestID[summary.RequestID]))
+	}
+	return &AgentLogOperationResult{Logs: operations, Pagination: pagination}
+}
+
+// newAgentLogOperation converts one request and its event rows to the public contract.
+func newAgentLogOperation(request *AgentLog, rows []AgentLog) AgentLogOperation {
+	operation := AgentLogOperation{AgentLogDetail: NewAgentLogDetail(request), Events: []AgentLogDetail{}}
+	for i := range rows {
+		if rows[i].RecordKind == "event" {
+			operation.Events = append(operation.Events, NewAgentLogDetail(&rows[i]))
+		}
+	}
+	return operation
+}
+
+func deserializeAgentSummaryGovernance(row *AgentLogSummary) {
+	entry := &AgentLog{
+		TeamIDs: row.TeamIDsStored, TeamNames: row.TeamNamesStored,
+		CustomerIDs: row.CustomerIDsStored, CustomerNames: row.CustomerNamesStored,
+		BusinessUnitIDs: row.BusinessUnitIDsStored, BusinessUnitNames: row.BusinessUnitNamesStored,
+		BudgetIDs: row.BudgetIDsStored, RateLimitIDs: row.RateLimitIDsStored,
+	}
+	if row.OverheadBreakdownStored != nil {
+		entry.OverheadBreakdown = *row.OverheadBreakdownStored
+	}
+	_ = entry.DeserializeFields()
+	row.TeamIDs, row.TeamNames = entry.TeamIDsParsed, entry.TeamNamesParsed
+	row.CustomerIDs, row.CustomerNames = entry.CustomerIDsParsed, entry.CustomerNamesParsed
+	row.BusinessUnitIDs, row.BusinessUnitNames = entry.BusinessUnitIDsParsed, entry.BusinessUnitNamesParsed
+	row.BudgetIDs, row.RateLimitIDs = entry.BudgetIDsParsed, entry.RateLimitIDsParsed
+	row.OverheadBreakdown = entry.OverheadBreakdownParsed
+}
+
+// agentSearchColumns are the DB-resident metadata columns the free-text A2A
+// search matches. Protocol bodies are excluded on purpose: the hybrid store
+// offloads them to object storage, where SQL cannot reach them.
+var agentSearchColumns = []string{"id", "agent_name", "operation", "task_id", "context_id", "request_id", "trace_id", "message_id", "request_message_id", "response_message_id", "artifact_id", "error_details"}
+
+func (s *RDBLogStore) agentSearchPredicate(search string) (string, []any) {
+	operand, needle := "LOWER(%s) LIKE ?", "%"+strings.ToLower(search)+"%"
+	switch s.db.Dialector.Name() {
+	case "postgres":
+		operand, needle = "%s ILIKE ?", "%"+search+"%"
+	case "clickhouse":
+		operand = "lowerUTF8(%s) LIKE ?"
+	}
+	clauses := make([]string, 0, len(agentSearchColumns))
+	args := make([]any, 0, len(agentSearchColumns))
+	for _, column := range agentSearchColumns {
+		clauses = append(clauses, fmt.Sprintf(operand, column))
+		args = append(args, needle)
+	}
+	return "(" + strings.Join(clauses, " OR ") + ")", args
+}
+
+// applyAgentHistoryFilters applies every A2A history filter to a query. Shared by
+// the list, stats and histogram queries so each of them narrows identically.
+func (s *RDBLogStore) applyAgentHistoryFilters(query *gorm.DB, filter AgentLogHistoryFilter) *gorm.DB {
+	var windowedRequestIDs *gorm.DB
+	if slices.Contains(filter.RecordKind, "request") && (filter.StartTime != nil || filter.EndTime != nil) {
+		windowedRequestIDs = s.ScopedDB(query.Statement.Context).
+			Model(&AgentLog{}).
+			Select("request_id").
+			Where("record_kind IN ?", filter.RecordKind)
+		if filter.StartTime != nil {
+			windowedRequestIDs = windowedRequestIDs.Where("timestamp >= ?", *filter.StartTime)
+		}
+		if filter.EndTime != nil {
+			windowedRequestIDs = windowedRequestIDs.Where("timestamp <= ?", *filter.EndTime)
+		}
+	}
+	for column, value := range map[string]string{
+		"request_id": filter.RequestID, "trace_id": filter.TraceID,
+		"task_id": filter.TaskID, "context_id": filter.ContextID, "push_config_id": filter.PushConfigID,
+		"delivery_id": filter.DeliveryID, "attempt_id": filter.AttemptID,
+	} {
+		if value != "" {
+			query = query.Where(column+" = ?", value)
+		}
+	}
+	// Multi-value filters match any of their values; an empty slice is no filter.
+	for column, values := range map[string][]string{
+		"agent_name": filter.AgentName, "operation": filter.Operation,
+		"user_id": filter.UserID, "virtual_key_id": filter.VirtualKeyID, "project_id": filter.ProjectID,
+		"event_type": filter.EventType, "status": filter.Status, "record_kind": filter.RecordKind,
+	} {
+		if column == "event_type" && slices.Contains(filter.RecordKind, "request") {
+			// Request rows carry no event type. Match it on correlated child events
+			// and return their parent operation, within the same DAC scope.
+			if len(values) > 0 {
+				matchingEvents := s.ScopedDB(query.Statement.Context).
+					Model(&AgentLog{}).
+					Select("request_id").
+					Where("record_kind = ? AND event_type IN ?", "event", values)
+				if windowedRequestIDs != nil {
+					matchingEvents = matchingEvents.Where("request_id IN (?)", windowedRequestIDs)
+				}
+				if slices.Contains(filter.RecordKind, "event") {
+					// Event rows must match the type themselves; other rows inherit the
+					// match from their operation's child events.
+					query = query.Where("((record_kind <> ? AND request_id IN (?)) OR (record_kind = ? AND event_type IN ?))", "event", matchingEvents, "event", values)
+				} else {
+					query = query.Where("request_id IN (?)", matchingEvents)
+				}
+			}
+			continue
+		}
+		if len(values) > 0 {
+			query = query.Where(column+" IN ?", values)
+		}
+	}
+	if len(filter.TaskState) > 0 {
+		if slices.Contains(filter.RecordKind, "request") {
+			// The operation list contains request rows, while task state changes live
+			// on correlated event rows. Rank only state-bearing events so artifact or
+			// message events after a status update do not hide the latest task state.
+			stateEvents := s.ScopedDB(query.Statement.Context).
+				Model(&AgentLog{}).
+				Select("request_id, task_state, ROW_NUMBER() OVER (PARTITION BY request_id ORDER BY event_sequence DESC, timestamp DESC, id DESC) AS state_rank").
+				Where("record_kind = ? AND task_state IS NOT NULL", "event")
+			if windowedRequestIDs != nil {
+				stateEvents = stateEvents.Where("request_id IN (?)", windowedRequestIDs)
+			}
+			matchingRequestIDs := s.db.Table("(?) AS latest_task_states", stateEvents).
+				Select("request_id").
+				Where("state_rank = 1 AND task_state IN ?", filter.TaskState)
+			query = query.Where("request_id IN (?)", matchingRequestIDs)
+		} else {
+			query = query.Where("task_state IN ?", filter.TaskState)
+		}
+	}
+	for _, dimension := range []struct {
+		scalar string
+		array  string
+		values []string
+	}{
+		{scalar: "team_id", array: "team_ids", values: filter.TeamID},
+		{scalar: "customer_id", array: "customer_ids", values: filter.CustomerID},
+		{scalar: "business_unit_id", array: "business_unit_ids", values: filter.BusinessUnitID},
+	} {
+		if len(dimension.values) == 0 {
+			continue
+		}
+		if s.db.Dialector.Name() == "postgres" {
+			sql, args := multiValueDimensionFilterSQL(dimension.scalar, dimension.array, dimension.values)
+			query = query.Where(sql, args...)
+		} else if s.db.Dialector.Name() == "clickhouse" {
+			query = query.Where(
+				dimension.scalar+" IN ? OR hasAny(JSONExtract("+dimension.array+", 'Array(String)'), ?)",
+				dimension.values,
+				dimension.values,
+			)
+		} else {
+			query = query.Where(
+				dimension.scalar+" IN ? OR EXISTS (SELECT 1 FROM json_each("+dimension.array+") WHERE value IN ?)",
+				dimension.values,
+				dimension.values,
+			)
+		}
+	}
+	if filter.StartTime != nil {
+		query = query.Where("timestamp >= ?", *filter.StartTime)
+	}
+	if filter.EndTime != nil {
+		query = query.Where("timestamp <= ?", *filter.EndTime)
+	}
+	if search := strings.TrimSpace(filter.Search); search != "" {
+		predicate, args := s.agentSearchPredicate(search)
+		if slices.Contains(filter.RecordKind, "request") {
+			// Search child events too, but return their parent operation. Applying
+			// ScopedDB to the subquery preserves the same DAC boundary as the list.
+			matchingRequestIDs := s.ScopedDB(query.Statement.Context).
+				Model(&AgentLog{}).
+				Select("request_id").
+				Where(predicate, args...)
+			if windowedRequestIDs != nil {
+				matchingRequestIDs = matchingRequestIDs.Where("request_id IN (?)", windowedRequestIDs)
+			}
+			query = query.Where(predicate+" OR request_id IN (?)", append(args, matchingRequestIDs)...)
+		} else {
+			query = query.Where(predicate, args...)
+		}
+	}
+	return query
+}
+
+func (s *RDBLogStore) GetAgentFilterData(ctx context.Context, dimensions []string, limit int, search string) (*AgentFilterData, error) {
+	result := &AgentFilterData{}
+	wanted := make(map[string]struct{}, len(dimensions))
+	for _, dimension := range dimensions {
+		wanted[dimension] = struct{}{}
+	}
+	if len(wanted) == 0 {
+		for _, dimension := range []string{"users", "virtual_keys", "teams", "customers", "business_units", "projects"} {
+			wanted[dimension] = struct{}{}
+		}
+	}
+	query := strings.ToLower(strings.TrimSpace(search))
+	load := func(idColumn, nameColumn string) ([]AgentFilterKeyPair, error) {
+		rows := []AgentFilterKeyPair{}
+		queryID, queryName := idColumn, nameColumn
+		q := s.ScopedDB(ctx).Model(&AgentLog{})
+		var src dimensionReadSource
+		if from, ok := agentDimensionFanoutFrom(s.db.Dialector.Name(), idColumn); ok {
+			q = s.ScopedDB(ctx).Table("?", gorm.Expr(from))
+			q.Statement.Table = "logs"
+			queryID, queryName = "dim_id", "dim_name"
+			src.FannedOut = true
+			q = q.Where("record_kind = ?", "request")
+		}
+		q = q.Select("DISTINCT " + queryID + " AS id, " + queryName + " AS name").
+			Where(queryID + " IS NOT NULL AND " + queryID + " != '' AND " + queryName + " IS NOT NULL AND " + queryName + " != ''")
+		// Same bound as the LLM log dropdowns: a row the caller may read can still
+		// carry an organisation it may not be shown the name of.
+		q = applyDimensionCeiling(ctx, q, src, idColumn)
+		if query != "" {
+			if s.db.Dialector.Name() == "postgres" {
+				q = q.Where(queryName+" ILIKE ?", "%"+search+"%")
+			} else if s.db.Dialector.Name() == "clickhouse" {
+				q = q.Where("lowerUTF8("+queryName+") LIKE ?", "%"+query+"%")
+			} else {
+				q = q.Where("LOWER("+queryName+") LIKE ?", "%"+query+"%")
+			}
+		}
+		if err := q.Order("name ASC").Limit(limit).Scan(&rows).Error; err != nil {
+			return nil, err
+		}
+		return rows, nil
+	}
+	for dimension, columns := range map[string][2]string{
+		"users": {"user_id", "user_name"}, "virtual_keys": {"virtual_key_id", "virtual_key_name"},
+		"teams": {"team_id", "team_name"}, "customers": {"customer_id", "customer_name"},
+		"business_units": {"business_unit_id", "business_unit_name"}, "projects": {"project_id", "project_name"},
+	} {
+		if _, ok := wanted[dimension]; !ok {
+			continue
+		}
+		pairs, err := load(columns[0], columns[1])
+		if err != nil {
+			return nil, fmt.Errorf("failed to get Agent %s filter data: %w", dimension, err)
+		}
+		switch dimension {
+		case "users":
+			result.Users = pairs
+		case "virtual_keys":
+			result.VirtualKeys = pairs
+		case "teams":
+			result.Teams = pairs
+		case "customers":
+			result.Customers = pairs
+		case "business_units":
+			result.BusinessUnits = pairs
+		case "projects":
+			result.Projects = pairs
+		}
+	}
+	return result, nil
+}
+
+// GetAgentLogStats aggregates the A2A history rows matching filter. Success rate
+// is measured over terminal entries only, so in-flight rows do not depress it.
+func (s *RDBLogStore) GetAgentLogStats(ctx context.Context, filter AgentLogHistoryFilter) (*AgentLogStats, error) {
+	query := s.applyAgentHistoryFilters(s.ScopedDB(ctx).Model(&AgentLog{}), filter)
+
+	var row struct {
+		TotalEntries   int64   `gorm:"column:total_entries"`
+		SuccessCount   int64   `gorm:"column:success_count"`
+		ErrorCount     int64   `gorm:"column:error_count"`
+		AverageLatency float64 `gorm:"column:average_latency"`
+	}
+	if err := query.Select(`
+			COUNT(*) as total_entries,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count,
+			COALESCE(AVG(latency), 0) as average_latency
+		`).Scan(&row).Error; err != nil {
+		return nil, fmt.Errorf("failed to get Agent history stats: %w", err)
+	}
+
+	stats := &AgentLogStats{
+		TotalEntries:   row.TotalEntries,
+		SuccessCount:   row.SuccessCount,
+		ErrorCount:     row.ErrorCount,
+		AverageLatency: row.AverageLatency,
+	}
+	if terminal := row.SuccessCount + row.ErrorCount; terminal > 0 {
+		stats.SuccessRate = float64(row.SuccessCount) / float64(terminal) * 100
+	}
+	return stats, nil
+}
+
+// GetAgentTopAgents ranks Agents by operation count for the given filter. Only
+// request rows are counted, so an operation's stream events do not inflate its
+// Agent's total. The request-row restriction is part of the filter, like the
+// operation list, so task-state and search filters that match child events
+// still select their parent operation.
+func (s *RDBLogStore) GetAgentTopAgents(ctx context.Context, filter AgentLogHistoryFilter, limit int) (*AgentTopAgentsResult, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	filter.RecordKind = []string{"request"}
+	query := s.applyAgentHistoryFilters(s.ScopedDB(ctx).Model(&AgentLog{}), filter)
+
+	var results []struct {
+		AgentName      string  `gorm:"column:agent_name"`
+		Count          int64   `gorm:"column:count"`
+		ErrorCount     int64   `gorm:"column:error_count"`
+		AverageLatency float64 `gorm:"column:average_latency"`
+	}
+	if err := query.
+		Select("agent_name, COUNT(*) as count, SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count, COALESCE(AVG(latency), 0) as average_latency").
+		Group("agent_name").
+		Order("count DESC, agent_name ASC").
+		Limit(limit).
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get Agent top agents: %w", err)
+	}
+
+	agents := make([]AgentTopAgentResult, len(results))
+	for i, r := range results {
+		agents[i] = AgentTopAgentResult{AgentName: r.AgentName, Count: r.Count, ErrorCount: r.ErrorCount, AverageLatency: r.AverageLatency}
+	}
+	return &AgentTopAgentsResult{Agents: agents}, nil
+}
+
+// GetAgentHistogram returns time-bucketed A2A volume for the given filter, split
+// into success and error so the chart can stack them.
+func (s *RDBLogStore) GetAgentHistogram(ctx context.Context, filter AgentLogHistoryFilter, bucketSizeSeconds int64) (*AgentHistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600
+	}
+	query := s.applyAgentHistoryFilters(s.ScopedDB(ctx).Model(&AgentLog{}), filter)
+
+	var results []struct {
+		BucketTimestamp int64 `gorm:"column:bucket_timestamp"`
+		Count           int64 `gorm:"column:count"`
+		Success         int64 `gorm:"column:success"`
+		Error           int64 `gorm:"column:error"`
+	}
+	selectClause := fmt.Sprintf(`
+			%s as bucket_timestamp,
+			COUNT(*) as count,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error
+		`, unixBucketExpr(s.db.Dialector.Name(), bucketSizeSeconds))
+	if err := query.Select(selectClause).Group("bucket_timestamp").Order("bucket_timestamp ASC").Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get Agent histogram: %w", err)
+	}
+
+	byTimestamp := make(map[int64]AgentHistogramBucket, len(results))
+	for _, r := range results {
+		byTimestamp[r.BucketTimestamp] = AgentHistogramBucket{
+			Timestamp: time.Unix(r.BucketTimestamp, 0).UTC(),
+			Count:     r.Count,
+			Success:   r.Success,
+			Error:     r.Error,
+		}
+	}
+
+	// Without a time range (an identifier-only timeline search) there is no
+	// window to fill, so the populated buckets are returned as they are.
+	allTimestamps := generateBucketTimestamps(filter.StartTime, filter.EndTime, bucketSizeSeconds)
+	if len(allTimestamps) == 0 {
+		buckets := make([]AgentHistogramBucket, 0, len(results))
+		for _, r := range results {
+			buckets = append(buckets, byTimestamp[r.BucketTimestamp])
+		}
+		return &AgentHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
+	}
+
+	buckets := make([]AgentHistogramBucket, len(allTimestamps))
+	for i, ts := range allTimestamps {
+		if bucket, ok := byTimestamp[ts]; ok {
+			buckets[i] = bucket
+			continue
+		}
+		buckets[i] = AgentHistogramBucket{Timestamp: time.Unix(ts, 0).UTC()}
+	}
+	return &AgentHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
+}
+
+func (s *RDBLogStore) UpdateAgentLog(ctx context.Context, id string, entry any) error {
+	var updates any
+	switch value := entry.(type) {
+	case map[string]interface{}:
+		updates = value
+	default:
+		return fmt.Errorf("logstore: unsupported UpdateAgentLog entry type %T", entry)
+	}
+	result := s.db.WithContext(ctx).Model(&AgentLog{}).Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *RDBLogStore) FlushAgentLogs(ctx context.Context, since time.Time) error {
+	if err := s.db.WithContext(ctx).Where("status = ? AND created_at < ?", "processing", since).Delete(&AgentLog{}).Error; err != nil {
+		return fmt.Errorf("failed to cleanup old processing A2A logs: %w", err)
+	}
+	return nil
+}
+
+func (s *RDBLogStore) FindAgentLogsForDeletion(ctx context.Context, ids []string) ([]*AgentLog, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var requestIDs []string
+	if err := s.ScopedDB(ctx).Model(&AgentLog{}).Distinct().Where("id IN ?", ids).Pluck("request_id", &requestIDs).Error; err != nil {
+		return nil, err
+	}
+	query := s.ScopedDB(ctx).Where("id IN ?", ids)
+	if len(requestIDs) > 0 {
+		query = s.ScopedDB(ctx).Where("id IN ? OR request_id IN ?", ids, requestIDs)
+	}
+	var entries []*AgentLog
+	if err := query.Find(&entries).Error; err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// DeleteAgentLogs deletes the identified A2A log rows together with every row
+// sharing their request IDs, so a deleted operation's correlated stream events
+// do not survive as orphans invisible to the request-only main list.
+func (s *RDBLogStore) DeleteAgentLogs(ctx context.Context, ids []string) error {
+	entries, err := s.FindAgentLogsForDeletion(ctx, ids)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	entryIDs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		entryIDs = append(entryIDs, entry.ID)
+	}
+	return s.db.WithContext(ctx).Where("id IN ?", entryIDs).Delete(&AgentLog{}).Error
+}
+
 // CreateMCPToolLog inserts a new MCP tool log entry into the database.
 func (s *RDBLogStore) CreateMCPToolLog(ctx context.Context, entry *MCPToolLog) error {
 	return s.db.WithContext(ctx).Create(entry).Error
 }
 
 // BatchCreateMCPToolLogsIfNotExists inserts multiple MCP tool log entries in a single transaction.
-// Uses ON CONFLICT DO NOTHING for idempotency.
+// Uses ON CONFLICT DO NOTHING for idempotency. Entries are written in chunks sized by
+// insertBatchSize so no single INSERT exceeds the parameter limit.
 func (s *RDBLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Context, entries []*MCPToolLog) error {
 	if len(entries) == 0 {
 		return nil
 	}
+	batchSize, _ := insertBatchSize(s.db, &MCPToolLog{})
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
 		DoNothing: true,
-	}).Create(&entries).Error
+	}).CreateInBatches(&entries, batchSize).Error
 }
 
 // FindMCPToolLog retrieves a single MCP tool log entry by its ID. When ctx
@@ -5030,8 +5900,10 @@ func (s *RDBLogStore) SearchMCPToolLogs(ctx context.Context, filters MCPToolLogS
 
 	// Get total count for pagination
 	var totalCount int64
-	if err := baseQuery.Count(&totalCount).Error; err != nil {
-		return nil, err
+	if !pagination.SkipCount {
+		if err = baseQuery.Session(&gorm.Session{}).Count(&totalCount).Error; err != nil {
+			return nil, err
+		}
 	}
 
 	// Build order clause
@@ -5044,10 +5916,12 @@ func (s *RDBLogStore) SearchMCPToolLogs(ctx context.Context, filters MCPToolLogS
 	switch pagination.SortBy {
 	case "timestamp":
 		orderClause = "timestamp " + direction
+	// NULLS LAST for the same reason as searchLogs: a tool call with no
+	// latency or cost recorded is not the extreme of either.
 	case "latency":
-		orderClause = "latency " + direction
+		orderClause = "latency " + direction + " NULLS LAST"
 	case "cost":
-		orderClause = "cost " + direction
+		orderClause = "cost " + direction + " NULLS LAST"
 	default:
 		orderClause = "timestamp " + direction
 	}
@@ -5684,6 +6558,9 @@ func (s *RDBLogStore) DeleteExpiredWebhookDeliveries(ctx context.Context) (int64
 // column directly. Passing the wrong one is a SQL error rather than a silent
 // hole, which is the failure mode to prefer.
 //
+// GetDimensionRankings adds the dropped rows back as one Other row (see
+// applyDimensionCeilingComplement), so its totals still reconcile.
+//
 // Rows with no id on this dimension are always kept. They aggregate into the
 // synthetic Unassigned bucket, which names no organisation and therefore
 // discloses nothing — dropping them would understate the caller's own totals
@@ -5705,7 +6582,72 @@ func applyDimensionCeiling(ctx context.Context, q *gorm.DB, src dimensionReadSou
 	if len(allowed) == 0 {
 		return q.Where(unowned)
 	}
-	return q.Where(fmt.Sprintf("%s IN ? OR %s", col, unowned), allowed)
+	// One bind for the whole list: a widened caller's member set can exceed the
+	// per-statement parameter limit as an "IN ?" list.
+	rhs, arg := queryscope.InSet(q, allowed)
+	return q.Where(fmt.Sprintf("%s %s OR %s", col, rhs, unowned), arg)
+}
+
+// dimensionRankingRow is one grouped row of a dimension ranking query.
+type dimensionRankingRow struct {
+	ID            string          `gorm:"column:id"`
+	Name          string          `gorm:"column:name"`
+	TotalRequests int64           `gorm:"column:total_requests"`
+	TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
+	TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
+}
+
+// dimensionTotals is one aggregate over a set of log rows.
+type dimensionTotals struct {
+	TotalRequests int64           `gorm:"column:total_requests"`
+	TotalTokens   sql.NullInt64   `gorm:"column:total_tokens"`
+	TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
+}
+
+// hiddenDimensionTotals sums the caller's rows in the window whose id on this
+// dimension it may not be shown, which become the Other ranking row. ok is
+// false when nothing is hidden.
+func (s *RDBLogStore) hiddenDimensionTotals(ctx context.Context, src dimensionReadSource, idCol string, filters SearchFilters) (dimensionTotals, bool, error) {
+	var totals dimensionTotals
+	if !src.Bucketed {
+		return totals, false, nil
+	}
+	q := src.base(s.scopedLogsDB(ctx))
+	q = s.applyFilters(q, filters)
+	q = q.Where("status IN ?", terminalLogStatuses)
+	q, bounded := applyDimensionCeilingComplement(ctx, q, src, idCol)
+	if !bounded {
+		return totals, false, nil
+	}
+	if err := q.Select("COUNT(*) as total_requests, SUM(total_tokens) as total_tokens, COALESCE(SUM(cost), 0) as total_cost").
+		Scan(&totals).Error; err != nil {
+		return totals, false, err
+	}
+	return totals, totals.TotalRequests > 0, nil
+}
+
+// applyDimensionCeilingComplement keeps exactly the rows applyDimensionCeiling
+// drops: an id on this dimension the caller may not be shown. bounded is false
+// when ctx sets no ceiling for idCol, since nothing is hidden then.
+func applyDimensionCeilingComplement(ctx context.Context, q *gorm.DB, src dimensionReadSource, idCol string) (*gorm.DB, bool) {
+	scope := queryscope.DimensionFromContext(ctx)
+	if scope == nil {
+		return q, false
+	}
+	allowed, bounded := scope(idCol)
+	if !bounded {
+		return q, false
+	}
+	col := idCol
+	if src.FannedOut {
+		col = "dim_id"
+	}
+	q = q.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", col, col))
+	if len(allowed) == 0 {
+		return q, true
+	}
+	notIn, arg := queryscope.NotInStrings(q, col, allowed)
+	return q.Where(notIn, arg), true
 }
 
 // applyCommaListOverlapFilter matches rows whose comma-separated column

@@ -69,7 +69,7 @@ logs:
           type: string
       - name: complexity_mechanisms
         in: query
-        description: Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)
+        description: Comma-separated list of complexity decision mechanisms to filter by (semantic, decision, llm, session, or skipped)
         schema:
           type: string
       - name: session_id
@@ -296,7 +296,7 @@ logs-stats:
           type: string
       - name: complexity_mechanisms
         in: query
-        description: Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)
+        description: Comma-separated list of complexity decision mechanisms to filter by (semantic, decision, llm, session, or skipped)
         schema:
           type: string
       - name: session_id
@@ -1155,7 +1155,7 @@ _histogram-parameters:
   complexity_mechanisms:
     name: complexity_mechanisms
     in: query
-    description: Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)
+    description: Comma-separated list of complexity decision mechanisms to filter by (semantic, decision, llm, session, or skipped)
     schema:
       type: string
   session_id:
@@ -1582,6 +1582,9 @@ mcp-logs:
     summary: Delete MCP tool logs
     description: |
       Deletes MCP tool logs by their IDs.
+      Requires authenticated management access. Requests admitted without checking
+      credentials because dashboard authentication is disabled, unconfigured, or
+      bypassed by an auth whitelist receive 403 before any logs are deleted.
     tags:
       - Logging
     requestBody:
@@ -1602,6 +1605,12 @@ mcp-logs:
               $ref: "../../schemas/management/common.yaml#/MessageResponse"
       "400":
         $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "403":
+        description: Authentication was bypassed; authenticated management access is required
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
 

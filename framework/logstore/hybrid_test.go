@@ -28,6 +28,10 @@ func (hybridTestLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEven
 	return schemas.NoopLogEvent
 }
 
+func agentLogsCreateError(_ []string, err error) error {
+	return err
+}
+
 func newTestHybrid(t *testing.T) (*HybridLogStore, LogStore, *objectstore.InMemoryObjectStore) {
 	t.Helper()
 	ctx := context.Background()
@@ -38,7 +42,7 @@ func newTestHybrid(t *testing.T) (*HybridLogStore, LogStore, *objectstore.InMemo
 	require.NoError(t, err)
 
 	objStore := objectstore.NewInMemoryObjectStore()
-	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, nil)
+	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, nil, nil)
 	return hybrid, inner, objStore
 }
 
@@ -142,6 +146,38 @@ func TestHybrid_CreateAndFindByID(t *testing.T) {
 
 	// Content summary should contain input text but the output should be in the payload.
 	assert.Contains(t, found.ContentSummary, "Hello, how are you?")
+}
+
+// TestHybrid_EmbeddingInputOffloaded pins that embedding_input leaves the DB row and is hydrated from the object.
+func TestHybrid_EmbeddingInputOffloaded(t *testing.T) {
+	hybrid, inner, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	text := "embed me"
+	entry := &Log{
+		ID:        "emb-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "openai",
+		Model:     "text-embedding-3-small",
+		Status:    "success",
+		Object:    "embedding",
+		EmbeddingInputParsed: []schemas.EmbeddingInputItem{
+			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}},
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForOffload(t, inner, "emb-1")
+
+	dbRow, err := inner.FindByID(ctx, "emb-1")
+	require.NoError(t, err)
+	assert.Empty(t, dbRow.EmbeddingInput, "embedding_input must be offloaded, not kept in the DB row")
+
+	found, err := hybrid.FindByID(ctx, "emb-1")
+	require.NoError(t, err)
+	require.Len(t, found.EmbeddingInputParsed, 1, "embedding_input should be hydrated from object storage")
+	assert.Equal(t, text, *found.EmbeddingInputParsed[0].Content[0].Text)
 }
 
 func TestHybrid_EmptyPayloadSkipsUpload(t *testing.T) {
@@ -514,6 +550,386 @@ func TestHybrid_UpdateMCPToolLogHydratesObjectBeforeHasObjectMarker(t *testing.T
 	assert.Equal(t, "done", found.ResultParsed.(map[string]interface{})["answer"])
 }
 
+func TestHybrid_A2ACorrelationReconciliationUsesInnerStore(t *testing.T) {
+	hybrid, inner, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	now := time.Now().UTC()
+	taskID, contextID := "task-hybrid", "context-hybrid"
+	request := &AgentLog{ID: "hybrid-request", Timestamp: now, RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "hybrid-request-id"}
+	event := &AgentLog{ID: "hybrid-event", Timestamp: now.Add(time.Second), RecordKind: "event", Status: "success", AgentName: "fixture", RequestID: "hybrid-request-id", TaskID: &taskID, ContextID: &contextID}
+
+	_, err := hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{request})
+	require.NoError(t, err)
+	require.NoError(t, hybrid.ReconcileAgentCorrelation(ctx, []*AgentLog{request}))
+	_, err = hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{event})
+	require.NoError(t, err)
+	require.NoError(t, hybrid.ReconcileAgentCorrelation(ctx, []*AgentLog{event}))
+
+	found, err := inner.FindAgentLog(ctx, request.ID)
+	require.NoError(t, err)
+	require.Equal(t, taskID, *found.TaskID)
+	require.Equal(t, contextID, *found.ContextID)
+}
+
+func TestHybrid_AgentLogPayloadRoundTrip(t *testing.T) {
+	hybrid, inner, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Date(2026, 7, 20, 13, 14, 15, 0, time.UTC)
+	requestBody := `{"jsonrpc":"2.0","method":"SendMessage"}`
+	responseBody := `{"jsonrpc":"2.0","result":{"taskId":"task-1"}}`
+	pluginLogs := `[{"plugin_name":"audit"}]`
+	errorDetails := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "upstream failed"}}
+	entry := &AgentLog{
+		ID: "a2a-1", Timestamp: ts, RecordKind: "request",
+		Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "req-a2a-1",
+		RequestBody: &requestBody, ResponseBody: &responseBody, PluginLogs: pluginLogs, ErrorDetailsParsed: errorDetails,
+	}
+
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject
+	})
+
+	dbOnly, err := inner.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, dbOnly.RequestBody)
+	require.NotNil(t, dbOnly.ResponseBody)
+	assert.Equal(t, requestBody, *dbOnly.RequestBody)
+	assert.Equal(t, responseBody, *dbOnly.ResponseBody)
+	require.NotNil(t, dbOnly.PayloadReference)
+	assert.Equal(t, AgentLogObjectKey("test", ts, entry.ID), *dbOnly.PayloadReference)
+	assert.Equal(t, "SendMessage", dbOnly.Operation)
+
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.RequestBody)
+	require.NotNil(t, found.ResponseBody)
+	assert.Equal(t, requestBody, *found.RequestBody)
+	assert.Equal(t, responseBody, *found.ResponseBody)
+
+	operation, err := hybrid.FindAgentLogOperation(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, pluginLogs, operation.PluginLogs)
+	require.NotNil(t, operation.ErrorDetails)
+	assert.Equal(t, "upstream failed", operation.ErrorDetails.Error.Message)
+}
+
+func TestHybrid_HiddenAgentLogRetainsObjectWithoutHydration(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	requestBody := `{"message":"secret"}`
+	entry := &AgentLog{
+		ID: "agent-hidden", Timestamp: time.Now().UTC(), RecordKind: "request",
+		Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "req-agent-hidden",
+		RequestBody: &requestBody, ContentHidden: true,
+	}
+
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject
+	})
+
+	dbOnly, err := inner.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.True(t, dbOnly.ContentHidden)
+	require.Nil(t, dbOnly.RequestBody)
+	require.NotNil(t, dbOnly.PayloadReference)
+	payload, err := objStore.Get(ctx, *dbOnly.PayloadReference)
+	require.NoError(t, err)
+	hydratedPayload := &AgentLog{}
+	require.NoError(t, MergeAgentLogPayloadFromJSON(hydratedPayload, payload))
+	require.NotNil(t, hydratedPayload.RequestBody)
+	require.Equal(t, requestBody, *hydratedPayload.RequestBody)
+
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.True(t, found.ContentHidden)
+	require.Nil(t, found.RequestBody)
+}
+
+func TestHybrid_UpdateAgentLogOffloadsMergedPayload(t *testing.T) {
+	hybrid, inner, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Date(2026, 7, 20, 13, 14, 15, 0, time.UTC)
+	requestBody := `{"request":"original"}`
+	responseBody := `{"response":"original"}`
+	updatedResponseBody := `{"response":"updated"}`
+	entry := &AgentLog{
+		ID: "agent-update", Timestamp: ts, RecordKind: "request",
+		Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "req-agent-update",
+		RequestBody: &requestBody, ResponseBody: &responseBody,
+	}
+
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject
+	})
+
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{
+		"response_body": updatedResponseBody,
+	}))
+	waitForUploads(t, func() bool {
+		found, err := hybrid.FindAgentLog(ctx, entry.ID)
+		return err == nil && found.ResponseBody != nil && *found.ResponseBody == updatedResponseBody
+	})
+
+	dbOnly, err := inner.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, dbOnly.RequestBody)
+	require.NotNil(t, dbOnly.ResponseBody)
+	assert.Equal(t, requestBody, *dbOnly.RequestBody)
+	assert.Equal(t, updatedResponseBody, *dbOnly.ResponseBody)
+
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.RequestBody)
+	require.NotNil(t, found.ResponseBody)
+	assert.Equal(t, requestBody, *found.RequestBody)
+	assert.Equal(t, updatedResponseBody, *found.ResponseBody)
+}
+
+func TestHybrid_UpdateAgentLogUploadFailureKeepsUpdatedDatabaseFallback(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Date(2026, 7, 20, 13, 14, 15, 0, time.UTC)
+	originalResponseBody := `{"response":"original"}`
+	updatedResponseBody := `{"response":"updated"}`
+	secondUpdatedResponseBody := `{"response":"updated again"}`
+	entry := &AgentLog{
+		ID: "agent-update-upload-failure", Timestamp: ts, RecordKind: "request",
+		Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "req-agent-update-upload-failure",
+		ResponseBody: &originalResponseBody,
+	}
+
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject
+	})
+
+	objStore.PutErr = assert.AnError
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{
+		"response_body": updatedResponseBody,
+	}))
+	waitForUploads(t, func() bool { return hybrid.DroppedUploads() == 1 })
+
+	dbOnly, err := inner.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.False(t, dbOnly.HasObject)
+	require.NotNil(t, dbOnly.ResponseBody)
+	assert.Equal(t, updatedResponseBody, *dbOnly.ResponseBody)
+
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.ResponseBody)
+	assert.Equal(t, updatedResponseBody, *found.ResponseBody)
+
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{
+		"response_body": secondUpdatedResponseBody,
+	}))
+	waitForUploads(t, func() bool { return hybrid.DroppedUploads() == 2 })
+
+	dbOnly, err = inner.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.False(t, dbOnly.HasObject)
+	require.NotNil(t, dbOnly.ResponseBody)
+	assert.Equal(t, secondUpdatedResponseBody, *dbOnly.ResponseBody)
+}
+
+func TestHybrid_AgentLogDuplicateDoesNotOverwritePayload(t *testing.T) {
+	hybrid, inner, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Date(2026, 7, 20, 13, 14, 15, 0, time.UTC)
+	originalBody := `{"message":"original"}`
+	duplicateBody := `{"message":"duplicate"}`
+	original := &AgentLog{
+		ID: "agent-duplicate", Timestamp: ts, RecordKind: "request",
+		Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "req-agent-duplicate",
+		RequestBody: &originalBody,
+	}
+
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{original})))
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, original.ID)
+		return err == nil && row.HasObject
+	})
+
+	duplicate := *original
+	duplicate.RequestBody = &duplicateBody
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{&duplicate})))
+
+	found, err := hybrid.FindAgentLog(ctx, original.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.RequestBody)
+	assert.Equal(t, originalBody, *found.RequestBody)
+}
+
+func TestHybrid_AgentLogDuplicateInSameBatchDoesNotOverwritePayload(t *testing.T) {
+	hybrid, inner, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Date(2026, 7, 20, 13, 14, 15, 0, time.UTC)
+	originalBody := `{"message":"original"}`
+	duplicateBody := `{"message":"duplicate"}`
+	original := &AgentLog{
+		ID: "agent-same-batch-duplicate", Timestamp: ts, RecordKind: "request",
+		Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "req-agent-same-batch-duplicate",
+		RequestBody: &originalBody,
+	}
+	duplicate := *original
+	duplicate.RequestBody = &duplicateBody
+
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{original, &duplicate})))
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, original.ID)
+		return err == nil && row.HasObject
+	})
+
+	found, err := hybrid.FindAgentLog(ctx, original.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.RequestBody)
+	assert.Equal(t, originalBody, *found.RequestBody)
+}
+
+func TestHybrid_DeleteAgentLogsRemovesCorrelatedObjects(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Date(2026, 7, 20, 13, 14, 15, 0, time.UTC)
+	requestBody := `{"request":"body"}`
+	eventBody := `{"event":"body"}`
+	unrelatedBody := `{"unrelated":"body"}`
+	entries := []*AgentLog{
+		{ID: "delete-request", Timestamp: ts, RecordKind: "request", Operation: "SendStreamingMessage", Status: "success", AgentName: "fixture", RequestID: "delete-operation", RequestBody: &requestBody},
+		{ID: "delete-event", Timestamp: ts.Add(time.Second), RecordKind: "event", Operation: "SendStreamingMessage", Status: "success", AgentName: "fixture", RequestID: "delete-operation", EventBody: &eventBody},
+		{ID: "keep-request", Timestamp: ts.Add(2 * time.Second), RecordKind: "request", Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "keep-operation", RequestBody: &unrelatedBody},
+	}
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, entries)))
+	for _, entry := range entries {
+		entry := entry
+		waitForUploads(t, func() bool {
+			row, err := inner.FindAgentLog(ctx, entry.ID)
+			return err == nil && row.HasObject
+		})
+	}
+
+	require.NoError(t, hybrid.DeleteAgentLogs(ctx, []string{"delete-request"}))
+	_, err := inner.FindAgentLog(ctx, "delete-request")
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = inner.FindAgentLog(ctx, "delete-event")
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = objStore.Get(ctx, AgentLogObjectKey("test", entries[0].Timestamp, entries[0].ID))
+	require.Error(t, err)
+	_, err = objStore.Get(ctx, AgentLogObjectKey("test", entries[1].Timestamp, entries[1].ID))
+	require.Error(t, err)
+	_, err = inner.FindAgentLog(ctx, "keep-request")
+	require.NoError(t, err)
+	_, err = objStore.Get(ctx, AgentLogObjectKey("test", entries[2].Timestamp, entries[2].ID))
+	require.NoError(t, err)
+}
+
+func TestHybrid_A2AEventBodyRoundTripKeepsBoundedDatabasePreview(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	body := `{"message":"` + string(make([]byte, maxA2APayloadPreviewRunes+50)) + `"}`
+	sequence := int64(1)
+	entry := &AgentLog{
+		ID: "a2a-event-1", Timestamp: time.Now().UTC(), RecordKind: "event",
+		Operation: "SendStreamingMessage", Status: "success", AgentName: "fixture", RequestID: "operation-1",
+		EventSequence: &sequence, EventBody: &body,
+	}
+
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject
+	})
+	dbOnly, err := inner.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, dbOnly.EventBody)
+	assert.LessOrEqual(t, len([]rune(*dbOnly.EventBody)), maxA2APayloadPreviewRunes)
+	assert.Equal(t, int64(1), *dbOnly.EventSequence)
+
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.EventBody)
+	assert.Equal(t, body, *found.EventBody)
+	assert.Equal(t, 1, objStore.Len())
+}
+
+func TestHybrid_AgentLogUploadFailureRetainsBoundedDatabaseFallback(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	objStore.PutErr = assert.AnError
+	requestBody := `{"message":"` + string(make([]byte, maxA2APayloadPreviewRunes+50)) + `"}`
+	responseBody := `{"result":"` + string(make([]byte, maxA2APayloadPreviewRunes+50)) + `"}`
+	entry := &AgentLog{
+		ID: "a2a-put-failure", Timestamp: time.Now().UTC(), RecordKind: "request",
+		Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "req-a2a-put-failure",
+		RequestBody: &requestBody, ResponseBody: &responseBody,
+	}
+
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(context.Background(), []*AgentLog{entry})))
+	waitForUploads(t, func() bool { return hybrid.DroppedUploads() == 1 })
+	row, err := inner.FindAgentLog(context.Background(), entry.ID)
+	require.NoError(t, err)
+	assert.False(t, row.HasObject)
+	require.NotNil(t, row.RequestBody)
+	require.NotNil(t, row.ResponseBody)
+	assert.LessOrEqual(t, len([]rune(*row.RequestBody)), maxA2APayloadPreviewRunes)
+	assert.LessOrEqual(t, len([]rune(*row.ResponseBody)), maxA2APayloadPreviewRunes)
+	assert.Equal(t, 0, objStore.Len())
+}
+
+func TestHybrid_AgentLogQueueRejectionRetainsBoundedDatabaseFallback(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	hybrid.pendingBytes.Store(defaultMaxUploadQueueBytes)
+	requestBody := `{"id":"task-1"}`
+	entry := &AgentLog{
+		ID: "a2a-queue-drop", Timestamp: time.Now().UTC(), RecordKind: "request",
+		Operation: "GetTask", Status: "success", AgentName: "fixture", RequestID: "req-a2a-queue-drop",
+		RequestBody: &requestBody,
+	}
+
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(context.Background(), []*AgentLog{entry})))
+	row, err := inner.FindAgentLog(context.Background(), entry.ID)
+	require.NoError(t, err)
+	assert.False(t, row.HasObject)
+	require.NotNil(t, row.RequestBody)
+	assert.Equal(t, requestBody, *row.RequestBody)
+	assert.Equal(t, int64(1), hybrid.DroppedUploads())
+	assert.Equal(t, 0, objStore.Len())
+	hybrid.pendingBytes.Store(0)
+}
+
+func TestHybrid_AgentLogWithoutPayloadStaysInDatabaseOnly(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	entry := &AgentLog{
+		ID: "a2a-metadata", Timestamp: time.Now().UTC(), RecordKind: "request",
+		Operation: "GetTask", Status: "success", AgentName: "fixture", RequestID: "req-a2a-metadata",
+	}
+
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	row, err := inner.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.False(t, row.HasObject)
+	assert.Nil(t, row.PayloadReference)
+	assert.Equal(t, 0, objStore.Len())
+}
+
 func TestHybrid_ProcessMCPUploadSkipsMissingRowsWithEmptyStatus(t *testing.T) {
 	hybrid, _, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
@@ -522,7 +938,7 @@ func TestHybrid_ProcessMCPUploadSkipsMissingRowsWithEmptyStatus(t *testing.T) {
 		logID:     "mcp-missing-row",
 		timestamp: time.Now().UTC(),
 		key:       MCPToolObjectKey(hybrid.prefix, time.Now().UTC(), "mcp-missing-row"),
-		mcp:       true,
+		kind:      uploadKindMCP,
 		payload:   []byte(`{"id":"mcp-missing-row"}`),
 	})
 
@@ -983,7 +1399,7 @@ func newTestHybridWithExclude(t *testing.T, excludeFields []string) (*HybridLogS
 	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "hybrid.db")}, hybridTestLogger{})
 	require.NoError(t, err)
 	objStore := objectstore.NewInMemoryObjectStore()
-	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, excludeFields)
+	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, excludeFields, nil)
 	return hybrid, inner, objStore
 }
 

@@ -285,7 +285,7 @@ func convertMCPToolsetConfigMap(m map[string]*schemas.ChatMCPToolsetConfig) map[
 // thinks and the response carries no reasoning_details.
 //
 // Two return values because Anthropic has one thinking mode the neutral type cannot
-// express. "enabled"/"disabled" map cleanly onto ChatReasoning and are returned as
+// express. "enabled"/"disabled"/"between_tools" map cleanly onto ChatReasoning and are returned as
 // reasoning so they flow through the model-aware mapping in ToAnthropicChatRequest -
 // budget_tokens was removed on Opus 4.7+, so copying the caller's object verbatim
 // would turn a valid request into an upstream 400. "adaptive" has no neutral
@@ -335,6 +335,8 @@ func promoteThinkingFromExtraParams(value interface{}) (*schemas.ChatReasoning, 
 		// Fable/Mythos carve-out below (that family rejects an explicit
 		// thinking:{type:"disabled"}) still applies.
 		return &schemas.ChatReasoning{Effort: schemas.Ptr("none")}, nil
+	case "between_tools":
+		return &schemas.ChatReasoning{Type: schemas.Ptr("between_tools")}, nil
 	default:
 		return nil, nil
 	}
@@ -417,7 +419,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		}
 
 		if bifrostReq.Params.MaxCompletionTokens != nil {
-			anthropicReq.MaxTokens = *bifrostReq.Params.MaxCompletionTokens
+			anthropicReq.MaxTokens = clampToModelOutputCeiling(caps, *bifrostReq.Params.MaxCompletionTokens)
 		}
 
 		// Opus 4.7+ and the Fable/Mythos family reject temperature, top_p, and
@@ -658,6 +660,20 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			// policy per user direction. See Bedrock's convertToolConfig for
 			// the direct-Bedrock-path equivalent.
 			filtered, _ := ValidateChatToolsForProvider(bifrostReq.Params.Tools, caps)
+			// Chat has no OpenAI counterpart for allowed_callers, but the neutral
+			// ChatTool carries it, so a "programmatic" caller still has to be renamed
+			// to the request's code execution version (see the Responses path).
+			programmaticCaller := ""
+			for _, tool := range filtered {
+				if hasProgrammaticCaller(tool.AllowedCallers) {
+					declaredVersion, hasCodeExecution := declaredChatCodeExecutionVersion(filtered)
+					programmaticCaller, _ = resolveAnthropicProgrammaticCaller(declaredVersion, hasCodeExecution)
+					if programmaticCaller == "" {
+						return nil, fmt.Errorf("code execution version %q has no allowed_callers value, so a tool restricted to programmatic callers cannot be expressed", declaredVersion)
+					}
+					break
+				}
+			}
 			tools := make([]AnthropicTool, 0, len(filtered))
 			for _, tool := range filtered {
 				if tool.Function != nil {
@@ -665,11 +681,13 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					if err != nil {
 						return nil, err
 					}
+					converted.AllowedCallers = anthropicAllowedCallers(converted.AllowedCallers, programmaticCaller)
 					tools = append(tools, converted)
 					continue
 				}
 				// Non-function tool: attempt server-tool reconstruction.
 				if converted, ok := convertServerToolToAnthropic(tool, caps, bifrostReq.Provider); ok {
+					converted.AllowedCallers = anthropicAllowedCallers(converted.AllowedCallers, programmaticCaller)
 					tools = append(tools, converted)
 				}
 			}
@@ -751,7 +769,14 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 		// Convert reasoning
 		if reasoningParams != nil {
-			if reasoningParams.MaxTokens != nil {
+			if reasoningParams.Type != nil && *reasoningParams.Type == "between_tools" && schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+				// A thinking type, independent of effort: the caller's effort is forwarded as-is.
+				anthropicReq.Thinking = BetweenToolsThinking(caps, reasoningParams.Effort)
+				if reasoningParams.Effort != nil && *reasoningParams.Effort != "none" &&
+					caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
+					setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*reasoningParams.Effort))
+				}
+			} else if reasoningParams.MaxTokens != nil {
 				if caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
 					// Opus 4.7+ and Fable/Mythos: budget_tokens removed; adaptive thinking is the only thinking-on mode.
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
@@ -764,6 +789,12 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					}
 					if budgetTokens < MinimumReasoningMaxTokens {
 						return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic: %w", MinimumReasoningMaxTokens, ErrReasoningMaxTokensTooLow)
+					}
+					// The output clamp can leave the caller's budget at or above max_tokens; refit it below.
+					if requested := bifrostReq.Params.MaxCompletionTokens; requested != nil && *requested > anthropicReq.MaxTokens {
+						if fitted, ok := fitThinkingBudget(&budgetTokens, reasoningParams.Effort, anthropicReq.MaxTokens); ok {
+							budgetTokens = fitted
+						}
 					}
 					anthropicReq.Thinking = &AnthropicThinking{
 						Type:         "enabled",
@@ -817,7 +848,8 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			// Opus 4.7+ and the Fable/Mythos family omit reasoning text by
 			// default; default to "summarized" so the text is visible unless
 			// the caller explicitly requests "omitted".
-			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" {
+			// between_tools takes no display field.
+			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" && anthropicReq.Thinking.Type != "between_tools" {
 				if reasoningParams.Display != nil {
 					anthropicReq.Thinking.Display = reasoningParams.Display
 				} else if caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
@@ -1413,11 +1445,13 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 				NumSearchQueries: &n,
 			}
+			bifrostResponse.Usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: n}}
 		}
 		// Extended-thinking token count. Already a subset of OutputTokens (see
 		// AnthropicOutputTokensDetails), which matches the Bifrost invariant that
-		// ReasoningTokens <= CompletionTokens — so no folding is required here.
-		if billable.OutputTokensDetails != nil && billable.OutputTokensDetails.ThinkingTokens > 0 {
+		// ReasoningTokens <= CompletionTokens — so no folding is required here. An
+		// explicit thinking_tokens: 0 keeps the details object present (#7649).
+		if billable.OutputTokensDetails != nil {
 			if bifrostResponse.Usage.CompletionTokensDetails == nil {
 				bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
 			}
@@ -1506,11 +1540,12 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 	if len(bifrostResp.Choices) > 0 {
 		choice := bifrostResp.Choices[0] // Anthropic typically returns one choice
 
-		if choice.FinishReason != nil {
-			anthropicResp.StopReason = ConvertBifrostFinishReasonToAnthropic(*choice.FinishReason)
+		var stopString *string
+		if choice.ChatNonStreamResponseChoice != nil {
+			stopString = choice.StopString
 		}
-		if choice.ChatNonStreamResponseChoice != nil && choice.StopString != nil {
-			anthropicResp.StopSequence = choice.StopString
+		if choice.FinishReason != nil {
+			anthropicResp.StopReason, anthropicResp.StopSequence = anthropicStopReasonWithSequence(ConvertBifrostFinishReasonToAnthropic(*choice.FinishReason), stopString)
 		}
 
 		// Add reasoning content
@@ -1912,6 +1947,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 			// Send error through channel before closing
 			bifrostErr := &schemas.BifrostError{
 				IsBifrostError: false,
+				StatusCode:     schemas.Ptr(streamErrorStatus(chunk.Error.Type)),
 				Error: &schemas.ErrorField{
 					Type:    &chunk.Error.Type,
 					Message: chunk.Error.Message,

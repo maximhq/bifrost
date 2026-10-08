@@ -34,11 +34,12 @@ func (s testHandlerStore) GetKVStore() *kvstore.Store                           
 func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 	return schemas.WhiteList{}
 }
-func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool { return false }
-func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool     { return false }
-func (s testHandlerStore) ShouldAllowDirectKeys() bool                { return s.allowDirectKeys }
-func (s testHandlerStore) GetMCPExternalServerURL() string            { return "" }
-func (s testHandlerStore) GetMCPExternalClientURL() string            { return "" }
+func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { return false }
+func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
+func (s testHandlerStore) ShouldAllowDirectKeys() bool                     { return s.allowDirectKeys }
+func (s testHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
+func (s testHandlerStore) GetMCPExternalServerURL() string                 { return "" }
+func (s testHandlerStore) GetMCPExternalClientURL() string                 { return "" }
 
 func TestParseSessionIDFromBaggage(t *testing.T) {
 	tests := []struct {
@@ -314,6 +315,33 @@ func TestConvertToBifrostContext_BaggageSessionIDSetsGrouping(t *testing.T) {
 
 	if got, _ := bifrostCtx.Value(schemas.BifrostContextKeyParentRequestID).(string); got != "rt-123" {
 		t.Fatalf("parent request id = %q, want %q", got, "rt-123")
+	}
+}
+
+func TestConvertToBifrostContext_CompatHeaderForceReasoningOnlyToResponses(t *testing.T) {
+	cases := []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{"named feature", `["force_reasoning_only_models_to_responses"]`, true},
+		{"true enables all", "true", true},
+		{"star enables all", `["*"]`, true},
+		{"other feature only", `["should_drop_params"]`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.Set("x-bf-compat", tc.header)
+
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+			defer cancel()
+
+			got, _ := bifrostCtx.Value(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses).(bool)
+			if got != tc.want {
+				t.Fatalf("force_reasoning_only_models_to_responses override = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

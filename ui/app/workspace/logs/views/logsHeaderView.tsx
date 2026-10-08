@@ -369,7 +369,7 @@ export function LogsHeaderView({
 			{/* Full width while the row wraps, so the search field owns its own line
 			    instead of squeezing to its 12rem minimum beside the date picker. */}
 			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 basis-full items-center overflow-hidden rounded-sm border lg:basis-auto">
-				<Search className="mr-2 ml-2 size-4" />
+				<Search className="mr-2 ml-2 size-4 shrink-0" />
 				<Input
 					type="text"
 					data-testid="logs-search-input"
@@ -444,8 +444,8 @@ export function LogsHeaderView({
 			/>
 			<Popover open={openMoreActionsPopover} onOpenChange={setOpenMoreActionsPopover}>
 				<PopoverTrigger asChild>
-					<Button variant="outline" size="sm" className="h-7.5 w-7.5">
-						<MoreVertical className="h-4 w-4" />
+					<Button variant="outline" size="sm" className="h-7.5 w-7.5" aria-label="More actions">
+						<MoreVertical className="h-4 w-4" aria-hidden="true" />
 					</Button>
 				</PopoverTrigger>
 				<PopoverContent className="bg-accent w-[250px] p-2" align="end">

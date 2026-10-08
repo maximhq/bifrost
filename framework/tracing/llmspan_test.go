@@ -682,7 +682,10 @@ func embeddingFixture() (*schemas.BifrostRequest, *schemas.BifrostResponse) {
 		EmbeddingRequest: &schemas.BifrostEmbeddingRequest{
 			Provider: schemas.OpenAI,
 			Model:    "text-embedding-3-small",
-			Input:    &schemas.EmbeddingInput{Texts: []string{"alpha", "beta"}},
+			Input: schemas.EmbeddingInput{
+				{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: strPtr("alpha")}}},
+				{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: strPtr("beta")}}},
+			},
 			Params: &schemas.EmbeddingParameters{
 				Dimensions:     intPtr(256),
 				EncodingFormat: strPtr("float"),
@@ -880,5 +883,160 @@ func TestRawPayloadsAreContentAttributes(t *testing.T) {
 		if !schemas.IsContentAttribute(k) {
 			t.Errorf("%s is not classified as content; disable_content_logging would not strip it", k)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Client tool call items whose input does not live on `arguments`.
+// ---------------------------------------------------------------------------
+
+// customToolCallItem builds the item Codex emits for a custom tool.
+func customToolCallItem(name, input string) schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeCustomToolCall),
+		ID:   schemas.Ptr("ctc_1"),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID:                  schemas.Ptr("call_1"),
+			Name:                    schemas.Ptr(name),
+			ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: input},
+		},
+	}
+}
+
+// A custom_tool_call keeps its input on `input`; the old type tag dropped it.
+func TestResponsesSummariesCarryCustomToolCallInput(t *testing.T) {
+	const input = `{"cmd":"whoami","max_output_tokens":1000}`
+	item := customToolCallItem("exec_command", input)
+
+	for _, tc := range []struct {
+		side string
+		got  []ResponsesMessageSummary
+	}{
+		{"output", extractResponsesOutputMessages(&schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{item}})},
+		{"input", extractResponsesInputMessages([]schemas.ResponsesMessage{item})},
+	} {
+		if len(tc.got) != 1 {
+			t.Fatalf("%s: len = %d, want 1: %+v", tc.side, len(tc.got), tc.got)
+		}
+		summary := tc.got[0]
+		if summary.Content != "" {
+			t.Fatalf("%s: content = %q, want the call on tool_calls", tc.side, summary.Content)
+		}
+		if len(summary.ToolCalls) != 1 {
+			t.Fatalf("%s: tool_calls = %+v, want 1", tc.side, summary.ToolCalls)
+		}
+		call := summary.ToolCalls[0]
+		if call.Type != "custom" || call.Name != "exec_command" {
+			t.Fatalf("%s: type/name = %q/%q, want custom/exec_command", tc.side, call.Type, call.Name)
+		}
+		if call.Args != input {
+			t.Fatalf("%s: args = %q, want %q", tc.side, call.Args, input)
+		}
+		if call.ID != "ctc_1" {
+			t.Fatalf("%s: id = %q, want ctc_1", tc.side, call.ID)
+		}
+	}
+}
+
+// local_shell_call keeps its command on `action`, code_interpreter_call on `code`.
+func TestResponsesSummariesCarryShellAndInterpreterInput(t *testing.T) {
+	output := []schemas.ResponsesMessage{
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeLocalShellCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				Action: &schemas.ResponsesToolMessageActionStruct{
+					ResponsesLocalShellToolCallAction: &schemas.ResponsesLocalShellToolCallAction{
+						Type:    "exec",
+						Command: []string{"bash", "-lc", "whoami"},
+					},
+				},
+			},
+		},
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeCodeInterpreterCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				ResponsesCodeInterpreterToolCall: &schemas.ResponsesCodeInterpreterToolCall{
+					Code: schemas.Ptr("print(1)"),
+				},
+			},
+		},
+	}
+
+	got := extractResponsesOutputMessages(&schemas.BifrostResponsesResponse{Output: output})
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2: %+v", len(got), got)
+	}
+
+	shell := got[0].ToolCalls
+	if len(shell) != 1 || shell[0].Type != "local_shell" || shell[0].Name != "local_shell" {
+		t.Fatalf("shell tool call = %+v", shell)
+	}
+	if !strings.Contains(shell[0].Args, `"whoami"`) {
+		t.Fatalf("shell args = %q, want the command", shell[0].Args)
+	}
+
+	interp := got[1].ToolCalls
+	if len(interp) != 1 || interp[0].Type != "code_interpreter" || interp[0].Args != "print(1)" {
+		t.Fatalf("interpreter tool call = %+v", interp)
+	}
+}
+
+// Items with no model-generated input keep the placeholder tag.
+func TestResponsesSummariesTagItemsWithoutInput(t *testing.T) {
+	got := extractResponsesOutputMessages(&schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{{
+			Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFileSearchCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: schemas.Ptr("docs")},
+		}},
+	})
+	if len(got) != 1 || got[0].Content != "[file_search_call] docs" {
+		t.Fatalf("got = %+v, want the [file_search_call] docs tag", got)
+	}
+}
+
+// End-to-end: a custom tool call must survive spanbuild and attribute marshaling,
+// which is what a downstream sink (BigQuery, Datadog) actually reads.
+func TestSpanAttributesCarryCustomToolCallInput(t *testing.T) {
+	const input = `{"cmd":"whoami","max_output_tokens":1000}`
+	resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		ID:     schemas.Ptr("resp_1"),
+		Model:  "gpt-5-codex",
+		Output: []schemas.ResponsesMessage{customToolCallItem("exec_command", input)},
+	}}
+	req := &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest}
+
+	attrs := BuildLLMSpanData(req, resp, nil, SpanBuildOptions{WantContent: true}).Attributes()
+	raw, ok := attrs[schemas.AttrOutputMessages].(string)
+	if !ok {
+		t.Fatalf("%s = %T, want JSON string", schemas.AttrOutputMessages, attrs[schemas.AttrOutputMessages])
+	}
+	if !strings.Contains(raw, `whoami`) || !strings.Contains(raw, `"name":"exec_command"`) {
+		t.Fatalf("%s = %s, want the tool name and its input", schemas.AttrOutputMessages, raw)
+	}
+
+	// Tool args are content, so they must vanish when no connector reads content.
+	noContent := BuildLLMSpanData(req, resp, nil, SpanBuildOptions{}).Attributes()
+	if got, ok := noContent[schemas.AttrOutputMessages]; ok {
+		t.Fatalf("%s = %v, want absent without WantContent", schemas.AttrOutputMessages, got)
+	}
+}
+
+// A status-only error must keep its status; Error is optional.
+func TestPopulateErrorAttributes_StatusOnlyError(t *testing.T) {
+	attrs := PopulateErrorAttributes(&schemas.BifrostError{StatusCode: schemas.Ptr(429)})
+
+	if got := schemas.GetIntAttr(attrs, schemas.AttrHTTPResponseStatusCode); got != 429 {
+		t.Errorf("%s = %d, want 429", schemas.AttrHTTPResponseStatusCode, got)
+	}
+	for _, absent := range []string{schemas.AttrError, schemas.AttrErrorTypeSpec, schemas.AttrErrorCode} {
+		if _, ok := attrs[absent]; ok {
+			t.Errorf("%s should be absent when Error is nil, got %v", absent, attrs[absent])
+		}
+	}
+}
+
+func TestPopulateErrorAttributes_NilError(t *testing.T) {
+	if attrs := PopulateErrorAttributes(nil); len(attrs) != 0 {
+		t.Errorf("attrs = %v, want empty for a nil error", attrs)
 	}
 }

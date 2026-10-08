@@ -336,12 +336,14 @@ export default function CachingView() {
 									<Label className="text-sm font-medium">Cache Mode</Label>
 									<Tabs value={mode} onValueChange={(v) => setMode(v as CacheMode)}>
 										<TabsList className="flex w-full justify-start">
-											<TabsTrigger value="direct" data-testid="caching-mode-direct-tab">
+											{/* Panels live outside <Tabs>, so drop the dangling aria-controls Radix would add. */}
+											<TabsTrigger value="direct" data-testid="caching-mode-direct-tab" aria-controls={undefined}>
 												Direct only
 											</TabsTrigger>
 											<TabsTrigger
 												value="semantic"
 												data-testid="caching-mode-semantic-tab"
+												aria-controls={undefined}
 												disabled={embeddingProviders.length === 0}
 												title={
 													embeddingProviders.length === 0 ? "Configure an embedding-capable provider to enable semantic mode." : undefined
@@ -592,6 +594,7 @@ export default function CachingView() {
 												<p className="text-muted-foreground text-xs">Strip system messages from the cache key.</p>
 											</div>
 											<Switch
+												aria-label="Exclude system prompt"
 												data-testid="caching-exclude-system-prompt-switch"
 												checked={cacheConfig.exclude_system_prompt || false}
 												onCheckedChange={(checked) => updateLocal({ exclude_system_prompt: checked })}
@@ -613,6 +616,7 @@ export default function CachingView() {
 												</p>
 											</div>
 											<Switch
+												aria-label="Cache by model"
 												data-testid="caching-cache-by-model-switch"
 												checked={cacheConfig.cache_by_model}
 												onCheckedChange={(checked) => updateLocal({ cache_by_model: checked })}
@@ -627,6 +631,7 @@ export default function CachingView() {
 												</p>
 											</div>
 											<Switch
+												aria-label="Cache by provider"
 												data-testid="caching-cache-by-provider-switch"
 												checked={cacheConfig.cache_by_provider}
 												onCheckedChange={(checked) => updateLocal({ cache_by_provider: checked })}
@@ -658,7 +663,7 @@ export default function CachingView() {
 								</div>
 							</div>
 
-							<div className="flex justify-end pt-2">
+							<div className="bg-card sticky bottom-0 flex justify-end py-2">
 								<Tooltip>
 									<TooltipTrigger asChild>
 										<span tabIndex={!hasSettingsUpdateAccess ? 0 : undefined}>

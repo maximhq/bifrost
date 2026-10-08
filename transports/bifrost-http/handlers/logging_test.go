@@ -3,22 +3,28 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	loggingplugin "github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
@@ -739,6 +745,11 @@ type dashboardLogManager struct {
 	lastMCPFilters         logstore.MCPToolLogSearchFilters
 	lastRecalculateFilters logstore.SearchFilters
 	lastRecalculateContext chan context.Context
+	deleteMCPCalls         int
+	deleteMCPIDs           []string
+	deleteMCPError         error
+	// rankings, when set, supplies the rows GetDimensionRankings returns per dimension.
+	rankings map[logstore.RankingDimension][]logstore.DimensionRankingWithTrend
 }
 
 // GetLog implements the test double used by logging handler tests.
@@ -832,7 +843,8 @@ func (m *dashboardLogManager) GetModelRankings(ctx context.Context, filters *log
 
 // GetDimensionRankings implements the test double used by logging handler tests.
 func (m *dashboardLogManager) GetDimensionRankings(ctx context.Context, filters *logstore.SearchFilters, dimension logstore.RankingDimension) (*logstore.DimensionRankingResult, error) {
-	return &logstore.DimensionRankingResult{Dimension: dimension}, nil
+	rows := append([]logstore.DimensionRankingWithTrend(nil), m.rankings[dimension]...)
+	return &logstore.DimensionRankingResult{Dimension: dimension, Rankings: rows}, nil
 }
 
 // GetDroppedRequests implements the test double used by logging handler tests.
@@ -1006,7 +1018,107 @@ func (m *dashboardLogManager) GetMCPTopTools(ctx context.Context, filters logsto
 }
 
 // DeleteMCPToolLogs implements the test double used by logging handler tests.
-func (m *dashboardLogManager) DeleteMCPToolLogs(ctx context.Context, ids []string) error { return nil }
+func (m *dashboardLogManager) DeleteMCPToolLogs(ctx context.Context, ids []string) error {
+	m.deleteMCPCalls++
+	m.deleteMCPIDs = append([]string(nil), ids...)
+	return m.deleteMCPError
+}
+
+type mcpLogAuthStore struct {
+	configstore.ConfigStore
+}
+
+func (*mcpLogAuthStore) GetSession(_ context.Context, token string) (*tables.SessionsTable, error) {
+	if token == "admin-session" {
+		return &tables.SessionsTable{ExpiresAt: time.Now().Add(time.Hour)}, nil
+	}
+	return nil, nil
+}
+
+func TestDeleteMCPLogsRequiresAuthenticatedAdmin(t *testing.T) {
+	SetLogger(&mockLogger{})
+	passwordHash, err := encrypt.Hash("password")
+	require.NoError(t, err)
+	enabled := &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar(passwordHash),
+		IsEnabled:     true,
+	}
+	disabled := &configstore.AuthConfig{IsEnabled: false}
+	basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("admin:password"))
+	validBody := `{"ids":["mcp-1","mcp-2"]}`
+
+	for _, tc := range []struct {
+		name          string
+		authConfig    *configstore.AuthConfig
+		noConfigStore bool
+		whitelist     []string
+		authorization string
+		cookie        string
+		body          string
+		storeError    error
+		wantStatus    int
+		wantCallCount int
+		wantError     string
+	}{
+		{name: "auth unconfigured", body: validBody, wantStatus: fasthttp.StatusForbidden},
+		{name: "auth unconfigured malformed body", body: `{`, wantStatus: fasthttp.StatusForbidden},
+		{name: "auth disabled", authConfig: disabled, body: validBody, wantStatus: fasthttp.StatusForbidden},
+		{name: "auth disabled with credentials", authConfig: disabled, authorization: basic, body: validBody, wantStatus: fasthttp.StatusForbidden},
+		{name: "no config store", noConfigStore: true, body: validBody, wantStatus: fasthttp.StatusForbidden},
+		{name: "exact whitelist", authConfig: enabled, whitelist: []string{"/api/mcp-logs"}, body: validBody, wantStatus: fasthttp.StatusForbidden},
+		{name: "wildcard whitelist with credentials", authConfig: enabled, whitelist: []string{"/api/*"}, authorization: basic, body: validBody, wantStatus: fasthttp.StatusForbidden},
+		{name: "no credentials", authConfig: enabled, body: validBody, wantStatus: fasthttp.StatusUnauthorized},
+		{name: "invalid credentials", authConfig: enabled, authorization: "Basic " + base64.StdEncoding.EncodeToString([]byte("admin:wrong")), body: validBody, wantStatus: fasthttp.StatusUnauthorized},
+		{name: "invalid session", authConfig: enabled, cookie: "invalid-session", body: validBody, wantStatus: fasthttp.StatusUnauthorized},
+		{name: "basic admin", authConfig: enabled, authorization: basic, body: validBody, wantStatus: fasthttp.StatusOK, wantCallCount: 1},
+		{name: "bearer session admin", authConfig: enabled, authorization: "Bearer admin-session", body: validBody, wantStatus: fasthttp.StatusOK, wantCallCount: 1},
+		{name: "cookie session admin", authConfig: enabled, cookie: "admin-session", body: validBody, wantStatus: fasthttp.StatusOK, wantCallCount: 1},
+		{name: "authenticated malformed body", authConfig: enabled, authorization: basic, body: `{`, wantStatus: fasthttp.StatusBadRequest, wantError: "Invalid JSON"},
+		{name: "authenticated empty IDs", authConfig: enabled, authorization: basic, body: `{"ids":[]}`, wantStatus: fasthttp.StatusBadRequest, wantError: "No log IDs provided"},
+		{name: "authenticated storage failure", authConfig: enabled, authorization: basic, body: validBody, storeError: errors.New("storage unavailable"), wantStatus: fasthttp.StatusInternalServerError, wantCallCount: 1, wantError: "Failed to delete MCP tool logs"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := &dashboardLogManager{deleteMCPError: tc.storeError}
+			h := &LoggingHandler{logManager: manager}
+			am := &AuthMiddleware{store: &mcpLogAuthStore{}}
+			am.UpdateAuthConfig(tc.authConfig)
+			am.UpdateWhitelistedRoutes(tc.whitelist)
+			middleware := am.APIMiddleware()
+			if tc.noConfigStore {
+				middleware = AuthBypassedMiddleware()
+			}
+			r := router.New()
+			h.RegisterRoutes(r, middleware)
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodDelete)
+			req.SetRequestURI("/api/mcp-logs")
+			req.SetBodyString(tc.body)
+			req.Header.Set("Authorization", tc.authorization)
+			if tc.cookie != "" {
+				req.Header.SetCookie("token", tc.cookie)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+			r.Handler(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			require.Equal(t, tc.wantCallCount, manager.deleteMCPCalls)
+			if tc.wantStatus == fasthttp.StatusForbidden {
+				require.Contains(t, string(ctx.Response.Body()), "requires an authenticated admin session")
+			}
+			if tc.wantError != "" {
+				require.Contains(t, string(ctx.Response.Body()), tc.wantError)
+			}
+			if tc.wantCallCount != 0 {
+				require.Equal(t, []string{"mcp-1", "mcp-2"}, manager.deleteMCPIDs)
+			} else {
+				require.Empty(t, manager.deleteMCPIDs)
+			}
+		})
+	}
+}
 
 // staticMCPLogRedactionResolver records calls and returns a configured reveal result.
 type staticMCPLogRedactionResolver struct {
@@ -1141,6 +1253,42 @@ func TestFilterDataListsProjects(t *testing.T) {
 	}
 }
 
+// TestCorrelationFilterParsing keeps scalar correlation filters identical across
+// LLM list/stats/histogram and MCP list/stats/analytics endpoints.
+func TestCorrelationFilterParsing(t *testing.T) {
+	var ctx fasthttp.RequestCtx
+	ctx.Request.SetRequestURI("/api/logs?agent_names=library-research,code-reviewer&session_id=session-1&agent_correlation_id=agent-1")
+
+	llm := &logstore.SearchFilters{}
+	parseAgentNamesFilter(&ctx, llm)
+	llm.SessionID = strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id")))
+	parseAgentCorrelationIDFilter(&ctx, llm)
+	if llm.SessionID != "session-1" || llm.AgentCorrelationID != "agent-1" || !reflect.DeepEqual(llm.AgentNames, []string{"library-research", "code-reviewer"}) {
+		t.Fatalf("lost LLM correlation filters: %+v", llm)
+	}
+	if got := parseHistogramFilters(&ctx); got.SessionID != "session-1" || got.AgentCorrelationID != "agent-1" || !reflect.DeepEqual(got.AgentNames, llm.AgentNames) {
+		t.Fatalf("lost LLM histogram correlation filters: %+v", got)
+	}
+
+	list, _, err := parseMCPFiltersAndPagination(&ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := parseMCPFilters(&ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	analytics, err := parseMCPHistogramFilters(&ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, filters := range []*logstore.MCPToolLogSearchFilters{list, stats, analytics} {
+		if filters.SessionID != "session-1" || filters.AgentCorrelationID != "agent-1" || !reflect.DeepEqual(filters.AgentNames, llm.AgentNames) {
+			t.Fatalf("lost MCP correlation filters: %+v", filters)
+		}
+	}
+}
+
 // TestMCPAttributionFilterParsing keeps detail-link filters identical across list and analytics endpoints.
 func TestMCPAttributionFilterParsing(t *testing.T) {
 	var ctx fasthttp.RequestCtx
@@ -1161,5 +1309,219 @@ func TestMCPAttributionFilterParsing(t *testing.T) {
 		if !reflect.DeepEqual(filters.UserIDs, []string{"u1", "u2"}) || !reflect.DeepEqual(filters.TeamIDs, []string{"t1"}) || !reflect.DeepEqual(filters.CustomerIDs, []string{"c1"}) || !reflect.DeepEqual(filters.BusinessUnitIDs, []string{"b1"}) || !reflect.DeepEqual(filters.ProjectIDs, []string{"p1"}) || !reflect.DeepEqual(filters.DeviceIDs, []string{"d1"}) {
 			t.Fatalf("lost attribution filters: %+v", filters)
 		}
+	}
+}
+
+// namedRedactedKeys is a redaction lookup holding a fixed name per id, which
+// records every id list it was asked for.
+type namedRedactedKeys struct {
+	keys, vks, rules map[string]string
+	calls            *[][]string
+}
+
+// record notes the id list of one lookup.
+func (n namedRedactedKeys) record(ids []string) {
+	if n.calls != nil {
+		*n.calls = append(*n.calls, append([]string(nil), ids...))
+	}
+}
+
+// GetAllRedactedKeys returns the known provider keys among ids.
+func (n namedRedactedKeys) GetAllRedactedKeys(ctx context.Context, ids []string) []schemas.Key {
+	n.record(ids)
+	var out []schemas.Key
+	for _, id := range ids {
+		if name, ok := n.keys[id]; ok {
+			out = append(out, schemas.Key{ID: id, Name: name})
+		}
+	}
+	return out
+}
+
+// GetAllRedactedVirtualKeys returns the known virtual keys among ids.
+func (n namedRedactedKeys) GetAllRedactedVirtualKeys(ctx context.Context, ids []string) []tables.TableVirtualKey {
+	n.record(ids)
+	var out []tables.TableVirtualKey
+	for _, id := range ids {
+		if name, ok := n.vks[id]; ok {
+			out = append(out, tables.TableVirtualKey{ID: id, Name: name})
+		}
+	}
+	return out
+}
+
+// GetAllRedactedRoutingRules returns the known routing rules among ids.
+func (n namedRedactedKeys) GetAllRedactedRoutingRules(ctx context.Context, ids []string) []tables.TableRoutingRule {
+	n.record(ids)
+	var out []tables.TableRoutingRule
+	for _, id := range ids {
+		if name, ok := n.rules[id]; ok {
+			out = append(out, tables.TableRoutingRule{ID: id, Name: name})
+		}
+	}
+	return out
+}
+
+// rankingNameStore serves team and customer names by id, the way RDBConfigStore does.
+type rankingNameStore struct {
+	configstore.ConfigStore
+	teams, customers map[string]string
+}
+
+// GetRedactedTeams returns the known teams among ids.
+func (s rankingNameStore) GetRedactedTeams(ctx context.Context, ids []string) ([]tables.TableTeam, error) {
+	var out []tables.TableTeam
+	for _, id := range ids {
+		if name, ok := s.teams[id]; ok {
+			out = append(out, tables.TableTeam{ID: id, Name: name})
+		}
+	}
+	return out, nil
+}
+
+// GetRedactedCustomers returns the known customers among ids.
+func (s rankingNameStore) GetRedactedCustomers(ctx context.Context, ids []string) ([]tables.TableCustomer, error) {
+	var out []tables.TableCustomer
+	for _, id := range ids {
+		if name, ok := s.customers[id]; ok {
+			out = append(out, tables.TableCustomer{ID: id, Name: name})
+		}
+	}
+	return out, nil
+}
+
+// rankingRows builds ranking rows from alternating id, name pairs.
+func rankingRows(pairs ...string) []logstore.DimensionRankingWithTrend {
+	var rows []logstore.DimensionRankingWithTrend
+	for i := 0; i+1 < len(pairs); i += 2 {
+		rows = append(rows, logstore.DimensionRankingWithTrend{DimensionRankingEntry: logstore.DimensionRankingEntry{ID: pairs[i], Name: pairs[i+1]}})
+	}
+	return rows
+}
+
+// rankingNames maps each row's id to its name.
+func rankingNames(res *logstore.DimensionRankingResult) map[string]string {
+	out := map[string]string{}
+	for _, r := range res.Rankings {
+		out[r.ID] = r.Name
+	}
+	return out
+}
+
+// TestApplyCurrentRankingNames pins that ranked entities show their current
+// config name (a rename shows at once), that a deleted entity keeps the name
+// the log store found, that the Unassigned bucket and id-is-name dimensions are
+// untouched, that an enterprise-registered resolver is used for its dimension,
+// and that no lookup is ever made with an empty list or the Unassigned id.
+func TestApplyCurrentRankingNames(t *testing.T) {
+	SetLogger(&mockLogger{})
+	var calls [][]string
+	h := &LoggingHandler{
+		redactedKeysManager: namedRedactedKeys{
+			keys:  map[string]string{"key-1": "Key Now"},
+			vks:   map[string]string{"vk-1": "VK Now"},
+			rules: map[string]string{"rr-1": "Rule Now"},
+			calls: &calls,
+		},
+		config: &lib.Config{ConfigStore: rankingNameStore{
+			teams:     map[string]string{"team-1": "Team Now"},
+			customers: map[string]string{"cust-1": "Customer Now"},
+		}},
+	}
+	RegisterRankingNameResolver(logstore.RankingDimensionUser, func(ctx context.Context, ids []string) (map[string]string, error) {
+		return map[string]string{"user-1": "Alice"}, nil
+	})
+	t.Cleanup(func() { RegisterRankingNameResolver(logstore.RankingDimensionUser, nil) })
+
+	cases := []struct {
+		dim  logstore.RankingDimension
+		rows []logstore.DimensionRankingWithTrend
+		want map[string]string
+	}{
+		{logstore.RankingDimensionVirtualKey, rankingRows("vk-1", "VK Old", "vk-gone", "VK Deleted", "unassigned", "Unassigned"),
+			map[string]string{"vk-1": "VK Now", "vk-gone": "VK Deleted", "unassigned": "Unassigned"}},
+		{logstore.RankingDimensionTeam, rankingRows("team-1", "Team Old", "team-gone", "Team Deleted"),
+			map[string]string{"team-1": "Team Now", "team-gone": "Team Deleted"}},
+		{logstore.RankingDimensionCustomer, rankingRows("cust-1", "Customer Old"), map[string]string{"cust-1": "Customer Now"}},
+		{logstore.RankingDimensionRoutingRule, rankingRows("rr-1", "Rule Old"), map[string]string{"rr-1": "Rule Now"}},
+		{logstore.RankingDimensionSelectedKey, rankingRows("key-1", "Key Old"), map[string]string{"key-1": "Key Now"}},
+		{logstore.RankingDimensionUser, rankingRows("user-1", "alice-old"), map[string]string{"user-1": "Alice"}},
+		{logstore.RankingDimensionProject, rankingRows("proj-1", "Project From Logs"), map[string]string{"proj-1": "Project From Logs"}},
+		{logstore.RankingDimensionApp, rankingRows("claude-code", "claude-code"), map[string]string{"claude-code": "claude-code"}},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.dim), func(t *testing.T) {
+			res := &logstore.DimensionRankingResult{Dimension: tc.dim, Rankings: tc.rows}
+			h.applyCurrentRankingNames(context.Background(), res)
+			require.Equal(t, tc.want, rankingNames(res))
+		})
+	}
+	for _, ids := range calls {
+		require.NotEmpty(t, ids, "a lookup with an empty id list returns every row")
+		require.NotContains(t, ids, "unassigned", "the Unassigned bucket is not an entity")
+	}
+}
+
+// TestRankingEndpointsShowCurrentNames pins the wiring: both the rankings
+// endpoint and the dashboard return the current config name for a renamed key.
+func TestRankingEndpointsShowCurrentNames(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, route := range []struct {
+		uri  string
+		call func(h *LoggingHandler, ctx *fasthttp.RequestCtx)
+	}{
+		{"/api/logs/rankings/by-dimension?dimension=virtual_key", (*LoggingHandler).getDimensionRankings},
+		{"/api/logs/dashboard", (*LoggingHandler).getDashboard},
+	} {
+		t.Run(route.uri, func(t *testing.T) {
+			mgr := &dashboardLogManager{rankings: map[logstore.RankingDimension][]logstore.DimensionRankingWithTrend{
+				logstore.RankingDimensionVirtualKey: rankingRows("vk-1", "VK Old"),
+			}}
+			h := &LoggingHandler{logManager: mgr, redactedKeysManager: namedRedactedKeys{vks: map[string]string{"vk-1": "VK Now"}}}
+			var req fasthttp.Request
+			req.SetRequestURI(route.uri)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+			route.call(h, ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			require.Contains(t, string(ctx.Response.Body()), `"VK Now"`)
+			require.NotContains(t, string(ctx.Response.Body()), `"VK Old"`)
+		})
+	}
+}
+
+// TestApplyCurrentRankingNamesBatchesLookups pins that an uncapped ranking
+// (all=true) resolves names in bounded batches: the provider-key and
+// routing-rule lookups bind one parameter per id, so one call over every
+// ranked id could exceed the database's bind-parameter limit and silently
+// leave every row on its logged name.
+func TestApplyCurrentRankingNamesBatchesLookups(t *testing.T) {
+	SetLogger(&mockLogger{})
+	var batches []int
+	RegisterRankingNameResolver(logstore.RankingDimensionVirtualKey, func(ctx context.Context, ids []string) (map[string]string, error) {
+		batches = append(batches, len(ids))
+		names := make(map[string]string, len(ids))
+		for _, id := range ids {
+			names[id] = "now-" + id
+		}
+		return names, nil
+	})
+	t.Cleanup(func() { RegisterRankingNameResolver(logstore.RankingDimensionVirtualKey, nil) })
+
+	const n = 2500
+	pairs := make([]string, 0, 2*n)
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("vk-%04d", i)
+		pairs = append(pairs, id, "old-"+id)
+	}
+	res := &logstore.DimensionRankingResult{Dimension: logstore.RankingDimensionVirtualKey, Rankings: rankingRows(pairs...)}
+	(&LoggingHandler{}).applyCurrentRankingNames(context.Background(), res)
+
+	require.Len(t, batches, 3, "2,500 ids must be resolved in three batches")
+	for _, size := range batches {
+		require.LessOrEqual(t, size, 1000)
+	}
+	for _, row := range res.Rankings {
+		require.Equal(t, "now-"+row.ID, row.Name)
 	}
 }

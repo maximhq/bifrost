@@ -4,6 +4,7 @@ import {
 	BadgeInfo,
 	BookOpenText,
 	BookUser,
+	Bot,
 	Boxes,
 	BoxIcon,
 	Building,
@@ -46,6 +47,7 @@ import {
 	Telescope,
 	ToolCase,
 	TrendingUp,
+	TriangleAlert,
 	UserRoundCheck,
 	Users,
 	Wallet,
@@ -77,7 +79,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { FEATURE_FLAGS } from "@/lib/constants/featureFlags";
 import { useBranding } from "@/lib/hooks/useBranding";
-import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery } from "@/lib/store";
+import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery, useIsAuthEnabledQuery } from "@/lib/store";
 import PoweredByBifrost from "@enterprise/components/branding/poweredByBifrost";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
@@ -125,20 +127,22 @@ const productionSetupHelpCard = {
 			We offer help with production setup including custom integrations and dedicated support.
 			<br />
 			<br />
-			Book a demo with our team{" "}
 			<a
 				href="https://calendly.com/maximai/bifrost-demo?utm_source=bfd_sdbr"
 				target="_blank"
 				className="text-primary font-medium underline"
 				rel="noopener noreferrer"
 			>
-				here
+				Book a demo with our team
 			</a>
 			.
 		</>
 	),
 	dismissible: true,
 };
+
+const newBadgeClassName =
+	"relative overflow-hidden px-1.5 py-0 text-[10px] leading-4 group-data-[collapsible=icon]:hidden after:pointer-events-none after:absolute after:inset-y-0 after:-left-full after:w-full after:skew-x-[-18deg] after:bg-gradient-to-r after:from-transparent after:via-primary/25 after:to-transparent after:opacity-0 after:content-[''] after:animate-[sidebar-new-badge-shine_1200ms_cubic-bezier(0.22,1,0.36,1)_260ms_both]";
 
 // Sidebar item interface
 interface SidebarItem {
@@ -162,7 +166,7 @@ const getSidebarItemHref = (item: Pick<SidebarItem, "url" | "queryParam">) => {
 
 const slug = (s: string) => s.toLowerCase().replace(/\s+/g, "-");
 
-const TimeFilterPages = new Set(["/workspace/dashboard", "/workspace/logs", "/workspace/mcp-logs"]);
+const TimeFilterPages = new Set(["/workspace/dashboard", "/workspace/logs", "/workspace/mcp-logs", "/workspace/agent-logs"]);
 
 const preserveTimeFilters = (baseHref: string, subItemUrl: string, pathname: string, search: string): string => {
 	if (TimeFilterPages.has(subItemUrl) && TimeFilterPages.has(pathname)) {
@@ -229,7 +233,8 @@ const SidebarItemView = ({
 	const isRouteMatch = (url: string) => {
 		// Exact-match base paths that have sibling tab routes nested under them, so the base
 		// tab isn't also highlighted when a child tab (e.g. /settings) is active.
-		if (url === "/workspace/custom-pricing" || url === "/workspace/adaptive-routing") return pathname === url;
+		if (url === "/workspace/custom-pricing" || url === "/workspace/adaptive-routing" || url === "/workspace/agent-gateway")
+			return pathname === url;
 		// Avoid double-highlighting with "/workspace/mcp-registry/library"
 		if (url === "/workspace/mcp-registry") return !pathname.startsWith("/workspace/mcp-registry/library") && pathname.startsWith(url);
 		return pathname.startsWith(url);
@@ -264,7 +269,7 @@ const SidebarItemView = ({
 			: isActive || isAnySubItemActive
 				? "bg-sidebar-accent text-primary border-primary/20"
 				: item.hasAccess
-					? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+					? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-600 dark:text-zinc-400"
 					: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
 	} `;
 
@@ -277,6 +282,11 @@ const SidebarItemView = ({
 				>
 					{item.title}
 				</span>
+				{item.new && (
+					<Badge data-new-badge="true" className={`${newBadgeClassName} ml-auto ${hasSubItems ? "mr-2" : ""}`}>
+						New
+					</Badge>
+				)}
 				{item.tag && (
 					<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs group-data-[collapsible=icon]:hidden">
 						{item.tag}
@@ -307,14 +317,21 @@ const SidebarItemView = ({
 				tooltip={isSidebarCollapsed ? undefined : item.title}
 				className={buttonClassName}
 				onClick={handleClick}
-				data-testid={`sidebar-item-btn-${slug(item.title)}`}
+				aria-label={item.title}
+				data-testid={`sidebar-item-btn-${item.testId ?? slug(item.title)}`}
 			>
 				{innerContent}
 			</SidebarMenuButton>
 		);
 	} else if (!item.hasAccess) {
 		menuButton = (
-			<SidebarMenuButton tooltip={item.title} data-nav-url={item.url} className={buttonClassName}>
+			<SidebarMenuButton
+				tooltip={item.title}
+				data-nav-url={item.url}
+				className={buttonClassName}
+				aria-disabled="true"
+				aria-label={item.title}
+			>
 				{innerContent}
 			</SidebarMenuButton>
 		);
@@ -325,6 +342,7 @@ const SidebarItemView = ({
 					href={item.url}
 					target="_blank"
 					rel="noopener noreferrer"
+					aria-label={item.title}
 					data-nav-url={item.url}
 					onClick={isSidebarCollapsed ? (e: React.MouseEvent) => e.stopPropagation() : undefined}
 				>
@@ -338,6 +356,7 @@ const SidebarItemView = ({
 				<Link
 					to={item.url}
 					preload="intent"
+					aria-label={item.title}
 					data-nav-url={item.url}
 					onClick={isSidebarCollapsed ? (e: React.MouseEvent) => e.stopPropagation() : undefined}
 				>
@@ -351,9 +370,12 @@ const SidebarItemView = ({
 		<SidebarMenuItem key={item.title}>
 			{isSidebarCollapsed && hasSubItems ? (
 				<Popover open={flyoutOpen} onOpenChange={setFlyoutOpen}>
-					<PopoverTrigger asChild onMouseEnter={openFlyout} onMouseLeave={closeFlyout}>
-						<div data-testid={`sidebar-flyout-trigger-${slug(item.title)}`}>{menuButton}</div>
-					</PopoverTrigger>
+					<div data-testid={`sidebar-flyout-trigger-${item.testId ?? slug(item.title)}`}>
+						{/* The trigger must be the button itself: aria-haspopup/aria-expanded are invalid on a role-less div. */}
+						<PopoverTrigger asChild onMouseEnter={openFlyout} onMouseLeave={closeFlyout}>
+							{menuButton}
+						</PopoverTrigger>
+					</div>
 					<PopoverContent
 						side="right"
 						align="start"
@@ -361,7 +383,7 @@ const SidebarItemView = ({
 						className="w-48 p-1"
 						onMouseEnter={openFlyout}
 						onMouseLeave={closeFlyout}
-						data-testid={`sidebar-flyout-content-${slug(item.title)}`}
+						data-testid={`sidebar-flyout-content-${item.testId ?? slug(item.title)}`}
 					>
 						<div className="text-muted-foreground px-2 py-1.5 text-xs font-medium">{item.title}</div>
 						{item.subItems?.map((subItem) => {
@@ -376,7 +398,7 @@ const SidebarItemView = ({
 										<SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />
 									)}
 									<span
-										className={`min-w-0 truncate text-sm ${isSubItemActive ? "text-primary font-medium" : "text-slate-500 dark:text-zinc-400"}`}
+										className={`min-w-0 truncate text-sm ${isSubItemActive ? "text-primary font-medium" : "text-slate-600 dark:text-zinc-400"}`}
 									>
 										{subItem.title}
 									</span>
@@ -388,10 +410,16 @@ const SidebarItemView = ({
 								</div>
 							);
 							return (
-								<div key={subItem.title} data-testid={`sidebar-flyout-subitem-${subSlug}`} onClick={() => setFlyoutOpen(false)}>
+								<div
+									key={subItem.title}
+									data-testid={`sidebar-flyout-subitem-${subSlug}`}
+									role="presentation"
+									onClick={() => setFlyoutOpen(false)}
+								>
 									{subItem.hasAccess === false ? (
 										<div
 											data-testid={`sidebar-subitem-disabled-${subSlug}`}
+											aria-disabled="true"
 											className="text-muted-foreground hover:bg-destructive/5 flex h-7 cursor-not-allowed items-center rounded-sm px-2"
 										>
 											{inner}
@@ -430,7 +458,7 @@ const SidebarItemView = ({
 									? "bg-sidebar-accent text-primary font-medium"
 									: subItem.hasAccess === false
 										? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-										: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+										: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-600 dark:text-zinc-400"
 						}`;
 						const subInner = (
 							<div className="flex w-full min-w-0 items-center gap-2">
@@ -452,6 +480,7 @@ const SidebarItemView = ({
 										data-nav-url={subItemHref}
 										data-testid={`sidebar-subitem-disabled-${subItem.testId ?? slug(subItem.title)}`}
 										className={subItemClassName}
+										aria-disabled="true"
 									>
 										{subInner}
 									</SidebarMenuSubButton>
@@ -566,6 +595,8 @@ export default function AppSidebar() {
 	const hasDashboardAccess = useRbac(RbacResource.Dashboard, RbacOperation.View);
 	const hasModelProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 	const hasMCPGatewayAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
+	const hasAgentGatewayAccess = useRbac(RbacResource.AgentGateway, RbacOperation.View);
+	const hasAgentLogsAccess = useRbac(RbacResource.AgentLogs, RbacOperation.View);
 	const hasVirtualMCPsAccess = useRbac(RbacResource.VirtualMCPs, RbacOperation.View);
 	const hasMCPLogsAccess = useRbac(RbacResource.MCPLogs, RbacOperation.View);
 	const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View);
@@ -574,7 +605,7 @@ export default function AppSidebar() {
 	const hasAuditLogsAccess = useRbac(RbacResource.AuditLogs, RbacOperation.View);
 	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
 	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
-	const hasBusinessUnitsAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
+	const hasBusinessUnitsAccess = useRbac(RbacResource.BusinessUnits, RbacOperation.View);
 	const hasRbacAccess = useRbac(RbacResource.RBAC, RbacOperation.View);
 	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
 	const hasGovernanceLegacyAccess = useRbac(RbacResource.Governance, RbacOperation.View);
@@ -608,6 +639,10 @@ export default function AppSidebar() {
 		hasProjectsAccess ||
 		hasGovernanceLegacyAccess;
 	const { data: coreConfig } = useGetCoreConfigQuery({});
+	// OSS setup lock: true while dashboard auth is not configured, so management APIs
+	// accept only the setup token. Drives the non-dismissible setup card below.
+	const { data: authState } = useIsAuthEnabledQuery(undefined, { skip: IS_ENTERPRISE });
+	const setupRequired = !IS_ENTERPRISE && !!authState?.setup_required;
 	const isDbConnected = coreConfig?.is_db_connected ?? false;
 	const envLabel = coreConfig?.env_label ?? null;
 
@@ -653,7 +688,8 @@ export default function AppSidebar() {
 				url: "/workspace/logs",
 				icon: Telescope,
 				description: "Request logs & monitoring",
-				hasAccess: hasLogsAccess,
+				hasAccess:
+					hasLogsAccess || hasDashboardAccess || hasMCPLogsAccess || hasAgentLogsAccess || hasObservabilityAccess || hasSettingsAccess,
 				subItems: [
 					{
 						title: "Dashboard",
@@ -675,6 +711,13 @@ export default function AppSidebar() {
 						icon: MCPIcon,
 						description: "MCP tool execution logs",
 						hasAccess: hasMCPLogsAccess,
+					},
+					{
+						title: "Agent Logs",
+						url: "/workspace/agent-logs",
+						icon: Bot,
+						description: "Agent request logs",
+						hasAccess: hasAgentLogsAccess,
 					},
 					{
 						title: "Connectors",
@@ -758,7 +801,8 @@ export default function AppSidebar() {
 				],
 			},
 			{
-				title: "MCP Gateway",
+				title: "MCP Servers",
+				testId: "mcp-gateway", // keep the pre-rename E2E selector stable
 				icon: MCPIcon,
 				description: "MCP configuration",
 				url: "/workspace/mcp-gateway",
@@ -806,6 +850,37 @@ export default function AppSidebar() {
 						icon: Settings,
 						description: "MCP configuration",
 						hasAccess: hasMCPGatewayAccess,
+					},
+				],
+			},
+			{
+				title: "Agents",
+				url: "/workspace/agent-gateway",
+				icon: Bot,
+				description: "Register and manage A2A agents",
+				hasAccess: hasAgentGatewayAccess,
+				new: true,
+				subItems: [
+					{
+						title: "Agent Catalog",
+						url: "/workspace/agent-gateway",
+						icon: LayoutGrid,
+						description: "Registered A2A agents",
+						hasAccess: hasAgentGatewayAccess,
+					},
+					{
+						title: "Push Configurations",
+						url: "/workspace/agent-gateway/push-configs",
+						icon: Webhook,
+						description: "Stored A2A push callbacks",
+						hasAccess: hasAgentGatewayAccess,
+					},
+					{
+						title: "Agent Settings",
+						url: "/workspace/config/agent-gateway",
+						icon: Settings,
+						description: "Agent Gateway configuration",
+						hasAccess: hasSettingsAccess,
 					},
 				],
 			},
@@ -859,6 +934,15 @@ export default function AppSidebar() {
 						icon: KeyRound,
 						description: "Manage virtual keys & access",
 						hasAccess: hasVirtualKeysAccess,
+					},
+					{
+						title: "Org Chart",
+						url: "/workspace/governance/org-chart",
+						icon: Network,
+						description: "Budgets and usage across business units, teams and users",
+						// The chart is read from business units down, so it follows the Business Units entry.
+						hasAccess: hasBusinessUnitsAccess,
+						new: true,
 					},
 					{
 						title: "Users",
@@ -1007,6 +1091,13 @@ export default function AppSidebar() {
 						hasAccess: isAdaptiveRoutingAllowed,
 					},
 					{
+						title: "Incidents",
+						url: "/workspace/adaptive-routing/incidents",
+						icon: TriangleAlert,
+						description: "Adaptive routing incidents",
+						hasAccess: isAdaptiveRoutingAllowed,
+					},
+					{
 						title: "Settings",
 						url: "/workspace/adaptive-routing/settings",
 						icon: Settings,
@@ -1136,6 +1227,8 @@ export default function AppSidebar() {
 			hasDashboardAccess,
 			hasModelProvidersAccess,
 			hasMCPGatewayAccess,
+			hasAgentGatewayAccess,
+			hasAgentLogsAccess,
 			hasVirtualMCPsAccess,
 			hasMCPLogsAccess,
 			hasPluginsAccess,
@@ -1224,7 +1317,8 @@ export default function AppSidebar() {
 	useEffect(() => {
 		const newExpandedItems = new Set<string>();
 		const isRouteMatch = (url: string) => {
-			if (url === "/workspace/custom-pricing" || url === "/workspace/adaptive-routing") return pathname === url;
+			if (url === "/workspace/custom-pricing" || url === "/workspace/adaptive-routing" || url === "/workspace/agent-gateway")
+				return pathname === url;
 			return pathname.startsWith(url);
 		};
 		items.forEach((item) => {
@@ -1388,6 +1482,38 @@ export default function AppSidebar() {
 	// Memoize promo cards array to prevent duplicates and unnecessary re-renders
 	const promoCards = useMemo(() => {
 		const cards = [];
+		// OSS setup lock card - non-dismissible, shown first: until an admin account
+		// exists, management APIs run on the operator's setup token.
+		if (setupRequired) {
+			cards.push({
+				id: "setup-required",
+				title: "Dashboard auth not configured",
+				description: (
+					<div className="flex h-full flex-col gap-2 text-xs text-amber-700 dark:text-amber-300/80" data-testid="setup-required-banner">
+						<p>
+							All management APIs accept the setup token in the <code className="font-semibold">X-Bifrost-Setup-Token</code> header until
+							you create an admin account.
+						</p>
+						<div className="mt-auto flex items-center gap-3 pb-1">
+							<Link to="/workspace/config/security" className="text-primary font-medium underline" data-testid="setup-required-banner-link">
+								Create admin
+							</Link>
+							<a
+								href="https://docs.getbifrost.ai/quickstart/gateway/setting-up-auth"
+								target="_blank"
+								rel="noopener noreferrer"
+								className="text-primary font-medium underline"
+								data-testid="setup-required-banner-docs-link"
+							>
+								Docs
+							</a>
+						</div>
+					</div>
+				),
+				dismissible: false,
+				variant: "warning" as const,
+			});
+		}
 		// Restart required card - non-dismissible, shown first
 		if (coreConfig?.restart_required?.required) {
 			cards.push({
@@ -1455,6 +1581,7 @@ export default function AppSidebar() {
 		}
 		return cards;
 	}, [
+		setupRequired,
 		coreConfig?.restart_required,
 		showNewReleaseBanner,
 		latestRelease,
@@ -1520,12 +1647,14 @@ export default function AppSidebar() {
 					</button>
 				</div>
 				{/* Collapsed state: vertical layout */}
-				<div
+				<button
+					type="button"
 					className="hidden w-full cursor-pointer flex-col items-center gap-2 py-1 group-data-[collapsible=icon]:flex"
+					aria-label="Expand sidebar"
 					onClick={toggleSidebar}
 				>
-					<img className="size-[22px] object-contain" src={iconSrc} alt={logoAlt} width={22} height={22} />
-				</div>
+					<img className="size-[22px] object-contain" src={iconSrc} alt="" width={22} height={22} />
+				</button>
 			</SidebarHeader>
 			{envLabel && (
 				<div className="mx-2 -mt-1 mb-2">

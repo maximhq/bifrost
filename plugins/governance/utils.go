@@ -2,11 +2,14 @@
 package governance
 
 import (
+	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/valyala/fasthttp"
 )
 
@@ -55,10 +58,23 @@ func IsModelRequiredForRequest(requestType schemas.RequestType) bool {
 	// Responses retrieve/delete/cancel/input_items target a response_id, not a model.
 	// Video edit's model is optional too — the OpenAI SDKs send none and the provider infers it from
 	// the source video — so it is evaluated only when the caller supplies one, same as passthrough.
-	if requestType == schemas.ListModelsRequest || requestType == schemas.MCPToolExecutionRequest || requestType == schemas.BatchCreateRequest || requestType == schemas.BatchListRequest || requestType == schemas.BatchRetrieveRequest || requestType == schemas.BatchCancelRequest || requestType == schemas.BatchResultsRequest || requestType == schemas.FileUploadRequest || requestType == schemas.FileListRequest || requestType == schemas.FileRetrieveRequest || requestType == schemas.FileDeleteRequest || requestType == schemas.FileContentRequest || requestType == schemas.ContainerCreateRequest || requestType == schemas.ContainerListRequest || requestType == schemas.ContainerRetrieveRequest || requestType == schemas.ContainerDeleteRequest || requestType == schemas.ContainerFileCreateRequest || requestType == schemas.ContainerFileListRequest || requestType == schemas.ContainerFileRetrieveRequest || requestType == schemas.ContainerFileContentRequest || requestType == schemas.ContainerFileDeleteRequest || requestType == schemas.CachedContentListRequest || requestType == schemas.CachedContentRetrieveRequest || requestType == schemas.CachedContentUpdateRequest || requestType == schemas.CachedContentDeleteRequest || requestType == schemas.ResponsesRetrieveRequest || requestType == schemas.ResponsesRetrieveStreamRequest || requestType == schemas.ResponsesDeleteRequest || requestType == schemas.ResponsesCancelRequest || requestType == schemas.ResponsesInputItemsRequest || requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoDownloadRequest || requestType == schemas.VideoListRequest || requestType == schemas.VideoDeleteRequest || requestType == schemas.VideoRemixRequest || requestType == schemas.VideoEditRequest || requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest {
+	if requestType == schemas.ListModelsRequest || requestType == schemas.MCPToolExecutionRequest || requestType == schemas.BatchCreateRequest || requestType == schemas.BatchListRequest || requestType == schemas.BatchRetrieveRequest || requestType == schemas.BatchCancelRequest || requestType == schemas.BatchResultsRequest || requestType == schemas.FileUploadRequest || requestType == schemas.FileListRequest || requestType == schemas.FileRetrieveRequest || requestType == schemas.FileDeleteRequest || requestType == schemas.FileContentRequest || requestType == schemas.ContainerCreateRequest || requestType == schemas.ContainerListRequest || requestType == schemas.ContainerRetrieveRequest || requestType == schemas.ContainerDeleteRequest || requestType == schemas.ContainerFileCreateRequest || requestType == schemas.ContainerFileListRequest || requestType == schemas.ContainerFileRetrieveRequest || requestType == schemas.ContainerFileContentRequest || requestType == schemas.ContainerFileDeleteRequest || requestType == schemas.CachedContentListRequest || requestType == schemas.CachedContentRetrieveRequest || requestType == schemas.CachedContentUpdateRequest || requestType == schemas.CachedContentDeleteRequest || requestType == schemas.ResponsesRetrieveRequest || requestType == schemas.ResponsesRetrieveStreamRequest || requestType == schemas.ResponsesDeleteRequest || requestType == schemas.ResponsesCancelRequest || requestType == schemas.ResponsesInputItemsRequest || requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoDownloadRequest || requestType == schemas.VideoListRequest || requestType == schemas.VideoDeleteRequest || requestType == schemas.VideoRemixRequest || requestType == schemas.VideoEditRequest || requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest || requestType == schemas.LiveContentRequest {
 		return false
 	}
 	return true
+}
+
+// batchModelBoundByProvider reports whether a provider's batch API runs the model named on the
+// batch create request. Gemini (models/{m}:batchGenerateContent), Vertex (job model) and Bedrock
+// (required modelId) do; OpenAI and Azure take only the uploaded input, whose rows each name their
+// own model, so the request's model is at most a pricing hint there.
+func batchModelBoundByProvider(provider schemas.ModelProvider) bool {
+	switch provider {
+	case schemas.OpenAI, schemas.Azure:
+		return false
+	default:
+		return true
+	}
 }
 
 // IsModelCheckedWhenPresent reports whether a request type whose model is optional
@@ -80,9 +96,15 @@ func IsModelCheckedWhenPresent(requestType schemas.RequestType) bool {
 
 // getWeight safely dereferences a *float64 weight pointer, returning 1.0 as default if nil.
 // This allows distinguishing between "not set" (nil -> 1.0) and "explicitly set to 0" (0.0).
+// A negative or non-finite weight counts as 0: the API rejects one, but config.json and older rows
+// can still carry it, and summed into the draw it would select the first provider whatever the
+// other weights say.
 func getWeight(w *float64) float64 {
 	if w == nil {
 		return 1.0
+	}
+	if *w < 0 || math.IsNaN(*w) || math.IsInf(*w, 0) {
+		return 0
 	}
 	return *w
 }
@@ -193,6 +215,27 @@ func presentedGrantBearingCredential(ctx *schemas.BifrostContext) bool {
 	return false
 }
 
+// ungrantedUserAdmitted reports whether a signed-in user nothing grants access to is to be served
+// anyway, as a key-less request is, rather than refused as access not found. Only a caller that
+// asked for it and only for a user: Warp asks, because reaching its chat route already proves the
+// user's role allows it, and on a deployment without access profiles no user ever holds a permit. A
+// virtual key the request presents is never admitted this way - a key that resolves to nothing is a
+// dead key whoever presents it - and neither is a request that names no user at all.
+func ungrantedUserAdmitted(ctx *schemas.BifrostContext) bool {
+	if !bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeyAdmitUngrantedUser) {
+		return false
+	}
+	g := ctx.Grant()
+	if g == nil {
+		return false
+	}
+	identity := g.Identity()
+	if identity == nil || identity.User() == nil {
+		return false
+	}
+	return identity.Credential().Kind != string(grant.CredentialVirtualKey)
+}
+
 // pruneMCPIncludeToolsFromContext narrows a caller-provided include-tools list (stamped on ctx
 // from the x-bf-mcp-include-tools header in lib/ctx.go) down to the tools the request's access
 // allows, and writes the pruned list back to ctx. Returns true when a caller list was present,
@@ -292,4 +335,12 @@ func AppendAllProviderPermits(permits []schemas.ProviderPermit, configured []str
 		})
 	}
 	return permits
+}
+
+// isLiveSessionContinuation reports a billing unit of an admitted live session: the continuation
+// flag counts only on a live request, so no other path can skip request limits by setting it.
+func isLiveSessionContinuation(ctx context.Context) bool {
+	continuation, _ := ctx.Value(schemas.BifrostContextKeySessionContinuation).(bool)
+	requestType, _ := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType)
+	return continuation && requestType == schemas.LiveRequest
 }

@@ -75,6 +75,37 @@ curl --location 'http://localhost:8080/v1/decisions' \
 
 Every declared question produces an answer of its declared kind. `confidence`, `probabilities`, and `legend` are included when the provider supplies them.
 
+### Provider-Specific Fields
+
+Some decision providers return fields beyond this shape. They appear on the response only when the provider supplies them.
+
+| Provider | Where | Fields |
+|----------|-------|--------|
+| Laya | Answer | `answer_confidence` (calibrated probability of the reported answer), `action`, and, when `min_confidence` is set, `abstention` (`passed`, `abstained`, or `unevaluated`), `abstention_threshold`, `low_confidence` |
+| Laya | Response | `routing`: the checkpoint that answered and why |
+| Laya | `usage` | `state_tokens`, `state_tokens_dropped`, `truncated`, `truncated_questions` |
+
+```json
+{
+  "model": "laya-rl-agent",
+  "answers": {
+    "urgency": {
+      "kind": "score",
+      "value": 1.931,
+      "confidence": 0.7674,
+      "probabilities": { "0": 0.0045, "1": 0.0599, "2": 0.9355 },
+      "legend": { "0": "can wait", "1": "soon", "2": "today" },
+      "answer_confidence": 0.9355,
+      "action": { "act_probability": 1.0 },
+      "abstention": "passed",
+      "abstention_threshold": 0.9
+    }
+  },
+  "usage": { "prompt_tokens": 39, "total_tokens": 39, "state_tokens": 13, "state_tokens_dropped": 0, "truncated": false },
+  "routing": { "model": "english", "reason": "explicit model='english'" }
+}
+```
+
 ## Fallbacks
 
 Standard fallback syntax applies:

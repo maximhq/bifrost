@@ -2,12 +2,15 @@ package schemas
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestAnthropicBillingHeaderExtraction(t *testing.T) {
@@ -55,6 +58,65 @@ func TestAnthropicBillingHeaderExtraction(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestAnthropicBillingHeaderAfterEffortOnlyItems covers a header that follows leading
+// effort-only system items (per-message output_config). Those items carry no prompt text,
+// so the header is still the leading system content: it is stripped and restored in place.
+func TestAnthropicBillingHeaderAfterEffortOnlyItems(t *testing.T) {
+	header := "x-anthropic-billing-header: cc_version=2.1.286; cc_entrypoint=cli;"
+	effortOnly := func(effort string) ResponsesMessage {
+		return ResponsesMessage{
+			Role:         Ptr(ResponsesInputMessageRoleSystem),
+			Content:      &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{}},
+			OutputConfig: &ResponsesMessageOutputConfig{Effort: Ptr(effort)},
+		}
+	}
+	for _, shape := range []string{"string", "blocks"} {
+		for _, leading := range []int{1, 2} {
+			t.Run(fmt.Sprintf("%s/leading=%d", shape, leading), func(t *testing.T) {
+				content := &ResponsesMessageContent{ContentStr: Ptr(header)}
+				if shape == "blocks" {
+					content = &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr(header)}}}
+				}
+				var input []ResponsesMessage
+				for range leading {
+					input = append(input, effortOnly("high"))
+				}
+				input = append(input,
+					ResponsesMessage{Role: Ptr(ResponsesInputMessageRoleSystem), Content: content},
+					ResponsesMessage{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("alpha")}},
+				)
+				original := slices.Clone(input)
+				r := &BifrostResponsesRequest{Input: input}
+				before, err := MarshalSorted(r)
+				require.NoError(t, err)
+
+				r.ExtractAnthropicBillingHeader()
+				require.Len(t, r.Input, leading+1)
+				for i := range leading {
+					assert.True(t, r.Input[i].IsEffortOnlySystemItem(), "item %d", i)
+				}
+				assert.Equal(t, "alpha", *r.Input[leading].Content.ContentStr)
+				normalized, err := MarshalSorted(r)
+				require.NoError(t, err)
+				assert.NotContains(t, string(normalized), "x-anthropic-billing-header:")
+				// Removal must not shift items in the caller's backing array.
+				assert.Equal(t, original, input)
+
+				restored := r.WithAnthropicBillingHeader()
+				after, err := MarshalSorted(restored)
+				require.NoError(t, err)
+				assert.Equal(t, string(before), string(after))
+			})
+		}
+	}
+	t.Run("effort-only items alone", func(t *testing.T) {
+		r := &BifrostResponsesRequest{Input: []ResponsesMessage{effortOnly("low")}}
+		r.ExtractAnthropicBillingHeader()
+		assert.Nil(t, r.anthropicBillingHeader)
+		require.Len(t, r.Input, 1)
+	})
 }
 
 func TestAnthropicBillingHeaderRestoresPositionsAndCacheMarkers(t *testing.T) {
@@ -235,6 +297,16 @@ func TestBifrostResponsesResponseWithDefaultsPreservesUltrafastServiceTier(t *te
 	got := (&BifrostResponsesResponse{ServiceTier: &tier}).WithDefaults()
 	if got.ServiceTier == nil || *got.ServiceTier != BifrostServiceTierUltrafast {
 		t.Fatalf("service tier = %v, want ultrafast", got.ServiceTier)
+	}
+}
+
+// OpenAI echoes service_tier "fast" (the renamed Priority tier) on served
+// requests; the client must see that value, not a coerced "auto".
+func TestBifrostResponsesResponseWithDefaultsPreservesFastServiceTier(t *testing.T) {
+	tier := BifrostServiceTierFast
+	got := (&BifrostResponsesResponse{ServiceTier: &tier}).WithDefaults()
+	if got.ServiceTier == nil || *got.ServiceTier != BifrostServiceTierFast {
+		t.Fatalf("service tier = %v, want fast", got.ServiceTier)
 	}
 }
 
@@ -1037,6 +1109,41 @@ func TestDeepCopyResponsesMessageCopiesCodeExecutionPointers(t *testing.T) {
 	}
 }
 
+// A copied computer_call must not share its actions with the original: plugins edit
+// their copy, and the edit must not reach the message other accumulators hold.
+func TestDeepCopyResponsesMessageCopiesComputerActions(t *testing.T) {
+	newAction := func() ResponsesComputerToolCallAction {
+		return ResponsesComputerToolCallAction{
+			Type: "click", X: Ptr(1), Y: Ptr(2), Button: Ptr("left"), ScrollX: Ptr(3), ScrollY: Ptr(4), Text: Ptr("hi"),
+			Path: []ResponsesComputerToolCallActionPath{{X: 5, Y: 6}}, Keys: []string{"ctrl"}, Region: []int{7, 8, 9, 10},
+		}
+	}
+	single := newAction()
+	original := ResponsesMessage{
+		Type: Ptr(ResponsesMessageTypeComputerCall),
+		ResponsesToolMessage: &ResponsesToolMessage{
+			Action:                    &ResponsesToolMessageActionStruct{ResponsesComputerToolCallAction: &single},
+			ResponsesComputerToolCall: &ResponsesComputerToolCall{Actions: []ResponsesComputerToolCallAction{newAction()}},
+		},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	for _, a := range []*ResponsesComputerToolCallAction{
+		&copied.ResponsesToolMessage.ResponsesComputerToolCall.Actions[0],
+		copied.ResponsesToolMessage.Action.ResponsesComputerToolCallAction,
+	} {
+		a.Type = "type"
+		*a.X, *a.Y, *a.ScrollX, *a.ScrollY = 0, 0, 0, 0
+		*a.Button, *a.Text = "right", "changed"
+		a.Path[0].X, a.Keys[0], a.Region[0] = 0, "alt", 0
+	}
+	copied.ResponsesToolMessage.ResponsesComputerToolCall.Actions = append(copied.ResponsesToolMessage.ResponsesComputerToolCall.Actions, newAction())
+
+	assert.Len(t, original.ResponsesToolMessage.ResponsesComputerToolCall.Actions, 1)
+	assert.Equal(t, newAction(), original.ResponsesToolMessage.ResponsesComputerToolCall.Actions[0], "actions entry changed through the copy")
+	assert.Equal(t, newAction(), *original.ResponsesToolMessage.Action.ResponsesComputerToolCallAction, "single action changed through the copy")
+}
+
 func TestDeepCopyResponsesMessagePreservesToolSearchFields(t *testing.T) {
 	toolSearchOutputType := ResponsesMessageTypeToolSearchOutput
 	callID := "call_1"
@@ -1606,5 +1713,605 @@ func TestResponsesToolCallAsyncSurvives(t *testing.T) {
 		if copied.ResponsesToolMessage.Async == msg.ResponsesToolMessage.Async {
 			t.Fatalf("deep copy aliases the async pointer: %s", in)
 		}
+	}
+}
+
+// The Responses API carries tool_usage at the top level; internally it rides on usage for pricing.
+func TestBifrostResponsesResponseToolUsageIsTopLevelOnTheWire(t *testing.T) {
+	body := `{"id":"resp_1","object":"response","created_at":1,"status":"completed","output":[],
+		"tool_usage":{"web_search":{"num_requests":2}},
+		"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`
+	var resp BifrostResponsesResponse
+	require.NoError(t, json.Unmarshal([]byte(body), &resp))
+	require.NotNil(t, resp.Usage.ToolUsage, "top-level tool_usage must reach usage for pricing")
+	assert.Equal(t, 2, resp.Usage.ToolUsage.WebSearch.NumRequests)
+	require.NotNil(t, resp.ToolUsage)
+	assert.Equal(t, 2, resp.ToolUsage.WebSearch.NumRequests)
+
+	// Marshal must not mutate the caller's response.
+	defer func() { assert.NotNil(t, resp.Usage.ToolUsage, "marshal cleared the caller's usage.tool_usage") }()
+
+	out, err := json.Marshal(resp)
+	require.NoError(t, err)
+	var wire map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(out, &wire))
+	assert.JSONEq(t, `{"web_search":{"num_requests":2}}`, string(wire["tool_usage"]))
+	assert.NotContains(t, string(wire["usage"]), "tool_usage", "usage must not carry tool_usage on the wire")
+
+	// Streamed response.completed nests the response; same shape inside it.
+	event := BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeCompleted, Response: &resp}
+	out, err = json.Marshal(event)
+	require.NoError(t, err)
+	var streamed struct {
+		Response map[string]json.RawMessage `json:"response"`
+	}
+	require.NoError(t, json.Unmarshal(out, &streamed))
+	assert.JSONEq(t, `{"web_search":{"num_requests":2}}`, string(streamed.Response["tool_usage"]))
+	assert.NotContains(t, string(streamed.Response["usage"]), "tool_usage")
+
+	// Set only on usage (how providers fill it): still sent top-level only.
+	out, err = json.Marshal(BifrostResponsesResponse{Usage: &ResponsesResponseUsage{TotalTokens: 1, ToolUsage: &ToolUsage{WebSearch: &WebSearchToolUsage{NumRequests: 4}}}})
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(out, &wire))
+	assert.JSONEq(t, `{"web_search":{"num_requests":4}}`, string(wire["tool_usage"]))
+	assert.NotContains(t, string(wire["usage"]), "tool_usage")
+
+	// A response without tool usage emits no tool_usage key.
+	out, err = json.Marshal(BifrostResponsesResponse{Usage: &ResponsesResponseUsage{TotalTokens: 1}})
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "tool_usage")
+
+	// Round trip through the stream event parser too.
+	var parsed BifrostResponsesStreamResponse
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"response.completed","sequence_number":3,"response":`+body+`}`), &parsed))
+	assert.Equal(t, 2, parsed.Response.Usage.ToolUsage.WebSearch.NumRequests)
+}
+
+func TestDeepCopyResponsesMessagePreservesGuardContent(t *testing.T) {
+	messageType := ResponsesMessageTypeMessage
+	role := ResponsesInputMessageRoleUser
+	text := "What is the capital of France?"
+
+	original := ResponsesMessage{
+		Type: &messageType,
+		Role: &role,
+		Content: &ResponsesMessageContent{
+			ContentBlocks: []ResponsesMessageContentBlock{{
+				Type:         ResponsesInputMessageContentBlockTypeText,
+				Text:         &text,
+				GuardContent: &GuardContent{Qualifiers: []string{"query"}},
+			}},
+		},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	got := copied.Content.ContentBlocks[0].GuardContent
+	if got == nil {
+		t.Fatal("deep copy dropped the guard marker")
+	}
+	if got == original.Content.ContentBlocks[0].GuardContent {
+		t.Error("copy aliases the original guard marker struct")
+	}
+	if len(got.Qualifiers) != 1 || got.Qualifiers[0] != "query" {
+		t.Fatalf("qualifiers = %v, want [query]", got.Qualifiers)
+	}
+	got.Qualifiers[0] = "grounding_source"
+	if original.Content.ContentBlocks[0].GuardContent.Qualifiers[0] != "query" {
+		t.Error("copy shares the qualifiers backing array with the original")
+	}
+}
+
+// TestResponsesMessageUnmarshalReasoningWrapperSummary: Gemini-shaped histories can
+// carry a reasoning item's summary under a "reasoning" wrapper
+// ({"reasoning":{"summary":["..."]}}) instead of OpenAI's top-level summary. The
+// decoder lifts it into ResponsesReasoning so the text survives to the provider;
+// plain strings become summary_text entries, objects decode as-is.
+func TestResponsesMessageUnmarshalReasoningWrapperSummary(t *testing.T) {
+	t.Run("string entries", func(t *testing.T) {
+		var msg ResponsesMessage
+		require.NoError(t, Unmarshal([]byte(`{"type":"reasoning","id":"msg_abc123_reasoning_0","reasoning":{"summary":["thinking about this","and more"]}}`), &msg))
+		require.NotNil(t, msg.ResponsesReasoning, "reasoning wrapper summary must be lifted")
+		require.Len(t, msg.ResponsesReasoning.Summary, 2)
+		assert.Equal(t, ResponsesReasoningContentBlockTypeSummaryText, msg.ResponsesReasoning.Summary[0].Type)
+		assert.Equal(t, "thinking about this", msg.ResponsesReasoning.Summary[0].Text)
+		assert.Equal(t, "and more", msg.ResponsesReasoning.Summary[1].Text)
+	})
+
+	t.Run("object entries and encrypted_content", func(t *testing.T) {
+		var msg ResponsesMessage
+		require.NoError(t, Unmarshal([]byte(`{"type":"reasoning","reasoning":{"summary":[{"type":"summary_text","text":"typed"},{"text":"untyped"}],"encrypted_content":"enc_123"}}`), &msg))
+		require.NotNil(t, msg.ResponsesReasoning)
+		require.Len(t, msg.ResponsesReasoning.Summary, 2)
+		assert.Equal(t, "typed", msg.ResponsesReasoning.Summary[0].Text)
+		assert.Equal(t, ResponsesReasoningContentBlockTypeSummaryText, msg.ResponsesReasoning.Summary[1].Type, "untyped entries default to summary_text")
+		assert.Equal(t, "untyped", msg.ResponsesReasoning.Summary[1].Text)
+		require.NotNil(t, msg.ResponsesReasoning.EncryptedContent)
+		assert.Equal(t, "enc_123", *msg.ResponsesReasoning.EncryptedContent)
+	})
+
+	t.Run("top-level summary wins", func(t *testing.T) {
+		var msg ResponsesMessage
+		require.NoError(t, Unmarshal([]byte(`{"type":"reasoning","summary":[{"type":"summary_text","text":"native"}],"reasoning":{"summary":["ignored"]}}`), &msg))
+		require.NotNil(t, msg.ResponsesReasoning)
+		require.Len(t, msg.ResponsesReasoning.Summary, 1)
+		assert.Equal(t, "native", msg.ResponsesReasoning.Summary[0].Text)
+	})
+
+	t.Run("non-reasoning items ignore the wrapper", func(t *testing.T) {
+		var msg ResponsesMessage
+		require.NoError(t, Unmarshal([]byte(`{"type":"message","role":"user","content":"hi","reasoning":{"summary":["x"]}}`), &msg))
+		assert.Nil(t, msg.ResponsesReasoning)
+	})
+}
+
+// An output_text history block that omits logprobs must not gain "logprobs": null on
+// re-marshal (strict upstreams 400 on it), while an explicit empty array stays an array.
+func TestResponsesOutputTextLogProbsNotNulled(t *testing.T) {
+	for _, tc := range []struct {
+		name, in string
+		want     string // raw logprobs JSON expected on the wire, "" = absent
+	}{
+		{"annotations_without_logprobs", `{"type":"output_text","text":"Previous answer.","annotations":[]}`, ""},
+		{"empty_logprobs_preserved", `{"type":"output_text","text":"Previous answer.","annotations":[],"logprobs":[]}`, "[]"},
+		{"populated_logprobs_preserved", `{"type":"output_text","text":"a","annotations":[],"logprobs":[{"bytes":[97],"logprob":-0.1,"token":"a","top_logprobs":[]}]}`, `[{"bytes":[97],"logprob":-0.1,"token":"a","top_logprobs":[]}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var block ResponsesMessageContentBlock
+			require.NoError(t, Unmarshal([]byte(tc.in), &block))
+			out, err := MarshalSorted(block)
+			require.NoError(t, err)
+			var got map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(out, &got))
+			raw, present := got["logprobs"]
+			if tc.want == "" {
+				assert.False(t, present, "logprobs must stay absent, got %s", out)
+				return
+			}
+			require.True(t, present, "logprobs must be present, got %s", out)
+			assert.JSONEq(t, tc.want, string(raw))
+		})
+	}
+
+	// Egress still emits the empty array that OpenAI-compliant output_text carries.
+	out, err := MarshalSorted(ResponsesMessageContentBlock{
+		Type: ResponsesOutputMessageContentTypeText,
+		Text: Ptr("hi"),
+		ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
+			Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+			LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+		},
+	})
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"logprobs":[]`)
+}
+
+// gjsonRaw returns the raw JSON of key, or "" when it is absent.
+func gjsonRaw(payload, key string) string {
+	result := gjson.Get(payload, key)
+	if !result.Exists() {
+		return ""
+	}
+	return result.Raw
+}
+
+// =============================================================================
+// OpenAI shell tool (the successor to local_shell)
+// =============================================================================
+
+// TestResponsesToolShellRoundTrip covers the three environment shapes of the
+// shell tool definition. Every field has to survive: OpenAI validates the
+// environment union, so a dropped key either changes where commands run or 400s.
+func TestResponsesToolShellRoundTrip(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "local",
+			input: `{"type":"shell","environment":{"type":"local"}}`,
+		},
+		{
+			name:  "local with skills",
+			input: `{"type":"shell","environment":{"type":"local","skills":[{"name":"pdf","description":"Fill PDFs","path":"/skills/pdf"}]}}`,
+		},
+		{
+			name:  "container_auto with network allowlist and domain secrets",
+			input: `{"type":"shell","environment":{"type":"container_auto","file_ids":["file-1"],"memory_limit":"4g","network_policy":{"type":"allowlist","allowed_domains":["example.com"],"domain_secrets":[{"domain":"example.com","name":"API_KEY","value":"sk-test"}]}}}`,
+		},
+		{
+			name:  "container_auto with disabled network and skills",
+			input: `{"type":"shell","environment":{"type":"container_auto","network_policy":{"type":"disabled"},"skills":[{"type":"skill_reference","skill_id":"skill_123","version":"latest"},{"type":"inline","name":"csv","description":"CSV tools","source":{"type":"base64","media_type":"application/zip","data":"UEsDBA=="}}]}}`,
+		},
+		{
+			name:  "container_reference",
+			input: `{"type":"shell","environment":{"type":"container_reference","container_id":"cntr_123"}}`,
+		},
+		{
+			name:  "allowed_callers",
+			input: `{"type":"shell","allowed_callers":["direct"],"environment":{"type":"local"}}`,
+		},
+		{
+			name:  "no environment",
+			input: `{"type":"shell"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var tool ResponsesTool
+			require.NoError(t, Unmarshal([]byte(tt.input), &tool))
+			assert.Equal(t, ResponsesToolTypeShell, tool.Type)
+
+			encoded, err := Marshal(tool)
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.input, string(encoded))
+		})
+	}
+}
+
+// TestResponsesShellCallRoundTrip locks the shell_call item. Its action carries no
+// "type" discriminator, so it is probed by shape — without that it decoded as a
+// computer action and the commands were lost.
+func TestResponsesShellCallRoundTrip(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "local call",
+			input: `{"action":{"commands":["ls -la"]},"call_id":"call_1","id":"shc_1","status":"in_progress","type":"shell_call"}`,
+		},
+		{
+			name:  "limits, environment and created_by",
+			input: `{"action":{"commands":["sleep 1","echo hi"],"max_output_length":2000,"timeout_ms":5000},"call_id":"call_2","created_by":"asst_1","environment":{"type":"container_reference","container_id":"cntr_1"},"id":"shc_2","status":"completed","type":"shell_call"}`,
+		},
+		{
+			name:  "program caller",
+			input: `{"action":{"commands":["pwd"]},"call_id":"call_3","caller":{"type":"program","caller_id":"call_parent"},"id":"shc_3","status":"completed","type":"shell_call"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var msg ResponsesMessage
+			require.NoError(t, Unmarshal([]byte(tt.input), &msg))
+			require.NotNil(t, msg.Type)
+			assert.Equal(t, ResponsesMessageTypeShellCall, *msg.Type)
+			require.NotNil(t, msg.ResponsesToolMessage)
+			require.NotNil(t, msg.Action)
+			require.NotNil(t, msg.Action.ResponsesShellToolCallAction)
+			assert.NotEmpty(t, msg.Action.ResponsesShellToolCallAction.Commands)
+
+			encoded, err := Marshal(msg)
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.input, string(encoded))
+		})
+	}
+}
+
+// TestResponsesShellCallOutputRoundTrip locks the shell_call_output item, whose
+// "output" is an array of {stdout, stderr, outcome} — a shape that would
+// otherwise be swallowed by the content-block decode.
+func TestResponsesShellCallOutputRoundTrip(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "exit outcome",
+			input: `{"call_id":"call_1","id":"shco_1","output":[{"outcome":{"type":"exit","exit_code":0},"stderr":"","stdout":"hello\n"}],"status":"completed","type":"shell_call_output"}`,
+		},
+		{
+			name:  "timeout outcome with max_output_length",
+			input: `{"call_id":"call_2","id":"shco_2","max_output_length":1000,"output":[{"outcome":{"type":"timeout"},"stderr":"killed","stdout":""}],"status":"completed","type":"shell_call_output"}`,
+		},
+		{
+			name:  "multiple chunks with caller and created_by",
+			input: `{"call_id":"call_3","caller":{"type":"direct"},"created_by":"asst_1","id":"shco_3","output":[{"created_by":"asst_1","outcome":{"type":"exit","exit_code":0},"stderr":"","stdout":"one"},{"outcome":{"type":"exit","exit_code":1},"stderr":"boom","stdout":"two"}],"status":"completed","type":"shell_call_output"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var msg ResponsesMessage
+			require.NoError(t, Unmarshal([]byte(tt.input), &msg))
+			require.NotNil(t, msg.ResponsesToolMessage)
+			require.NotNil(t, msg.Output)
+			require.NotEmpty(t, msg.Output.ResponsesShellCallOutput)
+			assert.Nil(t, msg.Output.ResponsesFunctionToolCallOutputBlocks)
+
+			encoded, err := Marshal(msg)
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.input, string(encoded))
+		})
+	}
+}
+
+// TestResponsesToolOutputArrayStillDecodesAsContentBlocks guards the shell probe:
+// a function_call_output array must not be claimed by the shell variant.
+func TestResponsesToolOutputArrayStillDecodesAsContentBlocks(t *testing.T) {
+	var output ResponsesToolMessageOutputStruct
+	require.NoError(t, Unmarshal([]byte(`[{"type":"output_text","text":"done"}]`), &output))
+	assert.Nil(t, output.ResponsesShellCallOutput)
+	require.Len(t, output.ResponsesFunctionToolCallOutputBlocks, 1)
+
+	// An array whose items only look shell-ish (no outcome) is not shell output either.
+	var partial ResponsesToolMessageOutputStruct
+	require.NoError(t, Unmarshal([]byte(`[{"stdout":"x"}]`), &partial))
+	assert.Nil(t, partial.ResponsesShellCallOutput)
+}
+
+// TestResponsesShellStreamEvents locks the five shell stream events. The
+// shell_call_output_content.delta event is the only one whose `delta` is an object:
+// the plain decode rejects it (which used to drop the event) and the provider falls
+// back to UnmarshalResponsesStreamObjectDelta, as this test does.
+func TestResponsesShellStreamEvents(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		assert func(t *testing.T, resp BifrostResponsesStreamResponse)
+	}{
+		{
+			name:  "command added",
+			input: `{"type":"response.shell_call_command.added","command":"ls -la","command_index":0,"output_index":1,"sequence_number":7}`,
+			assert: func(t *testing.T, resp BifrostResponsesStreamResponse) {
+				require.NotNil(t, resp.Command)
+				assert.Equal(t, "ls -la", *resp.Command)
+				require.NotNil(t, resp.CommandIndex)
+				assert.Equal(t, 0, *resp.CommandIndex)
+			},
+		},
+		{
+			name:  "command delta keeps a string delta",
+			input: `{"type":"response.shell_call_command.delta","command_index":1,"delta":"ls ","output_index":1,"sequence_number":8}`,
+			assert: func(t *testing.T, resp BifrostResponsesStreamResponse) {
+				require.NotNil(t, resp.Delta)
+				assert.Equal(t, "ls ", *resp.Delta)
+				assert.Nil(t, resp.ShellOutputDelta)
+			},
+		},
+		{
+			name:  "command done",
+			input: `{"type":"response.shell_call_command.done","command":"ls -la","command_index":1,"output_index":1,"sequence_number":9}`,
+			assert: func(t *testing.T, resp BifrostResponsesStreamResponse) {
+				require.NotNil(t, resp.Command)
+				assert.Equal(t, "ls -la", *resp.Command)
+			},
+		},
+		{
+			name:  "output content delta carries an object delta",
+			input: `{"type":"response.shell_call_output_content.delta","command_index":0,"delta":{"stdout":"hello"},"item_id":"shco_1","output_index":1,"sequence_number":10}`,
+			assert: func(t *testing.T, resp BifrostResponsesStreamResponse) {
+				assert.Nil(t, resp.Delta)
+				require.NotNil(t, resp.ShellOutputDelta)
+				require.NotNil(t, resp.ShellOutputDelta.Stdout)
+				assert.Equal(t, "hello", *resp.ShellOutputDelta.Stdout)
+			},
+		},
+		{
+			name:  "output content done",
+			input: `{"type":"response.shell_call_output_content.done","command_index":0,"item_id":"shco_1","output":[{"outcome":{"type":"exit","exit_code":0},"stderr":"","stdout":"hello"}],"output_index":1,"sequence_number":11}`,
+			assert: func(t *testing.T, resp BifrostResponsesStreamResponse) {
+				require.Len(t, resp.Output, 1)
+				assert.Equal(t, "hello", resp.Output[0].Stdout)
+				require.NotNil(t, resp.Output[0].Outcome.ExitCode)
+				assert.Equal(t, 0, *resp.Output[0].Outcome.ExitCode)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var resp BifrostResponsesStreamResponse
+			if err := Unmarshal([]byte(tt.input), &resp); err != nil {
+				resp = BifrostResponsesStreamResponse{}
+				require.NoError(t, UnmarshalResponsesStreamObjectDelta([]byte(tt.input), &resp))
+			}
+			tt.assert(t, resp)
+
+			// The /openai route re-emits the event through WithDefaults.
+			encoded, err := Marshal(resp.WithDefaults())
+			require.NoError(t, err)
+			for _, key := range []string{"command", "command_index", "delta", "output"} {
+				expected := gjsonRaw(tt.input, key)
+				if expected == "" {
+					continue
+				}
+				assert.JSONEq(t, expected, gjsonRaw(string(encoded), key), "field %q", key)
+			}
+		})
+	}
+}
+
+// TestUnmarshalResponsesStreamObjectDeltaRejectsStringDelta keeps the fallback from
+// claiming ordinary events: only an object `delta` belongs to it.
+func TestUnmarshalResponsesStreamObjectDeltaRejectsStringDelta(t *testing.T) {
+	var resp BifrostResponsesStreamResponse
+	err := UnmarshalResponsesStreamObjectDelta([]byte(`{"type":"response.output_text.delta","delta":"hi"}`), &resp)
+	require.Error(t, err)
+	assert.Nil(t, resp.ShellOutputDelta)
+}
+
+// TestShellCallOutputText renders the chunks the way summaries and Anthropic see them.
+func TestShellCallOutputText(t *testing.T) {
+	text := ShellCallOutputText([]ResponsesShellCallOutputContent{
+		{Stdout: "one", Stderr: ""},
+		{Stdout: "", Stderr: "boom"},
+	})
+	assert.Equal(t, "one\nboom", text)
+	assert.Equal(t, "", ShellCallOutputText(nil))
+}
+
+// TestResponsesApplyPatchCallRoundTrip locks the apply_patch items. OpenAI requires
+// `operation` on a replayed call — without it the turn is rejected with
+// "Missing required parameter: 'input[1].operation'".
+func TestResponsesApplyPatchCallRoundTrip(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "create_file",
+			input: `{"call_id":"call_1","id":"apc_1","operation":{"type":"create_file","path":"hello.txt","diff":"+hi\n"},"status":"completed","type":"apply_patch_call"}`,
+		},
+		{
+			name:  "update_file",
+			input: `{"call_id":"call_2","id":"apc_2","operation":{"type":"update_file","path":"main.go","diff":"@@\n-old\n+new\n"},"status":"in_progress","type":"apply_patch_call"}`,
+		},
+		{
+			name:  "delete_file carries no diff",
+			input: `{"call_id":"call_3","id":"apc_3","operation":{"type":"delete_file","path":"stale.txt"},"status":"completed","type":"apply_patch_call"}`,
+		},
+		{
+			name:  "caller and created_by",
+			input: `{"call_id":"call_4","caller":{"type":"program","caller_id":"call_parent"},"created_by":"asst_1","id":"apc_4","operation":{"type":"create_file","path":"a.txt","diff":"+a\n"},"status":"completed","type":"apply_patch_call"}`,
+		},
+		{
+			name:  "output item",
+			input: `{"call_id":"call_1","id":"apco_1","output":"done","status":"completed","type":"apply_patch_call_output"}`,
+		},
+		{
+			name:  "failed output item",
+			input: `{"call_id":"call_2","id":"apco_2","status":"failed","type":"apply_patch_call_output"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var msg ResponsesMessage
+			require.NoError(t, Unmarshal([]byte(tt.input), &msg))
+			require.NotNil(t, msg.Type)
+			require.NotNil(t, msg.ResponsesToolMessage)
+
+			encoded, err := Marshal(msg)
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.input, string(encoded))
+		})
+	}
+}
+
+// TestDeepCopyResponsesMessageCopiesApplyPatchOperation keeps the copy from sharing
+// the operation pointers with the original.
+func TestDeepCopyResponsesMessageCopiesApplyPatchOperation(t *testing.T) {
+	original := ResponsesMessage{
+		Type: Ptr(ResponsesMessageTypeApplyPatchCall),
+		ResponsesToolMessage: &ResponsesToolMessage{
+			CallID: Ptr("call_1"),
+			ResponsesApplyPatchCall: &ResponsesApplyPatchCall{
+				Operation: &ResponsesApplyPatchOperation{Type: "create_file", Path: "hello.txt", Diff: Ptr("+hi\n")},
+			},
+		},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	require.NotNil(t, copied.ResponsesToolMessage)
+	require.NotNil(t, copied.ResponsesApplyPatchCall)
+	operation := copied.ResponsesApplyPatchCall.Operation
+	require.NotNil(t, operation)
+	assert.Equal(t, "hello.txt", operation.Path)
+	require.NotNil(t, operation.Diff)
+	assert.Equal(t, "+hi\n", *operation.Diff)
+
+	*original.ResponsesApplyPatchCall.Operation.Diff = "mutated"
+	original.ResponsesApplyPatchCall.Operation.Path = "mutated"
+	assert.Equal(t, "+hi\n", *copied.ResponsesApplyPatchCall.Operation.Diff)
+	assert.Equal(t, "hello.txt", copied.ResponsesApplyPatchCall.Operation.Path)
+}
+
+// TestResponsesApplyPatchStreamEvents keeps the assembled patch on the done event:
+// the diff deltas are ordinary string deltas, but `diff` had no field to land in.
+func TestResponsesApplyPatchStreamEvents(t *testing.T) {
+	deltaEvent := `{"type":"response.apply_patch_call_operation_diff.delta","delta":"+hello","item_id":"apc_1","output_index":0,"sequence_number":3}`
+	doneEvent := `{"type":"response.apply_patch_call_operation_diff.done","diff":"+hello\n","item_id":"apc_1","output_index":0,"sequence_number":4}`
+
+	var delta BifrostResponsesStreamResponse
+	require.NoError(t, Unmarshal([]byte(deltaEvent), &delta))
+	require.NotNil(t, delta.Delta)
+	assert.Equal(t, "+hello", *delta.Delta)
+	assert.Nil(t, delta.Diff)
+
+	var done BifrostResponsesStreamResponse
+	require.NoError(t, Unmarshal([]byte(doneEvent), &done))
+	require.NotNil(t, done.Diff)
+	assert.Equal(t, "+hello\n", *done.Diff)
+
+	// The /openai route re-emits through WithDefaults.
+	encoded, err := Marshal(done.WithDefaults())
+	require.NoError(t, err)
+	assert.Equal(t, `"+hello\n"`, gjsonRaw(string(encoded), "diff"))
+}
+
+// Newer models batch computer actions into an `actions` array instead of the
+// singular `action`. The struct modelled only the older shape, so sonic dropped
+// the field on decode and the client got a computer_call carrying a call_id and
+// no instruction — the computer-use loop then stalls with nothing to execute.
+func TestResponsesComputerCallActionsRoundTrip(t *testing.T) {
+	// Verbatim from a gpt-6.1-sol response.
+	raw := `{
+		"id": "cu_0e484435a8b2b325016abc86cc097487d1b9f516c6993c742c",
+		"type": "computer_call",
+		"status": "completed",
+		"actions": [{"type": "screenshot"}],
+		"call_id": "call_CCgSejtyJvG8dUQdFqgr0Fpu"
+	}`
+
+	var msg ResponsesMessage
+	if err := Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if msg.ResponsesToolMessage == nil {
+		t.Fatalf("computer tool call not decoded: %+v", msg)
+	}
+
+	// Asserted through the re-marshalled wire bytes rather than the typed field:
+	// what the client actually receives is the JSON, and this keeps the test
+	// meaningful (a failing assertion, not a compile error) against a build that
+	// does not model the field at all.
+	out, err := Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	actions := gjson.GetBytes(out, "actions")
+	if !actions.IsArray() || len(actions.Array()) != 1 {
+		t.Fatalf("actions not carried through: %s", out)
+	}
+	if got := actions.Array()[0].Get("type").String(); got != "screenshot" {
+		t.Fatalf("actions[0].type = %q, want screenshot: %s", got, out)
+	}
+	// The call_id must still be there alongside it.
+	if got := gjson.GetBytes(out, "call_id").String(); got != "call_CCgSejtyJvG8dUQdFqgr0Fpu" {
+		t.Fatalf("call_id = %q: %s", got, out)
+	}
+
+	// The singular `action` must not be invented where the wire had none.
+	if msg.ResponsesToolMessage.Action != nil {
+		t.Fatalf("singular action = %+v, want nil", msg.ResponsesToolMessage.Action)
+	}
+	if strings.Contains(string(out), `"action":`) {
+		t.Fatalf("singular action emitted where none existed: %s", out)
+	}
+}
+
+// The older singular shape still has to work unchanged.
+func TestResponsesComputerCallSingularActionStillWorks(t *testing.T) {
+	raw := `{
+		"id": "cu_1",
+		"type": "computer_call",
+		"status": "completed",
+		"action": {"type": "screenshot"},
+		"call_id": "call_1"
+	}`
+
+	var msg ResponsesMessage
+	if err := Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Action == nil ||
+		msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction == nil {
+		t.Fatalf("singular action not decoded: %+v", msg.ResponsesToolMessage)
+	}
+	if got := msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction.Type; got != "screenshot" {
+		t.Fatalf("action type = %q, want screenshot", got)
 	}
 }

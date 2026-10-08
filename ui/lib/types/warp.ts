@@ -3,23 +3,35 @@
  * telemetry. These types mirror core/schemas/warp.go.
  */
 
+/** One provider and model pair Warp may run on. Mirrors schemas.WarpModel. */
+export interface WarpModel {
+	provider: string;
+	model: string;
+	/** Which of the provider's keys this model is pinned to. Empty for any key. */
+	api_key_id?: string;
+}
+
 /** What the read API returns. The stored credential is never included. */
 export interface WarpConfig {
 	/**
 	 * Whether Warp has everything it needs to answer: enabled, with a provider
-	 * and a model. A credential is deliberately not part of this test, since a
-	 * provider reached over a trusted network via base_url may need none.
+	 * and a model. A key is deliberately not part of this test, since a provider
+	 * using ambient credentials may need none.
 	 */
 	configured: boolean;
 	enabled: boolean;
 	provider: string;
 	model: string;
-	base_url?: string;
 	/**
 	 * Which of the provider's configured keys Warp uses. A reference, not a
 	 * credential, so it round-trips in the clear. Empty when none is needed.
 	 */
 	api_key_id?: string;
+	/**
+	 * The other models an operator exposed. `provider` and `model` above stay
+	 * the default; the panel's switcher offers the default followed by these.
+	 */
+	additional_models?: WarpModel[];
 	max_iterations: number;
 	request_timeout_seconds: number;
 	/**
@@ -55,8 +67,9 @@ export interface WarpConfigInput {
 	enabled: boolean;
 	provider: string;
 	model: string;
-	base_url?: string;
 	api_key_id?: string;
+	/** Replaced whole on every write: leaving it out clears the list. */
+	additional_models?: WarpModel[];
 	max_iterations?: number;
 	request_timeout_seconds?: number;
 	/** Zero means "use the default". There is no maximum. */
@@ -114,6 +127,10 @@ export interface WarpBackfillJob {
 	indexed: number;
 	skipped: number;
 	failed: number;
+	/** Tokens the job's embedding calls have consumed so far, across resumes. */
+	embedding_tokens?: number;
+	/** USD cost of those calls. Absent when the deployment cannot price them - unknown, not free. */
+	embedding_cost?: number;
 	last_error?: string;
 	message?: string;
 	created_at?: string;

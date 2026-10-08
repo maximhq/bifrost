@@ -207,6 +207,41 @@ export interface BifrostEmbedding {
 	embedding: string | number[] | number[][];
 }
 
+export interface EmbeddingMediaPart {
+	data?: string;
+	url?: string;
+	mime_type?: string;
+	filename?: string;
+}
+
+export interface EmbeddingContentPart {
+	type: "text" | "image" | "audio" | "file" | "video" | "tokens";
+	text?: string;
+	image?: EmbeddingMediaPart;
+	audio?: EmbeddingMediaPart;
+	file?: EmbeddingMediaPart;
+	video?: EmbeddingMediaPart;
+	video_config?: {
+		start_offset_sec?: number;
+		end_offset_sec?: number;
+		interval_sec?: number;
+	};
+	tokens?: number[];
+}
+
+export type EmbeddingContent = EmbeddingContentPart[];
+
+export interface EmbeddingInputItem {
+	content: EmbeddingContent;
+	params?: {
+		encoding_format?: string;
+		dimensions?: number;
+		task_type?: string;
+		title?: string;
+		auto_truncate?: boolean;
+	};
+}
+
 export interface RerankDocument {
 	text: string;
 	id?: string;
@@ -340,6 +375,36 @@ export interface BifrostVideoGenerationOutput {
 	size?: string;
 	status?: string;
 	content_filter?: ContentFilterInfo;
+}
+
+// A GPT Live session's typed log payload: how it ran, what was said, and what the backend did.
+export interface LiveSessionLog {
+	transport?: string;
+	provider_session_id?: string;
+	voice_seconds: number;
+	voice_cost?: number;
+	backend_cost?: number;
+	transcript?: LiveTranscriptLine[];
+	delegations?: LiveDelegationLog[];
+}
+
+export interface LiveTranscriptLine {
+	role: string;
+	text: string;
+	start_ms?: number;
+	end_ms?: number;
+}
+
+export interface LiveDelegationLog {
+	delegation_id?: string;
+	request_id: string;
+	response_ids?: string[];
+	model: string;
+	started_ms?: number;
+	usage?: LLMUsage;
+	cost?: number;
+	output?: ResponsesMessage[];
+	error?: string;
 }
 
 export interface BifrostVideoDownloadOutput {
@@ -556,20 +621,17 @@ export interface GuardrailMetadata {
 }
 
 export interface RoutingCall {
+	request_type?: string;
 	provider_used?: string;
 	model_used?: string;
 	input_tokens?: number;
-	// Present only when this call was a chat completion (the llm classifier);
-	// absent for a semantic classification embed.
+	// Present for token-generating classifiers; request_type selects the pricing mode.
 	output_tokens?: number;
 	count_toward_budgets?: boolean;
 }
 
 export interface RoutingMetadata {
-	// One entry per billable routing-classification call this request made: a
-	// semantic classification embed, an llm classification completion, or
-	// both when semantic classification produced no tier and the llm fallback
-	// ran.
+	// One entry per billable semantic embed or classifier call, including decision-model calls.
 	calls?: RoutingCall[];
 }
 
@@ -651,7 +713,6 @@ export interface RedactionMapping {
 // number (which is total minus the upstream socket accumulator).
 export interface OverheadBucket {
 	name: string; // e.g. "key.selection", "plugin.governance", "transport/core"
-	kind: string; // originating span kind, for grouping/coloring
 	duration_us: number;
 }
 
@@ -699,7 +760,7 @@ export interface LogEntry {
 	routing_rule_id?: string;
 	routing_rule_name?: string;
 	complexity_tier?: string; // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); absent when no routing rule referenced complexity_tier
-	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
+	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "decision", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
 	complexity_score?: number; // Classifier score: the semantic classifier's similarity to the nearest reference phrase
 	session_id?: string; // Raw opaque session ID resolved by Bifrost for key stickiness and request correlation
 	routing_engine_logs?: string; // Human-readable routing decision logs
@@ -712,6 +773,8 @@ export interface LogEntry {
 	content_summary?: string;
 	output_message?: ChatMessage;
 	responses_output?: ResponsesMessage[];
+	// Each entry is either a bare EmbeddingContent or an item carrying its own params.
+	embedding_input?: (EmbeddingContent | EmbeddingInputItem)[];
 	embedding_output?: BifrostEmbedding[];
 	rerank_output?: RerankResult[];
 	ocr_input?: OCRDocument;
@@ -722,6 +785,7 @@ export interface LogEntry {
 	video_download_output?: BifrostVideoDownloadOutput;
 	video_list_output?: BifrostVideoListOutput;
 	video_delete_output?: BifrostVideoDeleteOutput;
+	live_session?: LiveSessionLog;
 	params?: ModelParameters;
 	speech_input?: SpeechInput;
 	transcription_input?: TranscriptionInput;
@@ -748,7 +812,7 @@ export interface LogEntry {
 	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost and also guardrail judge calls)
 	cost_breakdown?: CostBreakdown; // Per-category split (input/output/additional); present whenever cost is
 	// Served billing tier, denormalized onto the log row so cost recomputation can reprice
-	// at the rates the request was actually served at. OpenAI: "priority" / "flex" / "ultrafast" / "default".
+	// at the rates the request was actually served at. OpenAI: "priority" / "fast" / "flex" / "ultrafast" / "default".
 	service_tier?: string;
 	status: string; // "success", "error", "processing", or "cancelled"
 	stop_reason?: string; // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
@@ -783,11 +847,17 @@ export interface LogEntry {
 // injected below an expanded parent in the grouped view; they never come from
 // the API. __chainChild covers any nested row so the table can indent it,
 // __rowKind says which expansion produced it, and __depth separates a session
-// member (1) from a fallback attempt under that member (2).
+// member (1) from a fallback attempt under that member (2). __turn is a session
+// member's position in its session (the root is turn 1), and __isLast marks the
+// last sibling so the tree branch can close. __parentIsLast does the same for
+// the session member a depth-2 row hangs from.
 export type DisplayLogEntry = LogEntry & {
 	__chainChild?: boolean;
 	__rowKind?: "chain-child" | "session-member";
 	__depth?: 1 | 2;
+	__turn?: number;
+	__isLast?: boolean;
+	__parentIsLast?: boolean;
 };
 
 export interface LogFilters {
@@ -805,8 +875,10 @@ export interface LogFilters {
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	tool_call_names?: string[]; // Requests whose response called any of these function names
 	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, llm, session, skipped)
+	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, decision, llm, session, skipped)
+	agent_names?: string[]; // Registered Agents whose context IDs correlate the matching logs
 	session_id?: string; // Exact session ID used for key stickiness and request correlation
+	agent_correlation_id?: string; // Exact Agent correlation ID shared across related protocol activity
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
@@ -1098,6 +1170,10 @@ export type ResponsesMessageType =
 	| "code_interpreter_call"
 	| "local_shell_call"
 	| "local_shell_call_output"
+	| "shell_call"
+	| "shell_call_output"
+	| "apply_patch_call"
+	| "apply_patch_call_output"
 	| "mcp_call"
 	| "custom_tool_call"
 	| "custom_tool_call_output"
@@ -1374,6 +1450,7 @@ export interface MCPToolLogEntry {
 	source?: string;
 	id: string;
 	llm_request_id?: string; // Links to the LLM request that triggered this tool call
+	session_id?: string;
 	timestamp: string; // ISO string format
 	tool_name: string;
 	server_label?: string; // MCP server that provided the tool
@@ -1408,6 +1485,9 @@ export interface MCPToolLogFilters {
 	status?: string[];
 	virtual_key_ids?: string[];
 	llm_request_ids?: string[];
+	agent_names?: string[];
+	session_id?: string;
+	agent_correlation_id?: string;
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
 	period?: string; // relative period ("1h","6h","24h","7d","30d"); computed server-side, takes precedence over start_time/end_time

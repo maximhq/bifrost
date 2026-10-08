@@ -46,6 +46,7 @@ type ModelCapabilities struct {
 	SupportsAdaptiveThinking        *bool `json:"supports_adaptive_thinking,omitempty"`
 	SupportsNativeEffort            *bool `json:"supports_native_effort,omitempty"`
 	SupportsMidConversationSystem   *bool `json:"supports_mid_conversation_system_messages,omitempty"`
+	SupportsMidConvOutputConfig     *bool `json:"supports_mid_conversation_output_config,omitempty"`
 	SupportsSamplingParams          *bool `json:"supports_sampling_params,omitempty"` // false ⇒ temperature/top_p/top_k rejected (adaptive-only models)
 	SupportsRedactThinking          *bool `json:"supports_redact_thinking,omitempty"`
 	SupportsTaskBudgets             *bool `json:"supports_task_budgets,omitempty"`
@@ -89,6 +90,10 @@ type ModelCapabilities struct {
 
 	// Datasheet "mode" for the row (chat, embedding, image_generation, …).
 	Mode *string `json:"mode,omitempty"`
+
+	// Model the provider actually serves for this id when the response does not say
+	// (e.g. DeepSeek's Anthropic endpoint echoes retired ids back).
+	ServerSideModel *string `json:"server_side_model,omitempty"`
 
 	// Endpoints the model is reachable on. Normalised into the catalog's
 	// supported-response-type index.
@@ -181,6 +186,9 @@ type ModelCapabilities struct {
 	// Model accepts an explicit "off" — thinking:{type:"disabled"} or a zero
 	// budget. False on models that reject it, which need the config omitted.
 	SupportsReasoningDisable *bool `json:"supports_reasoning_disable,omitempty"`
+
+	// Model accepts thinking:{type:"between_tools"} (no up-front thinking).
+	SupportsBetweenToolsThinking *bool `json:"supports_between_tools_thinking,omitempty"`
 
 	// Model accepts a self-managed thinking budget (Gemini thinkingBudget: -1).
 	SupportsDynamicReasoningBudget *bool `json:"supports_dynamic_reasoning_budget,omitempty"`

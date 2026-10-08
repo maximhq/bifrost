@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -514,18 +516,145 @@ func TestMigrationAddMetadataGINIndex_EdgeCases(t *testing.T) {
 	assert.True(t, indexExists(t, db, "idx_logs_metadata_gin"), "GIN index should be created")
 }
 
-// TestPerformanceIndexesCoverProjectIDs pins the project indexes to the ensurePerformanceIndexes
-// list: the project column migrations add only the columns (addColumnIfNotExists never creates a
-// field's index), so an upgraded deployment scans logs by project_id unindexed unless the
-// background builder carries both entries. A fresh database gets them from the model's index tags
-// at table creation.
+// TestCorrelationColumnsMigration verifies that all correlation columns are additive,
+// indexed, idempotent, and preserve rows written before the migration.
+func TestCorrelationColumnsMigration(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("CREATE TABLE mcp_tool_logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO logs (id) VALUES (?)", "log-existing").Error)
+	require.NoError(t, db.Exec("INSERT INTO mcp_tool_logs (id) VALUES (?)", "mcp-existing").Error)
+
+	ctx := context.Background()
+	require.NoError(t, migrationCreateAgentLogsTable(ctx, db, testLogger{}))
+	for _, column := range []struct {
+		model any
+		field string
+		index string
+	}{
+		{&Log{}, "AgentCorrelationID", "idx_logs_agent_correlation_id"},
+		{&MCPToolLog{}, "SessionID", "idx_mcp_logs_session_id"},
+		{&MCPToolLog{}, "AgentCorrelationID", "idx_mcp_logs_agent_correlation_id"},
+	} {
+		require.True(t, db.Migrator().HasColumn(column.model, column.field), "missing %s", column.field)
+		require.True(t, db.Migrator().HasIndex(column.model, column.index), "missing %s", column.index)
+	}
+	require.NoError(t, migrationCreateAgentLogsTable(ctx, db, testLogger{}))
+
+	var logCount, mcpCount int64
+	require.NoError(t, db.Table("logs").Where("id = ?", "log-existing").Count(&logCount).Error)
+	require.NoError(t, db.Table("mcp_tool_logs").Where("id = ?", "mcp-existing").Count(&mcpCount).Error)
+	assert.Equal(t, int64(1), logCount)
+	assert.Equal(t, int64(1), mcpCount)
+}
+
+func TestAgentLogsMigrationRollbackGuardsRecordedHistory(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	require.NoError(t, db.Exec("CREATE TABLE logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("CREATE TABLE mcp_tool_logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, migrationCreateAgentLogsTable(ctx, db, testLogger{}))
+	require.NoError(t, rollbackAgentLogsMigration(db, testLogger{}))
+	assert.False(t, db.Migrator().HasTable(&AgentLog{}), "empty Agent history is safe to drop")
+
+	require.NoError(t, db.AutoMigrate(&AgentLog{}))
+	require.NoError(t, db.Create(&AgentLog{
+		ID:         "agent-log-1",
+		Timestamp:  time.Now(),
+		RecordKind: "request",
+		Status:     "completed",
+		AgentName:  "test-agent",
+		RequestID:  "request-1",
+	}).Error)
+
+	err = rollbackAgentLogsMigration(db, testLogger{})
+	require.Error(t, err, "rollback must refuse while recorded Agent history exists")
+	assert.Contains(t, err.Error(), "agent_logs_init is non-rollbackable")
+	assert.True(t, db.Migrator().HasTable(&AgentLog{}), "a refused rollback must leave the table intact")
+
+	var surviving int64
+	require.NoError(t, db.Model(&AgentLog{}).Count(&surviving).Error)
+	assert.EqualValues(t, 1, surviving, "the recorded Agent history must survive")
+}
+
+func TestAgentLogsMigrationRollbackGuardsCorrelationData(t *testing.T) {
+	tests := []struct {
+		name   string
+		table  string
+		column string
+	}{
+		{name: "LLM Agent correlation", table: "logs", column: "agent_correlation_id"},
+		{name: "MCP session", table: "mcp_tool_logs", column: "session_id"},
+		{name: "MCP Agent correlation", table: "mcp_tool_logs", column: "agent_correlation_id"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+			require.NoError(t, err)
+			require.NoError(t, db.Exec("CREATE TABLE logs (id TEXT PRIMARY KEY)").Error)
+			require.NoError(t, db.Exec("CREATE TABLE mcp_tool_logs (id TEXT PRIMARY KEY)").Error)
+			require.NoError(t, migrationCreateAgentLogsTable(context.Background(), db, testLogger{}))
+			require.NoError(t, db.Table(tt.table).Create(map[string]interface{}{"id": "correlated-log", tt.column: "correlation-1"}).Error)
+
+			err = rollbackAgentLogsMigration(db, testLogger{})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "agent_logs_init is non-rollbackable")
+			assert.Contains(t, err.Error(), tt.table+"."+tt.column)
+			assert.True(t, db.Migrator().HasTable(&AgentLog{}), "a refused rollback must leave the Agent log table intact")
+			assert.True(t, db.Migrator().HasColumn(tt.table, tt.column), "a refused rollback must leave the populated correlation column intact")
+		})
+	}
+}
+
+// TestPerformanceIndexesCoverProjectIDs pins the project indexes to the background builders: the
+// project column migrations add only the columns (addColumnIfNotExists never creates a field's
+// index), so an upgraded deployment scans logs by project_id unindexed unless a builder carries
+// them. logs gets the (project_id, timestamp) composite from ensureOwnerTimestampIndexes;
+// mcp_tool_logs keeps its single-column entry in ensurePerformanceIndexes. A fresh database gets
+// them from the model's index tags at table creation.
 func TestPerformanceIndexesCoverProjectIDs(t *testing.T) {
 	tables := map[string]string{}
 	for _, idx := range performanceIndexes {
 		tables[idx.name] = idx.table
 	}
-	assert.Equal(t, "logs", tables["idx_logs_project_id"])
+	for _, idx := range rankingNameTimestampIndexes {
+		tables[idx.name] = idx.table
+	}
+	assert.Equal(t, "logs", tables["idx_logs_project_ts"])
 	assert.Equal(t, "mcp_tool_logs", tables["idx_mcp_logs_project_id"])
+}
+
+// TestPerformanceIndexesHaveNoDuplicateColumns keeps the background builder from building the
+// same index twice under two names: a second index on the same columns costs a full build on
+// every upgraded deployment and a write on every insert, and the planner still picks one. A
+// partial index counts as a duplicate of a full one on the same columns, since an equality
+// filter on the column already implies its IS NOT NULL predicate.
+func TestPerformanceIndexesHaveNoDuplicateColumns(t *testing.T) {
+	onColumns := regexp.MustCompile(`(?i)\bON\s+(\w+)\s*(USING\s+\w+\s*)?\(([^)]*)\)`)
+	seen := map[string]string{}
+	for _, idx := range performanceIndexes {
+		match := onColumns.FindStringSubmatch(idx.sql)
+		require.NotNil(t, match, "cannot read the columns of %s from %q", idx.name, idx.sql)
+		key := strings.ToLower(strings.TrimSpace(match[1]+" "+strings.TrimSpace(match[2])) + "(" + strings.Join(strings.Fields(match[3]), " ") + ")")
+		if other, ok := seen[key]; ok {
+			t.Errorf("%s and %s both index %s", other, idx.name, key)
+			continue
+		}
+		seen[key] = idx.name
+	}
+}
+
+func TestPerformanceIndexesCoverCorrelationIDs(t *testing.T) {
+	tables := map[string]string{}
+	for _, idx := range performanceIndexes {
+		tables[idx.name] = idx.table
+	}
+	assert.Equal(t, "logs", tables["idx_logs_agent_correlation_id"])
+	assert.Equal(t, "mcp_tool_logs", tables["idx_mcp_logs_session_id"])
+	assert.Equal(t, "mcp_tool_logs", tables["idx_mcp_logs_agent_correlation_id"])
 }
 
 // TestMigrationAddMCPGovernanceSnapshots verifies the attribution columns are
@@ -728,4 +857,48 @@ func TestWarpRollbackLocksTablesInWriterOrder(t *testing.T) {
 	require.NotEqual(t, -1, messagesLock, "rollback must lock warp_messages")
 	require.Less(t, conversationsLock, messagesLock,
 		"locks must follow writer order (conversation first), or a concurrent append can deadlock the rollback")
+}
+
+// ========== Embedding Input Column Migration Tests ==========
+
+// runEmbeddingInputColumnCases pins that the migration only adds the column and leaves existing rows NULL.
+func runEmbeddingInputColumnCases(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	db.Exec("DROP TABLE IF EXISTS logs")
+	db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)")
+	db.Exec("DELETE FROM migrations WHERE id = 'logs_add_embedding_input_column'")
+	require.NoError(t, db.Exec(`CREATE TABLE logs (id VARCHAR(255) PRIMARY KEY, object_type VARCHAR(255) NOT NULL, input_history TEXT)`).Error)
+	t.Cleanup(func() {
+		db.Exec("DROP TABLE IF EXISTS logs")
+		db.Exec("DELETE FROM migrations WHERE id = 'logs_add_embedding_input_column'")
+	})
+
+	history := `[{"role":"user","content":[{"type":"text","text":"hello"}]}]`
+	require.NoError(t, db.Exec("INSERT INTO logs (id, object_type, input_history) VALUES (?, ?, ?)", "emb-1", "embedding", history).Error)
+
+	ctx := context.Background()
+	require.NoError(t, migrationAddEmbeddingInputColumn(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasColumn(&Log{}, "embedding_input"))
+
+	var result struct {
+		EmbeddingInput *string `gorm:"column:embedding_input"`
+	}
+	require.NoError(t, db.Table("logs").Select("embedding_input").Where("id = ?", "emb-1").Scan(&result).Error)
+	assert.Nil(t, result.EmbeddingInput, "historical rows are not backfilled; the UI falls back to input_history")
+
+	require.NoError(t, migrationAddEmbeddingInputColumn(ctx, db, testLogger{}), "re-run should be a no-op")
+}
+
+func TestMigrationAddEmbeddingInputColumn_Postgres(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available, skipping test")
+	}
+	runEmbeddingInputColumnCases(t, db)
+}
+
+func TestMigrationAddEmbeddingInputColumn_SQLite(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	runEmbeddingInputColumnCases(t, db)
 }

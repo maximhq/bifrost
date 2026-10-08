@@ -24,6 +24,14 @@
             "type": "string"
           },
           "description": "Hostnames, IP addresses, or CIDR ranges that custom plugin (.so) downloads are allowed to reach even when they resolve to a private/loopback/link-local/CGNAT address (blocked by default to prevent SSRF). Use only for trusted internal artifact hosts. Deploy-time only - read from config.json/environment at startup, never settable via the plugin admin API."
+        },
+        "a2a_grpc_base_domain": {
+          "type": "string",
+          "description": "Base domain for the Agent Gateway's shared gRPC listener. Served agent cards advertise per-agent hostnames (<agent-name>.<base-domain>:<port>); a wildcard DNS record for *.<base-domain> must point at this server, and requests are routed by the first DNS label of the dialed authority. Deploy-time only; gRPC stays disabled while this or a2a_grpc_port is unset."
+        },
+        "a2a_grpc_port": {
+          "type": "integer",
+          "description": "Advertised (public) port for the Agent Gateway's shared gRPC listener. When a load balancer or port mapping sits in front, the BIFROST_A2A_GRPC_LISTEN_PORT environment variable overrides the local bind port without changing what agent cards advertise. Deploy-time only; gRPC stays disabled while this or a2a_grpc_base_domain is unset."
         }
       },
       "required": [
@@ -63,10 +71,22 @@
     "setup_token": {
       "type": "string",
       "pattern": "\\S",
-      "description": "Operator-provisioned bootstrap secret required to create the very first admin account when no admin account is configured yet. You can set the value as env.<ENV_VAR_NAME> to use an environment variable, or as vault.<path> to use a Vault secret reference. We also read the setup token from the BIFROST_SETUP_TOKEN environment variable. Identical across every node in a multi-node deployment (unlike a randomly generated value), so any node can authorize first-admin creation. Never persisted and never logged; if left unset, creating the first admin account is rejected until this is configured. Whitespace-only values are rejected."
+      "description": "Operator-provisioned bootstrap secret required to create the very first admin account when no admin account is configured yet. In OSS, while dashboard auth is not active (no admin account, or auth disabled), every /api call must carry this value in the X-Bifrost-Setup-Token header. You can set the value as env.<ENV_VAR_NAME> to use an environment variable, or as vault.<path> to use a Vault secret reference. We also read the setup token from the BIFROST_SETUP_TOKEN environment variable. Identical across every node in a multi-node deployment (unlike a randomly generated value), so any node can authorize first-admin creation. Never persisted and never logged; if left unset, creating the first admin account is rejected until this is configured. Whitespace-only values are rejected."
     },
     "client": {
       "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": { "mcp_server_auth_mode": { "enum": ["oauth", "both"] } },
+            "required": ["mcp_server_auth_mode"]
+          },
+          "then": {
+            "required": ["oauth2_server_config"],
+            "properties": { "oauth2_server_config": { "required": ["issuer_url"] } }
+          }
+        }
+      ],
       "description": "Client configuration settings",
       "properties": {
         "drop_excess_requests": {
@@ -100,7 +120,7 @@
               }
             ]
           },
-          "description": "CORS allowed origins (supports \"*\" or URI strings)"
+          "description": "CORS allowed origins: exact URI strings, wildcard-host patterns such as https://*.example.com, or \"*\". While dashboard auth is disabled, browser requests to the management API are accepted only from localhost origins, the gateway's own origin, and origins listed here explicitly; the \"*\" entry does not admit them."
         },
         "enable_logging": {
           "type": "boolean",
@@ -160,7 +180,8 @@
         },
         "enforce_auth_on_inference": {
           "type": "boolean",
-          "description": "Require auth (VK, API key, or user token) on inference endpoints"
+          "default": true,
+          "description": "Require auth (VK, API key, or user token) on inference endpoints. Defaults to true on new deployments and when creating the first enabled admin account if omitted; explicit false opts out. Existing deployments retain their stored setting when omitted."
         },
         "dual_credential_conflict_behavior": {
           "type": "string",
@@ -205,6 +226,11 @@
               "type": "boolean",
               "description": "Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses.",
               "default": false
+            },
+            "force_reasoning_only_models_to_responses": {
+              "type": "boolean",
+              "description": "Convert chat completion requests to responses for models whose datasheet sets supports_reasoning_with_tool_calls to false, so reasoning is kept instead of being forced off.",
+              "default": true
             }
           },
           "additionalProperties": false
@@ -282,6 +308,11 @@
           "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true and the provider's raw API key in an Authorization (Bearer), x-api-key, or x-goog-api-key header.",
           "default": false
         },
+        "delete_expired_virtual_keys": {
+          "type": "boolean",
+          "description": "Delete expired virtual keys automatically. A daily cleanup job removes every key whose expiry has passed unless the key sets delete_after_expire to false; keys with delete_after_expire true are removed regardless.",
+          "default": false
+        },
         "vk_rotation_cooldown": {
           "type": [
             "string",
@@ -322,6 +353,10 @@
           "type": "boolean",
           "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use mcp.tool_manager_config.disable_auto_tool_inject.",
           "default": false
+        },
+        "mcp_code_mode_limits": {
+          "$ref": "#/$defs/mcp_code_mode_limits",
+          "description": "Per-execution code mode limits, as stored and served by the config API. In config.json prefer mcp.tool_manager_config.code_mode_limits, which takes precedence when both are set."
         },
         "mcp_enable_temp_token_auth": {
           "type": "boolean",
@@ -368,6 +403,40 @@
           ],
           "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is reached via a different URL than its server-side metadata. Supports env var syntax: \"env.MY_VAR\"."
         },
+        "a2a_external_client_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string"
+                },
+                "ref": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "plain_text",
+                    "env",
+                    "vault"
+                  ]
+                },
+                "env_var": {
+                  "type": "string"
+                },
+                "from_env": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "Bifrost's public base URL for the Agent Gateway, used in served agent cards and push-notification callback URLs. If unset, served agent cards fall back to the incoming Host header and A2A push notifications are disabled. Supports env var syntax: \"env.MY_VAR\"."
+        },
         "mcp_server_auth_mode": {
           "type": "string",
           "enum": [
@@ -380,6 +449,12 @@
         "oauth2_server_config": {
           "type": "object",
           "properties": {
+            "allowed_redirect_uris": {
+              "type": "array",
+              "items": { "type": "string", "format": "uri" },
+              "default": [],
+              "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries. Remote callbacks are denied by default; changing this list through the API requires dashboard authentication."
+            },
             "issuer_url": {
               "anyOf": [
                 {
@@ -401,7 +476,7 @@
                   "additionalProperties": false
                 }
               ],
-              "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. Required for multi-host deployments; single-host deployments can omit this (falls back to request Host header). Supports env var syntax: \"env.MY_VAR\"."
+              "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. Required whenever mcp_server_auth_mode is 'both' or 'oauth' (config load and PUT /api/config reject an unset value in those modes); the issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax: \"env.MY_VAR\"."
             },
             "auth_code_ttl": {
               "type": "integer",
@@ -426,7 +501,36 @@
           "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mcp_server_auth_mode": {
+                "enum": [
+                  "both",
+                  "oauth"
+                ]
+              }
+            },
+            "required": [
+              "mcp_server_auth_mode"
+            ]
+          },
+          "then": {
+            "required": [
+              "oauth2_server_config"
+            ],
+            "properties": {
+              "oauth2_server_config": {
+                "required": [
+                  "issuer_url"
+                ]
+              }
+            }
+          }
+        }
+      ]
     },
     "framework": {
       "type": "object",
@@ -857,6 +961,10 @@
                 "type": "string",
                 "description": "Associated rate limit ID"
               },
+              "access_profile": {
+                "type": "string",
+                "description": "Name of the access profile (defined in access_profiles) this customer holds. The profile governs everything under the customer and replaces its own budgets and rate limit, so it cannot be combined with them. Under source_of_truth \"split\" the declaration is applied when it is new or changed and dashboard changes are kept otherwise; under \"config.json\" it is enforced on every startup and an entry without access_profile has its profile removed."
+              },
               "calendar_aligned": {
                 "type": "boolean",
                 "description": "Snap the customer's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
@@ -928,6 +1036,10 @@
                 "type": "object",
                 "description": "Team claims data"
               },
+              "access_profile": {
+                "type": "string",
+                "description": "Name of the access profile (defined in access_profiles) this team holds. The profile governs everything under the team and replaces its own budgets and rate limit, so it cannot be combined with them. Under source_of_truth \"split\" the declaration is applied when it is new or changed and dashboard changes are kept otherwise; under \"config.json\" it is enforced on every startup and an entry without access_profile has its profile removed."
+              },
               "calendar_aligned": {
                 "type": "boolean",
                 "description": "Snap the team's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
@@ -981,6 +1093,10 @@
                 "type": "object",
                 "description": "Business unit claims data"
               },
+              "access_profile": {
+                "type": "string",
+                "description": "Name of the access profile (defined in access_profiles) this business unit holds. The profile governs everything under the business unit and replaces its own budgets and rate limit, so it cannot be combined with them. Under source_of_truth \"split\" the declaration is applied when it is new or changed and dashboard changes are kept otherwise; under \"config.json\" it is enforced on every startup and an entry without access_profile has its profile removed."
+              },
               "team_ids": {
                 "type": "array",
                 "description": "Team IDs to assign to this business unit",
@@ -1012,10 +1128,12 @@
               },
               "dac": {
                 "type": "string",
-                "description": "Data Access Control scope: own-data (user's own records), team-data (user's team records), all-data (unrestricted). Defaults to all-data.",
+                "description": "Data Access Control scope: own-data (user's own records), team-data (plus records of the user's teams), business-unit-data (plus records of the user's business units), customer-data (everything under the customers the user reaches through their teams or business units), all-data (unrestricted). Defaults to all-data.",
                 "enum": [
                   "own-data",
                   "team-data",
+                  "business-unit-data",
+                  "customer-data",
                   "all-data"
                 ],
                 "default": "all-data"
@@ -1028,6 +1146,8 @@
                   "enum": [
                     "own-data",
                     "team-data",
+                    "business-unit-data",
+                    "customer-data",
                     "all-data"
                   ]
                 }
@@ -1111,6 +1231,10 @@
                 "format": "date-time",
                 "description": "Optional expiry timestamp (RFC3339). Once passed, requests using this virtual key are rejected. Omit for a key that never expires."
               },
+              "delete_after_expire": {
+                "type": "boolean",
+                "description": "Delete this virtual key automatically once expires_at has passed. A daily cleanup job removes it and posts a notification. Omit to follow client.delete_expired_virtual_keys; true or false override it for this key. Requires expires_at."
+              },
               "calendar_aligned": {
                 "type": "boolean",
                 "description": "Snap all budget resets to calendar boundaries (day, week, month, year)",
@@ -1187,12 +1311,24 @@
                 "items": {
                   "$ref": "#/$defs/virtual_key_mcp_config"
                 }
+              },
+              "agent_grants": {
+                "type": "array",
+                "description": "Agent grants directly assigned to this virtual key (empty array means no agents allowed, deny-by-default)",
+                "items": {
+                  "$ref": "#/$defs/virtual_key_agent_grant"
+                }
               }
             },
             "required": [
               "id",
               "name"
             ],
+            "dependentRequired": {
+              "delete_after_expire": [
+                "expires_at"
+              ]
+            },
             "additionalProperties": false,
             "allOf": [
               {
@@ -1391,6 +1527,10 @@
               "store_raw_request_response": {
                 "type": "boolean",
                 "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+              },
+              "ignore_provider_cost": {
+                "type": "boolean",
+                "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
               },
               "network_config": {
                 "$ref": "#/$defs/network_config"
@@ -1992,6 +2132,72 @@
         "additionalProperties": false
       }
     },
+    "agents": {
+      "type": "array",
+      "description": "Declarative A2A agent registrations reconciled into the config store at startup. Matching is by name with hash-based change detection: entries are created if new and updated if changed. In 'split' source-of-truth mode other stored registrations are left untouched; in 'config.json' mode stored registrations absent from this list are pruned.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Unique registration name (URL-safe slug). Forms the gateway routes /agents/a2a/<name>/... and the gRPC hostname label."
+          },
+          "agent_card_url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$",
+            "description": "Absolute http(s) URL of the upstream agent's Agent Card (typically .../.well-known/agent-card.json)."
+          },
+          "tenant": {
+            "type": "string",
+            "description": "Optional tenant label for the registration."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the agent is enabled (default: true when omitted)."
+          },
+          "allow_by_default": {
+            "type": "boolean",
+            "description": "Allow access for any identified caller without an explicit virtual-key grant (default: false)."
+          },
+          "forward_accepted_credential": {
+            "type": "boolean",
+            "description": "Forward the accepted Bifrost credential to the upstream agent so its callback LLM/MCP requests route back through Bifrost (default: false)."
+          },
+          "forward_accepted_credential_overrides_auth": {
+            "type": "boolean",
+            "description": "When forwarding the accepted credential, replace the configured runtime auth Authorization header with it instead of sending it alongside (default: false)."
+          },
+          "discovery_auth": {
+            "$ref": "#/$defs/agent_upstream_auth",
+            "description": "Authentication used when fetching the upstream Agent Card."
+          },
+          "runtime_auth": {
+            "$ref": "#/$defs/agent_upstream_auth",
+            "description": "Authentication attached to proxied upstream agent requests."
+          },
+          "extension_uris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "A2A extension URIs to activate for this agent."
+          },
+          "virtual_key_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Virtual key IDs granted access to this agent. Declares the exact grant set: changes here are reconciled like any other field."
+          }
+        },
+        "required": [
+          "name",
+          "agent_card_url"
+        ],
+        "additionalProperties": false
+      }
+    },
     "mcp": {
       "type": "object",
       "description": "Model Context Protocol configuration",
@@ -2322,6 +2528,18 @@
                     "description": "How long an idle physical connection is kept before being closed (Go duration string, default 5m). Without this the idle cap alone controls pool size, so bursts above max_idle_conns close and reopen connections repeatedly. Note the logs store and config store open separate pools, so a pod's connection ceiling is the sum of their max_open_conns.",
                     "pattern": "^[1-9][0-9]*(ns|us|\u00b5s|ms|s|m|h)$",
                     "default": "5m"
+                  },
+                  "statement_timeout": {
+                    "type": "string",
+                    "description": "Server-side statement_timeout set on every runtime pool connection (Go duration string, default 120s). Bounds a runaway query so it cannot hold a pooled connection and its locks indefinitely. \"0\" or a negative value leaves the server default. Migrations and background index builds are never bound by it.",
+                    "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+)$",
+                    "default": "120s"
+                  },
+                  "idle_in_transaction_session_timeout": {
+                    "type": "string",
+                    "description": "Server-side idle_in_transaction_session_timeout set on every runtime pool connection (Go duration string, default 120s). Ends a session left idle inside an open transaction, which would otherwise hold row locks and block vacuum. \"0\" or a negative value leaves the server default.",
+                    "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+)$",
+                    "default": "120s"
                   }
                 },
                 "required": [
@@ -2856,6 +3074,18 @@
                     "description": "How long an idle physical connection is kept before being closed (Go duration string, default 5m). Without this the idle cap alone controls pool size, so bursts above max_idle_conns close and reopen connections repeatedly. Note the logs store and config store open separate pools, so a pod's connection ceiling is the sum of their max_open_conns.",
                     "pattern": "^[1-9][0-9]*(ns|us|\u00b5s|ms|s|m|h)$",
                     "default": "5m"
+                  },
+                  "statement_timeout": {
+                    "type": "string",
+                    "description": "Server-side statement_timeout set on every runtime pool connection (Go duration string, default 120s). Bounds a runaway query so it cannot hold a pooled connection and its locks indefinitely. \"0\" or a negative value leaves the server default. Migrations and background index builds are never bound by it.",
+                    "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+)$",
+                    "default": "120s"
+                  },
+                  "idle_in_transaction_session_timeout": {
+                    "type": "string",
+                    "description": "Server-side idle_in_transaction_session_timeout set on every runtime pool connection (Go duration string, default 120s). Ends a session left idle inside an open transaction, which would otherwise hold row locks and block vacuum. \"0\" or a negative value leaves the server default.",
+                    "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+)$",
+                    "default": "120s"
                   }
                 },
                 "required": [
@@ -2928,6 +3158,12 @@
                     "description": "Connection dial timeout in milliseconds (default: 10000)",
                     "minimum": 1,
                     "default": 10000
+                  },
+                  "max_query_size": {
+                    "type": "integer",
+                    "description": "ClickHouse max_query_size setting in bytes, the longest SQL text the server will parse (default: 16777216)",
+                    "minimum": 1,
+                    "default": 16777216
                   },
                   "cluster": {
                     "type": "string",
@@ -3420,6 +3656,13 @@
             "additionalProperties": false
           }
         },
+        "object_storage_exclude_request_types": {
+          "type": "array",
+          "description": "Request types (log object type, e.g. list_models, embedding) whose logs are not offloaded to object storage. These logs are written to the logs database in full instead. Hidden logs (content logging disabled with client.retain_content_in_object_storage on) are still offloaded, so their content never lands in the database.",
+          "items": {
+            "type": "string"
+          }
+        },
         "object_storage_exclude_fields": {
           "type": "array",
           "description": "LLM log payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored. MCP logs always offload the full log and keep dashboard/table fields plus a 200-character input preview in the database.",
@@ -3647,6 +3890,11 @@
                         "type": "string"
                       },
                       "description": "Custom labels to add to Prometheus metrics"
+                    },
+                    "metrics_enabled": {
+                      "type": "boolean",
+                      "description": "Serve the /metrics scrape endpoint. Defaults to true when omitted.",
+                      "default": true
                     },
                     "overhead_breakdown_enabled": {
                       "type": "boolean",
@@ -3937,6 +4185,10 @@
                     "exclude_system_prompt": {
                       "type": "boolean",
                       "description": "Exclude system prompt in cache key (default: false)"
+                    },
+                    "cache_tool_call_responses": {
+                      "type": "boolean",
+                      "description": "Persist responses that carry tool calls (chat tool_calls or Responses API function_call/custom_tool_call/computer_call/local_shell_call/mcp_call/mcp_approval_request items). Off by default: a replayed tool call runs in a later caller's agent loop with arguments chosen for someone else's prompt."
                     }
                   },
                   "required": [
@@ -4756,10 +5008,97 @@
     },
     "circuit_breaker_config": {
       "$ref": "#/$defs/circuit_breaker_config"
+    },
+    "proxy_config": {
+      "$ref": "#/$defs/global_proxy_config"
     }
   },
   "additionalProperties": false,
   "$defs": {
+    "global_proxy_config": {
+      "type": "object",
+      "description": "Global outbound proxy (the dashboard's proxy settings page) and which components use it. Under source_of_truth \"split\" it is applied when new or changed and dashboard edits are kept otherwise; under \"config.json\" it is applied on every startup. Omit to manage the proxy from the dashboard. Not the same as a provider's own proxy_config.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Turn the proxy on",
+          "default": false
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "http"
+          ],
+          "default": "http",
+          "description": "Proxy type. Only http is supported."
+        },
+        "url": {
+          "type": "string",
+          "description": "Proxy URL, e.g. http://proxy.example.com:8080 (supports env.VAR_NAME). Required when enabled."
+        },
+        "username": {
+          "type": "string",
+          "description": "Username for proxy authentication (supports env.VAR_NAME)"
+        },
+        "password": {
+          "type": "string",
+          "description": "Password for proxy authentication (supports env.VAR_NAME)"
+        },
+        "no_proxy": {
+          "type": "string",
+          "description": "Comma-separated hosts that bypass the proxy: exact hosts, .example.com (domain and subdomains), *.example.com (subdomains), or *"
+        },
+        "timeout": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Connection timeout in seconds"
+        },
+        "skip_tls_verify": {
+          "type": "boolean",
+          "default": false,
+          "description": "Skip TLS certificate verification for the proxy"
+        },
+        "enable_for_scim": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enterprise: route SCIM directory sync and identity-provider requests through the proxy"
+        },
+        "enable_for_inference": {
+          "type": "boolean",
+          "default": false,
+          "description": "Route inference requests through the proxy"
+        },
+        "enable_for_api": {
+          "type": "boolean",
+          "default": false,
+          "description": "Route API requests through the proxy"
+        }
+      },
+      "additionalProperties": false
+    },
+    "complexity_decision_tier_criteria": {
+      "type": "object",
+      "properties": {
+        "definition": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Replaces this tier's shipped definition. Omit to use the default."
+        },
+        "signals": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "type": "string", "maxLength": 300 },
+          "description": "Replaces this tier's shipped signals. Omit to use the default."
+        },
+        "examples": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "type": "string", "maxLength": 300 },
+          "description": "Replaces this tier's shipped examples. Omit to use the default."
+        }
+      },
+      "additionalProperties": false
+    },
     "otel_endpoint": {
       "type": "string",
       "anyOf": [
@@ -4877,6 +5216,12 @@
           "type": "boolean",
           "description": "When true, message content (input/output messages, embeddings, tool definitions, and tool call arguments/results) is dropped from exported spans. Only metadata such as model, tokens, and latency is sent to the collector.",
           "default": false
+        },
+        "excluded_attributes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Span attribute names to drop before export, matched exactly (e.g. \"gen_ai.request.tools\"). Unknown names are ignored.",
+          "default": []
         },
         "export_raw_payloads": {
           "type": "boolean",
@@ -5095,6 +5440,12 @@
           "description": "Probability weight for this target (must be > 0). All weights in a rule must sum to 1",
           "exclusiveMinimum": 0,
           "maximum": 1
+        },
+        "ttft_timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000,
+          "description": "Time-to-first-token (TTFT) deadline in milliseconds for streaming requests routed to this target. An attempt that produces no first token in time is cut off and the next fallback runs. The last attempt is never cut off, so the setting only takes effect when fallbacks exist. Omit to disable."
         }
       },
       "required": [
@@ -5289,6 +5640,22 @@
       ],
       "additionalProperties": false
     },
+    "virtual_key_agent_grant": {
+      "type": "object",
+      "description": "Agent grant for a virtual key",
+      "properties": {
+        "virtual_key_id": {
+          "type": "string",
+          "description": "Associated virtual key ID"
+        },
+        "agent_name": {
+          "type": "string",
+          "description": "Registered agent name granted to this virtual key"
+        }
+      },
+      "required": ["agent_name"],
+      "additionalProperties": false
+    },
     "virtual_key_mcp_config": {
       "type": "object",
       "description": "MCP configuration for a virtual key",
@@ -5446,7 +5813,7 @@
     },
     "complexity_analyzer_config": {
       "type": "object",
-      "description": "Runtime configuration for semantic complexity_tier CEL routing",
+      "description": "Runtime configuration for complexity_tier CEL routing with semantic or decision-model classification",
       "properties": {
         "tier_boundaries": {
           "$ref": "#/$defs/complexity_tier_boundaries"
@@ -5454,8 +5821,20 @@
         "keywords": {
           "$ref": "#/$defs/complexity_analyzer_keywords"
         },
+        "classifier": {
+          "type": "string",
+          "enum": [
+            "semantic",
+            "decision"
+          ],
+          "default": "semantic",
+          "description": "Primary complexity classifier. Defaults to semantic."
+        },
         "semantic": {
           "$ref": "#/$defs/complexity_semantic_config"
+        },
+        "decision": {
+          "$ref": "#/$defs/complexity_decision_config"
         },
         "llm": {
           "$ref": "#/$defs/complexity_llm_config"
@@ -5484,7 +5863,17 @@
             },
             "required": [
               "session"
-            ]
+            ],
+            "not": {
+              "required": [
+                "classifier"
+              ],
+              "properties": {
+                "classifier": {
+                  "const": "decision"
+                }
+              }
+            }
           },
           "then": {
             "required": [
@@ -5522,11 +5911,11 @@
     },
     "complexity_session_config": {
       "type": "object",
-      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. The configured primary classifier supplies tiers; overlapping requests are best-effort.",
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default: false."
+          "description": "Enable monotonic session tier retention; default false."
         }
       },
       "required": [
@@ -5590,9 +5979,10 @@
           "type": "string",
           "enum": [
             "none",
-            "llm"
+            "llm",
+            "decision"
           ],
-          "description": "What answers when semantic classification produces no tier (a match below min_similarity, a timeout, an unfinished warmup): 'none' (the default) records the request as 'skipped'; 'llm' asks the chat model configured in the analyzer's llm block, which is required when this is set."
+          "description": "What answers when semantic classification produces no tier: none (default), the configured llm classifier, or the configured decision model."
         }
       },
       "required": [
@@ -5699,7 +6089,7 @@
         },
         "mcp_library_url": {
           "type": "string",
-          "description": "URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog. Accepts a file:// URL to load the catalog from local disk in air-gapped deployments.",
+          "description": "URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog. In config.json this also accepts a file:// URL to load the catalog from local disk in air-gapped deployments; the API accepts http(s) URLs only.",
           "optional": true,
           "format": "uri"
         },
@@ -5740,7 +6130,7 @@
         "base_url": {
           "type": "string",
           "format": "uri",
-          "description": "Base URL for the provider (optional, required for Ollama)"
+          "description": "Base URL for the provider (optional, required for Ollama). Management API updates accept an origin and optional path, without credentials, query parameters, or fragments."
         },
         "extra_headers": {
           "type": "object",
@@ -6686,13 +7076,57 @@
                   "type": "boolean",
                   "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
                   "default": false
+                },
+                "aws_workload_identity": {
+                  "type": "object",
+                  "description": "GCP Workload Identity Federation from the workload's AWS identity (EKS IRSA / Pod Identity, ECS task role, EC2 instance profile, AWS_* env vars). Bifrost signs an STS GetCallerIdentity request with the AWS SDK default chain and exchanges it at GCP STS, so no service-account key or static AWS key is needed. Takes precedence over auth_credentials; the two must not be combined.",
+                  "properties": {
+                    "audience": {
+                      "type": "string",
+                      "description": "Workload Identity Pool provider resource name, e.g. //iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/providers/PROVIDER_ID (can use env. prefix)"
+                    },
+                    "service_account_email": {
+                      "type": "string",
+                      "description": "Service account to impersonate after federation. Omit to use the federated principal directly (can use env. prefix)"
+                    },
+                    "token_lifetime_seconds": {
+                      "type": "integer",
+                      "minimum": 600,
+                      "maximum": 43200,
+                      "description": "Lifetime of the impersonated service-account token in seconds. Only used with service_account_email. Default 3600. Lifetimes above 3600 require the target service account to be allowed by the organization policy constraint constraints/iam.allowServiceAccountCredentialLifetimeExtension; otherwise token generation fails."
+                    },
+                    "aws_region": {
+                      "type": "string",
+                      "description": "AWS region used to sign the STS GetCallerIdentity request. Defaults to AWS_REGION / AWS_DEFAULT_REGION, then instance metadata (can use env. prefix)"
+                    },
+                    "aws_role_arn": {
+                      "type": "string",
+                      "description": "Optional IAM role to assume with the workload's credentials before the GCP exchange (can use env. prefix)"
+                    }
+                  },
+                  "required": [
+                    "audience"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
                 "project_id",
                 "region"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "if": {
+                "required": [
+                  "aws_workload_identity"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "auth_credentials": {
+                    "maxLength": 0
+                  }
+                }
+              }
             }
           },
           "required": [
@@ -6739,6 +7173,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -6779,6 +7217,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -6821,6 +7263,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -6861,6 +7307,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -6903,6 +7353,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -6943,6 +7397,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -6985,6 +7443,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7025,6 +7487,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7067,6 +7533,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7108,6 +7578,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7146,6 +7620,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7183,6 +7661,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7225,6 +7707,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7233,6 +7719,143 @@
         "keys"
       ],
       "additionalProperties": false
+    },
+    "agent_upstream_auth": {
+      "type": "object",
+      "description": "Authentication for upstream A2A agent requests. Secret values support env.<VAR> and vault.<key> references.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "none",
+            "headers",
+            "oauth"
+          ],
+          "description": "Authentication type."
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Headers to attach (for type 'headers'). Values can use env. or vault. prefix."
+        },
+        "oauth": {
+          "type": "object",
+          "description": "OAuth client-credentials configuration (for type 'oauth').",
+          "properties": {
+            "provider_url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$"
+            },
+            "discovery_url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$"
+            },
+            "token_url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$"
+            },
+            "client_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "OAuth client ID (can use env. or vault. prefix)."
+            },
+            "client_secret": {
+              "type": "string",
+              "minLength": 1,
+              "description": "OAuth client secret (can use env. or vault. prefix)."
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "resource": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "security_schemes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Agent Card security scheme names this auth satisfies."
+        },
+        "advanced": {
+          "type": "boolean"
+        },
+        "tls": {
+          "type": "object",
+          "description": "Upstream TLS overrides.",
+          "properties": {
+            "insecure_skip_verify": {
+              "type": "boolean"
+            },
+            "ca_cert_pem": {
+              "type": "string"
+            },
+            "client_cert_pem": {
+              "type": "string"
+            },
+            "client_key_pem": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "oauth"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "oauth"
+            ],
+            "properties": {
+              "oauth": {
+                "required": [
+                  "client_id",
+                  "client_secret"
+                ],
+                "anyOf": [
+                  {
+                    "required": [
+                      "provider_url"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "discovery_url"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "token_url"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
     },
     "mcp_client_config": {
       "type": "object",
@@ -7463,6 +8086,12 @@
             }
           ]
         },
+        "max_instructions_length": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Per-client override for the forwarded instruction byte cap. When set, overrides the global mcp.tool_manager_config.max_instructions_per_client for this MCP server only; the aggregate is still bounded by max_instructions_total. Omit or set to 0 to use the global default."
+        },
         "allowed_extra_headers": {
           "type": "array",
           "items": {
@@ -7478,6 +8107,11 @@
         "needs_session_stickiness": {
           "type": "boolean",
           "description": "Only meaningful for connection_type 'http': whether this client maintains one persistent connection reused across every caller (true) or connects fresh per call (false, the default for newly created clients). SSE and STDIO always behave as sticky regardless of this field.",
+          "default": false
+        },
+        "require_public_target": {
+          "type": "boolean",
+          "description": "Server-managed. Set to true when the client was registered over the management API with no admin credential check; every connection to the MCP server (initial, reconnect, per-call) must then resolve to a public address. Once stored as true it is never cleared by the API or by config.json reconciliation; declaring it true here is honored.",
           "default": false
         },
         "tool_pricing": {
@@ -7699,6 +8333,78 @@
           "type": "boolean",
           "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers, such as x-bf-mcp-include-tools or x-bf-mcp-include-clients.",
           "default": false
+        },
+        "max_instructions_per_client": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Byte bound on a single MCP server's forwarded instructions. Longer text is truncated on a rune boundary with a notice. 0 uses the built-in default of 4096.",
+          "default": 0
+        },
+        "max_instructions_total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Byte bound on the whole forwarded aggregate across every visible MCP server. Rides on every MCP-bearing request that carries tools, so raising it raises per-request tokens. 0 uses the built-in default of 16384.",
+          "default": 0
+        },
+        "code_mode_limits": {
+          "$ref": "#/$defs/mcp_code_mode_limits"
+        }
+      }
+    },
+    "mcp_code_mode_limits": {
+      "type": "object",
+      "description": "Limits applied to each code mode (executeToolCode) execution. Every field is optional; omit it or set 0 to use the built-in default. There is no limit on how many executions run concurrently.",
+      "additionalProperties": false,
+      "properties": {
+        "max_source_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum size of the submitted code in bytes. 0 uses the default of 65536 (64 KiB).",
+          "default": 0
+        },
+        "max_steps": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum interpreter computation steps per execution, including work inside builtins. 0 uses the default of 1000000.",
+          "default": 0
+        },
+        "max_memory_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Estimated allocation budget per execution in bytes, enforced by the interpreter and value converters before allocating. 0 uses the default of 67108864 (64 MiB).",
+          "default": 0
+        },
+        "max_log_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum print and tool log output per execution in bytes, including newlines. 0 uses the default of 65536 (64 KiB).",
+          "default": 0
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum nested MCP tool calls per execution. 0 uses the default of 64.",
+          "default": 0
+        },
+        "max_value_bytes": {
+          "type": "integer",
+          "anyOf": [
+            {
+              "const": 0
+            },
+            {
+              "minimum": 1024
+            }
+          ],
+          "description": "Size budget in bytes for each tool payload and converted result, counted conservatively for JSON escaping. Must be 0 (default of 1048576, 1 MiB) or at least 1024.",
+          "default": 0
+        },
+        "max_nesting_depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000,
+          "description": "Maximum nesting depth of values crossing the tool boundary. 0 uses the default of 64; at most 1000.",
+          "default": 0
         }
       }
     },
@@ -8165,7 +8871,7 @@
         },
         "ca_cert_pem": {
           "type": "string",
-          "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (for SSL-intercepting proxies, supports env.VAR_NAME)"
+          "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (for SSL-intercepting proxies, and for the proxy itself when the URL is https://, supports env.VAR_NAME)"
         }
       },
       "required": [
@@ -8625,7 +9331,7 @@
         },
         "apiToken": {
           "type": "string",
-          "description": "Okta API token for Admin API access (optional; enables 24-hour background user/group reconciliation)"
+          "description": "Okta API token for Admin API access (optional; enables background user/group reconciliation on the bulkSyncInterval schedule, 24h by default)"
         },
         "audience": {
           "type": "string",
@@ -8670,6 +9376,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -8761,6 +9473,12 @@
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
+        },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
         },
@@ -8835,6 +9553,12 @@
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
+        },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
         }
@@ -8899,6 +9623,10 @@
             "type": "string"
           }
         },
+        "displayName": {
+          "type": "string",
+          "description": "Label for the login button (\"Sign in with <displayName>\"). Defaults to \"SSO\"."
+        },
         "attributeRoleMappings": {
           "$ref": "#/$defs/scim_attribute_role_mappings"
         },
@@ -8916,6 +9644,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -8989,6 +9723,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -9079,6 +9819,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -9208,6 +9954,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -10462,6 +11214,11 @@
           "minimum": 0,
           "description": "Number of days to retain audit logs (0 means no retention limit)"
         },
+        "omit_ip_addresses": {
+          "type": "boolean",
+          "description": "Stop recording client IP addresses in audit logs while keeping every other field. When true, new events are stored without request_ip or initiator host, and IPs from rows written before the setting was enabled are hidden from the API, filter data, search, exports and object storage archives. Existing database rows are not rewritten. Use this where employee privacy rules or works council agreements forbid tracking IPs. Default: false",
+          "default": false
+        },
         "archive_interval": {
           "type": "string",
           "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))*$",
@@ -11191,6 +11948,9 @@
             "list_models": {
               "type": "boolean"
             },
+            "model_retrieve": {
+              "type": "boolean"
+            },
             "text_completion": {
               "type": "boolean"
             },
@@ -11361,6 +12121,9 @@
               "type": "boolean"
             },
             "realtime": {
+              "type": "boolean"
+            },
+            "live": {
               "type": "boolean"
             },
             "cached_content_create": {
@@ -11610,6 +12373,39 @@
         "additionalProperties": false
       }
     },
+    "scim_attribute_project_mappings": {
+      "type": "array",
+      "description": "Attribute -> project mappings. Every matching rule applies: the user is added to each project it matches. Projects are never auto-created; a rule naming a missing project is dropped. Memberships added this way are removed when the rule stops matching; members added from the dashboard are kept.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+          },
+          "value": {
+            "type": "string",
+            "description": "Claim value to match (case-insensitive). '*' matches whenever the claim carries any non-empty value; glob patterns (e.g. 'bifrost-*') are also supported."
+          },
+          "project": {
+            "type": "string",
+            "description": "Name of the project to add the user to on match"
+          }
+        },
+        "required": [
+          "attribute",
+          "value",
+          "project"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "scim_bulk_sync_interval": {
+      "type": "string",
+      "pattern": "^([0-9]+d|([0-9]+(\\.[0-9]+)?(h|m|s))+)$",
+      "default": "24h",
+      "description": "How often the directory reconcile lists the IdP's users through its admin API and deprovisions the ones it no longer returns, as whole days or h/m/s pairs (e.g. '12h', '1h30m', '7d'). Must be between 1h and 30d. Defaults to 24h. Inert when SCIM provisioning is enabled or the provider has no directory API access (e.g. Okta without apiToken)."
+    },
     "scim_attribute_business_unit_mappings": {
       "type": "array",
       "description": "Attribute -> business-unit mappings (all matches apply).",
@@ -11635,6 +12431,52 @@
         ],
         "additionalProperties": false
       }
+    },
+    "complexity_decision_config": {
+      "type": "object",
+      "description": "Decision-model complexity-classifier request settings. Credentials come from the selected provider's configuration.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Provider serving the decision model, e.g. typesafe, or a custom provider with base_provider_type typesafe (Laya, Nimble, Clef). Set together with model; leave both empty for typesafe/jev-latest."
+        },
+        "model": {
+          "type": "string",
+          "description": "Decision model to call on the provider, e.g. jev-latest, nimble-latest, english, clef. Set together with provider; leave both empty for typesafe/jev-latest."
+        },
+        "previous_message_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "default": 1,
+          "description": "Number of preceding user messages sent with the current request. Assistant messages are excluded."
+        },
+        "timeout": {
+          "description": "Maximum decision-model classification latency (duration string or milliseconds as a number; default 1500ms).",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h)$"
+            },
+            {
+              "type": "number",
+              "minimum": 0
+            }
+          ],
+          "default": "1500ms"
+        },
+        "criteria": {
+          "type": "object",
+          "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
+          "properties": {
+            "SIMPLE": { "$ref": "#/$defs/complexity_decision_tier_criteria" },
+            "MEDIUM": { "$ref": "#/$defs/complexity_decision_tier_criteria" },
+            "COMPLEX": { "$ref": "#/$defs/complexity_decision_tier_criteria" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

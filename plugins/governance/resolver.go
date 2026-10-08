@@ -29,6 +29,9 @@ const (
 	// there was nothing to evaluate it against. It is a wiring fault rather than a policy
 	// decision: evaluation is reached only after access has been resolved for the request.
 	DecisionAccessUnresolved Decision = "access_unresolved"
+	// DecisionAgentBlocked reports that the settled grant has no Agent Gateway permit
+	// for the requested agent. It is the A2A analogue of DecisionMCPToolBlocked.
+	DecisionAgentBlocked Decision = "agent_blocked"
 )
 
 // EvaluationRequest contains the context for evaluating a request
@@ -36,6 +39,9 @@ type EvaluationRequest struct {
 	RequestType schemas.RequestType   `json:"request_type"`
 	Provider    schemas.ModelProvider `json:"provider"`
 	Model       string                `json:"model"`
+	// OpaqueBatchInput marks a batch create whose work is an uploaded file or blob rather than
+	// inline requests, so the models it will run are not visible to governance.
+	OpaqueBatchInput bool `json:"opaque_batch_input,omitempty"`
 }
 
 // EvaluationResult is a governance verdict: whether the request may proceed, and why not when it
@@ -115,6 +121,28 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 	// still carries a model allowlist that would deny the request one step later.
 	skipModelCheck := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipModelCheck)
 	checkModelIfPresent := IsModelCheckedWhenPresent(requestType)
+	// A batch defined by an uploaded file or blob names its models only inside that input, which
+	// governance never reads. An access permitting every model of the provider loses nothing by
+	// that. One that restricts models would have the restriction silently skipped, so it is held
+	// to what the provider actually binds: where the batch job runs the model named on the request
+	// (Gemini, Vertex, Bedrock), that model has to be present, and the allowlist below checks it;
+	// where the batch API ignores the request's model and runs whatever the rows name (OpenAI,
+	// Azure), no hint can stand in for the rows, so the access has to permit every model of the
+	// provider. Inline batches are not opaque: PreLLMHook evaluates each item's model first.
+	if requestType == schemas.BatchCreateRequest && evaluationRequest.OpaqueBatchInput && !skipModelCheck && !providerUnconfigured && !access.AllowsEveryModel(string(provider)) {
+		if !batchModelBoundByProvider(provider) {
+			return &EvaluationResult{
+				Decision: DecisionModelBlocked,
+				Reason:   denialReason(fmt.Sprintf("File-based batch creation on provider '%s' requires an access that allows every model of the provider: its batch API runs the models named inside the uploaded input, not the model on the request", provider), access.DeniedPermitsForModel(string(provider), "")),
+			}
+		}
+		if model == "" {
+			return &EvaluationResult{
+				Decision: DecisionModelBlocked,
+				Reason:   denialReason(fmt.Sprintf("Batch creation on provider '%s' requires a model: this access restricts models, and a file-based batch names none on the request", provider), access.DeniedPermitsForModel(string(provider), "")),
+			}
+		}
+	}
 	if !skipModelCheck && !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (checkModelIfPresent && model != "")) && !access.IsModelAllowed(string(provider), model) {
 		return &EvaluationResult{
 			Decision: DecisionModelBlocked,

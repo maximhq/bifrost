@@ -24,6 +24,9 @@ API_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Configuration
 COLLECTION="$API_DIR/collections/bifrost-api-management.postman_collection.json"
 REPORT_DIR="$API_DIR/newman-reports/api-management"
+# OSS setup lock: while dashboard auth is not active, /api requires the setup token.
+# Must match setup_token in the server's config.json (or its BIFROST_SETUP_TOKEN).
+SETUP_TOKEN="${BIFROST_E2E_SETUP_TOKEN:-${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup-token}}"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -290,6 +293,10 @@ HTTP_SERVER_DIR="$BIFROST_ROOT/examples/mcps/http-no-ping-server"
 HTTP_SERVER_BIN="$HTTP_SERVER_DIR/http-server"
 HTTP_SERVER_PID=""
 AUTH_ENABLED_BY_RUN=""
+# "1" once this run has created (or found) the admin account and restored auth to
+# disabled: the request guard suite's Dashboard auth update folder needs a stored
+# admin whose password is ADMIN_PASSWORD and only runs when told one exists.
+REQUEST_GUARDS_ADMIN_EXISTS="0"
 
 start_http_mcp_server() {
     # Skip if something is already listening on 3001
@@ -340,6 +347,7 @@ cleanup() {
         echo "Restoring dashboard auth to disabled..."
         BIFROST_E2E_AUTH_HEADER="$ADMIN_AUTH_HEADER" \
         BIFROST_E2E_BASE_URL="$BASE_URL" \
+        BIFROST_E2E_SETUP_TOKEN="$SETUP_TOKEN" \
         BIFROST_E2E_ADMIN_USERNAME="$ADMIN_USERNAME" \
         BIFROST_E2E_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
             node "$SCRIPT_DIR/set-auth-config.mjs" disable >/dev/null 2>&1 || true
@@ -388,7 +396,7 @@ fi
 # Build shared Newman arguments. The collection and reporter export paths are
 # supplied per pass so the unauthenticated and authenticated runs keep separate
 # reports while using identical environment/config inputs.
-newman_args=(--timeout-script 120000 --timeout 900000 -r "$REPORTERS" --env-var "base_url=$BASE_URL")
+newman_args=(--timeout-script 120000 --timeout 900000 -r "$REPORTERS" --env-var "base_url=$BASE_URL" --env-var "setup_token=$SETUP_TOKEN")
 
 # Parsed seed env entries live here, not in the runner's shell namespace.
 # Decoupling the data keyspace from the script's own variables (PATH, COLLECTION,
@@ -527,7 +535,11 @@ run_newman_pass() {
     return $pass_exit
 }
 
-run_newman_pass "Running unauthenticated API management tests..." "$COLLECTION" "" ""
+# The unauthenticated pass runs while dashboard auth is off, so the OSS setup lock
+# needs every request to carry the setup token.
+SETUP_COLLECTION="$REPORT_DIR/api-management-setup-token.postman_collection.json"
+node "$SCRIPT_DIR/add-setup-token-header.mjs" "$COLLECTION" "$SETUP_COLLECTION"
+run_newman_pass "Running unauthenticated API management tests..." "$SETUP_COLLECTION" "" ""
 EXIT_CODE=$?
 
 AUTH_COLLECTION="$REPORT_DIR/api-management-auth.postman_collection.json"
@@ -536,6 +548,7 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo -e "${GREEN}Enabling dashboard auth for authenticated API management tests...${NC}" | tee -a "$LOG_FILE"
     set +e
     BIFROST_E2E_BASE_URL="$BASE_URL" \
+    BIFROST_E2E_SETUP_TOKEN="$SETUP_TOKEN" \
     BIFROST_E2E_ADMIN_USERNAME="$ADMIN_USERNAME" \
     BIFROST_E2E_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
         node "$SCRIPT_DIR/set-auth-config.mjs" enable 2>&1 | tee -a "$LOG_FILE"
@@ -579,12 +592,16 @@ if [ "$AUTH_ENABLED_BY_RUN" = "1" ]; then
     set +e
     BIFROST_E2E_AUTH_HEADER="$ADMIN_AUTH_HEADER" \
     BIFROST_E2E_BASE_URL="$BASE_URL" \
+    BIFROST_E2E_SETUP_TOKEN="$SETUP_TOKEN" \
     BIFROST_E2E_ADMIN_USERNAME="$ADMIN_USERNAME" \
     BIFROST_E2E_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
         node "$SCRIPT_DIR/set-auth-config.mjs" disable 2>&1 | tee -a "$LOG_FILE"
     AUTH_RESTORE_EXIT=${PIPESTATUS[0]}
     set -e
     AUTH_ENABLED_BY_RUN=""
+    if [ $AUTH_RESTORE_EXIT -eq 0 ]; then
+        REQUEST_GUARDS_ADMIN_EXISTS="1"
+    fi
     if [ $EXIT_CODE -eq 0 ] && [ $AUTH_RESTORE_EXIT -ne 0 ]; then
         EXIT_CODE=$AUTH_RESTORE_EXIT
     fi
@@ -619,6 +636,46 @@ if [ $EXIT_CODE -eq 0 ] && [ "${BIFROST_E2E_SKIP_CONTENT_LOGGING_MATRIX:-0}" != 
 elif [ $EXIT_CODE -eq 0 ]; then
     echo "" | tee -a "$LOG_FILE"
     echo -e "${YELLOW}Skipping content-logging permutation matrix (BIFROST_E2E_SKIP_CONTENT_LOGGING_MATRIX=1).${NC}" | tee -a "$LOG_FILE"
+fi
+
+# Request guard suite: what the management and gateway surface refuses over the
+# API (catalog URL validation, MCP client registration, proxy / provider /
+# provider-key endpoint changes, OAuth2 issuance availability, passthrough path
+# validation, request body limits, the webhook test-delivery gate and auth_config
+# updates that must prove the stored admin password). Hermetic: no provider is
+# contacted. It runs as its own newman invocation for the same reasons as the
+# governance suites below (its deliberate 4xx assertions must not meet the
+# management collection's 2xx gate), after auth is restored to disabled because
+# every folder exercises the unauthenticated posture. Its Dashboard auth update
+# folder re-enables auth with ADMIN_PASSWORD and disables it again, so it only
+# runs when this run created the admin account (REQUEST_GUARDS_ADMIN_EXISTS=1).
+# Set BIFROST_E2E_SKIP_REQUEST_GUARDS=1 to skip it.
+if [ $EXIT_CODE -eq 0 ] && [ "${BIFROST_E2E_SKIP_REQUEST_GUARDS:-0}" != "1" ]; then
+    echo "" | tee -a "$LOG_FILE"
+    echo -e "${GREEN}Running request guard tests...${NC}" | tee -a "$LOG_FILE"
+    set +e
+    BIFROST_BASE_URL="$BASE_URL" \
+    BIFROST_E2E_ADMIN_USERNAME="$ADMIN_USERNAME" \
+    BIFROST_E2E_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+    BIFROST_E2E_ADMIN_EXISTS="$REQUEST_GUARDS_ADMIN_EXISTS" \
+        "$SCRIPT_DIR/individual/run-newman-request-guards-tests.sh" 2>&1 | tee -a "$LOG_FILE"
+    REQUEST_GUARDS_EXIT=${PIPESTATUS[0]}
+    set -e
+    if [ $REQUEST_GUARDS_EXIT -ne 0 ]; then
+        EXIT_CODE=$REQUEST_GUARDS_EXIT
+        # A failure inside the Dashboard auth update folder can leave auth enabled;
+        # the suites below need it disabled, so restore it best-effort.
+        if [ "$REQUEST_GUARDS_ADMIN_EXISTS" = "1" ]; then
+            BIFROST_E2E_AUTH_HEADER="$ADMIN_AUTH_HEADER" \
+            BIFROST_E2E_BASE_URL="$BASE_URL" \
+            BIFROST_E2E_ADMIN_USERNAME="$ADMIN_USERNAME" \
+            BIFROST_E2E_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+                node "$SCRIPT_DIR/set-auth-config.mjs" disable >/dev/null 2>&1 || true
+        fi
+    fi
+elif [ $EXIT_CODE -eq 0 ]; then
+    echo "" | tee -a "$LOG_FILE"
+    echo -e "${YELLOW}Skipping request guard tests (BIFROST_E2E_SKIP_REQUEST_GUARDS=1).${NC}" | tee -a "$LOG_FILE"
 fi
 
 # Governance suites (virtual key quota, rate limit / budget enforcement,

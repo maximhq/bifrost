@@ -13,6 +13,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/objectstore"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
@@ -76,7 +77,7 @@ func chTestTargetIsDedicated(cfg *ClickHouseConfig, overridden bool) bool {
 func requireDedicatedClickHouseTestDB(t *testing.T, cfg *ClickHouseConfig) {
 	t.Helper()
 	if !chTestTargetIsDedicated(cfg, chTestOverridden()) {
-		t.Fatalf("refusing to run destructive ClickHouse tests against database %q: BIFROST_TEST_CLICKHOUSE_* overrides must point at a database whose name contains \"test\" (the suite truncates logs, mcp_tool_logs, async_jobs and webhook_deliveries and rewrites their TTL)", cfg.Database.GetValue())
+		t.Fatalf("refusing to run destructive ClickHouse tests against database %q: BIFROST_TEST_CLICKHOUSE_* overrides must point at a database whose name contains \"test\" (the suite truncates logs, mcp_tool_logs, agent_logs, async_jobs and webhook_deliveries and rewrites their TTL)", cfg.Database.GetValue())
 	}
 }
 
@@ -108,7 +109,7 @@ func trySetupClickHouseStore(t *testing.T) *ClickHouseLogStore {
 		t.Skipf("ClickHouse not available, skipping test: %v", err)
 	}
 	ch := store.(*ClickHouseLogStore)
-	for _, table := range []string{"logs", "mcp_tool_logs", "async_jobs", "webhook_deliveries"} {
+	for _, table := range []string{"logs", "mcp_tool_logs", "agent_logs", "async_jobs", "webhook_deliveries"} {
 		require.NoError(t, ch.db.Exec("TRUNCATE TABLE "+table).Error)
 	}
 	t.Cleanup(func() { _ = ch.Close(context.Background()) })
@@ -187,7 +188,14 @@ func TestBuildClickHouseDSN(t *testing.T) {
 		assert.Contains(t, dsn, "mutations_sync=1")
 		assert.Contains(t, dsn, "prefer_column_name_to_alias=1")
 		assert.Contains(t, dsn, "dial_timeout=10s")
+		assert.Contains(t, dsn, "max_query_size=16777216")
 		assert.NotContains(t, dsn, "secure=")
+	})
+
+	t.Run("MaxQuerySizeOverride", func(t *testing.T) {
+		dsn, err := buildClickHouseDSN(&ClickHouseConfig{Host: schemas.NewSecretVar("ch.local"), MaxQuerySize: 4194304})
+		require.NoError(t, err)
+		assert.Contains(t, dsn, "max_query_size=4194304")
 	})
 
 	t.Run("NativeSecureUsesTLSPort", func(t *testing.T) {
@@ -287,6 +295,26 @@ func TestChServerVersionSupported(t *testing.T) {
 	}
 }
 
+func TestClickHouseReconcileAgentCorrelation(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	taskID, contextID := "task-clickhouse", "context-clickhouse"
+	request := &AgentLog{ID: "ch-a2a-request", Timestamp: now, RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "ch-request-id"}
+	event := &AgentLog{ID: "ch-a2a-event", Timestamp: now.Add(time.Millisecond), RecordKind: "event", Status: "success", AgentName: "fixture", RequestID: "ch-request-id", TaskID: &taskID, ContextID: &contextID}
+
+	_, err := store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{request})
+	require.NoError(t, err)
+	require.NoError(t, store.ReconcileAgentCorrelation(ctx, []*AgentLog{request}))
+	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{event})))
+	require.NoError(t, store.ReconcileAgentCorrelation(ctx, []*AgentLog{event}))
+
+	found, err := store.FindAgentLog(ctx, request.ID)
+	require.NoError(t, err)
+	require.Equal(t, taskID, *found.TaskID)
+	require.Equal(t, contextID, *found.ContextID)
+}
+
 func TestChTTLDays(t *testing.T) {
 	t.Run("EngineFull", func(t *testing.T) {
 		// Fixtures copied verbatim from system.tables.engine_full on ClickHouse 26.6.
@@ -335,17 +363,17 @@ func (m *countingRetentionManager) DeleteLogsBatch(_ context.Context, _ time.Tim
 // issuing the delete again.
 func TestLogsCleanerStopsAfterOversizedBatch(t *testing.T) {
 	t.Run("OversizedCountEndsTheLoop", func(t *testing.T) {
-		m := &countingRetentionManager{counts: []int64{250}}
+		m := &countingRetentionManager{counts: []int64{batchSize + 150}}
 		NewLogsCleaner(m, CleanerConfig{RetentionDays: 3}, testLogger{}).cleanupOldLogs(context.Background())
 		assert.Equal(t, 1, m.calls, "a count above batchSize means the store already deleted everything")
 	})
 	t.Run("FullBatchesKeepGoing", func(t *testing.T) {
-		m := &countingRetentionManager{counts: []int64{100, 100, 40}}
+		m := &countingRetentionManager{counts: []int64{batchSize, batchSize, 40}}
 		NewLogsCleaner(m, CleanerConfig{RetentionDays: 3}, testLogger{}).cleanupOldLogs(context.Background())
 		assert.Equal(t, 3, m.calls, "SQL stores return exactly batchSize while rows remain")
 	})
 	t.Run("ExactBatchThenEmpty", func(t *testing.T) {
-		m := &countingRetentionManager{counts: []int64{100, 0}}
+		m := &countingRetentionManager{counts: []int64{batchSize, 0}}
 		NewLogsCleaner(m, CleanerConfig{RetentionDays: 3}, testLogger{}).cleanupOldLogs(context.Background())
 		assert.Equal(t, 2, m.calls, "a full batch is followed by one more probe that finds nothing")
 	})
@@ -685,6 +713,28 @@ func TestClickHouseDeleteLogs(t *testing.T) {
 		_, err := store.FindByID(ctx, id)
 		assert.ErrorIs(t, err, ErrNotFound, "log %s should be deleted", id)
 	}
+}
+
+func TestClickHouseDeleteAgentLogsAppliesScopeToRequestedAndCorrelatedRows(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	alice, bob := "alice", "bob"
+	rows := []*AgentLog{
+		{ID: "ch-alice-request", Timestamp: now, RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "ch-shared-request", UserID: &alice},
+		{ID: "ch-alice-event", Timestamp: now.Add(time.Millisecond), RecordKind: "event", Status: "success", AgentName: "fixture", RequestID: "ch-shared-request", UserID: &alice},
+		{ID: "ch-bob-shared-event", Timestamp: now.Add(2 * time.Millisecond), RecordKind: "event", Status: "success", AgentName: "fixture", RequestID: "ch-shared-request", UserID: &bob},
+		{ID: "ch-bob-request", Timestamp: now.Add(3 * time.Millisecond), RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "ch-bob-request", UserID: &bob},
+	}
+	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(context.Background(), rows)))
+	ctx := queryscope.WithQueryScope(context.Background(), func(db *gorm.DB) *gorm.DB {
+		return db.Where("user_id = ?", alice)
+	})
+
+	require.NoError(t, store.DeleteAgentLogs(ctx, []string{"ch-alice-request", "ch-bob-request"}))
+
+	var remaining []string
+	require.NoError(t, store.db.Model(&AgentLog{}).Order("id").Pluck("id", &remaining).Error)
+	require.Equal(t, []string{"ch-bob-request", "ch-bob-shared-event"}, remaining)
 }
 
 func TestClickHouseDeleteLogsBatch(t *testing.T) {
@@ -1073,7 +1123,7 @@ func TestClickHouseMCPToolLogs(t *testing.T) {
 func TestClickHouseHybridHasObjectSurvivesDuplicateCreate(t *testing.T) {
 	ch := trySetupClickHouseStore(t)
 	objStore := objectstore.NewInMemoryObjectStore()
-	hybrid := newHybridLogStore(ch, objStore, "test", hybridTestLogger{}, nil)
+	hybrid := newHybridLogStore(ch, objStore, "test", hybridTestLogger{}, nil, nil)
 	ctx := context.Background()
 	ts := time.Now().UTC().Truncate(time.Millisecond)
 

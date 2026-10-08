@@ -117,6 +117,9 @@ type Permit interface {
 	// MCPPermits is every MCP client the permit allows tools of.
 	MCPPermits() []MCPPermit
 
+	// AgentPermits is every Agent Gateway registration the permit allows.
+	AgentPermits() []string
+
 	// AllowsAllProviders reports whether the permit grants every provider, including ones it holds no
 	// provider permit for. It coexists with ProviderPermits: a provider the permit lists still has
 	// that permit's model, key, and weight rules applied; a provider it lists none for is allowed with
@@ -152,11 +155,20 @@ type Access interface {
 	// lose to nothing: a permit that blacklists the model does not permit it, whatever its
 	// allowed-models list says. An empty model asks about the provider alone.
 	IsModelAllowed(provider string, model string) bool
+	// AllowsEveryModel reports whether the request may use any model at all on provider: every
+	// permit deciding for the provider allows all of its models and blacklists none. It is the
+	// question to ask when a request will run models it does not name, such as a batch defined by
+	// an uploaded file: an access for which this is false has a model restriction that only a
+	// named model lets it apply.
+	AllowsEveryModel(provider string) bool
 	// IsMCPToolAllowed reports whether the request may execute toolPattern, which is either
 	// "<client>-<tool>" or the "<client>-*" wildcard standing for every tool of a client. A
 	// wildcard is permitted when the client is granted any tool at all; narrowing a wildcard down
 	// to the tools actually granted is MCPToolIncludeList's job.
 	IsMCPToolAllowed(toolPattern string) bool
+
+	// IsAgentAllowed reports whether the request may call the named Agent Gateway registration.
+	IsAgentAllowed(agentName string) bool
 
 	// PermitsForModel returns the permits the request answers to for model on provider: every one
 	// of the caller's permits that permits the pair, then the scoping permit whenever the request
@@ -202,6 +214,8 @@ type Access interface {
 	// DeniedPermitsForModel returns the permits that refused model on provider, so the refusal can name them.
 	// An empty model asks about the provider alone. Nil when the request is allowed.
 	DeniedPermitsForModel(provider string, model string) []Permit
+	// DeniedPermitsForAgent is DeniedPermitsForModel for an Agent Gateway registration.
+	DeniedPermitsForAgent(agentName string) []Permit
 	// DeniedPermitsForMCPTool is DeniedPermitsForModel for an MCP tool pattern.
 	DeniedPermitsForMCPTool(toolPattern string) []Permit
 }

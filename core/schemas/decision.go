@@ -1,5 +1,7 @@
 package schemas
 
+import "encoding/json"
+
 // DecisionKind identifies how a single question is decided. The vocabulary
 // mirrors Typesafe's System One question types.
 type DecisionKind string
@@ -32,6 +34,7 @@ type BifrostDecisionRequest struct {
 	Questions      map[string]DecisionQuestion `json:"questions"`
 	Fallbacks      []Fallback                  `json:"fallbacks,omitempty"`
 	RawRequestBody []byte                      `json:"-"`
+	ExtraParams    map[string]interface{}      `json:"-"` // native extensions; sent only under the passthrough-extra-params flag
 }
 
 // GetRawRequestBody returns the raw request body for the decision request.
@@ -51,15 +54,26 @@ type DecisionAnswer struct {
 	Confidence    *float64           `json:"confidence,omitempty"`
 	Probabilities map[string]float64 `json:"probabilities,omitempty"`
 	Legend        map[string]any     `json:"legend,omitempty"`
+
+	// Laya-specific fields
+	AnswerConfidence    *float64        `json:"answer_confidence,omitempty"`    // calibrated probability of the reported answer
+	Action              json.RawMessage `json:"action,omitempty"`               // action head, e.g. {"act_probability":1.0}; passed through untouched
+	Abstention          *string         `json:"abstention,omitempty"`           // "passed" | "abstained" | "unevaluated" when min_confidence is set
+	AbstentionThreshold *float64        `json:"abstention_threshold,omitempty"` // the min_confidence the answer was gated on
+	LowConfidence       *bool           `json:"low_confidence,omitempty"`       // answer_confidence fell below abstention_threshold
 }
 
 // BifrostDecisionResponse represents the response from a decision request.
 // Answers is keyed by question identifier; every requested question produces
 // an answer.
 type BifrostDecisionResponse struct {
-	ID          string                     `json:"id,omitempty"`
-	Model       string                     `json:"model"`
-	Answers     map[string]DecisionAnswer  `json:"answers"`
-	Usage       *BifrostLLMUsage           `json:"usage,omitempty"`
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	ID             string                     `json:"id,omitempty"`
+	Model          string                     `json:"model"`
+	Answers        map[string]DecisionAnswer  `json:"answers"`
+	Usage          *BifrostLLMUsage           `json:"usage,omitempty"`
+	ExtraFields    BifrostResponseExtraFields `json:"extra_fields"`
+	NativeResponse json.RawMessage            `json:"-"` // provider body verbatim for native drop-in routes; never serialized
+
+	// Laya-specific fields
+	Routing json.RawMessage `json:"routing,omitempty"` // checkpoint routing report (model, reason, detection); passed through untouched
 }

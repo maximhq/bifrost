@@ -2,8 +2,11 @@
 package mistral
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -13,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -147,6 +151,73 @@ func (provider *MistralProvider) ListModels(ctx *schemas.BifrostContext, keys []
 	)
 }
 
+// ModelRetrieve retrieves a single model's metadata from the Mistral API.
+func (provider *MistralProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	if request == nil || request.Model == "" {
+		return nil, providerUtils.NewBifrostOperationError("model is required", nil)
+	}
+	escapedModel, idErr := providerUtils.EscapeResourceID(request.Model, "model")
+	if idErr != nil {
+		return nil, idErr
+	}
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/models/"+escapedModel))
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+
+	// Make request
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	// Extract provider response headers early so they're available on error paths too
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.SetErrorLatency(ParseMistralError(resp), latency)
+	}
+
+	// Copy response body before releasing
+	responseBody := append([]byte(nil), resp.Body()...)
+
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	var mistralModel MistralModel
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &mistralModel, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
+	}
+
+	response := mistralModel.ToBifrostModelRetrieveResponse()
+	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+
+	if sendBackRawRequest {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
+}
+
 // TextCompletion is not supported by the Mistral provider.
 func (provider *MistralProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionRequest, provider.GetProviderKey())
@@ -210,7 +281,7 @@ func (provider *MistralProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		provider.GetProviderKey(),
 		postHookRunner,
 		nil,
-		nil,
+		mistralChatStreamResponseHandler,
 		ParseMistralError,
 		nil,
 		nil,
@@ -218,6 +289,84 @@ func (provider *MistralProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		provider.logger,
 		postHookSpanFinalizer,
 	)
+}
+
+// mistralChatStreamResponseHandler normalizes text arrays while keeping original
+// provider bytes available for raw-response diagnostics, including parse failures.
+func mistralChatStreamResponseHandler(responseBody []byte, response *schemas.BifrostChatResponse, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
+	if sendBackRawResponse {
+		var raw bytes.Buffer
+		if err := schemas.Compact(&raw, responseBody); err != nil {
+			rawResponse = string(responseBody)
+		} else {
+			rawResponse = json.RawMessage(raw.Bytes())
+		}
+	}
+
+	normalized, err := normalizeMistralStreamContent(responseBody)
+	if err != nil {
+		return nil, rawResponse, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+	}
+	rawRequest, _, bifrostErr = providerUtils.HandleProviderResponse(normalized, response, requestBody, sendBackRawRequest, false)
+	return rawRequest, rawResponse, bifrostErr
+}
+
+func normalizeMistralStreamContent(body []byte) ([]byte, error) {
+	if !sonic.Valid(body) {
+		return nil, errors.New("invalid mistral stream response JSON")
+	}
+	choices := providerUtils.GetJSONField(body, "choices")
+	if !choices.IsArray() {
+		return body, nil
+	}
+	hasContentArray := false
+	choices.ForEach(func(_, choice gjson.Result) bool {
+		if choice.Get("delta.content").IsArray() {
+			hasContentArray = true
+			return false
+		}
+		return true
+	})
+	if !hasContentArray {
+		return body, nil
+	}
+
+	// Rebuild choices once, avoiding a full response rewrite for every choice.
+	var rebuilt bytes.Buffer
+	rebuilt.Grow(len(choices.Raw))
+	rebuilt.WriteByte('[')
+	for choiceIndex, choice := range choices.Array() {
+		choiceBody := []byte(choice.Raw)
+		content := choice.Get("delta.content")
+		if content.IsArray() {
+			var text strings.Builder
+			for blockIndex, block := range content.Array() {
+				blockType := block.Get("type")
+				if !block.IsObject() || blockType.Type != gjson.String || blockType.String() != "text" {
+					return nil, fmt.Errorf("unsupported mistral content block at choices[%d].delta.content[%d]: expected text block", choiceIndex, blockIndex)
+				}
+				blockText := block.Get("text")
+				if blockText.Type != gjson.String {
+					return nil, fmt.Errorf("unsupported mistral content block at choices[%d].delta.content[%d]: text must be a string", choiceIndex, blockIndex)
+				}
+				text.WriteString(blockText.String())
+			}
+			encodedText, err := providerUtils.MarshalSorted(text.String())
+			if err != nil {
+				return nil, err
+			}
+			choiceBody, err = providerUtils.SetRawJSONField(choiceBody, "delta.content", encodedText)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if choiceIndex > 0 {
+			rebuilt.WriteByte(',')
+		}
+		rebuilt.Write(choiceBody)
+	}
+	rebuilt.WriteByte(']')
+	return providerUtils.SetRawJSONField(body, "choices", rebuilt.Bytes())
 }
 
 // Responses performs a responses request to the Mistral API.

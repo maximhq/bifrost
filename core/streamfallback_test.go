@@ -3,6 +3,7 @@ package bifrost
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -908,5 +909,480 @@ func TestRotationMarkerNotSetWhenCancelledDuringBackoff(t *testing.T) {
 	}
 	if trail[0].TriggeredRotation {
 		t.Fatalf("trail record %+v claims it triggered a rotation, but the rotated attempt was cancelled before it ran", trail[0])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TTFT deadline (BifrostContextKeyStreamFirstTokenTimeout)
+// ---------------------------------------------------------------------------
+
+// ttftUpstream records hits and hangups for a streaming test server.
+type ttftUpstream struct {
+	hits    atomic.Int32
+	hangups chan struct{}
+}
+
+func newTTFTUpstream() *ttftUpstream {
+	return &ttftUpstream{hangups: make(chan struct{}, 8)}
+}
+
+// stall blocks until delay passes, or records a hangup and reports false when
+// the client closed the request first. The body is read first: net/http only
+// notices a client hangup (and cancels r.Context) once the body is consumed.
+func (u *ttftUpstream) stall(r *http.Request, delay time.Duration) bool {
+	_, _ = io.Copy(io.Discard, r.Body)
+	select {
+	case <-time.After(delay):
+		return true
+	case <-r.Context().Done():
+		u.hangups <- struct{}{}
+		return false
+	}
+}
+
+// slowOpenAIHandler sends startup chunks only (an empty choices frame and a
+// role-only delta), stalls for delay, then sends the text "hello".
+func (u *ttftUpstream) slowOpenAIHandler(delay time.Duration) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u.hits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		send := func(data string) {
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			fl.Flush()
+		}
+		send(`{"id":"c1","object":"chat.completion.chunk","choices":[]}`)
+		send(`{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"}}]}`)
+		if !u.stall(r, delay) {
+			return
+		}
+		send(`{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hello"}}]}`)
+		send(`{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+		send("[DONE]")
+	}
+}
+
+// slowAnthropicHandler sends message_start and an empty content block (no
+// token yet), stalls for delay, then streams the text "hello".
+func (u *ttftUpstream) slowAnthropicHandler(delay time.Duration) http.HandlerFunc {
+	events := []struct{ typ, data string }{
+		{"message_start", `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-3-5-haiku-20241022","usage":{"input_tokens":10,"output_tokens":1}}}`},
+		{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+		{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`},
+		{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+		{"message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`},
+		{"message_stop", `{"type":"message_stop"}`},
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		u.hits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		for i, e := range events {
+			if i == 2 && !u.stall(r, delay) {
+				return
+			}
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.typ, e.data)
+			fl.Flush()
+		}
+	}
+}
+
+// newTTFTTestClient wires OpenAI (primary) and Anthropic (fallback) to the two
+// handlers. The primary is allowed retries, so a test can prove a TTFT miss
+// never retries the same provider.
+func newTTFTTestClient(t *testing.T, primary, fallback http.Handler) *Bifrost {
+	t.Helper()
+	primarySrv := httptest.NewServer(primary)
+	fallbackSrv := httptest.NewServer(fallback)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, primarySrv.URL)
+	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, fallbackSrv.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 2
+	account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+		{ID: "fallback-key", Value: *schemas.NewSecretVar("sk-fallback"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newStreamTestClient(t, account)
+	// LIFO: close the servers before Shutdown so a stalled handler cannot pin it.
+	t.Cleanup(func() {
+		primarySrv.CloseClientConnections()
+		fallbackSrv.CloseClientConnections()
+		primarySrv.Close()
+		fallbackSrv.Close()
+	})
+	return client
+}
+
+func ttftChatRequest(fallbacks ...schemas.Fallback) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Fallbacks: fallbacks,
+	}
+}
+
+func ttftContext(timeout time.Duration) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	if timeout > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyStreamFirstTokenTimeout, timeout)
+	}
+	return ctx
+}
+
+var anthropicFallback = schemas.Fallback{Provider: schemas.Anthropic, Model: "claude-3-5-haiku-20241022"}
+
+// A primary that opens the stream but sends only startup events is cut off at
+// the TTFT deadline, without a same-provider retry, and the fallback serves the
+// whole stream. The primary's socket is closed, not left to the idle timeout.
+func TestStreamTTFTCutsOffStartupOnlyPrimary(t *testing.T) {
+	primary, fallback := newTTFTUpstream(), newTTFTUpstream()
+	client := newTTFTTestClient(t, primary.slowOpenAIHandler(10*time.Second), fallback.slowAnthropicHandler(0))
+
+	ctx := ttftContext(300 * time.Millisecond)
+	start := time.Now()
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, ttftChatRequest(anthropicFallback))
+	if bifrostErr != nil {
+		t.Fatalf("expected the fallback to serve the stream, got %s", bifrostErr.Error.Message)
+	}
+	content, errs := drainChatStream(stream)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("TTFT cutoff took %v; the primary was not cut off at 300ms", elapsed)
+	}
+	if content != "hello" || len(errs) > 0 {
+		t.Fatalf("content = %q errs = %v, want the fallback's %q", content, errs, "hello")
+	}
+	if got := primary.hits.Load(); got != 1 {
+		t.Fatalf("primary hits = %d, want 1: a TTFT miss must not retry the same provider", got)
+	}
+	if got := fallback.hits.Load(); got != 1 {
+		t.Fatalf("fallback hits = %d, want 1", got)
+	}
+	select {
+	case <-primary.hangups:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the cut-off primary's connection is still open")
+	}
+	found := false
+	for _, entry := range ctx.GetRoutingEngineLogs() {
+		if strings.Contains(entry.Message, "TTFT timeout") && strings.Contains(entry.Message, "openai/gpt-4o-mini") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no TTFT timeout entry in routing engine logs: %+v", ctx.GetRoutingEngineLogs())
+	}
+	if ctx.Value(schemas.BifrostContextKeyStreamAttemptAbort) != nil {
+		t.Fatal("the attempt abort handle leaked past its attempt")
+	}
+}
+
+// A primary that never sends response headers is cut off at the TTFT deadline
+// well before default_request_timeout_in_seconds.
+func TestStreamTTFTCutsOffSilentPrimaryHeaderWait(t *testing.T) {
+	primary, fallback := newTTFTUpstream(), newTTFTUpstream()
+	silent := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primary.hits.Add(1)
+		primary.stall(r, 30*time.Second)
+	})
+	client := newTTFTTestClient(t, silent, fallback.slowAnthropicHandler(0))
+
+	start := time.Now()
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ttftContext(300*time.Millisecond), ttftChatRequest(anthropicFallback))
+	if bifrostErr != nil {
+		t.Fatalf("expected the fallback to serve the stream, got %s", bifrostErr.Error.Message)
+	}
+	content, _ := drainChatStream(stream)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("TTFT cutoff took %v during the header wait", elapsed)
+	}
+	if content != "hello" {
+		t.Fatalf("content = %q, want the fallback's %q", content, "hello")
+	}
+	if got := primary.hits.Load(); got != 1 {
+		t.Fatalf("primary hits = %d, want 1: a TTFT miss must not retry the same provider", got)
+	}
+	select {
+	case <-primary.hangups:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the cut-off primary's socket is still open after the header wait was cut off")
+	}
+}
+
+// The last attempt always runs to an answer: a slow fallback that is the last
+// in line is not cut off, and neither is a primary with no fallbacks.
+func TestStreamTTFTNeverCutsOffLastAttempt(t *testing.T) {
+	t.Run("last fallback", func(t *testing.T) {
+		primary, fallback := newTTFTUpstream(), newTTFTUpstream()
+		client := newTTFTTestClient(t, primary.slowOpenAIHandler(10*time.Second), fallback.slowAnthropicHandler(time.Second))
+		stream, bifrostErr := client.ChatCompletionStreamRequest(ttftContext(200*time.Millisecond), ttftChatRequest(anthropicFallback))
+		if bifrostErr != nil {
+			t.Fatalf("the last fallback was cut off: %s", bifrostErr.Error.Message)
+		}
+		if content, _ := drainChatStream(stream); content != "hello" {
+			t.Fatalf("content = %q, want %q", content, "hello")
+		}
+	})
+	t.Run("primary without fallbacks", func(t *testing.T) {
+		primary, fallback := newTTFTUpstream(), newTTFTUpstream()
+		client := newTTFTTestClient(t, primary.slowOpenAIHandler(time.Second), fallback.slowAnthropicHandler(0))
+		stream, bifrostErr := client.ChatCompletionStreamRequest(ttftContext(200*time.Millisecond), ttftChatRequest())
+		if bifrostErr != nil {
+			t.Fatalf("a primary with no fallbacks was cut off: %s", bifrostErr.Error.Message)
+		}
+		if content, _ := drainChatStream(stream); content != "hello" {
+			t.Fatalf("content = %q, want %q", content, "hello")
+		}
+		if got := fallback.hits.Load(); got != 0 {
+			t.Fatalf("fallback hits = %d, want 0", got)
+		}
+	})
+}
+
+// A primary whose first token beats the deadline serves the stream, and a
+// request without a deadline keeps today's behaviour for a slow primary.
+func TestStreamTTFTLeavesTimelyOrUnconfiguredPrimaryAlone(t *testing.T) {
+	cases := []struct {
+		name    string
+		delay   time.Duration
+		timeout time.Duration
+	}{
+		{name: "first token before deadline", delay: 50 * time.Millisecond, timeout: 2 * time.Second},
+		{name: "no deadline configured", delay: time.Second, timeout: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			primary, fallback := newTTFTUpstream(), newTTFTUpstream()
+			client := newTTFTTestClient(t, primary.slowOpenAIHandler(tc.delay), fallback.slowAnthropicHandler(0))
+			stream, bifrostErr := client.ChatCompletionStreamRequest(ttftContext(tc.timeout), ttftChatRequest(anthropicFallback))
+			if bifrostErr != nil {
+				t.Fatalf("primary failed: %s", bifrostErr.Error.Message)
+			}
+			if content, errs := drainChatStream(stream); content != "hello" || len(errs) > 0 {
+				t.Fatalf("content = %q errs = %v, want the primary's %q", content, errs, "hello")
+			}
+			if got := fallback.hits.Load(); got != 0 {
+				t.Fatalf("fallback hits = %d, want 0", got)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Provider response headers once every fallback failed
+// ---------------------------------------------------------------------------
+
+// notFoundUpstream answers every request with a 404 in its provider's error shape, tagged with an
+// X-Upstream header naming the provider, so a test can tell whose headers survived.
+func notFoundUpstream(provider, body string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Upstream", provider)
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(body))
+	}
+}
+
+// providerHeader reads one forwarded provider response header off ctx, matching its name in any case.
+func providerHeader(ctx *schemas.BifrostContext, name string) string {
+	headers, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
+	for k, v := range headers {
+		if strings.EqualFold(k, name) {
+			return v
+		}
+	}
+	return ""
+}
+
+// When the primary and every fallback fail, the primary's error is returned, so the provider
+// response headers left on the context for the transport to forward must be the primary's too.
+// They used to be the last fallback's: an OpenAI error went out with Anthropic's request-id.
+func TestExhaustedFallbacksKeepThePrimaryProviderHeaders(t *testing.T) {
+	openAI404 := notFoundUpstream("openai", `{"error":{"message":"The model does not exist","type":"invalid_request_error","code":"model_not_found"}}`)
+	anthropic404 := notFoundUpstream("anthropic", `{"type":"error","error":{"type":"not_found_error","message":"model: claude-missing"}}`)
+	fallback := schemas.Fallback{Provider: schemas.Anthropic, Model: "claude-missing"}
+
+	t.Run("non-streaming", func(t *testing.T) {
+		client := newTTFTTestClient(t, openAI404, anthropic404)
+		ctx := ttftContext(0)
+		_, bifrostErr := client.ChatCompletionRequest(ctx, ttftChatRequest(fallback))
+		if bifrostErr == nil {
+			t.Fatal("expected the primary's error once every fallback failed")
+		}
+		if got := providerHeader(ctx, "X-Upstream"); got != "openai" {
+			t.Fatalf("forwarded provider headers belong to %q, want the primary's (openai) with the primary's error", got)
+		}
+	})
+	t.Run("streaming", func(t *testing.T) {
+		client := newTTFTTestClient(t, openAI404, anthropic404)
+		ctx := ttftContext(0)
+		_, bifrostErr := client.ChatCompletionStreamRequest(ctx, ttftChatRequest(fallback))
+		if bifrostErr == nil {
+			t.Fatal("expected the primary's error once every fallback failed")
+		}
+		if got := providerHeader(ctx, "X-Upstream"); got != "openai" {
+			t.Fatalf("forwarded provider headers belong to %q, want the primary's (openai) with the primary's error", got)
+		}
+	})
+
+	// A primary that never answered had no headers, so none go out with its error, not the last
+	// fallback's: they would describe a provider the error did not come from.
+	dropsConnection := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			_ = conn.Close()
+		}
+	})
+	t.Run("non-streaming, primary sent no headers", func(t *testing.T) {
+		client := newTTFTTestClient(t, dropsConnection, anthropic404)
+		ctx := ttftContext(0)
+		_, bifrostErr := client.ChatCompletionRequest(ctx, ttftChatRequest(fallback))
+		if bifrostErr == nil {
+			t.Fatal("expected the primary's error once every fallback failed")
+		}
+		if headers := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders); headers != nil {
+			t.Fatalf("provider headers %v were left on the context with the primary's error, want none", headers)
+		}
+	})
+	t.Run("streaming, primary sent no headers", func(t *testing.T) {
+		client := newTTFTTestClient(t, dropsConnection, anthropic404)
+		ctx := ttftContext(0)
+		_, bifrostErr := client.ChatCompletionStreamRequest(ctx, ttftChatRequest(fallback))
+		if bifrostErr == nil {
+			t.Fatal("expected the primary's error once every fallback failed")
+		}
+		if headers := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders); headers != nil {
+			t.Fatalf("provider headers %v were left on the context with the primary's error, want none", headers)
+		}
+	})
+}
+
+// fallbackAnsweringPlugin answers requests for one provider itself, as a cache hit does, and lets
+// every other provider through.
+type fallbackAnsweringPlugin struct{ answers schemas.ModelProvider }
+
+func (p *fallbackAnsweringPlugin) GetName() string { return "fallback-answering" }
+func (p *fallbackAnsweringPlugin) Cleanup() error  { return nil }
+func (p *fallbackAnsweringPlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *fallbackAnsweringPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if provider, _, _ := req.GetRequestFields(); provider != p.answers {
+		return req, nil, nil
+	}
+	return req, &schemas.LLMPluginShortCircuit{Response: &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{ID: "answered-by-plugin", Model: "claude-3-5-haiku-20241022"},
+	}}, nil
+}
+func (p *fallbackAnsweringPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// streamFallbackAnsweredByPlugins streams a request whose openai primary fails and whose anthropic
+// fallback the given plugins handle, and returns the routing info the stream's headers are written from.
+func streamFallbackAnsweredByPlugins(t *testing.T, plugins ...schemas.LLMPlugin) schemas.RoutingInfo {
+	t.Helper()
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream down","type":"server_error"}}`))
+	}))
+	t.Cleanup(primary.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, primary.URL)
+	// Anthropic is configured but never called: the plugin answers for it.
+	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, "http://127.0.0.1:1")
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	// The primary's key aliases the model, so the failed attempt leaves its alias on the context.
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{ID: "openai-key", Value: *schemas.NewSecretVar("sk-openai"), Models: schemas.WhiteList{"*"}, Weight: 1,
+		Aliases: schemas.KeyAliases{"gpt-4o-mini": {ModelID: "gpt-4o-mini-deployment"}}}})
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{{ID: "anthropic-key", Value: *schemas.NewSecretVar("sk-anthropic"), Models: schemas.WhiteList{"*"}, Weight: 1}})
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: plugins,
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+		Provider:  schemas.OpenAI,
+		Model:     "gpt-4o-mini",
+		Input:     []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		Fallbacks: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-3-5-haiku-20241022"}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("the plugin should have answered the fallback, got %v", bifrostErr.Error.Message)
+	}
+	drainChatStream(stream)
+
+	info, ok := ctx.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo)
+	if !ok {
+		t.Fatal("no routing info recorded for the stream's headers")
+	}
+	return info
+}
+
+// TestStreamFallbackAnsweredByAPluginReportsTheFallback pins the bug where a streaming fallback a
+// plugin answered named the primary in the stream's headers. Stream headers come from the routing
+// info a provider worker records for each attempt, and a plugin's answer runs on no worker, so the
+// primary's record was marked as the fallback's and the headers named the provider that failed.
+func TestStreamFallbackAnsweredByAPluginReportsTheFallback(t *testing.T) {
+	info := streamFallbackAnsweredByPlugins(t, &fallbackAnsweringPlugin{answers: schemas.Anthropic})
+	if info.Provider != schemas.Anthropic || info.Model != "claude-3-5-haiku-20241022" {
+		t.Fatalf("headers name %s/%s, want the anthropic fallback the plugin answered: %+v", info.Provider, info.Model, info)
+	}
+	if !info.IsFallback || info.PrimaryProvider == nil || *info.PrimaryProvider != schemas.OpenAI {
+		t.Fatalf("headers must mark a fallback with openai as its primary: %+v", info)
+	}
+	if info.ResolvedKeyAlias != nil {
+		t.Fatalf("headers carry the failed primary's key alias %+v, but no provider key served the plugin's answer", *info.ResolvedKeyAlias)
+	}
+}
+
+// fallbackModelRewritingPlugin moves requests for one provider onto another model, as a routing
+// plugin's pre-hook does, and lets every other request through untouched.
+type fallbackModelRewritingPlugin struct {
+	provider schemas.ModelProvider
+	model    string
+}
+
+func (p *fallbackModelRewritingPlugin) GetName() string { return "fallback-model-rewriting" }
+func (p *fallbackModelRewritingPlugin) Cleanup() error  { return nil }
+func (p *fallbackModelRewritingPlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *fallbackModelRewritingPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if provider, _, _ := req.GetRequestFields(); provider == p.provider {
+		req.SetModel(p.model)
+	}
+	return req, nil, nil
+}
+func (p *fallbackModelRewritingPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestStreamFallbackAnsweredByAPluginReportsTheRewrittenTarget pins the headers to the target the
+// pre-hooks left the fallback on. One plugin moves the fallback to another model and a later plugin
+// answers it there, so the headers must name the model the answer is for, not the one requested.
+func TestStreamFallbackAnsweredByAPluginReportsTheRewrittenTarget(t *testing.T) {
+	info := streamFallbackAnsweredByPlugins(t,
+		&fallbackModelRewritingPlugin{provider: schemas.Anthropic, model: "claude-3-7-sonnet-20250219"},
+		&fallbackAnsweringPlugin{answers: schemas.Anthropic},
+	)
+	if info.Provider != schemas.Anthropic || info.Model != "claude-3-7-sonnet-20250219" {
+		t.Fatalf("headers name %s/%s, want anthropic/claude-3-7-sonnet-20250219, the model the pre-hooks moved the fallback to: %+v", info.Provider, info.Model, info)
+	}
+	if !info.IsFallback {
+		t.Fatalf("headers must mark the answered fallback as one: %+v", info)
 	}
 }

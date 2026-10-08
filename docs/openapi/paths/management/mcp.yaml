@@ -409,6 +409,12 @@ client-refresh-tools:
 
       The freshly discovered set is persisted and the hosted /mcp surface is
       re-synced automatically, exactly as for every other discovery path.
+      A refresh also re-reads the server's instructions, which costs one extra
+      handshake for a sticky http or sse client because tools/list cannot
+      carry that field. STDIO clients are skipped: Bifrost owns the
+      subprocess, so its instructions cannot change without a reconnect. This
+      is the only way to pick up instructions edited upstream without
+      restarting, since MCP defines no change notification for them.
       Rejected with 400 when the client is not in a state where discovery
       means anything: disabled (enable it first), needs_reauth (reauthorize
       it first), or still pending_verification (complete the one-time admin

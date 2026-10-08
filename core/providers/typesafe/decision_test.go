@@ -1,10 +1,17 @@
 package typesafe
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -186,8 +193,12 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 				reject(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string]any{"true": value}}, "must be a string, object, or array")
 			})
 		}
-		t.Run("rejects null", func(t *testing.T) {
-			reject(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string]any{"false": nil}}, "must be a string, object, or array")
+		t.Run("accepts null", func(t *testing.T) {
+			// SDK types: noul true/false descriptions may be null (#7599).
+			native := accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string]any{"false": nil}})
+			if got := native.Criteria.(map[string]any)["false"]; got != nil {
+				t.Fatalf("null description must stay null, got %#v", got)
+			}
 		})
 	})
 
@@ -248,8 +259,12 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 				reject(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: []any{"low", value}}, "level 1 must be a string, object, or array")
 			})
 		}
-		t.Run("rejects null level", func(t *testing.T) {
-			reject(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: []any{"low", nil}}, "level 1 must be a string, object, or array")
+		t.Run("accepts null level", func(t *testing.T) {
+			// SDK types: score levels may be null (#7599).
+			native := accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: []any{"low", nil}})
+			if levels := native.Criteria.([]any); len(levels) != 2 || levels[1] != nil {
+				t.Fatalf("null level must stay null, got %#v", native.Criteria)
+			}
 		})
 	})
 
@@ -314,7 +329,7 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 	t.Run("typed nil pointers are JSON null descriptions", func(t *testing.T) {
 		// map[string]*Rubric{"other": nil} wraps a nil pointer in a non-nil
 		// interface; it serializes to null and must follow the null rules:
-		// allowed for choice options, rejected for noul.
+		// allowed for choice options and noul sides alike (#7599).
 		type rubric struct {
 			Meaning string `json:"meaning"`
 		}
@@ -326,9 +341,12 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 		if !ok || len(m) != 2 {
 			t.Fatalf("typed pointer map not normalized: %#v", got.Criteria)
 		}
-		reject(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string]*rubric{
+		noul := accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string]*rubric{
 			"true": nil,
-		}}, "must be a string, object, or array")
+		}})
+		if !isJSONNull(noul.Criteria.(map[string]any)["true"]) {
+			t.Fatalf("typed nil noul description must serialize as null: %#v", noul.Criteria)
+		}
 	})
 
 	t.Run("typed string maps accepted for noul and choice", func(t *testing.T) {
@@ -396,11 +414,6 @@ func TestToTypesafeDecisionRequestRejections(t *testing.T) {
 			wantSub:  "unsupported kind",
 		},
 		{
-			name:     "missing instructions",
-			question: schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul},
-			wantSub:  "no instructions",
-		},
-		{
 			name:     "noul criteria with bad key",
 			question: schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string]interface{}{"maybe": "x"}},
 			wantSub:  `allows only "true" and "false" keys`,
@@ -441,13 +454,6 @@ func TestToTypesafeDecisionRequestRejections(t *testing.T) {
 			wantSub:  "instructions must be a string, object, or array",
 		},
 		{
-			// Only choice options may be null; the noul true/false descriptions
-			// are typed string | object | array.
-			name:     "noul criteria null description",
-			question: schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string]any{"true": nil}},
-			wantSub:  "must be a string, object, or array",
-		},
-		{
 			name:     "noul criteria number description",
 			question: schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string]any{"true": 7}},
 			wantSub:  "must be a string, object, or array",
@@ -456,11 +462,6 @@ func TestToTypesafeDecisionRequestRejections(t *testing.T) {
 			name:     "choice criteria unmarshalable description",
 			question: schemas.DecisionQuestion{Kind: schemas.DecisionKindChoice, Instructions: "d", Criteria: map[string]any{"a": func() {}}},
 			wantSub:  "must be a string, object, or array",
-		},
-		{
-			name:     "score criteria null level",
-			question: schemas.DecisionQuestion{Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: []any{"low", nil, "high"}},
-			wantSub:  "level 1 must be a string, object, or array",
 		},
 	}
 
@@ -480,7 +481,9 @@ func TestToTypesafeDecisionRequestRejections(t *testing.T) {
 	t.Run("state with unsupported shape", func(t *testing.T) {
 		// Pointers to scalars marshal to JSON scalars; funcs cannot marshal at
 		// all - both must be caller errors, not upstream 422s or marshal 500s.
-		for _, bad := range []interface{}{true, 42, 3.14, nil, new(42), func() {}} {
+		// nil is SDK-valid (EntryType null) and forwarded, see the SDK
+		// fidelity tests.
+		for _, bad := range []interface{}{true, 42, 3.14, new(42), func() {}} {
 			req := decisionRequest(bad, map[string]schemas.DecisionQuestion{
 				"q": {Kind: schemas.DecisionKindNoul, Instructions: "d"},
 			})
@@ -762,12 +765,15 @@ func TestNativeRoundTrip(t *testing.T) {
 }
 
 func TestToTypesafeNativeDecisionResponse(t *testing.T) {
+	answerConfidence, abstention, truncated := 0.75, "passed", true
 	resp := &schemas.BifrostDecisionResponse{
 		Model: "jev-1.13.0",
 		Answers: map[string]schemas.DecisionAnswer{
-			"approve": {Kind: schemas.DecisionKindNoul, Value: 0.25, Probabilities: map[string]float64{"true": 0.25, "false": 0.75}},
+			"approve": {Kind: schemas.DecisionKindNoul, Value: 0.25, Probabilities: map[string]float64{"true": 0.25, "false": 0.75},
+				AnswerConfidence: &answerConfidence, Abstention: &abstention, Action: json.RawMessage(`{"act_probability":1.0}`)},
 		},
-		Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 0, TotalTokens: 10},
+		Usage:   &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 0, TotalTokens: 10, Truncated: &truncated, TruncatedQuestions: []string{"approve"}},
+		Routing: json.RawMessage(`{"model":"english"}`),
 	}
 
 	native, err := ToTypesafeNativeDecisionResponse(resp)
@@ -783,6 +789,12 @@ func TestToTypesafeNativeDecisionResponse(t *testing.T) {
 	}
 	if native.Usage == nil || native.Usage.InputTokens != 10 {
 		t.Errorf("usage lost: %+v", native.Usage)
+	}
+	if answer.AnswerConfidence == nil || *answer.AnswerConfidence != 0.75 || answer.Abstention == nil || *answer.Abstention != "passed" || string(answer.Action) != `{"act_probability":1.0}` {
+		t.Errorf("Laya answer fields not rebuilt: %+v", answer)
+	}
+	if native.Usage.Truncated == nil || !*native.Usage.Truncated || !reflect.DeepEqual(native.Usage.TruncatedQuestions, []string{"approve"}) || string(native.Routing) != `{"model":"english"}` {
+		t.Errorf("Laya usage or routing not rebuilt: %+v routing=%s", native.Usage, native.Routing)
 	}
 }
 
@@ -800,17 +812,18 @@ func (noopLogger) SetOutputType(schemas.LoggerOutputType)                       
 func (noopLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder { return nil }
 
 func TestListModelsEntriesCarryOwnerAndDescription(t *testing.T) {
-	provider, err := NewTypesafeProvider(&schemas.ProviderConfig{}, noopLogger{})
-	if err != nil {
-		t.Fatalf("constructor failed: %v", err)
-	}
-	key := schemas.Key{Models: []string{"*"}}
-	resp, bifrostErr := provider.listModelsByKey(nil, key, &schemas.BifrostListModelsRequest{})
+	_, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"models":[{"name":"jev-latest","description":"The latest iteration of TypeSafe's System One Model: Jev","release_date":"2026-09-10T18:38:01.391457+00:00"},{"name":"jev-preview","description":"A preview","release_date":"2026-09-10T18:39:06.057655+00:00"}]}`))
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.listModelsByKey(ctx, fixtureKey(), &schemas.BifrostListModelsRequest{})
 	if bifrostErr != nil {
 		t.Fatalf("unexpected error: %v", bifrostErr)
 	}
-	if len(resp.Data) != len(typesafeModels) {
-		t.Fatalf("expected %d models, got %d", len(typesafeModels), len(resp.Data))
+	if len(resp.Data) != 2 {
+		t.Fatalf("expected the endpoint's 2 models, got %d", len(resp.Data))
 	}
 	for _, model := range resp.Data {
 		if model.OwnedBy == nil || *model.OwnedBy != "typesafe" {
@@ -824,6 +837,84 @@ func TestListModelsEntriesCarryOwnerAndDescription(t *testing.T) {
 		if model.Pricing != nil {
 			t.Errorf("model %s carries hardcoded pricing; pricing must come from the datasheet", model.ID)
 		}
+	}
+}
+
+// TestListModelsDefaultEndpointMergesPinnedCatalog pins the default-endpoint
+// rules: the live listing (aliases only) is merged with the pinned versioned
+// entries, and the pinned catalog stands in when the live call fails.
+func TestListModelsDefaultEndpointMergesPinnedCatalog(t *testing.T) {
+	t.Run("merge keeps live metadata and adds pinned versioned entries", func(t *testing.T) {
+		live := []TypesafeNativeModel{{Name: "jev-latest", Description: "live description", ReleaseDate: "2026-09-20"}}
+		merged := mergePinnedCatalog(live)
+		names := map[string]TypesafeNativeModel{}
+		for _, m := range merged {
+			names[m.Name] = m
+		}
+		if names["jev-latest"].Description != "live description" {
+			t.Errorf("live entry must win: %+v", names["jev-latest"])
+		}
+		if _, ok := names["jev-1.13.0"]; !ok {
+			t.Errorf("pinned versioned entry missing from %v", names)
+		}
+		if len(merged) != len(typesafeModels) {
+			t.Errorf("expected %d models after merge, got %d", len(typesafeModels), len(merged))
+		}
+	})
+
+	t.Run("pinned catalog served when the live call fails", func(t *testing.T) {
+		provider, err := NewTypesafeProvider(&schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 5},
+		}, noopLogger{})
+		if err != nil {
+			t.Fatalf("constructor failed: %v", err)
+		}
+		provider.client.Dial = func(addr string) (net.Conn, error) {
+			return nil, errors.New("offline")
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := provider.listModelsByKey(ctx, fixtureKey(), &schemas.BifrostListModelsRequest{})
+		if bifrostErr != nil {
+			t.Fatalf("default endpoint must fall back to the pinned catalog, got %v", bifrostErr)
+		}
+		if len(resp.Data) != len(typesafeModels) {
+			t.Fatalf("expected the %d pinned models, got %d", len(typesafeModels), len(resp.Data))
+		}
+	})
+
+	t.Run("custom endpoint failure is reported, not masked", func(t *testing.T) {
+		_, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"detail":"Not Found"}`))
+		})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := provider.listModelsByKey(ctx, fixtureKey(), &schemas.BifrostListModelsRequest{}); bifrostErr == nil {
+			t.Fatal("a custom endpoint without a catalog must not be answered with jev models")
+		}
+	})
+}
+
+// TestSDKFidelityNativeSuccessBodyRelayed pins that the provider keeps the
+// endpoint's success body verbatim so the native route can relay answer and
+// usage metadata the shared shape does not model.
+func TestSDKFidelityNativeSuccessBodyRelayed(t *testing.T) {
+	_, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(fixtureSuccessBody))
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	}))
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	if string(resp.NativeResponse) != fixtureSuccessBody {
+		t.Errorf("native body not kept verbatim:\n got %s\nwant %s", resp.NativeResponse, fixtureSuccessBody)
+	}
+	if resp.Answers["q"].Value != 0.25 {
+		t.Errorf("shared shape must still be built: %+v", resp.Answers["q"])
 	}
 }
 
@@ -860,5 +951,730 @@ func TestToTypesafeNativeError(t *testing.T) {
 	fallback := ToTypesafeNativeError(nil)
 	if fallback.Detail.ErrorType != "api_error" || fallback.Detail.Message == "" {
 		t.Errorf("nil error fallback = %+v", fallback.Detail)
+	}
+}
+
+// --- SDK fidelity regressions (#7599) -------------------------------------
+//
+// The official TypeSafe JS SDK (v0.6.0 types.ts) allows EntryType to be null
+// for state, instructions, and criteria descriptions, and forwards additional
+// top-level request properties. The cases below pin that contract end to end:
+// nullable inputs are accepted, native extensions reach the wire, and upstream
+// response fidelity (headers, native error detail, live catalog) survives.
+
+// TestSDKFidelityNullStateDistinctFromMissing pins that {"state": null} is an
+// accepted SDK input while an absent state stays a 400.
+func TestSDKFidelityNullStateDistinctFromMissing(t *testing.T) {
+	var withNull TypesafeDecisionRequest
+	if err := sonic.Unmarshal([]byte(`{"model":"jev-1.13.0","state":null,"questions":{"q":{"type":"noul","instructions":"Evaluate this state."}}}`), &withNull); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	shared, err := withNull.ToBifrostDecisionRequest(nil)
+	if err != nil {
+		t.Fatalf("null state is SDK-valid and must be accepted, got %v", err)
+	}
+	if shared.State != nil {
+		t.Errorf("null state must stay null, got %#v", shared.State)
+	}
+
+	var missing TypesafeDecisionRequest
+	if err := sonic.Unmarshal([]byte(`{"model":"jev-1.13.0","questions":{"q":{"type":"noul","instructions":"Evaluate this state."}}}`), &missing); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, err := missing.ToBifrostDecisionRequest(nil); err == nil || !strings.Contains(err.Error(), "state is required") {
+		t.Fatalf("absent state must still be rejected, got %v", err)
+	}
+}
+
+// TestSDKFidelityAcceptsNullables pins the nullable inputs the SDK types allow:
+// null state, optional/null instructions, null noul descriptions, and null
+// score levels. Choice options already accepted null.
+func TestSDKFidelityAcceptsNullables(t *testing.T) {
+	t.Run("null state serializes as null", func(t *testing.T) {
+		native, err := ToTypesafeDecisionRequest(decisionRequest(nil, map[string]schemas.DecisionQuestion{
+			"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+		}))
+		if err != nil {
+			t.Fatalf("null state must be accepted, got %v", err)
+		}
+		body, err := sonic.Marshal(native)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(body), `"state":null`) {
+			t.Errorf("null state must reach the wire as null, got %s", body)
+		}
+	})
+
+	t.Run("nil instructions accepted", func(t *testing.T) {
+		native, err := ToTypesafeDecisionRequest(decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+			"q": {Kind: schemas.DecisionKindChoice, Criteria: map[string]any{"a": nil, "b": nil}},
+		}))
+		if err != nil {
+			t.Fatalf("optional instructions must be accepted, got %v", err)
+		}
+		if native.Questions["q"].Instructions != nil {
+			t.Errorf("instructions must stay unset, got %#v", native.Questions["q"].Instructions)
+		}
+	})
+
+	t.Run("null noul descriptions accepted", func(t *testing.T) {
+		native, err := ToTypesafeDecisionRequest(decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+			"q": {Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string]any{"true": nil, "false": "no"}},
+		}))
+		if err != nil {
+			t.Fatalf("null noul description must be accepted, got %v", err)
+		}
+		criteria, ok := native.Questions["q"].Criteria.(map[string]any)
+		if !ok || len(criteria) != 2 {
+			t.Fatalf("noul criteria not carried: %#v", native.Questions["q"].Criteria)
+		}
+		if criteria["true"] != nil {
+			t.Errorf("null description must stay null, got %#v", criteria["true"])
+		}
+	})
+
+	t.Run("null score levels accepted", func(t *testing.T) {
+		native, err := ToTypesafeDecisionRequest(decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+			"q": {Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: []any{nil, "high"}},
+		}))
+		if err != nil {
+			t.Fatalf("null score level must be accepted, got %v", err)
+		}
+		levels, ok := native.Questions["q"].Criteria.([]any)
+		if !ok || len(levels) != 2 || levels[0] != nil {
+			t.Fatalf("score levels not carried losslessly: %#v", native.Questions["q"].Criteria)
+		}
+	})
+}
+
+// TestSDKFidelityExtensionsForwarded pins that additional top-level native
+// request properties (the SDK forwards them; classifier.dev uses "images")
+// survive the native -> shared -> native round trip as passthrough params.
+func TestSDKFidelityExtensionsForwarded(t *testing.T) {
+	raw := `{"model":"jev-1.13.0","state":"fixture","images":["data:image/png;base64,iVBORw0KGgo="],"trace":{"id":"t-1"},"questions":{"q":{"type":"noul","instructions":"Does the image contain text?"}}}`
+	var native TypesafeDecisionRequest
+	if err := sonic.Unmarshal([]byte(raw), &native); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	shared, err := native.ToBifrostDecisionRequest(nil)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	back, err := ToTypesafeDecisionRequest(shared)
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	extras := back.GetExtraParams()
+	for _, key := range []string{"images", "trace"} {
+		if _, ok := extras[key]; !ok {
+			t.Errorf("native extension %q lost in round trip; extra params = %v", key, extras)
+		}
+	}
+	for _, key := range []string{"model", "state", "questions"} {
+		if _, ok := extras[key]; ok {
+			t.Errorf("known field %q must not be treated as an extension", key)
+		}
+	}
+}
+
+// typesafeFixture is a loopback stand-in for a TypeSafe-compatible endpoint.
+type typesafeFixture struct {
+	*httptest.Server
+	mu     sync.Mutex
+	bodies [][]byte
+	paths  []string
+}
+
+func (f *typesafeFixture) record(r *http.Request) []byte {
+	buf := make([]byte, 1<<16)
+	n, _ := r.Body.Read(buf)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bodies = append(f.bodies, append([]byte(nil), buf[:n]...))
+	f.paths = append(f.paths, r.URL.Path)
+	return buf[:n]
+}
+
+func (f *typesafeFixture) lastBody() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.bodies) == 0 {
+		return ""
+	}
+	return string(f.bodies[len(f.bodies)-1])
+}
+
+func newTypesafeFixture(t *testing.T, handler func(w http.ResponseWriter, r *http.Request, body []byte)) (*typesafeFixture, *TypesafeProvider) {
+	t.Helper()
+	f := &typesafeFixture{}
+	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler(w, r, f.record(r))
+	}))
+	t.Cleanup(f.Close)
+	provider, err := NewTypesafeProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: f.URL, DefaultRequestTimeoutInSeconds: 10},
+	}, noopLogger{})
+	if err != nil {
+		t.Fatalf("NewTypesafeProvider: %v", err)
+	}
+	return f, provider
+}
+
+func fixtureKey() schemas.Key {
+	return schemas.Key{Value: *schemas.NewSecretVar("test-key"), Models: []string{"*"}}
+}
+
+func headerValue(headers map[string]string, name string) string {
+	for k, v := range headers {
+		if strings.EqualFold(k, name) {
+			return v
+		}
+	}
+	return ""
+}
+
+const fixtureSuccessBody = `{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.25,"rationale":"fixture extra"}},"usage":{"input_tokens":3,"output_tokens":0,"billed":true},"request_id":"req-123"}`
+
+// TestSDKFidelityFixtureHeaders pins that upstream response headers such as
+// x-typesafe-request-id reach the response ExtraFields and the context so the
+// transport forwards them to the SDK client.
+func TestSDKFidelityFixtureHeaders(t *testing.T) {
+	_, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		w.Header().Set("x-typesafe-request-id", "req-123")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(fixtureSuccessBody))
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	}))
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	if got := headerValue(resp.ExtraFields.ProviderResponseHeaders, "x-typesafe-request-id"); got != "req-123" {
+		t.Errorf("x-typesafe-request-id not on response headers: %v", resp.ExtraFields.ProviderResponseHeaders)
+	}
+	ctxHeaders, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
+	if got := headerValue(ctxHeaders, "x-typesafe-request-id"); got != "req-123" {
+		t.Errorf("x-typesafe-request-id not stored in context: %v", ctxHeaders)
+	}
+}
+
+// TestSDKFidelityFixtureNativeError pins that a native error body
+// {"detail":{"error_type","message"}} keeps its error_type and message, and that
+// the retry and request-id headers are captured for forwarding.
+func TestSDKFidelityFixtureNativeError(t *testing.T) {
+	_, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		w.Header().Set("Retry-After", "7")
+		w.Header().Set("Retry-After-Ms", "7000")
+		w.Header().Set("x-typesafe-request-id", "req-429")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"detail":{"error_type":"quota_exceeded","message":"Daily evaluation limit reached"},"billing":{"charged":false}}`))
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	}))
+	if bifrostErr == nil {
+		t.Fatal("expected upstream 429 to surface as an error")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("status = %v, want 429", bifrostErr.StatusCode)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != "quota_exceeded" {
+		t.Errorf("native error_type lost: %+v", bifrostErr.Error)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Message != "Daily evaluation limit reached" {
+		t.Errorf("native message lost: %+v", bifrostErr.Error)
+	}
+	native := ToTypesafeNativeError(bifrostErr)
+	if native.Detail.ErrorType != "quota_exceeded" || native.Detail.Message != "Daily evaluation limit reached" {
+		t.Errorf("native error body rebuilt wrong: %+v", native.Detail)
+	}
+	ctxHeaders, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
+	for name, want := range map[string]string{"Retry-After": "7", "Retry-After-Ms": "7000", "x-typesafe-request-id": "req-429"} {
+		if got := headerValue(ctxHeaders, name); got != want {
+			t.Errorf("header %s = %q, want %q (context headers: %v)", name, got, want, ctxHeaders)
+		}
+	}
+}
+
+// TestSDKFidelityFixtureImagesNotTextOnly pins that a native "images" extension
+// reaches the wire instead of being silently dropped: a fixture that rejects
+// image requests with a native 422 must see the images and reject, never
+// answer a text-only request with 200.
+func TestSDKFidelityFixtureImagesNotTextOnly(t *testing.T) {
+	fixture, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, body []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), `"images"`) {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"detail":{"error_type":"images_unsupported","message":"jev cannot see images"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(fixtureSuccessBody))
+	})
+	var native TypesafeDecisionRequest
+	if err := sonic.Unmarshal([]byte(`{"model":"jev-1.13.0","state":"Describe this photo.","images":["data:image/png;base64,iVBORw0KGgo="],"questions":{"q":{"type":"noul","instructions":"Does the image contain text?"}}}`), &native); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	shared, err := native.ToBifrostDecisionRequest(nil)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	// The native /typesafe route asks for extensions to reach the wire.
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	_, bifrostErr := provider.Decision(ctx, fixtureKey(), shared)
+	if !strings.Contains(fixture.lastBody(), `"images"`) {
+		t.Errorf("images extension never reached the wire; upstream body = %s", fixture.lastBody())
+	}
+	if bifrostErr == nil {
+		t.Fatal("image request answered as text-only 200; expected the fixture's native 422")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("status = %v, want 422", bifrostErr.StatusCode)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != "images_unsupported" {
+		t.Errorf("native error_type lost: %+v", bifrostErr.Error)
+	}
+}
+
+// TestSDKFidelityListModelsUpstreamCatalog pins that a compatible endpoint's
+// native GET /v1/models catalog is served instead of the built-in jev catalog,
+// with release_date carried into the native listing shape.
+func TestSDKFidelityListModelsUpstreamCatalog(t *testing.T) {
+	fixture, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"models":[{"name":"dgemma","description":"image classifier","release_date":"2026-09-01T00:00:00+00:00"}]}`))
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.ListModels(ctx, []schemas.Key{fixtureKey()}, &schemas.BifrostListModelsRequest{})
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	fixture.mu.Lock()
+	hits := len(fixture.paths)
+	fixture.mu.Unlock()
+	if hits == 0 {
+		t.Errorf("upstream GET /v1/models was never called; static catalog served instead")
+	}
+	ids := make([]string, 0, len(resp.Data))
+	for _, model := range resp.Data {
+		ids = append(ids, model.ID)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != "typesafe/dgemma" {
+		t.Fatalf("expected only the endpoint's catalog [typesafe/dgemma], got %v", ids)
+	}
+	if resp.Data[0].Description == nil || *resp.Data[0].Description != "image classifier" {
+		t.Errorf("upstream description lost: %+v", resp.Data[0])
+	}
+	native := ToTypesafeNativeListModelsResponse(resp)
+	if len(native.Models) != 1 || native.Models[0].Name != "dgemma" || native.Models[0].ReleaseDate != "2026-09-01T00:00:00+00:00" {
+		t.Errorf("native listing lost upstream metadata: %+v", native.Models)
+	}
+}
+
+const customTypesafeProviderName = schemas.ModelProvider("my-typesafe")
+
+// newCustomTypesafeFixture builds a provider that backs the custom provider
+// my-typesafe (base_provider_type typesafe) against a loopback endpoint.
+func newCustomTypesafeFixture(t *testing.T, custom schemas.CustomProviderConfig, handler func(w http.ResponseWriter, r *http.Request, body []byte)) (*typesafeFixture, *TypesafeProvider) {
+	t.Helper()
+	f := &typesafeFixture{}
+	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler(w, r, f.record(r))
+	}))
+	t.Cleanup(f.Close)
+	custom.CustomProviderKey = string(customTypesafeProviderName)
+	custom.BaseProviderType = schemas.Typesafe
+	provider, err := NewTypesafeProvider(&schemas.ProviderConfig{
+		NetworkConfig:        schemas.NetworkConfig{BaseURL: f.URL, DefaultRequestTimeoutInSeconds: 10},
+		CustomProviderConfig: &custom,
+	}, noopLogger{})
+	if err != nil {
+		t.Fatalf("NewTypesafeProvider: %v", err)
+	}
+	return f, provider
+}
+
+func writeFixtureSuccess(w http.ResponseWriter, r *http.Request, _ []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == http.MethodGet {
+		_, _ = w.Write([]byte(`{"models":[{"name":"jev-latest","description":"custom endpoint jev"}]}`))
+		return
+	}
+	_, _ = w.Write([]byte(fixtureSuccessBody))
+}
+
+// TestCustomProviderKeyIsCustomName pins that a Typesafe-backed custom provider
+// reports its own name, which Bifrost uses for provider lookup and key selection.
+func TestCustomProviderKeyIsCustomName(t *testing.T) {
+	_, provider := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{}, writeFixtureSuccess)
+	if got := provider.GetProviderKey(); got != customTypesafeProviderName {
+		t.Fatalf("GetProviderKey() = %q, want %q", got, customTypesafeProviderName)
+	}
+	_, standard := newTypesafeFixture(t, writeFixtureSuccess)
+	if got := standard.GetProviderKey(); got != schemas.Typesafe {
+		t.Fatalf("standard GetProviderKey() = %q, want %q", got, schemas.Typesafe)
+	}
+}
+
+// TestCustomProviderAllowedRequestsGate pins that allowed_requests gates the
+// decision and list-models operations without reaching the upstream.
+func TestCustomProviderAllowedRequestsGate(t *testing.T) {
+	fixture, provider := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{
+		AllowedRequests: &schemas.AllowedRequests{},
+	}, writeFixtureSuccess)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	_, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	}))
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "unsupported_operation" {
+		t.Fatalf("decision must be refused as unsupported_operation, got %+v", bifrostErr)
+	}
+	if !strings.Contains(bifrostErr.Error.Message, string(customTypesafeProviderName)) {
+		t.Errorf("error must name the custom provider: %q", bifrostErr.Error.Message)
+	}
+
+	_, bifrostErr = provider.ListModels(ctx, []schemas.Key{fixtureKey()}, &schemas.BifrostListModelsRequest{})
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "unsupported_operation" {
+		t.Fatalf("list models must be refused as unsupported_operation, got %+v", bifrostErr)
+	}
+
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	if len(fixture.paths) != 0 {
+		t.Errorf("gated operations must not reach the upstream, got %v", fixture.paths)
+	}
+
+	_, allowed := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{
+		AllowedRequests: &schemas.AllowedRequests{Decision: true},
+	}, writeFixtureSuccess)
+	if _, bifrostErr := allowed.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	})); bifrostErr != nil {
+		t.Fatalf("decision allowed by allowed_requests must succeed: %v", bifrostErr)
+	}
+}
+
+// TestCustomProviderRequestPathOverride pins that request_path_overrides
+// redirect the decision call, as a path on base_url or as an absolute URL.
+func TestCustomProviderRequestPathOverride(t *testing.T) {
+	fixture, provider := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{
+		RequestPathOverrides: map[schemas.RequestType]string{schemas.DecisionRequest: "gateway/systemone"},
+	}, writeFixtureSuccess)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	})); bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	fixture.mu.Lock()
+	gotPaths := append([]string(nil), fixture.paths...)
+	fixture.mu.Unlock()
+	if len(gotPaths) != 1 || gotPaths[0] != "/gateway/systemone" {
+		t.Fatalf("path override not applied, upstream saw %v", gotPaths)
+	}
+
+	absolute, _ := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{}, writeFixtureSuccess)
+	_, redirected := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{
+		RequestPathOverrides: map[schemas.RequestType]string{schemas.DecisionRequest: absolute.URL + "/elsewhere/systemone"},
+	}, writeFixtureSuccess)
+	if _, bifrostErr := redirected.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	})); bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	absolute.mu.Lock()
+	defer absolute.mu.Unlock()
+	if len(absolute.paths) != 1 || absolute.paths[0] != "/elsewhere/systemone" {
+		t.Fatalf("absolute URL override not applied, target saw %v", absolute.paths)
+	}
+}
+
+// TestCustomProviderListModelsPrefixAndNativeShape pins that a custom
+// provider's models are listed under its own name and that the native
+// listing restores the bare upstream name.
+func TestCustomProviderListModelsPrefixAndNativeShape(t *testing.T) {
+	_, provider := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{}, writeFixtureSuccess)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.ListModels(ctx, []schemas.Key{fixtureKey()}, &schemas.BifrostListModelsRequest{})
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != "my-typesafe/jev-latest" {
+		ids := make([]string, 0, len(resp.Data))
+		for _, model := range resp.Data {
+			ids = append(ids, model.ID)
+		}
+		t.Fatalf("expected [my-typesafe/jev-latest], got %v", ids)
+	}
+	native := ToTypesafeNativeListModelsResponse(resp)
+	if len(native.Models) != 1 || native.Models[0].Name != "jev-latest" || native.Models[0].Description != "custom endpoint jev" {
+		t.Errorf("native listing must carry the bare name and upstream metadata: %+v", native.Models)
+	}
+}
+
+// TestCustomProviderKeylessListModels pins that a keyless custom provider
+// lists models without any configured key and sends no Authorization header.
+func TestCustomProviderKeylessListModels(t *testing.T) {
+	var sawAuth bool
+	_, provider := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{IsKeyLess: true}, func(w http.ResponseWriter, r *http.Request, body []byte) {
+		if r.Header.Get("Authorization") != "" {
+			sawAuth = true
+		}
+		writeFixtureSuccess(w, r, body)
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.ListModels(ctx, nil, &schemas.BifrostListModelsRequest{})
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != "my-typesafe/jev-latest" {
+		t.Fatalf("keyless listing must serve the endpoint catalog, got %+v", resp.Data)
+	}
+	if sawAuth {
+		t.Errorf("keyless provider must not send an Authorization header")
+	}
+}
+
+// layaBody is a synthetic Laya-shaped systemone response (not captured from a
+// live server) carrying every Laya-specific answer, response, and usage field.
+const layaBody = `{"model":"laya-rl-agent",` +
+	`"answers":{` +
+	`"frustrated":{"type":"noul","noul":0.84,"confidence":0.84,"answer_confidence":0.84,"action":{"act_probability":1.0},"abstention":"abstained","abstention_threshold":0.9,"low_confidence":true},` +
+	`"category":{"type":"choice","choice":"billing","probabilities":{"billing":0.97,"bug":0.03},"confidence":0.84,"answer_confidence":0.97,"action":{"act_probability":1.0},"abstention":"passed","abstention_threshold":0.9},` +
+	`"urgency":{"type":"score","score":1.93,"legend":{"0":"low","1":"mid","2":"high"},"probabilities":{"0":0.01,"1":0.06,"2":0.93},"confidence":0.75,"answer_confidence":0.93,"action":{"act_probability":0.5}}},` +
+	`"usage":{"input_tokens":39,"output_tokens":0,"state_tokens":13,"state_tokens_dropped":0,"truncated":false,"truncated_questions":["urgency"]},` +
+	`"routing":{"model":"english","reason":"explicit model='english'"}}`
+
+// layaQuestions are the questions layaBody answers, one per kind.
+func layaQuestions() map[string]schemas.DecisionQuestion {
+	return map[string]schemas.DecisionQuestion{
+		"frustrated": {Kind: schemas.DecisionKindNoul, Instructions: "Is the customer frustrated?"},
+		"category":   {Kind: schemas.DecisionKindChoice, Instructions: "Ticket category", Criteria: map[string]any{"billing": "charges", "bug": "defects"}},
+		"urgency":    {Kind: schemas.DecisionKindScore, Instructions: "How urgent?", Criteria: []any{"low", "mid", "high"}},
+	}
+}
+
+// decideFixture serves body from a fixture endpoint and returns the shared
+// response alongside its wire encoding decoded into a generic map.
+func decideFixture(t *testing.T, body string, questions map[string]schemas.DecisionQuestion) (*schemas.BifrostDecisionResponse, map[string]any) {
+	t.Helper()
+	_, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", questions))
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	encoded, err := sonic.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatalf("decode encoded response %s: %v", encoded, err)
+	}
+	return resp, wire
+}
+
+// TestDecisionLayaFieldsPerKind pins that Laya's answer fields map onto the
+// typed answer fields for every kind and encode under Laya's own names.
+func TestDecisionLayaFieldsPerKind(t *testing.T) {
+	resp, wire := decideFixture(t, layaBody, layaQuestions())
+
+	frustrated := resp.Answers["frustrated"]
+	if frustrated.AnswerConfidence == nil || *frustrated.AnswerConfidence != 0.84 ||
+		frustrated.Abstention == nil || *frustrated.Abstention != "abstained" ||
+		frustrated.AbstentionThreshold == nil || *frustrated.AbstentionThreshold != 0.9 ||
+		frustrated.LowConfidence == nil || !*frustrated.LowConfidence ||
+		string(frustrated.Action) != `{"act_probability":1.0}` {
+		t.Errorf("noul Laya fields not mapped: %+v", frustrated)
+	}
+
+	answers := wire["answers"].(map[string]any)
+	want := map[string]map[string]any{
+		"frustrated": {"kind": "noul", "value": 0.84, "confidence": 0.84, "answer_confidence": 0.84, "action": map[string]any{"act_probability": 1.0}, "abstention": "abstained", "abstention_threshold": 0.9, "low_confidence": true},
+		"category":   {"kind": "choice", "value": "billing", "confidence": 0.84, "probabilities": map[string]any{"billing": 0.97, "bug": 0.03}, "answer_confidence": 0.97, "action": map[string]any{"act_probability": 1.0}, "abstention": "passed", "abstention_threshold": 0.9},
+		"urgency":    {"kind": "score", "value": 1.93, "confidence": 0.75, "probabilities": map[string]any{"0": 0.01, "1": 0.06, "2": 0.93}, "legend": map[string]any{"0": "low", "1": "mid", "2": "high"}, "answer_confidence": 0.93, "action": map[string]any{"act_probability": 0.5}},
+	}
+	for name, expected := range want {
+		if !reflect.DeepEqual(answers[name], any(expected)) {
+			t.Errorf("answer %q:\n got %v\nwant %v", name, answers[name], expected)
+		}
+	}
+}
+
+// TestDecisionLayaFieldsRoutingAndUsage pins that routing passes through
+// untouched and Laya's usage fields sit beside the shared token counts, with
+// zero values kept.
+func TestDecisionLayaFieldsRoutingAndUsage(t *testing.T) {
+	_, wire := decideFixture(t, layaBody, layaQuestions())
+	if routing := wire["routing"]; !reflect.DeepEqual(routing, any(map[string]any{"model": "english", "reason": "explicit model='english'"})) {
+		t.Errorf("routing not passed through: %v", routing)
+	}
+	wantUsage := map[string]any{"prompt_tokens": 39.0, "total_tokens": 39.0, "state_tokens": 13.0, "state_tokens_dropped": 0.0, "truncated": false, "truncated_questions": []any{"urgency"}}
+	if !reflect.DeepEqual(wire["usage"], any(wantUsage)) {
+		t.Errorf("usage:\n got %v\nwant %v", wire["usage"], wantUsage)
+	}
+}
+
+// TestDecisionWithoutLayaFieldsUnchanged pins that a Jev response, which
+// carries none of Laya's fields, encodes with exactly the keys it had before.
+func TestDecisionWithoutLayaFieldsUnchanged(t *testing.T) {
+	_, wire := decideFixture(t, `{"model":"jev-1.13.0","answers":{"q":{"type":"choice","choice":"a","probabilities":{"a":0.9,"b":0.1},"confidence":0.8}},"usage":{"input_tokens":3,"output_tokens":1}}`,
+		map[string]schemas.DecisionQuestion{"q": {Kind: schemas.DecisionKindChoice, Instructions: "Pick", Criteria: map[string]any{"a": "first", "b": "second"}}})
+
+	keys := func(m any) []string {
+		var out []string
+		for key := range m.(map[string]any) {
+			out = append(out, key)
+		}
+		sort.Strings(out)
+		return out
+	}
+	if got := keys(wire); !reflect.DeepEqual(got, []string{"answers", "extra_fields", "model", "usage"}) {
+		t.Errorf("top-level keys = %v", got)
+	}
+	if got := keys(wire["answers"].(map[string]any)["q"]); !reflect.DeepEqual(got, []string{"confidence", "kind", "probabilities", "value"}) {
+		t.Errorf("answer keys = %v", got)
+	}
+	if got := keys(wire["usage"]); !reflect.DeepEqual(got, []string{"completion_tokens", "prompt_tokens", "total_tokens"}) {
+		t.Errorf("usage keys = %v", got)
+	}
+}
+
+// clefEnvelopeBody is a Cloudflare Workers AI REST response for @cf/cloudflare/clef,
+// captured from the live API: the systemone body sits inside "result".
+const clefEnvelopeBody = `{"result":{"model":"clef","answers":{` +
+	`"frustrated":{"type":"noul","noul":0.9894},` +
+	`"category":{"type":"choice","choice":"billing","probabilities":{"billing":0.9668,"bug":0.0136,"other":0.0196},"confidence":0.9029},` +
+	`"urgency":{"type":"score","score":1.9729,"legend":{"0":"can wait","1":"soon","2":"today"},"probabilities":{"0":0.0052,"1":0.0167,"2":0.9781},"confidence":0.9356}},` +
+	`"usage":{"input_tokens":313,"output_tokens":0}},"success":true,"errors":[],"messages":[]}`
+
+// TestDecisionCloudflareEnvelope pins that a Cloudflare-enveloped systemone body
+// is unwrapped: every kind maps, usage maps, and the native relay is the inner body.
+func TestDecisionCloudflareEnvelope(t *testing.T) {
+	questions := map[string]schemas.DecisionQuestion{
+		"frustrated": {Kind: schemas.DecisionKindNoul, Instructions: "Is the customer frustrated?"},
+		"category":   {Kind: schemas.DecisionKindChoice, Instructions: "Ticket category", Criteria: map[string]any{"billing": "charges", "bug": "defects", "other": "else"}},
+		"urgency":    {Kind: schemas.DecisionKindScore, Instructions: "How urgent?", Criteria: []any{"can wait", "soon", "today"}},
+	}
+	resp, _ := decideFixture(t, clefEnvelopeBody, questions)
+
+	if resp.Model != "clef" {
+		t.Errorf("model = %q, want clef", resp.Model)
+	}
+	if v := resp.Answers["frustrated"].Value; v != 0.9894 {
+		t.Errorf("noul value = %v", v)
+	}
+	if a := resp.Answers["category"]; a.Value != "billing" || a.Confidence == nil || *a.Confidence != 0.9029 || a.Probabilities["bug"] != 0.0136 {
+		t.Errorf("choice answer = %+v", a)
+	}
+	if a := resp.Answers["urgency"]; a.Value != 1.9729 || a.Legend["2"] != "today" || a.Probabilities["2"] != 0.9781 {
+		t.Errorf("score answer = %+v", a)
+	}
+	if resp.Usage == nil || resp.Usage.PromptTokens != 313 {
+		t.Errorf("usage = %+v", resp.Usage)
+	}
+	if got := string(resp.NativeResponse); !strings.HasPrefix(got, `{"model":"clef","answers":`) {
+		t.Errorf("native relay is not the inner systemone body: %s", got)
+	}
+}
+
+// TestDecisionTopLevelAnswersNotUnwrapped pins that a body with answers at the
+// top level is parsed as is, even if it also carries a "result" key.
+func TestDecisionTopLevelAnswersNotUnwrapped(t *testing.T) {
+	resp, _ := decideFixture(t, `{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.25}},"result":{"answers":{"q":{"type":"noul","noul":0.99}}}}`,
+		map[string]schemas.DecisionQuestion{"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate."}})
+	if v := resp.Answers["q"].Value; v != 0.25 {
+		t.Errorf("value = %v, want the top-level 0.25", v)
+	}
+}
+
+// TestDecisionCloudflareEnvelopeError pins that Cloudflare envelope errors keep
+// their status, surface errors[].message, and leave the native relay to rebuild
+// a Typesafe-shaped error. Bodies are captured from the live API.
+func TestDecisionCloudflareEnvelopeError(t *testing.T) {
+	cases := map[string]struct {
+		status      int
+		body        string
+		wantMessage string
+	}{
+		"validation": {http.StatusUnprocessableEntity, `{"errors":[{"message":"AiError: AiError: {\"error\":{\"type\":\"invalid_request\",\"message\":\"Unsupported model 'clef-flash'. Use 'clef'.\"}} (beac2b74)","code":5012}],"success":false,"result":{},"messages":[]}`,
+			`AiError: AiError: {"error":{"type":"invalid_request","message":"Unsupported model 'clef-flash'. Use 'clef'."}} (beac2b74)`},
+		"auth": {http.StatusUnauthorized, `{"result":null,"success":false,"errors":[{"code":10000,"message":"Authentication error"}],"messages":[]}`, "Authentication error"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+				"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate."},
+			}))
+			if bifrostErr == nil {
+				t.Fatal("expected an error")
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tc.status {
+				t.Errorf("status = %v, want %d", bifrostErr.StatusCode, tc.status)
+			}
+			if bifrostErr.Error == nil || bifrostErr.Error.Message != tc.wantMessage {
+				t.Errorf("message = %+v, want %q", bifrostErr.Error, tc.wantMessage)
+			}
+			native, ok := ToTypesafeNativeErrorBody(bifrostErr).(*TypesafeNativeError)
+			if !ok || native.Detail.Message != tc.wantMessage {
+				t.Errorf("native error body = %#v, want a Typesafe error carrying the message", ToTypesafeNativeErrorBody(bifrostErr))
+			}
+		})
+	}
+}
+
+// TestDecisionCloudflareEnvelopeSuccessFalseOn200 pins that a 200 envelope with
+// success:false surfaces errors[].message, even when result is empty or carries
+// answers, while success:true and non-enveloped bodies are unaffected.
+func TestDecisionCloudflareEnvelopeSuccessFalseOn200(t *testing.T) {
+	cases := map[string]string{
+		"empty result":   `{"result":{},"success":false,"errors":[{"code":1001,"message":"quota exceeded"}],"messages":[]}`,
+		"null result":    `{"result":null,"success":false,"errors":[{"code":1001,"message":"quota exceeded"}],"messages":[]}`,
+		"partial result": `{"result":{"model":"clef","answers":{"q":{"type":"noul","noul":0.5}}},"success":false,"errors":[{"code":1001,"message":"quota exceeded"}],"messages":[]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
+				"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate."},
+			}))
+			if bifrostErr == nil {
+				t.Fatal("expected an error")
+			}
+			if bifrostErr.Error == nil || bifrostErr.Error.Message != "quota exceeded" {
+				t.Errorf("message = %+v, want quota exceeded", bifrostErr.Error)
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadGateway {
+				t.Errorf("status = %v, want 502", bifrostErr.StatusCode)
+			}
+		})
 	}
 }

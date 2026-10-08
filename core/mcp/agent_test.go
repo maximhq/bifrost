@@ -79,6 +79,10 @@ func (m *MockClientManager) GetToolPerClient(ctx context.Context) map[string][]s
 	return make(map[string][]schemas.ChatTool)
 }
 
+func (m *MockClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
+	return nil
+}
+
 func (m *MockClientManager) GetPluginPipeline() PluginPipeline             { return nil }
 func (m *MockClientManager) ReleasePluginPipeline(pipeline PluginPipeline) {}
 func (m *MockClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
@@ -574,6 +578,10 @@ func (m *MockAutoClientManager) GetClientByName(clientName string) *schemas.MCPC
 
 func (m *MockAutoClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
 	return make(map[string][]schemas.ChatTool)
+}
+
+func (m *MockAutoClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
+	return nil
 }
 
 func (m *MockAutoClientManager) GetPluginPipeline() PluginPipeline             { return nil }

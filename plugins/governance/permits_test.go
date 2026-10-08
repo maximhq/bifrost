@@ -1344,6 +1344,70 @@ func TestMandatoryAuthAcceptsAnAuthenticatedIdentity(t *testing.T) {
 	})
 }
 
+// A signed-in user nothing grants access to is refused as access not found - unless the caller asked
+// for such a user to be admitted, which Warp does: reaching its chat route already proves the user's
+// role allows it, and on a deployment without access profiles no user ever holds a permit. Admitted
+// means served as a key-less request is, ungoverned; it never widens what a presented key resolves
+// to, and it admits nobody who is not a user.
+func TestEvaluateAdmitsAnUngrantedUserOnlyWhenAsked(t *testing.T) {
+	vk := buildVKForMCPStamping([]string{"read_file"})
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, &mockInMemoryStore{})
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)},
+		logger, local, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	user := &schemas.UserRef{ID: "user-1"}
+	session := grant.NewCredential(grant.CredentialSessionToken, "user-1")
+	evaluate := func(t *testing.T, admit bool, identity schemas.Identity) (*EvaluationResult, *schemas.BifrostError) {
+		t.Helper()
+		ctx := emptyCtx()
+		ctx.Grant().SetIdentity(identity)
+		if admit {
+			ctx.SetValue(schemas.BifrostContextKeyAdmitUngrantedUser, true)
+		}
+		return plugin.Evaluate(ctx, &EvaluationRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			Provider:    schemas.OpenAI,
+			Model:       "gpt-4o",
+		})
+	}
+
+	t.Run("a user with no access is refused by default", func(t *testing.T) {
+		result, bifrostErr := evaluate(t, false, grant.NewIdentity(session, user, nil, nil, nil, nil, nil))
+
+		require.NotNil(t, bifrostErr)
+		assert.Equal(t, DecisionAccessNotFound, result.Decision)
+	})
+
+	t.Run("the same user is admitted when the caller asks", func(t *testing.T) {
+		result, bifrostErr := evaluate(t, true, grant.NewIdentity(session, user, nil, nil, nil, nil, nil))
+
+		require.Nil(t, bifrostErr)
+		assert.Equal(t, DecisionAllow, result.Decision)
+	})
+
+	t.Run("a presented key that resolves to nothing is still refused", func(t *testing.T) {
+		// The key is what the request goes by, whoever the session names: a dead key is a dead key.
+		result, bifrostErr := evaluate(t, true, grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-nobody"), user, nil, nil, nil, nil, nil))
+
+		require.NotNil(t, bifrostErr)
+		assert.Equal(t, DecisionAccessNotFound, result.Decision)
+	})
+
+	t.Run("a credential naming no user is not a user", func(t *testing.T) {
+		result, bifrostErr := evaluate(t, true, grant.NewIdentity(session, nil, nil, nil, nil, nil, nil))
+
+		require.NotNil(t, bifrostErr)
+		assert.Equal(t, DecisionAccessNotFound, result.Decision)
+	})
+}
+
 // Whether a credential may be used at all is settled when its permit is built, so the funnel reads
 // it off the permit rather than resolving the credential again. Inactive and expired are reported
 // distinctly, and inactive wins when a key is both: a key switched off is not a key that ran out.

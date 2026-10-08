@@ -484,7 +484,7 @@ export const ProviderIcons = {
 				width={resolvedSize}
 				height={resolvedSize}
 				viewBox="0 0 24 24"
-				role="img"
+				aria-hidden="true"
 				xmlns="http://www.w3.org/2000/svg"
 				className={className}
 			>
@@ -675,6 +675,48 @@ export const ProviderIcons = {
 				alt="nebius"
 				width={14}
 				height={14}
+				loading="lazy"
+				decoding="async"
+				className={cn("object-contain", className)}
+			/>
+		);
+	},
+	// Laya, Nimble, and Clef (on Cloudflare Workers AI) are decision models reached through
+	// custom providers, so they have no provider name of their own to match. The complexity
+	// router picks these marks by model family.
+	laya: ({ className = "" }: IconProps) => {
+		return (
+			<img
+				src="/images/laya.png"
+				alt="laya"
+				width={16}
+				height={16}
+				loading="lazy"
+				decoding="async"
+				className={cn("object-contain", className)}
+			/>
+		);
+	},
+	nimble: ({ className = "" }: IconProps) => {
+		return (
+			<img
+				src="/images/nimble.png"
+				alt="nimble"
+				width={16}
+				height={16}
+				loading="lazy"
+				decoding="async"
+				className={cn("object-contain", className)}
+			/>
+		);
+	},
+	clef: ({ className = "" }: IconProps) => {
+		return (
+			<img
+				src="/images/clef.png"
+				alt="clef"
+				width={16}
+				height={16}
 				loading="lazy"
 				decoding="async"
 				className={cn("object-contain", className)}

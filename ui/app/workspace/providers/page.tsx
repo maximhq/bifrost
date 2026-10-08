@@ -20,6 +20,7 @@ import {
 } from "@/lib/store";
 import { KnownProvider, ModelProvider, ModelProviderName, ProviderStatus } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
+import { decisionProviderIconKey } from "@/lib/utils/decisionModelProviders";
 import { DATABRICKS_PROVIDER, isCustomDatabricksProvider } from "@/lib/utils/databricksMigration";
 import { findCustomProviderCollisions, normalizeProviderName } from "@/lib/utils/providerCollision";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -296,6 +297,15 @@ export default function Providers() {
 								configuredProviders.map((p) => {
 									const isCustom = !!p.custom_provider_config || !ProviderNames.includes(p.name as KnownProvider);
 									const label = isCustom ? p.name : ProviderLabels[p.name as keyof typeof ProviderLabels];
+									const selectProviderItem = () => {
+										if (providerFormIsDirty) {
+											setPendingRedirection(p.name);
+											setShowRedirectionDialog(true);
+											return;
+										}
+										setProvider(p.name);
+										if (isMobile) setMobileDetailOpen(true);
+									};
 									return (
 										<div
 											key={p.name}
@@ -306,20 +316,31 @@ export default function Providers() {
 													? "bg-secondary opacity-100 hover:opacity-100"
 													: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
 											)}
+											role="button"
+											tabIndex={0}
 											onClick={(e) => {
 												e.preventDefault();
 												e.stopPropagation();
-												if (providerFormIsDirty) {
-													setPendingRedirection(p.name);
-													setShowRedirectionDialog(true);
-													return;
+												selectProviderItem();
+											}}
+											onKeyDown={(e) => {
+												if (e.target !== e.currentTarget) return;
+												if (e.key === "Enter" || e.key === " ") {
+													e.preventDefault();
+													selectProviderItem();
 												}
-												setProvider(p.name);
-												if (isMobile) setMobileDetailOpen(true);
 											}}
 										>
+											{/* A custom provider has no logo of its own, so it shows its base format's. Decision-model
+											    providers (Laya, Nimble, Clef) are the one exception: they get their model family's logo
+											    instead of Typesafe's. See lib/utils/decisionModelProviders.ts; that logic is specific to the
+											    Complexity Router's decision models, not a general custom-provider icon. */}
 											<RenderProviderIcon
-												provider={(isCustom ? p.custom_provider_config?.base_provider_type : p.name) as ProviderIconType}
+												provider={
+													(isCustom
+														? (decisionProviderIconKey(p) ?? p.custom_provider_config?.base_provider_type)
+														: p.name) as ProviderIconType
+												}
 												size="sm"
 												className="h-4 w-4 shrink-0"
 											/>

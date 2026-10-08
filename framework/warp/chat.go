@@ -25,6 +25,11 @@ var (
 	// varchar(36) column - persistTurn returns an empty id and the turn
 	// silently vanishes from history.
 	ErrBadConversationID = errors.New("conversation_id is too long")
+	// ErrModelNotAvailable is returned when a chat request names a provider and
+	// model the operator has not exposed. Refused rather than answered on the
+	// default: a panel holding a model that was since removed should be told,
+	// not silently billed against a different one.
+	ErrModelNotAvailable = errors.New("model is not available for warp")
 )
 
 // MaxConversationIDChars matches the warp_conversations id column
@@ -88,6 +93,13 @@ func (s *Service) NewTurn(ctx context.Context, request *ChatRequest, bodyBytes i
 	}
 	if bodyBytes > MaxHistoryBytes {
 		return nil, fmt.Errorf("%w: %d bytes exceeds the %d byte limit", ErrConversationTooLong, bodyBytes, MaxHistoryBytes)
+	}
+	// From here on config is the selected model's: the agent, the pinned key
+	// and pricing all read Provider, Model and APIKeyID off it.
+	provider, model := schemas.ModelProvider(strings.TrimSpace(string(request.Provider))), strings.TrimSpace(request.Model)
+	config, ok := config.ForModel(provider, model)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s/%s", ErrModelNotAvailable, provider, model)
 	}
 	conversationID := strings.TrimSpace(request.ConversationID)
 	// Refused before the model runs, not discovered at the append after it.
@@ -156,7 +168,11 @@ func (s *Service) RunTurn(ctx context.Context, turn *Turn, sink func(Event) bool
 	// searcher were snapshotted together at NewTurn, so a SetLogReader landing
 	// mid-turn cannot leave the agent searching one backend while it hydrates
 	// details from another - or hand it a nil reader it will dereference.
-	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), turn.logs, s.governance, ScopeFromContext(runCtx), turn.config, turn.utcOffsetMinutes, turn.timezone, turn.semantic)
+	// The resolver is asked here as well: a store that scopes per read leaves
+	// nothing on the context to tell a restricted caller from an admin.
+	scope := withCallerRestriction(runCtx, ScopeFromContext(runCtx), s.callerRestriction)
+	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), turn.logs, s.governance, scope, turn.config, turn.utcOffsetMinutes, turn.timezone, turn.semantic)
+	agent.SetGovernanceExtras(s.vkDecorator, s.userGovernance)
 	agent.questionsAsked = turn.questionsAsked
 	events := make(chan Event, 16)
 	go agent.Run(runCtx, turn.messages, events)

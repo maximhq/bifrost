@@ -4,16 +4,11 @@ import { useWarp } from "@/lib/contexts/warpContext";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useEffect, useRef } from "react";
 
-/**
- * Topbar button that opens and closes the Warp dock.
- *
- * The size-8 box is not cosmetic. Every topbar trigger shares one box because
- * Radix measures its menu offset from the trigger's bounding box, so an
- * odd-sized trigger opens its neighbours' surfaces off the shared line and
- * breaks the row's horizontal rhythm. Warp opens no Radix surface of its own,
- * but it still has to match.
- */
-/** Whether to label the modifier as Cmd rather than Ctrl. */
+// Same keycap as SheetNavigationButtons; min-w instead of a fixed size so "Ctrl" fits.
+const kbdClass =
+	"inline-flex items-center justify-center h-4 min-w-4 px-1 rounded border border-border/60 bg-muted/80 text-[10px] leading-none text-muted-foreground shadow-[0_1px_0_0.5px] shadow-border/40";
+
+// isAppleDevice picks the modifier label shown in the shortcut hint.
 function isAppleDevice(): boolean {
 	if (typeof navigator === "undefined") return false;
 	return /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent);
@@ -22,9 +17,7 @@ function isAppleDevice(): boolean {
 export default function WarpLauncher() {
 	const warp = useWarp();
 	const buttonRef = useRef<HTMLButtonElement>(null);
-	// Tracks whether this launcher was the thing that got hidden, so focus is
-	// only pulled back after a real close - not on first mount, where stealing
-	// focus would yank it away from whatever the page put it on.
+	// Refocus only after a real close, not on first mount.
 	const wasOpen = useRef(false);
 
 	useEffect(() => {
@@ -38,9 +31,7 @@ export default function WarpLauncher() {
 		}
 	}, [warp?.isOpen]);
 
-	// Cmd/Ctrl+I toggles the dock. enableOnFormTags is off by default in
-	// react-hotkeys-hook, which is what we want: the shortcut must not fire while
-	// someone is typing into a filter box or, especially, into Warp's own composer.
+	// enableOnFormTags stays off so the shortcut never fires while typing, including in the composer.
 	useHotkeys(
 		"mod+i",
 		(event) => {
@@ -51,13 +42,9 @@ export default function WarpLauncher() {
 		[warp],
 	);
 
-	// Rendered only where an WarpProvider is mounted, which excludes the minimal
-	// shells that have no dock to open.
 	if (!warp) return null;
 
-	// Stays visible while the dock is open and shows as selected, like the other
-	// topbar triggers. data-state is set by hand so this button can share their
-	// Radix data-[state=open] classes, even though it opens no Radix surface.
+	// data-state is set by hand to reuse the other topbar triggers' Radix data-[state=open] styles.
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
@@ -74,14 +61,11 @@ export default function WarpLauncher() {
 					<WarpIcon className="size-5" />
 				</button>
 			</TooltipTrigger>
-			<TooltipContent sideOffset={8}>
-				<span className="flex items-center gap-2">
-					Ask Warp
-					{/* mod+i binds Cmd on a Mac and Ctrl everywhere else, so the label
-					    has to follow the platform rather than always claiming ⌘. */}
-					<kbd className="bg-muted text-muted-foreground rounded px-1 py-0.5 font-mono text-[10px]">
-						{isAppleDevice() ? "⌘I" : "Ctrl+I"}
-					</kbd>
+			<TooltipContent sideOffset={8} className="flex items-center gap-1.5 px-2 py-1 text-xs">
+				Ask Warp
+				<span className="inline-flex items-center gap-1">
+					<kbd className={kbdClass}>{isAppleDevice() ? "⌘" : "Ctrl"}</kbd>
+					<kbd className={kbdClass}>I</kbd>
 				</span>
 			</TooltipContent>
 		</Tooltip>

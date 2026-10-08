@@ -315,13 +315,21 @@ func (t *Trace) SnapshotForExport() *Trace {
 // IsOverheadBreakdownSpan); only a plugin that opts in via OverheadSpanConsumer (the
 // logging plugin) receives them.
 var overheadBreakdownSpanNames = map[string]struct{}{
-	"request-unmarshal":    {},
-	"request-marshal":      {},
-	"response-parse":       {},
-	"response-marshal":     {},
-	"convertor":            {},
-	"queue-wait":           {},
-	"attribute-population": {},
+	"a2a.push.db.authenticate": {},
+	"a2a.push.db.bind":         {},
+	"a2a.push.db.enqueue":      {},
+	"a2a.push.db.config":       {},
+	"a2a.push.db.outcome":      {},
+	"a2a.push.db.local":        {},
+	"a2a.push.db.save":         {},
+	"a2a.push.db.delete":       {},
+	"request-unmarshal":        {},
+	"request-marshal":          {},
+	"response-parse":           {},
+	"response-marshal":         {},
+	"convertor":                {},
+	"queue-wait":               {},
+	"attribute-population":     {},
 }
 
 // IsOverheadBreakdownSpan reports whether a span exists only to feed the overhead
@@ -340,7 +348,9 @@ func IsOverheadBreakdownSpan(span *Span) bool {
 		}
 		return strings.HasPrefix(span.Name, "middleware.")
 	case SpanKindPlugin:
-		return strings.HasSuffix(span.Name, ".transportprehook") || strings.HasSuffix(span.Name, ".transportposthook")
+		return strings.HasSuffix(span.Name, ".transportprehook") ||
+			strings.HasSuffix(span.Name, ".transportposthook") ||
+			strings.HasSuffix(span.Name, ".transportresponseheadershook")
 	}
 	return false
 }
@@ -736,6 +746,23 @@ func (s *Span) End(status SpanStatus, statusMsg string) {
 // check and the caller falls back to the by-ID store lookup instead of mutating a
 // recycled span. The check rides inside the lock End already takes, so it adds no
 // extra locking.
+// EndIfOpen ends a span only if it has not ended, leaving finished spans untouched.
+// Used when a trace expires: an open span would otherwise export with a zero EndTime.
+func (s *Span) EndIfOpen(at time.Time, status SpanStatus, statusMsg string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.EndTime.IsZero() {
+		return false
+	}
+	s.EndTime = at
+	s.Status = status
+	s.StatusMsg = statusMsg
+	return true
+}
+
 func (s *Span) EndIfMatch(id string, status SpanStatus, statusMsg string) bool {
 	if s == nil {
 		return false
@@ -768,6 +795,25 @@ func (s *Span) SetAttributeIfMatch(id, key string, value any) bool {
 	}
 	s.Attributes[key] = value
 	return true
+}
+
+// EnsureLLMIfMatch returns the span's LLM payload, creating it when absent, but only
+// while the SpanID still equals id. Returns nil once the span has been recycled.
+// Callers must hold the returned pointer rather than re-reading span.LLM: Reset nils
+// the field, so a later deref would panic.
+func (s *Span) EnsureLLMIfMatch(id string) *LLMSpanData {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.SpanID != id {
+		return nil
+	}
+	if s.LLM == nil {
+		s.LLM = &LLMSpanData{}
+	}
+	return s.LLM
 }
 
 // MatchesID reports whether the span's SpanID still equals id, read under the span
@@ -830,6 +876,9 @@ const (
 	SpanKindPlugin SpanKind = "plugin"
 	// SpanKindMCPTool represents an MCP tool invocation
 	SpanKindMCPTool SpanKind = "mcp.tool"
+	// SpanKindA2AOperation represents one Agent Gateway (A2A) operation: the
+	// upstream call plus its post-hooks, mirroring the MCP op span.
+	SpanKindA2AOperation SpanKind = "a2a.operation"
 	// SpanKindMCPClient represents an MCP client lifecycle operation (connect/ping/list_tools).
 	// These run in the background per-client and are not part of an LLM request flow.
 	SpanKindMCPClient SpanKind = "mcp.client"
@@ -1100,6 +1149,25 @@ const (
 	// OTel MCP semconv.
 	AttrBifrostMCPToolDurationMs = "bifrost.mcp.tool.duration_ms"
 
+	// A2A (Agent Gateway) span attributes. There is no A2A semconv yet. The
+	// Bifrost operation name covers protocol and gateway-owned operations, while
+	// a2a.method.name is present only for strict-v1 JSON-RPC methods.
+	AttrBifrostA2AOperationName = "bifrost.a2a.operation.name"
+	AttrA2AMethodName           = "a2a.method.name"
+	AttrA2ATaskID               = "a2a.task.id"
+	AttrAgentName               = "gen_ai.agent.name"
+	AttrConversationID          = "gen_ai.conversation.id"
+
+	// Wire latency (ms) of one A2A operation as measured by the gateway, so the
+	// duration metric measures it rather than span wall-time (which covers the
+	// PostHooks). Bifrost-namespaced; not OTel semconv.
+	AttrBifrostA2AOperationDurationMs = "bifrost.a2a.operation.duration_ms"
+
+	// The transport the gateway selected for the upstream agent call
+	// (JSONRPC / GRPC / HTTP+JSON). Bifrost-namespaced because network.transport
+	// carries OSI-level values (tcp/pipe), not A2A protocol bindings.
+	AttrBifrostA2AUpstreamTransport = "bifrost.a2a.upstream.transport"
+
 	// =====================================================================
 	// Bifrost-namespaced attributes (bifrost.*)
 	//
@@ -1187,8 +1255,8 @@ const (
 	AttrBifrostAlias               = "bifrost.alias"                // original requested model when it differs from the resolved model
 	AttrBifrostRoutingEngineUsed   = "bifrost.routing_engine_used"  // comma-joined routing engines that handled the request
 	AttrBifrostComplexityTier      = "bifrost.complexity_tier"      // complexity tier used for routing (SIMPLE/MEDIUM/COMPLEX); absent when no rule referenced complexity_tier
-	AttrBifrostComplexityMechanism = "bifrost.complexity_mechanism" // how the complexity tier was classified (semantic, llm, session, skipped)
-	AttrBifrostComplexityScore     = "bifrost.complexity_score"     // numeric confidence score produced by complexity classification
+	AttrBifrostComplexityMechanism = "bifrost.complexity_mechanism" // how the complexity tier was classified (semantic, decision, llm, session, skipped)
+	AttrBifrostComplexityScore     = "bifrost.complexity_score"     // semantic similarity used to classify the tier; decision-model confidence is log-only
 	AttrBifrostStopSequencesJoined = "bifrost.request.stop_sequences"
 
 	// AttrBifrostErrorType is the normalized ErrorType, so span-derived connectors

@@ -1,0 +1,251 @@
+# Paths for Virtual MCP management.
+
+virtual-mcps:
+  get:
+    operationId: listVirtualMCPs
+    summary: List Virtual MCPs
+    description: |
+      Returns Virtual MCPs with their virtual key assignments. `limit` defaults
+      to 25 and is capped at 100.
+    tags:
+      - MCP
+    parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          default: 25
+          maximum: 100
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          default: 0
+      - name: search
+        in: query
+        description: Search by name.
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/virtualmcps.yaml#/VirtualMCPListResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createVirtualMCP
+    summary: Create Virtual MCP
+    description: |
+      Creates a Virtual MCP and serves it at `/mcp/{endpoint_slug}`.
+
+      Set `instructions` to give the model guidance alongside this Virtual MCP's
+      tools, and `instructions_mode` to choose whether the source servers' own
+      instructions are kept (`append`) or dropped (`replace`).
+    tags:
+      - MCP
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/virtualmcps.yaml#/CreateVirtualMCPRequest'
+    responses:
+      '201':
+        description: Virtual MCP created
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/virtualmcps.yaml#/VirtualMCPResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+virtual-mcps-by-id:
+  get:
+    operationId: getVirtualMCP
+    summary: Get Virtual MCP by ID
+    tags:
+      - MCP
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: uint
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/virtualmcps.yaml#/VirtualMCPResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateVirtualMCP
+    summary: Update Virtual MCP
+    description: |
+      Partial update: an omitted field keeps its current value, and
+      `endpoint_slug` is ignored because it is immutable after create.
+
+      To clear `instructions`, send an empty string; `null` reads as "not
+      provided" and leaves the stored text in place.
+    tags:
+      - MCP
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: uint
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/virtualmcps.yaml#/UpdateVirtualMCPRequest'
+    responses:
+      '200':
+        description: Virtual MCP updated
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/virtualmcps.yaml#/VirtualMCPResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteVirtualMCP
+    summary: Delete Virtual MCP
+    tags:
+      - MCP
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: uint
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Virtual MCP deleted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/virtualmcps.yaml#/VirtualMCPSuccessResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+virtual-mcps-virtual-key:
+  post:
+    operationId: attachVirtualMCPVirtualKey
+    summary: Assign Virtual MCP to a virtual key
+    tags:
+      - MCP
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: uint
+      - name: vkId
+        in: path
+        required: true
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Virtual key assigned
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/virtualmcps.yaml#/VirtualMCPSuccessResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        description: The virtual key is managed by an access profile; assign the Virtual MCP through that access profile instead.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: detachVirtualMCPVirtualKey
+    summary: Unassign Virtual MCP from a virtual key
+    tags:
+      - MCP
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: uint
+      - name: vkId
+        in: path
+        required: true
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Virtual key unassigned
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/virtualmcps.yaml#/VirtualMCPSuccessResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

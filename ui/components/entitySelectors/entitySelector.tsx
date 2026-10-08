@@ -29,6 +29,8 @@ import type { Option } from "@/components/ui/multiselectUtils";
 import { SearchSelect } from "@/components/ui/searchSelect";
 import { cn } from "@/lib/utils";
 
+import { EMPTY_ENTITY_PAGES, hasMoreEntities, loadMoreNeedsRefetch, mergeEntityPage, shouldAutoLoadMore } from "./entitySelectorPaging";
+
 export const ENTITY_SEARCH_DEBOUNCE_MS = 300;
 export const ENTITY_SELECTOR_PAGE_SIZE = 20;
 
@@ -84,6 +86,8 @@ export interface EntitySelectorCommonProps {
 	 * Single mode only.
 	 */
 	triggerClassName?: string;
+	/** Icon shown before the label in the default combobox trigger. Single mode only. */
+	triggerIcon?: ReactNode;
 	/**
 	 * Overrides the popover width, which otherwise matches the trigger. For a
 	 * narrow trigger whose options need more room than it has. Single/add only.
@@ -163,6 +167,13 @@ interface EntitySelectorChromeProps {
 	debouncedSearch: string;
 	/** True while the wrapper's debounce is still settling, or a fetch is in flight for a search. */
 	isSearching: boolean;
+	/** More rows exist on the server than `options` holds. */
+	hasMore?: boolean;
+	/** Fetches the next page. Called on scroll, and while `excludeIds` leaves the list short. */
+	onLoadMore?: () => void;
+	isLoadingMore?: boolean;
+	/** Retries the last failed request. */
+	onRetry?: () => void;
 	searchPlaceholder?: string;
 	/**
 	 * Supplied by the wrapper that knows the by-id endpoint. Rendered once per
@@ -186,6 +197,10 @@ export function EntitySelector(props: EntitySelectorProps) {
 		onSearchChange,
 		debouncedSearch,
 		isSearching,
+		hasMore = false,
+		onLoadMore,
+		isLoadingMore = false,
+		onRetry,
 		searchPlaceholder,
 		LabelResolver,
 		disabled = false,
@@ -195,6 +210,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 		fallbackOptions,
 		noPortal = true,
 		triggerClassName,
+		triggerIcon,
 		contentClassName,
 		excludeIds,
 		trigger,
@@ -259,6 +275,17 @@ export function EntitySelector(props: EntitySelectorProps) {
 		[options, excludeKey],
 	);
 
+	// Excluded rows still take up slots in each fetched page, so a picker whose
+	// first page is all already-added rows would look empty with more left on
+	// the server. Keep fetching until there is a page's worth to show. A short
+	// list can't be scrolled either, so this is also what reaches the rest.
+	const loadMore = hasMore ? onLoadMore : undefined;
+	useEffect(() => {
+		const visibleCount = visibleOptions.length;
+		if (shouldAutoLoadMore({ open, hasMore: !!loadMore, isFetching, isError, visibleCount, pageSize: ENTITY_SELECTOR_PAGE_SIZE }))
+			loadMore?.();
+	}, [open, loadMore, isFetching, isError, visibleOptions.length]);
+
 	// Only reached by the single/add presentation; multi selection is handled
 	// by react-select's own onChange below.
 	const handleSelect = (option: EntitySelectorEntry) => {
@@ -276,6 +303,8 @@ export function EntitySelector(props: EntitySelectorProps) {
 	const resolvedSearchPlaceholder = searchPlaceholder ?? `Search ${entityLabelPlural}...`;
 	const emptyMessage = debouncedSearch ? `No matching ${entityLabelPlural}` : `No ${entityLabelPlural} found`;
 	const errorMessage = `Failed to load ${entityLabelPlural}`;
+	// A failed later page keeps the rows already shown and offers a retry under them.
+	const hasRows = visibleOptions.length > 0;
 
 	// ---------------------------------------------------------------------
 	// Multi mode — react-select, so chips live inside the control.
@@ -333,6 +362,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 					// Clearing the input never reaches `reload`, so mirror every
 					// keystroke into the search state instead.
 					onInputChange={(inputValue) => onSearchChange(inputValue)}
+					onMenuScrollToBottom={loadMore}
 					onMenuOpen={() => onOpenChange(true)}
 					onMenuClose={() => onOpenChange(false)}
 					isClearable
@@ -396,8 +426,19 @@ export function EntitySelector(props: EntitySelectorProps) {
 					triggerClassName,
 				)}
 			>
-				<span className="truncate">{triggerLabel || resolvedPlaceholder}</span>
-				<ChevronDownIcon className="ml-2 size-4 shrink-0 opacity-50" />
+				{triggerIcon ? (
+					<span className="flex min-w-0 items-center gap-2">
+						{triggerIcon}
+						<span data-slot="entity-selector-label" className="truncate">
+							{triggerLabel || resolvedPlaceholder}
+						</span>
+					</span>
+				) : (
+					<span data-slot="entity-selector-label" className="truncate">
+						{triggerLabel || resolvedPlaceholder}
+					</span>
+				)}
+				<ChevronDownIcon data-slot="entity-selector-chevron" className="ml-2 size-4 shrink-0 opacity-50" />
 			</Button>
 		);
 
@@ -439,8 +480,12 @@ export function EntitySelector(props: EntitySelectorProps) {
 				// Skeletons only when there's nothing to show yet; refetching on
 				// each keystroke shouldn't blank out the current results.
 				isLoading={isFetching && visibleOptions.length === 0}
-				isError={isError}
+				onLoadMore={loadMore}
+				isLoadingMore={isLoadingMore}
+				isError={isError && !hasRows}
 				errorMessage={errorMessage}
+				loadMoreErrorMessage={isError && hasRows ? `Failed to load more ${entityLabelPlural}` : undefined}
+				onRetry={onRetry}
 				searchPlaceholder={resolvedSearchPlaceholder}
 				emptyMessage={emptyMessage}
 				disabled={disabled}
@@ -457,14 +502,18 @@ export function EntitySelector(props: EntitySelectorProps) {
 }
 
 /**
- * The open/search/debounce state every wrapper needs, so none of them
+ * The open/search/debounce/offset state every wrapper needs, so none of them
  * hand-roll it. `skip` feeds RTK Query — nothing is fetched until the picker
- * opens.
+ * opens. Pass `offset` to the list query and hand the result to
+ * `useEntitySelectorPages`.
  */
 export function useEntitySelectorSearch() {
-	const [open, setOpen] = useState(false);
+	const [open, setOpenState] = useState(false);
 	const [search, setSearch] = useState("");
 	const [debouncedSearch, setDebouncedSearch] = useState("");
+	// The offset belongs to the search it was scrolled under, so a new search
+	// starts from the first page without an effect to reset it.
+	const [page, setPage] = useState({ search: "", offset: 0 });
 
 	// Deployments can hold far more rows than one page, so pickers search
 	// server-side instead of filtering a capped pre-fetched list.
@@ -473,13 +522,92 @@ export function useEntitySelectorSearch() {
 		return () => clearTimeout(timer);
 	}, [search]);
 
+	const setOpen = useCallback((next: boolean) => {
+		setOpenState(next);
+		// Reopening starts from the first page again.
+		if (!next) setPage((prev) => (prev.offset === 0 ? prev : { search: "", offset: 0 }));
+	}, []);
+
+	const setOffset = useCallback(
+		(offset: number) =>
+			setPage((prev) => (prev.search === debouncedSearch && prev.offset === offset ? prev : { search: debouncedSearch, offset })),
+		[debouncedSearch],
+	);
+
 	return {
 		open,
 		setOpen,
 		setSearch,
 		debouncedSearch,
+		offset: page.search === debouncedSearch ? page.offset : 0,
+		setOffset,
 		skip: !open,
 		// Debounce is part of the wait, so the spinner covers it too.
 		isDebouncing: search !== debouncedSearch,
+	};
+}
+
+interface EntitySelectorPageResult {
+	/** One page of rows for the current query args; undefined while it is in flight. */
+	entries: EntitySelectorEntry[] | undefined;
+	/** The list endpoint's `total_count` for the current search. */
+	totalCount: number | undefined;
+	isFetching: boolean;
+	isError: boolean;
+	/** RTK Query's `refetch`, used to retry a page that failed. */
+	refetch?: () => void;
+}
+
+/**
+ * Accumulates the pages a wrapper fetches into one option list and returns
+ * the list props to spread onto `EntitySelector`. Wrappers pass RTK Query's
+ * `currentData`, not `data`: `data` still holds the previous args' page while
+ * the next is in flight, which would be merged at the wrong offset.
+ */
+export function useEntitySelectorPages(
+	search: ReturnType<typeof useEntitySelectorSearch>,
+	{ entries, totalCount, isFetching, isError, refetch }: EntitySelectorPageResult,
+) {
+	const { open, setOpen, setSearch, debouncedSearch, offset, setOffset, isDebouncing } = search;
+
+	// A ref rather than state: the merged list has to be ready in the same
+	// render the page lands, since multi mode settles react-select's pending
+	// load from it in an effect. The merge is idempotent, so a repeated
+	// render (StrictMode) leaves it unchanged.
+	const pagesRef = useRef(EMPTY_ENTITY_PAGES);
+	const pages = useMemo(() => {
+		if (entries) {
+			pagesRef.current = mergeEntityPage(pagesRef.current, {
+				search: debouncedSearch,
+				offset,
+				entries,
+				total: totalCount ?? offset + entries.length,
+			});
+		}
+		return pagesRef.current;
+	}, [entries, totalCount, debouncedSearch, offset]);
+
+	const hasMore = pages.search === debouncedSearch && hasMoreEntities(pages);
+	const nextOffset = pages.nextOffset;
+	const needsRefetch = loadMoreNeedsRefetch(pages, offset, isError);
+	const onLoadMore = useCallback(
+		() => (needsRefetch ? refetch?.() : setOffset(nextOffset)),
+		[needsRefetch, refetch, setOffset, nextOffset],
+	);
+	const isLoadingMore = isFetching && offset > 0;
+
+	return {
+		options: pages.entries,
+		isFetching,
+		isError,
+		open,
+		onOpenChange: setOpen,
+		onSearchChange: setSearch,
+		debouncedSearch,
+		isSearching: isDebouncing || (isFetching && !isLoadingMore && !!debouncedSearch),
+		hasMore,
+		onLoadMore,
+		isLoadingMore,
+		onRetry: refetch,
 	};
 }

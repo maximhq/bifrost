@@ -1,4 +1,6 @@
 import PageTitle from "@/components/pageTitle";
+import { DisabledReason, DisabledReasonMenuItem } from "@/components/ui/disabledReason";
+import { actionDisabledReason } from "@/lib/utils/governance";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
 	AlertDialog,
@@ -19,7 +21,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { resetDurationLabels } from "@/lib/constants/governance";
 import { getErrorMessage, useDeleteCustomerMutation } from "@/lib/store";
-import { Customer, Team } from "@/lib/types/governance";
+import { Customer } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { useEntityProfileLimits } from "@enterprise/components/access-profiles/fragments/entityAccessProfileSection";
@@ -66,8 +68,8 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end">
-				<DropdownMenuItem
-					disabled={!canUpdate}
+				<DisabledReasonMenuItem
+					reason={actionDisabledReason(canUpdate, "edit", "customers")}
 					data-testid={`customer-button-edit-${customer.id}`}
 					onSelect={(e) => {
 						e.stopPropagation();
@@ -80,7 +82,7 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 				>
 					<Edit className="h-4 w-4" />
 					Edit
-				</DropdownMenuItem>
+				</DisabledReasonMenuItem>
 				<DropdownMenuItem asChild className="cursor-pointer" data-testid={`customer-button-view-logs-${customer.id}`}>
 					<Link
 						to="/workspace/logs"
@@ -95,9 +97,9 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 						View logs
 					</Link>
 				</DropdownMenuItem>
-				<DropdownMenuItem
+				<DisabledReasonMenuItem
+					reason={actionDisabledReason(canDelete, "delete", "customers")}
 					variant="destructive"
-					disabled={!canDelete}
 					data-testid={`customer-button-delete-${customer.id}`}
 					onSelect={(e) => {
 						e.preventDefault();
@@ -109,7 +111,7 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 				>
 					<Trash2 className="h-4 w-4" />
 					Delete
-				</DropdownMenuItem>
+				</DisabledReasonMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);
@@ -118,7 +120,6 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 interface CustomersTableProps {
 	customers: Customer[];
 	totalCount: number;
-	teams: Team[];
 	search: string;
 	debouncedSearch: string;
 	onSearchChange: (value: string) => void;
@@ -132,7 +133,6 @@ interface CustomersTableProps {
 export default function CustomersTable({
 	customers,
 	totalCount,
-	teams,
 	search,
 	debouncedSearch,
 	onSearchChange,
@@ -184,10 +184,6 @@ export default function CustomersTable({
 	const handleCustomerSaved = () => {
 		setShowCustomerSheet(false);
 		setEditingCustomer(null);
-	};
-
-	const getTeamsForCustomer = (customerId: string) => {
-		return teams.filter((team) => team.customer_id === customerId);
 	};
 
 	const hasActiveFilters = debouncedSearch;
@@ -249,10 +245,17 @@ export default function CustomersTable({
 									data-testid="customers-search-input"
 								/>
 							</div>
-							<Button className="ml-auto" data-testid="customer-button-create" onClick={handleAddCustomer} disabled={!hasCreateAccess}>
-								<Plus className="h-4 w-4" />
-								Add Customer
-							</Button>
+							<DisabledReason reason={actionDisabledReason(hasCreateAccess, "create", "customers")} className="ml-auto">
+								<Button
+									className="ml-auto h-9"
+									data-testid="customer-button-create"
+									onClick={handleAddCustomer}
+									disabled={!hasCreateAccess}
+								>
+									<Plus className="h-4 w-4" />
+									Add Customer
+								</Button>
+							</DisabledReason>
 						</div>
 
 						<div className="mb-2 grow overflow-auto rounded-sm border" data-testid="customer-table-container">
@@ -276,7 +279,7 @@ export default function CustomersTable({
 										</TableRow>
 									) : (
 										customers.map((customer) => {
-											const customerTeams = getTeamsForCustomer(customer.id);
+											const teamCount = customer.team_count ?? 0;
 											const vkCount = customer.virtual_key_count ?? 0;
 
 											// A customer governed by an access profile has no limits of its own; its
@@ -339,17 +342,10 @@ export default function CustomersTable({
 														</div>
 													</TableCell>
 													<TableCell>
-														{customerTeams?.length > 0 ? (
-															<div className="flex items-center gap-2">
-																<Tooltip>
-																	<TooltipTrigger>
-																		<Badge variant="outline" className="text-xs">
-																			{customerTeams.length} {customerTeams.length === 1 ? "team" : "teams"}
-																		</Badge>
-																	</TooltipTrigger>
-																	<TooltipContent>{customerTeams.map((team) => team.name).join(", ")}</TooltipContent>
-																</Tooltip>
-															</div>
+														{teamCount > 0 ? (
+															<Badge variant="outline" className="text-xs">
+																{teamCount} {teamCount === 1 ? "team" : "teams"}
+															</Badge>
 														) : (
 															<span className="text-muted-foreground text-sm">-</span>
 														)}
@@ -371,6 +367,7 @@ export default function CustomersTable({
 																						</span>
 																					</div>
 																					<Progress
+																						aria-label="Budget usage"
 																						value={pct}
 																						className={cn(
 																							"bg-muted/70 dark:bg-muted/30 h-1.5",
@@ -413,6 +410,7 @@ export default function CustomersTable({
 																					</span>
 																				</div>
 																				<Progress
+																					aria-label="Token usage"
 																					value={tokenPercentage}
 																					className={cn(
 																						"bg-muted/70 dark:bg-muted/30 h-1",
@@ -447,6 +445,7 @@ export default function CustomersTable({
 																					</span>
 																				</div>
 																				<Progress
+																					aria-label="Request usage"
 																					value={requestPercentage}
 																					className={cn(
 																						"bg-muted/70 dark:bg-muted/30 h-1",

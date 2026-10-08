@@ -45,6 +45,11 @@ func CreateTypesafeRouteConfigs(pathPrefix string) []RouteConfig {
 				if err != nil {
 					return nil, err
 				}
+				// The native surface is the wire shape: extensions the SDK
+				// forwarded always reach the provider, no header needed.
+				if len(decisionReq.ExtraParams) > 0 && ctx != nil {
+					ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+				}
 				return &schemas.BifrostRequest{
 					DecisionRequest: decisionReq,
 				}, nil
@@ -52,18 +57,25 @@ func CreateTypesafeRouteConfigs(pathPrefix string) []RouteConfig {
 			return nil, errors.New("invalid request type")
 		},
 		DecisionResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostDecisionResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.Typesafe && resp.ExtraFields.RawResponse != nil {
-				return resp.ExtraFields.RawResponse, nil
+			// Custom providers report their own name, so match on the base
+			// provider type that served the attempt.
+			if schemas.ResolveBaseProvider(ctx, resp.ExtraFields.Provider) == schemas.Typesafe {
+				if resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+				if len(resp.NativeResponse) > 0 {
+					return resp.NativeResponse, nil
+				}
 			}
 			return typesafe.ToTypesafeNativeDecisionResponse(resp)
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return typesafe.ToTypesafeNativeError(err)
+			return typesafe.ToTypesafeNativeErrorBody(err)
 		},
 	})
 
-	// Models endpoint. Typesafe documents no upstream listing API; the response
-	// is synthesized from the provider's static catalog in native shape.
+	// Models endpoint: the endpoint's native GET /v1/models catalog in native
+	// shape (the pinned jev catalog backs the default endpoint).
 	routes = append(routes, RouteConfig{
 		Type:   RouteConfigTypeTypesafe,
 		Path:   pathPrefix + "/v1/models",
@@ -89,7 +101,7 @@ func CreateTypesafeRouteConfigs(pathPrefix string) []RouteConfig {
 			return typesafe.ToTypesafeNativeListModelsResponse(resp), nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return typesafe.ToTypesafeNativeError(err)
+			return typesafe.ToTypesafeNativeErrorBody(err)
 		},
 	})
 

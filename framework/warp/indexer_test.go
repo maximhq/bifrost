@@ -35,6 +35,11 @@ type fakeWarpVectorStore struct {
 	listErr     error
 	addErr      error
 	createCalls int
+	// respond, when set, answers GetNearest from the filters it was given
+	// instead of from nearest - for tests where which rows come back depends on
+	// the prefilter. calls keeps every filter set asked for.
+	respond func(queries []vectorstore.Query) []vectorstore.SearchResult
+	calls   [][]vectorstore.Query
 }
 
 func newFakeWarpVectorStore() *fakeWarpVectorStore {
@@ -80,6 +85,14 @@ func (f *fakeWarpVectorStore) GetNearest(_ context.Context, _ string, _ []float3
 	f.threshold = threshold
 	f.limit = limit
 	f.limits = append(f.limits, limit)
+	f.calls = append(f.calls, queries)
+	if f.respond != nil {
+		page := f.respond(queries)
+		if limit >= 0 && int64(len(page)) > limit {
+			page = page[:limit]
+		}
+		return append([]vectorstore.SearchResult(nil), page...), nil
+	}
 	// A real vector store returns at most top-K. Returning the whole fixture
 	// regardless hid every bug that only shows up once the cap actually bites.
 	if limit >= 0 && int64(len(f.nearest)) > limit {
@@ -106,6 +119,14 @@ func (f *fakeWarpVectorStore) DeleteAll(context.Context, string, []vectorstore.Q
 }
 func (f *fakeWarpVectorStore) Close(context.Context, string) error { return nil }
 
+// embeddingRequestText returns the single text part the indexer embeds, or "" for any other shape.
+func embeddingRequestText(request *schemas.BifrostEmbeddingRequest) string {
+	if request == nil || !schemas.EmbeddingInput(request.Input).AllSingleText() || len(request.Input) != 1 {
+		return ""
+	}
+	return *request.Input[0].Content[0].Text
+}
+
 func TestWarpIndexerEmbedsAndStoresVisibleConversation(t *testing.T) {
 	row := validWarpConfigRow()
 	row.EmbeddingAPIKeyID = "embedding-key"
@@ -114,7 +135,7 @@ func TestWarpIndexerEmbedsAndStoresVisibleConversation(t *testing.T) {
 	executor := func(ctx *schemas.BifrostContext, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		require.Equal(t, true, ctx.Value(schemas.BifrostContextKeySkipPluginPipeline))
 		require.Equal(t, "embedding-key", ctx.Value(schemas.BifrostContextKeyAPIKeyID))
-		embedded = *request.Input.Text
+		embedded = embeddingRequestText(request)
 		vector := make([]float64, row.EmbeddingDimension)
 		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: vector}}}}, nil
 	}
@@ -237,7 +258,7 @@ func TestWarpIndexerDrainsQueueOnClose(t *testing.T) {
 
 	executor := func(_ *schemas.BifrostContext, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		mu.Lock()
-		seen[*request.Input.Text] = true
+		seen[embeddingRequestText(request)] = true
 		mu.Unlock()
 		indexed.Done()
 		vector := make([]float64, 1536)

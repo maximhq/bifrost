@@ -16,6 +16,7 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
@@ -67,6 +68,10 @@ func (h *LoggingHandler) SetSidekiqBackend(runner *sidekiq.Runner, store Sidekiq
 		return h.logManager.RunCostRecalcJob(ctx, job.Metadata, func(meta string) error {
 			return progress(meta)
 		})
+	})
+	runner.RegisterSummarizer(logging.CostRecalcJobKind, func(metadata string) sidekiq.JobSummary {
+		done, total, message := logging.CostRecalcProgress(metadata)
+		return sidekiq.JobSummary{Done: done, Total: total, Message: message}
 	})
 }
 
@@ -575,9 +580,20 @@ func (h *LoggingHandler) getLogSessionByID(ctx *fasthttp.RequestCtx) {
 		return out
 	}
 
-	redactedKeys := h.redactedKeysManager.GetAllRedactedKeys(ctx, toSlice(selectedKeyIDs))
-	redactedVirtualKeys := h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
-	redactedRoutingRules := h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, toSlice(routingRuleIDs))
+	// The GetAllRedacted* lookups read every row for an empty id list, so a page
+	// that names no key of a kind skips that lookup: it has no name to resolve.
+	var redactedKeys []schemas.Key
+	if len(selectedKeyIDs) > 0 {
+		redactedKeys = h.redactedKeysManager.GetAllRedactedKeys(ctx, toSlice(selectedKeyIDs))
+	}
+	var redactedVirtualKeys []tables.TableVirtualKey
+	if len(virtualKeyIDs) > 0 {
+		redactedVirtualKeys = h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
+	}
+	var redactedRoutingRules []tables.TableRoutingRule
+	if len(routingRuleIDs) > 0 {
+		redactedRoutingRules = h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, toSlice(routingRuleIDs))
+	}
 
 	for i, log := range result.Logs {
 		if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
@@ -674,9 +690,11 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
 	}
+	parseAgentNamesFilter(ctx, filters)
 	if sessionID := strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id"))); sessionID != "" {
 		filters.SessionID = sessionID
 	}
+	parseAgentCorrelationIDFilter(ctx, filters)
 	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
@@ -825,9 +843,20 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 		return out
 	}
 
-	redactedKeys := h.redactedKeysManager.GetAllRedactedKeys(ctx, toSlice(selectedKeyIDs))
-	redactedVirtualKeys := h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
-	redactedRoutingRules := h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, toSlice(routingRuleIDs))
+	// The GetAllRedacted* lookups read every row for an empty id list, so a page
+	// that names no key of a kind skips that lookup: it has no name to resolve.
+	var redactedKeys []schemas.Key
+	if len(selectedKeyIDs) > 0 {
+		redactedKeys = h.redactedKeysManager.GetAllRedactedKeys(ctx, toSlice(selectedKeyIDs))
+	}
+	var redactedVirtualKeys []tables.TableVirtualKey
+	if len(virtualKeyIDs) > 0 {
+		redactedVirtualKeys = h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
+	}
+	var redactedRoutingRules []tables.TableRoutingRule
+	if len(routingRuleIDs) > 0 {
+		redactedRoutingRules = h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, toSlice(routingRuleIDs))
+	}
 
 	// Add selected key, virtual key, and routing rule to the result
 	for i, log := range result.Logs {
@@ -951,9 +980,11 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
 	}
+	parseAgentNamesFilter(ctx, filters)
 	if sessionID := strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id"))); sessionID != "" {
 		filters.SessionID = sessionID
 	}
+	parseAgentCorrelationIDFilter(ctx, filters)
 	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
@@ -1120,6 +1151,14 @@ func calculateBucketSize(start, end *time.Time) int64 {
 	return logstore.DefaultBucketSize(start, end)
 }
 
+func parseAgentNamesFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
+	filters.AgentNames = parseCommaSeparated(string(ctx.QueryArgs().Peek("agent_names")))
+}
+
+func parseAgentCorrelationIDFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
+	filters.AgentCorrelationID = strings.TrimSpace(string(ctx.QueryArgs().Peek("agent_correlation_id")))
+}
+
 // parseComplexityFilters extracts the structured complexity filters shared by
 // log search, aggregate, and histogram endpoints.
 func parseComplexityFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
@@ -1199,9 +1238,11 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
 	}
+	parseAgentNamesFilter(ctx, filters)
 	if sessionID := strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id"))); sessionID != "" {
 		filters.SessionID = sessionID
 	}
+	parseAgentCorrelationIDFilter(ctx, filters)
 	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
@@ -1557,8 +1598,184 @@ func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Dimension rankings calculation failed: %v", err))
 		return
 	}
+	h.applyCurrentRankingNames(ctx, result)
 
 	SendJSON(ctx, result)
+}
+
+// RankingNameResolver returns the current display name of each id of one
+// ranking dimension, looked up in the config store. An id missing from the map
+// no longer exists; its row keeps the name the log store resolved.
+type RankingNameResolver func(ctx context.Context, ids []string) (map[string]string, error)
+
+// rankingNameResolvers holds resolvers registered for dimensions whose entities
+// the OSS config store does not own (user, business unit, project) or that a
+// build wants to resolve differently. Guarded by rankingNameResolversMu.
+var (
+	rankingNameResolversMu sync.RWMutex
+	rankingNameResolvers   = map[logstore.RankingDimension]RankingNameResolver{}
+)
+
+// RegisterRankingNameResolver installs the name resolver for a ranking
+// dimension, replacing the built-in one. A nil fn removes the registration.
+// Intended to be called at startup; safe to call concurrently.
+func RegisterRankingNameResolver(dim logstore.RankingDimension, fn RankingNameResolver) {
+	rankingNameResolversMu.Lock()
+	defer rankingNameResolversMu.Unlock()
+	if fn == nil {
+		delete(rankingNameResolvers, dim)
+		return
+	}
+	rankingNameResolvers[dim] = fn
+}
+
+// redactedTeamNames and redactedCustomerNames are the batch name lookups
+// RDBConfigStore provides; a config store without them keeps the log names.
+type redactedTeamNames interface {
+	GetRedactedTeams(ctx context.Context, ids []string) ([]tables.TableTeam, error)
+}
+type redactedCustomerNames interface {
+	GetRedactedCustomers(ctx context.Context, ids []string) ([]tables.TableCustomer, error)
+}
+
+// The OSS config store must keep serving both lookups: without them team and
+// customer rankings would silently fall back to their logged names.
+var (
+	_ redactedTeamNames     = (*configstore.RDBConfigStore)(nil)
+	_ redactedCustomerNames = (*configstore.RDBConfigStore)(nil)
+)
+
+// rankingNameResolver returns the resolver for dim: a registered one first,
+// otherwise the built-in config-store lookup for the entities OSS owns.
+func (h *LoggingHandler) rankingNameResolver(dim logstore.RankingDimension) RankingNameResolver {
+	rankingNameResolversMu.RLock()
+	fn, ok := rankingNameResolvers[dim]
+	rankingNameResolversMu.RUnlock()
+	if ok {
+		return fn
+	}
+	rk := h.redactedKeysManager
+	var cs configstore.ConfigStore
+	if h.config != nil {
+		cs = h.config.ConfigStore
+	}
+	switch dim {
+	case logstore.RankingDimensionVirtualKey:
+		if rk == nil {
+			return nil
+		}
+		return func(ctx context.Context, ids []string) (map[string]string, error) {
+			names := make(map[string]string, len(ids))
+			for _, vk := range rk.GetAllRedactedVirtualKeys(ctx, ids) {
+				names[vk.ID] = vk.Name
+			}
+			return names, nil
+		}
+	case logstore.RankingDimensionRoutingRule:
+		if rk == nil {
+			return nil
+		}
+		return func(ctx context.Context, ids []string) (map[string]string, error) {
+			names := make(map[string]string, len(ids))
+			for _, rule := range rk.GetAllRedactedRoutingRules(ctx, ids) {
+				names[rule.ID] = rule.Name
+			}
+			return names, nil
+		}
+	case logstore.RankingDimensionSelectedKey:
+		if rk == nil {
+			return nil
+		}
+		return func(ctx context.Context, ids []string) (map[string]string, error) {
+			names := make(map[string]string, len(ids))
+			for _, key := range rk.GetAllRedactedKeys(ctx, ids) {
+				names[key.ID] = key.Name
+			}
+			return names, nil
+		}
+	case logstore.RankingDimensionTeam:
+		teams, ok := cs.(redactedTeamNames)
+		if !ok {
+			return nil
+		}
+		return func(ctx context.Context, ids []string) (map[string]string, error) {
+			rows, err := teams.GetRedactedTeams(ctx, ids)
+			if err != nil {
+				return nil, err
+			}
+			names := make(map[string]string, len(rows))
+			for _, team := range rows {
+				names[team.ID] = team.Name
+			}
+			return names, nil
+		}
+	case logstore.RankingDimensionCustomer:
+		customers, ok := cs.(redactedCustomerNames)
+		if !ok {
+			return nil
+		}
+		return func(ctx context.Context, ids []string) (map[string]string, error) {
+			rows, err := customers.GetRedactedCustomers(ctx, ids)
+			if err != nil {
+				return nil, err
+			}
+			names := make(map[string]string, len(rows))
+			for _, customer := range rows {
+				names[customer.ID] = customer.Name
+			}
+			return names, nil
+		}
+	}
+	return nil
+}
+
+// rankingNameLookupBatchSize bounds how many ids one ranking name lookup
+// carries, well under the Postgres and SQLite bind-parameter limits.
+const rankingNameLookupBatchSize = vkHydrationChunkSize
+
+// applyCurrentRankingNames replaces each ranked entity's name with its current
+// name from the config store, so a rename shows at once. An entity the config
+// store no longer has (deleted) keeps the name the log store resolved, which is
+// the last name it was logged under. The Unassigned bucket and dimensions whose
+// id is the name (app, user agent, alias) are left as they are.
+func (h *LoggingHandler) applyCurrentRankingNames(ctx context.Context, result *logstore.DimensionRankingResult) {
+	if result == nil || len(result.Rankings) == 0 {
+		return
+	}
+	resolve := h.rankingNameResolver(result.Dimension)
+	if resolve == nil {
+		return
+	}
+	ids := make([]string, 0, len(result.Rankings))
+	for _, row := range result.Rankings {
+		// The redacted lookups return every row for an empty id list, so only
+		// real entity ids are sent, never "" or the Unassigned / Other buckets.
+		if row.ID != "" && row.ID != logstore.UnassignedDimensionID && row.ID != logstore.OtherDimensionID {
+			ids = append(ids, row.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	// An uncapped ranking (all=true) can list every id in the window, and some
+	// lookups bind one parameter per id, so the ids go out in bounded batches.
+	names := make(map[string]string, len(ids))
+	for start := 0; start < len(ids); start += rankingNameLookupBatchSize {
+		end := min(start+rankingNameLookupBatchSize, len(ids))
+		batch, err := resolve(ctx, ids[start:end])
+		if err != nil {
+			logger.Warn("failed to resolve current %s names for rankings, keeping logged names: %v", result.Dimension, err)
+			return
+		}
+		for id, name := range batch {
+			names[id] = name
+		}
+	}
+	for i := range result.Rankings {
+		if name, ok := names[result.Rankings[i].ID]; ok && name != "" {
+			result.Rankings[i].Name = name
+		}
+	}
 }
 
 // dashboardRankingDimensions is the fixed set of dimensions returned in the
@@ -1731,6 +1948,7 @@ func (h *LoggingHandler) getDashboard(ctx *fasthttp.RequestCtx) {
 			if err != nil {
 				return fmt.Errorf("%s rankings: %w", dim, err)
 			}
+			h.applyCurrentRankingNames(gCtx, res)
 			dimMu.Lock()
 			result.DimensionRankings[string(dim)] = res
 			dimMu.Unlock()
@@ -2581,6 +2799,12 @@ type recalculateCostFilters struct {
 	Period string `json:"period,omitempty"`
 }
 
+func parseMCPCorrelationFilters(ctx *fasthttp.RequestCtx, filters *logstore.MCPToolLogSearchFilters) {
+	filters.AgentNames = parseCommaSeparated(string(ctx.QueryArgs().Peek("agent_names")))
+	filters.SessionID = strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id")))
+	filters.AgentCorrelationID = strings.TrimSpace(string(ctx.QueryArgs().Peek("agent_correlation_id")))
+}
+
 // parseMCPFiltersAndPagination parses MCP tool log filters and pagination from query parameters.
 // Returns an error if any required parsing fails (e.g., invalid time format, invalid number format).
 func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilters, *logstore.PaginationOptions, error) {
@@ -2610,6 +2834,7 @@ func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLo
 	if llmRequestIDs := string(ctx.QueryArgs().Peek("llm_request_ids")); llmRequestIDs != "" {
 		filters.LLMRequestIDs = parseCommaSeparated(llmRequestIDs)
 	}
+	parseMCPCorrelationFilters(ctx, filters)
 	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
 		filters.UserAgents = parseStringArrayParam(userAgents)
 	}
@@ -2742,6 +2967,7 @@ func parseMCPFilters(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilter
 	if llmRequestIDs := string(ctx.QueryArgs().Peek("llm_request_ids")); llmRequestIDs != "" {
 		filters.LLMRequestIDs = parseCommaSeparated(llmRequestIDs)
 	}
+	parseMCPCorrelationFilters(ctx, filters)
 	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
 		filters.UserAgents = parseStringArrayParam(userAgents)
 	}
@@ -2834,7 +3060,12 @@ func (h *LoggingHandler) getMCPLogs(ctx *fasthttp.RequestCtx) {
 		return out
 	}
 
-	redactedVirtualKeys := h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
+	// GetAllRedactedVirtualKeys reads every virtual key for an empty id list, so a
+	// page whose logs name no virtual key skips the lookup.
+	var redactedVirtualKeys []tables.TableVirtualKey
+	if len(virtualKeyIDs) > 0 {
+		redactedVirtualKeys = h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
+	}
 
 	// Add virtual key to the result
 	for i, log := range result.Logs {
@@ -2986,9 +3217,13 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 			virtualKeyIDs[i] = key.ID
 		}
 
+		// Skipped for an empty list: GetAllRedactedVirtualKeys would read every
+		// virtual key, and with no MCP virtual keys there is nothing to resolve.
 		redactedVirtualKeys := make(map[string]tables.TableVirtualKey)
-		for _, virtualKey := range h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, virtualKeyIDs) {
-			redactedVirtualKeys[virtualKey.ID] = virtualKey
+		if len(virtualKeyIDs) > 0 {
+			for _, virtualKey := range h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, virtualKeyIDs) {
+				redactedVirtualKeys[virtualKey.ID] = virtualKey
+			}
 		}
 
 		for _, virtualKey := range virtualKeys {
@@ -3034,6 +3269,11 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 
 // deleteMCPLogs handles DELETE /api/mcp-logs - Delete MCP tool logs by their IDs
 func (h *LoggingHandler) deleteMCPLogs(ctx *fasthttp.RequestCtx) {
+	if isAuthBypassed(ctx) {
+		SendError(ctx, fasthttp.StatusForbidden, "Deleting MCP tool logs requires an authenticated admin session; authentication was bypassed for this request")
+		return
+	}
+
 	var req struct {
 		IDs []string `json:"ids"`
 	}

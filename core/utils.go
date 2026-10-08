@@ -19,9 +19,10 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// Aliases; canonical definitions live in schemas so EffectiveHTTPStatus can match them.
 const (
-	ProviderAutoResolveErrorMessage = "could not auto resolve a provider for the request, please specify a provider explicitly"
-	ModelAutoResolveErrorMessage    = "could not auto resolve a model for the request, please specify a model explicitly"
+	ProviderAutoResolveErrorMessage = schemas.ProviderAutoResolveErrorMessage
+	ModelAutoResolveErrorMessage    = schemas.ModelAutoResolveErrorMessage
 )
 
 // dynamicallyConfigurableProviders is the list of providers that can be dynamically configured.
@@ -73,8 +74,10 @@ func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 // CanProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
 // Some providers like Vertex and Bedrock have their credentials in additional key configs.
 // Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
+// GitHub Copilot may authenticate with a GitHub App bundle in github_copilot_key_config
+// instead of a Copilot API token in value; validateKey checks that one of the two is present.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks || providerKey == schemas.GithubCopilot
 }
 
 // isKeySkippingAllowed gates SkipKeySelection on the provider this attempt resolved to. The flag
@@ -329,6 +332,45 @@ func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.Bifro
 	return ch
 }
 
+// stampRequestedRoute records the provider/model the caller sent, before any
+// PreRequestHook (routing rules, load balancing, session routing) rewrites them,
+// so plugins can read the original and RoutingInfo can report it. Always written,
+// even when empty, so a reused context never reports a previous request's route.
+// A large-payload request carries its model in LargePayloadMetadata rather than
+// on req, and routing rewrites that in place, so it is copied here first.
+func stampRequestedRoute(ctx *schemas.BifrostContext, requested schemas.Route) {
+	model := requested.Model
+	if model == "" {
+		if metadata, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata); metadata != nil {
+			model = metadata.Model
+		}
+	}
+	ctx.SetValue(schemas.BifrostContextKeyRequestedProvider, requested.Provider)
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, model)
+}
+
+// layerFallbackIdentity marks an attempt's routing info as a fallback's when the request is on one,
+// naming the primary from the previous attempt's record: the primary's own, or the primary it
+// carried on a later fallback (clearCtxForFallback keeps the record).
+func layerFallbackIdentity(ctx *schemas.BifrostContext, info *schemas.RoutingInfo) {
+	if fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); fallbackIndex <= 0 {
+		return
+	}
+	info.IsFallback = true
+	prev, ok := ctx.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo)
+	if !ok {
+		return
+	}
+	if prev.IsFallback && prev.PrimaryProvider != nil {
+		info.PrimaryProvider = prev.PrimaryProvider
+		info.PrimaryModel = prev.PrimaryModel
+	} else if prev.Provider != "" {
+		primaryProvider, primaryModel := prev.Provider, prev.Model
+		info.PrimaryProvider = &primaryProvider
+		info.PrimaryModel = &primaryModel
+	}
+}
+
 // clearCtxForFallback clears the ctx values which are not applicable for fallback requests.
 func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
@@ -338,10 +380,12 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
 	ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
 	ctx.ClearValue(schemas.BifrostContextKeyAttemptTrail)
+	ctx.ClearValue(schemas.BifrostContextKeyLoadBalancerAttempt)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
 	ctx.ClearValue(schemas.BifrostContextKeyConnectionClosed)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
+	ctx.ClearValue(schemas.BifrostContextKeyStreamAttemptAbort)
 	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
 	// Provider response headers belong to the provider that produced them.
 	// If a fallback attempt fails pre-flight (no HTTP request issued), the
@@ -353,6 +397,18 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	// inherit it. Cleared here, not when the invoke method returns, because the
 	// in-flight stream still reads it asynchronously (#6825).
 	ctx.ClearValue(schemas.BifrostContextKeySSEReaderFactory)
+}
+
+// restoreProviderResponseHeaders puts headers, the primary attempt's provider response headers,
+// back on ctx before the primary's error is returned once every fallback failed. Each fallback
+// attempt replaces them with its own provider's, so without this the transport forwards the last
+// fallback's headers (its request-id, rate-limit headers) with the primary's error body.
+func restoreProviderResponseHeaders(ctx *schemas.BifrostContext, headers map[string]string) {
+	if headers == nil {
+		ctx.ClearValue(schemas.BifrostContextKeyProviderResponseHeaders)
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 }
 
 // ClearContextForInternalRequest clears context state that is specific to the
@@ -411,6 +467,7 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
 	ctx.ClearValue(schemas.BifrostContextKeyDirectKey)
 	ctx.ClearValue(schemas.BifrostContextKeySkipKeySelection)
+	ctx.ClearValue(schemas.BifrostContextKeyLoadBalancerAttempt)
 	// Body transport.
 	ctx.ClearValue(schemas.BifrostContextKeyUseRawRequestBody)
 	ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
@@ -793,6 +850,7 @@ func isPromptOptionalVideoEditType(t *string) bool {
 // responses produced by a type-converted request are converted back to the
 // caller's original type before the post-hook runs.
 func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, targetType schemas.RequestType) schemas.PostHookRunner {
+	roleSent := false
 	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		if result != nil {
 			switch targetType {
@@ -807,6 +865,7 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 				// chat→responses: convert responses stream chunk back to chat
 				if result.ResponsesStreamResponse != nil {
 					if converted := result.ResponsesStreamResponse.ToBifrostChatResponse(); converted != nil {
+						roleSent = setAssistantRoleOnce(converted, roleSent)
 						result = &schemas.BifrostResponse{ChatResponse: converted}
 					}
 				}
@@ -814,4 +873,21 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 		}
 		return postHookRunner(ctx, result, bifrostErr)
 	}
+}
+
+// setAssistantRoleOnce puts the assistant role on the first delta of a
+// converted chat stream and clears it from later deltas. OpenAI-compatible
+// clients read the role from the first chunk only, and some concatenate a
+// repeated one. The stream converter emits a single choice per event. It
+// reports whether the role has been sent.
+func setAssistantRoleOnce(resp *schemas.BifrostChatResponse, roleSent bool) bool {
+	if len(resp.Choices) == 0 || resp.Choices[0].ChatStreamResponseChoice == nil || resp.Choices[0].Delta == nil {
+		return roleSent
+	}
+	if roleSent {
+		resp.Choices[0].Delta.Role = nil
+	} else {
+		resp.Choices[0].Delta.Role = schemas.Ptr(string(schemas.ChatMessageRoleAssistant))
+	}
+	return true
 }

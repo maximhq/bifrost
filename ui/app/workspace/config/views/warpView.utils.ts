@@ -1,4 +1,4 @@
-import type { WarpConfigInput } from "@/lib/types/warp";
+import type { WarpBackfillJob, WarpConfig } from "@/lib/types/warp";
 /**
  * Validation helpers for the Warp settings form.
  *
@@ -50,28 +50,58 @@ export function validateWarpRetentionDays(value: unknown): true | string {
 }
 
 /**
- * Checks a Warp base URL.
- *
- * A prefix test accepts "https://" with nothing after it, and the value is
- * handed to the provider config verbatim - so a scheme-only string is only
- * discovered on the first outbound call, long after the operator left this
- * page.
+ * The saved embedding space as one comparable string, so "did the space
+ * change" is a single equality on the four fields that define it. Uses NUL as
+ * the separator because it cannot appear in a config value.
  */
-export function isValidBaseURL(value: string): boolean {
-	// Trimmed first, because the save path submits `form.baseURL.trim()`: the
-	// untrimmed check rejected a pasted " https://api.example.com " that the
-	// server would have accepted, and the form could not say why.
-	let parsed: URL;
-	try {
-		parsed = new URL(value.trim());
-	} catch {
-		return false;
-	}
-	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
-	if (!parsed.hostname) return false;
-	// The server rejects userinfo here, and for a good reason: this column is
-	// stored unencrypted and read back unredacted, because Warp is designed to
-	// hold a key reference and no secret of its own. Accepting it in the form
-	// only to fail the save would teach operators the field takes credentials.
-	return parsed.username === "" && parsed.password === "";
+export function warpSavedSpaceKey(
+	config:
+		| Partial<Pick<WarpConfig, "embedding_provider" | "embedding_model" | "embedding_dimension" | "log_vector_store_namespace">>
+		| undefined,
+): string {
+	return [
+		config?.embedding_provider ?? "",
+		config?.embedding_model ?? "",
+		config?.embedding_dimension ?? 0,
+		config?.log_vector_store_namespace ?? "",
+	].join("\u0000");
+}
+
+/** A finished backfill kept on the client, tagged with the space it ran under. */
+export interface RetainedWarpBackfill {
+	job: WarpBackfillJob;
+	spaceKey: string;
+}
+
+/**
+ * Decides whether a job that just reached a terminal status is worth keeping.
+ *
+ * A job belongs to the space that was configured while it ran; the server
+ * refuses to change the space while a job is in flight, so any saved space
+ * observed during the run is the job's space. The status endpoint hides a
+ * finished job from the id-less read once the space changes, but the id-pinned
+ * poll the view uses during a run does not, so a run that finished under the
+ * old space can still arrive as "completed" after the new space was saved.
+ * Keeping it would show a full bar for rows the new space never indexed, so it
+ * is dropped unless the job's space is still the saved one. A job whose space
+ * was never observed (null) is assumed to belong to the current space: the
+ * only way to pin an id is to start or discover a running job, and both
+ * happen under the configured space.
+ */
+export function retainFinishedWarpBackfill(
+	job: WarpBackfillJob,
+	jobSpaceKey: string | null,
+	savedSpaceKey: string,
+): RetainedWarpBackfill | null {
+	const spaceKey = jobSpaceKey ?? savedSpaceKey;
+	return spaceKey === savedSpaceKey ? { job, spaceKey } : null;
+}
+
+/**
+ * The retained job, if it still describes the saved space. Checked at every
+ * read rather than cleared by an effect on change: an effect fires once, and a
+ * terminal status that lands after it has fired would be retained untouched.
+ */
+export function retainedWarpBackfillForSpace(retained: RetainedWarpBackfill | null, savedSpaceKey: string): WarpBackfillJob | null {
+	return retained && retained.spaceKey === savedSpaceKey ? retained.job : null;
 }

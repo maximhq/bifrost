@@ -30,7 +30,7 @@ func TestUpdateMCPClientTools_TargetedColumnUpdate(t *testing.T) {
 	}
 	mapping := map[string]string{"echo": "echo-server"}
 
-	require.NoError(t, s.UpdateMCPClientTools(ctx, "mcp-tools-client", tools, mapping))
+	require.NoError(t, s.UpdateMCPClientTools(ctx, "mcp-tools-client", tools, mapping, ""))
 
 	got, err := s.GetMCPClientByID(ctx, "mcp-tools-client")
 	require.NoError(t, err)
@@ -56,7 +56,7 @@ func TestUpdateMCPClientTools_EmptyMapPersistsAsLegitimateZeroTools(t *testing.T
 		DiscoveredTools:  map[string]schemas.ChatTool{"stale": {Type: "function"}},
 	}))
 
-	require.NoError(t, s.UpdateMCPClientTools(ctx, "mcp-empty-tools-client", map[string]schemas.ChatTool{}, map[string]string{}))
+	require.NoError(t, s.UpdateMCPClientTools(ctx, "mcp-empty-tools-client", map[string]schemas.ChatTool{}, map[string]string{}, ""))
 
 	got, err := s.GetMCPClientByID(ctx, "mcp-empty-tools-client")
 	require.NoError(t, err)
@@ -70,6 +70,6 @@ func TestUpdateMCPClientTools_UnknownClientReturnsNotFound(t *testing.T) {
 	s := setupRDBTestStore(t)
 	ctx := context.Background()
 
-	err := s.UpdateMCPClientTools(ctx, "does-not-exist", map[string]schemas.ChatTool{}, map[string]string{})
+	err := s.UpdateMCPClientTools(ctx, "does-not-exist", map[string]schemas.ChatTool{}, map[string]string{}, "")
 	assert.ErrorIs(t, err, ErrNotFound)
 }
