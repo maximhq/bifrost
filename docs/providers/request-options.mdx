@@ -189,7 +189,7 @@ A direct key is **not** authentication. If [`enforce_auth_on_inference`](../depl
 </Note>
 
 <Warning>
-A direct key only replaces the provider credential — it bypasses the **key pool**: no weighted selection, no rotation or fallback across alternate keys, and no per-key model restrictions. **Governance still applies:** with a virtual key alongside it, that key's budgets, rate limits, allow-lists, and routing are enforced and the spend counts against its budget. Enable `allow_direct_keys` only when callers should manage their own provider credentials.
+A direct key only replaces the provider credential — it bypasses the **key pool**: no weighted selection, no rotation or fallback across alternate keys, and no per-key model restrictions. It also takes precedence over every key pin: a matched routing rule's target `key_id` and the caller's `x-bf-api-key-id` / `x-bf-api-key` are not used for the attempt that uses the caller's key. **Governance still applies:** with a virtual key alongside it, that key's budgets, rate limits, allow-lists, and routing are enforced and the spend counts against its budget. Enable `allow_direct_keys` only when callers should manage their own provider credentials.
 </Warning>
 
 <Note>
