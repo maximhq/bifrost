@@ -217,6 +217,8 @@ func TestAdaptiveThinkingOnPreAdaptiveModels(t *testing.T) {
 		"claude-opus-4-6",
 		"claude-sonnet-4-6",
 		"claude-opus-4-7",
+		"claude-haiku-5-5",
+		"claude-haiku-5-5-20260801",
 	}
 	// Budgets over max_tokens 64000: 1024 + int(ratio * 62976).
 	const highBudget, lowBudget = 51404, 10470
@@ -325,6 +327,20 @@ func TestAdaptiveThinkingOnPreAdaptiveModels(t *testing.T) {
 		}
 	})
 
+	t.Run("raw_body_keeps_haiku_5_adaptive_and_effort", func(t *testing.T) {
+		body := []byte(`{"model":"claude-haiku-5-5","max_tokens":128000,"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"}}`)
+		result, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, "claude-haiku-5-5")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := providerUtils.GetJSONField(result, "thinking.type").String(); got != "adaptive" {
+			t.Errorf("thinking.type = %q, want \"adaptive\" kept; body: %s", got, result)
+		}
+		if got := providerUtils.GetJSONField(result, "output_config.effort").String(); got != "medium" {
+			t.Errorf("output_config.effort = %q, want \"medium\" kept; body: %s", got, result)
+		}
+	})
+	
 	t.Run("raw_body_leaves_non_claude_models", func(t *testing.T) {
 		body := []byte(`{"model":"deepseek-chat","max_tokens":8192,"thinking":{"type":"adaptive"}}`)
 		result, err := StripUnsupportedFieldsFromRawBody(body, schemas.DeepSeek, "deepseek-chat")

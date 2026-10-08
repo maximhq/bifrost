@@ -1183,6 +1183,13 @@ func IsSonnet55Plus(model string) bool {
 	return strings.Contains(m, "sonnet-5-5") || strings.Contains(m, "sonnet-5.5")
 }
 
+// IsHaiku55Plus returns true for Cluade Haiku 5.5, matching the
+// Bedrock/Vertex/date-suffixed forms. Haiku 5.5 rejects extended thinking with a
+// 400 ("thinking.type.enabled" is not supported for this model) - adaptive
+// thinking with output_config.effor is the thinking-on mode.
+func IsHaiku55Plus(model string) bool {
+	return strings.Contains(strings.ToLower(model), "haiku-5-5")
+}
 // IsFableFamily returns true for Claude Fable / Mythos models (Fable 5,
 // Mythos 5, Mythos Preview). These share Opus 4.7+'s request surface
 // (adaptive-only thinking, temperature/top_p/top_k removed) AND additionally

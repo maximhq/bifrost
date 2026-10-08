@@ -2656,6 +2656,11 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{"claude-haiku-4-6-20250514", false}, // haiku does not support adaptive
 		{"claude-haiku-4-7-20260401", false}, // haiku, not opus
 		{"claude-haiku-4-8-20260601", false}, // haiku, not opus
+		{"claude-haiku-5-5", true},
+		{"claude-haiku-5-5-20260801", true},
+		{"claude-haiku-5-5", true},
+		{"global.anthropic.claude-haiku-5-5", true},
+		{"claude-haiku-4-5", false},
 		{"", false},
 	}
 
@@ -2735,6 +2740,27 @@ func TestIsSonnet5Plus(t *testing.T) {
 	}
 }
 
+func TestIsHaiku55Plus(t *testing.T) {
+	tests := []struct {
+		model	 string
+		expected bool
+	}{
+		{"claude-haiku-5-5", true},
+		{"claude-haiku-5.5", true},
+		{"claude-haiku-5-5-20260801", true},
+		{"Claude-Haiku-5-5", true},
+		{"global.anthropic.claude-haiku-5-5", true},
+		{"claude-haiku-5-5@20260801", true},
+		// Must NOT match older Haikus or other families.
+		{"claude-haiku-5", false},
+		{"claude-haiku-5-20260101", false},
+		{"claude-haiku-4-5", false},
+		{"claude-sonnet-5", false},
+		{"claude-fable-5", false},
+		{"", false},
+		{"some-non-claude-model", false},
+	}
+}
 // TestIsOpus5Plus pins the Opus 5 predicate. Opus 5 shares Opus 4.8's request
 // surface (adaptive-only thinking, temperature/top_p/top_k removed, fast mode,
 // effort, mid-conversation system). The "opus-5" substring must NOT match
@@ -2949,6 +2975,11 @@ func TestSupportsEffortParameter(t *testing.T) {
 		{"claude-haiku-4-5-20251001", false},
 		{"anthropic.claude-haiku-4-5-20251001-v1:0", false},
 		{"claude-haiku-4-6-20250514", false},
+		// Haiku 5.5+ takes output_config.effort alongside adaptive thinking.
+		{"claude-haiku-5-5", true},
+		{"claude-haiku-5-5-20260801", true},
+		{"global.anthropic.claude-haiku-5-5", true},
+		{"claude-haiku-4-5", false}, // before 5.5: unchanged
 		// Sonnet < 4.6 not in the supported list.
 		{"claude-sonnet-4-5", false},
 		{"claude-sonnet-4-5-20250929", false},
