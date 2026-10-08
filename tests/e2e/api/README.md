@@ -172,8 +172,9 @@ The three bare `between_tools` cases are controls rather than fixes because
 upstream PR #7665 landed while this change was in review: it carries
 `thinking.type` through the neutral reasoning parameters, so that shape is
 already forwarded. What those parameters still cannot carry is a sibling
-`thinking.display`, which the typed path drops and the raw path forwards — that
-is the `between_tools` case that remains red. The `stock` column in
+`thinking.display`, which stock's typed path drops and its raw path forwards —
+that is the one `between_tools` case still counted as a fix above: red on the
+stock tree, green on this one. The `stock` column in
 `runners/lib/anthropic-request-surface.mjs` records both baselines so this
 distinction is checked rather than described.
 
