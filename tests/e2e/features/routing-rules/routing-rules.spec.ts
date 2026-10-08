@@ -640,10 +640,10 @@ test.describe('Routing Rules', () => {
       await page.goto('/workspace/routing-rules/tree')
 
       // Verify the toolbar badge reflects all 105 rules
-      await expect(page.getByText('105 rules')).toBeVisible()
+      await expect(page.getByTestId('routing-tree-rule-count')).toHaveText('105 rules')
 
       // Verify that the 105th rule appears in the graph
-      await expect(page.getByText('Test Rule 105')).toBeVisible()
+      await expect(page.getByTestId('routing-tree-rule-node-rule-105')).toBeVisible()
     })
   })
 })

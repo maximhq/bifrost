@@ -440,7 +440,7 @@ export function RoutingTreeView() {
 						<div className="flex items-center gap-2">
 							<GitBranch className="text-muted-foreground h-4 w-4" />
 							<p className="text-foreground text-sm leading-tight font-semibold">Routing Tree</p>
-							<p className="text-muted-foreground text-[11px]">
+							<p className="text-muted-foreground text-[11px]" data-testid="routing-tree-rule-count">
 								{search
 									? highlightedIds && highlightedIds.size > 0
 										? `${matchCount} rule${matchCount !== 1 ? "s" : ""}`
