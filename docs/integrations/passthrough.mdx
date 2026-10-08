@@ -29,17 +29,41 @@ When you use passthrough endpoints, the request still flows through Bifrost core
 
 1. Send your request to a passthrough endpoint (OpenAI, Anthropic, Azure, or GenAI passthrough).
 2. The integration strips the passthrough prefix and forwards the remaining provider-native path/body.
-3. **Bifrost picks the provider key.** Client-supplied provider credentials (`authorization`, `api-key`, `x-api-key`, `x-goog-api-key`) are stripped from the request, and Bifrost selects a key from its own key config for the resolved provider and model.
+3. Bifrost resolves upstream authentication:
+   - **Gateway-managed key (default):** Client-supplied credentials (`authorization`, `api-key`, `x-api-key`, `x-goog-api-key`) are stripped, and Bifrost selects a key from its own key config for the resolved provider and model.
+   - **Supported caller OAuth:** An Anthropic OAuth bearer token or OpenAI JWT bearer token is forwarded to its native HTTPS provider, and Bifrost skips provider-key selection for that request.
+   - **Direct provider credential (explicit opt-in):** When the server allows direct API keys and the request includes `x-bf-direct-key: true`, Bifrost uses the caller's provider credential instead of its configured key pool.
 4. Bifrost handles provider execution through core inference and plugin pipelines.
 5. Response status, headers, and body are returned as passthrough output (for both stream and non-stream requests).
 
 <Warning>
-**Authenticate to Bifrost with your Bifrost virtual key, not your provider API key.** Passthrough is not a credential proxy — provider keys in the incoming request are never forwarded upstream. Bifrost always injects the key it selects from its configured keys.
+**A provider API key is not passed through by default.** In the standard flow, authenticate to Bifrost with a Bifrost virtual key and let Bifrost select the upstream provider key. General provider-credential forwarding requires both the server-side `allow_direct_keys` setting and `x-bf-direct-key: true` on the request.
 </Warning>
 
 <Note>
-Claude Code OAuth sign-in (`Authorization: Bearer sk-ant-oat…`) is handled separately on the regular `/anthropic` route, where Bifrost forwards the caller's token instead of selecting a key. Point Claude Code there — no passthrough endpoint needed. See [Claude Code authentication](../cli-agents/claude-code#anthropic_custom_headers-alternative).
+Without Edge, Claude Code OAuth sign-in (`Authorization: Bearer sk-ant-oat…`) can use the regular `/anthropic` route, where Bifrost preserves the provider-native request and forwards the token instead of selecting a key. With Bifrost Edge, use **subscription pass-through** for native-credential inference: Edge preserves the credential and catalog, rewrites captured inference to `/anthropic_passthrough`, and enables the direct-key request path. **Require Anthropic login** alone does not select this route. See [Edge routing modes](/edge/supported-applications#edge-routing-modes).
 </Note>
+
+### Caller credential forwarding
+
+Recognized subscription credentials are forwarded only when all of the following are true:
+
+- The credential is a recognized Anthropic OAuth bearer token or OpenAI JWT bearer token.
+- The request resolves to the matching native provider. An Anthropic token is never forwarded to Bedrock, Vertex, Azure, or another provider.
+- The upstream is HTTPS. A caller credential is not forwarded to a plaintext `http://` upstream override.
+
+When Bifrost inference authentication requires a separate gateway identity, send the Bifrost virtual key through `x-bf-vk`; do not replace the provider OAuth token in `Authorization`. Bifrost Edge manages the gateway identity and native application credential separately.
+
+### Bifrost Edge subscription pass-through
+
+For supported applications, Edge configures the direct-provider-credential path automatically:
+
+1. Edge keeps the application's native credential and native model catalog.
+2. Edge routes captured inference to the matching Bifrost passthrough endpoint.
+3. Edge adds `x-bf-direct-key: true` and authenticates to Bifrost separately with the selected virtual key or signed-in agent identity.
+4. Bifrost attributes the request to the resolved user and source application, runs the plugin pipeline, records logs according to logging policy, and forwards the native credential only to the matching provider.
+
+This mode requires **Allow Direct API Keys** in Bifrost security settings. It bypasses Bifrost's configured provider-key pool, not the Bifrost gateway. Key selection and key rotation/load balancing do not apply to the caller's native credential. Model routing, inference routing to another provider, and cross-provider fallbacks are not supported.
 
 ---
 
@@ -305,6 +329,6 @@ curl -X POST "http://localhost:8080/genai_passthrough/v1/projects/my-project/loc
 ## Notes
 
 - Use passthrough when you need a provider endpoint that is not directly supported by Bifrost integration routes yet.
-- **Provider key selection is done by Bifrost, not by the caller.** On every passthrough endpoint, the client's `authorization`, `api-key`, `x-api-key`, and `x-goog-api-key` headers are dropped before the request leaves Bifrost, and the upstream auth header (including Azure's `api-key` / OAuth token) is set from the Bifrost key config.
-- The only exception is [direct API keys](../providers/request-options#direct-api-key), which need both the server-side `allow_direct_keys` setting and a per-request `x-bf-direct-key: true` header. Without both, a raw provider key in the request is ignored.
+- **Provider key selection is normally done by Bifrost, not by the caller.** The client's `authorization`, `api-key`, `x-api-key`, and `x-goog-api-key` headers are dropped before the request leaves Bifrost, and the upstream auth header is set from the Bifrost key config. Recognized subscription OAuth/JWT and explicitly enabled direct keys are the caller-auth exceptions described above.
+- [Direct API keys](../providers/request-options#direct-api-key) need both the server-side `allow_direct_keys` setting and a per-request `x-bf-direct-key: true` header. Without both, a raw provider key in the request is not used as the upstream credential.
 - For Azure `/openai/deployments/` routes, Bifrost injects `api-version=2025-04-01-preview` when the caller does not supply one. Supply your own `api-version` query parameter to use a different version (e.g. `2024-10-21` for the latest GA, or a newer preview).
