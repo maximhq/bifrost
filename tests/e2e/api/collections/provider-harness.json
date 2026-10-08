@@ -208538,7 +208538,7 @@
       ]
     },
     {
-      "name": "184. Gemini client-supplied tool thought signature retention (#8149) (client-thought-signature-fixture)",
+      "name": "186. Gemini client-supplied tool thought signature retention (#8149) (client-thought-signature-fixture)",
       "description": "Local wire-recorder regression for #8149 P1 only. Run runners/gemini-client-signature-fixture.mjs with an isolated gateway/profile and its environment (clientThoughtSignatureFixture=1); rows skip otherwise. The fixture answers independently of signatures, so passing Chat text/status is only a fixture-health check. Each row reads the captured upstream POST and asserts the functionCall part keeps the reporter-supplied opaque base64 bytes instead of skip_thought_signature_validator. This does not claim the sample is a Google-valid signature or exercise live model inference. Native Chat unary/stream cover Gemini and Vertex shared conversion; encoded-ID and unsigned controls retain the existing fallback behavior. Rows reset one recorder and must run sequentially. Existing /genai server-side signature replay (folder 49) and Responses reasoning replay (folder 43) are different paths. See runners/gemini-client-signature-fixture.md. Folder-level scripts are inherited by every row; provider, operation and expected signature are derived from that row's explicit request body.",
       "item": [
         {
