@@ -3271,6 +3271,24 @@ func (m *MCPManager) createHTTPConnection(ctx context.Context, config *schemas.M
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to build TLS HTTP client: %w", err)
 	}
+	// OAuth connections are long-lived while the credential store rotates the
+	// access token underneath them. Re-resolve the Authorization header at the
+	// HTTP boundary so every request — initialize, ping, tools/list, calls —
+	// carries the current token without reconnecting or rerunning the upstream
+	// OAuth exchange. The refreshing wrapper preserves the guarded TLS client
+	// built above (its Transport, Timeout, CheckRedirect and Jar) and clones the
+	// outgoing request before overriding Authorization, so the transport's
+	// static/plugin headers, allowlisted per-request extras and the effective
+	// (override-aware) target URL are all retained. Non-OAuth auth types keep the
+	// static headers baked in above and get no per-request resolver.
+	if config.AuthType == schemas.MCPAuthTypeOauth {
+		httpClient, err = newRefreshingOAuthHTTPClient(httpClient, url, func(reqCtx context.Context) (http.Header, error) {
+			return m.credStore.ConnectionHeaders(schemas.NewBifrostContext(reqCtx, schemas.NoDeadline), config)
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to build OAuth HTTP client: %w", err)
+		}
+	}
 	if httpClient != nil {
 		opts = append(opts, transport.WithHTTPBasicClient(httpClient))
 	}
