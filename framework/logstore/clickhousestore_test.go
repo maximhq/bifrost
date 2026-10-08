@@ -697,6 +697,40 @@ func TestClickHouseSearchAndStats(t *testing.T) {
 	assert.ElementsMatch(t, []string{"gpt-4o"}, upper)
 }
 
+// The driver binds a time.Time at seconds precision, so a window bound inside a
+// second used to widen to that second's start and narrow to its end's start.
+// Warp's backfill resumes from a millisecond cursor, and every page re-read the
+// rows earlier in that second and embedded them again.
+func TestClickHouseSearchWindowKeepsMilliseconds(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	second := time.Now().UTC().Truncate(time.Second)
+
+	for _, offset := range []time.Duration{100, 400, 700} {
+		entry := chTestLog(fmt.Sprintf("ch-window-%d", offset), second.Add(offset*time.Millisecond))
+		entry.Status = "success"
+		require.NoError(t, store.CreateIfNotExists(ctx, entry))
+	}
+
+	ids := func(filters SearchFilters) []string {
+		result, err := store.SearchLogs(ctx, filters, PaginationOptions{Limit: 10, SortBy: "timestamp", Order: "asc"})
+		require.NoError(t, err)
+		out := make([]string, 0, len(result.Logs))
+		for _, entry := range result.Logs {
+			out = append(out, entry.ID)
+		}
+		return out
+	}
+
+	start := second.Add(400 * time.Millisecond)
+	assert.Equal(t, []string{"ch-window-400", "ch-window-700"}, ids(SearchFilters{StartTime: &start}),
+		"a start inside a second must not reach back to rows earlier in it")
+	end := second.Add(400 * time.Millisecond)
+	assert.Equal(t, []string{"ch-window-100", "ch-window-400"}, ids(SearchFilters{EndTime: &end}),
+		"an end inside a second must still include the rows up to it")
+	assert.Equal(t, []string{"ch-window-400"}, ids(SearchFilters{StartTime: &start, EndTime: &end}))
+}
+
 func TestClickHouseDeleteLogs(t *testing.T) {
 	store := trySetupClickHouseStore(t)
 	ctx := context.Background()
