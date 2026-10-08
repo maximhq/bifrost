@@ -148,6 +148,83 @@ func sessionChat(t *testing.T, client *Bifrost) string {
 
 // Once the session's key is rejected, a sibling already rate-limited by this request is passed
 // over for one that has not been tried, as a request without a session would.
+// TestFixedKeyRetriesTheSameKeyAfterATransientFailure pins that a key the request is held to, by a
+// caller's pin or by its session's binding, is retried after a rate limit or a server error rather
+// than swapped for a sibling. Only a key the provider refuses outright moves a fixed request to
+// another key (TestSessionKeyRejectedOutrightMovesToItsSibling).
+func TestFixedKeyRetriesTheSameKeyAfterATransientFailure(t *testing.T) {
+	for _, failure := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"a rate limit", http.StatusTooManyRequests, `{"error":{"message":"Rate limit reached","type":"requests","code":"rate_limit_exceeded"}}`},
+		{"a server error", http.StatusInternalServerError, `{"error":{"message":"The server had an error","type":"server_error"}}`},
+	} {
+		for _, hold := range []string{"caller pin", "session binding"} {
+			t.Run(failure.name+" on a "+hold, func(t *testing.T) {
+				var mu sync.Mutex
+				var used []string
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					mu.Lock()
+					used = append(used, r.Header.Get("Authorization"))
+					first := len(used) == 1
+					mu.Unlock()
+					w.Header().Set("Content-Type", "application/json")
+					if first {
+						w.WriteHeader(failure.status)
+						_, _ = w.Write([]byte(failure.body))
+						return
+					}
+					_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+				}))
+				defer upstream.Close()
+
+				account := NewMockAccount()
+				account.AddProviderWithBaseURL(schemas.OpenAI, 5, 1000, upstream.URL)
+				account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 1
+				account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = time.Millisecond
+				account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffMax = time.Millisecond
+				account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+					{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+					{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+				})
+				client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: newMockKVStore()})
+				if err != nil {
+					t.Fatalf("Init: %v", err)
+				}
+				t.Cleanup(client.Shutdown)
+
+				ctx := sessionCtx("s")
+				route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
+				if hold == "caller pin" {
+					ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "key-a")
+				} else {
+					bind := sessionCtx("s")
+					bind.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
+					client.observeSessionOutcome(bind, route, &route, false, false, nil)
+				}
+				resp, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-4",
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				})
+				if bifrostErr != nil {
+					t.Fatalf("the retry should have served, got %v", bifrostErr.Error.Message)
+				}
+				if key := resp.ExtraFields.RoutingInfo.Key; key != "Key A" {
+					t.Fatalf("served by %q, want Key A", key)
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if want := []string{"Bearer sk-a", "Bearer sk-a"}; !slices.Equal(used, want) {
+					t.Fatalf("upstream saw %v, want the held key twice: %v", used, want)
+				}
+			})
+		}
+	}
+}
+
 func TestSessionKeyRejectedSkipsARateLimitedSibling(t *testing.T) {
 	client, hits := threeKeySessionClient(t, map[string][]int{"a": {http.StatusUnauthorized}, "b": {http.StatusTooManyRequests}}, nil)
 	if served := sessionChat(t, client); served != "Key C" {
