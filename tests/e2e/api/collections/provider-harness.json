@@ -203206,7 +203206,11 @@
                   "pm.test('warp-refusal: the message says what is missing and keeps the governance reason', function () {",
                   "  pm.expect(body.error.message, pm.response.text()).to.include('no model access');",
                   "  pm.expect(body.error.message, pm.response.text()).to.include('access not found');",
-                  "});"
+                  "});",
+                  "pm.test('warp-refusal: the refused turn is filed under a conversation', function () {",
+                  "  pm.expect(body.conversation_id, 'no conversation id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (body.conversation_id) { pm.collectionVariables.set('warpRefusalConversation', body.conversation_id); }"
                 ]
               }
             }
@@ -203233,6 +203237,78 @@
               }
             },
             "url": "{{baseUrl}}/api/warp/chat"
+          }
+        },
+        {
+          "name": "openai warp-refusal: a reopened refused turn keeps its error code",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The chat above reports why the thread is missing; nothing to read back.",
+                  "if (!pm.collectionVariables.get('warpRefusalConversation')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal history: conversation readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var messages = (pm.response.json().messages || []);",
+                  "var failed = messages.filter(function (m) { return m.role === 'assistant' && m.error; })[0];",
+                  "pm.test('warp-refusal history: the refused turn was filed with its error', function () {",
+                  "  pm.expect(failed, 'no failed assistant turn: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "pm.test('warp-refusal history: the code comes back beside the message, not inside it', function () {",
+                  "  pm.expect(failed.error_code, 'wrong code: ' + pm.response.text()).to.equal('access_denied');",
+                  "  pm.expect(failed.error, pm.response.text()).to.include('no model access');",
+                  "  pm.expect(failed.error.indexOf('access_denied:'), 'the code leaked into the message: ' + pm.response.text()).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/conversations/{{warpRefusalConversation}}"
+          }
+        },
+        {
+          "name": "openai warp-refusal cleanup: delete the refused conversation",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The chat above reports why the thread is missing; nothing to read back.",
+                  "if (!pm.collectionVariables.get('warpRefusalConversation')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal: refused conversation deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(204);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/conversations/{{warpRefusalConversation}}"
           }
         },
         {

@@ -170,7 +170,8 @@ export function turnsFromStoredMessages(messages: WarpStoredMessage[]): WarpTurn
 				textOffset: call.text_offset,
 			}));
 		}
-		if (message.error) turn.error = message.error;
+		// Encoded like a live turn's error, so a stored message's own colon is never read as a code.
+		if (message.error) turn.error = encodeTurnError(message.error_code || undefined, message.error);
 		if (isPartialAnswer(message.finish_reason)) turn.partial = true;
 		// Must be marked as a question, or the server counts the reply as a fresh question on replay.
 		if (isWarpQuestionFinish(message.finish_reason)) {
