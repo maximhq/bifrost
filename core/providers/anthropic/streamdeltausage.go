@@ -165,12 +165,17 @@ func openAnthropicStreamDeltaPromptUsageLedger(ctx *schemas.BifrostContext) *ant
 	// message_delta frames can still be queued unconverted when it returns, and
 	// dropping their readings renders exactly the prompt zeros this file removes.
 	//
-	// A stream that never reaches a terminal frame (truncated body, cancelled
-	// request, client gone) therefore has no consumer-side release, so the
-	// remaining entries are swept here, when the next stream opens, by the one
-	// signal that reliably outlives delivery: the owning request being finished.
-	// That costs a scan of a map holding one entry per in-flight stream, and no
-	// goroutine.
+	// A stream that ends without a terminal frame (truncated body, cancelled
+	// request) is released by its consumer too: the transport calls
+	// ReleaseStreamPromptUsage from the Anthropic stream error callback, which
+	// runs after the queued chunks have been converted.
+	//
+	// The sweep below is the backstop for a consumer that does neither -- a
+	// direct ResponsesStream caller that abandons the stream without releasing.
+	// It keys off the one signal that reliably outlives delivery, the owning
+	// request being finished, so it can never take readings from a slow but
+	// still-running stream. It costs a scan of a map holding one entry per
+	// in-flight stream, and no goroutine.
 	sweepFinishedAnthropicStreamDeltaPromptUsageLedgers()
 	return ledger
 }
