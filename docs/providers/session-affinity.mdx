@@ -43,7 +43,7 @@ The binding is keyed by what the caller asked for, so a session that asks for `g
 <Note>
 A request that names its provider (`openai/gpt-4o`) is never reordered and writes no provider binding. The caller asked for that provider, so only the key level applies, even when a fallback served an earlier turn of the same session.
 
-A request that pins one of the routed provider's keys, by ID (`x-bf-api-key-id`) or by name (`x-bf-api-key`), is not reordered either: the pinned key exists only on that provider, so the session keeps the routing decision. A pin on another provider's key leaves the order to the session, which may be moving the request to that very provider. A key a routing rule pinned moves with its route instead, see [How it fits with routing](#how-it-fits-with-routing).
+A request that pins one of the routed provider's keys, by ID (`x-bf-api-key-id`) or by name (`x-bf-api-key`), is not reordered either: the pinned key exists only on that provider, so the session keeps the routing decision. A pin on a key of a provider that routing put further down the chain brings that provider to the front before the session is consulted (see [API Key Selection](/providers/request-options#api-key-selection)), so the session keeps that order too. A key a routing rule pinned moves with its route instead, see [How it fits with routing](#how-it-fits-with-routing).
 </Note>
 
 ### Key level

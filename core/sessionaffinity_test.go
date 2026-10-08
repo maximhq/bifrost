@@ -1901,3 +1901,176 @@ func TestSessionAffinityLeavesAnExplicitProviderAlone(t *testing.T) {
 		t.Fatal("the session was recorded as deciding a route the caller named")
 	}
 }
+
+// TestResolveCallerKeyPin covers when a caller's key pin brings the provider that has the key to the
+// front of the chain, and when routing's order stands.
+func TestResolveCallerKeyPin(t *testing.T) {
+	account := NewMockAccount()
+	key := func(id, name string) schemas.Key {
+		return schemas.Key{ID: id, Name: name, Value: *schemas.NewSecretVar("sk-" + id), Models: schemas.WhiteList{"*"}, Weight: 1}
+	}
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{key("key-a", "Key A")})
+	account.SetKeysForProvider(schemas.Azure, []schemas.Key{key("az-1", "Azure")})
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{key("an-1", "Anthropic"), key("an-pinned", "Pinned Anthropic")})
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError)})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	head := schemas.Fallback{Provider: schemas.OpenAI, Model: "gpt-4o"}
+	azure := schemas.Fallback{Provider: schemas.Azure, Model: "gpt-4o"}
+	anthropic := schemas.Fallback{Provider: schemas.Anthropic, Model: "claude"}
+	bare := routeOf("", "gpt-4o")
+	cases := []struct {
+		name      string
+		requested schemas.Route
+		fallbacks []schemas.Fallback
+		set       map[schemas.BifrostContextKey]any
+		want      []schemas.Fallback // head first
+		wantWarn  bool
+	}{
+		{name: "a pin by id on a fallback provider's key brings that provider first", requested: bare, fallbacks: []schemas.Fallback{azure, anthropic},
+			set: map[schemas.BifrostContextKey]any{schemas.BifrostContextKeyAPIKeyID: "an-pinned"}, want: []schemas.Fallback{anthropic, head, azure}},
+		{name: "a pin by name does the same", requested: bare, fallbacks: []schemas.Fallback{azure, anthropic},
+			set: map[schemas.BifrostContextKey]any{schemas.BifrostContextKeyAPIKeyName: "Pinned Anthropic"}, want: []schemas.Fallback{anthropic, head, azure}},
+		{name: "a pin on the head provider's key leaves the chain", requested: bare, fallbacks: []schemas.Fallback{azure, anthropic},
+			set: map[schemas.BifrostContextKey]any{schemas.BifrostContextKeyAPIKeyID: "key-a"}, want: []schemas.Fallback{head, azure, anthropic}},
+		{name: "a caller that named the provider keeps it", requested: routeOf(schemas.OpenAI, "gpt-4o"), fallbacks: []schemas.Fallback{anthropic},
+			set: map[schemas.BifrostContextKey]any{schemas.BifrostContextKeyAPIKeyID: "an-pinned"}, want: []schemas.Fallback{head, anthropic}},
+		{name: "a routing rule's pin outranks the caller's", requested: bare, fallbacks: []schemas.Fallback{anthropic},
+			set: map[schemas.BifrostContextKey]any{schemas.BifrostContextKeyRoutingPinnedAPIKeyID: "key-a", schemas.BifrostContextKeyAPIKeyID: "an-pinned"}, want: []schemas.Fallback{head, anthropic}},
+		{name: "a direct key is used before any pin", requested: bare, fallbacks: []schemas.Fallback{anthropic},
+			set: map[schemas.BifrostContextKey]any{schemas.BifrostContextKeyDirectKey: key("caller", "caller"), schemas.BifrostContextKeyAPIKeyID: "an-pinned"}, want: []schemas.Fallback{head, anthropic}},
+		{name: "an entry a rule pinned to another key is not moved", requested: bare, fallbacks: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude", KeyID: "an-1"}},
+			set: map[schemas.BifrostContextKey]any{schemas.BifrostContextKeyAPIKeyID: "an-pinned"}, want: []schemas.Fallback{head, {Provider: schemas.Anthropic, Model: "claude", KeyID: "an-1"}}},
+		// The load balancer keeps a provider it moved a request away from last, pinned to the caller's
+		// key; moving that entry back to the front would undo the move.
+		{name: "an entry pinned to the caller's own key stays where routing put it", requested: bare, fallbacks: []schemas.Fallback{azure, {Provider: schemas.Anthropic, Model: "claude", KeyID: "an-pinned"}},
+			set: map[schemas.BifrostContextKey]any{schemas.BifrostContextKeyAPIKeyID: "an-pinned"}, want: []schemas.Fallback{head, azure, {Provider: schemas.Anthropic, Model: "claude", KeyID: "an-pinned"}}},
+		{name: "a pin no provider of the chain has leaves the chain and says so", requested: bare, fallbacks: []schemas.Fallback{azure, anthropic},
+			set: map[schemas.BifrostContextKey]any{schemas.BifrostContextKeyAPIKeyID: "nowhere"}, want: []schemas.Fallback{head, azure, anthropic}, wantWarn: true},
+		{name: "no pin leaves the chain", requested: bare, fallbacks: []schemas.Fallback{azure, anthropic}, want: []schemas.Fallback{head, azure, anthropic}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			for k, v := range tc.set {
+				ctx.SetValue(k, v)
+			}
+			req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: head.Provider, Model: head.Model}}
+			req.SetFallbacks(slices.Clone(tc.fallbacks))
+			client.resolveCallerKeyPin(ctx, tc.requested, req)
+
+			provider, model, fallbacks := req.GetRequestFields()
+			got := append([]schemas.Fallback{{Provider: provider, Model: model}}, fallbacks...)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("chain = %v, want %v", got, tc.want)
+			}
+			warned := false
+			for _, entry := range ctx.GetRoutingEngineLogs() {
+				if strings.Contains(entry.Message, "which no provider this request may use has") {
+					warned = true
+				}
+			}
+			if warned != tc.wantWarn {
+				t.Errorf("warned that no provider has the pinned key = %v, want %v", warned, tc.wantWarn)
+			}
+		})
+	}
+}
+
+// TestCallerKeyPinServesOnItsProviderFirst runs a caller's pin on a key of the provider routing put
+// second through a whole request: that provider is tried first, on the pinned key, and the provider
+// routing put first is never called. Before, the first attempt failed key selection there and the
+// key's provider ran as a fallback, which drops the caller's pin and picks a key of its own.
+func TestCallerKeyPinServesOnItsProviderFirst(t *testing.T) {
+	const anthropicKey, pinnedKey = "sk-gateway-anthropic", "sk-pinned-anthropic"
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			var mu sync.Mutex
+			var openaiCalls int
+			var anthropicSaw []string
+			openai := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				openaiCalls++
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+			}))
+			defer openai.Close()
+			anthropic := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				anthropicSaw = append(anthropicSaw, r.Header.Get("x-api-key"))
+				mu.Unlock()
+				if stream {
+					anthropicMessagesHandler()(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-5-haiku-20241022","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+			}))
+			defer anthropic.Close()
+
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, openai.URL)
+			account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, anthropic.URL)
+			account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+			account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+			account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{ID: "openai-key", Value: *schemas.NewSecretVar("sk-gateway-openai"), Models: schemas.WhiteList{"*"}, Weight: 1}})
+			account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+				{ID: "anthropic-key", Value: *schemas.NewSecretVar(anthropicKey), Models: schemas.WhiteList{"*"}, Weight: 1},
+				// Weight 0: a free pick never lands on it, so only the pin can send a request there.
+				{ID: "anthropic-pinned", Value: *schemas.NewSecretVar(pinnedKey), Models: schemas.WhiteList{"*"}, Weight: 0},
+			})
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account: account,
+				Logger:  NewDefaultLogger(schemas.LogLevelError),
+				LLMPlugins: []schemas.LLMPlugin{&bareModelRouter{
+					primary:   schemas.OpenAI,
+					fallbacks: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-3-5-haiku-20241022"}},
+				}},
+			})
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "anthropic-pinned")
+			req := &schemas.BifrostChatRequest{
+				Model: "gpt-4o-mini",
+				Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			}
+			var bifrostErr *schemas.BifrostError
+			if stream {
+				var ch chan *schemas.BifrostStreamChunk
+				if ch, bifrostErr = client.ChatCompletionStreamRequest(ctx, req); bifrostErr == nil {
+					drainChatStream(ch)
+				}
+			} else {
+				_, bifrostErr = client.ChatCompletionRequest(ctx, req)
+			}
+			if bifrostErr != nil {
+				t.Fatalf("the pinned key's provider should have served, got %v", bifrostErr.Error.Message)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if openaiCalls != 0 {
+				t.Errorf("openai, which has no such key, was called %d times", openaiCalls)
+			}
+			if want := []string{pinnedKey}; !slices.Equal(anthropicSaw, want) {
+				t.Errorf("anthropic saw %v, want only the pinned key %v", anthropicSaw, want)
+			}
+			moved := false
+			for _, entry := range ctx.GetRoutingEngineLogs() {
+				if strings.Contains(entry.Message, "is tried first") {
+					moved = true
+				}
+			}
+			if !moved {
+				t.Error("the trail does not say the pinned key's provider was tried first")
+			}
+		})
+	}
+}
