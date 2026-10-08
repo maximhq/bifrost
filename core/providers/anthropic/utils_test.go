@@ -2742,8 +2742,8 @@ func TestIsSonnet5Plus(t *testing.T) {
 
 func TestIsHaiku55Plus(t *testing.T) {
 	tests := []struct {
-		model	 string
-		expected bool
+		model		string
+		expected	bool
 	}{
 		{"claude-haiku-5-5", true},
 		{"claude-haiku-5.5", true},
@@ -2759,6 +2759,14 @@ func TestIsHaiku55Plus(t *testing.T) {
 		{"claude-fable-5", false},
 		{"", false},
 		{"some-non-claude-model", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := IsHaiku55Plus(tt.model); got != tt.expected {
+				t.Errorf("IsHaiku55Plus(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
 	}
 }
 // TestIsOpus5Plus pins the Opus 5 predicate. Opus 5 shares Opus 4.8's request
