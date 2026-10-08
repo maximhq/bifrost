@@ -1623,6 +1623,49 @@ func TestWarpSystemPromptNamesItsOwnTrafficInAggregates(t *testing.T) {
 	require.Contains(t, content, "semantic_search_logs does not")
 }
 
+// Warp's model calls run as the person asking, so its logged queries carry
+// that person's user and the teams, customer and business unit they are
+// attributed to. Told nothing about it, Warp said in a team breakdown that its
+// own queries had no team - while they made up both of the team rows it showed.
+// The inheritance only goes as far as the asker's own attribution, though: a
+// caller nobody identified, or one with no team, has none to pass on, and an
+// unconditional "never say they have no owner" made Warp deny a correct
+// reading of its own Unassigned rows.
+func TestWarpSystemPromptSaysItsOwnTrafficIsAttributedToTheAsker(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+
+	require.Contains(t, content, "logged as the person asking")
+	require.NotContains(t, content, "never say they have no team or owner")
+	require.Contains(t, content, "has none to inherit")
+	require.Contains(t, content, "land in Unassigned")
+}
+
+// A total without Warp was built by filtering apps to every other app
+// describe_filter_space listed. That list is never provably the window's whole
+// traffic: it is capped at 50, reads only the last 30 days, and leaves out
+// requests with no app label - which an apps filter then drops too. Subtracting
+// Warp's own app row over the same window is exact, so that is the method, and
+// a ranking that cuts Warp off means the number cannot be established.
+func TestWarpSystemPromptLeavesItsOwnTrafficOutBySubtraction(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+
+	require.Contains(t, content, "subtract its requests, cost and tokens from the total")
+	require.Contains(t, content, "never filter apps to leave Warp out")
+	require.Contains(t, content, "cannot be established")
+	require.NotContains(t, content, "name every app in it but Warp")
+}
+
+// No tool reports what a deployment has configured, only what traffic it
+// carried, so "configured" is never something Warp can know. Asked about a
+// model with no traffic, it answered correctly and then offered an ask_user
+// option calling that model "configured", which nothing supported.
+func TestWarpSystemPromptForbidsClaimingConfiguration(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+
+	require.Contains(t, content, "never describe a model, provider or key as configured, enabled or available")
+	require.Contains(t, content, "including in ask_user options")
+}
+
 // The loop allows up to four tool calls per step (MaxToolCallsPerTurn), but
 // nothing told the model that - so independent lookups ran one iteration at a
 // time and multi-part questions burned the step budget serially.
