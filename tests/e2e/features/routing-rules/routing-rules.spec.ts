@@ -599,4 +599,51 @@ test.describe('Routing Rules', () => {
       expect(exists).toBe(true)
     })
   })
+
+  test.describe('Routing Tree Visualization', () => {
+    test('should display all rules and accurate count when rule count exceeds 100', async ({ page }) => {
+      // Generate 105 mock rules
+      const mockRules = Array.from({ length: 105 }, (_, i) => {
+        const padded = String(i + 1).padStart(3, '0')
+        return {
+          id: `rule-${padded}`,
+          name: `Test Rule ${padded}`,
+          description: `Test rule ${padded}`,
+          cel_expression: `model == "gpt-${padded}"`,
+          enabled: true,
+          chain_rule: false,
+          priority: i + 1,
+          targets: [{ provider: 'openai', model: 'gpt-4', weight: 1 }],
+          scope: 'global',
+        }
+      })
+
+      // Mock the unbounded GET /api/routing/rules endpoint
+      await page.route('**/api/routing/rules', async (route) => {
+        if (route.request().method() === 'GET') {
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              rules: mockRules,
+              count: mockRules.length,
+              total_count: mockRules.length,
+              limit: mockRules.length,
+              offset: 0,
+            }),
+          })
+        } else {
+          await route.continue()
+        }
+      })
+
+      await page.goto('/workspace/routing-rules/tree')
+
+      // Verify the toolbar badge reflects all 105 rules
+      await expect(page.getByText('105 rules')).toBeVisible()
+
+      // Verify that the 105th rule appears in the graph
+      await expect(page.getByText('Test Rule 105')).toBeVisible()
+    })
+  })
 })
