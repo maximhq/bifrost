@@ -13548,6 +13548,48 @@ func TestSQLite_Team_MigratedToProfile_SplitSkipsAnEditedBudget(t *testing.T) {
 	assert.EqualValues(t, 100, limit, "the edited budget was applied to a team an access profile governs")
 }
 
+// TestSQLite_Team_MigratedToProfile_SplitRewriteSkipsItsInlineBudgets: a split-mode restart that
+// rewrites a governed team's entry - here a new inline budget id - saves the team without the inline
+// budgets, which the save would otherwise write as the team's own beside the profile.
+func TestSQLite_Team_MigratedToProfile_SplitRewriteSkipsItsInlineBudgets(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	teamWithInlineBudget := func(budgetID string) *ConfigData {
+		configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+		configData.Governance = &configstore.GovernanceConfig{
+			Teams: []tables.TableTeam{{ID: "team-1", Name: "Team One", Budgets: []tables.TableBudget{
+				{ID: budgetID, MaxLimit: 100, ResetDuration: "1M"},
+			}}},
+		}
+		return configData
+	}
+	createConfigFile(t, tempDir, teamWithInlineBudget("team-1-inline"))
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	exists, _ := countBudget(t, config1, "team-1-inline")
+	require.True(t, exists)
+	// What the enterprise migration does to the legacy budget.
+	require.NoError(t, config1.ConfigStore.DB().Where("id = ?", "team-1-inline").Delete(&tables.TableBudget{}).Error)
+	config1.Close(ctx)
+
+	governance.RegisterLegacyLimitGuard(migratedTeamGuard)
+	defer governance.RegisterLegacyLimitGuard(nil)
+	createConfigFile(t, tempDir, teamWithInlineBudget("team-1-inline-2"))
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+	for _, id := range []string{"team-1-inline", "team-1-inline-2"} {
+		exists, _ = countBudget(t, config2, id)
+		assert.False(t, exists, "inline budget %s was written beside the profile governing the team", id)
+	}
+	var team tables.TableTeam
+	require.NoError(t, config2.ConfigStore.DB().Where("id = ?", "team-1").First(&team).Error)
+	assert.NotEmpty(t, team.ConfigHash, "the rest of the entry still applies, hash and all")
+}
+
 // TestSQLite_Team_GuardLookupFails_SkipsItsLimitsAndBoots: a lookup that fails does not stop the
 // load. The team's limits are skipped this boot, as if a profile governed it, and the rest applies.
 func TestSQLite_Team_GuardLookupFails_SkipsItsLimitsAndBoots(t *testing.T) {
@@ -15214,6 +15256,97 @@ func TestSQLite_SourceOfTruthConfigJSON_LimitPruneGuardKeepsWhatItProtects(t *te
 	}
 	assert.ElementsMatch(t, []string{"file-budget", "guarded-budget"}, budgets)
 	assert.ElementsMatch(t, []string{"file-rl", "guarded-rl"}, rateLimits)
+}
+
+// fatalRecordingLogger is the silent test logger, except that it keeps each Fatal message: LoadConfig
+// reports a failed sync through Fatal, which the test logger otherwise swallows.
+type fatalRecordingLogger struct {
+	testLogger
+	fatals []string
+}
+
+// Fatal records the message instead of exiting.
+func (l *fatalRecordingLogger) Fatal(msg string, args ...any) {
+	l.fatals = append(l.fatals, fmt.Sprintf(msg, args...))
+}
+
+// TestSQLite_SourceOfTruthConfigJSON_KeepsInlineLimitsAcrossRestarts: budgets and rate limits declared
+// inline on a team, customer, virtual key or provider config are the file's, so the prune of
+// governance.budgets and governance.rate_limits keeps them. Pruned, a budget was deleted on one boot and
+// rewritten by its owner on the next, leaving the owner unfunded every other restart, and a rate limit
+// still linked by its owner failed the whole prune on the foreign key, which stops startup.
+//
+// Each section is present on its own, since a failure pruning one rolls back the other.
+func TestSQLite_SourceOfTruthConfigJSON_KeepsInlineLimitsAcrossRestarts(t *testing.T) {
+	requestMax := int64(5)
+	requestDur := "1m"
+	inlineRateLimit := func(id string) *tables.TableRateLimit {
+		return &tables.TableRateLimit{ID: id, RequestMaxLimit: &requestMax, RequestResetDuration: &requestDur}
+	}
+	inlineBudget := func(id string) []tables.TableBudget {
+		return []tables.TableBudget{{ID: id, MaxLimit: 10, ResetDuration: "1M"}}
+	}
+	for _, tc := range []struct {
+		name       string
+		governance configstore.GovernanceConfig
+		budgets    []string
+		rateLimits []string
+	}{
+		{
+			name: "budgets",
+			governance: configstore.GovernanceConfig{
+				Budgets:   []tables.TableBudget{{ID: "file-budget", MaxLimit: 100, ResetDuration: "1d"}},
+				Teams:     []tables.TableTeam{{ID: "team-1", Name: "Team One", Budgets: inlineBudget("team-budget")}},
+				Customers: []tables.TableCustomer{{ID: "customer-1", Name: "Customer One", Budgets: inlineBudget("customer-budget")}},
+				VirtualKeys: []tables.TableVirtualKey{{ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: schemas.Ptr(true),
+					Budgets: inlineBudget("vk-budget"),
+					ProviderConfigs: []tables.TableVirtualKeyProviderConfig{{Provider: "openai", Weight: ptrFloat64(1), AllowedModels: []string{"*"},
+						Budgets: inlineBudget("pc-budget")}}}},
+			},
+			budgets: []string{"file-budget", "team-budget", "customer-budget", "vk-budget", "pc-budget"},
+		},
+		{
+			name: "rate limits",
+			governance: configstore.GovernanceConfig{
+				RateLimits: []tables.TableRateLimit{*inlineRateLimit("file-rl")},
+				Teams:      []tables.TableTeam{{ID: "team-1", Name: "Team One", RateLimit: inlineRateLimit("team-rl")}},
+				Customers:  []tables.TableCustomer{{ID: "customer-1", Name: "Customer One", RateLimit: inlineRateLimit("customer-rl")}},
+				VirtualKeys: []tables.TableVirtualKey{{ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: schemas.Ptr(true),
+					RateLimit: inlineRateLimit("vk-rl")}},
+			},
+			rateLimits: []string{"file-rl", "team-rl", "customer-rl", "vk-rl"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := &fatalRecordingLogger{}
+			SetLogger(recorder)
+			defer initTestLogger()
+			tempDir := createTempDir(t)
+			configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+				"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
+			}, tempDir)
+			configData.SourceOfTruth = SourceOfTruthConfigJSON
+			configData.Governance = &tc.governance
+			createConfigFile(t, tempDir, configData)
+
+			ctx := context.Background()
+			for boot := 1; boot <= 3; boot++ {
+				config, err := LoadConfig(ctx, tempDir)
+				require.NoError(t, err)
+				for _, id := range tc.budgets {
+					exists, _ := countBudget(t, config, id)
+					assert.True(t, exists, "boot %d: budget %s was pruned", boot, id)
+				}
+				for _, id := range tc.rateLimits {
+					var count int64
+					require.NoError(t, config.ConfigStore.DB().Model(&tables.TableRateLimit{}).Where("id = ?", id).Count(&count).Error)
+					assert.EqualValues(t, 1, count, "boot %d: rate limit %s was pruned", boot, id)
+				}
+				assert.Empty(t, recorder.fatals, "boot %d: the prune failed", boot)
+				config.Close(ctx)
+			}
+		})
+	}
 }
 
 // TestSQLite_SourceOfTruthConfigJSON_LimitPruneGuardFailureKeepsEveryCandidate: when the guard cannot
