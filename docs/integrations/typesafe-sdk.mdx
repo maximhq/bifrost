@@ -91,5 +91,5 @@ const client = new TypeSafeClient({
 - **Retries**: Bifrost retries 429 and 529 with backoff per the provider's `network_config` in addition to any SDK-side retry policy.
 
 <Note>
-For provider-routed access with fallbacks and Bifrost's normalized response shape, use [`POST /v1/decisions`](/quickstart/gateway/decisions) instead - same questions, `kind` instead of `type`, and a unified `value` per answer.
+For provider-routed access with fallbacks and Bifrost's normalized response shape, use [`POST /v1/decisions`](/quickstart/gateway/decisions) instead - the same questions as a list, answered in order by any decision model.
 </Note>
