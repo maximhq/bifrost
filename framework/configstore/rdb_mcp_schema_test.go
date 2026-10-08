@@ -44,7 +44,7 @@ func TestMCPSchemaSQLiteReopenWriteEntrypoints(t *testing.T) {
 			s := openMCPSchemaStore(t, path)
 			tools := storedMCPSchemaTools()
 			mapping := map[string]string{"fixture-edge": "edge", "fixture-absent": "absent", "fixture-no-input": "no-input"}
-			cfg := &schemas.MCPClientConfig{ID: "fixture-id", Name: "fixture", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"X-Fixture"}, ToolsToExecute: schemas.WhiteList{"edge"}, Headers: map[string]schemas.SecretVar{"X-Synthetic": *schemas.NewSecretVar("local-test-only")}, ConfigHash: "preserve-hash"}
+			cfg := &schemas.MCPClientConfig{ID: "fixture-id", Name: "fixture", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"X-Fixture"}, ToolsToExecute: schemas.WhiteList{"edge"}, Headers: map[string]schemas.SecretVar{"X-Synthetic": *schemas.NewSecretVar("local-test-only")}, ConfigHash: "preserve-hash", DiscoveredInstructions: "preserved instructions"}
 			if mode == "create" {
 				cfg.DiscoveredTools, cfg.DiscoveredToolNameMapping = tools, mapping
 			}
@@ -57,12 +57,12 @@ func TestMCPSchemaSQLiteReopenWriteEntrypoints(t *testing.T) {
 				require.NoError(t, s.UpdateMCPClientConfig(ctx, cfg.ID, &row))
 			case "tools-update":
 				// Compare every persisted column, not just Name. The periodic writer may
-				// update only its three declared columns, including credentials and ACL.
+				// update only its four declared columns, leaving credentials and ACL intact.
 				var before, after map[string]any
 				require.NoError(t, s.DB().Table("config_mcp_clients").Where("client_id = ?", cfg.ID).Take(&before).Error)
-				require.NoError(t, s.UpdateMCPClientTools(ctx, cfg.ID, tools, mapping, ""))
+				require.NoError(t, s.UpdateMCPClientTools(ctx, cfg.ID, tools, mapping, "preserved instructions"))
 				require.NoError(t, s.DB().Table("config_mcp_clients").Where("client_id = ?", cfg.ID).Take(&after).Error)
-				for _, col := range []string{"discovered_tools_json", "tool_name_mapping_json", "updated_at"} {
+				for _, col := range []string{"discovered_tools_json", "tool_name_mapping_json", "discovered_instructions", "updated_at"} {
 					delete(before, col)
 					delete(after, col)
 				}
@@ -89,6 +89,7 @@ func TestMCPSchemaSQLiteReopenWriteEntrypoints(t *testing.T) {
 			got, err := s.GetMCPClientByID(ctx, "fixture-id")
 			require.NoError(t, err)
 			require.Equal(t, mapping, got.DiscoveredToolNameMapping)
+			require.Equal(t, "preserved instructions", got.DiscoveredInstructions)
 			expected := storedMCPSchemaTools()
 			for name, tool := range expected {
 				require.Equal(t, tool.MCPToolSchema, got.DiscoveredTools[name].MCPToolSchema)
