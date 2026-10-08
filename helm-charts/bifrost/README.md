@@ -39,6 +39,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `cache_tool_call_responses` to `bifrost.plugins.semanticCache.config` (`semantic_cache` plugin config): cache responses that carry tool calls. Off by default, since a replayed tool call runs in another caller's agent loop.
 - `bifrost.governance.routingRules[].fallbacks` entries now accept an object `{ provider, model, provider_key_name }` that pins a provider key, alongside the `provider/model` string form (`governance.routing_rules[].fallbacks`).
 - Added `displayName` to the generic OIDC `bifrost.scim.config` (`scim_config.config.displayName`): the login button label (`Sign in with <displayName>`), default `SSO`.
+- Added `topologySpreadConstraints` (top-level value): pod topology spread constraints rendered into the Bifrost Deployment or StatefulSet pod spec, to spread replicas across nodes and zones. A constraint without a `labelSelector` defaults to the release's server pod labels, so only Bifrost's own replicas are counted.
 
 ### 2.1.43
 - Added `bifrost.plugins.telemetry.config.user_labels_enabled` (default `false`) — adds `user_id` and `user_name` labels to every `bifrost_*` metric. Off by default because these are unbounded: they multiply metric series by end-user count, on top of a `virtual_key_id` label that already reaches tens of thousands of values in large deployments, and Prometheus cannot drop a label after the fact. Datadog and Splunk emit these dimensions unconditionally, since a costly tag can be dropped server-side there.
