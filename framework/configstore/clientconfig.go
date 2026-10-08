@@ -9,6 +9,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -1135,6 +1136,16 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	// Hash DeleteAfterExpire only when set, for the same reason
 	if vk.DeleteAfterExpire != nil {
 		hash.Write([]byte(fmt.Sprintf("deleteAfterExpire:%t", *vk.DeleteAfterExpire)))
+	}
+	// Hash AgentGrants only when declared. Nil leaves the key's grants alone, and writing nothing
+	// for it keeps every key that does not declare them on the hash it already has.
+	if vk.AgentGrants != nil {
+		agentNames := make([]string, 0, len(vk.AgentGrants))
+		for _, agentGrant := range vk.AgentGrants {
+			agentNames = append(agentNames, agentGrant.AgentName)
+		}
+		sort.Strings(agentNames)
+		hash.Write([]byte("agentGrants:" + strings.Join(agentNames, ",")))
 	}
 	// Hash TeamID
 	if vk.TeamID != nil {

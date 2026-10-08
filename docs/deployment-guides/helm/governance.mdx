@@ -252,6 +252,8 @@ bifrost:
         delete_after_expire: true         # delete the key once expires_at passes
         disable_content_logging: true     # keep request/response content out of the logs for this key
         allow_all_providers: true
+        agent_grants:                     # A2A agents this key may call
+          - agent_name: "research-agent"
 ```
 
 `provider_configs[].key_ids` and `provider_configs[].keys` are both supported in Helm values. Prefer `key_ids` for parity with `config.json` (`key_ids` should contain provider key names).
@@ -262,10 +264,11 @@ bifrost:
 | `delete_after_expire` | Delete the key once `expires_at` passes. Omit to follow `bifrost.client.deleteExpiredVirtualKeys` (default `false`); `true` or `false` overrides it for this key |
 | `disable_content_logging` | Per-key override of `bifrost.client.disableContentLogging`. Omit to inherit; `false` forces content into the log store even when the client setting is `true` |
 | `business_unit_id` | Owning business unit. Mutually exclusive with `team_id` and `customer_id` |
+| `agent_grants` | The exact set of A2A agents (by `agent_name`) the key may call. An empty list allows none; omit it to leave the key's grants alone |
 
 To delete expired keys globally, set `bifrost.client.deleteExpiredVirtualKeys: true` (renders into `client.delete_expired_virtual_keys`). A daily job then removes every expired key except those with `delete_after_expire: false`.
 
-To let a virtual key call an A2A agent, grant it from the agent side with `bifrost.agents[].virtual_key_ids`.
+A grant can be declared on the key (`agent_grants`) or on the agent (`bifrost.agents[].virtual_key_ids`). Declare each grant on one side: when a key declares `agent_grants`, that list is the key's exact set, and an agent whose `virtual_key_ids` disagrees with it is overridden for that key, with a warning in the logs. The agents must be registered, either under `bifrost.agents` or through the API. An agent name that is not registered is skipped with a warning: the key still gets its other declared agents and loses any it no longer declares, the rest of the configuration loads, and the skipped name is retried on the next restart.
 
 **Use a virtual key in API calls:**
 

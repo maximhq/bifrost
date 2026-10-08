@@ -4258,6 +4258,15 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 	return nil
 }
 
+// UpdateVirtualKeyConfigHash sets the config_hash on a virtual key row so config reconciliation
+// treats the key as changed (or unchanged) on the next load.
+func (s *RDBConfigStore) UpdateVirtualKeyConfigHash(ctx context.Context, virtualKeyID string, configHash string) error {
+	return s.DB().WithContext(ctx).
+		Model(&tables.TableVirtualKey{}).
+		Where("id = ?", virtualKeyID).
+		Update("config_hash", configHash).Error
+}
+
 // GetKeysByIDs retrieves multiple keys by their IDs
 func (s *RDBConfigStore) GetKeysByIDs(ctx context.Context, ids []string) ([]tables.TableKey, error) {
 	if len(ids) == 0 {

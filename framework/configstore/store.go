@@ -379,6 +379,7 @@ type ConfigStore interface {
 	GetVirtualKeyQuotaByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error)
 	CreateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	UpdateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
+	UpdateVirtualKeyConfigHash(ctx context.Context, virtualKeyID string, configHash string) error
 	DeleteVirtualKey(ctx context.Context, id string, tx ...*gorm.DB) error
 	ReplaceVirtualKeyAgentGrants(ctx context.Context, virtualKeyID string, agentNames []string, tx ...*gorm.DB) error
 

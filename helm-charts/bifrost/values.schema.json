@@ -2265,6 +2265,26 @@
                         }
                       }
                     }
+                  },
+                  "agent_grants": {
+                    "type": "array",
+                    "description": "The exact set of A2A agents this virtual key may call; an empty list allows none. Omit to leave the key's grants alone. Where it disagrees with bifrost.agents[].virtual_key_ids, this list wins for the key.",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "virtual_key_id": {
+                          "type": "string",
+                          "description": "Associated virtual key ID"
+                        },
+                        "agent_name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Registered agent name granted to this virtual key"
+                        }
+                      },
+                      "required": ["agent_name"],
+                      "additionalProperties": false
+                    }
                   }
                 },
                 "required": ["id", "name"],

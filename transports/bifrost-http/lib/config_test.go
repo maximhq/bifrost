@@ -362,8 +362,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1169,6 +1171,10 @@ func (m *MockConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables
 }
 
 func (m *MockConfigStore) ReplaceVirtualKeyAgentGrants(ctx context.Context, virtualKeyID string, agentNames []string, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdateVirtualKeyConfigHash(ctx context.Context, virtualKeyID string, configHash string) error {
 	return nil
 }
 
@@ -8379,6 +8385,37 @@ func TestGenerateVirtualKeyHash_WithMCPConfigs(t *testing.T) {
 	if hash1 == hash3 {
 		t.Error("Expected different hash for virtual keys with different MCPConfigs tools")
 	}
+}
+
+func TestGenerateVirtualKeyHash_WithAgentGrants(t *testing.T) {
+	base := tables.TableVirtualKey{
+		ID:       "vk-1",
+		Name:     "test-vk",
+		Value:    *schemas.NewSecretVar("vk_abc123"),
+		IsActive: schemas.Ptr(true),
+	}
+	hashWith := func(grants []tables.TableVirtualKeyAgentGrant) string {
+		t.Helper()
+		vk := base
+		vk.AgentGrants = grants
+		hash, err := configstore.GenerateVirtualKeyHash(vk)
+		require.NoError(t, err)
+		return hash
+	}
+
+	undeclared := hashWith(nil)
+	baseHash, err := configstore.GenerateVirtualKeyHash(base)
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, undeclared, "a key that does not declare agent_grants keeps its hash")
+
+	research := hashWith([]tables.TableVirtualKeyAgentGrant{{AgentName: "research"}})
+	assert.NotEqual(t, undeclared, research, "declaring a grant changes the hash")
+	assert.NotEqual(t, undeclared, hashWith([]tables.TableVirtualKeyAgentGrant{}), "an empty list is a declaration, distinct from omitting it")
+	assert.NotEqual(t, research, hashWith([]tables.TableVirtualKeyAgentGrant{{AgentName: "billing"}}), "a different agent changes the hash")
+	assert.Equal(t,
+		hashWith([]tables.TableVirtualKeyAgentGrant{{AgentName: "research"}, {AgentName: "billing"}}),
+		hashWith([]tables.TableVirtualKeyAgentGrant{{AgentName: "billing"}, {AgentName: "research"}}),
+		"grant order does not matter")
 }
 
 // TestVirtualKeyHashComparison_MatchingHash tests that DB config is kept when hashes match
@@ -22005,6 +22042,355 @@ func TestLoadAgentsConfigSecretRefsAndGrants(t *testing.T) {
 	assert.True(t, header.IsFromSecret(), "env references pass through as secret refs")
 	assert.Equal(t, "env.AGENT_TEST_TOKEN_UNSET", header.GetRawRef())
 	assert.Empty(t, header.GetValue(), "unset env refs stay unresolved rather than becoming literals")
+}
+
+// loadConfigJSON writes body as config.json, pointing its config store at the same SQLite file
+// createTestSQLiteConfigStore opens in dir, and runs the full LoadConfig so governance, agents
+// and grants load in boot order.
+// The returned close is idempotent and also runs at cleanup, so reload tests can close one
+// load before the next.
+func loadConfigJSON(t *testing.T, dir, body string) (*Config, func()) {
+	t.Helper()
+	full := strings.Replace(body, "{", fmt.Sprintf(`{"config_store": {"enabled": true, "type": "sqlite", "config": {"path": %q}},`, filepath.Join(dir, "test-config.db")), 1)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(full), 0644))
+	config, err := LoadConfig(context.Background(), dir)
+	require.NoError(t, err)
+	var once sync.Once
+	closeConfig := func() { once.Do(func() { config.Close(context.Background()) }) }
+	t.Cleanup(closeConfig)
+	return config, closeConfig
+}
+
+// agentGrantsOfVirtualKey returns the sorted agent names granted to a virtual key.
+func agentGrantsOfVirtualKey(t *testing.T, store configstore.ConfigStore, vkID string) []string {
+	t.Helper()
+	registrations, err := store.ListAgentRegistrations(context.Background())
+	require.NoError(t, err)
+	names := []string{}
+	for _, registration := range registrations {
+		if slices.Contains(registration.VirtualKeyIDs, vkID) {
+			names = append(names, registration.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func TestLoadConfig_VirtualKeyAgentGrantsFromConfigJSON(t *testing.T) {
+	initTestLogger()
+	dir := createTempDir(t)
+
+	// Agents load after governance, so writing these grants with the key used to violate the
+	// grant row's foreign key and roll back the whole governance section.
+	config, _ := loadConfigJSON(t, dir, `{
+		"agents": [
+			{"name": "research", "agent_card_url": "https://example.com/research"},
+			{"name": "billing", "agent_card_url": "https://example.com/billing"}
+		],
+		"governance": {
+			"customers": [{"id": "cust-1", "name": "Customer One"}],
+			"virtual_keys": [
+				{"id": "vk-granted", "name": "granted", "value": "sk-bf-granted", "is_active": true, "agent_grants": [{"agent_name": "research"}, {"agent_name": "billing"}]},
+				{"id": "vk-plain", "name": "plain", "value": "sk-bf-plain", "is_active": true}
+			]
+		}
+	}`)
+	ctx := context.Background()
+
+	_, err := config.ConfigStore.GetVirtualKey(ctx, "vk-granted")
+	require.NoError(t, err, "a key declaring agent_grants must be created")
+	_, err = config.ConfigStore.GetVirtualKey(ctx, "vk-plain")
+	require.NoError(t, err, "keys beside it must be created too")
+	customers, err := config.ConfigStore.GetCustomers(ctx)
+	require.NoError(t, err)
+	assert.Len(t, customers, 1, "the rest of the governance section must be written")
+	assert.Equal(t, []string{"billing", "research"}, agentGrantsOfVirtualKey(t, config.ConfigStore, "vk-granted"))
+	assert.Empty(t, agentGrantsOfVirtualKey(t, config.ConfigStore, "vk-plain"))
+}
+
+func TestLoadConfig_VirtualKeyAgentGrantsUnknownAgentIsSkipped(t *testing.T) {
+	initTestLogger()
+	dir := createTempDir(t)
+
+	config, _ := loadConfigJSON(t, dir, `{
+		"agents": [{"name": "research", "agent_card_url": "https://example.com/research"}],
+		"governance": {
+			"virtual_keys": [
+				{"id": "vk-typo", "name": "typo", "value": "sk-bf-typo", "is_active": true, "agent_grants": [{"agent_name": "reserch"}]},
+				{"id": "vk-good", "name": "good", "value": "sk-bf-good", "is_active": true, "agent_grants": [{"agent_name": "research"}]}
+			]
+		}
+	}`)
+
+	// An unknown agent name skips that key's grants with a warning; it never fails the load.
+	_, err := config.ConfigStore.GetVirtualKey(context.Background(), "vk-typo")
+	require.NoError(t, err, "the key itself is still created")
+	assert.Empty(t, agentGrantsOfVirtualKey(t, config.ConfigStore, "vk-typo"))
+	assert.Equal(t, []string{"research"}, agentGrantsOfVirtualKey(t, config.ConfigStore, "vk-good"))
+}
+
+func TestLoadConfig_VirtualKeyAgentGrantsUnknownAgentDoesNotKeepRemovedGrants(t *testing.T) {
+	initTestLogger()
+	dir := createTempDir(t)
+	agents := `"agents": [
+		{"name": "research", "agent_card_url": "https://example.com/research"},
+		{"name": "billing", "agent_card_url": "https://example.com/billing"}
+	],`
+
+	first, closeFirst := loadConfigJSON(t, dir, `{`+agents+`
+		"governance": {"virtual_keys": [{"id": "vk-1", "name": "vk-1", "value": "sk-bf-one", "is_active": true, "agent_grants": [{"agent_name": "research"}]}]}
+	}`)
+	assert.Equal(t, []string{"research"}, agentGrantsOfVirtualKey(t, first.ConfigStore, "vk-1"))
+	closeFirst()
+
+	// The file drops research and names billing plus a misspelled agent. The unknown name must
+	// not keep the removed grant in place: the registered names apply, the unknown one is skipped.
+	second, _ := loadConfigJSON(t, dir, `{`+agents+`
+		"governance": {"virtual_keys": [{"id": "vk-1", "name": "vk-1", "value": "sk-bf-one", "is_active": true, "agent_grants": [{"agent_name": "billing"}, {"agent_name": "reserch"}, {"agent_name": "billing"}]}]}
+	}`)
+	assert.Equal(t, []string{"billing"}, agentGrantsOfVirtualKey(t, second.ConfigStore, "vk-1"))
+}
+
+// failingAgentListStore is a real store whose agent registration listing fails.
+type failingAgentListStore struct {
+	configstore.ConfigStore
+}
+
+func (s failingAgentListStore) ListAgentRegistrations(ctx context.Context) ([]schemas.AgentRegistration, error) {
+	return nil, errors.New("agent registrations unavailable")
+}
+
+func TestApplyVirtualKeyAgentGrants_ListFailureRetriesEveryPendingKey(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	apiCreatedAgent(t, store, "research")
+	for _, id := range []string{"vk-1", "vk-2"} {
+		require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
+			ID: id, Name: id, Value: *schemas.NewSecretVar("sk-bf-" + id), IsActive: schemas.Ptr(true), ConfigHash: "synced-" + id,
+		}))
+		require.NoError(t, store.ReplaceVirtualKeyAgentGrants(ctx, id, []string{"research"}))
+	}
+
+	config := &Config{ConfigStore: failingAgentListStore{store}, virtualKeyAgentGrantsChanged: map[string]bool{"vk-1": true, "vk-2": true}}
+	configData := &ConfigData{Governance: &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{
+		{ID: "vk-1", AgentGrants: []tables.TableVirtualKeyAgentGrant{}},
+		{ID: "vk-2", AgentGrants: []tables.TableVirtualKeyAgentGrant{}},
+	}}}
+	applyVirtualKeyAgentGrants(ctx, config, configData, nil, nil)
+
+	// Without the registered names nothing is written, and every pending key is left to retry.
+	for _, id := range []string{"vk-1", "vk-2"} {
+		vk, err := store.GetVirtualKey(ctx, id)
+		require.NoError(t, err)
+		assert.Empty(t, vk.ConfigHash, "%s keeps no stored hash, so the next load retries it", id)
+		assert.Equal(t, []string{"research"}, agentGrantsOfVirtualKey(t, store, id), "%s grants are not rewritten from an incomplete list", id)
+	}
+}
+
+// editAgentGrantsAsAPI replaces a key's grants between loads through the store method the
+// governance API uses, as a dashboard edit would.
+func editAgentGrantsAsAPI(t *testing.T, dir, vkID string, agentNames ...string) {
+	t.Helper()
+	store := createTestSQLiteConfigStore(t, dir)
+	require.NoError(t, store.ReplaceVirtualKeyAgentGrants(context.Background(), vkID, agentNames))
+	store.Close(context.Background())
+}
+
+const agentGrantsModeAgents = `"agents": [
+	{"name": "research", "agent_card_url": "https://example.com/research"},
+	{"name": "billing", "agent_card_url": "https://example.com/billing"}
+],`
+
+func TestLoadConfig_VirtualKeyAgentGrantsSplitModeKeepsAPIEdits(t *testing.T) {
+	initTestLogger()
+	dir := createTempDir(t)
+	file := func(description string) string {
+		return `{` + agentGrantsModeAgents + `
+			"governance": {"virtual_keys": [{"id": "vk-1", "name": "vk-1", "description": "` + description + `", "value": "sk-bf-one", "is_active": true, "agent_grants": [{"agent_name": "research"}]}]}
+		}`
+	}
+
+	first, closeFirst := loadConfigJSON(t, dir, file("v1"))
+	assert.Equal(t, []string{"research"}, agentGrantsOfVirtualKey(t, first.ConfigStore, "vk-1"))
+	closeFirst()
+
+	// A dashboard edit survives a restart while the file's declaration of the key is unchanged.
+	editAgentGrantsAsAPI(t, dir, "vk-1", "billing")
+	second, closeSecond := loadConfigJSON(t, dir, file("v1"))
+	assert.Equal(t, []string{"billing"}, agentGrantsOfVirtualKey(t, second.ConfigStore, "vk-1"))
+	closeSecond()
+
+	// Any change to the key in the file changes its hash, and the file's grants apply again.
+	third, _ := loadConfigJSON(t, dir, file("v2"))
+	assert.Equal(t, []string{"research"}, agentGrantsOfVirtualKey(t, third.ConfigStore, "vk-1"))
+}
+
+func TestLoadConfig_VirtualKeyAgentGrantsSourceOfTruthRevertsAPIEdits(t *testing.T) {
+	initTestLogger()
+	dir := createTempDir(t)
+	file := `{"source_of_truth": "config.json", ` + agentGrantsModeAgents + `
+		"governance": {"virtual_keys": [{"id": "vk-1", "name": "vk-1", "value": "sk-bf-one", "is_active": true, "agent_grants": [{"agent_name": "research"}]}]}
+	}`
+
+	first, closeFirst := loadConfigJSON(t, dir, file)
+	assert.Equal(t, []string{"research"}, agentGrantsOfVirtualKey(t, first.ConfigStore, "vk-1"))
+	closeFirst()
+
+	// With config.json as the source of truth, the file's grants are applied on every load,
+	// so a dashboard edit is reverted even though the file did not change.
+	editAgentGrantsAsAPI(t, dir, "vk-1", "billing")
+	second, _ := loadConfigJSON(t, dir, file)
+	assert.Equal(t, []string{"research"}, agentGrantsOfVirtualKey(t, second.ConfigStore, "vk-1"))
+}
+
+func TestLoadConfig_VirtualKeyAgentGrantsSourceOfTruthPrunedKeyLosesGrants(t *testing.T) {
+	initTestLogger()
+	dir := createTempDir(t)
+
+	first, closeFirst := loadConfigJSON(t, dir, `{"source_of_truth": "config.json", `+agentGrantsModeAgents+`
+		"governance": {"virtual_keys": [
+			{"id": "vk-1", "name": "vk-1", "value": "sk-bf-one", "is_active": true, "agent_grants": [{"agent_name": "research"}]},
+			{"id": "vk-2", "name": "vk-2", "value": "sk-bf-two", "is_active": true, "agent_grants": [{"agent_name": "billing"}]}
+		]}
+	}`)
+	assert.Equal(t, []string{"billing"}, agentGrantsOfVirtualKey(t, first.ConfigStore, "vk-2"))
+	closeFirst()
+
+	// Dropping a key from a source-of-truth file deletes it, and its grant rows with it.
+	second, _ := loadConfigJSON(t, dir, `{"source_of_truth": "config.json", `+agentGrantsModeAgents+`
+		"governance": {"virtual_keys": [
+			{"id": "vk-1", "name": "vk-1", "value": "sk-bf-one", "is_active": true, "agent_grants": [{"agent_name": "research"}]}
+		]}
+	}`)
+	_, err := second.ConfigStore.GetVirtualKey(context.Background(), "vk-2")
+	require.Error(t, err, "vk-2 is pruned")
+	assert.Empty(t, agentGrantsOfVirtualKey(t, second.ConfigStore, "vk-2"))
+	assert.Equal(t, []string{"research"}, agentGrantsOfVirtualKey(t, second.ConfigStore, "vk-1"))
+}
+
+func TestLoadConfig_VirtualKeyAgentGrantsOmittedAreLeftAlone(t *testing.T) {
+	for _, mode := range []string{"", `"source_of_truth": "config.json", `} {
+		name := "split"
+		if mode != "" {
+			name = "source_of_truth"
+		}
+		t.Run(name, func(t *testing.T) {
+			initTestLogger()
+			dir := createTempDir(t)
+			file := `{` + mode + agentGrantsModeAgents + `
+				"governance": {"virtual_keys": [{"id": "vk-1", "name": "vk-1", "value": "sk-bf-one", "is_active": true}]}
+			}`
+
+			first, closeFirst := loadConfigJSON(t, dir, file)
+			assert.Empty(t, agentGrantsOfVirtualKey(t, first.ConfigStore, "vk-1"))
+			closeFirst()
+
+			// A key that omits agent_grants does not manage its grants from the file, in either mode.
+			editAgentGrantsAsAPI(t, dir, "vk-1", "billing")
+			second, _ := loadConfigJSON(t, dir, file)
+			assert.Equal(t, []string{"billing"}, agentGrantsOfVirtualKey(t, second.ConfigStore, "vk-1"))
+		})
+	}
+}
+
+func TestLoadConfig_VirtualKeyAgentGrantsReconcileOnReload(t *testing.T) {
+	initTestLogger()
+	dir := createTempDir(t)
+	agents := `"agents": [
+		{"name": "research", "agent_card_url": "https://example.com/research"},
+		{"name": "billing", "agent_card_url": "https://example.com/billing"}
+	],`
+
+	first, closeFirst := loadConfigJSON(t, dir, `{`+agents+`
+		"governance": {"virtual_keys": [{"id": "vk-1", "name": "vk-1", "value": "sk-bf-one", "is_active": true, "agent_grants": [{"agent_name": "research"}]}]}
+	}`)
+	assert.Equal(t, []string{"research"}, agentGrantsOfVirtualKey(t, first.ConfigStore, "vk-1"))
+	closeFirst()
+
+	// Changing the declared grants changes the key's config hash, so the next load replaces them.
+	second, closeSecond := loadConfigJSON(t, dir, `{`+agents+`
+		"governance": {"virtual_keys": [{"id": "vk-1", "name": "vk-1", "value": "sk-bf-one", "is_active": true, "agent_grants": [{"agent_name": "billing"}]}]}
+	}`)
+	assert.Equal(t, []string{"billing"}, agentGrantsOfVirtualKey(t, second.ConfigStore, "vk-1"))
+	closeSecond()
+
+	// An empty list is a declaration too: it clears the key's grants.
+	third, _ := loadConfigJSON(t, dir, `{`+agents+`
+		"governance": {"virtual_keys": [{"id": "vk-1", "name": "vk-1", "value": "sk-bf-one", "is_active": true, "agent_grants": []}]}
+	}`)
+	assert.Empty(t, agentGrantsOfVirtualKey(t, third.ConfigStore, "vk-1"))
+}
+
+func TestLoadConfig_VirtualKeyAgentGrantsSurviveAgentUpdate(t *testing.T) {
+	initTestLogger()
+	dir := createTempDir(t)
+	keys := `"governance": {"virtual_keys": [{"id": "vk-1", "name": "vk-1", "value": "sk-bf-one", "is_active": true, "agent_grants": [{"agent_name": "research"}]}]}`
+
+	first, closeFirst := loadConfigJSON(t, dir, `{"agents": [{"name": "research", "agent_card_url": "https://example.com/v1"}], `+keys+`}`)
+	assert.Equal(t, []string{"research"}, agentGrantsOfVirtualKey(t, first.ConfigStore, "vk-1"))
+	closeFirst()
+
+	// The agent changes and the key does not. Updating an agent replaces all of its grant rows
+	// with its own virtual_key_ids, so the key's declaration has to be applied again.
+	second, _ := loadConfigJSON(t, dir, `{"agents": [{"name": "research", "agent_card_url": "https://example.com/v2"}], `+keys+`}`)
+	assert.Equal(t, []string{"research"}, agentGrantsOfVirtualKey(t, second.ConfigStore, "vk-1"))
+}
+
+func TestLoadConfig_VirtualKeyAgentGrantsAreTheKeysExactSet(t *testing.T) {
+	initTestLogger()
+	dir := createTempDir(t)
+
+	// A key that declares agent_grants gets exactly that set, even where an agent's
+	// virtual_key_ids also names the key. A key that omits agent_grants keeps what agents grant.
+	config, _ := loadConfigJSON(t, dir, `{
+		"agents": [
+			{"name": "research", "agent_card_url": "https://example.com/research", "virtual_key_ids": ["vk-listed", "vk-empty", "vk-omitted"]},
+			{"name": "billing", "agent_card_url": "https://example.com/billing"}
+		],
+		"governance": {"virtual_keys": [
+			{"id": "vk-listed", "name": "vk-listed", "value": "sk-bf-listed", "is_active": true, "agent_grants": [{"agent_name": "billing"}]},
+			{"id": "vk-empty", "name": "vk-empty", "value": "sk-bf-empty", "is_active": true, "agent_grants": []},
+			{"id": "vk-omitted", "name": "vk-omitted", "value": "sk-bf-omitted", "is_active": true}
+		]}
+	}`)
+	assert.Equal(t, []string{"billing"}, agentGrantsOfVirtualKey(t, config.ConfigStore, "vk-listed"))
+	assert.Empty(t, agentGrantsOfVirtualKey(t, config.ConfigStore, "vk-empty"), "an explicit empty list allows no agents")
+	assert.Equal(t, []string{"research"}, agentGrantsOfVirtualKey(t, config.ConfigStore, "vk-omitted"))
+}
+
+func TestLoadConfig_VirtualKeyAgentGrantsEmptyListSurvivesAgentUpdate(t *testing.T) {
+	initTestLogger()
+	dir := createTempDir(t)
+	keys := `"governance": {"virtual_keys": [{"id": "vk-1", "name": "vk-1", "value": "sk-bf-one", "is_active": true, "agent_grants": []}]}`
+
+	first, closeFirst := loadConfigJSON(t, dir, `{"agents": [{"name": "research", "agent_card_url": "https://example.com/research"}], `+keys+`}`)
+	assert.Empty(t, agentGrantsOfVirtualKey(t, first.ConfigStore, "vk-1"))
+	closeFirst()
+
+	// Only the agent changes, now listing the key. The key's empty list still decides.
+	second, _ := loadConfigJSON(t, dir, `{"agents": [{"name": "research", "agent_card_url": "https://example.com/research", "virtual_key_ids": ["vk-1"]}], `+keys+`}`)
+	assert.Empty(t, agentGrantsOfVirtualKey(t, second.ConfigStore, "vk-1"))
+}
+
+func TestLoadConfig_VirtualKeyAgentGrantsRetryAfterFailure(t *testing.T) {
+	initTestLogger()
+	dir := createTempDir(t)
+	body := `{"governance": {"virtual_keys": [{"id": "vk-1", "name": "vk-1", "value": "sk-bf-one", "is_active": true, "agent_grants": [{"agent_name": "research"}]}]}}`
+
+	// The agent is not registered yet, so the grant cannot be written.
+	first, closeFirst := loadConfigJSON(t, dir, body)
+	assert.Empty(t, agentGrantsOfVirtualKey(t, first.ConfigStore, "vk-1"))
+	closeFirst()
+
+	// Register the agent through the store, as the API would, between restarts.
+	store := createTestSQLiteConfigStore(t, dir)
+	apiCreatedAgent(t, store, "research")
+	store.Close(context.Background())
+
+	// Same file, agent now registered through the API: the failed grant is retried.
+	second, _ := loadConfigJSON(t, dir, body)
+	assert.Equal(t, []string{"research"}, agentGrantsOfVirtualKey(t, second.ConfigStore, "vk-1"))
 }
 
 func TestResolveSetupToken_Unset(t *testing.T) {

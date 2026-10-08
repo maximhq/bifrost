@@ -1549,6 +1549,8 @@ bifrost:
         delete_after_expire: false
         disable_content_logging: true
         business_unit_id: "bu-1"
+        agent_grants:
+          - agent_name: "research-agent"
     routingRules:
       - id: "rr-sync"
         name: "rr-sync"
@@ -1590,6 +1592,7 @@ assert_field_value 'mcp.client_configs[0].require_public_target' '.mcp.client_co
 assert_field_value 'governance.virtual_keys[0].delete_after_expire' '.governance.virtual_keys.[0].delete_after_expire' 'false'
 assert_field_value 'governance.virtual_keys[0].disable_content_logging' '.governance.virtual_keys.[0].disable_content_logging' 'true'
 assert_field_value 'governance.virtual_keys[0].business_unit_id' '.governance.virtual_keys.[0].business_unit_id' '"bu-1"'
+assert_field_value 'governance.virtual_keys[0].agent_grants[0].agent_name' '.governance.virtual_keys.[0].agent_grants.[0].agent_name' '"research-agent"'
 assert_field_value 'governance.routing_rules[0].fallbacks[0] (string)' '.governance.routing_rules.[0].fallbacks.[0]' '"anthropic/claude-sonnet-4-5"'
 assert_field_value 'governance.routing_rules[0].fallbacks[1].provider_key_name (object)' '.governance.routing_rules.[0].fallbacks.[1].provider_key_name' '"azure-eu"'
 assert_field_value 'plugins: semantic_cache cache_tool_call_responses' '.plugins.[0].config.cache_tool_call_responses' 'true'

@@ -1033,6 +1033,9 @@ bifrost:
       #   mcp_configs:
       #     - mcp_client_id: 1
       #       tools_to_execute: ["tool1", "tool2"]
+      #   # Exact set of A2A agents this key may call ([] allows none; omit to leave grants alone)
+      #   agent_grants:
+      #     - agent_name: "research-agent"
     modelConfigs: []
       # - id: "model-config-1"
       #   model_name: "gpt-4o"       # model name, or "*" for all models
