@@ -182,8 +182,8 @@ DecisionAnswer:
       description: The question's type, or `refusal` when the model declined to answer
       example: choice
     name:
-      type: string
-      description: The question's name, when it had one
+      type: [string, 'null']
+      description: The question's name, when it had one. OpenAI sends null for an unnamed question
     probability:
       type: number
       description: Predicate answers. Probability in [0,1] that the condition is true

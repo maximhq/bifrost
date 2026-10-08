@@ -217969,6 +217969,497 @@
       ]
     },
     {
+      "name": "186. OpenAI-compatible /openai/v1/decisions (openai-compat-decisions)",
+      "description": "Pins the OpenAI SDK route /openai/v1/decisions (PR #8192): the OpenAI request body reaches every decision model. Every model, gpt-6-luna (a bare name defaults to openai), a Typesafe Jev model and a chat model alike, is answered in OpenAI's response shape rendered from the normalized response (ordered answers, name null for an unnamed question, input/output token usage, and Bifrost's extra_fields as on the other OpenAI routes). The route takes exactly OpenAI's request: Typesafe's criteria and a stray state are rejected by name rather than translated or forwarded. When OpenAI answers with raw responses on (as the harness config sets), its own body is relayed instead, as on the chat route. Fallbacks apply, and the map form and a missing input are rejected.",
+      "item": [
+        {
+          "name": "/openai/v1/decisions - every question type in the OpenAI shape - gpt-6-luna",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('OpenAI decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('one typed answer per question, in question order', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(6);",
+                  "    var a = body.answers;",
+                  "    ['is_frustrated', 'wants_refund', 'category', 'escalate', 'urgency'].forEach(function (name, i) {",
+                  "        pm.expect(a[i].name, 'answer ' + i).to.eql(name);",
+                  "    });",
+                  "    pm.expect(a[0].type).to.eql('predicate');",
+                  "    pm.expect(a[0].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[1].type).to.eql('predicate');",
+                  "    pm.expect(a[1].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[2].type).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(a[2].choice);",
+                  "    pm.expect(a[3].type).to.eql('choice');",
+                  "    pm.expect([true, false]).to.include(a[3].choice);",
+                  "    pm.expect(a[4].type).to.eql('score');",
+                  "    pm.expect(a[4].score).to.be.within(0, 2);",
+                  "    pm.expect(a[5].type).to.eql('predicate');",
+                  "    pm.expect(a[5].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[5], 'unnamed answer has name null, as OpenAI sends it: ' + JSON.stringify(a[5])).to.have.property('name', null);",
+                  "});",
+                  "pm.test('OpenAI-compatible envelope, with Bifrost extra fields as on the other OpenAI routes', function () {",
+                  "    pm.expect(body.extra_fields, 'body: ' + pm.response.text()).to.be.an('object').that.has.property('provider');",
+                  "    pm.expect(body.model).to.be.a('string');",
+                  "    pm.expect(body.usage.input_tokens, 'usage: ' + JSON.stringify(body.usage)).to.be.a('number');",
+                  "    pm.expect(body.usage).to.not.have.property('prompt_tokens');",
+                  "    pm.expect(body.usage.input_tokens).to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-6-luna\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Does the customer want a refund (asks for money back)?\"\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges and refunds\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\"\n        }\n      ]\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"escalate\",\n      \"instructions\": \"Should this be escalated to a manager?\",\n      \"choices\": [\n        {\n          \"value\": true,\n          \"description\": \"yes\"\n        },\n        {\n          \"value\": false,\n          \"description\": \"no\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"levels\": [\n        {\n          \"label\": \"low\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"medium\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"high\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    },\n    {\n      \"type\": \"predicate\",\n      \"instructions\": \"Is the message written in English?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/openai/v1/decisions - Typesafe answers in the OpenAI shape - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Jev decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('one typed answer per question, in question order', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(6);",
+                  "    var a = body.answers;",
+                  "    ['is_frustrated', 'wants_refund', 'category', 'escalate', 'urgency'].forEach(function (name, i) {",
+                  "        pm.expect(a[i].name, 'answer ' + i).to.eql(name);",
+                  "    });",
+                  "    pm.expect(a[0].type).to.eql('predicate');",
+                  "    pm.expect(a[0].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[1].type).to.eql('predicate');",
+                  "    pm.expect(a[1].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[2].type).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(a[2].choice);",
+                  "    pm.expect(a[3].type).to.eql('choice');",
+                  "    pm.expect([true, false]).to.include(a[3].choice);",
+                  "    pm.expect(a[4].type).to.eql('score');",
+                  "    pm.expect(a[4].score).to.be.within(0, 2);",
+                  "    pm.expect(a[5].type).to.eql('predicate');",
+                  "    pm.expect(a[5].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[5], 'unnamed answer has name null, as OpenAI sends it: ' + JSON.stringify(a[5])).to.have.property('name', null);",
+                  "});",
+                  "pm.test('OpenAI-compatible envelope, with Bifrost extra fields as on the other OpenAI routes', function () {",
+                  "    pm.expect(body.extra_fields, 'body: ' + pm.response.text()).to.be.an('object').that.has.property('provider');",
+                  "    pm.expect(body.extra_fields.raw_response, 'raw responses are on in the harness config, so the Typesafe body comes back: ' + pm.response.text()).to.exist;",
+                  "    pm.expect(body.model).to.be.a('string');",
+                  "    pm.expect(body.usage.input_tokens, 'usage: ' + JSON.stringify(body.usage)).to.be.a('number');",
+                  "    pm.expect(body.usage).to.not.have.property('prompt_tokens');",
+                  "    pm.expect(body.usage.input_tokens).to.be.above(0);",
+                  "});",
+                  "pm.test('no id key, as in the OpenAI Decision object', function () {",
+                  "    pm.expect(body, 'body: ' + pm.response.text()).to.not.have.property('id');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Does the customer want a refund (asks for money back)?\"\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges and refunds\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\"\n        }\n      ]\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"escalate\",\n      \"instructions\": \"Should this be escalated to a manager?\",\n      \"choices\": [\n        {\n          \"value\": true,\n          \"description\": \"yes\"\n        },\n        {\n          \"value\": false,\n          \"description\": \"no\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"levels\": [\n        {\n          \"label\": \"low\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"medium\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"high\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    },\n    {\n      \"type\": \"predicate\",\n      \"instructions\": \"Is the message written in English?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/openai/v1/decisions - chat emulation in the OpenAI shape - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('emulated decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('one typed answer per question, in question order', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(6);",
+                  "    var a = body.answers;",
+                  "    ['is_frustrated', 'wants_refund', 'category', 'escalate', 'urgency'].forEach(function (name, i) {",
+                  "        pm.expect(a[i].name, 'answer ' + i).to.eql(name);",
+                  "    });",
+                  "    pm.expect(a[0].type).to.eql('predicate');",
+                  "    pm.expect(a[0].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[1].type).to.eql('predicate');",
+                  "    pm.expect(a[1].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[2].type).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(a[2].choice);",
+                  "    pm.expect(a[3].type).to.eql('choice');",
+                  "    pm.expect([true, false]).to.include(a[3].choice);",
+                  "    pm.expect(a[4].type).to.eql('score');",
+                  "    pm.expect(a[4].score).to.be.within(0, 2);",
+                  "    pm.expect(a[5].type).to.eql('predicate');",
+                  "    pm.expect(a[5].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[5], 'unnamed answer has name null, as OpenAI sends it: ' + JSON.stringify(a[5])).to.have.property('name', null);",
+                  "});",
+                  "pm.test('OpenAI-compatible envelope, with Bifrost extra fields as on the other OpenAI routes', function () {",
+                  "    pm.expect(body.extra_fields, 'body: ' + pm.response.text()).to.be.an('object').that.has.property('provider');",
+                  "    pm.expect(body.model).to.be.a('string');",
+                  "    pm.expect(body.usage.input_tokens, 'usage: ' + JSON.stringify(body.usage)).to.be.a('number');",
+                  "    pm.expect(body.usage).to.not.have.property('prompt_tokens');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\"\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Does the customer want a refund (asks for money back)?\"\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges and refunds\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\"\n        }\n      ]\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"escalate\",\n      \"instructions\": \"Should this be escalated to a manager?\",\n      \"choices\": [\n        {\n          \"value\": true,\n          \"description\": \"yes\"\n        },\n        {\n          \"value\": false,\n          \"description\": \"no\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"levels\": [\n        {\n          \"label\": \"low\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"medium\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"high\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    },\n    {\n      \"type\": \"predicate\",\n      \"instructions\": \"Is the message written in English?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/openai/v1/decisions - failed Typesafe model falls back to openai/gpt-6-luna - typesafe/jev-does-not-exist",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the fallback answers', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].name).to.eql('is_frustrated');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});",
+                  "pm.test('OpenAI answered with raw responses on (the harness config), so its own body is relayed as on the chat route', function () {",
+                  "    pm.expect(body, 'body: ' + pm.response.text()).to.not.have.property('extra_fields');",
+                  "    pm.expect(body.model).to.be.a('string');",
+                  "    pm.expect(body.usage.input_tokens, 'usage: ' + JSON.stringify(body.usage)).to.be.a('number');",
+                  "    pm.expect(body.usage).to.not.have.property('prompt_tokens');",
+                  "    pm.expect(body.usage.input_tokens).to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-does-not-exist\",\n  \"fallbacks\": [\n    \"openai/gpt-6-luna\"\n  ],\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] /openai/v1/decisions - deprecated map form rejected - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the map form is not accepted on the OpenAI route', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges and refunds\",\n        \"bug\": \"product defects\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered soon\",\n        \"needs a reply today\"\n      ]\n    }\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] /openai/v1/decisions - missing input rejected - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('a request without input is rejected', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/openai/decisions - the alias without /v1 answers in the OpenAI shape - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('alias decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered in the OpenAI shape', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].name).to.eql('is_frustrated');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "    pm.expect(body.extra_fields, 'body: ' + pm.response.text()).to.be.an('object').that.has.property('provider');",
+                  "    pm.expect(body).to.not.have.property('id');",
+                  "    pm.expect(body.usage.input_tokens).to.be.a('number');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] /openai/v1/decisions - Typesafe criteria rejected - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('a field OpenAI does not define is rejected by name', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "    pm.expect(pm.response.text()).to.include('criteria');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Does the customer want a refund?\",\n      \"criteria\": {\n        \"true\": \"asks for money back\"\n      }\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] /openai/v1/decisions - state next to input rejected - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('a stray state is rejected, never sent to Typesafe as its state', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "    pm.expect(pm.response.text()).to.include('state is not part of');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"state\": \"A stale state that must not be sent.\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
       "name": "182. GenAI embedding params reach non-Gemini providers (genai-embedding-params)",
       "description": "GenAI :embedContent / :batchEmbedContents converters put taskType / title / outputDimensionality on each input item. Providers with one parameter block per request (openai, vertex, bedrock, cohere) reject per-item params with a 400 (\"applies one set of parameters to the whole request\"). google-genai always uses batchEmbedContents and repeats the same params on every entry, so identical entry params must be hoisted to request level. Entries with differing params stay per item (Gemini honours them) and non-Gemini targets reject them with a 400. Cases send outputDimensionality: 8 and assert 8-dim vectors come back.",
       "item": [

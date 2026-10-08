@@ -135,7 +135,7 @@ Add `fallbacks` to any request above; a model that fails, or rejects an input it
 
 ## Validation
 
-Requests are validated before dispatch and rejected with a `400` rather than silently approximated: unsupported question types, a choice question without choices, score levels outside what the model accepts, and repeated question names. A detail one model cannot read (an image or audio part for a TypeSafe model) fails only that attempt.
+Requests are validated before dispatch and rejected with a `400` rather than silently approximated: unsupported question types, a choice question without choices, score levels outside what the model accepts, and repeated question names. A detail one model cannot read (an image or audio part for a TypeSafe model) fails only that attempt, so a configured fallback can serve the request; if every fallback fails too, the response carries the first attempt's error.
 
 ## Map Form (Deprecated)
 
@@ -175,6 +175,10 @@ The response keys answers by question name, each with a `kind` and a `value`:
 ```
 
 A body that does not read as the request above is read as the map form: its `questions` are an object keyed by name rather than a list. A `state` sent alongside `input` is ignored.
+
+<Note>
+OpenAI SDKs can send their own Decisions request to `POST /openai/v1/decisions` (see [OpenAI SDK](/integrations/openai-sdk/overview#decisions-api)). The body is the request above, and every decision model can answer it within the inputs it reads: TypeSafe-based and chat models read text only and reject image parts with a `400`, which a configured fallback can serve.
+</Note>
 
 <Note>
 TypeSafe's native API is also available 1:1 at `POST /typesafe/v1/systemone` - see the [TypeSafe provider page](/providers/supported-providers/typesafe) for the mapping between the two.

@@ -678,6 +678,8 @@ A request whose `input` is `null` is rejected with a `400` for the OpenAI attemp
 
 Input messages are sent unchanged, including `input_image` parts with their `detail`: OpenAI's decision models read images, unlike TypeSafe-based models. A part of any other type is rejected with a `400`.
 
+OpenAI SDKs can call the same endpoint through Bifrost at `/openai/v1/decisions`, which takes OpenAI's request: a top-level `state`, and a field a question, choice, or level does not define (such as `criteria`), are rejected with a `400`, while other top-level fields a newer SDK sends are forwarded unchanged. See [OpenAI SDK](/integrations/openai-sdk/overview#decisions-api).
+
 **Endpoint**: `POST /v1/decisions`
 
 ---
