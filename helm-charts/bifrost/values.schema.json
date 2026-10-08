@@ -512,6 +512,11 @@
                 "azureDeepseek": {
                   "type": "boolean",
                   "description": "Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses."
+                },
+                "forceReasoningOnlyModelsToResponses": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Convert chat completion requests to responses for models whose datasheet sets supports_reasoning_with_tool_calls to false, so reasoning is kept instead of being forced off."
                 }
               },
               "additionalProperties": false
@@ -618,6 +623,11 @@
               "description": "When true, deleted virtual keys are omitted from logs and MCP logs filter data.",
               "default": false
             },
+            "deleteExpiredVirtualKeys": {
+              "type": "boolean",
+              "description": "Delete expired virtual keys automatically. A daily cleanup job removes every key whose expiry has passed unless the key sets delete_after_expire to false; keys with delete_after_expire true are removed regardless. Maps to client.delete_expired_virtual_keys.",
+              "default": false
+            },
             "mcpDisableAutoToolInject": {
               "type": "boolean",
               "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use bifrost.mcp.toolManagerConfig.disableAutoToolInject.",
@@ -681,6 +691,14 @@
                 "disableVkIdentity": {
                   "type": "boolean",
                   "description": "When true, the OAuth consent flow no longer offers or accepts virtual-key identity. Honored only when an identity provider is configured. Only valid when mcpServerAuthMode is 'oauth'."
+                },
+                "allowedRedirectUris": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries; other remote callbacks are denied by default. Maps to client.oauth2_server_config.allowed_redirect_uris."
                 }
               },
               "additionalProperties": false
@@ -1153,6 +1171,10 @@
                     },
                     "exclude_system_prompt": {
                       "type": "boolean"
+                    },
+                    "cache_tool_call_responses": {
+                      "type": "boolean",
+                      "description": "Persist responses that carry tool calls. Off by default: a replayed tool call runs in a later caller's agent loop with arguments chosen for someone else's prompt."
                     },
                     "vector_store_namespace": {
                       "type": "string"
@@ -2136,11 +2158,23 @@
                     "format": "date-time",
                     "description": "Optional expiry timestamp (RFC3339). Once passed, requests using this virtual key are rejected. Omit for a key that never expires."
                   },
+                  "delete_after_expire": {
+                    "type": "boolean",
+                    "description": "Delete this virtual key automatically once expires_at has passed. Omit to follow client.deleteExpiredVirtualKeys; true or false override it for this key. Requires expires_at."
+                  },
+                  "disable_content_logging": {
+                    "type": "boolean",
+                    "description": "Per-key override of client.disableContentLogging for requests made with this virtual key. Omit to inherit the client setting."
+                  },
                   "team_id": {
                     "type": "string"
                   },
                   "customer_id": {
                     "type": "string"
+                  },
+                  "business_unit_id": {
+                    "type": "string",
+                    "description": "Associated business unit ID (mutually exclusive with team_id and customer_id)"
                   },
                   "access_profile_id": {
                     "type": "integer",
@@ -2183,7 +2217,13 @@
                     }
                   }
                 },
-                "required": ["id", "name"]
+                "required": ["id", "name"],
+                "dependentRequired": {"delete_after_expire": ["expires_at"]},
+                "allOf": [
+                  {"$comment": "A virtual key belongs to at most one owner: team_id and customer_id cannot both name one.", "not": {"allOf": [{"required": ["team_id"], "properties": {"team_id": {"pattern": "\\S"}}}, {"required": ["customer_id"], "properties": {"customer_id": {"pattern": "\\S"}}}]}},
+                  {"$comment": "A virtual key belongs to at most one owner: team_id and business_unit_id cannot both name one.", "not": {"allOf": [{"required": ["team_id"], "properties": {"team_id": {"pattern": "\\S"}}}, {"required": ["business_unit_id"], "properties": {"business_unit_id": {"pattern": "\\S"}}}]}},
+                  {"$comment": "A virtual key belongs to at most one owner: customer_id and business_unit_id cannot both name one.", "not": {"allOf": [{"required": ["customer_id"], "properties": {"customer_id": {"pattern": "\\S"}}}, {"required": ["business_unit_id"], "properties": {"business_unit_id": {"pattern": "\\S"}}}]}}
+                ]
               }
             },
             "projects": {
@@ -2252,8 +2292,36 @@
                   },
                   "fallbacks": {
                     "type": "array",
+                    "description": "Fallback chain. Each entry is a 'provider/model' string ('provider/' keeps the incoming model), or an object that additionally pins a provider key.",
                     "items": {
-                      "type": "string"
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "provider": {
+                              "type": "string",
+                              "minLength": 1,
+                              "description": "Fallback provider name (e.g., 'openai', 'azure')"
+                            },
+                            "model": {
+                              "type": "string",
+                              "minLength": 1,
+                              "description": "Fallback model name. Omit to use the incoming request model"
+                            },
+                            "provider_key_name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "description": "Optional provider key name to pin for this fallback. Resolved to the internal provider key ID at config load time."
+                            }
+                          },
+                          "required": ["provider"],
+                          "additionalProperties": false
+                        }
+                      ]
                     }
                   },
                   "scope": {
@@ -3672,6 +3740,10 @@
                         "type": "array",
                         "description": "Additional OAuth2 scopes to request",
                         "items": { "type": "string" }
+                      },
+                      "displayName": {
+                        "type": "string",
+                        "description": "Label for the login button (\"Sign in with <displayName>\"). Defaults to \"SSO\"."
                       },
                       "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
                       "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
@@ -5193,6 +5265,16 @@
               "description": "How long an idle physical connection is kept before being closed (default 5m). Without this the idle cap alone controls pool size, so bursts above maxIdleConns close and reopen connections. The config store and logs store open separate pools.",
               "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
             },
+            "statementTimeout": {
+              "type": "string",
+              "description": "Server-side statement_timeout set on every runtime pool connection (Go duration string, default 120s). Bounds a runaway query so it cannot hold a pooled connection and its locks indefinitely. \"0\" or a negative value leaves the server default. Only applies when the store is postgres.",
+              "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+            },
+            "idleInTransactionSessionTimeout": {
+              "type": "string",
+              "description": "Server-side idle_in_transaction_session_timeout set on every runtime pool connection (Go duration string, default 120s). Ends a session left idle inside an open transaction, which would otherwise hold row locks and block vacuum. \"0\" or a negative value leaves the server default. Only applies when the store is postgres.",
+              "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+            },
             "vaultStore": {
               "type": "object",
               "description": "Vault store for external secret management",
@@ -5279,6 +5361,16 @@
               "type": "string",
               "description": "How long an idle physical connection is kept before being closed (default 5m). Without this the idle cap alone controls pool size, so bursts above maxIdleConns close and reopen connections. The config store and logs store open separate pools.",
               "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+            },
+            "statementTimeout": {
+              "type": "string",
+              "description": "Server-side statement_timeout set on every runtime pool connection (Go duration string, default 120s). Bounds a runaway query so it cannot hold a pooled connection and its locks indefinitely. \"0\" or a negative value leaves the server default. Only applies when the store is postgres.",
+              "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+            },
+            "idleInTransactionSessionTimeout": {
+              "type": "string",
+              "description": "Server-side idle_in_transaction_session_timeout set on every runtime pool connection (Go duration string, default 120s). Ends a session left idle inside an open transaction, which would otherwise hold row locks and block vacuum. \"0\" or a negative value leaves the server default. Only applies when the store is postgres.",
+              "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
             },
             "postgres": {
               "type": "object",
@@ -5484,6 +5576,7 @@
             },
             "objectStorageExcludeRequestTypes": {
               "type": "array",
+              "description": "Request types (log object type, e.g. list_models, embedding) whose logs are not offloaded to object storage and are written to the logs database in full instead. Hidden logs are still offloaded. Maps to logs_store.object_storage_exclude_request_types.",
               "items": {
                 "type": "string"
               }
@@ -7549,6 +7642,11 @@
           "type": "integer",
           "minimum": 0,
           "description": "Per-client override for the forwarded instruction byte cap. Overrides the global mcp.toolManagerConfig.maxInstructionsPerClient for this server only; the aggregate is still bounded by maxInstructionsTotal. Omit or set to 0 to use the global default."
+        },
+        "requirePublicTarget": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require every connection to this MCP server (initial, reconnect, per-call) to resolve to a public address. Server-managed: set to true when the client was registered over the management API with no admin credential check, and once stored as true it is never cleared by the API or by config.json reconciliation; declaring true here is honored."
         },
         "isPingAvailable": {
           "type": "boolean",
