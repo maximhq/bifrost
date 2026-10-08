@@ -569,8 +569,7 @@ type ResponsesParameters struct {
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
 
-	// BedrockOutputConfig carries native Converse outputConfig.
-	BedrockOutputConfig json.RawMessage `json:"-"`
+	BedrockOutputConfig json.RawMessage `json:"-"` // Native Converse outputConfig carrier.
 }
 
 type ResponsesStreamOptions struct {
