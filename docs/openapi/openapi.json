@@ -125671,6 +125671,9 @@
                 "enum": [
                   "upstream_error",
                   "access_denied",
+                  "budget_exceeded",
+                  "rate_limited",
+                  "model_blocked",
                   "max_iterations",
                   "timeout",
                   "cancelled"

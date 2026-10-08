@@ -142,12 +142,40 @@ describe("errorMessage", () => {
 		expect(isEncodedTurnError(encodeTurnError("access_denied", "refused"))).toBe(true);
 	});
 
+	it("headlines a spent budget as a budget, not as missing access", () => {
+		const detail = warpErrorDetail("budget_exceeded", "user budget exceeded: 0.0600 >= 0.0500 dollars");
+		expect(detail.summary).toContain("budget");
+		expect(detail.summary).not.toContain("access");
+		expect(detail.cause).not.toContain("access profile");
+		expect(detail.raw).toBe("user budget exceeded: 0.0600 >= 0.0500 dollars");
+		expect(isEncodedTurnError(encodeTurnError("budget_exceeded", "refused"))).toBe(true);
+	});
+
+	it("headlines rate limits and blocked models as what they are", () => {
+		expect(warpErrorDetail("rate_limited", "").summary).toContain("rate limit");
+		expect(warpErrorDetail("model_blocked", "").summary).toContain("isn't allowed");
+		for (const code of ["rate_limited", "model_blocked"]) {
+			expect(warpErrorDetail(code, "").summary, code).not.toContain("access");
+			expect(isEncodedTurnError(encodeTurnError(code, "refused")), code).toBe(true);
+		}
+	});
+
 	it("keeps the raw server message", () => {
 		expect(warpErrorDetail("upstream_error", "provider exploded").raw).toBe("provider exploded");
 	});
 
 	it("has guidance for every code it recognises", () => {
-		for (const code of ["not_configured", "max_iterations", "timeout", "upstream_error", "access_denied", "tool_error"]) {
+		for (const code of [
+			"not_configured",
+			"max_iterations",
+			"timeout",
+			"upstream_error",
+			"access_denied",
+			"budget_exceeded",
+			"rate_limited",
+			"model_blocked",
+			"tool_error",
+		]) {
 			const detail = warpErrorDetail(code, "");
 			expect(detail.summary, code).not.toBe("");
 			expect(detail.cause, code).not.toBe("");

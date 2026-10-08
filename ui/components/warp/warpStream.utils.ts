@@ -375,7 +375,42 @@ export function warpErrorDetail(code: string | undefined, message: string | unde
 					"This deployment's governance rules refused the request before it reached the provider. Warp's model calls count as yours, so they need the same access any of your requests would.",
 				suggestions: [
 					"Ask an administrator to give your account model access, such as an access profile that allows Warp's model.",
-					"If you do have access, the details below say which budget, rate limit or rule refused it.",
+					"If you do have access, the details below say which rule refused it.",
+				],
+				raw,
+			};
+		case "budget_exceeded":
+			return {
+				summary: "You've used up your budget.",
+				cause:
+					"A budget that covers your account is spent for this cycle, so governance refused Warp's model call. Warp's model calls count as yours, so they spend the same budget as any of your requests.",
+				suggestions: [
+					"Wait for the budget to reset at the start of the next cycle.",
+					"Ask an administrator to raise the limit if you need more this cycle.",
+					"The details below say which budget refused it.",
+				],
+				raw,
+			};
+		case "rate_limited":
+			return {
+				summary: "You've hit a rate limit.",
+				cause:
+					"Your account sent more requests or tokens than a rate limit allows in its window, so governance refused Warp's model call. Warp's model calls count as yours, so they share the same limits.",
+				suggestions: [
+					"Wait a moment and ask again.",
+					"Ask an administrator to raise the limit if it keeps happening.",
+					"The details below say which limit refused it.",
+				],
+				raw,
+			};
+		case "model_blocked":
+			return {
+				summary: "Warp's model isn't allowed for your account.",
+				cause:
+					"This deployment's governance rules block the model or provider Warp is set to use for your account, so the request was refused before it reached the provider.",
+				suggestions: [
+					"Ask an administrator to allow Warp's model for your account.",
+					"Or set Warp to a model your account is allowed to use in Warp settings.",
 				],
 				raw,
 			};
@@ -406,6 +441,9 @@ const WARP_ERROR_CODES = new Set([
 	"not_configured",
 	"upstream_error",
 	"access_denied",
+	"budget_exceeded",
+	"rate_limited",
+	"model_blocked",
 	"tool_error",
 	"max_iterations",
 	"timeout",
