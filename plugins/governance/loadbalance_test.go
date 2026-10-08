@@ -414,6 +414,58 @@ func TestCandidateExclusionConsultsProviderScopedModelConfigs(t *testing.T) {
 		"the spent budget covering every provider excludes no candidate; that refusal is the funnel's to state")
 }
 
+// TestCandidateExclusionConsultsTheVirtualKeysProviderLimits pins that load balancing routes around a
+// provider whose own limits on the virtual key are spent, whether that is its provider-config budget,
+// its request limit or its token limit, while the provider beside it, with room left, stays a
+// candidate. Exceeding either kind of rate limit excludes the provider; neither stands in for the other.
+func TestCandidateExclusionConsultsTheVirtualKeysProviderLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		want    Decision
+		wantErr string
+		spend   func(pc *configstoreTables.TableVirtualKeyProviderConfig) ([]configstoreTables.TableBudget, []configstoreTables.TableRateLimit)
+	}{
+		{"a spent provider-config budget", DecisionBudgetExceeded, "budget exceeded", func(pc *configstoreTables.TableVirtualKeyProviderConfig) ([]configstoreTables.TableBudget, []configstoreTables.TableRateLimit) {
+			budget := buildBudgetWithUsage("openai-budget", 1.0, 2.0, "1h")
+			pc.Budgets = []configstoreTables.TableBudget{*budget}
+			return pc.Budgets, nil
+		}},
+		{"a spent request limit with tokens to spare", DecisionRequestLimited, "request limit exceeded", func(pc *configstoreTables.TableVirtualKeyProviderConfig) ([]configstoreTables.TableBudget, []configstoreTables.TableRateLimit) {
+			rateLimit := buildRateLimitWithUsage("openai-rate-limit", 1_000_000, 0, 1, 1)
+			pc.RateLimitID, pc.RateLimit = &rateLimit.ID, rateLimit
+			return nil, []configstoreTables.TableRateLimit{*rateLimit}
+		}},
+		{"a spent token limit with requests to spare", DecisionTokenLimited, "token limit exceeded", func(pc *configstoreTables.TableVirtualKeyProviderConfig) ([]configstoreTables.TableBudget, []configstoreTables.TableRateLimit) {
+			rateLimit := buildRateLimitWithUsage("openai-rate-limit", 10, 10, 1_000_000, 0)
+			pc.RateLimitID, pc.RateLimit = &rateLimit.ID, rateLimit
+			return nil, []configstoreTables.TableRateLimit{*rateLimit}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spent := buildProviderConfig("openai", []string{"*"})
+			budgets, rateLimits := tc.spend(&spent)
+			vk := buildVirtualKeyWithProviders("vk-1", "sk-bf-lb", "LB Key", []configstoreTables.TableVirtualKeyProviderConfig{spent, buildProviderConfig("azure", []string{"*"})})
+			store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{
+				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+				Budgets:     budgets,
+				RateLimits:  rateLimits,
+			}, nil, nil)
+			require.NoError(t, err)
+			access := grant.NewAccess([]schemas.Permit{permitWithProviders(grant.PermitVirtualKey, vk.ID, vk.Name, "openai", "azure")}, nil, "", nil)
+
+			decision, exclusionErr := store.CheckProviderCandidateExclusion(emptyCtx(), access, schemas.ProviderCandidate{Provider: "openai"}, "gpt-4o")
+			// openai's own limit on the key is spent, so it is no candidate, for that limit and no other reason.
+			assert.Equal(t, tc.want, decision, "err=%v", exclusionErr)
+			require.Error(t, exclusionErr)
+			assert.Contains(t, exclusionErr.Error(), tc.wantErr)
+
+			decision, exclusionErr = store.CheckProviderCandidateExclusion(emptyCtx(), access, schemas.ProviderCandidate{Provider: "azure"}, "gpt-4o")
+			require.NoError(t, exclusionErr)
+			assert.Equal(t, DecisionAllow, decision, "azure has room left on the key and stays a candidate")
+		})
+	}
+}
+
 // TestProviderScopedModelLimitsInScopeNarrowsANamedScopeToTheProvider: the named-scope lookup is
 // ProviderScopedModelLimits for a scope no permit stands for. It reports the tiers that name the
 // provider, exact pair and all models on it, attributed to the kind it was handed, and leaves the
