@@ -45,6 +45,11 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 	if req == nil || len(req.Questions) == 0 {
 		return nil, providerUtils.NewBifrostBadRequestError("decision request requires at least one question")
 	}
+	// The state reaches the model as text, so an image in it would be read as
+	// its encoding; refusing beats a silent text-only answer.
+	if schemas.DecisionStateHasImage(req.State) {
+		return nil, providerUtils.NewBifrostBadRequestError("decision emulation cannot read an image in the state; route the request to a provider that accepts image input")
+	}
 	// Extensions the caller asked to reach the wire (e.g. images) have no
 	// meaning to an emulating chat model; refusing beats a silent text-only
 	// answer.

@@ -664,6 +664,9 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 		}, []schemas.ResponsesMessage{}
 	}
 	if request.DecisionRequest != nil {
+		if messages, ok := request.DecisionRequest.State.([]schemas.DecisionInputMessage); ok {
+			return decisionMessagesLog(messages), []schemas.ResponsesMessage{}
+		}
 		var state string
 		if s, ok := request.DecisionRequest.State.(string); ok {
 			state = s
@@ -729,6 +732,46 @@ func redactEmbeddingMediaData(items []schemas.EmbeddingInputItem) []schemas.Embe
 		stripped[i] = schemas.EmbeddingInputItem{Content: parts, Params: item.Params}
 	}
 	return stripped
+}
+
+// decisionMessagesLog renders a decision state given as messages the way chat
+// requests are logged, so the logs UI shows its text and inline images the
+// same way. A part of a type the schema does not model is kept as its type
+// name, and a message without a role is the user's.
+func decisionMessagesLog(input []schemas.DecisionInputMessage) []schemas.ChatMessage {
+	messages := make([]schemas.ChatMessage, 0, len(input))
+	for _, message := range input {
+		role := schemas.ChatMessageRole(message.Role)
+		if role == "" {
+			role = schemas.ChatMessageRoleUser
+		}
+		if message.Content.Text != nil {
+			messages = append(messages, schemas.ChatMessage{
+				Role:    role,
+				Content: &schemas.ChatMessageContent{ContentStr: message.Content.Text},
+			})
+			continue
+		}
+		blocks := make([]schemas.ChatContentBlock, 0, len(message.Content.Parts))
+		for _, part := range message.Content.Parts {
+			switch {
+			case part.Type == schemas.DecisionInputPartTypeText && part.Text != nil:
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: part.Text})
+			case part.Type == schemas.DecisionInputPartTypeImage && part.ImageURL != nil:
+				blocks = append(blocks, schemas.ChatContentBlock{
+					Type:           schemas.ChatContentBlockTypeImage,
+					ImageURLStruct: &schemas.ChatInputImage{URL: *part.ImageURL},
+				})
+			default:
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("[" + part.Type + "]")})
+			}
+		}
+		messages = append(messages, schemas.ChatMessage{
+			Role:    role,
+			Content: &schemas.ChatMessageContent{ContentBlocks: blocks},
+		})
+	}
+	return messages
 }
 
 // embeddingMediaDataSize totals the inline media bytes across every item.

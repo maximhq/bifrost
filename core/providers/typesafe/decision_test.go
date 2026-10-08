@@ -1678,3 +1678,126 @@ func TestDecisionCloudflareEnvelopeSuccessFalseOn200(t *testing.T) {
 		})
 	}
 }
+
+// TestToTypesafeDecisionRequestFromOrderedRequestFields pins how the fields a
+// request written as an ordered list carries reach Typesafe's map shape: level
+// labels fold into the level descriptions, boolean choices keep their
+// "true"/"false" options, a text-only messages state is sent as structured
+// state, and the order, generated-name marker, and safety identifier stay off
+// the wire.
+func TestToTypesafeDecisionRequestFromOrderedRequestFields(t *testing.T) {
+	first, second := 0, 1
+	state := []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Text: schemas.Ptr("The app crashes on login.")}}}
+	req := &schemas.BifrostDecisionRequest{
+		Provider:         schemas.Typesafe,
+		Model:            "jev-1.13.0",
+		State:            state,
+		SafetyIdentifier: schemas.Ptr("user-1"),
+		Questions: map[string]schemas.DecisionQuestion{
+			"refund": {Kind: schemas.DecisionKindChoice, Instructions: "Refund?", Order: &first, BoolChoices: true,
+				Criteria: map[string]any{"true": "refund now", "false": nil}},
+			"question_2": {Kind: schemas.DecisionKindScore, Instructions: "Rate", Order: &second, Unnamed: true,
+				Criteria: []any{nil, "nothing works"}, LevelLabels: []string{"Cosmetic", "Blocked"}},
+		},
+	}
+
+	native, err := ToTypesafeDecisionRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := native.Questions["question_2"].Criteria; !reflect.DeepEqual(got, any([]any{"Cosmetic", "Blocked: nothing works"})) {
+		t.Errorf("level labels not folded into descriptions: %#v", got)
+	}
+	if got := native.Questions["refund"].Criteria; !reflect.DeepEqual(got, any(map[string]any{"true": "refund now", "false": nil})) {
+		t.Errorf("boolean choice options changed: %#v", got)
+	}
+
+	body, err := sonic.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !reflect.DeepEqual(wire["state"], any([]any{map[string]any{"role": "user", "content": "The app crashes on login."}})) {
+		t.Errorf("messages state not sent as structured state: %v", wire["state"])
+	}
+	for _, key := range []string{"safety_identifier", "order", "level_labels", "bool_choices"} {
+		if strings.Contains(string(body), key) {
+			t.Errorf("%q must not reach Typesafe: %s", key, body)
+		}
+	}
+}
+
+// TestToTypesafeDecisionRequestRejectsImageState pins that an image in a
+// state given as messages is a 400 for the Typesafe attempt, so a fallback
+// that reads images can serve it.
+func TestToTypesafeDecisionRequestRejectsImageState(t *testing.T) {
+	req := decisionRequest([]schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+		{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,AAAA")},
+	}}}}, map[string]schemas.DecisionQuestion{"damaged": {Kind: schemas.DecisionKindNoul, Instructions: "Damaged?"}})
+	if _, err := ToTypesafeDecisionRequest(req); err == nil || !strings.Contains(err.Error(), "image") {
+		t.Fatalf("expected image rejection, got %v", err)
+	}
+}
+
+// TestToBifrostDecisionResponseBoolChoices pins that a BoolChoices question
+// is answered with a boolean, while other choices keep their option string.
+func TestToBifrostDecisionResponseBoolChoices(t *testing.T) {
+	req := decisionRequest("state", map[string]schemas.DecisionQuestion{
+		"refund": {Kind: schemas.DecisionKindChoice, BoolChoices: true, Criteria: map[string]any{"true": nil, "false": nil}},
+		"lang":   {Kind: schemas.DecisionKindChoice, Criteria: map[string]any{"true": nil, "false": nil}},
+	})
+	no := "false"
+	resp, bifrostErr := ToBifrostDecisionResponse(&TypesafeDecisionResponse{
+		Model: "jev-1.13.0",
+		Answers: map[string]TypesafeAnswer{
+			"refund": {Type: TypesafeQuestionTypeChoice, Choice: &no, Probabilities: map[string]float64{"true": 0.3, "false": 0.7}},
+			"lang":   {Type: TypesafeQuestionTypeChoice, Choice: &no},
+		},
+	}, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	if got := resp.Answers["refund"]; got.Value != false || got.Probabilities["false"] != 0.7 {
+		t.Errorf("boolean choice answer = %+v", got)
+	}
+	if got := resp.Answers["lang"].Value; got != "false" {
+		t.Errorf("string choice answer = %#v, want the option string", got)
+	}
+}
+
+// TestToTypesafeNativeDecisionResponseOtherProviderAnswers pins how the
+// /v1/systemone route renders answers only another provider produces: a
+// boolean choice as its option, a refusal as its type with no value, and an
+// unrecognized answer verbatim. The payloads are synthetic.
+func TestToTypesafeNativeDecisionResponseOtherProviderAnswers(t *testing.T) {
+	native, err := ToTypesafeNativeDecisionResponse(&schemas.BifrostDecisionResponse{
+		Model: "gpt-6-luna",
+		Answers: map[string]schemas.DecisionAnswer{
+			"refund":   {Kind: schemas.DecisionKindChoice, Value: true},
+			"declined": {Kind: schemas.DecisionKindRefusal},
+			"future":   schemas.NewUnrecognizedDecisionAnswer("ranking", json.RawMessage(`{"type":"ranking","name":"future","order":["a"]}`)),
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	body, err := sonic.Marshal(native.Answers)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var answers map[string]any
+	if err := json.Unmarshal(body, &answers); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := map[string]any{
+		"refund":   map[string]any{"type": "choice", "choice": "true"},
+		"declined": map[string]any{"type": "refusal"},
+		"future":   map[string]any{"type": "ranking", "name": "future", "order": []any{"a"}},
+	}
+	if !reflect.DeepEqual(answers, want) {
+		t.Errorf("answers:\n got %v\nwant %v", answers, want)
+	}
+}

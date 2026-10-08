@@ -97,6 +97,18 @@ type TypesafeAnswer struct {
 	Abstention          *string         `json:"abstention,omitempty"`
 	AbstentionThreshold *float64        `json:"abstention_threshold,omitempty"`
 	LowConfidence       *bool           `json:"low_confidence,omitempty"`
+
+	raw json.RawMessage // verbatim answer from another provider that this shape cannot express
+}
+
+// MarshalJSON re-emits an answer this shape cannot express verbatim and
+// otherwise marshals the typed fields.
+func (a TypesafeAnswer) MarshalJSON() ([]byte, error) {
+	if a.raw != nil {
+		return a.raw, nil
+	}
+	type alias TypesafeAnswer
+	return sonic.Marshal(alias(a))
 }
 
 // TypesafeUsage reports token consumption. Typesafe bills input tokens only.

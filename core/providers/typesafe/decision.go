@@ -3,6 +3,7 @@ package typesafe
 import (
 	"fmt"
 	"reflect"
+	"strconv"
 
 	"github.com/tidwall/gjson"
 
@@ -51,12 +52,18 @@ func validStructuredValue(value interface{}) bool {
 
 // ToTypesafeDecisionRequest converts a Bifrost decision request into
 // Typesafe's native systemone shape. Unsupported kinds and malformed criteria
-// are rejected rather than silently approximated. Validation is never
-// stricter than the official SDKs' types: null state, null or absent
-// instructions, and null descriptions are forwarded for the endpoint to judge.
+// are rejected rather than silently approximated, and so is an image in a
+// state given as messages, which Typesafe would read as text. Level labels are
+// folded into the level descriptions, since the native shape has none.
+// Validation is never stricter than the official SDKs' types: null state, null
+// or absent instructions, and null descriptions are forwarded for the endpoint
+// to judge.
 func ToTypesafeDecisionRequest(request *schemas.BifrostDecisionRequest) (*TypesafeDecisionRequest, error) {
 	if len(request.Questions) == 0 {
 		return nil, providerUtils.InvalidRequestErrorf("decision request requires at least one question")
+	}
+	if schemas.DecisionStateHasImage(request.State) {
+		return nil, providerUtils.InvalidRequestErrorf("state carries an image, which Typesafe cannot read; route the request to a provider that accepts image input")
 	}
 	if !isJSONNull(request.State) && !validStructuredValue(request.State) {
 		return nil, providerUtils.InvalidRequestErrorf("state must be a string, object, or array")
@@ -109,7 +116,7 @@ func toTypesafeQuestion(name string, question schemas.DecisionQuestion) (*Typesa
 		}
 		native.Criteria = criteria
 	case schemas.DecisionKindScore:
-		criteria, err := scoreCriteria(name, question.Criteria)
+		criteria, err := scoreCriteria(name, question.LabelledCriteria())
 		if err != nil {
 			return nil, err
 		}
@@ -293,7 +300,7 @@ func ToBifrostDecisionResponse(resp *TypesafeDecisionResponse, request *schemas.
 			if native.Choice == nil {
 				return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("typesafe choice answer for question %q carries no value", name), nil)
 			}
-			answer.Value = *native.Choice
+			answer.Value = question.ChoiceValue(*native.Choice)
 		case schemas.DecisionKindScore:
 			if native.Score == nil {
 				return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("typesafe score answer for question %q carries no value", name), nil)
@@ -379,7 +386,9 @@ func (req *TypesafeDecisionRequest) ToBifrostDecisionRequest(ctx *schemas.Bifros
 
 // ToTypesafeNativeDecisionResponse converts a shared decision response back
 // into Typesafe's native model, answers, and usage shape, covering all three
-// answer types.
+// answer types. A refusal from another provider keeps its type with no value,
+// and an unrecognized answer is emitted verbatim under its name, rather than
+// either being dropped or given a value.
 func ToTypesafeNativeDecisionResponse(resp *schemas.BifrostDecisionResponse) (*TypesafeDecisionResponse, error) {
 	if resp == nil {
 		return nil, fmt.Errorf("decision response is nil")
@@ -387,6 +396,14 @@ func ToTypesafeNativeDecisionResponse(resp *schemas.BifrostDecisionResponse) (*T
 
 	answers := make(map[string]TypesafeAnswer, len(resp.Answers))
 	for name, answer := range resp.Answers {
+		if !answer.IsRecognized() {
+			answers[name] = TypesafeAnswer{Type: string(answer.Kind), raw: answer.RawJSON()}
+			continue
+		}
+		if answer.Kind == schemas.DecisionKindRefusal {
+			answers[name] = TypesafeAnswer{Type: string(schemas.DecisionKindRefusal)}
+			continue
+		}
 		native := TypesafeAnswer{
 			Confidence:          answer.Confidence,
 			Probabilities:       answer.Probabilities,
@@ -406,7 +423,11 @@ func ToTypesafeNativeDecisionResponse(resp *schemas.BifrostDecisionResponse) (*T
 			native.Type = TypesafeQuestionTypeNoul
 			native.Noul = &number
 		case schemas.DecisionKindChoice:
+			// A boolean choice is the option it is keyed by natively.
 			choice, ok := answer.Value.(string)
+			if flag, isBool := answer.Value.(bool); isBool {
+				choice, ok = strconv.FormatBool(flag), true
+			}
 			if !ok {
 				return nil, fmt.Errorf("decision answer %q is not a string", name)
 			}

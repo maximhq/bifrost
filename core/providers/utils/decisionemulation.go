@@ -364,7 +364,9 @@ func BuildDecisionSchema(questions map[string]schemas.DecisionQuestion) (*schema
 				"additionalProperties": false,
 			}
 		case schemas.DecisionKindScore:
-			scoreLevelsList, err := scoreCriteriaLevels(q.Criteria)
+			// Level labels reach the model folded into the level descriptions.
+			criteria := q.LabelledCriteria()
+			scoreLevelsList, err := scoreCriteriaLevels(criteria)
 			if err != nil {
 				return nil, fmt.Errorf("question %q: %w", name, err)
 			}
@@ -374,7 +376,7 @@ func BuildDecisionSchema(questions map[string]schemas.DecisionQuestion) (*schema
 			nested = map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"value":      numberSchema(desc+" "+scoreLevels(q.Criteria), &zero, &maxLevel),
+					"value":      numberSchema(desc+" "+scoreLevels(criteria), &zero, &maxLevel),
 					"confidence": confidenceSchema(),
 					"probabilities": probabilitiesSchema(
 						"Required. Probability for each level index (\"0\", \"1\", ...); values must sum to 1.",
@@ -624,10 +626,11 @@ func ParseDecisionAnswers(argumentsJSON []byte, questions map[string]schemas.Dec
 					return nil, fmt.Errorf("choice answer %q for %q does not have the highest probability (option %q is higher)", *got.Choice, name, option)
 				}
 			}
-			answer.Value = *got.Choice
+			answer.Value = q.ChoiceValue(*got.Choice)
 			answer.Probabilities = probabilities
 		case schemas.DecisionKindScore:
-			levels, err := scoreCriteriaLevels(q.Criteria)
+			criteria := q.LabelledCriteria()
+			levels, err := scoreCriteriaLevels(criteria)
 			if err != nil {
 				return nil, fmt.Errorf("score question %q: %w", name, err)
 			}
@@ -639,7 +642,7 @@ func ParseDecisionAnswers(argumentsJSON []byte, questions map[string]schemas.Dec
 			if len(got.Probabilities) == 0 {
 				return nil, fmt.Errorf("score answer for %q is missing probabilities", name)
 			}
-			legend := scoreLegend(q.Criteria)
+			legend := scoreLegend(criteria)
 			allowed := make(map[string]bool, len(levels))
 			for i := range levels {
 				allowed[fmt.Sprintf("%d", i)] = true

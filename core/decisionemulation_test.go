@@ -316,3 +316,65 @@ func TestEmulateDecisionRefusesPassthroughExtensions(t *testing.T) {
 		t.Fatalf("unexpected error without passthrough: %v", bifrostErr)
 	}
 }
+
+// TestEmulateDecisionOrderedRequestFields pins that emulation honours what a
+// request written as an ordered list carries: level labels reach the model in
+// the level descriptions, and a BoolChoices question is answered with a
+// boolean.
+func TestEmulateDecisionOrderedRequestFields(t *testing.T) {
+	args := `{
+		"refund":   {"choice": "true", "confidence": 0.8, "probabilities": {"true": 0.8, "false": 0.2}},
+		"severity": {"value": 1, "confidence": 0.7, "probabilities": {"0": 0.1, "1": 0.9}}
+	}`
+	provider := &decisionEmulationProvider{response: emulationFunctionCallResponse(args)}
+	req := &schemas.BifrostDecisionRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		State:    "Customer message: please refund me.",
+		Questions: map[string]schemas.DecisionQuestion{
+			"refund": {Kind: schemas.DecisionKindChoice, Instructions: "Refund?", BoolChoices: true,
+				Criteria: map[string]any{"true": "refund now", "false": nil}},
+			"severity": {Kind: schemas.DecisionKindScore, Instructions: "How bad?",
+				Criteria: []any{nil, "nothing works"}, LevelLabels: []string{"Cosmetic", "Blocked"}},
+		},
+	}
+
+	var b Bifrost
+	resp, bifrostErr := b.emulateDecisionViaResponses(nil, provider, schemas.Key{}, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	if desc := questionDescription(t, provider.lastRequest, "severity", "value"); !strings.Contains(desc, "0=Cosmetic") || !strings.Contains(desc, "1=Blocked: nothing works") {
+		t.Errorf("level labels did not reach the model: %q", desc)
+	}
+	if got := resp.Answers["refund"].Value; got != true {
+		t.Errorf("boolean choice answer = %#v, want true", got)
+	}
+	if got := resp.Answers["severity"].Legend["1"]; got != "Blocked: nothing works" {
+		t.Errorf("legend = %#v", resp.Answers["severity"].Legend)
+	}
+}
+
+// TestEmulateDecisionRejectsImageState pins that an image in a state given as
+// messages is refused before the model is called, since emulation sends the
+// state as text.
+func TestEmulateDecisionRejectsImageState(t *testing.T) {
+	provider := &decisionEmulationProvider{}
+	req := &schemas.BifrostDecisionRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		State: []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+			{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,AAAA")},
+		}}}},
+		Questions: map[string]schemas.DecisionQuestion{"cat": {Kind: schemas.DecisionKindNoul, Instructions: "Is this a cat?"}},
+	}
+
+	var b Bifrost
+	_, bifrostErr := b.emulateDecisionViaResponses(nil, provider, schemas.Key{}, req)
+	if bifrostErr == nil || bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "image") {
+		t.Fatalf("expected image rejection, got %+v", bifrostErr)
+	}
+	if provider.lastRequest != nil {
+		t.Error("the emulating model must not be called")
+	}
+}
