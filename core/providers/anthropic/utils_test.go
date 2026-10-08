@@ -2656,7 +2656,7 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{"claude-haiku-4-6-20250514", false}, // haiku does not support adaptive
 		{"claude-haiku-4-7-20260401", false}, // haiku, not opus
 		{"claude-haiku-4-8-20260601", false}, // haiku, not opus
-		{"claude-haiku-5-5", true},
+		{"claude-haiku-5.5", true},
 		{"claude-haiku-5-5-20260801", true},
 		{"claude-haiku-5-5", true},
 		{"global.anthropic.claude-haiku-5-5", true},
@@ -2741,7 +2741,7 @@ func TestIsSonnet5Plus(t *testing.T) {
 }
 
 // TestIsHaiku55Plus pins the Haiku 5.5 predicate. It must NOT match Haiku 5,
-// "haiku-4-5" or "3-5-haiku"
+// "haiku-4-5" or "3-5-haiku".
 func TestIsHaiku55Plus(t *testing.T) {
 	tests := []struct {
 		model    string
@@ -2753,7 +2753,7 @@ func TestIsHaiku55Plus(t *testing.T) {
 		{"Claude-Haiku-5-5", true},
 		{"global.anthropic.claude-haiku-5-5", true},
 		{"claude-haiku-5-5@20260801", true},
-		{"anthropic.claude-haiku-5-5-v1", true}
+		{"anthropic.claude-haiku-5-5-v1", true},
 		// Must NOT match older Haikus or other families.
 		{"claude-haiku-5", false},
 		{"claude-haiku-5-20260101", false},
@@ -2761,7 +2761,7 @@ func TestIsHaiku55Plus(t *testing.T) {
 		{"claude-haiku-4-5-20251001", false},
 		{"claude-3-5-haiku-20241022", false},
 		{"claude-sonnet-5-5", false},
-		{"claude-opus-5-5", false}
+		{"claude-opus-5-5", false},
 		{"", false},
 		{"some-non-claude-model", false},
 	}
