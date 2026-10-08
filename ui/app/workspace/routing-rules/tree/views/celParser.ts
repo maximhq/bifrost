@@ -68,12 +68,25 @@ export function evalChainCondition(cond: string, vars: Record<string, string>): 
 function isWrappedInParens(s: string): boolean {
 	if (!s.startsWith("(") || !s.endsWith(")")) return false;
 	let d = 0;
+	let inQuote: '"' | "'" | null = null;
 	for (let i = 0; i < s.length; i++) {
-		if (s[i] === "(") d++;
-		else if (s[i] === ")") d--;
+		const ch = s[i];
+		if (ch === "\\" && inQuote !== null && i + 1 < s.length) {
+			i++;
+			continue;
+		}
+		if (ch === '"' || ch === "'") {
+			if (inQuote === null) inQuote = ch;
+			else if (inQuote === ch) inQuote = null;
+			continue;
+		}
+		if (inQuote !== null) continue;
+
+		if (ch === "(") d++;
+		else if (ch === ")") d--;
 		if (d === 0 && i < s.length - 1) return false;
 	}
-	return true;
+	return d === 0;
 }
 
 function splitOn(expr: string, op: "&&" | "||"): string[] {
@@ -82,8 +95,26 @@ function splitOn(expr: string, op: "&&" | "||"): string[] {
 	const parts: string[] = [];
 	let depth = 0,
 		current = "";
+	let inQuote: '"' | "'" | null = null;
+
 	for (let i = 0; i < s.length; i++) {
 		const ch = s[i];
+		if (ch === "\\" && inQuote !== null && i + 1 < s.length) {
+			current += ch + s[i + 1];
+			i++;
+			continue;
+		}
+		if (ch === '"' || ch === "'") {
+			if (inQuote === null) inQuote = ch;
+			else if (inQuote === ch) inQuote = null;
+			current += ch;
+			continue;
+		}
+		if (inQuote !== null) {
+			current += ch;
+			continue;
+		}
+
 		if (ch === "(" || ch === "[") depth++;
 		else if (ch === ")" || ch === "]") depth--;
 		else if (depth === 0 && s.slice(i, i + 2) === op) {
@@ -148,11 +179,47 @@ export function expandCEL(cel: string): string[][] {
 
 /**
  * Normalize a CEL condition token for trie key comparison.
- * Collapses whitespace around operators so "a == b" and "a==b" are the same key.
+ * Collapses whitespace around operators outside quoted strings so "a == b" and "a==b" are the same key.
  */
 export function normalizeCond(cond: string): string {
-	return cond
-		.trim()
-		.replace(/\s*(==|!=|>=|<=|>|<)\s*/g, (_, op) => ` ${op} `)
-		.replace(/\s+/g, " ");
+	const trimmed = cond.trim();
+	let result = "";
+	let current = "";
+	let inQuote: '"' | "'" | null = null;
+
+	const flushNonQuoted = () => {
+		if (current) {
+			result += current.replace(/\s*(==|!=|>=|<=|>|<)\s*/g, (_, op) => ` ${op} `).replace(/\s+/g, " ");
+			current = "";
+		}
+	};
+
+	for (let i = 0; i < trimmed.length; i++) {
+		const ch = trimmed[i];
+		if (ch === "\\" && inQuote !== null && i + 1 < trimmed.length) {
+			result += ch + trimmed[i + 1];
+			i++;
+			continue;
+		}
+		if (ch === '"' || ch === "'") {
+			if (inQuote === null) {
+				flushNonQuoted();
+				inQuote = ch;
+				result += ch;
+			} else if (inQuote === ch) {
+				inQuote = null;
+				result += ch;
+			} else {
+				result += ch;
+			}
+			continue;
+		}
+		if (inQuote !== null) {
+			result += ch;
+		} else {
+			current += ch;
+		}
+	}
+	flushNonQuoted();
+	return result.trim();
 }
