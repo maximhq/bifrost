@@ -18,6 +18,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/cespare/xxhash/v2"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -3436,7 +3437,7 @@ func normalizeSchemaFromJSON(t *testing.T, raw string) (*schemas.ToolFunctionPar
 	if err := json.Unmarshal([]byte(raw), &params); err != nil {
 		t.Fatalf("failed to unmarshal schema: %v", err)
 	}
-	normalized, changed := RewriteToolSchemaPatterns(&params, NormalizeRegexNULEscape)
+	normalized, changed := ApplyToolSchemaPolicy(&params, ToolSchemaPolicy{NormalizeNULEscape: true})
 	return &params, normalized, changed
 }
 
@@ -3531,7 +3532,7 @@ func TestNormalizeResponsesToolSchemas_CopiesOnlyTheRewrittenTool(t *testing.T) 
 			ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &withNUL}},
 	}
 
-	updated, changed := RewriteResponsesToolSchemas(tools, NormalizeRegexNULEscape)
+	updated, changed := ApplyResponsesToolSchemaPolicy(tools, ToolSchemaPolicy{NormalizeNULEscape: true})
 	if !changed {
 		t.Fatal("expected the tool slice to be rewritten")
 	}
@@ -3547,10 +3548,10 @@ func TestNormalizeResponsesToolSchemas_CopiesOnlyTheRewrittenTool(t *testing.T) 
 }
 
 func TestNormalizeToolSchemas_NoToolsIsANoOp(t *testing.T) {
-	if tools, changed := RewriteResponsesToolSchemas(nil, NormalizeRegexNULEscape); changed || tools != nil {
+	if tools, changed := ApplyResponsesToolSchemaPolicy(nil, ToolSchemaPolicy{NormalizeNULEscape: true}); changed || tools != nil {
 		t.Fatal("nil responses tools must be returned unchanged")
 	}
-	if params, changed := RewriteToolSchemaPatterns(nil, NormalizeRegexNULEscape); changed || params != nil {
+	if params, changed := ApplyToolSchemaPolicy(nil, ToolSchemaPolicy{NormalizeNULEscape: true}); changed || params != nil {
 		t.Fatal("a nil schema must be returned unchanged")
 	}
 }
@@ -3606,26 +3607,29 @@ func TestStripRegexLookaround(t *testing.T) {
 	}
 }
 
-func TestComposePatternRewriters_AppliesInOrderAndStaysNoOpWhenIdle(t *testing.T) {
-	both := ComposePatternRewriters(NormalizeRegexNULEscape, StripRegexLookaround)
-	if got := both(`^(?!\0)[^\0]*$`); got != `^[^\x00]*$` {
-		t.Fatalf("composed rewrite = %q, want %q", got, `^[^\x00]*$`)
+func TestToolSchemaPolicy_RewritesPatternInOrderAndStaysNoOpWhenIdle(t *testing.T) {
+	both := ToolSchemaPolicy{NormalizeNULEscape: true, StripLookaround: true}
+	if got := both.rewritePattern(`^(?!\0)[^\0]*$`); got != `^[^\x00]*$` {
+		t.Fatalf("policy rewrite = %q, want %q", got, `^[^\x00]*$`)
 	}
-	if in := `^[a-z]+$`; both(in) != in {
-		t.Fatal("a composed rewriter must return its input unchanged when nothing applies")
+	if in := `^[a-z]+$`; both.rewritePattern(in) != in {
+		t.Fatal("a policy must return a pattern unchanged when nothing applies")
+	}
+	if !(ToolSchemaPolicy{}).IsZero() || both.IsZero() || (ToolSchemaPolicy{StringFormats: []string{"uuid"}}).IsZero() {
+		t.Fatal("IsZero must hold only for the policy that changes nothing")
 	}
 }
 
 // The lossy rewrite must go through the same copy-on-write walker as the
 // lossless one: nothing copied unless a pattern actually changed, and the
 // caller's schema never written through.
-func TestRewriteToolSchemaPatterns_LookaroundIsCopyOnWrite(t *testing.T) {
+func TestApplyToolSchemaPolicy_LookaroundIsCopyOnWrite(t *testing.T) {
 	raw := `{"type":"object","properties":{"doc_id":{"type":"string","pattern":"^(?!\\.\\.?$)[A-Za-z0-9_.]{1,200}$"},"note":{"type":"string","pattern":"^[a-z]+$"}}}`
 	var params schemas.ToolFunctionParameters
 	if err := json.Unmarshal([]byte(raw), &params); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	updated, changed := RewriteToolSchemaPatterns(&params, StripRegexLookaround)
+	updated, changed := ApplyToolSchemaPolicy(&params, ToolSchemaPolicy{StripLookaround: true})
 	if !changed || updated == &params {
 		t.Fatal("expected a rewritten copy")
 	}
@@ -3650,7 +3654,7 @@ func TestRewriteToolSchemaPatterns_LookaroundIsCopyOnWrite(t *testing.T) {
 // additionalProperties keyword is a schema"), so a pattern under it is reachable
 // by the model and must be rewritten like any other. The boolean form has no
 // schema and must pass through as the caller's own pointer.
-func TestRewriteToolSchemaPatterns_CoversTopLevelAdditionalProperties(t *testing.T) {
+func TestApplyToolSchemaPolicy_CoversTopLevelAdditionalProperties(t *testing.T) {
 	extra := schemas.NewOrderedMap()
 	extra.Set("type", "string")
 	extra.Set("pattern", `^[^\0]*$`)
@@ -3660,7 +3664,7 @@ func TestRewriteToolSchemaPatterns_CoversTopLevelAdditionalProperties(t *testing
 		AdditionalProperties: &schemas.AdditionalPropertiesStruct{AdditionalPropertiesMap: extra},
 	}
 
-	updated, changed := RewriteToolSchemaPatterns(&params, NormalizeRegexNULEscape)
+	updated, changed := ApplyToolSchemaPolicy(&params, ToolSchemaPolicy{NormalizeNULEscape: true})
 	if !changed {
 		t.Fatal("a pattern under additionalProperties was not rewritten")
 	}
@@ -3682,7 +3686,7 @@ func TestRewriteToolSchemaPatterns_CoversTopLevelAdditionalProperties(t *testing
 		Properties:           schemas.NewOrderedMap(),
 		AdditionalProperties: &schemas.AdditionalPropertiesStruct{AdditionalPropertiesBool: schemas.Ptr(false)},
 	}
-	if out, changed := RewriteToolSchemaPatterns(&boolParams, NormalizeRegexNULEscape); changed || out != &boolParams {
+	if out, changed := ApplyToolSchemaPolicy(&boolParams, ToolSchemaPolicy{NormalizeNULEscape: true}); changed || out != &boolParams {
 		t.Fatal("boolean additionalProperties must be returned as-is")
 	}
 }
@@ -3691,7 +3695,7 @@ func TestRewriteToolSchemaPatterns_CoversTopLevelAdditionalProperties(t *testing
 // maps: BuildDecisionSchema sets each question's schema into an OrderedMap as a
 // map[string]any. The walker must descend into those too, copy-on-write, and
 // must hand back the caller's own map when nothing inside it changes.
-func TestRewriteToolSchemaPatterns_DescendsIntoPlainMapSchemas(t *testing.T) {
+func TestApplyToolSchemaPolicy_DescendsIntoPlainMapSchemas(t *testing.T) {
 	dirty := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -3704,7 +3708,7 @@ func TestRewriteToolSchemaPatterns_DescendsIntoPlainMapSchemas(t *testing.T) {
 	props.Set("clean", clean)
 	params := schemas.ToolFunctionParameters{Type: "object", Properties: props}
 
-	updated, changed := RewriteToolSchemaPatterns(&params, NormalizeRegexNULEscape)
+	updated, changed := ApplyToolSchemaPolicy(&params, ToolSchemaPolicy{NormalizeNULEscape: true})
 	if !changed {
 		t.Fatal("a pattern inside a plain-map nested schema was not rewritten")
 	}
@@ -3722,6 +3726,170 @@ func TestRewriteToolSchemaPatterns_DescendsIntoPlainMapSchemas(t *testing.T) {
 	clean["sentinel"] = true
 	if c2, _ := updated.Properties.Get("clean"); c2.(map[string]any)["sentinel"] != true {
 		t.Fatal("an unchanged plain-map schema was copied instead of shared")
+	}
+}
+
+// kimiSchemaFormats is the string-format allowlist moonshotai.kimi-k3 on Bedrock accepts.
+var kimiSchemaFormats = []string{"date", "date-time", "time", "duration", "email", "hostname", "ipv4", "ipv6", "uri", "uuid"}
+
+// A format outside the allowlist is dropped from every string or untyped schema at any
+// depth. Numeric formats, allowlisted ones, instance data, and properties merely named
+// "format" or "default" are schema-aware exceptions that must survive.
+func TestApplyToolSchemaPolicy_DropsFormatsOutsideAllowlist(t *testing.T) {
+	raw := `{"type":"object","format":"byte","properties":{` +
+		`"blob":{"type":"string","format":"byte"},` +
+		`"when":{"type":"string","format":"date-time"},` +
+		`"size":{"type":"integer","format":"int64"},` +
+		`"ratio":{"type":["number","null"],"format":"double"},` +
+		`"maybe":{"type":["string","null"],"format":"binary"},` +
+		`"untyped":{"format":"password"},` +
+		`"list":{"type":"array","items":{"type":"string","format":"base64"}},` +
+		`"either":{"anyOf":[{"type":"string","format":"int64"},{"type":"null"}]},` +
+		`"format":{"type":"object","default":{"format":"byte"},"examples":[{"format":"byte"}]},` +
+		`"default":{"type":"object","properties":{"inner":{"type":"string","format":"uri-reference"}}}},` +
+		`"$defs":{"Attachment":{"type":"object","properties":{"content":{"type":"string","format":"byte"}}}}}`
+	var params schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	updated, changed := ApplyToolSchemaPolicy(&params, ToolSchemaPolicy{StringFormats: kimiSchemaFormats})
+	if !changed {
+		t.Fatal("expected the schema to be rewritten")
+	}
+	out, err := json.Marshal(updated)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, path := range []string{
+		"format",
+		"properties.blob.format",
+		"properties.maybe.format",
+		"properties.untyped.format",
+		"properties.list.items.format",
+		"properties.either.anyOf.0.format",
+		"properties.default.properties.inner.format",
+		`\$defs.Attachment.properties.content.format`,
+	} {
+		if v := gjson.GetBytes(out, path); v.Exists() {
+			t.Errorf("%s = %s survived: %s", path, v.Raw, out)
+		}
+	}
+	for path, want := range map[string]string{
+		"properties.when.format":              "date-time",
+		"properties.size.format":              "int64",
+		"properties.ratio.format":             "double",
+		"properties.format.default.format":    "byte",
+		"properties.format.examples.0.format": "byte",
+		"properties.blob.type":                "string",
+	} {
+		if got := gjson.GetBytes(out, path).String(); got != want {
+			t.Errorf("%s = %q, want %q: %s", path, got, want, out)
+		}
+	}
+	if s := string(out); strings.Index(s, `"blob"`) > strings.Index(s, `"when"`) {
+		t.Fatalf("property order changed: %s", s)
+	}
+	before, _ := json.Marshal(&params)
+	if got := gjson.GetBytes(before, `\$defs.Attachment.properties.content.format`).String(); got != "byte" {
+		t.Fatalf("caller's schema was mutated in place: %s", before)
+	}
+}
+
+// A schema whose formats are all allowed, or a policy without an allowlist, must hand
+// back the caller's own schema so its bytes and prompt-cache key stay identical.
+func TestApplyToolSchemaPolicy_AllowedFormatsAreNotCopied(t *testing.T) {
+	var allowed schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"when":{"type":"string","format":"date-time"},"size":{"type":"integer","format":"int64"}}}`), &allowed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out, changed := ApplyToolSchemaPolicy(&allowed, ToolSchemaPolicy{StringFormats: kimiSchemaFormats}); changed || out != &allowed {
+		t.Fatal("a schema with only allowed formats must be returned as-is")
+	}
+	var blob schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"blob":{"type":"string","format":"byte"}}}`), &blob); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out, changed := ApplyToolSchemaPolicy(&blob, ToolSchemaPolicy{NormalizeNULEscape: true}); changed || out != &blob {
+		t.Fatal("a policy with no allowlist must keep every format")
+	}
+}
+
+func TestApplyChatToolSchemaPolicy_CopiesOnlyTheChangedTool(t *testing.T) {
+	var clean, dirty schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"when":{"type":"string","format":"date-time"}}}`), &clean); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"blob":{"type":"string","format":"byte"}}}`), &dirty); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	tools := []schemas.ChatTool{
+		{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "clean", Parameters: &clean}},
+		{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "dirty", Parameters: &dirty}},
+		{Type: schemas.ChatToolTypeCustom},
+	}
+	updated, changed := ApplyChatToolSchemaPolicy(tools, ToolSchemaPolicy{StringFormats: kimiSchemaFormats})
+	if !changed {
+		t.Fatal("expected the tool slice to be rewritten")
+	}
+	if updated[0].Function != tools[0].Function {
+		t.Fatal("a tool with nothing to change must not be copied")
+	}
+	if updated[1].Function == tools[1].Function || updated[1].Function.Parameters.Properties == dirty.Properties {
+		t.Fatal("the changed tool must be copied, not written through")
+	}
+	out, _ := json.Marshal(updated[1].Function.Parameters)
+	if gjson.GetBytes(out, "properties.blob.format").Exists() {
+		t.Fatalf("byte format survived: %s", out)
+	}
+	if before, _ := json.Marshal(&dirty); !gjson.GetBytes(before, "properties.blob.format").Exists() {
+		t.Fatalf("caller's tool schema was mutated in place: %s", before)
+	}
+	if tools, changed := ApplyChatToolSchemaPolicy(nil, ToolSchemaPolicy{StringFormats: kimiSchemaFormats}); changed || tools != nil {
+		t.Fatal("nil chat tools must be returned unchanged")
+	}
+}
+
+// A namespace that stays intact on the wire still sends its members' schemas, so they
+// are normalized too, copy-on-write like top-level tools.
+func TestApplyResponsesToolSchemaPolicy_WalksNamespaceMembers(t *testing.T) {
+	var clean, dirty schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"when":{"type":"string","format":"date-time"}}}`), &clean); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"blob":{"type":"string","format":"byte"}}}`), &dirty); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	namespace := &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("list_labels"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &clean}},
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("send_message"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &dirty}},
+	}}
+	tools := []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("top"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &clean}},
+		{Type: schemas.ResponsesToolTypeNamespace, Name: new("gmail"), ResponsesToolNamespace: namespace},
+	}
+	updated, changed := ApplyResponsesToolSchemaPolicy(tools, ToolSchemaPolicy{StringFormats: kimiSchemaFormats})
+	if !changed {
+		t.Fatal("expected the namespace member to be rewritten")
+	}
+	if updated[0].ResponsesToolFunction != tools[0].ResponsesToolFunction {
+		t.Fatal("a tool with nothing to change must not be copied")
+	}
+	if updated[1].ResponsesToolNamespace == namespace {
+		t.Fatal("the changed namespace must be copied, not written through")
+	}
+	members := updated[1].ResponsesToolNamespace.Tools
+	if members[0].ResponsesToolFunction != namespace.Tools[0].ResponsesToolFunction {
+		t.Fatal("a member with nothing to change must not be copied")
+	}
+	out, _ := json.Marshal(members[1].ResponsesToolFunction.Parameters)
+	if gjson.GetBytes(out, "properties.blob.format").Exists() {
+		t.Fatalf("byte format survived in a namespace member: %s", out)
+	}
+	if namespace.Tools[1].ResponsesToolFunction.Parameters != &dirty {
+		t.Fatal("caller's namespace member was written through")
+	}
+	if before, _ := json.Marshal(&dirty); !gjson.GetBytes(before, "properties.blob.format").Exists() {
+		t.Fatalf("caller's member schema was mutated in place: %s", before)
 	}
 }
 

@@ -2,6 +2,7 @@ package bifrost
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -4158,9 +4159,9 @@ func lookaroundToolParams() *schemas.ToolFunctionParameters {
 	return &schemas.ToolFunctionParameters{Type: "object", Properties: props}
 }
 
-// Only Moonshot and DeepSeek models get their tool-schema patterns rewritten.
-// Every other model, on every provider, must reach the wire byte-identical, and
-// the no-op path must hand back the caller's request itself so nothing is copied.
+// Without a datasheet row, only Moonshot and DeepSeek models get their tool-schema
+// patterns rewritten. Every other model must reach the wire byte-identical, and the
+// no-op path must hand back the caller's request itself so nothing is copied.
 func TestToolSchemaPatternRewriteAppliesOnlyToMoonshotAndDeepSeek(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	cases := []struct {
@@ -4190,7 +4191,7 @@ func TestToolSchemaPatternRewriteAppliesOnlyToMoonshotAndDeepSeek(t *testing.T) 
 					ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: lookaroundToolParams()},
 				}}},
 			}
-			out := normalizeResponsesToolSchemas(ctx, req)
+			out := normalizeResponsesToolSchemas(ctx, schemas.Bedrock, req)
 			got := patternOf(t, out.Params.Tools[0].ResponsesToolFunction.Parameters)
 			if !tc.rewritten {
 				if out != req {
@@ -4209,6 +4210,210 @@ func TestToolSchemaPatternRewriteAppliesOnlyToMoonshotAndDeepSeek(t *testing.T) 
 			}
 		})
 	}
+}
+
+// kimiRejectedToolParams mirrors the Claude Code tools moonshotai.kimi-k3 on Bedrock
+// rejected (Gmail's nested `format: byte`, Artifact's `\0` and lookahead), next to
+// formats it accepts.
+func kimiRejectedToolParams(t *testing.T) *schemas.ToolFunctionParameters {
+	t.Helper()
+	raw := `{"type":"object","properties":{` +
+		`"attachments":{"type":"array","items":{"$ref":"#/$defs/Attachment"}},` +
+		`"send_at":{"type":"string","format":"date-time"},` +
+		`"size":{"type":"integer","format":"int64"},` +
+		`"path":{"type":"string","pattern":"^(?!\\.\\.?$)[^\\0]{1,200}$"}},` +
+		`"$defs":{"Attachment":{"type":"object","properties":{"content":{"type":"string","format":"byte"}},"required":["content"]}}}`
+	var params schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return &params
+}
+
+// assertKimiToolParamsNormalized checks the rejected constructs are gone, the accepted
+// ones survive, and the caller's schema was not written through.
+func assertKimiToolParamsNormalized(t *testing.T, caller, sent *schemas.ToolFunctionParameters) {
+	t.Helper()
+	out, err := json.Marshal(sent)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	rendered := string(out)
+	for _, gone := range []string{`"byte"`, `(?!`, `\\0`} {
+		if strings.Contains(rendered, gone) {
+			t.Fatalf("%s reached the provider: %s", gone, rendered)
+		}
+	}
+	for _, kept := range []string{`"date-time"`, `"int64"`, `[^\\x00]{1,200}`} {
+		if !strings.Contains(rendered, kept) {
+			t.Fatalf("%s was lost before the provider: %s", kept, rendered)
+		}
+	}
+	if before, _ := json.Marshal(caller); !strings.Contains(string(before), `"byte"`) {
+		t.Fatalf("caller's schema was mutated in place: %s", before)
+	}
+}
+
+// kimi-k3 on Bedrock answers a nested non-standard `format` with HTTP 200 and an empty
+// stream, so the Responses path drops it alongside the regex rewrites.
+func TestPrepareResponsesRequest_NormalizesToolSchemasForKimi(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	params := kimiRejectedToolParams(t)
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.moonshotai.kimi-k3",
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+			Type:                  schemas.ResponsesToolTypeFunction,
+			Name:                  new("send_message"),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params},
+		}}},
+	}
+	prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Bedrock}, schemas.Key{}, req)
+	if bifrostErr != nil {
+		t.Fatalf("prepare failed: %v", bifrostErr.Error)
+	}
+	assertKimiToolParamsNormalized(t, params, prepared.Params.Tools[0].ResponsesToolFunction.Parameters)
+}
+
+// Codex also declares tools inside namespaces and additional_tools input items. Converse
+// has no namespace container, so both are hoisted to the top level; a wire that has one
+// keeps the namespace. Either way the schemas kimi-k3 receives are normalized.
+func TestPrepareResponsesRequest_NormalizesEmbeddedToolSchemasForKimi(t *testing.T) {
+	sendMessage := func(params *schemas.ToolFunctionParameters) schemas.ResponsesTool {
+		return schemas.ResponsesTool{
+			Type:                  schemas.ResponsesToolTypeFunction,
+			Name:                  new("send_message"),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params},
+		}
+	}
+	namespaced := func(t *testing.T, params *schemas.ToolFunctionParameters) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+			Type:                   schemas.ResponsesToolTypeNamespace,
+			Name:                   new("gmail"),
+			ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{sendMessage(params)}},
+		}}}}
+	}
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		wantType schemas.ResponsesToolType
+		build    func(t *testing.T, params *schemas.ToolFunctionParameters) *schemas.BifrostResponsesRequest
+	}{
+		{"additional_tools item hoisted for Converse", schemas.Bedrock, "us.moonshotai.kimi-k3", schemas.ResponsesToolTypeFunction,
+			func(t *testing.T, params *schemas.ToolFunctionParameters) *schemas.BifrostResponsesRequest {
+				declared, err := json.Marshal([]schemas.ResponsesTool{sendMessage(params)})
+				if err != nil {
+					t.Fatalf("marshal: %v", err)
+				}
+				return &schemas.BifrostResponsesRequest{Input: []schemas.ResponsesMessage{{
+					Type:            new(schemas.ResponsesMessageTypeAdditionalTools),
+					AdditionalTools: declared,
+				}}}
+			}},
+		{"namespace flattened for Converse", schemas.Bedrock, "us.moonshotai.kimi-k3", schemas.ResponsesToolTypeFunction, namespaced},
+		{"namespace kept by an OpenAI-compatible wire", schemas.OpenAI, "kimi-k3", schemas.ResponsesToolTypeNamespace, namespaced},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			params := kimiRejectedToolParams(t)
+			req := tc.build(t, params)
+			req.Provider, req.Model = tc.provider, tc.model
+			prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: tc.provider}, schemas.Key{}, req)
+			if bifrostErr != nil {
+				t.Fatalf("prepare failed: %v", bifrostErr.Error)
+			}
+			if len(prepared.Params.Tools) != 1 || prepared.Params.Tools[0].Type != tc.wantType {
+				t.Fatalf("want one %s tool on the wire, got %+v", tc.wantType, prepared.Params.Tools)
+			}
+			sent := prepared.Params.Tools[0]
+			if sent.ResponsesToolNamespace != nil {
+				sent = sent.ResponsesToolNamespace.Tools[0]
+			}
+			assertKimiToolParamsNormalized(t, params, sent.ResponsesToolFunction.Parameters)
+		})
+	}
+}
+
+// The Chat Completions path reaches kimi-k3 too and must normalize the same way.
+func TestHandleProviderRequest_ChatNormalizesToolSchemasForKimi(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	params := kimiRejectedToolParams(t)
+	provider := &chatCapturingProvider{stubProvider: stubProvider{key: schemas.Bedrock}}
+	msg := &ChannelMessage{
+		Context: ctx,
+		BifrostRequest: schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    "us.moonshotai.kimi-k3",
+				Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+					Type:     schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{Name: "send_message", Parameters: params},
+				}}},
+			},
+		},
+	}
+	if _, bifrostErr := (&Bifrost{}).handleProviderRequest(provider, &schemas.ProviderConfig{}, msg, schemas.Key{}, nil); bifrostErr != nil {
+		t.Fatalf("dispatch failed: %v", bifrostErr.Error)
+	}
+	if provider.got == nil {
+		t.Fatal("the provider never received the request")
+	}
+	assertKimiToolParamsNormalized(t, params, provider.got.Params.Tools[0].Function.Parameters)
+}
+
+// A datasheet row decides in either direction: it restricts a model the fallback leaves
+// alone, and lifts a restriction the fallback would apply. A model with neither row nor
+// fallback gets the zero policy, which skips the walk.
+func TestToolSchemaPolicy_DatasheetRowWins(t *testing.T) {
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		switch model {
+		case "xai.grok-4.7":
+			return &schemas.ModelCapabilities{SupportsRegexLookaround: new(false), SupportedSchemaFormats: []string{"date-time"}}
+		case "us.moonshotai.kimi-k3":
+			return &schemas.ModelCapabilities{SupportsRegexLookaround: new(true), SupportsRegexNULEscape: new(true), SupportedSchemaFormats: []string{"byte"}}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	grok := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.Bedrock, "xai.grok-4.7"))
+	if !grok.StripLookaround || grok.NormalizeNULEscape || !slices.Equal(grok.StringFormats, []string{"date-time"}) {
+		t.Fatalf("grok row not applied: %+v", grok)
+	}
+	kimi := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.Bedrock, "us.moonshotai.kimi-k3"))
+	if kimi.StripLookaround || kimi.NormalizeNULEscape || !slices.Equal(kimi.StringFormats, []string{"byte"}) {
+		t.Fatalf("kimi row did not override the fallback: %+v", kimi)
+	}
+	if claude := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.Bedrock, "global.anthropic.claude-sonnet-5")); !claude.IsZero() {
+		t.Fatalf("a model with no row and no fallback must get the zero policy: %+v", claude)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-5",
+		Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+			Type:     schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{Name: "send_message", Parameters: kimiRejectedToolParams(t)},
+		}}},
+	}
+	if out := prepareChatRequest(ctx, nil, schemas.Bedrock, req); out != req {
+		t.Fatal("a chat request for an unrestricted model must be returned as-is")
+	}
+}
+
+// chatCapturingProvider records the Chat request dispatch hands the provider.
+type chatCapturingProvider struct {
+	stubProvider
+	got *schemas.BifrostChatRequest
+}
+
+func (p *chatCapturingProvider) ChatCompletion(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	p.got = req
+	return &schemas.BifrostChatResponse{}, nil
 }
 
 // TestSetFallbackPinnedAPIKeyID_SurvivesBlockedWrites covers the streaming race, where a prior attempt's async post-hooks hold blockRestrictedWrites.

@@ -8461,7 +8461,6 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 	if r == nil {
 		return nil, nil
 	}
-	r = normalizeResponsesToolSchemas(ctx, r)
 	var supported bool
 	if capable, ok := provider.(schemas.ResponsesNamespaceToolProvider); ok {
 		supported = capable.SupportsResponsesNamespaceTools(ctx, key, r.Model)
@@ -8482,31 +8481,35 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	if supported {
-		// Pass-through: the request carries no alias map, so nothing is restored.
-		return r, nil
+	// When supported, namespaces pass through and the request carries no alias map.
+	if !supported {
+		if r, bifrostErr = providerUtils.FlattenResponsesNamespaceTools(ctx, r); bifrostErr != nil {
+			return nil, bifrostErr
+		}
 	}
-	return providerUtils.FlattenResponsesNamespaceTools(ctx, r)
+	// Last, so tools hoisted out of additional_tools items and namespaces are normalized too.
+	return normalizeResponsesToolSchemas(ctx, provider.GetProviderKey(), r), nil
 }
 
-// normalizeResponsesToolSchemas applies toolSchemaPatternRewriter to the request's
-// tool schemas, with the same copy-on-write guarantee as promptCacheResponsesRequest:
-// a request whose model is outside the relaxed set, or whose tools need no
-// rewrite, is returned unchanged and allocates nothing.
+// normalizeResponsesToolSchemas applies toolSchemaPolicy to the request's tool
+// schemas, with the same copy-on-write guarantee as promptCacheResponsesRequest:
+// a request without tools returns before any lookup, and one whose model accepts
+// every schema, or whose tools need no change, is returned unchanged and allocates
+// nothing.
 //
 // This sits on the shared dispatch path rather than in any one provider because
 // the affected models are reached through several: DeepSeek natively,
 // moonshotai.kimi-k3 through Bedrock, and OpenAI-compatible gateways fronting
 // either.
-func normalizeResponsesToolSchemas(ctx *schemas.BifrostContext, r *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+func normalizeResponsesToolSchemas(ctx *schemas.BifrostContext, provider schemas.ModelProvider, r *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
 	if r == nil || r.Params == nil || len(r.Params.Tools) == 0 {
 		return r
 	}
-	rewrite := toolSchemaPatternRewriter(ctx, r.Model)
-	if rewrite == nil {
+	policy := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, provider), schemas.ResolveCanonicalModel(ctx, r.Model)))
+	if policy.IsZero() {
 		return r
 	}
-	tools, changed := providerUtils.RewriteResponsesToolSchemas(r.Params.Tools, rewrite)
+	tools, changed := providerUtils.ApplyResponsesToolSchemaPolicy(r.Params.Tools, policy)
 	if !changed {
 		return r
 	}
@@ -8517,34 +8520,56 @@ func normalizeResponsesToolSchemas(ctx *schemas.BifrostContext, r *schemas.Bifro
 	return &cp
 }
 
-// relaxedPatternRewriter is the tool-schema pattern rewrite for the two model
-// families whose validators reject regex syntax that every other tested backend
-// accepts: the lossless `\0` -> `\x00` normalization followed by the lossy
-// lookaround strip. Built once so the per-request path allocates no closure.
-var relaxedPatternRewriter = providerUtils.ComposePatternRewriters(
-	providerUtils.NormalizeRegexNULEscape,
-	providerUtils.StripRegexLookaround,
-)
-
-// toolSchemaPatternRewriter returns the pattern rewrite for a request's model, or
-// nil when the model's tool schemas must reach the provider untouched.
-//
-// This is a positive list on purpose. Verified live on 2026-09-22: OpenAI,
-// Anthropic (directly and on Bedrock) and Gemini all accept both `\0` and
-// lookaround; DeepSeek rejects `\0` with a 400; moonshotai.kimi-k3 on Bedrock
-// rejects both with HTTP 200 and an empty event stream. Only the two families
-// with a verified rejection are rewritten, so every other model keeps its exact
-// bytes (and its prompt-cache key), and a new backend that chokes on a pattern
-// fails loudly through the Bedrock empty-stream guard rather than being silently
-// rewritten. The check is on the model, never the provider: kimi behind an
-// OpenAI-compatible custom provider is still kimi, and Claude on Bedrock is still
-// Claude.
-func toolSchemaPatternRewriter(ctx *schemas.BifrostContext, model string) providerUtils.PatternRewriter {
-	canonical := schemas.ResolveCanonicalModel(ctx, model)
-	if schemas.IsMoonshotModel(canonical) || schemas.IsDeepSeekModel(canonical) {
-		return relaxedPatternRewriter
+// normalizeChatToolSchemas is the Chat Completions parallel of
+// normalizeResponsesToolSchemas, with the same guarantees.
+func normalizeChatToolSchemas(ctx *schemas.BifrostContext, provider schemas.ModelProvider, r *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	if r == nil || r.Params == nil || len(r.Params.Tools) == 0 {
+		return r
 	}
-	return nil
+	policy := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, provider), schemas.ResolveCanonicalModel(ctx, r.Model)))
+	if policy.IsZero() {
+		return r
+	}
+	tools, changed := providerUtils.ApplyChatToolSchemaPolicy(r.Params.Tools, policy)
+	if !changed {
+		return r
+	}
+	params := *r.Params
+	params.Tools = tools
+	cp := *r
+	cp.Params = &params
+	return &cp
+}
+
+// moonshotSchemaFormats is the string `format` allowlist kimi-k3's tool validator
+// accepts, verified on Bedrock 2026-10-08; any other value fails the request.
+var moonshotSchemaFormats = []string{"date", "date-time", "time", "duration", "email", "hostname", "ipv4", "ipv6", "uri", "uuid"}
+
+// toolSchemaPolicy returns the tool-schema subset the attempt's model accepts. The
+// datasheet row decides; without one, only families with a verified rejection are
+// restricted, so every other model keeps its exact tool bytes and prompt-cache key.
+// Verified live: OpenAI, Anthropic (direct and on Bedrock) and Gemini accept `\0`,
+// lookaround and every format; DeepSeek rejects `\0` with a 400; kimi-k3 on Bedrock
+// rejects `\0`, lookaround and non-allowlisted nested string formats with HTTP 200
+// and an empty stream. The fallback checks the model, never the provider: kimi
+// behind an OpenAI-compatible custom provider is still kimi.
+func toolSchemaPolicy(caps schemas.ModelCaps) providerUtils.ToolSchemaPolicy {
+	moonshot := schemas.IsMoonshotModel(caps.Model())
+	relaxed := moonshot || schemas.IsDeepSeekModel(caps.Model())
+	var formats []string
+	if moonshot {
+		formats = moonshotSchemaFormats
+	}
+	return providerUtils.ToolSchemaPolicy{
+		NormalizeNULEscape: !caps.SupportsRegexNULEscape(!relaxed),
+		StripLookaround:    !caps.SupportsRegexLookaround(!relaxed),
+		StringFormats:      caps.SupportedSchemaFormats(formats),
+	}
+}
+
+// prepareChatRequest is the Chat Completions parallel of prepareResponsesRequest.
+func prepareChatRequest(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, provider schemas.ModelProvider, r *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	return normalizeChatToolSchemas(ctx, provider, promptCacheChatRequest(ctx, config, provider, r))
 }
 
 // promptCacheChatRequest is the Chat Completions parallel of
@@ -8598,7 +8623,7 @@ func (bifrost *Bifrost) dispatchChat(ctx *schemas.BifrostContext, provider schem
 			return responsesResponse.ToBifrostChatResponse(), nil
 		}
 	}
-	chatCompletionResponse, bifrostError := provider.ChatCompletion(ctx, key, promptCacheChatRequest(ctx, config, provider.GetProviderKey(), chatRequest))
+	chatCompletionResponse, bifrostError := provider.ChatCompletion(ctx, key, prepareChatRequest(ctx, config, provider.GetProviderKey(), chatRequest))
 	if bifrostError != nil {
 		return nil, bifrostError
 	}
@@ -8655,7 +8680,7 @@ func (bifrost *Bifrost) dispatchChatStream(ctx *schemas.BifrostContext, provider
 			return provider.ResponsesStream(ctx, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ResponsesRequest), postHookSpanFinalizer, key, responsesRequest)
 		}
 	}
-	return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, promptCacheChatRequest(ctx, config, provider.GetProviderKey(), chatRequest))
+	return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, prepareChatRequest(ctx, config, provider.GetProviderKey(), chatRequest))
 }
 
 // dispatchResponsesStream opens one Responses API stream, converting through chat
@@ -8702,7 +8727,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.TextCompletionRequest.ToBifrostChatRequest()
 			if chatRequest != nil {
-				chatRequest = promptCacheChatRequest(req.Context, config, provider.GetProviderKey(), chatRequest)
+				chatRequest = prepareChatRequest(req.Context, config, provider.GetProviderKey(), chatRequest)
 				chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, chatRequest)
 				if bifrostError != nil {
 					return nil, bifrostError
@@ -9108,7 +9133,7 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, c
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.TextCompletionRequest.ToBifrostChatRequest()
 			if chatRequest != nil {
-				return provider.ChatCompletionStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ChatCompletionRequest), postHookSpanFinalizer, key, promptCacheChatRequest(req.Context, config, provider.GetProviderKey(), chatRequest))
+				return provider.ChatCompletionStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ChatCompletionRequest), postHookSpanFinalizer, key, prepareChatRequest(req.Context, config, provider.GetProviderKey(), chatRequest))
 			}
 		}
 		return provider.TextCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.TextCompletionRequest)
