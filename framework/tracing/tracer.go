@@ -1029,10 +1029,13 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 	accumCtx.SetValue(schemas.BifrostContextKeyAccumulatorID, traceID)
 	accumCtx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, isFinalChunk)
 
-	// Forward relevant context values to the new context
+	// Forward every value PricingLookupScopesFromContext reads, so the streamed
+	// total is priced with the same scopes as the request's cost breakdown.
 	if ctx != nil {
 		accumCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, ctx.Value(schemas.BifrostContextKeySelectedKeyID))
 		accumCtx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID))
+		accumCtx.SetValue(schemas.BifrostContextKeyUserID, ctx.Value(schemas.BifrostContextKeyUserID))
+		accumCtx.SetValue(schemas.BifrostContextKeyRequestStartTime, ctx.Value(schemas.BifrostContextKeyRequestStartTime))
 	}
 
 	processedResp, processErr := t.accumulator.ProcessStreamingResponse(accumCtx, result, err)
@@ -1086,7 +1089,17 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 		accResult.FinishReason = processedResp.Data.FinishReason
 		accResult.RawResponse = processedResp.Data.RawResponse
 
-		if (accResult.Cost == nil || *accResult.Cost == 0.0) && accResult.TokenUsage != nil && accResult.TokenUsage.Cost != nil {
+		// Fall back to the provider-reported cost when the catalog could not price
+		// the stream, unless the provider is configured with ignore_provider_cost.
+		// Key the check on the routed provider, as pricing does.
+		provider := processedResp.Provider
+		if result != nil {
+			if ef := result.GetExtraFields(); ef != nil && ef.RoutingInfo.Provider != "" {
+				provider = ef.RoutingInfo.Provider
+			}
+		}
+		if (accResult.Cost == nil || *accResult.Cost == 0.0) && accResult.TokenUsage != nil && accResult.TokenUsage.Cost != nil &&
+			!t.pricingManager.IsProviderCostIgnored(provider) {
 			accResult.Cost = &accResult.TokenUsage.Cost.TotalCost
 		}
 	}
