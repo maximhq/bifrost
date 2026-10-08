@@ -217307,4 +217307,150 @@
       ]
     }
   ]
+},
+{
+  "name": "183. Claude Haiku 5.5 keeps adaptive thinking (haiku 5.5 adaptive thinking)",
+  "description": "Gateway regression for Claude Haiku 5.5 adaptive thinking. Haiku 5.5 was classified as a pre-adaptive model (like Haiku 4.5), so Bifrost rewrote thinking.type \"adaptive\" to \"enabled\" with budget_tokens and stripped output_config.effort. Haiku 5.5 rejects \"enabled\" with a 400 (\"thinking.type.enabled\" is not supported for this model), which broke every Claude Code request to it. The cases pin the Anthropic drop-in (non-streaming and streaming) and the Bedrock Converse route: each must return 200 without the enabled-thinking error. max_tokens 2048 keeps the pre-fix rewrite producing a valid budget so the cases are red before the fix.",
+  "item": [
+    {
+      "name": "Drop-in /anthropic: anthropic/claude-haiku-5-5 adaptive thinking + effort",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('haiku 5.5 adaptive thinking: request succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "pm.test('haiku 5.5 adaptive thinking: adaptive is not rewritten to enabled', function () {",
+              "  pm.expect(pm.response.text(), 'adaptive was rewritten to enabled').to.not.include('thinking.type.enabled');",
+              "});",
+              "pm.test('haiku 5.5 adaptive thinking: response is a message with content', function () {",
+              "  var body = pm.response.json();",
+              "  pm.expect(body.type, 'body: ' + pm.response.text()).to.eql('message');",
+              "  pm.expect(body.content, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-haiku-5-5\",\n  \"max_tokens\": 2048,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"low\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with one word: ok\"\n    }\n  ]\n}"
+        },
+        "url": "{{baseUrl}}/anthropic/v1/messages"
+      },
+      "response": []
+    },
+    {
+      "name": "Drop-in /anthropic: anthropic/claude-haiku-5-5 adaptive thinking + effort (stream)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('haiku 5.5 adaptive thinking: stream succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var text = pm.response.text();",
+              "pm.test('haiku 5.5 adaptive thinking: adaptive is not rewritten to enabled', function () {",
+              "  pm.expect(text, 'adaptive was rewritten to enabled').to.not.include('thinking.type.enabled');",
+              "});",
+              "pm.test('haiku 5.5 adaptive thinking: stream completes', function () {",
+              "  pm.expect(text, 'stream: ' + text).to.include('message_stop');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-haiku-5-5\",\n  \"max_tokens\": 2048,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"low\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with one word: ok\"\n    }\n  ],\n  \"stream\": true\n}"
+        },
+        "url": "{{baseUrl}}/anthropic/v1/messages"
+      },
+      "response": []
+    },
+    {
+      "name": "Drop-in /anthropic: bedrock/global.anthropic.claude-haiku-5-5 adaptive thinking + effort",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('haiku 5.5 adaptive thinking: request succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "pm.test('haiku 5.5 adaptive thinking: adaptive is not rewritten to enabled', function () {",
+              "  pm.expect(pm.response.text(), 'adaptive was rewritten to enabled').to.not.include('thinking.type.enabled');",
+              "});",
+              "pm.test('haiku 5.5 adaptive thinking: response is a message with content', function () {",
+              "  var body = pm.response.json();",
+              "  pm.expect(body.type, 'body: ' + pm.response.text()).to.eql('message');",
+              "  pm.expect(body.content, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_tokens\": 2048,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"low\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with one word: ok\"\n    }\n  ]\n}"
+        },
+        "url": "{{baseUrl}}/anthropic/v1/messages"
+      },
+      "response": []
+    }
+  ]
 }

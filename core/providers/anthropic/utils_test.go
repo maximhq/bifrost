@@ -2744,8 +2744,13 @@ func TestIsSonnet5Plus(t *testing.T) {
 // "haiku-4-5" or "3-5-haiku".
 func TestIsHaiku55Plus(t *testing.T) {
 	tests := []struct {
+<<<<<<< HEAD
 		model    string
 		expected bool
+=======
+		model		string
+		expected	bool
+>>>>>>> 84b080d4e (fix: typo)
 	}{
 		{"claude-haiku-5-5", true},
 		{"claude-haiku-5.5", true},
