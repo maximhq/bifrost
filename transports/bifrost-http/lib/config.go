@@ -4162,6 +4162,8 @@ func fileManagedModelConfigScope(scope string) bool {
 //
 //   - a model config of a scope the file does not manage (fileManagedModelConfigScope), which is kept
 //     itself, so the budgets and rate limit it owns stay with it
+//   - a row declared inline on a team, customer, virtual key or provider config in the file
+//     (markInlineGovernanceLimits)
 //   - whatever the registered GovernanceLimitPruneGuard claims, such as an access profile's rows
 //
 // Resolved before the prune transaction opens, since the guard reads through the store's own
@@ -4182,6 +4184,7 @@ func governanceLimitsToKeep(ctx context.Context, store configstore.ConfigStore, 
 			rateLimits[*mc.RateLimitID] = true
 		}
 	}
+	markInlineGovernanceLimits(configData.Governance, budgets, rateLimits)
 
 	var budgetCandidates, rateLimitCandidates []string
 	if configData.governanceSectionPresent("budgets") {
@@ -4230,6 +4233,44 @@ func governanceLimitsToKeep(ctx context.Context, store configstore.ConfigStore, 
 	maps.Copy(budgets, guardedBudgets)
 	maps.Copy(rateLimits, guardedRateLimits)
 	return budgets, rateLimits
+}
+
+// markInlineGovernanceLimits adds to budgets and rateLimits the ids config.json declares inline on its
+// teams, customers, virtual keys and their provider configs. Their owner's save writes those rows, and
+// they are never listed under governance.budgets or governance.rate_limits, so a prune keyed on those
+// sections alone deletes them, leaving the owner unfunded on every other boot.
+func markInlineGovernanceLimits(governance *configstore.GovernanceConfig, budgets, rateLimits map[string]bool) {
+	if governance == nil {
+		return
+	}
+	markBudgets := func(rows []configstoreTables.TableBudget) {
+		for _, budget := range rows {
+			if budget.ID != "" {
+				budgets[budget.ID] = true
+			}
+		}
+	}
+	markRateLimit := func(rateLimit *configstoreTables.TableRateLimit) {
+		if rateLimit != nil && rateLimit.ID != "" {
+			rateLimits[rateLimit.ID] = true
+		}
+	}
+	for _, team := range governance.Teams {
+		markBudgets(team.Budgets)
+		markRateLimit(team.RateLimit)
+	}
+	for _, customer := range governance.Customers {
+		markBudgets(customer.Budgets)
+		markRateLimit(customer.RateLimit)
+	}
+	for _, vk := range governance.VirtualKeys {
+		markBudgets(vk.Budgets)
+		markRateLimit(vk.RateLimit)
+		for _, pc := range vk.ProviderConfigs {
+			markBudgets(pc.Budgets)
+			markRateLimit(pc.RateLimit)
+		}
+	}
 }
 
 // routingRulePruneCandidates returns the IDs of stored routing rules a present config.json
@@ -4695,6 +4736,9 @@ func updateGovernanceConfigInStore(
 				if governed.limitsUnknown["team:"+team.ID] {
 					team.ConfigHash = ""
 				}
+				// The save writes the inline budgets as associations, which would hand a governed team
+				// budgets of its own beside the profile's.
+				team.Budgets = nil
 			}
 			if err := config.ConfigStore.CreateTeam(ctx, &team, tx); err != nil {
 				return fmt.Errorf("failed to create team %s: %w", team.ID, err)
@@ -4709,6 +4753,8 @@ func updateGovernanceConfigInStore(
 				if governed.limitsUnknown["team:"+team.ID] {
 					team.ConfigHash = ""
 				}
+				// Same as the create above: Save upserts the inline budgets as the team's own.
+				team.Budgets = nil
 			}
 			if err := config.ConfigStore.UpdateTeam(ctx, &team, tx); err != nil {
 				return fmt.Errorf("failed to update team %s: %w", team.ID, err)
