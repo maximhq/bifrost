@@ -1055,6 +1055,14 @@ func (m *MockConfigStore) DeleteRateLimit(ctx context.Context, id string, tx ...
 	return nil
 }
 
+func (m *MockConfigStore) GetVirtualKeyBudgets(ctx context.Context, virtualKeyID string, tx ...*gorm.DB) ([]tables.TableBudget, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetVirtualKeyProviderConfigBudgets(ctx context.Context, providerConfigID uint, tx ...*gorm.DB) ([]tables.TableBudget, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) DeleteBudget(ctx context.Context, id string, tx ...*gorm.DB) error {
 	if m.governanceConfig == nil || len(m.governanceConfig.Budgets) == 0 {
 		return nil
@@ -15349,6 +15357,124 @@ func TestSQLite_SourceOfTruthConfigJSON_KeepsInlineLimitsAcrossRestarts(t *testi
 	}
 }
 
+// TestSQLite_VirtualKeyInlineBudgetsFollowTheFile: a virtual key's inline budgets and its provider
+// config's are written from config.json on every reload of the key, not only when the key or provider
+// config is created. An edited max_limit under the same id is applied with the spend kept, a budget a
+// model config has taken over keeps that owner, a budget moved between the key and its provider config
+// is deleted from one and created fresh under the other in the same reload, a new id is created under
+// its owner, a dropped one is deleted, and a governance.budgets row the key also holds is left alone. Split mode reloads a key only when its entry
+// changed, so each step there edits the description too.
+func TestSQLite_VirtualKeyInlineBudgetsFollowTheFile(t *testing.T) {
+	for _, sourceOfTruth := range []string{"", SourceOfTruthConfigJSON} {
+		t.Run("source_of_truth="+sourceOfTruth, func(t *testing.T) {
+			initTestLogger()
+			tempDir := createTempDir(t)
+			declare := func(step string, limit float64, keyBudgetIDs, providerBudgetIDs []string) *ConfigData {
+				budgets := func(ids []string) []tables.TableBudget {
+					rows := make([]tables.TableBudget, 0, len(ids))
+					for _, id := range ids {
+						rows = append(rows, tables.TableBudget{ID: id, MaxLimit: limit, ResetDuration: "1M"})
+					}
+					return rows
+				}
+				configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+					"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
+				}, tempDir)
+				configData.SourceOfTruth = sourceOfTruth
+				configData.Governance = &configstore.GovernanceConfig{
+					Budgets: []tables.TableBudget{{ID: "top-level-budget", MaxLimit: 5, ResetDuration: "1d", VirtualKeyID: schemas.Ptr("vk-1")}},
+					// Declared so source_of_truth config.json keeps it: the key's budget is moved onto it below.
+					ModelConfigs: []tables.TableModelConfig{{ID: "mc-vk-1", ModelName: tables.ModelConfigAllModels, Scope: tables.ModelConfigScopeVirtualKey, ScopeID: schemas.Ptr("vk-1")}},
+					VirtualKeys: []tables.TableVirtualKey{{
+						ID: "vk-1", Name: "vk-1", Description: step, Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: schemas.Ptr(true),
+						Budgets: budgets(keyBudgetIDs),
+						ProviderConfigs: []tables.TableVirtualKeyProviderConfig{{
+							Provider: "openai", Weight: ptrFloat64(1), AllowedModels: []string{"*"}, Budgets: budgets(providerBudgetIDs),
+						}},
+					}},
+				}
+				return configData
+			}
+			ctx := context.Background()
+			boot := func(configData *ConfigData) *Config {
+				t.Helper()
+				createConfigFile(t, tempDir, configData)
+				config, err := LoadConfig(ctx, tempDir)
+				require.NoError(t, err)
+				return config
+			}
+			stored := func(config *Config, id string) *tables.TableBudget {
+				t.Helper()
+				budget, err := config.ConfigStore.GetBudget(ctx, id)
+				if errors.Is(err, configstore.ErrNotFound) {
+					return nil
+				}
+				require.NoError(t, err)
+				return budget
+			}
+			heldBy := func(budget *tables.TableBudget) string {
+				switch {
+				case budget.ModelConfigID != nil:
+					return "model config " + *budget.ModelConfigID
+				case budget.VirtualKeyID != nil:
+					return "virtual key " + *budget.VirtualKeyID
+				case budget.ProviderConfigID != nil:
+					return "provider config"
+				}
+				return "nothing"
+			}
+			assertBudget := func(config *Config, step, id string, maxLimit, usage float64, owner string) {
+				t.Helper()
+				budget := stored(config, id)
+				if !assert.NotNil(t, budget, "%s: budget %s is missing", step, id) {
+					return
+				}
+				assert.EqualValues(t, maxLimit, budget.MaxLimit, "%s: budget %s", step, id)
+				assert.EqualValues(t, usage, budget.CurrentUsage, "%s: budget %s", step, id)
+				assert.Equal(t, owner, heldBy(budget), "%s: budget %s", step, id)
+			}
+
+			first := boot(declare("first", 10, []string{"key-budget", "moving-budget"}, []string{"provider-budget"}))
+			for _, id := range []string{"key-budget", "moving-budget", "provider-budget"} {
+				require.NoError(t, first.ConfigStore.UpdateBudgetUsage(ctx, id, 7))
+			}
+			// What the VK governance migration does: the key's budget moves onto its model config.
+			migrated := stored(first, "key-budget")
+			migrated.ModelConfigID, migrated.VirtualKeyID = schemas.Ptr("mc-vk-1"), nil
+			require.NoError(t, first.ConfigStore.UpdateBudget(ctx, migrated))
+			first.Close(ctx)
+
+			edited := boot(declare("edited", 20, []string{"key-budget", "moving-budget"}, []string{"provider-budget"}))
+			assertBudget(edited, "edited", "key-budget", 20, 7, "model config mc-vk-1")
+			assertBudget(edited, "edited", "moving-budget", 20, 7, "virtual key vk-1")
+			assertBudget(edited, "edited", "provider-budget", 20, 7, "provider config")
+			edited.Close(ctx)
+
+			// A move is a new budget: created fresh under its new owner, in the reload that moves it.
+			down := boot(declare("moved to the provider config", 20, []string{"key-budget"}, []string{"provider-budget", "moving-budget"}))
+			assertBudget(down, "moved to the provider config", "moving-budget", 20, 0, "provider config")
+			require.NoError(t, down.ConfigStore.UpdateBudgetUsage(ctx, "moving-budget", 7))
+			down.Close(ctx)
+
+			up := boot(declare("moved back to the key", 20, []string{"key-budget", "moving-budget"}, []string{"provider-budget"}))
+			assertBudget(up, "moved back to the key", "moving-budget", 20, 0, "virtual key vk-1")
+			up.Close(ctx)
+
+			swapped := boot(declare("swapped", 20, []string{"key-budget", "moving-budget", "key-budget-2"}, []string{"provider-budget-2"}))
+			defer swapped.Close(ctx)
+			if added := stored(swapped, "key-budget-2"); assert.NotNil(t, added, "a budget added to the key was not created") {
+				assert.Equal(t, "virtual key vk-1", heldBy(added))
+			}
+			if added := stored(swapped, "provider-budget-2"); assert.NotNil(t, added, "a budget added to the provider config was not created") {
+				assert.Equal(t, "provider config", heldBy(added))
+			}
+			assert.Nil(t, stored(swapped, "provider-budget"), "a budget dropped from the provider config was kept")
+			assertBudget(swapped, "swapped", "key-budget", 20, 7, "model config mc-vk-1")
+			assert.NotNil(t, stored(swapped, "top-level-budget"), "the governance.budgets row the key holds was deleted")
+		})
+	}
+}
+
 // TestSQLite_SourceOfTruthConfigJSON_LimitPruneGuardFailureKeepsEveryCandidate: when the guard cannot
 // say which rows it owns, no budget or rate limit is pruned this boot rather than deleting one the
 // enterprise build still uses; the next boot prunes them once the guard answers.
@@ -15520,6 +15646,7 @@ func TestUpdateGovernanceConfigInStore_RejectsSharedGovernanceIDs(t *testing.T) 
 			providerAdds, providerUpdates,
 			nil,
 			false,
+			nil,
 		)
 	}
 
