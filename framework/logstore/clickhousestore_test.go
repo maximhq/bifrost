@@ -731,6 +731,22 @@ func TestClickHouseSearchWindowKeepsMilliseconds(t *testing.T) {
 	assert.Equal(t, []string{"ch-window-400"}, ids(SearchFilters{StartTime: &start, EndTime: &end}))
 }
 
+func TestClickHouseDimensionFiltersMatchFanoutRankings(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	assertFilterMatchesFanoutRankings(t, store.RDBLogStore, func(idCol, id, scalarID, scalarName, arrayIDs, arrayNames string) {
+		insertDimensionLog(t, store.db, idCol, id, now, scalarID, scalarName, arrayIDs, arrayNames)
+	}, now)
+}
+
+// The agent-log team, customer and business-unit filters bound the ids as a
+// bare list inside hasAny, which ClickHouse refuses as a string, so every one
+// of them failed on this backend.
+func TestClickHouseA2AAttributionFilters(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	assertA2AAttributionFilters(t, store.RDBLogStore, store.BatchCreateAgentLogsIfNotExists)
+}
+
 func TestClickHouseDeleteLogs(t *testing.T) {
 	store := trySetupClickHouseStore(t)
 	ctx := context.Background()
