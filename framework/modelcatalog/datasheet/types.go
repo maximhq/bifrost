@@ -309,7 +309,10 @@ func LookupScopesFromContext(ctx *schemas.BifrostContext, provider string) *Look
 	if ctx == nil {
 		return nil
 	}
-	userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
+	userID := grantUserID(ctx)
+	if userID == "" {
+		userID, _ = ctx.Value(schemas.BifrostContextKeyUserID).(string)
+	}
 	virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
 	selectedKeyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
 	billedAt, _ := ctx.Value(schemas.BifrostContextKeyRequestStartTime).(time.Time)
@@ -320,6 +323,24 @@ func LookupScopesFromContext(ctx *schemas.BifrostContext, provider string) *Look
 		Provider:      provider,
 		BilledAt:      billedAt,
 	}
+}
+
+// grantUserID returns the user the request's grant attributes it to, or "" when
+// the context carries no grant, no identity, or no user. Callers fall back to the
+// deprecated BifrostContextKeyUserID for contexts built without a grant.
+func grantUserID(ctx *schemas.BifrostContext) string {
+	g := ctx.Grant()
+	if g == nil {
+		return ""
+	}
+	identity := g.Identity()
+	if identity == nil {
+		return ""
+	}
+	if user := identity.User(); user != nil {
+		return user.ID
+	}
+	return ""
 }
 
 // ScopeKind identifies which governance scope an override applies to.

@@ -10,6 +10,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/require"
 )
@@ -1167,26 +1168,83 @@ func TestProcessStreamingChunk_HonorsIgnoreProviderCost(t *testing.T) {
 // The accumulated stream cost must be priced with the same scopes as the request,
 // so a user-scoped pricing override applies to the streamed total just as it does
 // to the per-category breakdown the logging plugin computes from the real context.
+// The user comes from the request's grant; the deprecated context key still works
+// for contexts built without one.
 func TestProcessStreamingChunk_PricesWithRequestUserScope(t *testing.T) {
+	const userID = "user-stream-pricing"
+	for _, tc := range []struct {
+		name     string
+		identify func(ctx *schemas.BifrostContext)
+	}{
+		{
+			name: "grant identity",
+			identify: func(ctx *schemas.BifrostContext) {
+				g := grant.New()
+				g.SetIdentity(grant.NewIdentity(schemas.Credential{}, &schemas.UserRef{ID: userID}, nil, nil, nil, nil, nil))
+				require.True(t, ctx.SetGrant(g))
+			},
+		},
+		{
+			name: "deprecated user id key",
+			identify: func(ctx *schemas.BifrostContext) {
+				ctx.SetValue(schemas.BifrostContextKeyUserID, userID)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog := modelcatalog.NewTestCatalog(nil)
+			catalog.SetIgnoreProviderCost("cortecs", true)
+			uid := userID
+			require.NoError(t, catalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
+				ID:               "user-scoped-override",
+				ScopeKind:        "user",
+				UserID:           &uid,
+				MatchType:        "exact",
+				Pattern:          "unpriced-model",
+				RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest},
+				PricingPatchJSON: `{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002}`,
+			}}))
+			tracer := NewTracer(NewTraceStore(time.Hour, nil), catalog, bifrost.NewNoOpLogger())
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			tc.identify(ctx)
+			result := streamProviderCostChunks(t, tracer, ctx)
+
+			// 1000*0.000001 + 500*0.000002
+			require.NotNil(t, result.Cost)
+			require.InDelta(t, 0.002, *result.Cost, 1e-12)
+		})
+	}
+}
+
+// The streamed total is billed at the request's start time, not the moment the
+// stream finishes, so an off-peak request keeps its discount however late its
+// final chunk lands.
+func TestProcessStreamingChunk_PricesAtRequestStartTime(t *testing.T) {
 	catalog := modelcatalog.NewTestCatalog(nil)
 	catalog.SetIgnoreProviderCost("cortecs", true)
-	userID := "user-stream-pricing"
+	providerID := "cortecs"
+	// Peak covers every day except the 6-hour gap from 00:00 to 06:00 UTC, so
+	// "now" is only off-peak during that gap.
 	require.NoError(t, catalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
-		ID:               "user-scoped-override",
-		ScopeKind:        "user",
-		UserID:           &userID,
-		MatchType:        "exact",
-		Pattern:          "unpriced-model",
-		RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest},
-		PricingPatchJSON: `{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002}`,
+		ID:           "off-peak-override",
+		ScopeKind:    "provider",
+		ProviderID:   &providerID,
+		MatchType:    "exact",
+		Pattern:      "unpriced-model",
+		RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002,` +
+			`"off_peak_cost_multiplier":0.5,` +
+			`"peak_hours":{"timezone":"UTC","windows":[{"days":[0,1,2,3,4,5,6],"start":"06:00","end":"00:00"}]}}`,
 	}}))
 	tracer := NewTracer(NewTraceStore(time.Hour, nil), catalog, bifrost.NewNoOpLogger())
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyUserID, userID)
+	// 03:00 UTC is inside the off-peak gap.
+	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, time.Date(2026, 8, 17, 3, 0, 0, 0, time.UTC))
 	result := streamProviderCostChunks(t, tracer, ctx)
 
-	// 1000*0.000001 + 500*0.000002
+	// (1000*0.000001 + 500*0.000002) * 0.5
 	require.NotNil(t, result.Cost)
-	require.InDelta(t, 0.002, *result.Cost, 1e-12)
+	require.InDelta(t, 0.001, *result.Cost, 1e-12)
 }

@@ -1029,9 +1029,13 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 	accumCtx.SetValue(schemas.BifrostContextKeyAccumulatorID, traceID)
 	accumCtx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, isFinalChunk)
 
-	// Forward every value PricingLookupScopesFromContext reads, so the streamed
-	// total is priced with the same scopes as the request's cost breakdown.
+	// Forward everything PricingLookupScopesFromContext reads, so the streamed
+	// total is priced with the same scopes as the request's cost breakdown. The
+	// grant carries the user; the deprecated key covers contexts built without one.
 	if ctx != nil {
+		if g := ctx.Grant(); g != nil {
+			accumCtx.SetGrant(g)
+		}
 		accumCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, ctx.Value(schemas.BifrostContextKeySelectedKeyID))
 		accumCtx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID))
 		accumCtx.SetValue(schemas.BifrostContextKeyUserID, ctx.Value(schemas.BifrostContextKeyUserID))
