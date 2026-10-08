@@ -569,9 +569,7 @@ type ResponsesParameters struct {
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
 
-	// BedrockOutputConfig carries the native top-level Converse outputConfig
-	// through the provider-neutral Responses conversion without exposing an
-	// AWS-only field to other providers' wire serializers.
+	// BedrockOutputConfig carries native Converse outputConfig.
 	BedrockOutputConfig json.RawMessage `json:"-"`
 }
 
