@@ -1259,6 +1259,63 @@ func TestPromptUsageLedgerIsReleasedOnDelivery(t *testing.T) {
 		}
 	})
 
+	t.Run("the consumer's release covers an abnormal end", func(t *testing.T) {
+		// The transport calls ReleaseStreamPromptUsage from the Anthropic stream
+		// error callback, which runs after handleStreaming has converted the
+		// in-order chunks. So the readings have to be intact for a queued frame
+		// rendered BEFORE that callback, and gone after it.
+		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+		ledger := openAnthropicStreamDeltaPromptUsageLedger(ctx)
+		id, _ := ctx.Value(schemas.BifrostContextKeyAnthropicStreamDeltaPromptUsage).(string)
+		ledger.record(0, anthropicPromptCounterInputTokens)
+
+		// A queued frame converted before the error callback keeps its reading.
+		usage := &AnthropicUsage{InputTokens: 100, OutputTokens: 25}
+		applyAnthropicStreamDeltaPromptUsage(ctx, 0, usage)
+		if usage.absentPromptCounters == 0 {
+			t.Fatal("a queued frame lost its reading before the error callback ran")
+		}
+
+		ReleaseStreamPromptUsage(ctx)
+		if loadAnthropicStreamDeltaPromptUsageLedger(id) != nil {
+			t.Fatal("the consumer's release left the readings in the store")
+		}
+
+		// Idempotent: the callback can run on a stream that already ended
+		// normally, and a second release must not panic or disturb anything.
+		ReleaseStreamPromptUsage(ctx)
+		ReleaseStreamPromptUsage(nil)
+	})
+
+	t.Run("a child request cannot release its parent's readings", func(t *testing.T) {
+		// Value reads through, so a derived sub-request sees the parent's ledger
+		// ID. Releasing on it must be refused, or a plugin's internal call would
+		// strip the caller's still-running stream of its evidence.
+		parent := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+		parent.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+		ledger := openAnthropicStreamDeltaPromptUsageLedger(parent)
+		id, _ := parent.Value(schemas.BifrostContextKeyAnthropicStreamDeltaPromptUsage).(string)
+		ledger.record(3, anthropicPromptCounterInputTokens)
+
+		child := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+		ReleaseStreamPromptUsage(child)
+		if loadAnthropicStreamDeltaPromptUsageLedger(id) == nil {
+			t.Fatal("a child request released readings belonging to its parent's stream")
+		}
+		// And the parent's own frame still finds its reading afterwards.
+		usage := &AnthropicUsage{InputTokens: 100, OutputTokens: 25}
+		applyAnthropicStreamDeltaPromptUsage(parent, 3, usage)
+		if usage.absentPromptCounters == 0 {
+			t.Fatal("the parent's reading was lost to a child's release")
+		}
+
+		ReleaseStreamPromptUsage(parent)
+		if loadAnthropicStreamDeltaPromptUsageLedger(id) != nil {
+			t.Fatal("the owner's release did not take effect")
+		}
+	})
+
 	t.Run("a truncated stream's queued frames still find their readings", func(t *testing.T) {
 		// The reader returns before the consumer has converted what it queued, so
 		// nothing on the producer side may release: a reading dropped here renders

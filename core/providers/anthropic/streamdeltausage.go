@@ -189,6 +189,28 @@ func sweepFinishedAnthropicStreamDeltaPromptUsageLedgers() {
 	})
 }
 
+// ReleaseStreamPromptUsage releases the streaming prompt-usage readings this
+// request opened. It is the one hook a stream CONSUMER needs, and it exists
+// because a stream that never renders a terminal frame has no other release
+// point: the readings must outlive the producer (queued chunks are converted
+// after the reader goroutine returns) but must not outlive the consumer.
+//
+// Callers must stop converting this stream's chunks BEFORE calling it. A
+// reading released while a queued message_delta is still to be rendered puts
+// the synthesized prompt zeros back on that frame, which is the whole defect
+// this evidence removes. The transport calls it from the Anthropic stream error
+// callback, which runs after the in-order chunks have been converted.
+//
+// A direct ResponsesStream consumer holding a non-cancelling context should
+// call it once it has finished consuming or abandoned the stream; a gateway
+// request context is swept when the next stream opens.
+//
+// Idempotent, and scoped to the caller's own request: a ledger read through
+// from a parent context belongs to the parent's stream and is left alone.
+func ReleaseStreamPromptUsage(ctx *schemas.BifrostContext) {
+	closeAnthropicStreamDeltaPromptUsageLedger(ctx)
+}
+
 // closeAnthropicStreamDeltaPromptUsageLedger releases the readings this
 // context's own request opened. A ledger read THROUGH from a parent is left
 // alone: it belongs to the parent's stream, which is still running.
