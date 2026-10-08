@@ -624,6 +624,8 @@ func TestGeminiChatClientThoughtSignatureFallbacks(t *testing.T) {
 		{name: "unpadded URL base64", id: "call_1", extra: json.RawMessage(`{"google":{"thought_signature":"-_8"}}`), wantSignature: []byte{0xfb, 0xff}},
 		{name: "embedded ID takes priority", id: "call_1_ts_AQID", reasoning: schemas.Ptr("BAUG"), extra: extra, wantSignature: []byte{1, 2, 3}},
 		{name: "reasoning takes priority", id: "call_1", reasoning: schemas.Ptr("BAUG"), extra: extra, wantSignature: []byte{4, 5, 6}},
+		{name: "newline-only ID falls back to reasoning", id: "call_1_ts_\n", reasoning: schemas.Ptr("BAUG"), extra: extra, wantSignature: []byte{4, 5, 6}},
+		{name: "newline-only reasoning falls back to metadata", id: "call_1", reasoning: schemas.Ptr("\n"), extra: extra, wantSignature: []byte{0xfb, 0xff}},
 		{name: "invalid ID recovers metadata", id: "call_1_ts_!", extra: extra, wantSignature: []byte{0xfb, 0xff}},
 		{name: "invalid reasoning recovers metadata", id: "call_1", reasoning: schemas.Ptr("!"), extra: extra, wantSignature: []byte{0xfb, 0xff}},
 		{name: "nil metadata", id: "call_1", wantSignature: []byte(sentinel)},

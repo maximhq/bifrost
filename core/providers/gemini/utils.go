@@ -2395,13 +2395,13 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 					// Decode thought signature if extracted from ID
 					if thoughtSig != "" {
 						decoded, err := base64.RawURLEncoding.DecodeString(thoughtSig)
-						if err == nil {
+						if err == nil && len(decoded) > 0 {
 							part.ThoughtSignature = decoded
 						}
 					}
 
 					// Also check in reasoning details array for thought signature (fallback)
-					if part.ThoughtSignature == nil && len(message.ChatAssistantMessage.ReasoningDetails) > 0 {
+					if len(part.ThoughtSignature) == 0 && len(message.ChatAssistantMessage.ReasoningDetails) > 0 {
 						// Extract base ID for lookup (strip signature if present)
 						baseCallID := callID
 						if strings.Contains(callID, thoughtSignatureSeparator) {
@@ -2417,7 +2417,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 								reasoningDetail.Signature != nil {
 								// Decode the base64 string to raw bytes
 								decoded, err := base64.StdEncoding.DecodeString(*reasoningDetail.Signature)
-								if err == nil {
+								if err == nil && len(decoded) > 0 {
 									part.ThoughtSignature = decoded
 								}
 								break
@@ -2425,11 +2425,11 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 						}
 					}
 
-					if part.ThoughtSignature == nil {
+					if len(part.ThoughtSignature) == 0 {
 						part.ThoughtSignature = thoughtSignatureFromExtraContent(toolCall.ExtraContent)
 					}
 
-					if part.ThoughtSignature == nil {
+					if len(part.ThoughtSignature) == 0 {
 						part.ThoughtSignature = []byte(skipThoughtSignatureValidator)
 					}
 
