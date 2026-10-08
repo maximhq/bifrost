@@ -124,7 +124,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// — see issue #5887.
 		openaiReq.stripReasoningDetailsExceptToolCalls()
 		return openaiReq
-	case schemas.Groq, schemas.Cerebras:
+	case schemas.Groq, schemas.Cerebras, schemas.VLLM:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.renameAssistantReasoningToAlias()
 		return openaiReq

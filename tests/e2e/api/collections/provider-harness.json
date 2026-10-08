@@ -208536,6 +208536,154 @@
           }
         }
       ]
+    },
+    {
+      "name": "183. vLLM assistant reasoning replay (#6238) (vllm-reasoning-replay)",
+      "description": "Native typed Chat Completions must send assistant reasoning as reasoning, not reasoning_content, to the built-in vLLM OpenAI-compatible endpoint. These unary and SSE cases assert the captured outbound body, so even a server that accepts both spellings cannot mask the regression. Requires a configured vllm key/model Qwen/Qwen3-0.6B (or a matching alias) with use_anthropic_endpoints=false. The generic harness profile does not configure a vLLM server; configure it before running PROVIDER=vllm FEATURE=vllm-reasoning-replay. Raw-body and large-payload passthrough are separate paths and are covered by local mock tests.",
+      "item": [
+        {
+          "name": "183.1 vllm/Qwen/Qwen3-0.6B assistant reasoning replay unary - vllm-reasoning-replay - #6238",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = null, rr = null;",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "pm.test('successful chat response', function () {",
+                  "  pm.expect(body, 'invalid response: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.choices, 'missing choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "if (body) { rr = (body.extra_fields || {}).raw_request; }",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('outbound assistant reasoning uses the canonical field', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr.messages, 'outbound messages missing: ' + JSON.stringify(rr)).to.be.an('array').with.lengthOf(3);",
+                  "  var assistant = rr.messages[1];",
+                  "  pm.expect(assistant.role).to.equal('assistant');",
+                  "  pm.expect(assistant.content).to.equal('Final response');",
+                  "  pm.expect(assistant.reasoning).to.equal('Deep Thoughts here...');",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(assistant, 'reasoning_content'), 'legacy field still sent: ' + JSON.stringify(assistant)).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vllm/Qwen/Qwen3-0.6B\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"First prompt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Final response\",\n      \"reasoning_content\": \"Deep Thoughts here...\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Follow up question\"\n    }\n  ],\n  \"max_tokens\": 32\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "183.2 vllm/Qwen/Qwen3-0.6B assistant reasoning replay stream - vllm-reasoning-replay - #6238",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var text = pm.response.text(), rr = null, sawDone = false, sawChoice = false, parseError = null, streamError = null;",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (data === '[DONE]') { sawDone = true; return; }",
+                  "  var chunk;",
+                  "  try { chunk = JSON.parse(data); } catch (e) { parseError = String(e); return; }",
+                  "  if (chunk.error) { streamError = chunk.error; }",
+                  "  if (chunk.choices && chunk.choices.length) { sawChoice = true; }",
+                  "  if ((chunk.extra_fields || {}).raw_request) { rr = chunk.extra_fields.raw_request; }",
+                  "});",
+                  "pm.test('successful chat stream terminates', function () {",
+                  "  pm.expect(parseError, 'invalid SSE: ' + text).to.equal(null);",
+                  "  pm.expect(streamError, 'stream error: ' + text).to.equal(null);",
+                  "  pm.expect(sawChoice, 'missing chat choices: ' + text).to.equal(true);",
+                  "  pm.expect(sawDone, 'missing [DONE]: ' + text).to.equal(true);",
+                  "});",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('outbound assistant reasoning uses the canonical field', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr.messages, 'outbound messages missing: ' + JSON.stringify(rr)).to.be.an('array').with.lengthOf(3);",
+                  "  var assistant = rr.messages[1];",
+                  "  pm.expect(assistant.role).to.equal('assistant');",
+                  "  pm.expect(assistant.content).to.equal('Final response');",
+                  "  pm.expect(assistant.reasoning).to.equal('Deep Thoughts here...');",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(assistant, 'reasoning_content'), 'legacy field still sent: ' + JSON.stringify(assistant)).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vllm/Qwen/Qwen3-0.6B\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"First prompt\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Final response\",\n      \"reasoning_content\": \"Deep Thoughts here...\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Follow up question\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

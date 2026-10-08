@@ -1078,6 +1078,7 @@ func TestToOpenAIChatRequest_MovesAssistantReasoningToAliasForGroq(t *testing.T)
 	}{
 		{name: "groq", provider: schemas.Groq, model: "qwen/qwen3.8-27b"},
 		{name: "cerebras", provider: schemas.Cerebras, model: "gpt-oss-120b"},
+		{name: "vllm", provider: schemas.VLLM, model: "Qwen/Qwen3-0.6B"},
 	} {
 		t.Run(tt.name, func(t *testing.T) { assertMovesAssistantReasoningToAlias(t, tt.provider, tt.model) })
 	}
@@ -1110,6 +1111,10 @@ func assertMovesAssistantReasoningToAlias(t *testing.T, provider schemas.ModelPr
 		},
 	}
 
+	before, err := json.Marshal(bifrostReq.Input)
+	if err != nil {
+		t.Fatalf("failed to snapshot caller messages: %v", err)
+	}
 	result := ToOpenAIChatRequest(ctx, bifrostReq)
 	if result == nil {
 		t.Fatal("expected non-nil result")
@@ -1154,6 +1159,13 @@ func assertMovesAssistantReasoningToAlias(t *testing.T, provider schemas.ModelPr
 	}
 	if got, ok := assistantMessage["reasoning"].(string); !ok || got != reasoning {
 		t.Fatalf("expected reasoning %q in %s assistant payload, got %#v", reasoning, provider, assistantMessage["reasoning"])
+	}
+	after, err := json.Marshal(bifrostReq.Input)
+	if err != nil {
+		t.Fatalf("failed to snapshot caller messages after conversion: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("conversion mutated caller messages: before=%s after=%s", before, after)
 	}
 }
 

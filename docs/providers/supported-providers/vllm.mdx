@@ -118,6 +118,8 @@ case schemas.VLLM:
 
 The alias-level setting takes precedence when both are present. Count Tokens always uses `/v1/messages/count_tokens`, regardless of this setting.
 
+Typed Chat Completions sent to the OpenAI-compatible endpoint replay assistant reasoning as `reasoning`. Native message input accepts both `reasoning` and `reasoning_content`; when both are supplied, `reasoning` takes precedence. Raw-body and large-payload passthrough retain the caller's field spelling.
+
 <Note>
 Authentication remains `Authorization: Bearer <key>` in both modes. Bifrost omits the header when the key value is empty.
 </Note>
