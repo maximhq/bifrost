@@ -253,6 +253,63 @@ initContainers:
     command: ["sh", "-c", "until nc -z postgres-svc 5432; do sleep 2; done"]
 ```
 
+### Sidecar Containers
+
+Add sidecars the way Kubernetes defines them; the chart has no separate sidecar setting. Every container in the pod shares its network, so a sidecar reaches Bifrost on `localhost:8080`.
+
+**Native sidecars** (Kubernetes 1.29+) are init containers with `restartPolicy: Always`, as described in the [Kubernetes sidecar docs](https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/). Add them under `initContainers`. Kubernetes starts a native sidecar before the init containers listed after it and before Bifrost, keeps it running beside Bifrost, restarts it if it exits, and stops it only after Bifrost has shut down. Use one for anything Bifrost needs from startup to shutdown, such as a database proxy. This one runs the Cloud SQL Auth Proxy and points Bifrost's external PostgreSQL at it:
+
+```yaml
+initContainers:
+  - name: cloud-sql-proxy
+    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+    restartPolicy: Always      # makes this init container a native sidecar
+    args:
+      - "--port=5432"                       # Postgres listener, on 127.0.0.1 only
+      - "--health-check"                    # serve /startup, /liveness and /readiness
+      - "--http-address=0.0.0.0"            # health endpoints must be reachable by the kubelet on the pod IP
+      - "--http-port=9801"
+      - "my-project:us-central1:bifrost-db" # your instance connection name
+    startupProbe:              # later init containers and Bifrost wait until the proxy has started
+      httpGet:
+        path: /startup
+        port: 9801
+      periodSeconds: 1
+      failureThreshold: 30
+
+storage:
+  mode: postgres               # store config and logs in PostgreSQL, reached through the proxy
+
+postgresql:
+  external:
+    enabled: true
+    host: "127.0.0.1"          # the proxy, inside the pod
+    port: 5432
+```
+
+Init containers run in list order, so put a native sidecar before any init container that needs it (for example, a migration step that connects through the proxy). Kubernetes moves on once a native sidecar has started, not once its service is ready: when something depends on the sidecar being ready, give it a `startupProbe`, and Kubernetes waits for the probe to succeed first. The kubelet sends probes to the pod IP, so a sidecar that listens only on `127.0.0.1` (like the proxy's Postgres port) needs a probe on a listener the kubelet can reach, such as the proxy's health endpoint above. On a cluster older than 1.29, the chart refuses to render an init container with `restartPolicy: Always` rather than leave the pod stuck behind an init container that never exits.
+
+**Regular sidecars** go in `extraContainers`, which the chart appends to the pod's containers after Bifrost. They start and stop alongside Bifrost with no ordering guarantee, and work on any Kubernetes version. This one serves Bifrost on a second pod port by forwarding raw TCP:
+
+```yaml
+extraContainers:
+  - name: port-forwarder
+    image: alpine/socat:1.8.0.0
+    args: ["TCP-LISTEN:9090,fork,reuseaddr", "TCP:localhost:8080"]
+    ports:
+      - containerPort: 9090
+        name: http-alt
+```
+
+A TCP forwarder passes every route on port 8080, the full API included, with the same authentication; it is not a metrics-only endpoint. To expose only `/metrics` on its own port, use an HTTP proxy that allows that path alone.
+
+| Kind | Where to add it | Starts | Stops | Kubernetes |
+|------|-----------------|--------|-------|------------|
+| Native sidecar | `initContainers`, with `restartPolicy: Always` | Before later init containers and Bifrost | After Bifrost | 1.29+ |
+| Regular sidecar | `extraContainers` | With Bifrost | With Bifrost | Any |
+
+Share files between Bifrost and a sidecar by declaring the volume under `volumes`, mounting it into Bifrost with `volumeMounts`, and mounting it into the sidecar in its own `volumeMounts`.
+
 ---
 
 ## Values Examples
