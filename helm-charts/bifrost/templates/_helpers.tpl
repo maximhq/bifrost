@@ -54,6 +54,21 @@ app.kubernetes.io/component: server
 {{- toYaml $constraints }}
 {{- end }}
 
+{{- /* Init containers for the Bifrost pod, rendered as given. An entry with restartPolicy: Always
+       is a Kubernetes native sidecar, which needs Kubernetes 1.29+ (the SidecarContainers feature
+       is on by default from 1.29). Older API servers drop or reject the field, which would leave
+       the pod stuck behind an init container that never exits, so the chart refuses to render it. */ -}}
+{{- define "bifrost.initContainers" -}}
+{{- range .Values.initContainers }}
+{{- if and (eq (toString .restartPolicy) "Always") (semverCompare "<1.29.0-0" $.Capabilities.KubeVersion.Version) }}
+{{- fail (printf "ERROR: native sidecar container '%s' (restartPolicy: Always) needs Kubernetes 1.29 or newer; this cluster reports %s. Use extraContainers for a regular sidecar instead." .name $.Capabilities.KubeVersion.Version) }}
+{{- end }}
+{{- end }}
+{{- with .Values.initContainers }}
+{{- toYaml . }}
+{{- end }}
+{{- end }}
+
 {{- define "bifrost.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
 {{- default (include "bifrost.fullname" .) .Values.serviceAccount.name }}

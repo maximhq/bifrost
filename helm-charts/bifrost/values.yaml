@@ -2119,6 +2119,34 @@ envFrom: []
   # - configMapRef:
   #     name: my-configmap
 
-# Init containers to run before the main application container.
+# Regular sidecar containers, appended to the pod's containers after Bifrost. They run
+# alongside Bifrost with no start or stop ordering and share its network namespace, so
+# they can reach Bifrost on localhost:8080. For a container that must be up before Bifrost
+# starts and outlive it on shutdown, use a native sidecar under initContainers instead.
+extraContainers: []
+  # - name: port-forwarder               # serves all of Bifrost's routes (not only /metrics) on pod port 9090
+  #   image: alpine/socat:1.8.0.0
+  #   args: ["TCP-LISTEN:9090,fork,reuseaddr", "TCP:localhost:8080"]
+  #   ports:
+  #     - containerPort: 9090
+  #       name: http-alt
+
+# Init containers to run before the main application container, in order.
 # Provide a list of init containers using standard Kubernetes container spec.
+#
+# Native sidecars (Kubernetes 1.29+) follow the Kubernetes convention: an init container with
+# restartPolicy: Always starts before the containers after it and Bifrost, keeps running beside
+# Bifrost, is restarted if it exits, and is stopped after Bifrost on shutdown. Kubernetes waits
+# only for a sidecar to start, not to be ready: give one that Bifrost or a later init container
+# depends on a startupProbe. The chart refuses to render a native sidecar on older clusters.
 initContainers: []
+  # - name: cloud-sql-proxy             # with storage.mode: postgres and postgresql.external.host: "127.0.0.1"
+  #   image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+  #   restartPolicy: Always             # makes this init container a native sidecar
+  #   args: ["--port=5432", "--health-check", "--http-address=0.0.0.0", "--http-port=9801", "my-project:us-central1:bifrost-db"]
+  #   startupProbe:                     # probes hit the pod IP, so probe the health listener, not 127.0.0.1:5432
+  #     httpGet:
+  #       path: /startup
+  #       port: 9801
+  #     periodSeconds: 1
+  #     failureThreshold: 30
