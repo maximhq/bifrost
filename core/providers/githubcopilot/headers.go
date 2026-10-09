@@ -54,6 +54,24 @@ func buildAuthHeaders(creds *copilotCredentials, hasImageContent bool) map[strin
 	return headers
 }
 
+// responsesRequestHasImageContent is chatRequestHasImageContent for a Responses request.
+func responsesRequestHasImageContent(request *schemas.BifrostResponsesRequest) bool {
+	if request == nil {
+		return false
+	}
+	for _, message := range request.Input {
+		if message.Content == nil {
+			continue
+		}
+		for _, block := range message.Content.ContentBlocks {
+			if block.Type == schemas.ResponsesInputMessageContentBlockTypeImage {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // chatRequestHasImageContent reports whether any message in the request carries an image
 // block. Only content blocks can hold images; a plain string content never does.
 func chatRequestHasImageContent(request *schemas.BifrostChatRequest) bool {
