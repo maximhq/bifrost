@@ -128889,7 +128889,7 @@
                           "  pm.expect(j.data, 'top-level data means the Bifrost envelope leaked through the Cohere dialect').to.be.undefined;",
                           "  pm.expect(j.embeddings, 'no embeddings object; body: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
                           "  pm.expect(j.id, 'Cohere responses carry an id').to.be.a('string');",
-                          "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.match(/^embeddings_/);",
+                          "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.eql('embeddings_by_type');",
                           "});",
                           "pm.test('embedding_types:[float] yields a non-empty float vector', function () {",
                           "  var vecs = j.embeddings.float || [];",
@@ -128972,7 +128972,7 @@
                           "  pm.expect(j.data, 'top-level data means the Bifrost envelope leaked through the Cohere dialect').to.be.undefined;",
                           "  pm.expect(j.embeddings, 'no embeddings object; body: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
                           "  pm.expect(j.id, 'Cohere responses carry an id').to.be.a('string');",
-                          "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.match(/^embeddings_/);",
+                          "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.eql('embeddings_by_type');",
                           "});",
                           "pm.test('embedding_types:[float] yields a non-empty float vector', function () {",
                           "  var vecs = j.embeddings.float || [];",
@@ -129028,7 +129028,7 @@
                           "  pm.expect(j.data, 'top-level data means the Bifrost envelope leaked through the Cohere dialect').to.be.undefined;",
                           "  pm.expect(j.embeddings, 'no embeddings object; body: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
                           "  pm.expect(j.id, 'Cohere responses carry an id').to.be.a('string');",
-                          "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.match(/^embeddings_/);",
+                          "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.eql('embeddings_by_type');",
                           "});",
                           "pm.test('embedding_types:[float] yields a non-empty float vector', function () {",
                           "  var vecs = j.embeddings.float || [];",
@@ -129084,7 +129084,7 @@
                           "  pm.expect(j.data, 'top-level data means the Bifrost envelope leaked through the Cohere dialect').to.be.undefined;",
                           "  pm.expect(j.embeddings, 'no embeddings object; body: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
                           "  pm.expect(j.id, 'Cohere responses carry an id').to.be.a('string');",
-                          "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.match(/^embeddings_/);",
+                          "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.eql('embeddings_by_type');",
                           "});",
                           "pm.test('embedding_types:[float] yields a non-empty float vector', function () {",
                           "  var vecs = j.embeddings.float || [];",
@@ -129167,7 +129167,7 @@
                           "  pm.expect(j.data, 'top-level data means the Bifrost envelope leaked through the Cohere dialect').to.be.undefined;",
                           "  pm.expect(j.embeddings, 'no embeddings object; body: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
                           "  pm.expect(j.id, 'Cohere responses carry an id').to.be.a('string');",
-                          "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.match(/^embeddings_/);",
+                          "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.eql('embeddings_by_type');",
                           "});",
                           "pm.test('embedding_types:[float] yields a non-empty float vector', function () {",
                           "  var vecs = j.embeddings.float || [];",
@@ -132710,7 +132710,7 @@
                       "pm.test('response is Cohere-native, not the Bifrost embedding envelope', function () {",
                       "  pm.expect(j.data, 'top-level data means the Bifrost envelope leaked through the Cohere dialect').to.be.undefined;",
                       "  pm.expect(j.id, 'Cohere responses carry an id').to.be.a('string');",
-                      "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.match(/^embeddings_/);",
+                      "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.eql('embeddings_by_type');",
                       "});",
                       "pm.test('billed units come back for both texts', function () {",
                       "  var billed = (j.meta || {}).billed_units || {};",
@@ -184291,7 +184291,7 @@
                       "  pm.expect(j.data, 'top-level data means the Bifrost envelope leaked through the Cohere dialect').to.be.undefined;",
                       "  pm.expect(j.object, 'top-level object belongs to the Bifrost envelope').to.be.undefined;",
                       "  pm.expect(j.id, 'Cohere responses carry an id').to.be.a('string');",
-                      "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.match(/^embeddings_/);",
+                      "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.eql('embeddings_by_type');",
                       "});"
                     ]
                   }
@@ -184346,7 +184346,7 @@
                       "  pm.expect(j.data, 'top-level data means the Bifrost envelope leaked through the Cohere dialect').to.be.undefined;",
                       "  pm.expect(j.object, 'top-level object belongs to the Bifrost envelope').to.be.undefined;",
                       "  pm.expect(j.id, 'Cohere responses carry an id').to.be.a('string');",
-                      "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.match(/^embeddings_/);",
+                      "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.eql('embeddings_by_type');",
                       "});"
                     ]
                   }
@@ -184401,7 +184401,7 @@
                       "  pm.expect(j.data, 'top-level data means the Bifrost envelope leaked through the Cohere dialect').to.be.undefined;",
                       "  pm.expect(j.object, 'top-level object belongs to the Bifrost envelope').to.be.undefined;",
                       "  pm.expect(j.id, 'Cohere responses carry an id').to.be.a('string');",
-                      "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.match(/^embeddings_/);",
+                      "  pm.expect(String(j.response_type || ''), 'response_type missing or unrecognised').to.eql('embeddings_by_type');",
                       "});"
                     ]
                   }
@@ -217303,6 +217303,609 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "182. GenAI embedding params reach non-Gemini providers (genai-embedding-params)",
+      "description": "GenAI :embedContent / :batchEmbedContents converters put taskType / title / outputDimensionality on each input item. Providers with one parameter block per request (openai, vertex, bedrock, cohere) reject per-item params with a 400 (\"applies one set of parameters to the whole request\"). google-genai always uses batchEmbedContents and repeats the same params on every entry, so identical entry params must be hoisted to request level. Entries with differing params stay per item (Gemini honours them) and non-Gemini targets reject them with a 400. Cases send outputDimensionality: 8 and assert 8-dim vectors come back.",
+      "item": [
+        {
+          "name": "182.1 openai/text-embedding-3-small - batchEmbedContents with identical outputDimensionality on every entry",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requests\":[{\"content\":{\"parts\":[{\"text\":\"Hello world\"}]},\"taskType\":\"RETRIEVAL_DOCUMENT\",\"outputDimensionality\":8},{\"content\":{\"parts\":[{\"text\":\"Goodbye world\"}]},\"taskType\":\"RETRIEVAL_DOCUMENT\",\"outputDimensionality\":8}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/openai/text-embedding-3-small:batchEmbedContents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "openai",
+                "text-embedding-3-small:batchEmbedContents"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai batch params: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var embs = body.embeddings || [];",
+                  "pm.test('openai batch params: one embedding per entry', function () {",
+                  "  pm.expect(embs.length, pm.response.text()).to.eql(2);",
+                  "});",
+                  "pm.test('openai batch params: outputDimensionality honoured', function () {",
+                  "  embs.forEach(function (e) { pm.expect((e.values || []).length, pm.response.text()).to.eql(8); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "182.2 vertex/text-embedding-005 - embedContent with outputDimensionality and taskType",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"content\":{\"parts\":[{\"text\":\"Hello world\"}]},\"taskType\":\"RETRIEVAL_DOCUMENT\",\"outputDimensionality\":8}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/text-embedding-005:embedContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "text-embedding-005:embedContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex embedContent params: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('vertex embedContent params: outputDimensionality honoured', function () {",
+                  "  pm.expect(((body.embedding || {}).values || []).length, pm.response.text()).to.eql(8);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "182.3 [EXPECT-4XX] openai/text-embedding-3-small - batchEmbedContents with differing params is rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requests\":[{\"content\":{\"parts\":[{\"text\":\"Hello world\"}]},\"taskType\":\"RETRIEVAL_QUERY\",\"outputDimensionality\":8},{\"content\":{\"parts\":[{\"text\":\"Goodbye world\"}]},\"taskType\":\"RETRIEVAL_DOCUMENT\",\"outputDimensionality\":16}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/openai/text-embedding-3-small:batchEmbedContents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "openai",
+                "text-embedding-3-small:batchEmbedContents"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai differing params: rejected with 400', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "});",
+                  "pm.test('openai differing params: per-item params error', function () {",
+                  "  pm.expect(pm.response.text()).to.include('cannot carry its own params');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "183. Embedding input errors do not name the wrong provider (embedding-error-wording)",
+      "description": "The OpenAI embedding converter is shared by OpenAI-compatible providers (azure, mistral, ollama, vllm, ...). Its unsupported-input errors used to say \"openai embedding does not support ...\" even when the request targeted another provider. They now say \"this provider does not support ...\". The request is rejected in the converter, so no upstream call is made.",
+      "item": [
+        {
+          "name": "183.1 [EXPECT-4XX] azure/text-embedding-ada-002 - image input error does not name openai",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"azure/text-embedding-ada-002\",\"input\":[[{\"type\":\"image\",\"image\":{\"url\":\"https://example.com/a.png\"}}]]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('azure image embedding: rejected with 400', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "pm.test('azure image embedding: error names no wrong provider', function () {",
+                  "  pm.expect(text, text).to.include('this provider does not support');",
+                  "  pm.expect(text, text).to.not.include('openai embedding');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "184. Bedrock Cohere Embed v3 image input uses images[] (bedrock-cohere-v3-image)",
+      "description": "Image-only embedding input to Bedrock Cohere used to be sent as inputs[], which only Embed v4 accepts; Embed v3 rejected it with \"extraneous key [inputs] is not permitted ... required key [texts] not found\". Lone images now go out as images[] with input_type defaulted to \"image\" (v3 rejects images[] under search_document; v4 accepts both). Bare base64 with a mime_type is sent as a data URI, since Bedrock Cohere rejects bare base64. On the native invoke route with x-bf-passthrough-extra-params, the original images/inputs from the request must not be merged back beside the rebuilt shape (Bedrock rejects a body carrying both).",
+      "item": [
+        {
+          "name": "184.1 bedrock/cohere.embed-english-v3 - image-only input returns one embedding",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/cohere.embed-english-v3\",\"input\":[[{\"type\":\"image\",\"image\":{\"data\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAOklEQVR4nO3RQREAQAjDwHKS8C8AWSchfPhlBZSZUNOdS+90PR5Y8AfIRMhEyETIRMhEyETIRMhEIR/EvwFs/VkrpgAAAABJRU5ErkJggg==\"}}]]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('bedrock cohere v3 image: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var data = (pm.response.json() || {}).data || [];",
+                  "pm.test('bedrock cohere v3 image: one non-empty embedding', function () {",
+                  "  pm.expect(data.length, pm.response.text()).to.eql(1);",
+                  "  pm.expect((data[0].embedding || []).length, pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "184.2 bedrock/cohere.embed-english-v3 - bare base64 with mime_type returns one embedding",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/cohere.embed-english-v3\",\"input\":[[{\"type\":\"image\",\"image\":{\"data\":\"iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAOklEQVR4nO3RQREAQAjDwHKS8C8AWSchfPhlBZSZUNOdS+90PR5Y8AfIRMhEyETIRMhEyETIRMhEIR/EvwFs/VkrpgAAAABJRU5ErkJggg==\",\"mime_type\":\"image/png\"}}]]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('bedrock cohere v3 bare base64 image: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var data = (pm.response.json() || {}).data || [];",
+                  "pm.test('bedrock cohere v3 bare base64 image: one non-empty embedding', function () {",
+                  "  pm.expect(data.length, pm.response.text()).to.eql(1);",
+                  "  pm.expect((data[0].embedding || []).length, pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "184.3 bedrock/global.cohere.embed-v4:0 - native lone-image inputs[] with passthrough sends one image shape",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"input_type\":\"search_document\",\"inputs\":[{\"content\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAOklEQVR4nO3RQREAQAjDwHKS8C8AWSchfPhlBZSZUNOdS+90PR5Y8AfIRMhEyETIRMhEyETIRMhEIR/EvwFs/VkrpgAAAABJRU5ErkJggg==\"}}]}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.cohere.embed-v4:0/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.cohere.embed-v4:0",
+                "invoke"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('bedrock cohere v4 native lone image: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var e = (pm.response.json() || {}).embeddings;",
+                  "var vectors = Array.isArray(e) ? e : ((e || {}).float || []);",
+                  "pm.test('bedrock cohere v4 native lone image: one non-empty embedding', function () {",
+                  "  pm.expect(vectors.length, pm.response.text()).to.eql(1);",
+                  "  pm.expect((vectors[0] || []).length, pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "185. Embedding params outside the OpenAI schema stay off OpenAI-compatible wires (openai-compat-embedding-params)",
+      "description": "task_type / title / auto_truncate are first-class embedding params (Gemini, Vertex), but the shared OpenAI converter used to copy them onto the wire for every OpenAI-compatible provider. Strict providers such as Mistral reject unknown keys with 422 \"Extra inputs are not permitted\". Only encoding_format and dimensions are OpenAI fields, so only those are forwarded.",
+      "item": [
+        {
+          "name": "185.1 mistral/mistral-embed - task_type, title and auto_truncate are not forwarded",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/mistral-embed\",\"input\":\"Hello world\",\"task_type\":\"RETRIEVAL_QUERY\",\"title\":\"t\",\"auto_truncate\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mistral embedding params: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var data = (pm.response.json() || {}).data || [];",
+                  "pm.test('mistral embedding params: one non-empty embedding', function () {",
+                  "  pm.expect(data.length, pm.response.text()).to.eql(1);",
+                  "  pm.expect((data[0].embedding || []).length, pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "186. documentOcr / audioTrackExtraction go under embedContentConfig (embed-content-config)",
+      "description": "Gemini (AI Studio) and Vertex accept documentOcr / audioTrackExtraction only inside embedContentConfig; at the top level of the body or of a :batchEmbedContents entry both return 400 \"Unknown name\". Bifrost used to serialize them at the top level and dropped a caller-supplied embedContentConfig (and, under passthrough, merged it at the Gemini batch top level, which 400s). A nested embedContentConfig must now reach the wire on the body (Vertex) or on each requests[] entry (Gemini).",
+      "item": [
+        {
+          "name": "186.1 vertex/gemini-embedding-2-preview - embedContentConfig is forwarded",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-embedding-2-preview\",\"input\":[[{\"type\":\"text\",\"text\":\"alpha kestrel harbor\"}]],\"task_type\":\"RETRIEVAL_DOCUMENT\",\"dimensions\":256,\"embedContentConfig\":{\"documentOcr\":true,\"audioTrackExtraction\":true}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('embedContentConfig: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('embedContentConfig: dimensions applied', function () {",
+                  "  pm.expect((((body.data || [])[0] || {}).embedding || []).length, pm.response.text().slice(0, 300)).to.eql(256);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('embedContentConfig: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var entry = rr;",
+                  "pm.test('embedContentConfig: documentOcr and audioTrackExtraction nested', function () {",
+                  "  var cfg = (entry || {}).embedContentConfig || {};",
+                  "  pm.expect(cfg.documentOcr, JSON.stringify(rr)).to.eql(true);",
+                  "  pm.expect(cfg.audioTrackExtraction, JSON.stringify(rr)).to.eql(true);",
+                  "});",
+                  "pm.test('embedContentConfig: nothing at the top level', function () {",
+                  "  pm.expect(entry, JSON.stringify(rr)).to.not.have.property('documentOcr');",
+                  "  pm.expect(entry, JSON.stringify(rr)).to.not.have.property('audioTrackExtraction');",
+                  "  pm.expect(rr, JSON.stringify(rr)).to.not.have.property('documentOcr');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "186.2 gemini/gemini-embedding-2 - embedContentConfig goes on each requests[] entry",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-embedding-2\",\"input\":[[{\"type\":\"text\",\"text\":\"alpha kestrel harbor\"}]],\"task_type\":\"RETRIEVAL_DOCUMENT\",\"dimensions\":256,\"embedContentConfig\":{\"documentOcr\":true,\"audioTrackExtraction\":true}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('embedContentConfig: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('embedContentConfig: dimensions applied', function () {",
+                  "  pm.expect((((body.data || [])[0] || {}).embedding || []).length, pm.response.text().slice(0, 300)).to.eql(256);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('embedContentConfig: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var entry = (rr.requests || [])[0];",
+                  "pm.test('embedContentConfig: documentOcr and audioTrackExtraction nested', function () {",
+                  "  var cfg = (entry || {}).embedContentConfig || {};",
+                  "  pm.expect(cfg.documentOcr, JSON.stringify(rr)).to.eql(true);",
+                  "  pm.expect(cfg.audioTrackExtraction, JSON.stringify(rr)).to.eql(true);",
+                  "});",
+                  "pm.test('embedContentConfig: nothing at the top level', function () {",
+                  "  pm.expect(entry, JSON.stringify(rr)).to.not.have.property('documentOcr');",
+                  "  pm.expect(entry, JSON.stringify(rr)).to.not.have.property('audioTrackExtraction');",
+                  "  pm.expect(rr, JSON.stringify(rr)).to.not.have.property('documentOcr');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "186.3 gemini/gemini-embedding-2 - embedContentConfig with passthrough stays inside requests[]",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-embedding-2\",\"input\":[[{\"type\":\"text\",\"text\":\"alpha kestrel harbor\"}]],\"task_type\":\"RETRIEVAL_DOCUMENT\",\"dimensions\":256,\"embedContentConfig\":{\"documentOcr\":true,\"audioTrackExtraction\":true}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('embedContentConfig: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('embedContentConfig: dimensions applied', function () {",
+                  "  pm.expect((((body.data || [])[0] || {}).embedding || []).length, pm.response.text().slice(0, 300)).to.eql(256);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('embedContentConfig: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var entry = (rr.requests || [])[0];",
+                  "pm.test('embedContentConfig: documentOcr and audioTrackExtraction nested', function () {",
+                  "  var cfg = (entry || {}).embedContentConfig || {};",
+                  "  pm.expect(cfg.documentOcr, JSON.stringify(rr)).to.eql(true);",
+                  "  pm.expect(cfg.audioTrackExtraction, JSON.stringify(rr)).to.eql(true);",
+                  "});",
+                  "pm.test('embedContentConfig: nothing at the top level', function () {",
+                  "  pm.expect(entry, JSON.stringify(rr)).to.not.have.property('documentOcr');",
+                  "  pm.expect(entry, JSON.stringify(rr)).to.not.have.property('audioTrackExtraction');",
+                  "  pm.expect(rr, JSON.stringify(rr)).to.not.have.property('documentOcr');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }
