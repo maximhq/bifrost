@@ -218460,6 +218460,491 @@
       ]
     },
     {
+      "name": "187. OpenAI decision pricing from decision rates and overrides (openai-decision-pricing) [SERIAL]",
+      "description": "Pins how a decision on openai/gpt-6-luna is priced (PR #8249). gpt-6-luna is a chat row in the datasheet with no decisions-mode row, so a decision used to be recorded with no cost; it is now priced from the model's own row. Case 1-2 pin that a plain decision is recorded with a cost. Cases 3-8 pin that an override on the decision rate fields (input_cost_per_token_decisions / output_cost_per_token_decisions), which the pricing override API accepts, prices a decision at those rates. The override is scoped to a throwaway virtual key on purpose: a global or provider-scoped override would reprice every other gpt-6-luna request in flight and trip the suite's cost-accuracy checks.",
+      "item": [
+        {
+          "name": "/v1/decisions - decision on a chat row is sent for pricing - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var reqId = 'e2e-luna-decision-price-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);",
+                  "pm.collectionVariables.set('lunaDecisionPriceRequestId', reqId);",
+                  "pm.collectionVariables.unset('lunaDecisionPriceRetry');"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('decision on openai/gpt-6-luna succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].name).to.eql('is_refund_request');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{lunaDecisionPriceRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"input\": \"I was charged twice for my subscription this month and I would like a refund.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_refund_request\",\n      \"instructions\": \"Does the customer ask for a refund?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "logs - the decision is recorded with a cost from the datasheet - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var retry = Number(pm.collectionVariables.get('lunaDecisionPriceRetry') || 0);",
+                  "if (retry > 0) {",
+                  "  // The async log writer flushes in 1s batches. Newman drains pending timers before it sends.",
+                  "  var until = Date.now() + 1000;",
+                  "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.collectionVariables.get('lunaDecisionPriceRequestId');",
+                  "pm.test('logs query responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('lunaDecisionPriceRetry'); return; }",
+                  "var logs = (pm.response.json().logs || []);",
+                  "// The log row id is the request id, so an identity check turns a wrong row into no row.",
+                  "var row = null;",
+                  "logs.forEach(function (l) { if (l.id === reqId) { row = l; } });",
+                  "var retry = Number(pm.collectionVariables.get('lunaDecisionPriceRetry') || 0);",
+                  "if ((!row || !(row.cost > 0)) && retry < 10) {",
+                  "  pm.collectionVariables.set('lunaDecisionPriceRetry', retry + 1);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('lunaDecisionPriceRetry');",
+                  "pm.test('the decision was logged under its request id', function () {",
+                  "  pm.expect(row, 'no log row for ' + reqId + ': ' + pm.response.text()).to.not.equal(null);",
+                  "  pm.expect(row.object).to.eql('decisions');",
+                  "});",
+                  "if (!row) { return; }",
+                  "var prompt = row.token_usage && row.token_usage.prompt_tokens;",
+                  "pm.test('the decision recorded its input tokens', function () {",
+                  "  pm.expect(prompt, 'token_usage: ' + JSON.stringify(row.token_usage)).to.be.above(0);",
+                  "});",
+                  "",
+                  "pm.test('the decision was priced', function () {",
+                  "  pm.expect(row.cost, 'cost: ' + JSON.stringify([row.cost, row.token_usage])).to.be.above(0);",
+                  "});",
+                  ""
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs?request_id={{lunaDecisionPriceRequestId}}&limit=1"
+          },
+          "response": []
+        },
+        {
+          "name": "Setup - Create VK for decision pricing - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.unset('lunaPricingVkId');",
+                  "pm.collectionVariables.unset('lunaPricingVkValue');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'Decision Pricing VK ' + Date.now(),",
+                  "  provider_configs: [{ provider: 'openai', weight: 1.0, allowed_models: ['*'], key_ids: ['*'] }]",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Create VK returns 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var vk = body && (body.virtual_key || body);",
+                  "pm.test('Created VK exposes usable credentials', function () {",
+                  "  pm.expect(vk && vk.id, 'id in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(vk && vk.value, 'value in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "if (vk && vk.id && vk.value) {",
+                  "  pm.collectionVariables.set('lunaPricingVkId', vk.id);",
+                  "  pm.collectionVariables.set('lunaPricingVkValue', vk.value);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Setup - Decisions override on the decision rate fields, VK scoped [EXPECT-201] - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var missing = ['lunaPricingVkId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "pm.collectionVariables.unset('lunaPricingOverrideId');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'e2e-luna-decision-rates-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),",
+                  "  // Virtual-key scoped on purpose: a global or provider-scoped override would reprice every other",
+                  "  // gpt-6-luna request in flight and trip the cost-accuracy checks elsewhere in the suite.",
+                  "  scope_kind: 'virtual_key',",
+                  "  virtual_key_id: pm.collectionVariables.get('lunaPricingVkId'),",
+                  "  match_type: 'exact',",
+                  "  pattern: 'gpt-6-luna',",
+                  "  request_types: ['decisions'],",
+                  "  patch: { input_cost_per_token_decisions: 0.001, output_cost_per_token_decisions: 0 }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Override on the decision rate fields is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var ov = body && (body.pricing_override || body);",
+                  "pm.test('Override exposes an id', function () {",
+                  "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "if (ov && ov.id) { pm.collectionVariables.set('lunaPricingOverrideId', ov.id); }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - decision through the VK with the decision rate override - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var missing = ['lunaPricingVkValue', 'lunaPricingOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var reqId = 'e2e-luna-decision-override-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);",
+                  "pm.collectionVariables.set('lunaDecisionOverrideRequestId', reqId);",
+                  "pm.collectionVariables.unset('lunaDecisionOverrideRetry');"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('decision on openai/gpt-6-luna succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].name).to.eql('is_refund_request');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{lunaPricingVkValue}}"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{lunaDecisionOverrideRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"input\": \"I was charged twice for my subscription this month and I would like a refund.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_refund_request\",\n      \"instructions\": \"Does the customer ask for a refund?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "logs - the decision is priced at the overridden decision rate - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var retry = Number(pm.collectionVariables.get('lunaDecisionOverrideRetry') || 0);",
+                  "if (retry > 0) {",
+                  "  // The async log writer flushes in 1s batches. Newman drains pending timers before it sends.",
+                  "  var until = Date.now() + 1000;",
+                  "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.collectionVariables.get('lunaDecisionOverrideRequestId');",
+                  "pm.test('logs query responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('lunaDecisionOverrideRetry'); return; }",
+                  "var logs = (pm.response.json().logs || []);",
+                  "// The log row id is the request id, so an identity check turns a wrong row into no row.",
+                  "var row = null;",
+                  "logs.forEach(function (l) { if (l.id === reqId) { row = l; } });",
+                  "var retry = Number(pm.collectionVariables.get('lunaDecisionOverrideRetry') || 0);",
+                  "if ((!row || !(row.cost > 0)) && retry < 10) {",
+                  "  pm.collectionVariables.set('lunaDecisionOverrideRetry', retry + 1);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('lunaDecisionOverrideRetry');",
+                  "pm.test('the decision was logged under its request id', function () {",
+                  "  pm.expect(row, 'no log row for ' + reqId + ': ' + pm.response.text()).to.not.equal(null);",
+                  "  pm.expect(row.object).to.eql('decisions');",
+                  "});",
+                  "if (!row) { return; }",
+                  "var prompt = row.token_usage && row.token_usage.prompt_tokens;",
+                  "pm.test('the decision recorded its input tokens', function () {",
+                  "  pm.expect(prompt, 'token_usage: ' + JSON.stringify(row.token_usage)).to.be.above(0);",
+                  "});",
+                  "",
+                  "// 0.001 per input token, and a decision has no output tokens to bill.",
+                  "var expected = prompt * 0.001;",
+                  "pm.test('the decision cost is the overridden decision rate times the input tokens', function () {",
+                  "  pm.expect(Math.abs(row.cost - expected), 'cost ' + row.cost + ' vs expected ' + expected + ' for ' + prompt + ' input tokens').to.be.at.most(Math.max(1e-9, expected * 1e-6));",
+                  "});",
+                  ""
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs?request_id={{lunaDecisionOverrideRequestId}}&limit=1"
+          },
+          "response": []
+        },
+        {
+          "name": "Teardown - Delete the decision rate override - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var missing = ['lunaPricingOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Override deleted', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "pm.collectionVariables.unset('lunaPricingOverrideId');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{lunaPricingOverrideId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides",
+                "{{lunaPricingOverrideId}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Teardown - Delete VK - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var missing = ['lunaPricingVkId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('VK deleted', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "pm.collectionVariables.unset('lunaPricingVkId');",
+                  "pm.collectionVariables.unset('lunaPricingVkValue');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{lunaPricingVkId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{lunaPricingVkId}}"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
       "name": "182. GenAI embedding params reach non-Gemini providers (genai-embedding-params)",
       "description": "GenAI :embedContent / :batchEmbedContents converters put taskType / title / outputDimensionality on each input item. Providers with one parameter block per request (openai, vertex, bedrock, cohere) reject per-item params with a 400 (\"applies one set of parameters to the whole request\"). google-genai always uses batchEmbedContents and repeats the same params on every entry, so identical entry params must be hoisted to request level. Entries with differing params stay per item (Gemini honours them) and non-Gemini targets reject them with a 400. Cases send outputDimensionality: 8 and assert 8-dim vectors come back.",
       "item": [

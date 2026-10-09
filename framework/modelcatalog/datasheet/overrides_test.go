@@ -1199,3 +1199,24 @@ func TestPatchPricing_Above100kRates(t *testing.T) {
 	require.NotNil(t, patched.InputCostPerToken)
 	assert.Equal(t, 1e-07, *patched.InputCostPerToken)
 }
+
+// TestPatchPricing_DecisionRatesPassThrough pins that the decision rates in an
+// override patch land on the pricing row, and leave the plain rates alone.
+func TestPatchPricing_DecisionRatesPassThrough(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(1.0),
+		OutputCostPerToken: bifrost.Ptr(2.0),
+	}
+
+	patched := patchPricing(base, Options{
+		InputCostPerTokenDecisions:  bifrost.Ptr(0.1),
+		OutputCostPerTokenDecisions: bifrost.Ptr(0.2),
+	})
+
+	require.NotNil(t, patched.InputCostPerTokenDecisions)
+	require.NotNil(t, patched.OutputCostPerTokenDecisions)
+	assert.Equal(t, 0.1, *patched.InputCostPerTokenDecisions)
+	assert.Equal(t, 0.2, *patched.OutputCostPerTokenDecisions)
+	assert.Equal(t, 1.0, *patched.InputCostPerToken)
+	assert.Equal(t, 2.0, *patched.OutputCostPerToken)
+}

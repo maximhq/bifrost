@@ -54,13 +54,13 @@ export const PRICING_FIELDS = [
 		key: "input_cost_per_token",
 		label: "Input / token",
 		group: "chat",
-		requestTypeGroups: ["chat", "embedding", "rerank", "decisions", "audio", "image", "video"],
+		requestTypeGroups: ["chat", "embedding", "rerank", "audio", "image", "video"],
 	},
 	{
 		key: "output_cost_per_token",
 		label: "Output / token",
 		group: "chat",
-		requestTypeGroups: ["chat", "rerank", "decisions", "audio", "image", "video"],
+		requestTypeGroups: ["chat", "rerank", "audio", "image", "video"],
 	},
 	{
 		key: "input_cost_per_token_batches",
@@ -109,6 +109,18 @@ export const PRICING_FIELDS = [
 		label: "Output / token (flex)",
 		group: "chat",
 		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "input_cost_per_token_decisions",
+		label: "Input / token (decisions)",
+		group: "chat",
+		requestTypeGroups: ["decisions"],
+	},
+	{
+		key: "output_cost_per_token_decisions",
+		label: "Output / token (decisions)",
+		group: "chat",
+		requestTypeGroups: ["decisions"],
 	},
 	{
 		key: "input_cost_per_token_fast",
