@@ -188,17 +188,17 @@ Releasing requires the **AdaptiveRouter** resource with the **Update** operation
 
 ```bash
 # Release one model of a key
-curl -X POST http://localhost:8080/api/load-balancer-config/conditions/clear \
+curl -X POST http://localhost:8080/api/adaptive-routing/conditions/clear \
   -H "Content-Type: application/json" \
   -d '{"provider": "azure", "key_id": "key-uuid", "model": "gpt-4o"}'
 
 # Release every model of a key
-curl -X POST http://localhost:8080/api/load-balancer-config/conditions/clear \
+curl -X POST http://localhost:8080/api/adaptive-routing/conditions/clear \
   -H "Content-Type: application/json" \
   -d '{"provider": "openai", "key_id": "key-uuid"}'
 
 # Release every held key
-curl -X POST http://localhost:8080/api/load-balancer-config/conditions/clear
+curl -X POST http://localhost:8080/api/adaptive-routing/conditions/clear
 ```
 
 | Field | Effect |
@@ -207,13 +207,13 @@ curl -X POST http://localhost:8080/api/load-balancer-config/conditions/clear
 | `key_id` | Limits the release to one key of the provider. Requires `provider`. Omit to release every key of the provider |
 | `model` | Limits the release to one model of the key. Requires `provider` and `key_id`. A hold on the whole key, such as a rejected credential, is released only by naming the key without a model |
 
-The response lists the routes that were put back and how many:
+The response lists the holds the release dropped and how many. Each hold counts once: a hold on the whole key is named by its key id, however many models it covered, and a hold on one model by its route:
 
 ```json
-{ "cleared": ["openai:lb-identifier:gpt-4o:lb-identifier:key-uuid"], "count": 1 }
+{ "cleared": ["key-uuid", "openai:lb-identifier:gpt-4o:lb-identifier:other-key-uuid"], "count": 2 }
 ```
 
-A `count` of `0` means nothing matched on the node that took the request. When the request names a key, the release is still sent to every other node, which release anything they hold for it.
+Every node holds the same keys, so the answer is the same whichever node takes the request, even one that never sent the key a request. A `count` of `0` means nothing named was held, for example because the hold lapsed before the release reached it. The release is sent to every other node, which release the same holds.
 
 ### Across the cluster
 
@@ -273,14 +273,14 @@ The load balancer settings page exposes the five switches; changes apply immedia
 </Tab>
 <Tab title="API">
 
-Read and update the settings through `/api/load-balancer-config`:
+Read and update the settings through `/api/adaptive-routing/config` (the older `/api/load-balancer-config` still works but answers with a deprecation warning):
 
 ```bash
 # Read the current settings
-curl http://localhost:8080/api/load-balancer-config
+curl http://localhost:8080/api/adaptive-routing/config
 
 # Update the settings - always send all five fields
-curl -X PUT http://localhost:8080/api/load-balancer-config \
+curl -X PUT http://localhost:8080/api/adaptive-routing/config \
   -H "Content-Type: application/json" \
   -d '{
     "direction_selection_enabled": true,
