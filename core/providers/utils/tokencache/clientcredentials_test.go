@@ -128,14 +128,17 @@ func TestClientCredentialsMinter(t *testing.T) {
 		assert.Empty(t, user)
 	})
 
-	t.Run("a missing expires_in falls back to a short lifetime", func(t *testing.T) {
+	t.Run("a missing expires_in falls back to a short lifetime, refreshed a minute early", func(t *testing.T) {
+		// The docs promise a re-mint roughly every four minutes for such a token: a five
+		// minute assumed lifetime minus the one minute refresh margin.
 		ts := newTokenServer(t)
 		ts.set(http.StatusOK, `{"access_token":"minted","token_type":"Bearer"}`, nil)
 		mint := ClientCredentialsMinter(ClientCredentialsConfig{TokenURL: ts.URL, ClientID: "id", ClientSecret: "s"}, authClient(t))
 		e, bErr := mint(context.Background(), nil)
 		require.Nil(t, bErr)
 		assert.WithinDuration(t, time.Now().Add(fallbackTokenLifetime), e.ExpiresAt, 5*time.Second)
-		assert.True(t, e.RefreshAt.Before(e.ExpiresAt))
+		assert.WithinDuration(t, time.Now().Add(fallbackTokenLifetime-DefaultRefreshMargin), e.RefreshAt, 5*time.Second)
+		assert.Equal(t, 4*time.Minute, fallbackTokenLifetime-DefaultRefreshMargin)
 	})
 
 	t.Run("an endpoint rejection carries its status, blocks fallbacks and hides the body", func(t *testing.T) {
@@ -284,9 +287,10 @@ func TestClientCredentialsMinter(t *testing.T) {
 
 func TestEntryFor(t *testing.T) {
 	t.Run("a token already inside its margin is trusted for half its remaining life", func(t *testing.T) {
+		// The docs promise a 30-second token is re-minted after about 15 seconds.
 		expiry := time.Now().Add(30 * time.Second)
 		e := entryFor("t", expiry, time.Minute)
-		assert.True(t, e.RefreshAt.After(time.Now()))
+		assert.WithinDuration(t, time.Now().Add(15*time.Second), e.RefreshAt, 2*time.Second)
 		assert.True(t, e.RefreshAt.Before(expiry))
 	})
 }
