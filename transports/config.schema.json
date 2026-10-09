@@ -7257,14 +7257,12 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
-<<<<<<< HEAD
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
-=======
+        },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
->>>>>>> 13fe490aa (feat: accept injected_tools on the provider API and config schema)
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7307,14 +7305,12 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
-<<<<<<< HEAD
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
-=======
+        },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
->>>>>>> 13fe490aa (feat: accept injected_tools on the provider API and config schema)
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7357,14 +7353,12 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
-<<<<<<< HEAD
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
-=======
+        },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
->>>>>>> 13fe490aa (feat: accept injected_tools on the provider API and config schema)
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7407,14 +7401,12 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
-<<<<<<< HEAD
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
-=======
+        },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
->>>>>>> 13fe490aa (feat: accept injected_tools on the provider API and config schema)
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7457,14 +7449,12 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
-<<<<<<< HEAD
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
-=======
+        },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
->>>>>>> 13fe490aa (feat: accept injected_tools on the provider API and config schema)
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7507,14 +7497,12 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
-<<<<<<< HEAD
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
-=======
+        },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
->>>>>>> 13fe490aa (feat: accept injected_tools on the provider API and config schema)
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7557,14 +7545,12 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
-<<<<<<< HEAD
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
-=======
+        },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
->>>>>>> 13fe490aa (feat: accept injected_tools on the provider API and config schema)
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7607,14 +7593,12 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
-<<<<<<< HEAD
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
-=======
+        },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
->>>>>>> 13fe490aa (feat: accept injected_tools on the provider API and config schema)
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7657,14 +7641,12 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
-<<<<<<< HEAD
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
-=======
+        },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
->>>>>>> 13fe490aa (feat: accept injected_tools on the provider API and config schema)
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7704,14 +7686,12 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
-<<<<<<< HEAD
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
-=======
+        },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
->>>>>>> 13fe490aa (feat: accept injected_tools on the provider API and config schema)
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7751,14 +7731,12 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
-<<<<<<< HEAD
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
-=======
+        },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
->>>>>>> 13fe490aa (feat: accept injected_tools on the provider API and config schema)
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7801,14 +7779,12 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
-<<<<<<< HEAD
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
-=======
+        },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
->>>>>>> 13fe490aa (feat: accept injected_tools on the provider API and config schema)
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
