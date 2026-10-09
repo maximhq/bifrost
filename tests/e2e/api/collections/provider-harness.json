@@ -218752,6 +218752,186 @@
           }
         }
       ]
+    },
+    {
+      "name": "190. xai realtime client secret",
+      "description": "Native xAI client-secret minting through Bifrost. Previously rejected as unsupported provider. Asserts actual upstream mint succeeds and the gateway replaces the credential with an identity-bound mapped token. Does not validate WebSocket capture or voice execution. Deliberately excludes credentials from assertion messages.",
+      "item": [
+        {
+          "name": "xai grok-voice-latest realtime client secret",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-voice-latest\",\n  \"expires_after\": {\n    \"seconds\": 60\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/realtime/client_secrets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "realtime",
+                "client_secrets"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('xai realtime mint returns a mapped credential and actual expiry', function () {",
+                  "  pm.expect(pm.response.code, 'mint status (credentials redacted)').to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(typeof body.value).to.equal('string');",
+                  "  pm.expect(body.value.indexOf('ek_bf_') === 0, 'expected a Bifrost-mapped credential').to.equal(true);",
+                  "  pm.expect(body.expires_at).to.be.a('number');",
+                  "  pm.expect(body.expires_at).to.be.above(Math.floor(Date.now() / 1000));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "191. xai realtime native credentials",
+      "description": "Synthetic invalid browser credentials must return HTTP 400 before WebSocket upgrade, including on open deployments. No real provider credentials or inference calls. Valid native xAI credentials and OpenAI compatibility are covered by Go admission tests; these cases do not validate voice streaming.",
+      "item": [
+        {
+          "name": "xai grok-voice-latest realtime native credentials empty [EXPECT-400]",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Connection",
+                "value": "Upgrade"
+              },
+              {
+                "key": "Upgrade",
+                "value": "websocket"
+              },
+              {
+                "key": "Sec-WebSocket-Version",
+                "value": "13"
+              },
+              {
+                "key": "Sec-WebSocket-Key",
+                "value": "dGhlIHNhbXBsZSBub25jZQ=="
+              },
+              {
+                "key": "Sec-WebSocket-Protocol",
+                "value": "xai-client-secret."
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/realtime?model=xai/grok-voice-latest",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "realtime"
+              ],
+              "query": [
+                {
+                  "key": "model",
+                  "value": "xai/grok-voice-latest"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('invalid native credential is refused before upgrade', function () {",
+                  "  pm.expect(pm.response.code, 'expected HTTP refusal').to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('realtime subprotocol credential');",
+                  "  pm.expect(pm.response.text().indexOf('ek_synthetic')).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "xai grok-voice-latest realtime native credentials conflicting [EXPECT-400]",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Connection",
+                "value": "Upgrade"
+              },
+              {
+                "key": "Upgrade",
+                "value": "websocket"
+              },
+              {
+                "key": "Sec-WebSocket-Version",
+                "value": "13"
+              },
+              {
+                "key": "Sec-WebSocket-Key",
+                "value": "dGhlIHNhbXBsZSBub25jZQ=="
+              },
+              {
+                "key": "Sec-WebSocket-Protocol",
+                "value": "xai-client-secret.ek_synthetic_one, openai-insecure-api-key.ek_synthetic_two"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/realtime?model=xai/grok-voice-latest",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "realtime"
+              ],
+              "query": [
+                {
+                  "key": "model",
+                  "value": "xai/grok-voice-latest"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('invalid native credential is refused before upgrade', function () {",
+                  "  pm.expect(pm.response.code, 'expected HTTP refusal').to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('realtime subprotocol credential');",
+                  "  pm.expect(pm.response.text().indexOf('ek_synthetic')).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

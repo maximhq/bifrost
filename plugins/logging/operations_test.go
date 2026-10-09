@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -4851,6 +4852,42 @@ func TestA2AHooksCaptureOnlyActualOperationNames(t *testing.T) {
 	for _, operation := range captured {
 		if strings.Contains(strings.ToLower(operation), "authorize") {
 			t.Fatalf("captured synthetic authorization operation %q", operation)
+		}
+	}
+}
+
+// TestRefusalLogOutcome reproduces a synthetic zero-output refusal without changing inference results.
+func TestRefusalLogOutcome(t *testing.T) {
+	for _, reason := range []string{"refusal", "content_filter", "safety", "stop", "length", "tool_calls", "future_stop"} {
+		for _, streamed := range []bool{false, true} {
+			for _, content := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/stream=%t/content=%t", reason, streamed, content), func(t *testing.T) {
+					p := &LoggerPlugin{}
+					entry := &logstore.Log{Status: logStatusSuccess}
+					result := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{StopReason: schemas.Ptr(reason)}}
+					if streamed {
+						p.applyStreamingOutputToEntry(entry, &streaming.ProcessedStreamResponse{Data: &streaming.AccumulatedData{FinishReason: schemas.Ptr(reason), Cost: schemas.Ptr(0.27)}}, false, content)
+						require.Equal(t, 0.27, *entry.Cost)
+					} else {
+						p.applyNonStreamingOutputToEntry(entry, result, false, content)
+					}
+					require.Equal(t, reason, *entry.StopReason)
+					require.Equal(t, reason, *result.ResponsesResponse.StopReason)
+					switch reason {
+					case "refusal", "content_filter", "safety":
+						require.Equal(t, logStatusError, entry.Status)
+						require.NotNil(t, entry.ErrorDetailsParsed)
+						require.Equal(t, "model_refusal", *entry.ErrorDetailsParsed.Error.Type)
+						require.Contains(t, entry.ErrorDetailsParsed.Error.Message, reason)
+						require.Nil(t, entry.ErrorDetailsParsed.StatusCode)
+						require.NoError(t, entry.SerializeFields())
+						require.Contains(t, entry.ErrorDetails, "model_refusal")
+					default:
+						require.Equal(t, logStatusSuccess, entry.Status)
+						require.Nil(t, entry.ErrorDetailsParsed)
+					}
+				})
+			}
 		}
 	}
 }
