@@ -299,65 +299,6 @@ func ParseRouteState(value string) (schemas.Route, bool) {
 	return schemas.Route{Provider: schemas.ModelProvider(provider), Model: model}, true
 }
 
-// resolveCallerKeyPin puts first the provider that has the key the caller pinned, by id
-// (x-bf-api-key-id) or by name (x-bf-api-key), when routing put another provider first but offers
-// that one further down the chain. A key belongs to one provider: left where routing put it, the
-// first attempt would fail key selection on a provider without the key, and the entry that has it
-// would run as a fallback, which never carries the caller's pin. The caller asked for that key, so
-// the provider that has it is tried first, and the rest of the chain keeps its order behind it.
-//
-// Routing's choice stands when the caller named the provider (the pin was asked for there), when
-// the request brings a direct key (which key selection uses before any pin), when a routing rule
-// pinned the primary's key (a rule's pin outranks the caller's), and when no entry of the chain has
-// the key. An entry that carries a pin of its own stays where it is too, whatever key it names: a
-// rule placed it there with its key, or the load balancer did, keeping a provider it moved the
-// request away from last with the key pinned for it, and moving that entry back would undo the
-// move. It runs before the session settles the chain, which then leaves a chain whose head has the
-// pinned key as it is.
-func (bifrost *Bifrost) resolveCallerKeyPin(ctx *schemas.BifrostContext, requested schemas.Route, req *schemas.BifrostRequest) {
-	if requested.Provider != "" || routingKeyPinFromContext(ctx) != "" {
-		return
-	}
-	if _, direct := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); direct {
-		return
-	}
-	id, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string)
-	name, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string)
-	id, name = strings.TrimSpace(id), strings.TrimSpace(name)
-	if id == "" && name == "" {
-		return
-	}
-	provider, model, fallbacks := req.GetRequestFields()
-	if provider == "" || bifrost.callerPinsKeyOf(ctx, provider) {
-		return
-	}
-	at := slices.IndexFunc(fallbacks, func(fallback schemas.Fallback) bool {
-		return strings.TrimSpace(fallback.KeyID) == "" && bifrost.callerPinsKeyOf(ctx, fallback.Provider)
-	})
-	pinned := id
-	if pinned == "" {
-		pinned = name
-	}
-	if at < 0 {
-		if held := slices.IndexFunc(fallbacks, func(fallback schemas.Fallback) bool { return bifrost.callerPinsKeyOf(ctx, fallback.Provider) }); held >= 0 {
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Request pins key %s of %s, which routing placed with a pin of its own, so the chain keeps its order", pinned, fallbacks[held].Provider))
-			return
-		}
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Request pins key %s, which no provider this request may use has, so the first attempt on %s finds no such key and the fallbacks run without the pin", pinned, provider))
-		return
-	}
-	promoted := fallbacks[at]
-	next := make([]schemas.Fallback, 0, len(fallbacks))
-	next = append(next, schemas.Fallback{Provider: provider, Model: model})
-	next = append(next, fallbacks[:at]...)
-	next = append(next, fallbacks[at+1:]...)
-	req.SetProvider(promoted.Provider)
-	req.SetModel(promoted.Model)
-	req.SetFallbacks(next)
-	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Request pins key %s of %s, so %s/%s is tried first; routing proposed %s/%s", pinned, promoted.Provider, promoted.Provider, promoted.Model, provider, model))
-	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineCore)
-}
-
 // resolveSessionRoute asks the session affinity to settle the chain the routing hooks
 // produced for req and applies its answer: the first route becomes the primary, the rest its
 // fallbacks. A request no hook could route is left for validation to refuse.
