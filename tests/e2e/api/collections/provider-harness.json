@@ -218377,8 +218377,8 @@
       ]
     },
     {
-      "name": "188. Semantic cache hits do not replay raw provider payloads (semanticcache-raw-fields)",
-      "description": "A semantic cache hit makes no upstream call, so the raw_request and raw_response its entry was written with describe a different request. The plugin used to store them with the entry and hand them to whoever hit it next. It now strips them when it writes, and clears any an older entry still carries when it replays.\n\nThe row is the call that switches the semantic_cache plugin on in direct-only mode, which needs no embedding provider. Its test script then sends one request that misses and writes the entry, and the identical request again. The miss must still carry its own raw payloads, otherwise the absence on the hit proves nothing. The hit must report cache_hit and carry neither raw_request nor raw_response. The script puts the plugin back as it found it. Only requests with an x-bf-cache-key header are cached, so other rows are not affected while the plugin is on. The inference calls go out from the script because a cache hit has no upstream call and so none of the routed-identity headers the collection asserts on every inference row.\n\nRun with FEATURE=\"semanticcache-raw-fields\".",
+      "name": "188. Semantic cache hits do not replay raw provider payloads (semanticcache-raw-fields) [SERIAL]",
+      "description": "A semantic cache hit makes no upstream call, so the raw_request and raw_response its entry was written with describe a different request. The plugin used to store them with the entry and hand them to whoever hit it next. It now strips them when it writes, and clears any an older entry still carries when it replays.\n\nThe row is the call that switches the semantic_cache plugin on in direct-only mode, which needs no embedding provider. Its test script then sends one request that misses and writes the entry, and the identical request again. The miss must still carry its own raw payloads, otherwise the absence on the hit proves nothing. The hit must report cache_hit and carry neither raw_request nor raw_response. The script puts the plugin back as it found it. Only requests with an x-bf-cache-key header are cached, so other rows are not affected while the plugin is on. The plugin is a gateway-wide singleton, so the folder is tagged [SERIAL]. It also uses a vector store namespace of its own: direct-only mode writes dimension-1 vectors, which a store would reject in the index of a provider-backed cache configured on the same gateway. The index is left behind when the plugin is removed. The inference calls go out from the script because a cache hit has no upstream call and so none of the routed-identity headers the collection asserts on every inference row.\n\nRun with FEATURE=\"semanticcache-raw-fields\".",
       "item": [
         {
           "name": "openai/gpt-4o-mini: a direct cache hit carries no raw_request or raw_response - semanticcache-raw-fields",
@@ -218497,7 +218497,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"enabled\": true,\n  \"config\": {\n    \"provider\": \"\",\n    \"dimension\": 1,\n    \"ttl\": \"5m\",\n    \"cache_by_model\": true,\n    \"cache_by_provider\": true\n  }\n}"
+              "raw": "{\n  \"enabled\": true,\n  \"config\": {\n    \"provider\": \"\",\n    \"dimension\": 1,\n    \"ttl\": \"5m\",\n    \"cache_by_model\": true,\n    \"cache_by_provider\": true,\n    \"vector_store_namespace\": \"BifrostHarnessSemanticCacheRawFields\"\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/plugins/semantic_cache",
