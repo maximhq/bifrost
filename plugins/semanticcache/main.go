@@ -726,6 +726,16 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	// Serialization failure is nonfatal — skip the write, keep the response
 	// flowing (issue #7233).
 	responseData, err := sonic.Marshal(res)
+	if err == nil {
+		// Raw provider payloads never go into the entry. They describe the
+		// upstream call made for this request, and a hit makes no upstream
+		// call; replaying them would hand this request's payloads to a later
+		// caller whose own send-back policy is not known yet when the hit is
+		// served (core derives it per attempt, after the pre-hooks). Strip
+		// them on the serialized copy only: the live response keeps them for
+		// core's own strip and the logging post-hooks.
+		responseData, err = dropRawFields(responseData)
+	}
 	if err != nil {
 		switch {
 		case !isStream:

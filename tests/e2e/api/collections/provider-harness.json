@@ -218375,6 +218375,144 @@
           ]
         }
       ]
+    },
+    {
+      "name": "188. Semantic cache hits do not replay raw provider payloads (semanticcache-raw-fields) [SERIAL]",
+      "description": "A semantic cache hit makes no upstream call, so the raw_request and raw_response its entry was written with describe a different request. The plugin used to store them with the entry and hand them to whoever hit it next. It now strips them when it writes, and clears any an older entry still carries when it replays.\n\nThe row is the call that switches the semantic_cache plugin on in direct-only mode, which needs no embedding provider. Its test script then sends one request that misses and writes the entry, and the identical request again. The miss must still carry its own raw payloads, otherwise the absence on the hit proves nothing. The hit must report cache_hit and carry neither raw_request nor raw_response. The script puts the plugin back as it found it. Only requests with an x-bf-cache-key header are cached, so other rows are not affected while the plugin is on. The plugin is a gateway-wide singleton, so the folder is tagged [SERIAL]. It also uses a vector store namespace of its own: direct-only mode writes dimension-1 vectors, which a store would reject in the index of a provider-backed cache configured on the same gateway. The index is left behind when the plugin is removed. The inference calls go out from the script because a cache hit has no upstream call and so none of the routed-identity headers the collection asserts on every inference row.\n\nRun with FEATURE=\"semanticcache-raw-fields\".",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini: a direct cache hit carries no raw_request or raw_response - semanticcache-raw-fields",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "pm.collectionVariables.set('rawFieldsCacheKey', 'harness-raw-fields-run-' + Date.now());",
+                  "pm.collectionVariables.unset('rawFieldsPriorPlugin');",
+                  "pm.sendRequest({ url: BASE + '/api/plugins/semantic_cache', method: 'GET', header: { 'Content-Type': 'application/json' } }, function (err, res) {",
+                  "  if (err) { pm.test('GET /api/plugins/semantic_cache reached the gateway', function () { pm.expect.fail(String(err)); }); return; }",
+                  "  var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "  // A 404 means the plugin was never configured on this server; the test script then deletes it again.",
+                  "  if (res.code === 200 && json) {",
+                  "    pm.collectionVariables.set('rawFieldsPriorPlugin', JSON.stringify({ enabled: !!json.enabled, config: json.config || {} }));",
+                  "  } else if (res.code === 404) {",
+                  "    pm.collectionVariables.set('rawFieldsPriorPlugin', 'none');",
+                  "  } else {",
+                  "    pm.test('GET /api/plugins/semantic_cache answered 200 or 404', function () { pm.expect.fail('unexpected status: ' + res.text()); });",
+                  "  }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "function call(method, path, body, headers, cb) {",
+                  "  var h = { 'Content-Type': 'application/json' };",
+                  "  for (var k in (headers || {})) { h[k] = headers[k]; }",
+                  "  var req = { url: BASE + path, method: method, header: h };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// Leave the plugin the way the run found it.",
+                  "function restore() {",
+                  "  var prior = pm.collectionVariables.get('rawFieldsPriorPlugin');",
+                  "  if (prior === 'none') {",
+                  "    call('DELETE', '/api/plugins/semantic_cache', null, null, function (res) { expectOk('semantic_cache is removed again', res); });",
+                  "  } else if (prior) {",
+                  "    call('PUT', '/api/plugins/semantic_cache', JSON.parse(prior), null, function (res) { expectOk('semantic_cache is restored to its previous config', res); });",
+                  "  }",
+                  "}",
+                  "",
+                  "pm.test('semantic_cache is enabled in direct-only mode', function () {",
+                  "  pm.expect(pm.response.code, 'enabling failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { restore(); return; }",
+                  "",
+                  "// The row itself is a management call, so the two inference requests go out from here. The first",
+                  "// misses and writes an entry; the identical second one has to be served from it.",
+                  "var chatBody = { model: 'openai/gpt-4o-mini', messages: [{ role: 'user', content: 'Reply with the single word: pong' }], max_tokens: 16, temperature: 0 };",
+                  "var chatHeaders = {",
+                  "  'x-bf-cache-key': pm.collectionVariables.get('rawFieldsCacheKey'),",
+                  "  'x-bf-cache-type': 'direct',",
+                  "  'x-bf-send-back-raw-request': 'true',",
+                  "  'x-bf-send-back-raw-response': 'true'",
+                  "};",
+                  "call('POST', '/v1/chat/completions', chatBody, chatHeaders, function (missRes, missJson) {",
+                  "  if (!expectOk('the first request, a cache miss, is answered', missRes)) { restore(); return; }",
+                  "  var missEf = (missJson && missJson.extra_fields) || {};",
+                  "  pm.test('the miss still carries its own raw_request and raw_response', function () {",
+                  "    pm.expect(missEf.raw_request, 'raw_request missing from the miss; body: ' + missRes.text().slice(0, 400)).to.exist;",
+                  "    pm.expect(missEf.raw_response, 'raw_response missing from the miss; body: ' + missRes.text().slice(0, 400)).to.exist;",
+                  "  });",
+                  "  // The entry is written after the response goes out.",
+                  "  var __t = Date.now(); while (Date.now() - __t < 2000) { /* busy-wait ~2s for the cache write */ }",
+                  "  call('POST', '/v1/chat/completions', chatBody, chatHeaders, function (hitRes, hitJson) {",
+                  "    if (!expectOk('the identical second request is answered', hitRes)) { restore(); return; }",
+                  "    var text = hitRes.text();",
+                  "    var ef = (hitJson && hitJson.extra_fields) || {};",
+                  "    pm.test('the second request is served from the cache', function () {",
+                  "      pm.expect(ef.cache_debug, 'no cache_debug on the response; body: ' + text.slice(0, 400)).to.be.an('object');",
+                  "      pm.expect(ef.cache_debug.cache_hit, 'expected a cache hit: ' + JSON.stringify(ef.cache_debug)).to.eql(true);",
+                  "    });",
+                  "    pm.test('the hit still answers with the cached message', function () {",
+                  "      var content = ((((hitJson || {}).choices || [])[0] || {}).message || {}).content;",
+                  "      pm.expect(content, 'cached answer missing; body: ' + text.slice(0, 400)).to.be.a('string').and.not.empty;",
+                  "    });",
+                  "    pm.test('the hit carries no raw_request from the request that wrote the entry', function () {",
+                  "      pm.expect(ef, 'a cache hit replayed raw_request; body: ' + text.slice(0, 600)).to.not.have.property('raw_request');",
+                  "    });",
+                  "    pm.test('the hit carries no raw_response from the request that wrote the entry', function () {",
+                  "      pm.expect(ef, 'a cache hit replayed raw_response; body: ' + text.slice(0, 600)).to.not.have.property('raw_response');",
+                  "    });",
+                  "    restore();",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": true,\n  \"config\": {\n    \"provider\": \"\",\n    \"dimension\": 1,\n    \"ttl\": \"5m\",\n    \"cache_by_model\": true,\n    \"cache_by_provider\": true,\n    \"vector_store_namespace\": \"BifrostHarnessSemanticCacheRawFields\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/semantic_cache",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "semantic_cache"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

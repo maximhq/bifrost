@@ -335,6 +335,15 @@ func (plugin *Plugin) buildNonStreamingResponseFromResult(ctx *schemas.BifrostCo
 		return nil, fmt.Errorf("failed to unmarshal cached response: %w", err)
 	}
 
+	// Entries written before raw fields were stripped at write time can still
+	// carry them. A hit makes no upstream call, so they never belong to this
+	// request. The unmarshaled response is plugin-owned, so clearing the
+	// fields here mutates nothing the caller holds.
+	if ef := cachedResponse.GetExtraFields(); ef != nil {
+		ef.RawRequest = nil
+		ef.RawResponse = nil
+	}
+
 	plugin.stampCacheMetadataForHit(state, cachedResponse.GetExtraFields(), result.ID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
 	state.ShortCircuited = true
 	return &schemas.LLMPluginShortCircuit{Response: &cachedResponse}, nil
@@ -361,6 +370,13 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 			if err := json.Unmarshal([]byte(chunkStr), &cachedResponse); err != nil {
 				plugin.logger.Warn("Failed to unmarshal stream chunk %d, skipping: %v", i, err)
 				continue
+			}
+
+			// Same as the non-stream path: older entries can still carry
+			// raw payloads that never belong to a replay.
+			if ef := cachedResponse.GetExtraFields(); ef != nil {
+				ef.RawRequest = nil
+				ef.RawResponse = nil
 			}
 
 			// Ensure RequestType is set on every chunk so downstream consumers
