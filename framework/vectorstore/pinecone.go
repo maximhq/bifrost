@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/pinecone-io/go-pinecone/v5/pinecone"
@@ -30,6 +31,11 @@ type PineconeStore struct {
 	mu         sync.RWMutex // Protects namespaces and dimension
 	namespaces map[string]*pinecone.IndexConnection
 	dimension  int // Store dimension for zero vector queries in GetAll
+
+	// fetchByMetadata is whether the index can fetch by metadata, found out
+	// once by asking it.
+	fetchByMetadataOnce sync.Once
+	fetchByMetadata     bool
 }
 
 // Ping checks if the Pinecone server is reachable.
@@ -215,6 +221,13 @@ func (s *PineconeStore) GetAll(ctx context.Context, namespace string, queries []
 		return nil, nil, err
 	}
 
+	// A caller that wants the vectors is reading the namespace out, not
+	// looking one entry up, so it needs every page. The query below has no
+	// way to continue past its first.
+	if IncludeVectorsRequested(ctx) {
+		return s.getAllWithVectors(ctx, idxConn, queries, selectFields, cursor, limit)
+	}
+
 	topK := boundedPageLimit(limit, 100)
 
 	// Create zero vector for query - this allows us to use QueryByVectorValues
@@ -268,6 +281,197 @@ func (s *PineconeStore) GetAll(ctx context.Context, namespace string, queries []
 	// Note: QueryByVectorValues doesn't support pagination tokens like ListVectors
 	// For direct hash lookup (the main use case), we only need 1 result anyway
 	return results, nil, nil
+}
+
+// pineconeMaxTopK is the most matches one query returns.
+const pineconeMaxTopK = 1000
+
+// pineconeDeleteRounds bounds how many times deleteMatching asks for what is
+// left. Each round removes up to a full query's worth.
+const pineconeDeleteRounds = 20
+
+func isPineconeFilteredDeleteUnsupported(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "do not support deleting with metadata filtering")
+}
+
+// deleteMatching deletes the entries a filter selects by looking them up and
+// deleting them by id, for indexes that cannot delete by filter.
+//
+// A query runs a moment behind a delete, so an id it returns may already be
+// gone. Ids already deleted are not counted again, and the rounds stop once a
+// query brings back nothing new.
+func (s *PineconeStore) deleteMatching(ctx context.Context, idxConn *pinecone.IndexConnection, namespace string, queries []Query) ([]DeleteResult, error) {
+	deleted := map[string]struct{}{}
+	results := []DeleteResult{}
+	for round := 0; round < pineconeDeleteRounds; round++ {
+		matches, _, err := s.GetAll(ctx, namespace, queries, nil, nil, pineconeMaxTopK)
+		if err != nil {
+			return results, fmt.Errorf("failed to find vectors to delete: %w", err)
+		}
+		ids := make([]string, 0, len(matches))
+		for _, match := range matches {
+			if _, done := deleted[match.ID]; !done && match.ID != "" {
+				ids = append(ids, match.ID)
+			}
+		}
+		if len(ids) == 0 {
+			return results, nil
+		}
+		if err := idxConn.DeleteVectorsById(ctx, ids); err != nil {
+			return results, fmt.Errorf("failed to delete vectors: %w", err)
+		}
+		for _, id := range ids {
+			deleted[id] = struct{}{}
+			results = append(results, DeleteResult{ID: id, Status: DeleteStatusSuccess})
+		}
+	}
+	return results, nil
+}
+
+// pineconePageLimit is the most ids one listing call returns.
+const pineconePageLimit = 100
+
+// getAllWithVectors pages a namespace with each entry's stored vector.
+//
+// Without a filter it lists ids and fetches them, which is the only paging
+// read Pinecone has. Listing is eventually consistent - an entry written a
+// moment ago may be missing - which is why the read that looks one entry up
+// does not use it; a read of a whole namespace tolerates that. With a filter
+// it fetches by metadata, which pages and filters on the server. The cursor is
+// Pinecone's own pagination token either way.
+func (s *PineconeStore) getAllWithVectors(ctx context.Context, idxConn *pinecone.IndexConnection, queries []Query, selectFields []string, cursor *string, limit int64) ([]SearchResult, *string, error) {
+	wanted := int(boundedPageLimit(limit, pineconePageLimit))
+	var token *string
+	if cursor != nil && *cursor != "" {
+		token = cursor
+	}
+	filter, err := buildPineconeFilter(queries)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to build pinecone filter: %w", err)
+	}
+
+	// A cursor from the listing read stays with the listing read: the two
+	// kinds of token are not interchangeable.
+	listing := filter == nil
+	if token != nil && strings.HasPrefix(*token, pineconeListCursorPrefix) {
+		listing = true
+		stripped := strings.TrimPrefix(*token, pineconeListCursorPrefix)
+		token = &stripped
+		if stripped == "" {
+			token = nil
+		}
+	}
+
+	results := make([]SearchResult, 0, wanted)
+	for len(results) < wanted {
+		pageLimit := uint32(min(wanted-len(results), pineconePageLimit))
+		if listing && filter != nil {
+			// What is listed is then filtered here, so asking for only as many
+			// as are still wanted asks again and again for a handful. A page
+			// can come back holding more than was asked for.
+			pageLimit = pineconePageLimit
+		}
+		var vectors map[string]*pinecone.Vector
+		var ids []string
+		var next *string
+		if !listing {
+			res, err := idxConn.FetchVectorsByMetadata(ctx, &pinecone.FetchVectorsByMetadataRequest{Filter: filter, Limit: &pageLimit, PaginationToken: token})
+			if err != nil && isPineconeUnimplemented(err) && token == nil && len(results) == 0 {
+				// An index that cannot fetch by metadata is read by listing, with
+				// the filter applied here. It costs the namespace, not the slice.
+				listing = true
+				continue
+			}
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to fetch vectors by metadata: %w", err)
+			}
+			vectors = res.Vectors
+			for id := range res.Vectors {
+				ids = append(ids, id)
+			}
+			sort.Strings(ids)
+			if res.Pagination != nil && res.Pagination.Next != "" {
+				next = &res.Pagination.Next
+			}
+		} else {
+			listed, err := idxConn.ListVectors(ctx, &pinecone.ListVectorsRequest{Limit: &pageLimit, PaginationToken: token})
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to list vectors: %w", err)
+			}
+			for _, id := range listed.VectorIds {
+				if id != nil && *id != "" {
+					ids = append(ids, *id)
+				}
+			}
+			if len(ids) > 0 {
+				fetched, err := idxConn.FetchVectors(ctx, ids)
+				if err != nil {
+					return nil, nil, fmt.Errorf("failed to fetch vectors: %w", err)
+				}
+				vectors = fetched.Vectors
+			}
+			if listed.NextPaginationToken != nil && *listed.NextPaginationToken != "" {
+				next = listed.NextPaginationToken
+			}
+		}
+		for _, id := range ids {
+			vector := vectors[id]
+			if vector == nil {
+				continue
+			}
+			properties := metadataToMap(vector.Metadata)
+			if listing && len(queries) > 0 && !matchesChromemQueries(properties, queries) {
+				continue
+			}
+			result := SearchResult{ID: id, Properties: filterPropertiesPinecone(properties, selectFields)}
+			if vector.Values != nil {
+				result.Vector = *vector.Values
+			}
+			results = append(results, result)
+		}
+		token = next
+		if token == nil {
+			break
+		}
+	}
+	if token != nil && listing && filter != nil {
+		marked := pineconeListCursorPrefix + *token
+		token = &marked
+	}
+	return results, token, nil
+}
+
+// pineconeListCursorPrefix marks the cursor of a filtered read that fell back
+// to listing, so the next page carries on listing.
+const pineconeListCursorPrefix = "list:"
+
+// pineconeProbeTimeout bounds the one call that finds out whether the index
+// can fetch by metadata.
+const pineconeProbeTimeout = 10 * time.Second
+
+// FiltersVectorReadsOnServer reports whether a filtered read is served by
+// fetch-by-metadata. Not every index has it, and one without falls back to
+// listing, which works and costs the whole namespace for every read - so the
+// index is asked, once, rather than assumed. Anything but a plain refusal is
+// taken as having it: the read itself will report what is wrong.
+func (s *PineconeStore) FiltersVectorReadsOnServer() bool {
+	s.fetchByMetadataOnce.Do(func() {
+		s.fetchByMetadata = true
+		if s.indexConn == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), pineconeProbeTimeout)
+		defer cancel()
+		filter, err := buildPineconeFilter([]Query{{Field: "bifrost_probe", Operator: QueryOperatorEqual, Value: "probe"}})
+		if err != nil || filter == nil {
+			return
+		}
+		limit := uint32(1)
+		if _, err := s.indexConn.FetchVectorsByMetadata(ctx, &pinecone.FetchVectorsByMetadataRequest{Filter: filter, Limit: &limit}); isPineconeUnimplemented(err) {
+			s.fetchByMetadata = false
+		}
+	})
+	return s.fetchByMetadata
 }
 
 // GetNearest retrieves the nearest vectors to a given vector.
@@ -419,6 +623,12 @@ func (s *PineconeStore) DeleteAll(ctx context.Context, namespace string, queries
 		if filter != nil {
 			err = idxConn.DeleteVectorsByFilter(ctx, filter)
 			if err != nil {
+				// Serverless and Starter indexes refuse a filtered delete, and
+				// they are what most deployments run. The same filter can still
+				// be queried, so the matches are found first and deleted by id.
+				if isPineconeFilteredDeleteUnsupported(err) {
+					return s.deleteMatching(ctx, idxConn, namespace, queries)
+				}
 				return nil, fmt.Errorf("failed to delete vectors by filter: %w", err)
 			}
 			// Pinecone doesn't return individual results for filter-based deletion

@@ -104,6 +104,7 @@ describe("warpToolLabel", () => {
 			"render_chart",
 			"describe_filter_space",
 			"describe_virtual_key",
+			"list_topics",
 			"ask_user",
 		];
 		for (const tool of tools) {

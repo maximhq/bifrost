@@ -171,7 +171,7 @@ func (s *Service) RunTurn(ctx context.Context, turn *Turn, sink func(Event) bool
 	// The resolver is asked here as well: a store that scopes per read leaves
 	// nothing on the context to tell a restricted caller from an admin.
 	scope := withCallerRestriction(runCtx, ScopeFromContext(runCtx), s.callerRestriction)
-	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), turn.logs, s.governance, scope, turn.config, turn.utcOffsetMinutes, turn.timezone, turn.semantic)
+	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), turn.logs, s.governance, scope, turn.config, turn.utcOffsetMinutes, turn.timezone, s.topicLister(), turn.semantic)
 	agent.SetGovernanceExtras(s.vkDecorator, s.userGovernance)
 	agent.questionsAsked = turn.questionsAsked
 	events := make(chan Event, 16)

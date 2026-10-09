@@ -47,6 +47,10 @@ type SearchResult struct {
 	ID         string
 	Score      *float64
 	Properties map[string]interface{}
+	// Vector is the stored embedding. Populated only when the read was made
+	// with WithIncludeVectors; vectors are large and most callers want the
+	// properties alone.
+	Vector []float32
 }
 
 // DeleteResult represents the result of a delete operation.
@@ -128,6 +132,70 @@ func WithDisableScanFallback(ctx context.Context) context.Context {
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, disableScanFallbackContextKey{}, true)
+}
+
+type includeVectorsContextKey struct{}
+
+// WithIncludeVectors asks paging reads (GetAll) to return each entry's stored
+// vector alongside its properties. Off by default: a vector is thousands of
+// floats, and a listing that only wants ids should not carry them.
+func WithIncludeVectors(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, includeVectorsContextKey{}, true)
+}
+
+// ServerFilteredReader is implemented by a store that can say whether it
+// applies a filter on the server while paging a read that carries vectors.
+//
+// It decides how a caller should take a large namespace out. A store that
+// filters on the server is read a slice at a time, each costing what the
+// slice holds. One that does not pays for the whole namespace on every
+// filtered read - it walks everything and drops what does not match - so it
+// is read once, unfiltered, and the caller does the dropping.
+type ServerFilteredReader interface {
+	FiltersVectorReadsOnServer() bool
+}
+
+// FiltersVectorReadsOnServer reports whether store filters a paged read with
+// vectors on the server. A store that does not say is taken not to.
+func FiltersVectorReadsOnServer(store VectorStore) bool {
+	reader, ok := store.(ServerFilteredReader)
+	return ok && reader.FiltersVectorReadsOnServer()
+}
+
+// IncludeVectorsRequested reports whether the current read asked for vectors.
+func IncludeVectorsRequested(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	include, _ := ctx.Value(includeVectorsContextKey{}).(bool)
+	return include
+}
+
+// VectorFromAdditional converts the vector a backend returns in its
+// "_additional" block (a []interface{} of float64, as GraphQL decodes numbers)
+// into []float32. Anything that is not a numeric list yields nil.
+func VectorFromAdditional(raw interface{}) []float32 {
+	values, ok := raw.([]interface{})
+	if !ok || len(values) == 0 {
+		return nil
+	}
+	vector := make([]float32, 0, len(values))
+	for _, value := range values {
+		switch number := value.(type) {
+		case float64:
+			vector = append(vector, float32(number))
+		case float32:
+			vector = append(vector, number)
+		case int:
+			vector = append(vector, float32(number))
+		default:
+			return nil
+		}
+	}
+	return vector
 }
 
 // IsScanFallbackDisabled reports whether scan fallback has been disabled for
