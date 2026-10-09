@@ -4150,19 +4150,20 @@ func HandleStreamCancellation(
 
 	// Bill for tokens the provider already processed before the client
 	// disconnected.
-	attachBilledUsageFromContext(ctx, cancelErr)
+	AttachBilledUsageFromContext(ctx, cancelErr)
 
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, cancelErr, responseChan, logger, postHookSpanFinalizer)
 }
 
-// attachBilledUsageFromContext copies a streaming provider's in-place
+// AttachBilledUsageFromContext copies a streaming provider's in-place
 // accumulated usage handle (BifrostContextKeyStreamAccumulatedUsage), if any,
 // onto the error's BilledUsage so downstream post-hooks (governance billing,
 // logging cost) can charge for tokens the provider already processed before the
-// stream was cancelled or timed out. No-op when nothing measurable was
-// accumulated, so failures that consumed no tokens bill nothing.
-func attachBilledUsageFromContext(ctx *schemas.BifrostContext, bifrostErr *schemas.BifrostError) {
+// stream failed (cancel, timeout, truncation, or a provider stream loop's own
+// error exits). No-op when nothing measurable was accumulated, so failures that
+// consumed no tokens bill nothing.
+func AttachBilledUsageFromContext(ctx *schemas.BifrostContext, bifrostErr *schemas.BifrostError) {
 	if ctx == nil || bifrostErr == nil {
 		return
 	}
@@ -4237,7 +4238,7 @@ func HandleStreamTimeout(
 	}
 
 	// Bill for tokens the provider already processed before the deadline.
-	attachBilledUsageFromContext(ctx, timeoutErr)
+	AttachBilledUsageFromContext(ctx, timeoutErr)
 
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, timeoutErr, responseChan, logger, postHookSpanFinalizer)
@@ -4272,7 +4273,7 @@ func ProcessAndSendNonSSEStreamError(
 	if len(info.Sample) > 0 && ShouldSendBackRawResponse(ctx, false) {
 		bifrostError.ExtraFields.RawResponse = string(info.Sample)
 	}
-	attachBilledUsageFromContext(ctx, bifrostError)
+	AttachBilledUsageFromContext(ctx, bifrostError)
 	ProcessAndSendBifrostError(ctx, postHookRunner, bifrostError, responseChan, logger, postHookSpanFinalizer)
 }
 
@@ -4300,9 +4301,41 @@ func ProcessAndSendError(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) {
+	processAndSendError(ctx, postHookRunner, err, responseChan, logger, postHookSpanFinalizer, false)
+}
+
+// ProcessAndSendErrorWithBilledUsage is ProcessAndSendError for a stream loop
+// that registered an accumulated usage handle
+// (BifrostContextKeyStreamAccumulatedUsage): the reported error also carries,
+// as BilledUsage, the usage the provider consumed before the read failed, as
+// the cancel, timeout and truncation exits do. The caller finalizes the handle
+// (e.g. folds cached tokens) first: the error carries a snapshot of it.
+func ProcessAndSendErrorWithBilledUsage(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	err error,
+	responseChan chan *schemas.BifrostStreamChunk,
+	logger schemas.Logger,
+	postHookSpanFinalizer func(context.Context),
+) {
+	processAndSendError(ctx, postHookRunner, err, responseChan, logger, postHookSpanFinalizer, true)
+}
+
+func processAndSendError(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	err error,
+	responseChan chan *schemas.BifrostStreamChunk,
+	logger schemas.Logger,
+	postHookSpanFinalizer func(context.Context),
+	billUsage bool,
+) {
 	var carrier BifrostErrorCarrier
 	if errors.As(err, &carrier) {
 		if typed := carrier.BifrostError(); typed != nil {
+			if billUsage {
+				AttachBilledUsageFromContext(ctx, typed)
+			}
 			ProcessAndSendBifrostError(ctx, postHookRunner, typed, responseChan, logger, postHookSpanFinalizer)
 			return
 		}
@@ -4314,6 +4347,9 @@ func ProcessAndSendError(
 			Message: fmt.Sprintf("Error reading stream: %v", err),
 			Error:   err,
 		},
+	}
+	if billUsage {
+		AttachBilledUsageFromContext(ctx, bifrostError)
 	}
 	processedResponse, processedError := postHookRunner(ctx, nil, bifrostError)
 
@@ -4368,7 +4404,7 @@ func SendStreamTruncatedError(
 	}
 
 	// Bill for tokens the provider already produced before the stream died.
-	attachBilledUsageFromContext(ctx, truncatedErr)
+	AttachBilledUsageFromContext(ctx, truncatedErr)
 
 	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 	ProcessAndSendBifrostError(ctx, postHookRunner, truncatedErr, responseChan, logger, postHookSpanFinalizer)

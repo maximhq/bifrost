@@ -1098,7 +1098,10 @@ func HandleAnthropicChatCompletionStreaming(
 				if readErr != io.EOF {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					logger.Warn("Error reading %s stream: %v", providerName, readErr)
-					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
+					// Bill what the stream consumed before the read failed, folded
+					// first: the error carries a snapshot of the handle.
+					normalizeUsage()
+					providerUtils.ProcessAndSendErrorWithBilledUsage(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
 					return
 				}
 				break
@@ -1160,13 +1163,13 @@ func HandleAnthropicChatCompletionStreaming(
 					}
 				}
 				// Capture served tier + fast mode + inference geography (top-level response
-				// fields). Speed and InferenceGeo are mirrored onto the billing usage handle
-				// so a mid-stream cancel/timeout can still apply the served-tier multiplier
-				// (billed usage is otherwise bare); BifrostLLMUsage has no service_tier field,
-				// so that one can only ride the final chunk's response envelope.
+				// fields). All three are mirrored onto the billing usage handle so a failed
+				// stream (cancel, timeout, truncation, error event, read error) can still
+				// apply the served-tier multiplier (billed usage is otherwise bare).
 				if usageToProcess.ServiceTier != nil {
 					mapped := MapAnthropicServiceTierToBifrost(*usageToProcess.ServiceTier)
 					servedServiceTier = &mapped
+					usage.ServiceTier = &mapped
 				}
 				if usageToProcess.Speed != nil {
 					servedSpeed = usageToProcess.Speed
@@ -1300,6 +1303,11 @@ func HandleAnthropicChatCompletionStreaming(
 			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			if bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				// An Anthropic error event: bill what the stream consumed before it,
+				// like the cancel/timeout/truncation exits. Fold first: the attach
+				// snapshots the handle.
+				normalizeUsage()
+				providerUtils.AttachBilledUsageFromContext(ctx, bifrostErr)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger, postHookSpanFinalizer)
 				// Already reported; returning (rather than breaking) keeps the
 				// post-loop truncation check from reporting the same stream twice.
@@ -1768,7 +1776,10 @@ func HandleAnthropicResponsesStream(
 				if readErr != io.EOF {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					logger.Warn("Error reading %s stream: %v", providerName, readErr)
-					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
+					// Bill what the stream consumed before the read failed, folded
+					// first: the error carries a snapshot of the handle.
+					normalizeBilledUsage()
+					providerUtils.ProcessAndSendErrorWithBilledUsage(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
 					// Already reported; returning (rather than breaking) keeps the
 					// post-loop truncation check from reporting the same stream twice.
 					return
@@ -1812,13 +1823,13 @@ func HandleAnthropicResponsesStream(
 				// Also mirror it into billedUsage so cancellation/timeout paths can
 				// charge for provider-reported usage before the final chunk arrives.
 				accumulateAnthropicResponsesUsage(usage, billedUsage, usageToProcess)
-				// Mirror served tier onto billedUsage so a mid-stream cancel/timeout can
-				// still apply the served-tier multiplier (billed usage is otherwise bare).
-				// service_tier has no home on BifrostLLMUsage, so it is latched for the
-				// final chunk's response envelope only.
+				// Mirror served tier onto billedUsage so a failed stream (cancel, timeout,
+				// truncation, error event, read error) can still apply the served-tier
+				// multiplier (billed usage is otherwise bare).
 				if usageToProcess.ServiceTier != nil {
 					mapped := MapAnthropicServiceTierToBifrost(*usageToProcess.ServiceTier)
 					servedServiceTier = &mapped
+					billedUsage.ServiceTier = &mapped
 				}
 				if usageToProcess.Speed != nil {
 					servedSpeed = usageToProcess.Speed
@@ -1854,6 +1865,11 @@ func HandleAnthropicResponsesStream(
 					return
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				// An Anthropic error event: bill what the stream consumed before it,
+				// like the cancel/timeout/truncation exits. Fold first: the attach
+				// snapshots the handle.
+				normalizeBilledUsage()
+				providerUtils.AttachBilledUsageFromContext(ctx, bifrostErr)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger, postHookSpanFinalizer)
 				// Already reported; returning (rather than breaking) keeps the
 				// post-loop truncation check from reporting the same stream twice.
