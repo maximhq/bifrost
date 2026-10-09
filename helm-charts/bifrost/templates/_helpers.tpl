@@ -38,6 +38,22 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/component: server
 {{- end }}
 
+{{- /* Pod topology spread constraints. A constraint that omits labelSelector would count
+       no pods at all, so it defaults to this release's server pod selector labels. Only an
+       absent key is defaulted: an explicit empty selector ({}) matches every pod in the
+       namespace and is kept as written. */ -}}
+{{- define "bifrost.topologySpreadConstraints" -}}
+{{- $constraints := list }}
+{{- range .Values.topologySpreadConstraints }}
+{{- $constraint := deepCopy . }}
+{{- if not (hasKey $constraint "labelSelector") }}
+{{- $_ := set $constraint "labelSelector" (dict "matchLabels" (include "bifrost.serverSelectorLabels" $ | fromYaml)) }}
+{{- end }}
+{{- $constraints = append $constraints $constraint }}
+{{- end }}
+{{- toYaml $constraints }}
+{{- end }}
+
 {{- define "bifrost.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
 {{- default (include "bifrost.fullname" .) .Values.serviceAccount.name }}

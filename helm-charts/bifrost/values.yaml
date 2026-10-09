@@ -173,6 +173,21 @@ tolerations: []
 
 affinity: {}
 
+# Spread Bifrost pods across failure domains (nodes, zones), to reduce the chance that
+# one node or zone going down takes every replica with it. Spreading is not a guarantee:
+# ScheduleAnyway only prefers it, and DoNotSchedule without minDomains can still place
+# every replica in the only eligible domain. Rendered into the pod spec's
+# topologySpreadConstraints on both the Deployment and the StatefulSet. A constraint
+# without a labelSelector gets this release's server pod labels filled in, so it
+# spreads only Bifrost's own replicas.
+topologySpreadConstraints: []
+  # - maxSkew: 1
+  #   topologyKey: topology.kubernetes.io/zone
+  #   whenUnsatisfiable: ScheduleAnyway     # prefer spreading across zones, never block scheduling
+  # - maxSkew: 1
+  #   topologyKey: kubernetes.io/hostname
+  #   whenUnsatisfiable: DoNotSchedule      # hard rule: at most 1 replica of difference per node
+
 # Deployment rolling update strategy. Applies to the Deployment only (not the
 # StatefulSet used for sqlite-with-persistence). Rendered verbatim into spec.strategy.
 # Empty ({}) uses the Kubernetes default (RollingUpdate, maxSurge 25%, maxUnavailable 25%).

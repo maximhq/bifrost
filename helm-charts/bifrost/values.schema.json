@@ -270,6 +270,56 @@
     "affinity": {
       "type": "object"
     },
+    "topologySpreadConstraints": {
+      "type": "array",
+      "description": "Pod topology spread constraints for the Bifrost Deployment or StatefulSet, rendered into the pod spec. A constraint without labelSelector gets the release's server pod selector labels.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "maxSkew": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum allowed difference in matching pods between any two topology domains"
+          },
+          "topologyKey": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Node label key that defines a topology domain, e.g. topology.kubernetes.io/zone or kubernetes.io/hostname"
+          },
+          "whenUnsatisfiable": {
+            "type": "string",
+            "enum": ["DoNotSchedule", "ScheduleAnyway"],
+            "description": "DoNotSchedule keeps a pod pending rather than break the skew; ScheduleAnyway only prefers spreading"
+          },
+          "labelSelector": {
+            "type": "object",
+            "description": "Pods counted when computing skew. Defaults to this release's server pod selector labels when omitted."
+          },
+          "minDomains": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Minimum number of eligible domains (requires whenUnsatisfiable: DoNotSchedule)"
+          },
+          "matchLabelKeys": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Pod label keys whose values are added to labelSelector, e.g. pod-template-hash to spread each rollout's pods separately"
+          },
+          "nodeAffinityPolicy": {
+            "type": "string",
+            "enum": ["Honor", "Ignore"]
+          },
+          "nodeTaintsPolicy": {
+            "type": "string",
+            "enum": ["Honor", "Ignore"]
+          }
+        },
+        "required": ["maxSkew", "topologyKey", "whenUnsatisfiable"],
+        "if": { "required": ["minDomains"] },
+        "then": { "properties": { "whenUnsatisfiable": { "const": "DoNotSchedule" } } },
+        "additionalProperties": false
+      }
+    },
     "strategy": {
       "type": "object",
       "description": "Deployment update strategy. Applies to the Deployment only (not the StatefulSet). Empty uses the Kubernetes default. Rendered verbatim into spec.strategy."
