@@ -382,6 +382,13 @@ func (s *Store) modelParameterCandidates(model string) []string {
 	// digit-dotted names such as "gpt-3.5-turbo" intact.
 	add(schemas.NormalizeModelName(model))
 
+	// Again, on the provider-stripped form. A "bedrock/eu.anthropic.claude-haiku-5.5"
+	// id carries both a slash prefix and vendor dots: the loop above removes only
+	// the slash, and the two calls on the original leave the dots in place, so
+	// neither reaches the bare "claude-haiku-5.5" that the sheet actually carries.
+	add(s.BaseModelName(bare))
+	add(schemas.NormalizeModelName(bare))
+
 	suffix := "/" + bare
 	var qualified []string
 	s.mu.RLock()

@@ -152,6 +152,29 @@ func TestGetSupportedParameters_ResolvesEveryVendorPrefix(t *testing.T) {
 	}
 }
 
+// A caller that names the provider as well as the inference profile --
+// "bedrock/eu.anthropic.claude-haiku-5.5", reported on the PR -- hands over a
+// name carrying both a slash prefix and vendor dots. The slash loop removes
+// only the slash, and the normalizing calls ran on the original name, where the
+// slash stops them removing the dots, so the bare row the sheet does carry was
+// never reached and the plugin dropped nothing.
+func TestGetSupportedParameters_ResolvesAProviderPrefixedInferenceProfileID(t *testing.T) {
+	s := NewTestStore(nil)
+	s.SetSupportedParamsForTest(map[string][]string{
+		"claude-haiku-5.5": {"max_tokens"},
+	})
+
+	for _, model := range []string{
+		"bedrock/eu.anthropic.claude-haiku-5.5",
+		"bedrock/us.anthropic.claude-haiku-5.5",
+		"bedrock/anthropic.claude-haiku-5.5",
+	} {
+		if got := s.GetSupportedParameters(model); !slices.Equal(got, []string{"max_tokens"}) {
+			t.Errorf("%s resolved to %v, want [max_tokens]", model, got)
+		}
+	}
+}
+
 // An exact row still wins, so a model that resolves today keeps resolving to
 // the same list rather than to its base model's.
 func TestGetSupportedParameters_PrefersTheExactRow(t *testing.T) {
