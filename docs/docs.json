@@ -5,10 +5,6 @@
     "dark": "/media/bifrost-logo-dark.png",
     "light": "/media/bifrost-logo.png"
   },
-  "banner": {
-    "content": "Try Bifrost Enterprise free for 14 days. [Explore now](https://www.getmaxim.ai/bifrost/enterprise)",
-    "dismissible": true
-  },
   "theme": "mint",
   "colors": {
     "primary": "#0C3B43",
@@ -29,12 +25,16 @@
         "label": "GitHub",
         "href": "https://github.com/maximhq/bifrost",
         "icon": "github"
+      },
+      {
+        "label": "Request License",
+        "href": "https://www.getmaxim.ai/enterprise#free-license"
       }
     ],
     "primary": {
       "type": "button",
       "label": "Book a demo",
-      "href": "https://www.getmaxim.ai/bifrost/book-a-demo"
+      "href": "https://www.getmaxim.ai/book-a-demo"
     }
   },
   "navigation": {
@@ -2564,9 +2564,123 @@
   ],
   "footer": {
     "socials": {
-      "x": "https://x.com/getmaximai",
-      "github": "https://github.com/maximhq/bifrost",
-      "linkedin": "https://linkedin.com/company/maxim-ai"
-    }
+      "x": "https://x.com/getbifrost",
+      "linkedin": "https://linkedin.com/company/maxim-ai",
+      "github": "https://github.com/maximhq/bifrost"
+    },
+    "links": [
+      {
+        "header": "Company",
+        "items": [
+          {
+            "label": "Book a Demo",
+            "href": "https://www.getmaxim.ai/book-a-demo?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Partner Program",
+            "href": "https://www.getmaxim.ai/partners-program?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Careers",
+            "href": "https://www.getmaxim.ai/careers?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Contact Us",
+            "href": "mailto:contact@getmaxim.ai"
+          },
+          {
+            "label": "Security",
+            "href": "https://docs.getbifrost.ai/security"
+          },
+          {
+            "label": "Trust Center",
+            "href": "https://trust.getmaxim.ai/"
+          },
+          {
+            "label": "Terms of Service",
+            "href": "https://www.getmaxim.ai/terms-of-service?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Privacy Policy",
+            "href": "https://www.getmaxim.ai/privacy-policy?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          }
+        ]
+      },
+      {
+        "header": "Products",
+        "items": [
+          {
+            "label": "LLM Gateway",
+            "href": "https://www.getmaxim.ai/llm-gateway?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "MCP Gateway",
+            "href": "https://www.getmaxim.ai/mcp-gateway?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Governance",
+            "href": "https://www.getmaxim.ai/ai-governance?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Guardrails",
+            "href": "https://www.getmaxim.ai/ai-guardrails?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Observability",
+            "href": "https://www.getmaxim.ai/ai-observability?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Bifrost Edge",
+            "href": "https://www.getmaxim.ai/edge?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          }
+        ]
+      },
+      {
+        "header": "Resources",
+        "items": [
+          {
+            "label": "Bifrost Enterprise",
+            "href": "https://www.getmaxim.ai/enterprise?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Performance Benchmarks",
+            "href": "https://www.getmaxim.ai/bifrost/resources/benchmarks?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "LLM Gateway Buyer's Guide",
+            "href": "https://www.getmaxim.ai/bifrost/resources/buyers-guide?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Claude Code Integration",
+            "href": "https://www.getmaxim.ai/bifrost/resources/claude-code?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Migrating from LiteLLM",
+            "href": "https://www.getmaxim.ai/bifrost/resources/migrating-from-litellm?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Blogs",
+            "href": "https://www.getmaxim.ai/bifrost/blog?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          }
+        ]
+      },
+      {
+        "header": "For LLMs",
+        "items": [
+          {
+            "label": "llms-full.txt",
+            "href": "https://docs.getbifrost.ai/llms-full.txt"
+          },
+          {
+            "label": "llms.txt",
+            "href": "https://docs.getbifrost.ai/llms.txt"
+          },
+          {
+            "label": "llm-info",
+            "href": "https://www.getmaxim.ai/llm-info?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          }
+        ]
+      }
+    ]
   }
 }
