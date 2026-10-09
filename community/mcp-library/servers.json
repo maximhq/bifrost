@@ -2339,7 +2339,7 @@
     },
     {
       "name": "FXMacroData",
-      "description": "Official-source macroeconomic, central-bank, and FX data for 22 currencies, including indicator releases, release calendars, policy rates, FX rates, COT positioning, and commodities. Hosted remotely by FXMacroData. Works without a key for USD announcement data from the most recent 90 days (each release readable 15 minutes after publication), the USD release calendar, USD press releases, USD COT positioning, and the data catalogue, plus forecast coverage and market sessions for every currency. Non-USD series and COT positioning, FX rates, commodities, real-time releases, and full announcement history need an API key sent as an Authorization: Bearer <key> header.",
+      "description": "Official-source macroeconomic, central-bank, and FX data for 22 currencies, including indicator releases, release calendars, policy rates, FX rates, COT positioning, and commodities. Hosted remotely by FXMacroData. Works without a key for USD announcement data from the most recent 90 days (each release readable 15 minutes after publication), the USD release calendar, USD press releases, USD COT positioning, and the data catalogue, plus forecast coverage and market sessions for every currency. Non-USD series, non-USD COT positioning, FX rates, commodities, real-time releases, and full announcement history need an API key sent as an Authorization: Bearer <key> header.",
       "category": "Finance",
       "connection_type": "http",
       "connection_url": "https://mcp.fxmacrodata.com",
