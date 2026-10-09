@@ -1,0 +1,28 @@
+name: bifrost-log-upload-outbox
+services:
+  bifrost:
+    image: maximhq/bifrost:v2.2.0@sha256:12d6bbab32b44e3bb88869c6f5ca9304b53a9c43cb55c57a29f851037bcc19e1
+    ports: ["127.0.0.1:18693:8080"]
+    volumes:
+      - "${OUTBOX_TEST_BINARY:?Build the gateway binary first}:/app/main:ro"
+      - "${OUTBOX_TEST_DIR:?Set the test directory}/data:/app/data"
+      - "${OUTBOX_TEST_DIR}/outbox:/app/outbox"
+    environment:
+      LOG_LEVEL: info
+      LOG_STYLE: json
+      BIFROST_SETUP_TOKEN: local-s3-log-test
+      BIFROST_LOG_UPLOAD_OUTBOX_DIR: /app/outbox
+      BIFROST_LOG_UPLOAD_OUTBOX_MAX_BYTES: "${OUTBOX_TEST_MAX_BYTES:-10000000000}"
+    depends_on: [provider, s3]
+  provider:
+    image: python:3.12-slim
+    command: ["python", "/provider.py"]
+    volumes: ["./provider.py:/provider.py:ro"]
+  s3:
+    image: python:3.12-slim
+    command: ["python", "/s3.py"]
+    ports: ["127.0.0.1:18694:8080"]
+    volumes:
+      - "./s3.py:/s3.py:ro"
+      - "${OUTBOX_TEST_DIR}/objects:/objects"
+      - "${OUTBOX_TEST_DIR}/results:/results"

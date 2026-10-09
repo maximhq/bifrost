@@ -218375,6 +218375,133 @@
           ]
         }
       ]
+    },
+    {
+      "name": "188. Disk outbox S3 log recovery (local fixture)",
+      "description": "Infrastructure regression: run fixtures/log-upload-outbox/run.py --keep first, then use its results/newman.env.json. PREVIEW marks these as fixture-dependent so normal paid provider sweeps do not require a local S3 service. A failed upload must preserve all four request messages and the response, then recover via the one-minute outbox worker, including after restart. Before the outbox feature these GETs return only one request message and no response.",
+      "item": [
+        {
+          "name": "[PREVIEW] openai/gpt-4o-mini disk outbox periodic retry",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "local-s3-log-test"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/{{outboxRecoveredLogID}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "{{outboxRecoveredLogID}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Disk outbox recovery restores complete log: periodic retry', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  var log = body.log || body;",
+                  "  pm.expect(log.status).to.eql('success');",
+                  "  pm.expect(log.input_history, pm.response.text()).to.have.lengthOf(4);",
+                  "  pm.expect(log.input_history, pm.response.text()).to.deep.equal([{\"role\":\"system\",\"content\":\"SYSTEM-CONTEXT-outbox-periodic\"},{\"role\":\"user\",\"content\":\"EARLIER-USER-outbox-periodic\"},{\"role\":\"assistant\",\"content\":\"EARLIER-ASSISTANT-outbox-periodic\"},{\"role\":\"user\",\"content\":\"LATEST-USER-outbox-periodic\"}]);",
+                  "  pm.expect(log.output_message, pm.response.text()).to.exist;",
+                  "  pm.expect(log.output_message.content).to.eql('ASSISTANT-RESPONSE-LATEST-USER-outbox-periodic');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] openai/gpt-4o-mini disk outbox restart retry",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "local-s3-log-test"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/{{outboxRestartLogID}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "{{outboxRestartLogID}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Disk outbox recovery restores complete log: restart retry', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  var log = body.log || body;",
+                  "  pm.expect(log.status).to.eql('success');",
+                  "  pm.expect(log.input_history, pm.response.text()).to.have.lengthOf(4);",
+                  "  pm.expect(log.input_history, pm.response.text()).to.deep.equal([{\"role\":\"system\",\"content\":\"SYSTEM-CONTEXT-outbox-restart\"},{\"role\":\"user\",\"content\":\"EARLIER-USER-outbox-restart\"},{\"role\":\"assistant\",\"content\":\"EARLIER-ASSISTANT-outbox-restart\"},{\"role\":\"user\",\"content\":\"LATEST-USER-outbox-restart\"}]);",
+                  "  pm.expect(log.output_message, pm.response.text()).to.exist;",
+                  "  pm.expect(log.output_message.content).to.eql('ASSISTANT-RESPONSE-LATEST-USER-outbox-restart');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] openai/gpt-4o-mini disk outbox deleted log cleanup after eviction and restart",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{outboxS3Url}}/control",
+              "host": [
+                "{{outboxS3Url}}"
+              ],
+              "path": [
+                "control"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Disk outbox deletion survives eviction and restart', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  var state = pm.response.json();",
+                  "  var id = pm.environment.get('outboxDeletedLogID');",
+                  "  pm.expect(id, 'run the local outbox fixture first').to.be.a('string').and.not.empty;",
+                  "  pm.expect(state.put_attempts.some(function (attempt) { return attempt.path.indexOf(id) !== -1 && attempt.status === 200; }), 'deleted log must have had a real remote object').to.eql(true);",
+                  "  pm.expect(state.objects.some(function (key) { return key.indexOf(id) !== -1; }), pm.response.text()).to.eql(false);",
+                  "  pm.expect(state.delete_attempts.some(function (attempt) { return attempt.path.indexOf(id) !== -1 && attempt.status === 403; }), pm.response.text()).to.eql(true);",
+                  "  pm.expect(state.delete_attempts.some(function (attempt) { return attempt.path.indexOf(id) !== -1 && attempt.status === 204; }), pm.response.text()).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

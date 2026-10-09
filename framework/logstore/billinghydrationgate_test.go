@@ -31,6 +31,8 @@ func (s *countingObjectStore) Get(ctx context.Context, key string) ([]byte, erro
 	return s.InMemoryObjectStore.Get(ctx, key)
 }
 
+// newCountingHybrid creates a hybrid store whose object reads can be counted to verify hydration
+// gating.
 func newCountingHybrid(t *testing.T, excludeFields []string) (*HybridLogStore, LogStore, *countingObjectStore) {
 	t.Helper()
 	inner, err := newSqliteLogStore(
@@ -40,7 +42,8 @@ func newCountingHybrid(t *testing.T, excludeFields []string) (*HybridLogStore, L
 	)
 	require.NoError(t, err)
 	objStore := &countingObjectStore{InMemoryObjectStore: objectstore.NewInMemoryObjectStore()}
-	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, excludeFields, nil)
+	hybrid, err := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, excludeFields, nil)
+	require.NoError(t, err)
 	return hybrid, inner, objStore
 }
 

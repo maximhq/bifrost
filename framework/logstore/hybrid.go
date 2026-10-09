@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -34,13 +35,16 @@ const (
 
 // uploadWork represents an async S3 upload job.
 type uploadWork struct {
-	logID     string
-	timestamp time.Time
-	key       string
-	kind      uploadKind
-	status    string
-	payload   []byte // JSON-encoded payload
-	tags      map[string]string
+	queuedAt   time.Time
+	generation uint64 // In-process ordering; persisted records use queuedAt.
+	logID      string
+	timestamp  time.Time
+	key        string
+	kind       uploadKind
+	status     string
+	payload    []byte // JSON-encoded payload
+	tags       map[string]string
+	deleteOnly bool // Durable remote cleanup; never upload or evict its record.
 }
 
 // HybridLogStore wraps an existing LogStore and offloads large payload
@@ -61,6 +65,9 @@ type HybridLogStore struct {
 	closed         atomic.Bool
 	droppedUploads atomic.Int64
 	pendingBytes   atomic.Int64
+	outbox         *uploadOutbox
+	outboxCancel   context.CancelFunc
+	uploadLocks    [64]sync.Mutex
 	// excludedPayloadFields is the set of payload field names (DB column names) that must NOT be offloaded to object storage and must remain in the DB.
 	excludedPayloadFields map[string]struct{}
 	// excludedRequestTypes is the set of log object types that are never offloaded; their rows stay complete in the DB.
@@ -92,7 +99,11 @@ var databaseResidentPayloadFields = []string{"error_details"}
 // database rather than offloaded to object storage, on top of
 // databaseResidentPayloadFields. Pass nil to offload every other payload field. excludeRequestTypes lists log
 // object types whose rows are written to the DB unchanged and never uploaded.
-func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix string, logger schemas.Logger, excludeFields []string, excludeRequestTypes []string) *HybridLogStore {
+func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix string, logger schemas.Logger, excludeFields []string, excludeRequestTypes []string) (*HybridLogStore, error) {
+	outbox, err := newUploadOutboxFromEnv()
+	if err != nil {
+		return nil, err
+	}
 	excluded := make(map[string]struct{}, len(excludeFields)+len(databaseResidentPayloadFields))
 	for _, f := range databaseResidentPayloadFields {
 		excluded[f] = struct{}{}
@@ -119,13 +130,21 @@ func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix s
 		excludedPayloadFields: excluded,
 		excludedRequestTypes:  excludedTypes,
 		offloadErrorRawBodies: offloadErrorRawBodies,
+		outbox:                outbox,
 	}
 	// Start upload workers.
 	for i := 0; i < defaultUploadWorkers; i++ {
 		h.wg.Add(1)
 		go h.uploadWorker()
 	}
-	return h
+	if outbox != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		h.outboxCancel = cancel
+		h.wg.Add(1)
+		go h.runUploadOutbox(ctx)
+		logger.Info("objectstore: upload outbox enabled at %s (max %d bytes, retry interval %s)", outbox.dir, outbox.maxBytes, uploadOutboxInterval)
+	}
+	return h, nil
 }
 
 // uploadWorker processes async S3 upload jobs from the queue.
@@ -137,58 +156,124 @@ func (h *HybridLogStore) uploadWorker() {
 }
 
 // processUpload uploads a single payload to object storage.
-// This is fire-and-forget by design: on Put failure the upload is dropped and
-// counted in droppedUploads. The DB row retains has_object=false, so FindByID
-// falls back to whatever data the DB holds. Retries are intentionally omitted
-// to keep S3 latency from cascading into the write path.
+// Failed uploads are persisted when a disk outbox is configured; otherwise
+// they are dropped. The DB row retains has_object=false until upload succeeds.
 func (h *HybridLogStore) processUpload(work *uploadWork) {
 	payloadSize := int64(len(work.payload))
 	defer h.pendingBytes.Add(-payloadSize)
+	if h.outbox != nil {
+		defer h.outbox.finishUpload(work)
+	}
 
 	defer func() {
 		if r := recover(); r != nil {
 			h.logger.Error("objectstore: panic in upload worker (recovered): %v", r)
-			h.droppedUploads.Add(1)
+			h.preserveFailedUpload(work)
 		}
 	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	switch work.kind {
-	case uploadKindMCP:
-		current, err := h.inner.FindMCPToolLog(ctx, work.logID)
-		if err != nil {
-			h.logger.Warn("objectstore: failed to check MCP tool log %s before upload: %v", work.logID, err)
-			h.droppedUploads.Add(1)
-			return
-		}
-		if work.status != "" && current.Status != work.status {
-			return
-		}
-	case uploadKindAgent:
-		current, err := h.inner.FindAgentLog(ctx, work.logID)
-		if err != nil {
-			h.logger.Warn("objectstore: failed to check A2A log %s before upload: %v", work.logID, err)
-			h.droppedUploads.Add(1)
-			return
-		}
-		if work.status != "" && current.Status != work.status {
+	if h.outbox != nil {
+		lock := h.uploadLock(work.key)
+		lock.Lock()
+		defer lock.Unlock()
+		if h.outbox.superseded(work) {
 			return
 		}
 	}
 
-	if err := h.objects.Put(ctx, work.key, work.payload, work.tags); err != nil {
-		h.logger.Warn("objectstore: failed to upload log %s: %v", work.logID, err)
+	if err := h.uploadAndMark(context.Background(), work); errors.Is(err, errUploadObsolete) {
 		h.droppedUploads.Add(1)
+	} else if err != nil {
+		h.logger.Warn("objectstore: failed to upload log %s: %v", work.logID, err)
+		h.preserveFailedUpload(work)
 		return
+	}
+	if h.outbox != nil {
+		if err := h.outbox.removeThrough(work); err != nil {
+			h.logger.Warn("objectstore: failed to remove completed outbox upload for log %s: %v", work.logID, err)
+		}
+	}
+}
+
+// uploadLock returns the lock that orders network operations for an object key.
+func (h *HybridLogStore) uploadLock(key string) *sync.Mutex {
+	digest := sha256.Sum256([]byte(key))
+	return &h.uploadLocks[int(digest[0])%len(h.uploadLocks)]
+}
+
+// uploadAndMark is shared by live uploads and disk retries. A successful Put
+// alone is insufficient: readers only hydrate payloads after has_object is set.
+func (h *HybridLogStore) uploadAndMark(ctx context.Context, work *uploadWork) error {
+	if work.deleteOnly {
+		return h.removeDeletedUpload(ctx, work)
+	}
+	putCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	switch work.kind {
+	case uploadKindLog:
+		if h.outbox != nil {
+			present, err := h.inner.IsLogEntryPresent(putCtx, work.logID)
+			if err != nil {
+				return err
+			}
+			if !present {
+				return h.removeDeletedUpload(ctx, work)
+			}
+		}
+	case uploadKindMCP:
+		current, err := h.inner.FindMCPToolLog(putCtx, work.logID)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return h.removeDeletedUpload(ctx, work)
+			}
+			return fmt.Errorf("check MCP tool log before upload: %w", err)
+		}
+		if h.outbox == nil && work.status != "" && current.Status != work.status {
+			return nil // A superseded snapshot is not a lost log.
+		}
+		if h.outbox != nil {
+			// The DB owns current metadata; the pending snapshot owns the full
+			// payload fields. A status change does not invalidate those fields.
+			var pending MCPToolLog
+			if err := MergeMCPToolLogPayloadFromJSON(&pending, work.payload); err != nil {
+				return err
+			}
+			current.Arguments, current.ArgumentsParsed = pending.Arguments, pending.ArgumentsParsed
+			current.Result, current.ResultParsed = pending.Result, pending.ResultParsed
+			current.ErrorDetails, current.ErrorDetailsParsed = pending.ErrorDetails, pending.ErrorDetailsParsed
+			payload, err := MarshalMCPToolLogPayload(current)
+			if err != nil {
+				return err
+			}
+			work.payload, work.tags = payload, BuildMCPToolTags(current)
+		}
+	case uploadKindAgent:
+		current, err := h.inner.FindAgentLog(putCtx, work.logID)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return h.removeDeletedUpload(ctx, work)
+			}
+			return fmt.Errorf("check agent log before upload: %w", err)
+		}
+		if h.outbox == nil && work.status != "" && current.Status != work.status {
+			return nil // A superseded snapshot is not a lost log.
+		}
+		if h.outbox != nil {
+			work.tags = BuildAgentLogTags(current)
+		}
+	}
+
+	err := h.objects.Put(putCtx, work.key, work.payload, work.tags)
+	cancel()
+	if err != nil {
+		return err
 	}
 
 	// Mark the DB row as having an object. Use a fresh context so that a slow
 	// Put doesn't starve the DB update of its deadline. Retry up to 3 times
 	// with exponential backoff to avoid orphaning the uploaded object.
+	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		dbCtx, dbCancel := context.WithTimeout(ctx, 10*time.Second)
 		var err error
 		switch work.kind {
 		case uploadKindMCP:
@@ -200,15 +285,45 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 		}
 		dbCancel()
 		if err == nil {
-			return
+			return nil
 		}
+		if h.outbox != nil && errors.Is(err, ErrNotFound) {
+			return h.removeDeletedUpload(ctx, work)
+		}
+		lastErr = err
 		h.logger.Warn("objectstore: failed to set has_object for log %s (attempt %d/3): %v", work.logID, attempt+1, err)
 		if attempt < 2 {
-			time.Sleep(time.Duration(1<<attempt) * time.Second) // 1s, 2s backoff
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(1<<attempt) * time.Second):
+			}
 		}
 	}
 	h.logger.Error("objectstore: failed to set has_object for log %s after 3 attempts; payload orphaned in object store", work.logID)
-	h.droppedUploads.Add(1)
+	return fmt.Errorf("set has_object after upload: %w", lastErr)
+}
+
+// removeDeletedUpload cleans up an object whose row disappeared before or during
+// Put. It retains cleanup metadata until deletion succeeds and returns errUploadObsolete.
+func (h *HybridLogStore) removeDeletedUpload(ctx context.Context, work *uploadWork) error {
+	if h.outbox != nil {
+		// Scrub content even if the remote cleanup itself is unavailable.
+		copy := *work
+		copy.deleteOnly = true
+		if err := h.outbox.save(&copy); err != nil {
+			h.logger.Error("objectstore: failed to retire pending log %s: %v", work.logID, err)
+		}
+		deleteCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if err := h.objects.Delete(deleteCtx, work.key); err != nil {
+			return fmt.Errorf("delete object for removed log: %w", err)
+		}
+		if err := h.outbox.removeThrough(&copy); err != nil {
+			return fmt.Errorf("remove completed deletion from outbox: %w", err)
+		}
+	}
+	return errUploadObsolete
 }
 
 // isPayloadEmpty returns true when the payload carries no offloadable content.
@@ -226,8 +341,8 @@ func isPayloadEmpty(payload map[string]string) bool {
 	return true
 }
 
-// enqueueUpload pushes an upload job onto the queue. If the queue is full,
-// the job is dropped to prevent S3 slowness from cascading.
+// enqueueUpload pushes an upload job onto the queue. Overflow is written to the
+// disk outbox when enabled, keeping the in-memory queue bounded.
 func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payload map[string]string, tags map[string]string) {
 	if h.closed.Load() || isPayloadEmpty(payload) {
 		return
@@ -250,38 +365,64 @@ func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payloa
 }
 
 // enqueueRawUpload submits a pre-serialized payload to the upload queue.
-// Drops the upload (and increments droppedUploads) when the store is closed,
-// the data is empty, the in-flight byte budget would be exceeded, or the queue
-// is full. Used by both regular log uploads (via enqueueUpload) and MCP tool
-// log uploads, which already hold raw JSON bytes.
+// Queue and memory overflow are persisted when an outbox is enabled, otherwise
+// dropped. Used by regular, MCP tool, and agent log uploads.
 func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key string, kind uploadKind, status string, data []byte, tags map[string]string) {
 	if h.closed.Load() || len(data) == 0 {
 		return
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			h.droppedUploads.Add(1)
-		}
-	}()
-	if h.pendingBytes.Load()+int64(len(data)) > defaultMaxUploadQueueBytes {
+	if int64(len(data)) > defaultMaxUploadQueueBytes {
+		h.logger.Warn("objectstore: payload exceeds upload memory limit for log %s", logID)
 		h.droppedUploads.Add(1)
-		h.logger.Warn("objectstore: upload queue memory limit reached, dropping upload for log %s", logID)
 		return
 	}
+	work := &uploadWork{queuedAt: time.Now().UTC(), logID: logID, timestamp: timestamp, key: key, kind: kind, status: status, payload: data, tags: tags}
+	queued := false
+	if h.outbox != nil {
+		h.outbox.trackUpload(work)
+		defer func() {
+			if !queued {
+				h.outbox.finishUpload(work)
+			}
+		}()
+	}
+	reserved := false
+	defer func() {
+		if r := recover(); r != nil {
+			if reserved {
+				h.pendingBytes.Add(-int64(len(data)))
+			}
+			h.preserveFailedUpload(work)
+		}
+	}()
+	if !h.reserveUploadBytes(int64(len(data))) {
+		h.logger.Warn("objectstore: upload queue memory limit reached for log %s", logID)
+		h.preserveFailedUpload(work)
+		return
+	}
+	reserved = true
 	select {
-	case h.uploadQueue <- &uploadWork{
-		logID:     logID,
-		timestamp: timestamp,
-		key:       key,
-		kind:      kind,
-		status:    status,
-		payload:   data,
-		tags:      tags,
-	}:
-		h.pendingBytes.Add(int64(len(data)))
+	case h.uploadQueue <- work:
+		queued = true
 	default:
-		h.droppedUploads.Add(1)
-		h.logger.Warn("objectstore: upload queue full, dropping upload for log %s", logID)
+		h.pendingBytes.Add(-int64(len(data)))
+		reserved = false
+		h.logger.Warn("objectstore: upload queue full for log %s", logID)
+		h.preserveFailedUpload(work)
+	}
+}
+
+// reserveUploadBytes atomically reserves bytes shared by live uploads and disk retries, returning
+// false when the budget is exhausted.
+func (h *HybridLogStore) reserveUploadBytes(size int64) bool {
+	for {
+		pending := h.pendingBytes.Load()
+		if size > defaultMaxUploadQueueBytes-pending {
+			return false
+		}
+		if h.pendingBytes.CompareAndSwap(pending, pending+size) {
+			return true
+		}
 	}
 }
 
@@ -618,6 +759,10 @@ func (h *HybridLogStore) DeleteLog(ctx context.Context, id string) error {
 	if err := h.inner.DeleteLog(ctx, id); err != nil {
 		return err
 	}
+	if h.outbox != nil && log != nil {
+		h.retireDeletedUploads(ctx, []uploadWork{{logID: log.ID, timestamp: log.Timestamp, key: ObjectKey(h.prefix, log.Timestamp, log.ID)}})
+		return nil
+	}
 	if log != nil && log.HasObject {
 		key := ObjectKey(h.prefix, log.Timestamp, log.ID)
 		if delErr := h.objects.Delete(ctx, key); delErr != nil {
@@ -634,6 +779,7 @@ func (h *HybridLogStore) DeleteLog(ctx context.Context, id string) error {
 func (h *HybridLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 	// Collect keys for S3 deletion before removing from DB.
 	var keys []string
+	var pending []uploadWork
 	for _, id := range ids {
 		log, findErr := h.inner.FindByID(ctx, id)
 		if findErr != nil && !errors.Is(findErr, ErrNotFound) {
@@ -642,9 +788,16 @@ func (h *HybridLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 		if log != nil && log.HasObject {
 			keys = append(keys, ObjectKey(h.prefix, log.Timestamp, log.ID))
 		}
+		if h.outbox != nil && log != nil {
+			pending = append(pending, uploadWork{logID: log.ID, timestamp: log.Timestamp, key: ObjectKey(h.prefix, log.Timestamp, log.ID)})
+		}
 	}
 	if err := h.inner.DeleteLogs(ctx, ids); err != nil {
 		return err
+	}
+	if h.outbox != nil {
+		h.retireDeletedUploads(ctx, pending)
+		return nil
 	}
 	if len(keys) > 0 {
 		if delErr := h.objects.DeleteBatch(ctx, keys); delErr != nil {
@@ -677,6 +830,9 @@ func (h *HybridLogStore) DeleteMCPToolLogsBatch(ctx context.Context, cutoff time
 // mid-flight.
 func (h *HybridLogStore) Close(ctx context.Context) error {
 	h.closed.Store(true)
+	if h.outboxCancel != nil {
+		h.outboxCancel()
+	}
 	close(h.uploadQueue)
 	done := make(chan struct{})
 	go func() {
@@ -1567,7 +1723,16 @@ func (h *HybridLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry 
 	if err != nil {
 		return err
 	}
-	if err := h.hydrateMCPToolLogFromObject(ctx, current); err != nil {
+	if h.outbox != nil {
+		lock := h.uploadLock(MCPToolObjectKey(h.prefix, current.Timestamp, current.ID))
+		lock.Lock()
+		defer lock.Unlock()
+		current, err = h.inner.FindMCPToolLog(ctx, id)
+		if err != nil {
+			return err
+		}
+	}
+	if err := h.hydrateMCPToolLogForUpdate(ctx, current); err != nil {
 		return err
 	}
 	if err := applyMCPToolLogUpdate(current, entry); err != nil {
@@ -1784,6 +1949,8 @@ func applyAgentLogBodyUpdate(entry *AgentLog, field string, value any) error {
 	return nil
 }
 
+// UpdateAgentLog applies agent updates. Map updates containing body fields first
+// restore the full payload and fail without changing the row if hydration fails.
 func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry any) error {
 	updates, ok := entry.(map[string]interface{})
 	if !ok {
@@ -1804,10 +1971,23 @@ func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry an
 	if err != nil {
 		return err
 	}
-	if current.HasObject {
-		if err := h.hydrateAgentLogFromObject(ctx, current); err != nil {
+	if h.outbox != nil {
+		key := AgentLogObjectKey(h.prefix, current.Timestamp, current.ID)
+		if current.PayloadReference != nil && *current.PayloadReference != "" {
+			key = *current.PayloadReference
+		}
+		lock := h.uploadLock(key)
+		lock.Lock()
+		defer lock.Unlock()
+		// A recovery may have completed since the first read. Re-read its
+		// hydration flag while holding the same lock as the upload worker.
+		current, err = h.inner.FindAgentLog(ctx, id)
+		if err != nil {
 			return err
 		}
+	}
+	if err := h.hydrateAgentLogForUpdate(ctx, current); err != nil {
+		return err
 	}
 
 	dbUpdates := make(map[string]interface{}, len(updates)+1)
@@ -1857,8 +2037,9 @@ func (h *HybridLogStore) DeleteAgentLogs(ctx context.Context, ids []string) erro
 		return err
 	}
 	keys := make([]string, 0, len(entries))
+	var pending []uploadWork
 	for _, entry := range entries {
-		if !entry.HasObject {
+		if !entry.HasObject && h.outbox == nil {
 			continue
 		}
 		key := AgentLogObjectKey(h.prefix, entry.Timestamp, entry.ID)
@@ -1866,9 +2047,16 @@ func (h *HybridLogStore) DeleteAgentLogs(ctx context.Context, ids []string) erro
 			key = *entry.PayloadReference
 		}
 		keys = append(keys, key)
+		if h.outbox != nil {
+			pending = append(pending, uploadWork{logID: entry.ID, timestamp: entry.Timestamp, key: key, kind: uploadKindAgent})
+		}
 	}
 	if err := h.inner.DeleteAgentLogs(ctx, ids); err != nil {
 		return err
+	}
+	if h.outbox != nil {
+		h.retireDeletedUploads(ctx, pending)
+		return nil
 	}
 	if len(keys) > 0 {
 		if delErr := h.objects.DeleteBatch(ctx, keys); delErr != nil {
@@ -1896,6 +2084,7 @@ func (h *HybridLogStore) HasMCPToolLogs(ctx context.Context) (bool, error) {
 // DeleteMCPToolLogs deletes MCP tool logs with the given IDs, including any associated object storage objects.
 func (h *HybridLogStore) DeleteMCPToolLogs(ctx context.Context, ids []string) error {
 	var keys []string
+	var pending []uploadWork
 	for _, id := range ids {
 		log, findErr := h.inner.FindMCPToolLog(ctx, id)
 		if findErr != nil && !errors.Is(findErr, ErrNotFound) {
@@ -1904,9 +2093,16 @@ func (h *HybridLogStore) DeleteMCPToolLogs(ctx context.Context, ids []string) er
 		if log != nil && log.HasObject {
 			keys = append(keys, MCPToolObjectKey(h.prefix, log.Timestamp, log.ID))
 		}
+		if h.outbox != nil && log != nil {
+			pending = append(pending, uploadWork{logID: log.ID, timestamp: log.Timestamp, key: MCPToolObjectKey(h.prefix, log.Timestamp, log.ID), kind: uploadKindMCP})
+		}
 	}
 	if err := h.inner.DeleteMCPToolLogs(ctx, ids); err != nil {
 		return err
+	}
+	if h.outbox != nil {
+		h.retireDeletedUploads(ctx, pending)
+		return nil
 	}
 	if len(keys) > 0 {
 		if delErr := h.objects.DeleteBatch(ctx, keys); delErr != nil {
