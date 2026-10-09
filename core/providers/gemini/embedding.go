@@ -134,7 +134,23 @@ func EmbeddingContentToGeminiContent(content schemas.EmbeddingContent, allowedUR
 // individual requests[] entry of :batchEmbedContents. applyGeminiEmbeddingParams lifts
 // them onto the entry, and ToGeminiEmbeddingRequest strips them from the batch-level
 // extra params so they are never merged at the top level, where Gemini rejects them.
-var geminiPerEntryEmbeddingExtraKeys = []string{"taskType", "title", "documentOcr", "audioTrackExtraction"}
+var geminiPerEntryEmbeddingExtraKeys = []string{"taskType", "title", "embedContentConfig"}
+
+// ReadEmbedContentConfig returns the documentOcr / audioTrackExtraction a caller nested under
+// embedContentConfig, the only place Gemini and Vertex accept them.
+func ReadEmbedContentConfig(extra map[string]interface{}) *GeminiEmbedContentConfig {
+	nested, ok := extra["embedContentConfig"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	cfg := &GeminiEmbedContentConfig{}
+	cfg.DocumentOCR, _ = schemas.SafeExtractBoolPointer(nested["documentOcr"])
+	cfg.AudioTrackExtraction, _ = schemas.SafeExtractBoolPointer(nested["audioTrackExtraction"])
+	if cfg.DocumentOCR == nil && cfg.AudioTrackExtraction == nil {
+		return nil
+	}
+	return cfg
+}
 
 // applyGeminiEmbeddingParams copies the embedding parameters onto one requests[] entry.
 // The first-class task_type/title fields win; the Gemini-native "taskType"/"title"
@@ -162,14 +178,7 @@ func applyGeminiEmbeddingParams(req *GeminiEmbeddingRequest, params *schemas.Emb
 				req.Title = title
 			}
 		}
-		if documentOCR, ok := schemas.SafeExtractBoolPointer(params.ExtraParams["documentOcr"]); ok {
-			delete(req.ExtraParams, "documentOcr")
-			req.DocumentOCR = documentOCR
-		}
-		if audioTrackExtraction, ok := schemas.SafeExtractBoolPointer(params.ExtraParams["audioTrackExtraction"]); ok {
-			delete(req.ExtraParams, "audioTrackExtraction")
-			req.AudioTrackExtraction = audioTrackExtraction
-		}
+		req.EmbedContentConfig = ReadEmbedContentConfig(req.ExtraParams)
 	}
 }
 
@@ -425,18 +434,18 @@ func applyBifrostEmbeddingParams(params *schemas.EmbeddingParameters, req Gemini
 		params.Title = req.Title
 		changed = true
 	}
-	if req.DocumentOCR != nil {
+	if cfg := req.EmbedContentConfig; cfg != nil && (cfg.DocumentOCR != nil || cfg.AudioTrackExtraction != nil) {
+		nested := map[string]interface{}{}
+		if cfg.DocumentOCR != nil {
+			nested["documentOcr"] = *cfg.DocumentOCR
+		}
+		if cfg.AudioTrackExtraction != nil {
+			nested["audioTrackExtraction"] = *cfg.AudioTrackExtraction
+		}
 		if params.ExtraParams == nil {
 			params.ExtraParams = map[string]interface{}{}
 		}
-		params.ExtraParams["documentOcr"] = req.DocumentOCR
-		changed = true
-	}
-	if req.AudioTrackExtraction != nil {
-		if params.ExtraParams == nil {
-			params.ExtraParams = map[string]interface{}{}
-		}
-		params.ExtraParams["audioTrackExtraction"] = req.AudioTrackExtraction
+		params.ExtraParams["embedContentConfig"] = nested
 		changed = true
 	}
 	if !changed {
@@ -447,11 +456,18 @@ func applyBifrostEmbeddingParams(params *schemas.EmbeddingParameters, req Gemini
 
 // sameGeminiEmbeddingParams reports whether two requests[] entries carry identical params.
 func sameGeminiEmbeddingParams(a, b GeminiEmbeddingRequest) bool {
+	cfgA, cfgB := a.EmbedContentConfig, b.EmbedContentConfig
+	if cfgA == nil {
+		cfgA = &GeminiEmbedContentConfig{}
+	}
+	if cfgB == nil {
+		cfgB = &GeminiEmbedContentConfig{}
+	}
 	return ptrEqual(a.TaskType, b.TaskType) &&
 		ptrEqual(a.Title, b.Title) &&
 		ptrEqual(a.OutputDimensionality, b.OutputDimensionality) &&
-		ptrEqual(a.DocumentOCR, b.DocumentOCR) &&
-		ptrEqual(a.AudioTrackExtraction, b.AudioTrackExtraction)
+		ptrEqual(cfgA.DocumentOCR, cfgB.DocumentOCR) &&
+		ptrEqual(cfgA.AudioTrackExtraction, cfgB.AudioTrackExtraction)
 }
 
 // geminiEmbeddingEntriesToBifrost converts requests[] entries to input items. Params shared by
