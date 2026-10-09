@@ -2665,8 +2665,8 @@ func TestInvokeChatGuardTagging_PreservesCacheControlAndCitations(t *testing.T) 
 		Model:    "us.anthropic.claude-sonnet-4-6",
 		Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
 			{
-				Type:         schemas.ChatContentBlockTypeText,
-				Text:         schemas.Ptr("Context prefix with cache control"),
+				Type:         schemas.ChatContentBlockTypeFile,
+				File:         &schemas.ChatInputFile{FileID: schemas.Ptr("file_test123"), Filename: schemas.Ptr("doc.txt")},
 				CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, TTL: &ttl},
 				Citations:    &schemas.Citations{Enabled: &enabled},
 			},
@@ -2694,7 +2694,10 @@ func TestInvokeChatGuardTagging_PreservesCacheControlAndCitations(t *testing.T) 
 	provider := &BedrockProvider{}
 	body, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, tagged, provider.invokeBuildConfig(tagged.Model, false, false, guardrailBody))
 	require.Nil(t, bifrostErr)
+	assert.Equal(t, "document", gjson.GetBytes(body, "messages.0.content.0.type").String())
 	assert.Equal(t, "ephemeral", gjson.GetBytes(body, "messages.0.content.0.cache_control.type").String())
+	assert.True(t, gjson.GetBytes(body, "messages.0.content.0.citations.enabled").Bool())
+	assert.Contains(t, gjson.GetBytes(body, "messages.0.content.1.text").String(), "amazon-bedrock-guardrails-query_xyz")
 }
 
 // TestGuardTagSuffixValidation_InvokePath: a caller-supplied tagSuffix outside AWS's 1-20
