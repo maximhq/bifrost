@@ -26,7 +26,7 @@ import (
 
 // clickhouseTestConfig targets the tests/docker-compose.yml ClickHouse, with
 // the same overrides the logstore suite honours.
-func clickhouseTestConfig(t *testing.T) *logstore.ClickHouseConfig {
+func clickhouseTestConfig(t testing.TB) *logstore.ClickHouseConfig {
 	t.Helper()
 	env := func(key, def string) string {
 		if v := os.Getenv(key); v != "" {
@@ -56,7 +56,7 @@ type clickhouseTestEnv struct {
 // setupClickHouse opens the logstore and drops the queue tables so each test
 // creates them from scratch. It skips when ClickHouse is not running locally
 // and fails in CI, where the compose service is expected to be up.
-func setupClickHouse(t *testing.T) clickhouseTestEnv {
+func setupClickHouse(t testing.TB) clickhouseTestEnv {
 	t.Helper()
 	ls, err := logstore.NewLogStore(context.Background(), &logstore.Config{
 		Enabled: true,
@@ -79,7 +79,7 @@ func setupClickHouse(t *testing.T) clickhouseTestEnv {
 	return clickhouseTestEnv{logStore: ls, db: db, schema: ls.(chSchemaStore)}
 }
 
-func (e clickhouseTestEnv) store(t *testing.T, locker logstore.DistributedLocker) *clickhouseStore {
+func (e clickhouseTestEnv) store(t testing.TB, locker logstore.DistributedLocker) *clickhouseStore {
 	t.Helper()
 	s, err := newClickHouseStore(context.Background(), e.db, e.schema, locker, DefaultRetentionHours*time.Hour, nil)
 	require.NoError(t, err)
@@ -939,4 +939,25 @@ func TestClickHouseLookupsUseSortingKey(t *testing.T) {
 		checked++
 	}
 	assert.GreaterOrEqual(t, checked, 3, "existence check, message load and held-row read")
+}
+
+func BenchmarkClickHouseQueue(b *testing.B) {
+	runBenchmarks(b, benchBackend{
+		fresh: func(b *testing.B) (Store, func()) {
+			env := setupClickHouse(b)
+			return env.store(b, NewProcessLocker()), func() { _ = env.logStore.Close(context.Background()) }
+		},
+		footprint: func(b *testing.B, s Store) int64 {
+			var bytes int64
+			require.NoError(b, s.(*clickhouseStore).db.Raw("SELECT sum(bytes_on_disk) FROM system.parts WHERE active AND database = currentDatabase() "+
+				"AND table IN ('queue_groups', 'queue_messages', 'queue_deliveries')").Scan(&bytes).Error)
+			return bytes
+		},
+		compact: func(b *testing.B, s Store) {
+			for _, table := range []string{"queue_groups", "queue_messages", "queue_deliveries"} {
+				require.NoError(b, s.(*clickhouseStore).db.Exec("OPTIMIZE TABLE "+table+" FINAL").Error)
+			}
+		},
+		backlogs: []int{10_000, 100_000},
+	})
 }

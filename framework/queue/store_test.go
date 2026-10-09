@@ -2,7 +2,9 @@ package queue
 
 import (
 	"context"
+	crand "crypto/rand"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -921,4 +923,388 @@ func contractRetentionFromDeathAndDueTime(t *testing.T, s Store) {
 	mustGroup(t, s, topic2, "late", StartFromEarliest)
 	assert.Equal(t, []string{"scheduled"}, payloads(mustClaim(t, s, topic2, "late", 10, longLease)),
 		"kept for AckedRetention after it became due")
+}
+
+// Benchmarks. Run them with, for example:
+//
+//	go test -run '^$' -bench 'Queue' -benchtime 2s ./queue/
+//
+// Every backend runs the same set through runBenchmarks: publish, claim and
+// ack, end to end through the engine, single-claim latency over a large
+// backlog, and storage footprint.
+//
+// Workloads are bounded: throughput benchmarks run in rounds of benchRound
+// messages, each starting from the same state, and footprint runs one whole
+// workload per iteration. So -benchtime changes how long a run takes, never
+// the backlog a measurement sees.
+
+// benchBackend is a backend under benchmark.
+type benchBackend struct {
+	// fresh returns an empty store, its tables reset, and a func that closes
+	// its database. Whatever is not closed sooner is closed when b ends.
+	fresh func(b *testing.B) (Store, func())
+	// footprint reports the bytes the queue occupies right now.
+	footprint func(b *testing.B, s Store) int64
+	// compact reclaims space the backend can reclaim (VACUUM, OPTIMIZE, GC).
+	compact func(b *testing.B, s Store)
+	// backlogs are the pending-delivery counts the claim benchmark builds.
+	backlogs []int
+}
+
+const benchPayloadSize = 1024
+
+// benchRound is the most messages a throughput benchmark has stored at once.
+const benchRound = 10_000
+
+// benchRounds calls round with the sizes of consecutive rounds totalling n.
+func benchRounds(n int, round func(size int)) {
+	for done := 0; done < n; done += benchRound {
+		round(min(benchRound, n-done))
+	}
+}
+
+// drainPurge purges everything purgeable, so the next round starts from an
+// empty store whatever the backend keeps after an acknowledgement.
+func drainPurge(b *testing.B, s Store) {
+	for {
+		n, err := s.Purge(context.Background(), PurgePolicy{}, 10_000)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if n == 0 {
+			return
+		}
+	}
+}
+
+// benchMessages builds n messages with random, incompressible payloads, so
+// columnar compression cannot flatter the footprint numbers.
+func benchMessages(topic string, n, payload int, key func(i int) string) []*Message {
+	at := time.Now().UTC()
+	msgs := make([]*Message, n)
+	for i := range msgs {
+		body := make([]byte, payload)
+		_, _ = crand.Read(body)
+		m := &Message{ID: uuid.NewString(), Topic: topic, Payload: body, PublishedAt: at, Headers: map[string]string{"content-type": "application/json"}}
+		if key != nil {
+			m.Key = key(i)
+		}
+		msgs[i] = m
+	}
+	return msgs
+}
+
+// appendInBatches loads msgs 1,000 at a time, the way a producer would.
+func appendInBatches(b *testing.B, s Store, msgs []*Message) {
+	b.Helper()
+	for chunk := range slices.Chunk(msgs, 1000) {
+		if err := s.Append(context.Background(), chunk); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func runBenchmarks(b *testing.B, backend benchBackend) {
+	for _, batch := range []int{1, 100} {
+		b.Run(fmt.Sprintf("Publish/batch=%d", batch), func(b *testing.B) { benchPublish(b, backend, batch) })
+	}
+	b.Run("ClaimAck", func(b *testing.B) { benchClaimAck(b, backend) })
+	b.Run("EndToEnd", func(b *testing.B) { benchEndToEnd(b, backend) })
+	b.Run("Latency", func(b *testing.B) { benchLatency(b, backend) })
+	for _, pending := range backend.backlogs {
+		for _, keys := range []int{0, 1000, 1} {
+			name := fmt.Sprintf("ClaimBacklog/pending=%d/keys=%d", pending, keys)
+			b.Run(name, func(b *testing.B) { benchClaimBacklog(b, backend, pending, keys) })
+		}
+	}
+	for _, tc := range []struct{ payload, groups int }{{0, 1}, {benchPayloadSize, 1}, {benchPayloadSize, 3}} {
+		b.Run(fmt.Sprintf("Footprint/payload=%d/groups=%d", tc.payload, tc.groups), func(b *testing.B) {
+			benchFootprint(b, backend, tc.payload, tc.groups)
+		})
+	}
+}
+
+// benchPublish measures publish throughput with two consumer groups, so each
+// message fans out to two deliveries.
+func benchPublish(b *testing.B, backend benchBackend, batch int) {
+	ctx := context.Background()
+	topic := "bench-publish"
+	b.ReportAllocs()
+	b.ResetTimer()
+	benchRounds(b.N, func(size int) {
+		// Each round publishes into a fresh store, so stored rows never exceed
+		// one round.
+		b.StopTimer()
+		s, closeStore := backend.fresh(b)
+		for _, g := range []string{"g1", "g2"} {
+			if err := s.EnsureGroup(ctx, topic, g, StartFromLatest); err != nil {
+				b.Fatal(err)
+			}
+		}
+		msgs := benchMessages(topic, size, benchPayloadSize, nil)
+		b.StartTimer()
+		for chunk := range slices.Chunk(msgs, batch) {
+			if err := s.Append(ctx, chunk); err != nil {
+				b.Fatal(err)
+			}
+		}
+		// Rounds would otherwise pile up open databases until b ends.
+		b.StopTimer()
+		closeStore()
+	})
+	b.StopTimer()
+	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "msgs/s")
+}
+
+func benchClaimAck(b *testing.B, backend benchBackend) {
+	s, _ := backend.fresh(b)
+	ctx := context.Background()
+	topic := "bench-claim"
+	if err := s.EnsureGroup(ctx, topic, "g", StartFromLatest); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	benchRounds(b.N, func(size int) {
+		// Each round drains a backlog of its own size from an empty store.
+		b.StopTimer()
+		drainPurge(b, s)
+		appendInBatches(b, s, benchMessages(topic, size, benchPayloadSize, nil))
+		b.StartTimer()
+		for done := 0; done < size; {
+			cs, err := s.Claim(ctx, ClaimRequest{Topic: topic, Group: "g", RunnerID: "bench", Max: 32, Lease: time.Minute})
+			if err != nil {
+				b.Fatal(err)
+			}
+			if len(cs) == 0 {
+				b.Fatalf("claimed %d of %d", done, size)
+			}
+			// One Ack per claimed batch, as the engine's acker does under load.
+			if _, err := s.Ack(ctx, cs); err != nil {
+				b.Fatal(err)
+			}
+			done += len(cs)
+		}
+	})
+	b.StopTimer()
+	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "msgs/s")
+}
+
+// benchEndToEnd measures sustained engine throughput: publish in batches of
+// 100 as fast as possible while one subscription (Concurrency 8, BatchSize
+// 32) consumes. Its latency percentiles include time queued behind earlier
+// messages; benchLatency measures an idle queue.
+func benchEndToEnd(b *testing.B, backend benchBackend) {
+	s, _ := backend.fresh(b)
+	q, err := NewStoreQueue(s, EngineConfig{}, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer q.Close(context.Background())
+	topic := "bench-e2e"
+	var mu sync.Mutex
+	latencies := make([]time.Duration, 0, b.N)
+	_, err = q.Subscribe(context.Background(), topic, "g", func(ctx context.Context, d *Delivery) error {
+		mu.Lock()
+		latencies = append(latencies, time.Since(d.PublishedAt))
+		mu.Unlock()
+		return nil
+	}, WithConcurrency(8), WithBatchSize(32), WithPollInterval(20*time.Millisecond))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	benchRounds(b.N, func(size int) {
+		b.StopTimer()
+		msgs := benchMessages(topic, size, benchPayloadSize, nil)
+		b.StartTimer()
+		for chunk := range slices.Chunk(msgs, 100) {
+			for _, m := range chunk {
+				m.PublishedAt = time.Time{} // stamped at publish, so latency starts there
+			}
+			if err := q.Publish(context.Background(), chunk...); err != nil {
+				b.Fatal(err)
+			}
+		}
+		// The round ends when every delivery has been acknowledged, so the
+		// next starts on an empty queue and the final acks are timed.
+		awaitDrained(b, q, topic, "g")
+	})
+	b.StopTimer()
+	if len(latencies) < b.N {
+		b.Fatalf("handled %d of %d", len(latencies), b.N)
+	}
+	slices.Sort(latencies)
+	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "msgs/s")
+	b.ReportMetric(float64(latencies[len(latencies)/2].Microseconds())/1000, "p50-ms")
+	b.ReportMetric(float64(latencies[len(latencies)*99/100].Microseconds())/1000, "p99-ms")
+}
+
+// awaitDrained waits until group on topic has nothing pending or leased,
+// that is, every delivery handed out so far has been acknowledged.
+func awaitDrained(b *testing.B, q Queue, topic, group string) {
+	deadline := time.Now().Add(time.Minute)
+	for {
+		st, err := q.Stats(context.Background(), topic, group)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if st.Pending == 0 && st.Leased == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			b.Fatalf("acknowledgements did not land: %+v", st)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// benchLatency measures one message at a time through an idle queue: the
+// time from calling Publish to the handler starting, which is what a caller
+// waits when nothing is queued ahead of it.
+func benchLatency(b *testing.B, backend benchBackend) {
+	s, _ := backend.fresh(b)
+	q, err := NewStoreQueue(s, EngineConfig{}, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer q.Close(context.Background())
+	topic := "bench-latency"
+	got := make(chan time.Time, 1)
+	_, err = q.Subscribe(context.Background(), topic, "g", func(ctx context.Context, d *Delivery) error {
+		got <- time.Now()
+		return nil
+	}, WithConcurrency(1), WithPollInterval(time.Second))
+	if err != nil {
+		b.Fatal(err)
+	}
+	latencies := make([]time.Duration, 0, b.N)
+	body := make([]byte, benchPayloadSize)
+	b.ResetTimer()
+	for range b.N {
+		// Measured from the Publish call: the wakeup can start the handler
+		// before Publish has returned.
+		sent := time.Now()
+		if err := q.Publish(context.Background(), &Message{Topic: topic, Payload: body}); err != nil {
+			b.Fatal(err)
+		}
+		select {
+		case at := <-got:
+			latencies = append(latencies, at.Sub(sent))
+		case <-time.After(30 * time.Second):
+			b.Fatal("message not delivered")
+		}
+		// The next sample starts on an idle queue, not behind this ack.
+		awaitDrained(b, q, topic, "g")
+	}
+	b.StopTimer()
+	slices.Sort(latencies)
+	b.ReportMetric(float64(latencies[len(latencies)/2].Microseconds())/1000, "p50-ms")
+	b.ReportMetric(float64(latencies[len(latencies)*99/100].Microseconds())/1000, "p99-ms")
+}
+
+// benchClaimBacklog measures one Claim of 32 over a backlog of pending
+// deliveries, releasing the claim so the backlog stays the same size. keys=0
+// is unkeyed; keys=1000 spreads the backlog over 1,000 keys; keys=1 is one
+// hot key whose head is held in flight, so every other delivery is blocked
+// behind it and the claim must find that nothing is claimable.
+func benchClaimBacklog(b *testing.B, backend benchBackend, pending, keys int) {
+	s, _ := backend.fresh(b)
+	ctx := context.Background()
+	topic := "bench-backlog"
+	if err := s.EnsureGroup(ctx, topic, "g", StartFromLatest); err != nil {
+		b.Fatal(err)
+	}
+	var key func(int) string
+	if keys > 0 {
+		key = func(i int) string { return fmt.Sprintf("k%d", i%keys) }
+	}
+	appendInBatches(b, s, benchMessages(topic, pending, 64, key))
+	if keys == 1 {
+		held, err := s.Claim(ctx, ClaimRequest{Topic: topic, Group: "g", RunnerID: "busy", Max: 1, Lease: time.Hour})
+		if err != nil || len(held) != 1 {
+			b.Fatalf("hold the hot key's head: %v", err)
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		cs, err := s.Claim(ctx, ClaimRequest{Topic: topic, Group: "g", RunnerID: "bench", Max: 32, Lease: time.Minute})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if keys != 1 && len(cs) == 0 {
+			b.Fatal("claimed nothing from a full backlog")
+		}
+		if keys == 1 && len(cs) != 0 {
+			b.Fatal("claimed past a hot key's in-flight head")
+		}
+		b.StopTimer()
+		if err := s.Release(ctx, cs); err != nil {
+			b.Fatal(err)
+		}
+		b.StartTimer()
+	}
+}
+
+// benchFootprint publishes 10,000 messages and reports bytes per message at
+// each stage of their life: pending, acknowledged, purged, and compacted.
+func benchFootprint(b *testing.B, backend benchBackend, payload, groups int) {
+	// One whole workload per iteration, each on a fresh store, so ns/op is the
+	// time of one workload; the metrics are those of the last.
+	for range b.N {
+		footprintOnce(b, backend, payload, groups)
+	}
+}
+
+// footprintOnce publishes, acknowledges and purges 10,000 messages on a fresh
+// store, reporting the bytes per message at each stage.
+func footprintOnce(b *testing.B, backend benchBackend, payload, groups int) {
+	const n = 10_000
+	s, closeStore := backend.fresh(b)
+	defer closeStore()
+	ctx := context.Background()
+	topic := "bench-footprint"
+	empty := backend.footprint(b, s)
+	for g := range groups {
+		if err := s.EnsureGroup(ctx, topic, fmt.Sprintf("g%d", g), StartFromLatest); err != nil {
+			b.Fatal(err)
+		}
+	}
+	appendInBatches(b, s, benchMessages(topic, n, payload, nil))
+	perMsg := func(stage string) {
+		b.ReportMetric(float64(backend.footprint(b, s)-empty)/n, stage+"-B/msg")
+	}
+	backend.compact(b, s)
+	perMsg("pending")
+
+	for g := range groups {
+		for {
+			cs, err := s.Claim(ctx, ClaimRequest{Topic: topic, Group: fmt.Sprintf("g%d", g), RunnerID: "bench", Max: 1000, Lease: time.Minute})
+			if err != nil {
+				b.Fatal(err)
+			}
+			if len(cs) == 0 {
+				break
+			}
+			if _, err := s.Ack(ctx, cs); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+	perMsg("acked")
+	backend.compact(b, s)
+	perMsg("acked-compacted")
+
+	for {
+		n, err := s.Purge(ctx, PurgePolicy{}, 10_000)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if n == 0 {
+			break
+		}
+	}
+	backend.compact(b, s)
+	perMsg("purged-compacted")
 }
