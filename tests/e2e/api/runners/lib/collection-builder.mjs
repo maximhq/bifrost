@@ -27,6 +27,20 @@ export function collectionPrerequest() {
   ];
 }
 
+// Sends the gateway's setup token on every /api call. While dashboard auth is not active, OSS
+// refuses /api calls that lack it (the e2e python profile sets setup_token and creates no admin).
+// Inference routes ignore the header and so does /api once dashboard auth is enabled, but it is
+// still added only to /api calls, and only when {{setup_token}} is set, so a run against an
+// authenticated gateway can blank it with --env-var setup_token=.
+export function setupTokenPrerequest() {
+  return [
+    "var __setupToken = pm.variables.get('setup_token');",
+    "if (__setupToken && pm.request.url.getPath().indexOf('/api/') === 0) {",
+    "  pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: __setupToken });",
+    "}",
+  ];
+}
+
 // Skip the scenario when its required credentials are absent so a developer can
 // run with whatever providers they have configured.
 export function folderPrerequest(requiredVars) {
@@ -66,11 +80,16 @@ export function pollPrerequest(waitSeconds) {
 // outcome while intermediate retries stay silent. On terminal failure it jumps
 // to the scenario cleanup so a wedged scenario tears down instead of burning
 // retries on every remaining step.
+//
+// The attempt counter is keyed by this request's own name and read here, not from
+// what pollPrerequest stashed: a polling step without that prerequest would
+// otherwise re-read another step's stale counter on every retry and never reach
+// the cap. With the prerequest the two read the same value.
 export function pollTest(testname, assertLines, cleanupName) {
   return [
     `var maxAttempts = ${MAX_POLL_ATTEMPTS};`,
-    "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-    "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+    "var pollKey = '__poll_' + pm.info.requestName;",
+    "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
     `var cleanupReq = ${JSON.stringify(cleanupName)};`,
     "function assertNow() {",
     ...assertLines.map((l) => "  " + l),
@@ -87,9 +106,46 @@ export function pollTest(testname, assertLines, cleanupName) {
     "  pm.execution.setNextRequest(pm.info.requestName);",
     "} else {",
     "  pm.collectionVariables.set(pollKey, '0');",
-    `  pm.test(${JSON.stringify(testname)}, function () { throw new Error(errMsg); });`,
+    `  pm.test(${JSON.stringify(testname)}, function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });`,
     "  pm.execution.setNextRequest(cleanupReq);",
     "}",
+  ];
+}
+
+// A single-shot assertion: the request is sent once and judged once. Routing
+// checks use this rather than pollTest, because a poll that re-sends a request
+// until the expected route appears only proves that route showed up once in
+// several tries. Whatever the request depends on that settles asynchronously
+// (the model catalog's live list) is waited for by an earlier polling step that
+// asserts nothing about routing. On failure it jumps to the scenario cleanup.
+export function singleTest(testname, assertLines, cleanupName) {
+  return [
+    `var cleanupReq = ${JSON.stringify(cleanupName)};`,
+    "function assertNow() {",
+    ...assertLines.map((l) => "  " + l),
+    "}",
+    "var ok = true, errMsg = '';",
+    "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+    `pm.test(${JSON.stringify(testname)}, function () { if (!ok) { throw new Error(errMsg); } });`,
+    "if (!ok) { pm.execution.setNextRequest(cleanupReq); }",
+  ];
+}
+
+// The assertion lines of a catalog-readiness poll for one provider: its model
+// list is non-empty and holds every model in `models` (run variables such as
+// {{run_id}} resolved). Live discovery fills a provider's list when a key is
+// added, so an empty list or a missing model means discovery has not landed yet.
+export function catalogReadyAssertLines(jsProviderName, models) {
+  return [
+    `var providerName = ${jsProviderName};`,
+    `var expected = ${JSON.stringify(models)}.map(function (m) { return pm.variables.replaceIn(m); });`,
+    "if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+    "var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+    "  .map(function (m) { return m.name; });",
+    "if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+    "expected.forEach(function (m) {",
+    "  if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+    "});",
   ];
 }
 
@@ -203,7 +259,11 @@ export function item(id, name, req, evts) {
 // Assembly + output
 // --------------------------------------------------------------------------- //
 
-export function buildCollection({ id, name, description, expandedScenarios, extraVariables }) {
+// setupToken opts a collection into sending the setup token on its /api calls: true uses the e2e
+// profile's token (tests/integrations/python/config.json), a string uses that token. Collections
+// that leave it unset are generated exactly as before.
+export function buildCollection({ id, name, description, expandedScenarios, extraVariables, setupToken }) {
+  const tokenValue = setupToken === true ? "bifrost-e2e-setup-token" : setupToken;
   return {
     info: {
       _postman_id: id,
@@ -217,8 +277,9 @@ export function buildCollection({ id, name, description, expandedScenarios, extr
       { key: "__purge_target", value: "", type: "string" },
       { key: "__purge_queue", value: "", type: "string" },
       ...(extraVariables || []),
+      ...(tokenValue ? [{ key: "setup_token", value: tokenValue, type: "string" }] : []),
     ],
-    event: events(collectionPrerequest(), null),
+    event: events(tokenValue ? [...collectionPrerequest(), ...setupTokenPrerequest()] : collectionPrerequest(), null),
     // The clear-providers setup folder always runs first so every run starts
     // from a clean provider slate.
     item: [clearProvidersFolder(), ...expandedScenarios],
