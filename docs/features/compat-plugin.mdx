@@ -151,10 +151,13 @@ The following parameter values are converted to values the model accepts:
 
 | Parameter | Original Value | Transformed Value | Provider |
 |-----------|----------------|-------------------|----------|
-| `max_completion_tokens` / `max_tokens` (chat), `max_output_tokens` (responses), `max_tokens` (text) | Above the model's `max_output_tokens` | The model's `max_output_tokens` | Every provider whose model has `max_output_tokens` in the model catalog |
-| `reasoning.max_tokens` | At or above a token cap that was just lowered | One below the lowered cap | Same as above |
+| `max_completion_tokens` / `max_tokens` (chat), `max_output_tokens` (responses), `max_tokens` (text) | Above the model's `max_output_tokens` | The model's `max_output_tokens` | Every model with a known output limit |
+| Same as above | Below the model's `min_output_tokens` | The model's `min_output_tokens` | Models whose catalog row sets `min_output_tokens` |
+| `reasoning.max_tokens` | Sent with a token cap that was lowered | Scaled by the same ratio as the cap | Every model with a known output limit |
+| `reasoning.max_tokens` | Outside the model's thinking-budget range | The nearest end of the range | Claude, Gemini 2.5, and models whose catalog row sets `reasoning_budget` |
+| `reasoning.max_tokens` | At or above the lowered cap, or the model's `max_output_tokens` when no cap was sent | One below that cap | Every model with a known output limit |
 
-The limit comes from the model catalog datasheet, per model and provider. Values are only lowered, never raised or added. A model with no `max_output_tokens` in the catalog is left untouched. Each conversion is logged as a warning on the request, for example `max_output_tokens: 1000000 -> 65536`.
+Limits come from the model catalog, with built-in fallbacks for Claude output limits and Claude and Gemini 2.5 thinking budgets. Only values present in the request are changed; none are added. Budgets of `0` and `-1` are left as sent. The conversion runs again for each fallback, so every fallback model is fitted to its own limits. Each conversion is logged as a warning on the request, for example `max_output_tokens: 1000000 -> 65536`.
 
 `developer` role messages are mapped to `system` by the Gemini, Vertex and Bedrock providers themselves, so that works without this setting.
 

@@ -77,29 +77,6 @@ func defaultEffortControl(model string) *schemas.EffortControl {
 	return &schemas.EffortControl{Levels: supportedThinkingLevels(model)}
 }
 
-// geminiBudgetRanges are the published thinking-budget limits. Longest prefix
-// first, since "gemini-2.5-flash" also prefixes "gemini-2.5-flash-lite".
-var geminiBudgetRanges = []struct {
-	prefix   string
-	min, max int
-}{
-	{"gemini-2.5-flash-lite", 512, 24576},
-	{"gemini-2.5-pro", 128, 32768},
-	{"gemini-2.5-flash", 0, 24576},
-}
-
-// defaultBudgetControl returns the published thinking-budget range, or nil when
-// the model publishes none and validation should be skipped.
-func defaultBudgetControl(model string) *schemas.BudgetControl {
-	modelLower := strings.ToLower(model)
-	for _, entry := range geminiBudgetRanges {
-		if strings.Contains(modelLower, entry.prefix) {
-			return &schemas.BudgetControl{Min: new(entry.min), Max: new(entry.max)}
-		}
-	}
-	return nil
-}
-
 // NormalizeRawGenerateContentRequestForCompatibility applies the same
 // provider-compatibility cleanup expected by the typed conversion path, while
 // preserving JSON key order with gjson/sjson-style byte edits.
@@ -339,7 +316,7 @@ func effortToThinkingLevel(caps schemas.ModelCaps, effort string) string {
 }
 
 func getThinkingBudgetRange(caps schemas.ModelCaps, defaultMaxTokens int) thinkingBudgetRange {
-	min, max, _ := caps.ReasoningBudgetRange(defaultMaxTokens, defaultBudgetControl(caps.Model()))
+	min, max, _ := caps.ReasoningBudgetRange(defaultMaxTokens, providerUtils.KnownGeminiReasoningBudget(caps.Model()))
 	return thinkingBudgetRange{Min: min, Max: max}
 }
 
@@ -360,7 +337,7 @@ func validateThinkingBudget(caps schemas.ModelCaps, budget int) error {
 	if budget < 0 {
 		return fmt.Errorf("thinking budget %d is invalid; only 0 and -1 are supported special values", budget)
 	}
-	min, max, ok := caps.ReasoningBudgetRange(0, defaultBudgetControl(caps.Model()))
+	min, max, ok := caps.ReasoningBudgetRange(0, providerUtils.KnownGeminiReasoningBudget(caps.Model()))
 	if !ok {
 		return nil // skip validation
 	}

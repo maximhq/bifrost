@@ -1,67 +1,67 @@
 package compat
 
 import (
-	"fmt"
-
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// convertUnsupportedParamValues rewrites param values the model cannot accept
-// into the closest value it can. Returns one "param: from -> to" entry per change.
-//
-// Today that is the output token cap: a value above the model's catalog
-// max_output_tokens is lowered to it. Values are only ever lowered, never
-// raised or filled in.
-func convertUnsupportedParamValues(req *schemas.BifrostRequest, maxOutputTokens int) []string {
-	if req == nil || maxOutputTokens <= 0 {
+// convertUnsupportedParamValues fits the output cap and thinking budget to the
+// model's limits, returning one "param: from -> to" entry per change. Only values
+// the caller sent are touched. req must be a clone: fitted values are swapped in
+// as new pointers, so the caller's request keeps what was sent.
+func (p *CompatPlugin) convertUnsupportedParamValues(req *schemas.BifrostRequest, provider schemas.ModelProvider, model string) []string {
+	if req == nil {
+		return nil
+	}
+	var maxParam string
+	var maxTokens, budget **int
+	switch {
+	case req.ChatRequest != nil && req.ChatRequest.Params != nil:
+		// max_tokens is folded into max_completion_tokens before PreLLMHook runs.
+		maxParam, maxTokens = "max_completion_tokens", &req.ChatRequest.Params.MaxCompletionTokens
+		if reasoning := req.ChatRequest.Params.Reasoning; reasoning != nil {
+			budget = &reasoning.MaxTokens
+		}
+	case req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil:
+		maxParam, maxTokens = "max_output_tokens", &req.ResponsesRequest.Params.MaxOutputTokens
+		if reasoning := req.ResponsesRequest.Params.Reasoning; reasoning != nil {
+			budget = &reasoning.MaxTokens
+		}
+	case req.TextCompletionRequest != nil && req.TextCompletionRequest.Params != nil:
+		maxParam, maxTokens = "max_tokens", &req.TextCompletionRequest.Params.MaxTokens
+	default:
+		return nil
+	}
+	var sentBudget *int
+	if budget != nil {
+		sentBudget = *budget
+	}
+	if *maxTokens == nil && sentBudget == nil {
 		return nil
 	}
 
-	var changes []string
-
-	if req.ChatRequest != nil && req.ChatRequest.Params != nil {
-		params := req.ChatRequest.Params
-		// max_tokens is folded into max_completion_tokens before PreLLMHook runs.
-		if clampTokenCap(&changes, "max_completion_tokens", &params.MaxCompletionTokens, maxOutputTokens) && params.Reasoning != nil {
-			clampReasoningBudget(&changes, &params.Reasoning.MaxTokens, maxOutputTokens)
-		}
+	caps := schemas.ResolveModelCaps(provider, p.canonicalModel(provider, model))
+	// The catalog's pricing data is in memory, so this limit holds without a config store.
+	fittedMax, fittedBudget, changes := providerUtils.FitOutputTokens(caps, p.modelCatalog.GetMaxOutputTokens(model, provider), maxParam, *maxTokens, sentBudget)
+	*maxTokens = fittedMax
+	if budget != nil {
+		*budget = fittedBudget
 	}
-
-	if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
-		params := req.ResponsesRequest.Params
-		if clampTokenCap(&changes, "max_output_tokens", &params.MaxOutputTokens, maxOutputTokens) && params.Reasoning != nil {
-			clampReasoningBudget(&changes, &params.Reasoning.MaxTokens, maxOutputTokens)
-		}
-	}
-
-	if req.TextCompletionRequest != nil && req.TextCompletionRequest.Params != nil {
-		clampTokenCap(&changes, "max_tokens", &req.TextCompletionRequest.Params.MaxTokens, maxOutputTokens)
-	}
-
 	return changes
 }
 
-// clampTokenCap lowers the value to limit when it is above it and reports
-// whether it did. It swaps in a new pointer rather than writing through the
-// old one: cloneBifrostReq copies params shallowly, so the old pointer is
-// still the caller's.
-func clampTokenCap(changes *[]string, param string, field **int, limit int) bool {
-	if *field == nil || **field <= limit {
-		return false
+// canonicalModel resolves a key alias to the model it names, so capability
+// lookups and the built-in Claude and Gemini tables see the real model.
+func (p *CompatPlugin) canonicalModel(provider schemas.ModelProvider, model string) string {
+	alias, ok := p.modelCatalog.ResolveAlias(provider, model)
+	if !ok {
+		return model
 	}
-	*changes = append(*changes, fmt.Sprintf("%s: %d -> %d", param, **field, limit))
-	*field = new(limit)
-	return true
-}
-
-// clampReasoningBudget keeps the thinking budget strictly below a cap this
-// plugin just lowered. Anthropic rejects budget_tokens >= max_tokens, so
-// clamping only the outer cap would swap one upstream 400 for another. It runs
-// only after a clamp: a cap/budget pairing the caller sent is not ours to fix.
-func clampReasoningBudget(changes *[]string, budget **int, limit int) {
-	if *budget == nil || **budget < limit || limit <= 1 {
-		return
+	if alias.Config.ModelName != nil && *alias.Config.ModelName != "" {
+		return *alias.Config.ModelName
 	}
-	*changes = append(*changes, fmt.Sprintf("reasoning.max_tokens: %d -> %d", **budget, limit-1))
-	*budget = new(limit - 1)
+	if alias.Config.ModelID != "" {
+		return alias.Config.ModelID
+	}
+	return model
 }

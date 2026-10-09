@@ -199,17 +199,17 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 
 	// Convert param values the model cannot accept. Runs after the drop above so a
-	// dropped param is never converted. Namespace-tool flattening used to live under
+	// dropped param is never converted. Fallbacks rerun this hook, so each attempt
+	// is fitted to its own model. Namespace-tool flattening used to live under
 	// this flag too; it moved to core dispatch (prepareResponsesRequest).
 	if ((shouldConvertParamsOverrideEnabled && shouldConvertParamsOverride) || p.config.ShouldConvertParams) && p.modelCatalog != nil {
 		provider, model, _ := modifiedReq.GetRequestFields()
 		if model != "" {
-			maxOutputTokens := p.modelCatalog.GetMaxOutputTokens(model, provider)
-			if maxOutputTokens <= 0 {
-				ctx.Log(schemas.LogLevelDebug, fmt.Sprintf("model catalog has no max_output_tokens for model %s (%s), no param values converted", model, provider))
-			} else if changes := convertUnsupportedParamValues(modifiedReq, maxOutputTokens); len(changes) > 0 {
+			if changes := p.convertUnsupportedParamValues(modifiedReq, provider, model); len(changes) > 0 {
 				p.logger.Debug("compat: converted param values for model %s: %v", model, changes)
-				ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("converted %d param value(s) for model %s - the model catalog lists max_output_tokens %d: %s", len(changes), model, maxOutputTokens, strings.Join(changes, ", ")))
+				ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("converted %d param value(s) for model %s: %s", len(changes), model, strings.Join(changes, ", ")))
+			} else {
+				ctx.Log(schemas.LogLevelDebug, fmt.Sprintf("no param values converted for model %s (%s)", model, provider))
 			}
 		}
 	}
