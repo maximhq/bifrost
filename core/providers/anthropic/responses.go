@@ -6223,7 +6223,9 @@ func anthropicToolUseBlockToResponsesMessage(toolBlock *AnthropicContentBlock, i
 		if err := sonic.Unmarshal(toolBlock.Input, &inputMap); err == nil {
 			setResponsesComputerCallAction(bifrostMsg.ResponsesToolMessage, convertAnthropicToResponsesComputerAction(inputMap))
 		}
-	} else if toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebSearch) {
+	} else if toolBlock.Type == AnthropicContentBlockTypeServerToolUse && toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebSearch) {
+		// Client tool_use blocks may reuse the web_search / web_fetch names; only
+		// server_tool_use blocks are Anthropic's server tools.
 		bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall)
 		bifrostMsg.ResponsesToolMessage.Name = nil
 		if q := providerUtils.GetJSONField(toolBlock.Input, "query"); q.Exists() && q.Type == gjson.String {
@@ -6236,7 +6238,7 @@ func anthropicToolUseBlockToResponsesMessage(toolBlock *AnthropicContentBlock, i
 				},
 			}
 		}
-	} else if toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebFetch) {
+	} else if toolBlock.Type == AnthropicContentBlockTypeServerToolUse && toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebFetch) {
 		bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall)
 		bifrostMsg.ResponsesToolMessage.Name = nil
 		if u := providerUtils.GetJSONField(toolBlock.Input, "url"); u.Exists() && u.Type == gjson.String {
