@@ -73,6 +73,7 @@ cd tests/live/python && uv run pytest -q          # by hand, with BIFROST_BASE_U
 | `LIVE_FAKE_ADDR` | `127.0.0.1:9411` | where the fake listens; must match `config.json` |
 | `BIFROST_VK` | | credential for real mode when the gateway enforces auth |
 | `BIFROST_SETUP_TOKEN` | `bifrost-live-setup-token` | the `setup_token` in `config.json`, sent on `/api` calls while dashboard auth is off |
+| `BIFROST_ADMIN_AUTH` | | the `Authorization` header value for `/api` calls on a gateway with dashboard auth: `Basic <base64 user:password>` with the admin login, or `Bearer <session token>` |
 
 Every test skips when the gateway does not answer `/health`.
 
