@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -1406,27 +1408,124 @@ func ApplyDefaultEagerInputStreamingToRawBody(jsonBody []byte, provider schemas.
 	return jsonBody, nil
 }
 
-// DefaultSupportsAdaptiveThinking: thinking.type "adaptive" is accepted on Opus
-// 4.6, Sonnet 4.6, Sonnet 5+, Opus 4.7+ and the Fable/Mythos family.
+// claudeOpusSonnet4MinorRe matches a Claude Opus/Sonnet 4.x model id in either
+// spelling, family-first ("claude-opus-4-6-20250514") or version-first
+// ("claude-4.6-sonnet", a common deployment alias), and captures the minor
+// when one is spelled out. The minor is 1-3 digits right after "-4" or ".4"
+// and must not be followed by another digit, so a 2025xxxx date run after a
+// bare "-4" is not read as a minor. After the major, a non-digit or the end of
+// the id is required, so "opus-40" is not a 4.x model.
+var claudeOpusSonnet4MinorRe = regexp.MustCompile(`(?:opus|sonnet)-4(?:[-.](\d{1,3})(?:\D|$)|\D|$)|claude-4(?:[-.](\d{1,3}))?-(?:opus|sonnet)`)
+
+// claudeOpusSonnet4Minor extracts the minor version of a Claude Opus/Sonnet 4.x
+// model from a lowercased model id. It returns (minor, true) when m names such a
+// model, or (0, false) otherwise. Adaptive thinking arrived at the .6 minor, so
+// callers treat minor < 6 as pre-adaptive (legacy) and minor == 6 as dual-mode.
+//
+// Handles every id form Anthropic/Bedrock/Vertex use:
+//
+//	claude-opus-4-6-20250514      -> 6
+//	claude-sonnet-4-5-20250929    -> 5
+//	claude-sonnet-4-20250514      -> 0   (bare 4.0, dated)
+//	anthropic.claude-opus-4-v1    -> 0   (bare 4.0, bedrock)
+//	claude-opus-4                 -> 0   (bare 4.0, alias)
+//	claude-opus-4.6               -> 6
+//	claude-opus-4-16              -> 16
+//	claude-4.6-sonnet             -> 6   (version-first alias)
+//	claude-4-sonnet               -> 0   (version-first bare 4.0)
+func claudeOpusSonnet4Minor(m string) (int, bool) {
+	sub := claudeOpusSonnet4MinorRe.FindStringSubmatch(m)
+	if sub == nil {
+		return 0, false
+	}
+	digits := sub[1]
+	if digits == "" {
+		digits = sub[2]
+	}
+	if digits == "" {
+		return 0, true // bare 4.0
+	}
+	n, err := strconv.Atoi(digits)
+	if err != nil {
+		return 0, true
+	}
+	return n, true
+}
+
+// claudeThinkingTier is the request surface a Claude model id implies for
+// thinking and sampling parameters, from the model name alone. The datasheet
+// row overrides it wherever ModelCaps has an opinion.
+type claudeThinkingTier int
+
+const (
+	// claudeTierNotClaude: not a Claude id at all (empty, or another vendor).
+	claudeTierNotClaude claudeThinkingTier = iota
+	// claudeTierLegacy: budget_tokens extended thinking only, sampling params
+	// accepted. Claude 2.x/3.x (incl. 3.x Haiku), Haiku 4.5, Opus/Sonnet 4.x
+	// below the .6 minor.
+	claudeTierLegacy
+	// claudeTierDualMode: adaptive and budget_tokens both accepted, sampling
+	// params accepted. Opus 4.6 and Sonnet 4.6 only.
+	claudeTierDualMode
+	// claudeTierAdaptiveOnly: budget_tokens removed, temperature/top_p/top_k
+	// rejected with a 400. Opus 4.7+, Sonnet 5+, Haiku 5.5, Fable/Mythos, and
+	// by fail-open default every Claude id not matched above.
+	claudeTierAdaptiveOnly
+)
+
+// classifyClaudeThinking buckets a lowercased model id into a
+// claudeThinkingTier with one pass of substring checks and at most one regexp
+// match. It fails open on purpose: the previous allowlist treated every newly
+// released Claude model as pre-adaptive until someone added it, so Bifrost
+// rewrote adaptive thinking to budget_tokens and the model rejected the request
+// with a 400 (Haiku 5.5, #8155). New Claude models have shipped adaptive-only
+// since Opus 4.7, so an unrecognized Claude id means adaptive-only now, and
+// only the closed legacy and dual-mode sets are carved out.
+func classifyClaudeThinking(m string) claudeThinkingTier {
+	if !strings.Contains(m, "claude") {
+		return claudeTierNotClaude
+	}
+	// Pre-Claude-4 generations, including every 3.x Haiku and the Bedrock
+	// spellings anthropic.claude-v1 / claude-v2:1 / claude-instant-v1.
+	if strings.Contains(m, "claude-2") || strings.Contains(m, "claude-3") ||
+		strings.Contains(m, "claude-v1") || strings.Contains(m, "claude-v2") ||
+		strings.Contains(m, "claude-instant") {
+		return claudeTierLegacy
+	}
+	// Haiku 4.5 is the one budget_tokens-only Haiku. Match it explicitly (both
+	// spellings) rather than any "haiku" so a newer Haiku (Haiku 5.5 is
+	// adaptive-only) fails open.
+	if strings.Contains(m, "haiku-4-5") || strings.Contains(m, "haiku-4.5") ||
+		strings.Contains(m, "4-5-haiku") || strings.Contains(m, "4.5-haiku") {
+		return claudeTierLegacy
+	}
+	if minor, ok := claudeOpusSonnet4Minor(m); ok {
+		switch {
+		case minor < 6:
+			return claudeTierLegacy
+		case minor == 6:
+			return claudeTierDualMode
+		}
+	}
+	return claudeTierAdaptiveOnly
+}
+
+// DefaultSupportsAdaptiveThinking: thinking.type "adaptive" is accepted on every
+// Claude model except the legacy budget_tokens-only set (see
+// classifyClaudeThinking). Empty and non-Claude model strings return false.
 func DefaultSupportsAdaptiveThinking(model string) bool {
-	if IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model) {
-		return true
-	}
-	m := strings.ToLower(model)
-	if !strings.Contains(m, "4-6") && !strings.Contains(m, "4.6") {
-		return false
-	}
-	return strings.Contains(m, "opus") || strings.Contains(m, "sonnet")
+	return classifyClaudeThinking(strings.ToLower(model)) >= claudeTierDualMode
 }
 
 // DefaultEffortControl: the output_config.effort ladder per family, for rows that publish none.
-// Opus 4.5 takes low/medium/high, Opus/Sonnet 4.6 add max, Opus 4.7+/Sonnet 5+/Fable add xhigh.
+// Opus 4.5 takes low/medium/high, Opus/Sonnet 4.6 add max, and every adaptive-only model
+// (Opus 4.7+, Sonnet 5+, Haiku 5.5, Fable, and any newer Claude) adds xhigh.
 func DefaultEffortControl(model string) *schemas.EffortControl {
 	levels := []string{schemas.ReasoningEffortLow, schemas.ReasoningEffortMedium, schemas.ReasoningEffortHigh}
-	switch {
-	case IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model):
+	switch classifyClaudeThinking(strings.ToLower(model)) {
+	case claudeTierAdaptiveOnly:
 		levels = append(levels, schemas.ReasoningEffortXHigh, schemas.ReasoningEffortMax)
-	case DefaultSupportsAdaptiveThinking(model):
+	case claudeTierDualMode:
 		levels = append(levels, schemas.ReasoningEffortMax)
 	}
 	return &schemas.EffortControl{Levels: levels}
@@ -1471,8 +1570,11 @@ func fitRawThinkingBudget(jsonBody []byte, maxTokens int) ([]byte, error) {
 
 // DefaultAdaptiveOnlyThinking: models where budget_tokens thinking is removed
 // and temperature/top_p/top_k are rejected — adaptive is the only thinking mode.
+// Opus 4.7+, Sonnet 5+, Haiku 5.5, Fable/Mythos, and by fail-open default any
+// unrecognized Claude id (see classifyClaudeThinking). The legacy set and the
+// dual-mode Opus 4.6 / Sonnet 4.6 are excluded.
 func DefaultAdaptiveOnlyThinking(model string) bool {
-	return IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)
+	return classifyClaudeThinking(strings.ToLower(model)) == claudeTierAdaptiveOnly
 }
 
 // DefaultCanDisableReasoning: the Fable/Mythos family, Opus 5.5 and Sonnet 5.5
@@ -1535,20 +1637,14 @@ func SupportsNativeEffort(caps schemas.ModelCaps) bool {
 // Source: https://platform.claude.com/docs/en/build-with-claude/effort
 func DefaultSupportsNativeEffort(model string) bool {
 	m := strings.ToLower(model)
-	if IsFableFamily(m) || IsSonnet5Plus(m) || IsOpus5Plus(m) {
+	switch classifyClaudeThinking(m) {
+	case claudeTierDualMode, claudeTierAdaptiveOnly:
+		// Every adaptive-capable Claude model takes effort, Haiku 5.5 included.
 		return true
-	}
-	if strings.Contains(m, "haiku") {
-		return false
-	}
-	if strings.Contains(m, "opus") {
-		return strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
-			strings.Contains(m, "4-6") || strings.Contains(m, "4.6") ||
-			strings.Contains(m, "4-7") || strings.Contains(m, "4.7") ||
-			strings.Contains(m, "4-8") || strings.Contains(m, "4.8")
-	}
-	if strings.Contains(m, "sonnet") {
-		return strings.Contains(m, "4-6") || strings.Contains(m, "4.6")
+	case claudeTierLegacy:
+		// Opus 4.5 is the one legacy model that accepts effort (with
+		// budget_tokens thinking). Sonnet 4.5, Haiku 4.5 and older reject it.
+		return strings.Contains(m, "opus-4-5") || strings.Contains(m, "opus-4.5")
 	}
 	return false
 }
