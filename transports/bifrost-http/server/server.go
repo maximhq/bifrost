@@ -2613,6 +2613,7 @@ func (s *BifrostHTTPServer) InitializeAgentGateway(ctx context.Context, registra
 	if s.Config.ServerConfig != nil {
 		managerConfig.GRPCBaseDomain = s.Config.ServerConfig.A2AGRPCBaseDomain
 		managerConfig.GRPCPort = s.Config.ServerConfig.A2AGRPCPort
+		managerConfig.AllowPrivatePushCallbacks = s.Config.ServerConfig.A2AAllowPrivatePushCallbacks
 	}
 	if s.Client != nil {
 		managerConfig.PluginPipelineAcquire = func() agent.PluginPipeline {

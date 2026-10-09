@@ -1283,3 +1283,46 @@ func TestPushRelayRetriesThenDeadLetters(t *testing.T) {
 	dead := store.delivery(t, deliveryID)
 	require.Contains(t, dead.LastError, "push configuration no longer exists")
 }
+
+// TestPushDeliveryClientPrivateCallbacks verifies loopback callbacks are
+// blocked by default, delivered when explicitly allowed, and that redirects
+// are refused in both modes.
+func TestPushDeliveryClientPrivateCallbacks(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer target.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// post sends a bounded, context-aware POST so a stalled response cannot hang the test.
+	post := func(c *http.Client, url string) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return c.Do(req)
+	}
+
+	blocked := newPushDeliveryClient(false)
+	if resp, err := post(blocked, target.URL); err == nil {
+		resp.Body.Close()
+		t.Fatal("loopback callback was not blocked by default")
+	}
+
+	allowed := newPushDeliveryClient(true)
+	resp, err := post(allowed, target.URL)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	resp, err = post(allowed, redirector.URL)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+}

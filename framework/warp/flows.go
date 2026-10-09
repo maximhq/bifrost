@@ -68,18 +68,24 @@ func semanticSearchLogsTool() Tool {
 	return Tool{
 		name: SemanticSearchToolName,
 		description: "Find logged conversations by meaning. Use this when the question is about what users discussed, wanted, reported, or what assistants answered, even when the wording differs. " +
+			"Give several phrasings of the same topic in one call; they are searched together and each conversation keeps its closest score. " +
+			"Results are ranked by similarity, not judged: real matches often score only 0.6 to 0.75, and unrelated conversations can score close to them. " +
+			"Read each row's content and keep only the rows actually about what was asked before you count, quote or summarize them; if none are, report that no matching conversations were found. " +
 			"Use query_logs, count_logs, or query_metrics for exact fields, counts, latency, cost, and trends.",
 		schemaJSON: `{
   "type": "object",
   "properties": {
-    "query": {"type": "string", "maxLength": ` + strconv.Itoa(MaxSemanticQueryChars) + `, "description": "A natural-language description of the conversations to find."},
+    "queries": {"type": "array", "minItems": 1, "maxItems": ` + strconv.Itoa(MaxSemanticQueries) + `, "items": {"type": "string", "maxLength": ` + strconv.Itoa(MaxSemanticQueryChars) + `}, "description": "2 to ` + strconv.Itoa(MaxSemanticQueries) + ` phrasings of the conversations to find, searched together. Describe the requests themselves (\"users asking for help planning a trip\", \"travel itinerary for a city\"), not a bare keyword (\"travel\") - a description scores far closer to a logged conversation."},
     "filters": ` + FilterSchema + `,
     "limit": {"type": "integer", "minimum": 1, "maximum": 25, "description": "Matches to return. Also capped by the configured semantic search limit."}
   },
-  "required": ["query", "filters"]
+  "required": ["queries", "filters"]
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			query, _ := args["query"].(string)
+			queries, err := stringSliceArg(args, "queries")
+			if err != nil {
+				return nil, err
+			}
 			if deps.semantic == nil {
 				return nil, fmt.Errorf("semantic log search is not configured")
 			}
@@ -95,7 +101,7 @@ func semanticSearchLogsTool() Tool {
 			}
 			// The caller's visibility rides along so the index is asked for
 			// their rows, rather than for the deployment's and then filtered.
-			result, err := deps.semantic.SearchVisible(ctx, query, filters, deps.scope.Visible, limit)
+			result, err := deps.semantic.SearchVisible(ctx, queries, filters, deps.scope.Visible, limit)
 			if err != nil {
 				return nil, err
 			}
@@ -113,7 +119,7 @@ func semanticSearchLogsTool() Tool {
 				// happened and what the legitimate next moves are.
 				response["hint"] = fmt.Sprintf("No stored conversation scored above the similarity threshold of %.2f. "+
 					"For a topic question - one that names something to look for - do not fall back to count_logs or query_logs to answer a question about meaning: "+
-					"widen the time range once, rephrase the query, or report that no matching conversations were found. "+
+					"widen the time range once, try other phrasings, or report that no matching conversations were found. "+
 					"For a survey question - what someone was doing, what the themes or topics are - this was the wrong first step, because a description of activity is not a conversation and does not embed near one: "+
 					"take the sample with query_logs using include_content and limit 25, and say in the answer that it was drawn from a sample and is not representative of the entire traffic.", result.Threshold)
 			}

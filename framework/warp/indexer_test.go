@@ -40,6 +40,9 @@ type fakeWarpVectorStore struct {
 	// the prefilter. calls keeps every filter set asked for.
 	respond func(queries []vectorstore.Query) []vectorstore.SearchResult
 	calls   [][]vectorstore.Query
+	// respondVector, when set, answers from the query vector as well, for tests
+	// where each phrasing of a search reaches different rows.
+	respondVector func(vector []float32, queries []vectorstore.Query) []vectorstore.SearchResult
 }
 
 func newFakeWarpVectorStore() *fakeWarpVectorStore {
@@ -78,7 +81,7 @@ func (f *fakeWarpVectorStore) GetChunks(context.Context, string, []string) ([]ve
 func (f *fakeWarpVectorStore) GetAll(context.Context, string, []vectorstore.Query, []string, *string, int64) ([]vectorstore.SearchResult, *string, error) {
 	return nil, nil, nil
 }
-func (f *fakeWarpVectorStore) GetNearest(_ context.Context, _ string, _ []float32, queries []vectorstore.Query, _ []string, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
+func (f *fakeWarpVectorStore) GetNearest(_ context.Context, _ string, vector []float32, queries []vectorstore.Query, _ []string, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.queries = queries
@@ -86,6 +89,13 @@ func (f *fakeWarpVectorStore) GetNearest(_ context.Context, _ string, _ []float3
 	f.limit = limit
 	f.limits = append(f.limits, limit)
 	f.calls = append(f.calls, queries)
+	if f.respondVector != nil {
+		page := f.respondVector(vector, queries)
+		if limit >= 0 && int64(len(page)) > limit {
+			page = page[:limit]
+		}
+		return append([]vectorstore.SearchResult(nil), page...), nil
+	}
 	if f.respond != nil {
 		page := f.respond(queries)
 		if limit >= 0 && int64(len(page)) > limit {

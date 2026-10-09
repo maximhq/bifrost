@@ -343,6 +343,8 @@ bifrost:
     # Served agent cards advertise <agent-name>.<a2aGrpcBaseDomain>:<a2aGrpcPort>.
     # a2aGrpcBaseDomain: "a2a.example.com"
     # a2aGrpcPort: 9095
+    # Lets A2A push delivery reach loopback/private callback targets. Only for controlled dev/test environments; keep unset in production.
+    # a2aAllowPrivatePushCallbacks: true
 
   # Framework configuration
   framework:

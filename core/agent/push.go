@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -915,11 +916,17 @@ func pushBackoff(attempts int) time.Duration {
 
 // newPushDeliveryClient creates the dedicated client for untrusted callback
 // URLs. Address validation happens on every dial so DNS changes cannot bypass
-// the private-network boundary between configuration and delivery.
-func newPushDeliveryClient() *http.Client {
+// the private-network boundary between configuration and delivery. When
+// allowPrivate is true the address check is skipped so loopback and private
+// callbacks work; this is only for controlled test environments.
+func newPushDeliveryClient(allowPrivate bool) *http.Client {
+	dial := network.SSRFSafeDialContext(pushSendTimeout)
+	if allowPrivate {
+		dial = (&net.Dialer{Timeout: pushSendTimeout}).DialContext
+	}
 	return &http.Client{
 		Transport: &http.Transport{
-			DialContext:           network.SSRFSafeDialContext(pushSendTimeout),
+			DialContext:           dial,
 			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          100,
 			IdleConnTimeout:       90 * time.Second,
