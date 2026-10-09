@@ -916,6 +916,50 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 		copy.GuardContent = copyGuardContent
 	}
 
+	// Deep copy CacheControl if present
+	if original.CacheControl != nil {
+		copyCacheControl := &CacheControl{Type: original.CacheControl.Type}
+		if original.CacheControl.TTL != nil {
+			copyTTL := *original.CacheControl.TTL
+			copyCacheControl.TTL = &copyTTL
+		}
+		if original.CacheControl.Scope != nil {
+			copyScope := *original.CacheControl.Scope
+			copyCacheControl.Scope = &copyScope
+		}
+		copy.CacheControl = copyCacheControl
+	}
+
+	// Deep copy Citations.
+	if original.Citations != nil {
+		copyCitations := &Citations{}
+		if original.Citations.Enabled != nil {
+			copyEnabled := *original.Citations.Enabled
+			copyCitations.Enabled = &copyEnabled
+		}
+		copy.Citations = copyCitations
+	}
+
+	// Deep copy PromptCacheBreakpoint.
+	if original.PromptCacheBreakpoint != nil {
+		copyPromptCacheBreakpoint := &PromptCacheBreakpoint{}
+		if original.PromptCacheBreakpoint.Mode != nil {
+			copyMode := *original.PromptCacheBreakpoint.Mode
+			copyPromptCacheBreakpoint.Mode = &copyMode
+		}
+		copy.PromptCacheBreakpoint = copyPromptCacheBreakpoint
+	}
+
+	// Deep copy CachePoint.
+	if original.CachePoint != nil {
+		copyCachePoint := &CachePoint{Type: original.CachePoint.Type}
+		if original.CachePoint.TTL != nil {
+			copyTTL := *original.CachePoint.TTL
+			copyCachePoint.TTL = &copyTTL
+		}
+		copy.CachePoint = copyCachePoint
+	}
+
 	return copy
 }
 
