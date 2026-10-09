@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"errors"
+	"os"
 	"runtime"
 	"slices"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1464,5 +1466,90 @@ func TestReloadProxyConfigAcceptsRemoval(t *testing.T) {
 	}
 	if got := factory.GetProxyConfig(); got != nil {
 		t.Fatalf("factory proxy = %+v, want none after removal", got)
+	}
+}
+
+// TestShutdownAfterIncompleteBootstrap covers Shutdown on a server whose
+// Bootstrap returned an error part-way. Bootstrap creates the websocket
+// handler early but only starts its heartbeat from RegisterAPIRoutes, and it
+// creates the Bifrost client further in, so such a server can hold a handler
+// that never started and no client at all. Shutdown has to stop what exists
+// and skip the rest: it used to wait forever on the heartbeat, and would have
+// dereferenced the missing client had it got that far.
+func TestShutdownAfterIncompleteBootstrap(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelled := make(chan struct{})
+	s := &BifrostHTTPServer{
+		Ctx:              schemas.NewBifrostContext(ctx, schemas.NoDeadline),
+		Config:           &lib.Config{},
+		WebSocketHandler: handlers.NewWebSocketHandler(ctx, nil),
+		cancel: func() {
+			close(cancelled)
+			cancel()
+		},
+	}
+
+	shutdownCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	require.NoError(t, s.Shutdown(shutdownCtx))
+
+	select {
+	case <-cancelled:
+	default:
+		t.Fatal("Shutdown did not cancel the server context")
+	}
+}
+
+// TestWaitForExitRunsFullShutdown pins that both ways out of Start run the
+// whole shutdown sequence. The serve-error exit used to close only the realtime
+// sessions, the websocket pool and the skills cache, which left the Bifrost
+// client, the cleaners, the sweep, webhook and sidekiq workers and Config
+// running. The sidekiq dispatcher is stopped well after the first steps, so
+// seeing it stop shows the sequence ran through, not just that it began.
+func TestWaitForExitRunsFullShutdown(t *testing.T) {
+	serveErr := errors.New("accept failed")
+	cases := []struct {
+		name    string
+		trigger func(sigChan chan os.Signal, errChan chan error)
+		wantErr error
+	}{
+		{"signal", func(sigChan chan os.Signal, _ chan error) { sigChan <- syscall.SIGTERM }, nil},
+		{"serve error", func(_ chan os.Signal, errChan chan error) { errChan <- serveErr }, serveErr},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prevLogger := logger
+			logger = noopTestLogger{}
+			defer func() { logger = prevLogger }()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			dispatcherStopped := make(chan struct{})
+			s := &BifrostHTTPServer{
+				Server:                &fasthttp.Server{},
+				Ctx:                   schemas.NewBifrostContext(ctx, schemas.NoDeadline),
+				Config:                &lib.Config{},
+				WebSocketHandler:      handlers.NewWebSocketHandler(ctx, nil),
+				cancel:                cancel,
+				SidekiqDispatcherStop: func() { close(dispatcherStopped) },
+			}
+
+			sigChan := make(chan os.Signal, 1)
+			errChan := make(chan error, 1)
+			tc.trigger(sigChan, errChan)
+
+			require.Equal(t, tc.wantErr, s.waitForExit(sigChan, errChan))
+
+			select {
+			case <-dispatcherStopped:
+			default:
+				t.Fatal("the shutdown sequence did not run to the sidekiq dispatcher")
+			}
+		})
 	}
 }

@@ -3614,6 +3614,9 @@ func (s *BifrostHTTPServer) CloseAgentGateway() {
 // sessions: their connections are hijacked, so fasthttp's own shutdown
 // neither waits for them nor closes them.
 //
+// It may also run after a Bootstrap that returned an error: each step is
+// skipped when the component it stops was never created or never started.
+//
 // Blocks until the sequence finishes or ctx is done, whichever comes first,
 // returning ctx.Err() in the latter case. Call it once; it is not safe to
 // call concurrently or repeatedly.
@@ -3648,9 +3651,12 @@ func (s *BifrostHTTPServer) Shutdown(ctx context.Context) error {
 		}
 		logger.Info("closing agent gateway...")
 		s.CloseAgentGateway()
-		logger.Info("shutting down bifrost client...")
-		s.Client.Shutdown()
-		logger.Info("bifrost client shutdown completed")
+		// A Bootstrap that failed before it created the client leaves it nil.
+		if s.Client != nil {
+			logger.Info("shutting down bifrost client...")
+			s.Client.Shutdown()
+			logger.Info("bifrost client shutdown completed")
+		}
 		logger.Info("cleaning up storage engines...")
 		// Cleanup server-specific components
 		if s.LogsCleaner != nil {
@@ -3701,9 +3707,9 @@ func (s *BifrostHTTPServer) Shutdown(ctx context.Context) error {
 		// Not previously part of this sequence. The handler's heartbeat
 		// goroutine was left to exit on context cancellation with nothing
 		// waiting for it to actually finish, and connected clients were never
-		// closed; Stop() does both. A Bootstrap that returned nil has started
-		// the heartbeat (RegisterAPIRoutes -> StartHeartbeat), so this cannot
-		// block on a handler whose goroutine never ran.
+		// closed; Stop() does both. The heartbeat only starts in
+		// RegisterAPIRoutes, so after a Bootstrap that failed earlier the
+		// handler exists without one; Stop() skips the wait in that case.
 		if s.WebSocketHandler != nil {
 			logger.Info("stopping websocket handler...")
 			s.WebSocketHandler.Stop()
@@ -3752,6 +3758,13 @@ func (s *BifrostHTTPServer) Start() error {
 			errChan <- err
 		}
 	}()
+	return s.waitForExit(sigChan, errChan)
+}
+
+// waitForExit blocks until a termination signal arrives or serving fails, then
+// stops everything Bootstrap started. It is split out of Start so that each
+// exit can be driven without a listener or a real signal.
+func (s *BifrostHTTPServer) waitForExit(sigChan <-chan os.Signal, errChan <-chan error) error {
 	// Wait for either termination signal or server error
 	select {
 	case sig := <-sigChan:

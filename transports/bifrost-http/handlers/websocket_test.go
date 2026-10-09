@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -296,5 +297,66 @@ func TestWebSocketStopClosesClients(t *testing.T) {
 		t.Fatal("write to a stopped handler's client unexpectedly succeeded")
 	} else if strings.Contains(err.Error(), "panic") {
 		t.Fatalf("write after Stop panicked inside the websocket library: %v", err)
+	}
+}
+
+// TestWebSocketStopWithoutHeartbeat covers a handler Bootstrap created but never
+// reached StartHeartbeat for, which is what a failed Bootstrap leaves behind.
+// Stop used to wait on the heartbeat goroutine's done channel unconditionally,
+// so with no goroutine to close it the call never returned.
+func TestWebSocketStopWithoutHeartbeat(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := NewWebSocketHandler(context.Background(), nil)
+
+	stopped := make(chan struct{})
+	go func() {
+		h.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop blocked waiting for a heartbeat goroutine that was never started")
+	}
+}
+
+// TestWebSocketStopTwice checks that a second Stop is a no-op instead of
+// panicking on the already closed stop channel.
+func TestWebSocketStopTwice(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h, _, stop := startWebSocketTestServer(t)
+	defer stop()
+
+	h.Stop()
+	h.Stop()
+}
+
+// TestWebSocketRejectsClientsAfterStop covers an upgrade that completes after
+// Stop has emptied the client map. Registering that client would leave it in
+// the map with nothing left to close it.
+func TestWebSocketRejectsClientsAfterStop(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h, addr, stop := startWebSocketTestServer(t)
+	defer stop()
+
+	h.Stop()
+
+	client := dialWebSocket(t, addr)
+	defer client.Close()
+
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := client.ReadMessage()
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		t.Fatal("a client that connected after Stop was left open")
+	}
+	if n := len(snapshotClients(h)); n != 0 {
+		t.Fatalf("Stop left %d client(s) registered after it returned", n)
 	}
 }
