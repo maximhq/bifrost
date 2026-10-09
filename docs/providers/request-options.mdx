@@ -90,7 +90,7 @@ Virtual keys can also be passed via `Authorization: Bearer vk-*`, `x-api-key: vk
 
 Bifrost supports selecting a specific key by **ID** or **name**. When both are present, ID takes priority.
 
-A key belongs to one provider. When the request leaves the provider to routing (a bare model such as `gpt-4o`) and routing offers the key's provider further down the chain, that provider is tried first, on the pinned key, and the rest of the chain keeps its order behind it. A chain entry that a routing rule fallback or the load balancer pinned to a key of its own keeps its place. A request that names its provider (`openai/gpt-4o`) stays on it, so a pin on another provider's key fails key selection there and the fallbacks run without the pin. A key pinned by a matched routing rule takes precedence over these headers.
+A key pinned with `x-bf-api-key-id` or `x-bf-api-key` applies to the first attempt only, on whichever provider your configuration put first: the requested provider, a routing rule, virtual key weights, the adaptive load balancer, a circuit breaker redirect or the session. Bifrost never changes the provider for a pin. If that provider has no key with that id or name, or the key does not serve the model, the attempt fails key selection without calling the provider, and the fallbacks run. Fallbacks never carry the caller's pin; each uses its own `key_id` or picks a key normally. A routing rule's key pin overrides the caller's, and a [direct key](#direct-api-key) (`x-bf-direct-key`) overrides both.
 
 #### By ID
 
