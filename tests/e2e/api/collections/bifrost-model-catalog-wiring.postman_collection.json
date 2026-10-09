@@ -25,6 +25,11 @@
       "key": "__purge_queue",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "setup_token",
+      "value": "bifrost-e2e-setup-token",
+      "type": "string"
     }
   ],
   "event": [
@@ -38,6 +43,10 @@
           "  var nonce = Date.now().toString(36) + '-' + Math.floor(Math.random() * 1000000).toString(36);",
           "  pm.collectionVariables.set('run_id', seed + '-' + nonce);",
           "  console.log('run_id = ' + pm.collectionVariables.get('run_id'));",
+          "}",
+          "var __setupToken = pm.variables.get('setup_token');",
+          "if (__setupToken && pm.request.url.getPath().indexOf('/api/') === 0) {",
+          "  pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: __setupToken });",
           "}"
         ]
       }

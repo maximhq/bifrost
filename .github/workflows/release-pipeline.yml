@@ -1716,6 +1716,7 @@ jobs:
             172.38.0.12:8301
             api.tokenfactory.nebius.com:443
             iojs.org:443
+            aiplatform.googleapis.com:443
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
@@ -1735,6 +1736,7 @@ jobs:
             api.x.ai:443
             auth.docker.io:443
             bedrock-mantle.us-east-1.api.aws:443
+            bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-gateway-resource.openai.azure.com:443
             cr.weaviate.io:443
