@@ -104,6 +104,11 @@ describe("isRequestTypeDisabled", () => {
 		expect(isRequestTypeDisabled("typesafe", "embedding")).toBe(true);
 	});
 
+	it("offers live sessions on an openai base, which is the one provider that serves them", () => {
+		expect(isRequestTypeDisabled("openai", "live")).toBe(false);
+		expect(isRequestTypeDisabled("anthropic", "live")).toBe(true);
+	});
+
 	it("keeps decisions off for bases that do not serve them natively", () => {
 		expect(isRequestTypeDisabled("openai", "decisions")).toBe(true);
 		expect(isRequestTypeDisabled("anthropic", "decisions")).toBe(true);

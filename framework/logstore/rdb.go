@@ -122,7 +122,9 @@ func (s *RDBLogStore) ScopedDB(ctx context.Context) *gorm.DB {
 // full set, set by the enterprise user/AP path). It ORs the scalar `IN` (btree
 // index) with array containment per id (partial jsonb_path_ops GIN index). The
 // `IS NOT NULL AND IS JSON ARRAY` guard matches the partial index predicate so
-// the planner uses the GIN. Returns the parenthesised SQL and its args.
+// the planner uses the GIN. The scalar matches only on rows with no valid array,
+// the rows teamOrBUFanoutFrom falls back to it on. Returns the parenthesised
+// SQL and its args.
 func multiValueDimensionFilterSQL(scalarCol, arrayCol string, ids []string) (string, []interface{}) {
 	arrConds := make([]string, len(ids))
 	args := []interface{}{ids}
@@ -131,9 +133,44 @@ func multiValueDimensionFilterSQL(scalarCol, arrayCol string, ids []string) (str
 		frag, _ := sonic.Marshal([]string{id})
 		args = append(args, string(frag))
 	}
-	sql := fmt.Sprintf("(%s IN ? OR (%s IS NOT NULL AND %s IS JSON ARRAY AND (%s)))",
-		scalarCol, arrayCol, arrayCol, strings.Join(arrConds, " OR "))
+	sql := fmt.Sprintf("((%[1]s IN ? AND (%[2]s IS NULL OR %[2]s IS NOT JSON ARRAY)) OR (%[2]s IS NOT NULL AND %[2]s IS JSON ARRAY AND (%[3]s)))",
+		scalarCol, arrayCol, strings.Join(arrConds, " OR "))
 	return sql, args
+}
+
+// dimensionMembershipFilterSQL matches logs whose team, customer or business
+// unit is one of ids, on the scalar column or in the JSON-array column, in the
+// dialect's own terms. It mirrors dimensionFanoutFrom: every backend whose
+// rankings fan out over the array column filters on it too, so a ranking row
+// and the logs it links to always agree. The scalar column matches only where
+// the fan-out falls back to it, on a row with no valid array: a row carrying
+// both is ranked under its array ids alone. Malformed or non-array JSON counts
+// as no array, as it does in the fan-out. A dialect with no fan-out filters on
+// the scalar column alone, matching its rankings.
+func dimensionMembershipFilterSQL(dialect, scalarCol, arrayCol string, ids []string) (string, []interface{}) {
+	switch dialect {
+	case "postgres":
+		return multiValueDimensionFilterSQL(scalarCol, arrayCol, ids)
+	case "clickhouse":
+		// One placeholder per id. GORM expands a bound slice to a bare list only
+		// right after "(": after "[" it wraps it in parentheses, so [?] became
+		// [('a','b')], an array holding one tuple, which ClickHouse rejects.
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+		args := make([]interface{}, 0, len(ids)+1)
+		args = append(args, ids)
+		for _, id := range ids {
+			args = append(args, id)
+		}
+		isArray := fmt.Sprintf("isValidJSON(ifNull(%[1]s, '')) AND JSONType(ifNull(%[1]s, '')) = 'Array'", arrayCol)
+		return fmt.Sprintf("((%[1]s IN ? AND NOT (%[3]s)) OR hasAny(JSONExtract(ifNull(%[2]s, ''), 'Array(String)'), [%[4]s]))", scalarCol, arrayCol, isArray, placeholders), args
+	case "sqlite":
+		// json_each over the raw column errors on malformed JSON, and SQLite
+		// does not promise to short-circuit a guard written beside it, so the
+		// guard picks what json_each reads instead.
+		isArray := fmt.Sprintf("%[1]s IS NOT NULL AND json_valid(%[1]s) AND json_type(%[1]s) = 'array'", arrayCol)
+		return fmt.Sprintf("((%[1]s IN ? AND NOT (%[3]s)) OR EXISTS (SELECT 1 FROM json_each(CASE WHEN %[3]s THEN %[2]s ELSE '[]' END) WHERE value IN ?))", scalarCol, arrayCol, isArray), []interface{}{ids, ids}
+	}
+	return scalarCol + " IN ?", []interface{}{ids}
 }
 
 // teamOrBUFanoutFrom is the Postgres implementation behind dimensionFanoutFrom
@@ -304,10 +341,12 @@ func (s *RDBLogStore) applyAgentContextFilter(baseQuery *gorm.DB, agentNames []s
 		Where("agent_name IN ?", agentNames).
 		Where("context_id IS NOT NULL AND context_id <> ''")
 	if startTime != nil {
-		contexts = contexts.Where("timestamp >= ?", *startTime)
+		placeholder, arg := timestampBound(s.db.Dialector.Name(), *startTime, lowerTimeBound)
+		contexts = contexts.Where("timestamp >= "+placeholder, arg)
 	}
 	if endTime != nil {
-		contexts = contexts.Where("timestamp <= ?", *endTime)
+		placeholder, arg := timestampBound(s.db.Dialector.Name(), *endTime, upperTimeBound)
+		contexts = contexts.Where("timestamp <= "+placeholder, arg)
 	}
 	return baseQuery.Where("session_id IN (?)", contexts)
 }
@@ -377,20 +416,12 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("routing_rule_id IN ?", filters.RoutingRuleIDs)
 	}
 	if len(filters.TeamIDs) > 0 {
-		if s.db.Dialector.Name() == "postgres" {
-			sql, args := multiValueDimensionFilterSQL("team_id", "team_ids", filters.TeamIDs)
-			baseQuery = baseQuery.Where(sql, args...)
-		} else {
-			baseQuery = baseQuery.Where("team_id IN ?", filters.TeamIDs)
-		}
+		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), "team_id", "team_ids", filters.TeamIDs)
+		baseQuery = baseQuery.Where(sql, args...)
 	}
 	if len(filters.CustomerIDs) > 0 {
-		if s.db.Dialector.Name() == "postgres" {
-			sql, args := multiValueDimensionFilterSQL("customer_id", "customer_ids", filters.CustomerIDs)
-			baseQuery = baseQuery.Where(sql, args...)
-		} else {
-			baseQuery = baseQuery.Where("customer_id IN ?", filters.CustomerIDs)
-		}
+		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), "customer_id", "customer_ids", filters.CustomerIDs)
+		baseQuery = baseQuery.Where(sql, args...)
 	}
 	if len(filters.UserIDs) > 0 {
 		baseQuery = baseQuery.Where("user_id IN ?", filters.UserIDs)
@@ -401,12 +432,8 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("project_id IN ?", filters.ProjectIDs)
 	}
 	if len(filters.BusinessUnitIDs) > 0 {
-		if s.db.Dialector.Name() == "postgres" {
-			sql, args := multiValueDimensionFilterSQL("business_unit_id", "business_unit_ids", filters.BusinessUnitIDs)
-			baseQuery = baseQuery.Where(sql, args...)
-		} else {
-			baseQuery = baseQuery.Where("business_unit_id IN ?", filters.BusinessUnitIDs)
-		}
+		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), "business_unit_id", "business_unit_ids", filters.BusinessUnitIDs)
+		baseQuery = baseQuery.Where(sql, args...)
 	}
 	if len(filters.UserAgents) > 0 {
 		baseQuery = baseQuery.Where("user_agent IN ?", filters.UserAgents)
@@ -429,10 +456,12 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("id = ?", filters.RequestID)
 	} else {
 		if filters.StartTime != nil {
-			baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)
+			placeholder, arg := timestampBound(s.db.Dialector.Name(), *filters.StartTime, lowerTimeBound)
+			baseQuery = baseQuery.Where("timestamp >= "+placeholder, arg)
 		}
 		if filters.EndTime != nil {
-			baseQuery = baseQuery.Where("timestamp <= ?", *filters.EndTime)
+			placeholder, arg := timestampBound(s.db.Dialector.Name(), *filters.EndTime, upperTimeBound)
+			baseQuery = baseQuery.Where("timestamp <= "+placeholder, arg)
 		}
 	}
 	if filters.MinLatency != nil {
@@ -1149,7 +1178,7 @@ func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pag
 	g.Go(func() error {
 		dataQuery := s.scopedLogsDB(gCtx).Model(&Log{})
 		dataQuery = s.applyFilters(dataQuery, filters)
-		dataQuery = applyKeysetCursor(dataQuery, pagination)
+		dataQuery = applyKeysetCursor(dataQuery, s.db.Dialector.Name(), pagination)
 		dataQuery = dataQuery.Order(orderClause).Select(selectColumns).Limit(limit)
 		if pagination.Offset > 0 {
 			dataQuery = dataQuery.Offset(pagination.Offset)
@@ -1199,19 +1228,22 @@ func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pag
 // applyKeysetCursor restricts query to rows strictly after the pagination
 // cursor in (timestamp, id) order. It applies only when SortBy is timestamp
 // (or the default) and both cursor fields are set. The direction follows
-// pagination.Order, the same rule logsOrderClause applies to the ORDER BY.
-func applyKeysetCursor(query *gorm.DB, pagination PaginationOptions) *gorm.DB {
+// pagination.Order, the same rule logsOrderClause applies to the ORDER BY. The
+// timestamp goes through timestampBound: bound at whole seconds on ClickHouse,
+// "= ?" never matched the cursor row and "> ?" re-read its second, so ascending
+// pages repeated forever.
+func applyKeysetCursor(query *gorm.DB, dialect string, pagination PaginationOptions) *gorm.DB {
 	if pagination.AfterTimestamp == nil || pagination.AfterID == "" {
 		return query
 	}
 	if pagination.SortBy != "" && pagination.SortBy != "timestamp" {
 		return query
 	}
-	ts := *pagination.AfterTimestamp
+	placeholder, ts := timestampBound(dialect, *pagination.AfterTimestamp, cursorTimeBound)
 	if pagination.Order != "asc" {
-		return query.Where("(timestamp < ? OR (timestamp = ? AND id < ?))", ts, ts, pagination.AfterID)
+		return query.Where("(timestamp < "+placeholder+" OR (timestamp = "+placeholder+" AND id < ?))", ts, ts, pagination.AfterID)
 	}
-	return query.Where("(timestamp > ? OR (timestamp = ? AND id > ?))", ts, ts, pagination.AfterID)
+	return query.Where("(timestamp > "+placeholder+" OR (timestamp = "+placeholder+" AND id > ?))", ts, ts, pagination.AfterID)
 }
 
 // attachChildAggregates populates ChildCount/ChildrenCost/ChildrenTokens on the
@@ -5520,22 +5552,8 @@ func (s *RDBLogStore) applyAgentHistoryFilters(query *gorm.DB, filter AgentLogHi
 		if len(dimension.values) == 0 {
 			continue
 		}
-		if s.db.Dialector.Name() == "postgres" {
-			sql, args := multiValueDimensionFilterSQL(dimension.scalar, dimension.array, dimension.values)
-			query = query.Where(sql, args...)
-		} else if s.db.Dialector.Name() == "clickhouse" {
-			query = query.Where(
-				dimension.scalar+" IN ? OR hasAny(JSONExtract("+dimension.array+", 'Array(String)'), ?)",
-				dimension.values,
-				dimension.values,
-			)
-		} else {
-			query = query.Where(
-				dimension.scalar+" IN ? OR EXISTS (SELECT 1 FROM json_each("+dimension.array+") WHERE value IN ?)",
-				dimension.values,
-				dimension.values,
-			)
-		}
+		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), dimension.scalar, dimension.array, dimension.values)
+		query = query.Where(sql, args...)
 	}
 	if filter.StartTime != nil {
 		query = query.Where("timestamp >= ?", *filter.StartTime)

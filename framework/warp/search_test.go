@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -70,7 +71,7 @@ func TestSemanticSearchHydratesScopedLogsAndPreservesVectorOrder(t *testing.T) {
 	type scopeKey struct{}
 	ctx := context.WithValue(context.Background(), scopeKey{}, "kept")
 	minLatency, maxLatency, minCost, maxCost := 400.25, 500.75, 0.002, 0.003
-	result, err := searcher.Search(ctx, "customers whose card was declined", &logstore.SearchFilters{
+	result, err := searcher.Search(ctx, []string{"customers whose card was declined"}, &logstore.SearchFilters{
 		StartTime: &start, EndTime: &end, Providers: []string{"openai"}, Status: []string{"error"}, UserIDs: []string{userID},
 		MinLatency: &minLatency, MaxLatency: &maxLatency, MinCost: &minCost, MaxCost: &maxCost,
 	}, 10)
@@ -79,9 +80,9 @@ func TestSemanticSearchHydratesScopedLogsAndPreservesVectorOrder(t *testing.T) {
 	require.Equal(t, []string{"missing", "visible", "wrong-status", "hidden"}, reader.sawIDs)
 	require.Equal(t, 1, result.Returned)
 	require.Equal(t, "visible", result.Rows[0].ID)
-	require.Equal(t, scoreVisible, result.Rows[0].Score)
+	require.InDelta(t, (1+scoreVisible)/2, result.Rows[0].Score, 1e-9)
 	require.Contains(t, result.Rows[0].Content, visibleContent)
-	require.Equal(t, schemas.WarpDefaultSemanticSearchThreshold, vectors.threshold)
+	require.Equal(t, 2*schemas.WarpDefaultSemanticSearchThreshold-1, vectors.threshold)
 	require.Equal(t, int64(50), vectors.limit)
 	require.Contains(t, vectors.queries, vectorstore.Query{Field: "warp_log", Operator: vectorstore.QueryOperatorEqual, Value: true})
 	require.Contains(t, vectors.queries, vectorstore.Query{Field: "user_id", Operator: vectorstore.QueryOperatorEqual, Value: userID})
@@ -105,7 +106,7 @@ func TestSemanticSearchToolAppliesDefaultCallerScope(t *testing.T) {
 	}
 	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, vectors, executor, reader)
 	result, err := runTool(t, "semantic_search_logs", &ToolDeps{logManager: reader, semantic: searcher, scope: Scope{HasIdentity: true, UserID: userID}}, map[string]any{
-		"query": "payment failures", "filters": map[string]any{},
+		"queries": []any{"payment failures"}, "filters": map[string]any{},
 	})
 	require.NoError(t, err)
 	response := result.(map[string]any)
@@ -208,7 +209,7 @@ func TestWarpSemanticRefillsCandidatesPastFilteredRows(t *testing.T) {
 	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, vectors, func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}}}, nil
 	}, reader)
-	result, err := searcher.Search(context.Background(), "card declined", nil, 1)
+	result, err := searcher.Search(context.Background(), []string{"card declined"}, nil, 1)
 	require.NoError(t, err)
 	require.Equal(t, 1, result.Returned,
 		"a readable match below the first candidate page must still be found: the cap is a vector-store page size, not the answer")
@@ -267,7 +268,7 @@ func TestWarpSemanticSearchBoundsQueryLength(t *testing.T) {
 		return nil, nil
 	}, reader)
 
-	_, err := searcher.Search(context.Background(), strings.Repeat("é", MaxSemanticQueryChars+1), &logstore.SearchFilters{}, 5)
+	_, err := searcher.Search(context.Background(), []string{strings.Repeat("é", MaxSemanticQueryChars+1)}, &logstore.SearchFilters{}, 5)
 	require.ErrorContains(t, err, fmt.Sprintf("%d characters", MaxSemanticQueryChars+1))
 }
 
@@ -282,7 +283,7 @@ func TestSemanticSearchToolHintsWhenNothingMatches(t *testing.T) {
 	}
 	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, newFakeWarpVectorStore(), executor, reader)
 	result, err := runTool(t, "semantic_search_logs", &ToolDeps{logManager: reader, semantic: searcher, scope: Scope{}}, map[string]any{
-		"query": "refund requests", "filters": map[string]any{},
+		"queries": []any{"refund requests"}, "filters": map[string]any{},
 	})
 	require.NoError(t, err)
 	response := result.(map[string]any)
@@ -299,17 +300,129 @@ func TestSemanticSearchToolHintsWhenNothingMatches(t *testing.T) {
 	require.Contains(t, hint, "not representative of the entire traffic")
 }
 
-// The default threshold is a Weaviate certainty, (1 + cosine) / 2. At 0.80 it
-// cut off real matches: with text-embedding-3-small, "Has anyone had trouble
-// resetting their account password recently?" scored 0.738 against a logged
-// "I can't reset my account password, the reset email never arrives", so the
-// search came back empty and Warp reported that nobody had asked. Question-to-
-// conversation matches sit well below near-duplicate scores, and the default
-// has to admit them.
-func TestWarpDefaultSemanticThresholdAdmitsAQuestionToConversationMatch(t *testing.T) {
-	const measuredMatch = 0.738
-	require.LessOrEqual(t, (&schemas.WarpConfig{}).EffectiveSemanticSearchThreshold(), measuredMatch)
-	require.Equal(t, 0.70, schemas.WarpDefaultSemanticSearchThreshold)
+// The threshold is a 0-1 similarity, (1 + cosine) / 2, on a cosine-scored index.
+// It was handed to the store as is, and only Weaviate reads a threshold as that
+// certainty - Chromem, Qdrant, Pinecone and Redis compare it to raw cosine - so
+// the old 0.70 meant cosine 0.40 on one store and 0.70 on the others.
+//
+// Measured with text-embedding-3-small over Warp's own index text: conversations
+// that really are about a topic score cosine 0.15 to 0.47 against a topic query,
+// a similarity of 0.575 to 0.735, and unrelated ones score inside that range
+// too, so no threshold separates them. 0.70 on a cosine store returned nothing
+// for every topic question. The default has to admit every real match; the
+// ranking, the limit and the model reading each row decide what is relevant.
+func TestWarpDefaultSemanticThresholdAdmitsEveryMeasuredTopicMatch(t *testing.T) {
+	const lowestMeasuredMatch = (1 + 0.15) / 2
+	require.LessOrEqual(t, (&schemas.WarpConfig{}).EffectiveSemanticSearchThreshold(), lowestMeasuredMatch)
+	require.Equal(t, 0.5, schemas.WarpDefaultSemanticSearchThreshold)
+}
+
+// On a store that scores raw cosine the similarity threshold goes down as
+// cosine, and the scores come back as similarity, so the model and the merge
+// read one scale whichever store is configured.
+func TestWarpSemanticSearchConvertsACosineStoreToSimilarity(t *testing.T) {
+	reader := &semanticLogReader{logs: map[string]logstore.Log{"trip": semanticConversation("trip")}}
+	vectors := newFakeWarpVectorStore()
+	vectors.nearest = scoredCandidates("trip", 0.4)
+	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, vectors, zeroEmbeddingExecutor, reader)
+
+	result, err := searcher.Search(context.Background(), []string{"users planning a trip"}, nil, 5)
+	require.NoError(t, err)
+	require.Equal(t, 0.0, vectors.threshold, "a 0.5 similarity is cosine 0 on a cosine store")
+	require.Equal(t, schemas.WarpDefaultSemanticSearchThreshold, result.Threshold)
+	require.Len(t, result.Rows, 1)
+	require.InDelta(t, 0.7, result.Rows[0].Score, 1e-9, "cosine 0.4 is similarity 0.7")
+}
+
+// Weaviate already filters and scores as certainty, which is the similarity
+// scale, so it is passed through untouched.
+func TestWarpSemanticSearchPassesWeaviateCertaintyThrough(t *testing.T) {
+	require.True(t, scoresAsCertainty(&vectorstore.WeaviateStore{}))
+	require.False(t, scoresAsCertainty(newFakeWarpVectorStore()))
+	require.Equal(t, 0.5, storeThreshold(0.5, true))
+	require.Equal(t, 0.73, similarityFromScore(0.73, true))
+}
+
+// Each phrasing is embedded and searched, and a log keeps the best score any
+// phrasing gave it: a conversation only one phrasing reaches is still found,
+// and one several reach is ranked by its closest.
+func TestWarpSemanticSearchMergesEveryPhrasing(t *testing.T) {
+	reader := &semanticLogReader{logs: map[string]logstore.Log{
+		"itinerary": semanticConversation("itinerary"),
+		"packing":   semanticConversation("packing"),
+	}}
+	vectors := newFakeWarpVectorStore()
+	vectors.respondVector = func(vector []float32, _ []vectorstore.Query) []vectorstore.SearchResult {
+		if vector[0] == 1 {
+			return scoredCandidates("itinerary", 0.4, "packing", 0.1)
+		}
+		return scoredCandidates("packing", 0.3)
+	}
+	executor := phrasingExecutor(map[string]int{"travel itinerary for a city": 0, "packing for a trip": 1})
+	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, vectors, executor, reader)
+
+	result, err := searcher.Search(context.Background(), []string{"travel itinerary for a city", "packing for a trip"}, nil, 10)
+	require.NoError(t, err)
+	require.Len(t, result.Rows, 2)
+	require.Equal(t, "itinerary", result.Rows[0].ID)
+	require.InDelta(t, 0.7, result.Rows[0].Score, 1e-9)
+	require.Equal(t, "packing", result.Rows[1].ID)
+	require.InDelta(t, 0.65, result.Rows[1].Score, 1e-9, "packing keeps the closer of its two scores")
+}
+
+// The phrasings are embedded together, not one after another: each is a
+// provider round trip, and a five-phrasing search should cost one of them in
+// wall time.
+func TestWarpSemanticSearchEmbedsPhrasingsInParallel(t *testing.T) {
+	reader := &semanticLogReader{logs: map[string]logstore.Log{}}
+	var arrived sync.WaitGroup
+	arrived.Add(2)
+	executor := func(ctx *schemas.BifrostContext, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		arrived.Done()
+		together := make(chan struct{})
+		go func() { arrived.Wait(); close(together) }()
+		select {
+		case <-together:
+		case <-time.After(2 * time.Second):
+			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "the phrasings were embedded one at a time"}}
+		}
+		return zeroEmbeddingExecutor(ctx, request)
+	}
+	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, newFakeWarpVectorStore(), executor, reader)
+
+	_, err := searcher.Search(context.Background(), []string{"users planning a trip", "travel itinerary"}, nil, 5)
+	require.NoError(t, err)
+}
+
+func TestWarpSemanticSearchValidatesPhrasings(t *testing.T) {
+	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, newFakeWarpVectorStore(), zeroEmbeddingExecutor, &semanticLogReader{})
+	_, err := searcher.Search(context.Background(), []string{" ", ""}, nil, 5)
+	require.ErrorContains(t, err, "at least one query")
+	_, err = searcher.Search(context.Background(), []string{"a", "b", "c", "d", "e", "f"}, nil, 5)
+	require.ErrorContains(t, err, "at most 5")
+	// Repeats are dropped rather than refused, so they cost nothing and do not
+	// count against the limit.
+	_, err = searcher.Search(context.Background(), []string{"a", "b", "c", "d", "e", "a"}, nil, 5)
+	require.NoError(t, err)
+}
+
+func semanticConversation(id string) logstore.Log {
+	return logstore.Log{ID: id, Timestamp: time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC), Object: string(schemas.ChatCompletionRequest), Status: "success", Provider: "openai", Model: "gpt-4o", ContentSummary: id}
+}
+
+func zeroEmbeddingExecutor(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}}}, nil
+}
+
+// phrasingExecutor embeds each known phrasing as a one-hot vector on its index,
+// so a fake store can tell which phrasing it was asked with.
+func phrasingExecutor(index map[string]int) EmbeddingExecutor {
+	return func(_ *schemas.BifrostContext, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		vector := make([]float64, 1536)
+		text := *request.Input[0].Content[0].Text
+		vector[index[text]] = 1
+		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: vector}}}}, nil
+	}
 }
 
 // Visibility is an OR across fields and vector filters only AND, so each
@@ -482,7 +595,7 @@ func TestWarpSemanticSearchReachesARestrictedCallersRows(t *testing.T) {
 
 	t.Run("unfiltered, the cap is spent on rows the caller cannot read", func(t *testing.T) {
 		searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, newVectors(), executor, reader)
-		result, err := searcher.Search(context.Background(), "card declined", nil, 5)
+		result, err := searcher.Search(context.Background(), []string{"card declined"}, nil, 5)
 		require.NoError(t, err)
 		require.Zero(t, result.Returned)
 	})
@@ -491,7 +604,7 @@ func TestWarpSemanticSearchReachesARestrictedCallersRows(t *testing.T) {
 		vectors := newVectors()
 		searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, vectors, executor, reader)
 		visible := &LogVisibility{UserIDs: []string{mine}, VirtualKeyIDs: []string{teamKey}, TeamIDs: []string{"team-1"}}
-		result, err := searcher.SearchVisible(context.Background(), "card declined", nil, visible, 5)
+		result, err := searcher.SearchVisible(context.Background(), []string{"card declined"}, nil, visible, 5)
 		require.NoError(t, err)
 		require.Equal(t, 2, result.Returned)
 		require.Equal(t, "team-key", result.Rows[0].ID)
@@ -511,7 +624,7 @@ func TestWarpSemanticSearchReachesARestrictedCallersRows(t *testing.T) {
 			return scoredCandidates("not-readable", 0.95, "mine", 0.71)
 		}
 		searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, vectors, executor, reader)
-		result, err := searcher.SearchVisible(context.Background(), "card declined", nil, &LogVisibility{UserIDs: []string{mine}}, 5)
+		result, err := searcher.SearchVisible(context.Background(), []string{"card declined"}, nil, &LogVisibility{UserIDs: []string{mine}}, 5)
 		require.NoError(t, err)
 		require.Equal(t, 1, result.Returned)
 		require.Equal(t, "mine", result.Rows[0].ID)
@@ -530,7 +643,7 @@ func TestSemanticSearchToolPrefiltersByCallerVisibility(t *testing.T) {
 	// scope "all": the one question a restricted caller's default does not
 	// already narrow to their own user id.
 	_, err := runTool(t, "semantic_search_logs", &ToolDeps{logManager: reader, semantic: searcher, scope: scope}, map[string]any{
-		"query": "payment failures", "filters": map[string]any{"scope": "all"},
+		"queries": []any{"payment failures"}, "filters": map[string]any{"scope": "all"},
 	})
 	require.NoError(t, err)
 	require.Len(t, vectors.calls, 2)
@@ -541,4 +654,16 @@ func TestSemanticSearchToolPrefiltersByCallerVisibility(t *testing.T) {
 		}
 	}
 	require.True(t, fields["user_id"] && fields["team_ids"])
+}
+
+// Scores cannot tell a topic match from an unrelated row, so the model is told
+// to judge each row by its content. Without it Warp counted every returned row
+// as a match, or - with nothing above the old threshold - said a topic with
+// nineteen conversations had none.
+func TestWarpSemanticSearchToldToJudgeRowsByContent(t *testing.T) {
+	tool := semanticSearchLogsTool()
+	require.Contains(t, tool.description, "Read each row's content and keep only the rows actually about what was asked")
+	require.Contains(t, tool.description, "several phrasings")
+	require.Contains(t, tool.schemaJSON, `"queries"`)
+	require.Contains(t, SemanticSearchGuidance, "drop every row whose content is not about the topic")
 }
