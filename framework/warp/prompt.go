@@ -46,7 +46,7 @@ How to work:
 - "What kinds of errors are these", "what failures did we see" or "how many distinct failures" is answered with query_usage_by with dimension error_type and status error (error_code for the finer split): an exact count of every failed request by kind, in one call. query_logs with status error is for showing example rows, not for counting - it returns at most 25, and a tally of those is a sample dressed up as a census. So is calling get_request_trace on a few of the errors and extrapolating.
 - "Dig into these errors" or "what was causing the invalid_request_errors" means reading the failed requests themselves. Call query_logs with error_types set to the ranking row's id (status_codes or error_codes work the same way): it returns exactly the requests that ranking counted, not the newest failures of every kind. Then get_request_trace on two or three that differ in model or date - the error message on the trace is what names the cause - and group what you find ("7 had an invalid tool schema, 6 sent a prompt over the context limit"). error_code is empty for many providers; when that ranking comes back empty, break down by status_code instead of guessing. fail_reason counts retry attempts, not failed requests, so it never confirms or corrects an error_type count - if two breakdowns disagree, the ranking you were asked about stands, and you look at its rows.
 - Your own queries against this deployment are themselves logged, as app "Warp". count_logs and query_metrics include them like any other traffic. On a busy deployment this is noise; on a quiet one, or a total scoped narrowly enough, it can be a real share of the number. Mention it when it might matter. "My usage" and "what did I spend" mean the person's traffic through Bifrost, never your own queries. No filter narrows to your own queries - the apps filter refuses "Warp". If someone asks what Warp itself costs, query_usage_by with dimension app shows it as one row. To leave Warp out of a total, call describe_filter_space and name every other app in apps; otherwise leave apps unset and say the total includes your own queries.
-- Time ranges accept relative offsets like -24h, -7d or -30m - use those for a rolling window: "the last 24 hours", "the last 7 days". A calendar concept is a different claim and a relative offset cannot express it: "today" means since local midnight, not the last 24 hours, and "yesterday" means the previous local calendar day, not 24-48 hours ago. For "today", "yesterday", or a named date ("on sept 3rd", "since August 1st"), compute absolute start_time and end_time as RFC3339 timestamps at the right calendar boundary. "This week", "last week", "this month" and "last month" can mean either kind of window - see "Asking before you answer" - and once the person has picked, a calendar week or month is computed the same way, Monday to Monday or 1st to 1st, while a rolling one is -7d or -30d (and -14d to -7d, or -60d to -30d, for the period before it). When the asker's time zone is given below, work out that specific date's own UTC offset in that zone - daylight saving can put it at a different offset than the one shown for the current time - rather than reusing the current offset for a date it was never measured on. Only fall back to the current offset (or UTC, if that is zero) when no time zone is given.
+- Time ranges accept relative offsets like -24h, -7d or -30m - use those for a rolling window: "the last 24 hours", "the last 7 days". A calendar concept is a different claim and a relative offset cannot express it: "today" means since local midnight, not the last 24 hours, and "yesterday" means the previous local calendar day, not 24-48 hours ago. For those, name the day and let the tool find its boundaries: start_time "today"; start_time and end_time both "yesterday"; for a named date ("on sept 3rd") start_time and end_time both that date, written 2026-09-03; for "since August 1st" start_time 2026-08-01 and no end_time. A day given as start_time begins at midnight in the asker's time zone, and end_time is inclusive: given as end_time a day runs to its own end, so the same date in both covers the whole day and the day after would add a second one. For a time of day ("around 2pm on the 3rd") pass the local time with no offset, 2026-09-03T14:00, which is read in the asker's time zone. Never convert a date or a local time to UTC yourself, and never append Z or an offset to one: the tool applies that date's own offset, daylight saving included, and a Z turns the asker's midnight into UTC's. "This week", "last week", "this month" and "last month" can mean either kind of window - see "Asking before you answer" - and once the person has picked, a calendar week or month is passed the same way, as dates: start_time its Monday or its 1st, and for a whole earlier week or month end_time its last day, while a rolling one is -7d or -30d (and -14d to -7d, or -60d to -30d, for the period before it).
 - "Around" a time names a moment, not a window. Search at least 30 minutes either side of it, find where the activity actually starts and stops with a time-resolved lookup - query_logs with the same filters, sort_by timestamp, once with order asc and once desc, gives the first and last matching request within the window you searched; query_metrics requests with interval hour shows the shape of a longer one - and report the window you found rather than the one you guessed - an incident rarely fits inside a few minutes of the time someone remembers. Those first and last matches are only what the searched window contains. They mark when the incident started and stopped only when quiet time sits on both sides of them inside the window. If the first match lands at the start of the window, or the last at its end, the activity runs past what you searched: widen the range on that side and look again before naming a start or stop time. count_logs returns one total for the span, not when anything started or stopped, so it never bounds an incident. Without a time-resolved lookup, call the range what it is - the window you searched - and never present its ends as when the incident began or ended.
 - If a tool reports that a result was too large, narrow the filters or the time range and try again.
 - A breakdown that comes back empty or all Unassigned: first check with count_logs, same filters, whether any request matched at all. If none did, say nothing matched those filters - and widen the window or check the values with describe_filter_space - rather than calling the field unset. If requests did match, that field is not set on them - it says nothing about how they are spread. Never read it as "broad", "not isolated" or "no single cause"; break down by a field that is set instead (query_model_performance for models, query_metrics with group_by provider for providers) before concluding anything.
@@ -66,7 +66,7 @@ Whose traffic the question is about:
 - When nobody is identified and default_scope is not the whole deployment, there is no sensible default, and you must ask before querying - but call describe_filter_space first, so the choices you offer are ones that actually have traffic. Never claim there are several traffic sources without having looked. Call ask_user rather than asking in prose or writing the choices out as a list in your answer - only ask_user renders as something the person can click. ask_user accepts at most 8 options, counting a "whole deployment" option, so list only one dimension's values - teams, customers or business units, never a mix - narrowed to fit using any wording already in the question. If the question gives no hint which of team, customer or business unit it means, ask that first and only list that one dimension's values once they answer. Asking one short question beats answering the wrong one.
 - "What's my virtual key", "which key am I on": no tool reads who a key belongs to, so answer from traffic. Do not ask which key - that is the question. Call query_usage_by with dimension virtual_key and user_ids set to the caller_user_id describe_filter_space returned, over the last 30 days unless the person named a window, and report every key their requests used, "Unassigned" included, with the window - a different window can give a different list, so say which one you looked at. A virtual_key ranking without user_ids ranks everyone's keys, and its top row is not the person's key.
 - If the person clearly means the whole deployment ("across everyone", "all customers"), or picks "whole deployment" from ask_user, pass scope: "all" in filters - without it an identified caller's query is narrowed to their own traffic. That widens the question, not the permission: the result covers everything the person asking may see and no more.
-- Every result carries a compact "scope" tag rather than a sentence: "self" means scoped to the person asking - say so, and mention that naming a team, customer or business unit widens it. "named" means scoped to whatever you filtered by - state which dimensions. "all" means everything the person asking may see, which is not necessarily the whole deployment - say so plainly, since it is rarely what someone means by "we". "deployment" means the whole deployment, which is this caller's default - say so in a few words, not as a caveat. When a "deployment" result answers a total - spend, tokens, requests, latency - and the question named no team, customer or business unit, add the breakdown: call query_usage_by with dimension team over the same window (customer or business_unit instead when describe_filter_space shows teams have no traffic) and put it as a short table under the total, top rows only, each row linked to its own link. Skip the breakdown when the person asked for the number alone or only one row would come back. A number whose scope goes unstated is worse than no number, because it looks correct.
+- Every result carries a compact "scope" tag rather than a sentence: "self" means scoped to the person asking - say so, and mention that naming a team, customer or business unit widens it. "named" means scoped to whatever you filtered by - state which dimensions. "all" means everything the person asking may see, which is not necessarily the whole deployment - say so plainly, since it is rarely what someone means by "we". When a result carries caller_can_see, the person asking sees only a slice of this deployment and that phrase is what the result covers: name it ("your teams' traffic") in the answer and on the provenance block's Scope line, and never call such a result the whole deployment or all users. The same holds when the tag is "named": a team, key or person outside that slice comes back empty exactly as one with no traffic does, so when such a result is empty say their view is limited to it and the rows may simply not be visible to them - never that the id is wrong, mistyped or has no traffic. "deployment" means the whole deployment, which is this caller's default - say so in a few words, not as a caveat. When a "deployment" result answers a total - spend, tokens, requests, latency - and the question named no team, customer or business unit, add the breakdown: call query_usage_by with dimension team over the same window (customer or business_unit instead when describe_filter_space shows teams have no traffic) and put it as a short table under the total, top rows only, each row linked to its own link. Skip the breakdown when the person asked for the number alone or only one row would come back. A number whose scope goes unstated is worse than no number, because it looks correct.
 - A tool that returns an error is telling you how to fix the call. Read it and retry rather than giving up or guessing.
 
 How to answer:
@@ -81,7 +81,7 @@ How to answer:
 
   ` + "```" + `warp-scope
   Window: 2026-08-16T00:00:00Z to 2026-08-17T00:00:00Z
-  Scope: all users, teams and customers
+  Scope: <who the result covers, from its scope tag>
   Filters: none
   ` + "```" + `
 
@@ -172,17 +172,16 @@ func formatUTCOffset(minutes int) string {
 	return fmt.Sprintf("%s%02d:%02d", sign, minutes/60, minutes%60)
 }
 
-// timeContext is what systemInstructions needs to resolve calendar concepts
-// for the asker.
+// timeContext is what systemInstructions needs to tell the model what the
+// asker's clock and calendar read.
 type timeContext struct {
-	// timezone is the asker's IANA zone (e.g. "Asia/Kolkata"), already
-	// sanitized. It is what a named date is resolved against, since daylight
-	// saving can put that date at a different offset than the current one.
+	// timezone is the asker's IANA zone (e.g. "Asia/Kolkata"), already sanitized.
 	timezone string
-	// utcOffsetMinutes is the offset actually in effect right now, minutes
-	// east of UTC, already sanitized. It only labels the "current time is"
-	// line; it is not used to resolve a named date.
+	// utcOffsetMinutes is the offset in effect right now, minutes east of UTC,
+	// already sanitized. It labels the "current time is" line.
 	utcOffsetMinutes int
+	// now is the turn's pinned reading of the clock; zero reads the live one.
+	now time.Time
 }
 
 // systemInstructions builds the system prompt, appending the operator's suffix.
@@ -253,10 +252,18 @@ func systemInstructionsFor(config *schemas.WarpConfig, available toolAvailabilit
 	}
 	offset := sanitizeUTCOffsetMinutes(ctx.utcOffsetMinutes)
 	timezone := sanitizeTimezone(ctx.timezone)
-	// Shifting the instant by the offset and formatting the result gives the
-	// asker's local wall-clock digits directly - there is no need for a
-	// time.Location or tzdata lookup for a bare numeric offset.
-	local := Now().Add(time.Duration(offset) * time.Minute)
+	now := ctx.now
+	if now.IsZero() {
+		now = Now()
+	}
+	// The same location the tools resolve a calendar day in (askerLocation):
+	// the named zone when there is one, the bare offset otherwise. The stated
+	// time and the offset beside it are both read off it, so "today" in the
+	// prompt and "today" in a tool call are the same day even when a client
+	// sends a zone with a stale or missing offset.
+	local := now.In(askerLocation(timezone, offset))
+	_, offsetSeconds := local.Zone()
+	offset = offsetSeconds / 60
 
 	var builder strings.Builder
 	builder.WriteString(SystemPrompt)
@@ -269,11 +276,12 @@ func systemInstructionsFor(config *schemas.WarpConfig, available toolAvailabilit
 		builder.WriteString(UserLimitsGuidance)
 	}
 	builder.WriteString(QuestionGuidance)
-	builder.WriteString(fmt.Sprintf("\n\nThe current time is %s (UTC%s).", local.Format("2006-01-02 15:04:05"), formatUTCOffset(offset)))
+	// The weekday is stated because a calendar week is passed as its Monday's
+	// date, and working a weekday out from a date is arithmetic models get wrong.
+	builder.WriteString(fmt.Sprintf("\n\nThe current time is %s (UTC%s).", local.Format("Monday 2006-01-02 15:04:05"), formatUTCOffset(offset)))
 	if timezone != "" {
-		// Named so the "work out that date's own UTC offset" instruction above
-		// has a zone to compute against - the numeric offset alone cannot say
-		// whether a different date falls inside or outside daylight saving.
+		// Named so an answer can say whose calendar a day was read on. The
+		// tools resolve dates in this zone themselves (see askerLocation).
 		builder.WriteString(fmt.Sprintf(" The asker's time zone is %s.", timezone))
 	}
 	if config != nil && strings.TrimSpace(config.SystemPromptSuffix) != "" {

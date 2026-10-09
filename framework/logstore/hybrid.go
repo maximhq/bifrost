@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,12 +22,20 @@ const (
 	defaultMaxUploadQueueBytes = 1 << 30 // 1 GiB
 )
 
+type uploadKind uint8
+
+const (
+	uploadKindLog uploadKind = iota
+	uploadKindMCP
+	uploadKindAgent
+)
+
 // uploadWork represents an async S3 upload job.
 type uploadWork struct {
 	logID     string
 	timestamp time.Time
 	key       string
-	mcp       bool
+	kind      uploadKind
 	status    string
 	payload   []byte // JSON-encoded payload
 	tags      map[string]string
@@ -52,6 +61,8 @@ type HybridLogStore struct {
 	pendingBytes   atomic.Int64
 	// excludedPayloadFields is the set of payload field names (DB column names) that must NOT be offloaded to object storage and must remain in the DB.
 	excludedPayloadFields map[string]struct{}
+	// excludedRequestTypes is the set of log object types that are never offloaded; their rows stay complete in the DB.
+	excludedRequestTypes map[string]struct{}
 }
 
 type scopedDBLogStore interface {
@@ -61,11 +72,18 @@ type scopedDBLogStore interface {
 // newHybridLogStore creates a HybridLogStore wrapping the given inner store.
 // excludeFields lists payload field DB column names that should be kept in the
 // database rather than offloaded to object storage. Pass nil for the default
-// behaviour of offloading all payload fields.
-func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix string, logger schemas.Logger, excludeFields []string) *HybridLogStore {
+// behaviour of offloading all payload fields. excludeRequestTypes lists log
+// object types whose rows are written to the DB unchanged and never uploaded.
+func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix string, logger schemas.Logger, excludeFields []string, excludeRequestTypes []string) *HybridLogStore {
 	excluded := make(map[string]struct{}, len(excludeFields))
 	for _, f := range excludeFields {
 		excluded[f] = struct{}{}
+	}
+	excludedTypes := make(map[string]struct{}, len(excludeRequestTypes))
+	for _, t := range excludeRequestTypes {
+		if t = strings.TrimSpace(t); t != "" {
+			excludedTypes[t] = struct{}{}
+		}
 	}
 	h := &HybridLogStore{
 		inner:                 inner,
@@ -74,6 +92,7 @@ func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix s
 		logger:                logger,
 		uploadQueue:           make(chan *uploadWork, defaultUploadQueueSize),
 		excludedPayloadFields: excluded,
+		excludedRequestTypes:  excludedTypes,
 	}
 	// Start upload workers.
 	for i := 0; i < defaultUploadWorkers; i++ {
@@ -110,16 +129,24 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if work.mcp {
+	switch work.kind {
+	case uploadKindMCP:
 		current, err := h.inner.FindMCPToolLog(ctx, work.logID)
 		if err != nil {
 			h.logger.Warn("objectstore: failed to check MCP tool log %s before upload: %v", work.logID, err)
 			h.droppedUploads.Add(1)
 			return
 		}
-		// Status is the only monotonic-ish signal available on MCP log rows today.
-		// If stricter upload ordering is needed, add an updated_at/version column
-		// and compare it here alongside status.
+		if work.status != "" && current.Status != work.status {
+			return
+		}
+	case uploadKindAgent:
+		current, err := h.inner.FindAgentLog(ctx, work.logID)
+		if err != nil {
+			h.logger.Warn("objectstore: failed to check A2A log %s before upload: %v", work.logID, err)
+			h.droppedUploads.Add(1)
+			return
+		}
 		if work.status != "" && current.Status != work.status {
 			return
 		}
@@ -137,9 +164,12 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 	for attempt := 0; attempt < 3; attempt++ {
 		dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		var err error
-		if work.mcp {
+		switch work.kind {
+		case uploadKindMCP:
 			err = h.inner.UpdateMCPToolLog(dbCtx, work.logID, map[string]interface{}{"has_object": true})
-		} else {
+		case uploadKindAgent:
+			err = h.inner.UpdateAgentLog(dbCtx, work.logID, map[string]interface{}{"has_object": true})
+		default:
 			err = h.inner.Update(dbCtx, work.logID, map[string]interface{}{"has_object": true})
 		}
 		dbCancel()
@@ -190,7 +220,7 @@ func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payloa
 		h.droppedUploads.Add(1)
 		return
 	}
-	h.enqueueRawUpload(logID, timestamp, ObjectKey(h.prefix, timestamp, logID), false, "", data, tags)
+	h.enqueueRawUpload(logID, timestamp, ObjectKey(h.prefix, timestamp, logID), uploadKindLog, "", data, tags)
 }
 
 // enqueueRawUpload submits a pre-serialized payload to the upload queue.
@@ -198,7 +228,7 @@ func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payloa
 // the data is empty, the in-flight byte budget would be exceeded, or the queue
 // is full. Used by both regular log uploads (via enqueueUpload) and MCP tool
 // log uploads, which already hold raw JSON bytes.
-func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key string, mcp bool, status string, data []byte, tags map[string]string) {
+func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key string, kind uploadKind, status string, data []byte, tags map[string]string) {
 	if h.closed.Load() || len(data) == 0 {
 		return
 	}
@@ -217,7 +247,7 @@ func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key
 		logID:     logID,
 		timestamp: timestamp,
 		key:       key,
-		mcp:       mcp,
+		kind:      kind,
 		status:    status,
 		payload:   data,
 		tags:      tags,
@@ -320,7 +350,22 @@ func (h *HybridLogStore) extractUploadPayload(entry *Log) map[string]string {
 	return ExtractPayloadFiltered(entry, h.excludedPayloadFields)
 }
 
+// skipsOffload reports whether entry's request type is excluded from object
+// storage. Excluded entries are written to the inner store unchanged, which
+// builds their content summary on write. Hidden entries are always offloaded:
+// their content may only live in object storage, never in the DB row.
+func (h *HybridLogStore) skipsOffload(entry *Log) bool {
+	if entry.ContentHidden {
+		return false
+	}
+	_, ok := h.excludedRequestTypes[entry.Object]
+	return ok
+}
+
 func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
+	if h.skipsOffload(entry) {
+		return h.inner.Create(ctx, entry)
+	}
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
 	}
@@ -341,6 +386,9 @@ func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 // same ID exists, then offloads the full payload to object storage on insert.
 // Same payload-stripping and shallow-copy semantics as Create.
 func (h *HybridLogStore) CreateIfNotExists(ctx context.Context, entry *Log) error {
+	if h.skipsOffload(entry) {
+		return h.inner.CreateIfNotExists(ctx, entry)
+	}
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
 	}
@@ -376,6 +424,11 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 	origEntries := make([]*Log, 0, len(entries))
 	for _, entry := range entries {
 		if entry == nil {
+			continue
+		}
+		if h.skipsOffload(entry) {
+			dbEntries = append(dbEntries, entry)
+			origEntries = append(origEntries, entry)
 			continue
 		}
 		if err := entry.SerializeFields(); err != nil {
@@ -1380,7 +1433,7 @@ func (h *HybridLogStore) CreateMCPToolLog(ctx context.Context, entry *MCPToolLog
 	if err := h.inner.CreateMCPToolLog(ctx, &dbEntry); err != nil {
 		return err
 	}
-	h.enqueueRawUpload(entry.ID, entry.Timestamp, MCPToolObjectKey(h.prefix, entry.Timestamp, entry.ID), true, entry.Status, payload, tags)
+	h.enqueueRawUpload(entry.ID, entry.Timestamp, MCPToolObjectKey(h.prefix, entry.Timestamp, entry.ID), uploadKindMCP, entry.Status, payload, tags)
 	return nil
 }
 
@@ -1427,7 +1480,7 @@ func (h *HybridLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Context, 
 	}
 
 	for _, u := range uploads {
-		h.enqueueRawUpload(u.logID, u.timestamp, MCPToolObjectKey(h.prefix, u.timestamp, u.logID), true, u.status, u.payload, u.tags)
+		h.enqueueRawUpload(u.logID, u.timestamp, MCPToolObjectKey(h.prefix, u.timestamp, u.logID), uploadKindMCP, u.status, u.payload, u.tags)
 	}
 	return nil
 }
@@ -1471,7 +1524,293 @@ func (h *HybridLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry 
 	if err != nil {
 		return fmt.Errorf("logstore: serialize MCP tool log update before offload: %w", err)
 	}
-	h.enqueueRawUpload(current.ID, current.Timestamp, MCPToolObjectKey(h.prefix, current.Timestamp, current.ID), true, current.Status, payload, BuildMCPToolTags(current))
+	h.enqueueRawUpload(current.ID, current.Timestamp, MCPToolObjectKey(h.prefix, current.Timestamp, current.ID), uploadKindMCP, current.Status, payload, BuildMCPToolTags(current))
+	return nil
+}
+
+func (h *HybridLogStore) BatchCreateAgentLogsIfNotExists(ctx context.Context, entries []*AgentLog) ([]string, error) {
+	type pendingUpload struct {
+		id        string
+		timestamp time.Time
+		status    string
+		key       string
+		payload   []byte
+		tags      map[string]string
+	}
+	dbEntries := make([]*AgentLog, 0, len(entries))
+	uploads := make([]pendingUpload, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		if _, ok := seen[entry.ID]; ok {
+			continue
+		}
+		seen[entry.ID] = struct{}{}
+		dbEntry := *entry
+		if AgentLogHasPayload(entry) {
+			key := AgentLogObjectKey(h.prefix, entry.Timestamp, entry.ID)
+			payload, err := MarshalAgentLogPayload(entry)
+			if err != nil {
+				return nil, fmt.Errorf("logstore: serialize A2A log before offload: %w", err)
+			}
+			PrepareAgentLogDBEntry(&dbEntry, key)
+			uploads = append(uploads, pendingUpload{
+				id: entry.ID, timestamp: entry.Timestamp, status: entry.Status,
+				key: key, payload: payload, tags: BuildAgentLogTags(entry),
+			})
+		}
+		dbEntries = append(dbEntries, &dbEntry)
+	}
+	if len(dbEntries) == 0 {
+		return nil, nil
+	}
+	insertedIDs, err := h.inner.BatchCreateAgentLogsIfNotExists(ctx, dbEntries)
+	if err != nil {
+		return nil, err
+	}
+	inserted := make(map[string]struct{}, len(insertedIDs))
+	for _, id := range insertedIDs {
+		inserted[id] = struct{}{}
+	}
+	for _, upload := range uploads {
+		if _, ok := inserted[upload.id]; !ok {
+			continue
+		}
+		h.enqueueRawUpload(upload.id, upload.timestamp, upload.key, uploadKindAgent, upload.status, upload.payload, upload.tags)
+	}
+	return insertedIDs, nil
+}
+
+func (h *HybridLogStore) ReconcileAgentCorrelation(ctx context.Context, entries []*AgentLog) error {
+	return h.inner.ReconcileAgentCorrelation(ctx, entries)
+}
+
+func (h *HybridLogStore) FindAgentLog(ctx context.Context, id string) (*AgentLog, error) {
+	entry, err := h.inner.FindAgentLog(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	h.hydrateAgentLog(ctx, entry)
+	return entry, nil
+}
+
+func (h *HybridLogStore) FindAgentLogsForDeletion(ctx context.Context, ids []string) ([]*AgentLog, error) {
+	return h.inner.FindAgentLogsForDeletion(ctx, ids)
+}
+
+func (h *HybridLogStore) ListAgentLogHistory(ctx context.Context, filter AgentLogHistoryFilter, pagination PaginationOptions) (*AgentLogHistoryResult, error) {
+	return h.inner.ListAgentLogHistory(ctx, filter, pagination)
+}
+
+// ListAgentLogOperations hydrates payload objects for the bounded operation page.
+func (h *HybridLogStore) ListAgentLogOperations(ctx context.Context, filter AgentLogHistoryFilter, pagination PaginationOptions) (*AgentLogOperationResult, error) {
+	result, err := h.inner.ListAgentLogOperations(ctx, filter, pagination)
+	if err != nil {
+		return nil, err
+	}
+	for i := range result.Logs {
+		h.hydrateAgentLogDetail(ctx, &result.Logs[i].AgentLogDetail)
+		for j := range result.Logs[i].Events {
+			h.hydrateAgentLogDetail(ctx, &result.Logs[i].Events[j])
+		}
+	}
+	return result, nil
+}
+
+// FindAgentLogOperation hydrates the request and correlated event payload objects.
+func (h *HybridLogStore) FindAgentLogOperation(ctx context.Context, id string) (*AgentLogOperation, error) {
+	operation, err := h.inner.FindAgentLogOperation(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	h.hydrateAgentLogDetail(ctx, &operation.AgentLogDetail)
+	for i := range operation.Events {
+		h.hydrateAgentLogDetail(ctx, &operation.Events[i])
+	}
+	return operation, nil
+}
+
+// hydrateAgentLogDetail hydrates one public detail through the existing Agent log object path.
+func (h *HybridLogStore) hydrateAgentLogDetail(ctx context.Context, detail *AgentLogDetail) {
+	if !detail.hasObject || detail.contentHidden {
+		return
+	}
+	entry := &AgentLog{ID: detail.ID, Timestamp: detail.Timestamp, HasObject: detail.hasObject, ContentHidden: detail.contentHidden, PayloadReference: detail.payloadReference}
+	h.hydrateAgentLog(ctx, entry)
+	detail.RequestBody = entry.RequestBody
+	detail.ResponseBody = entry.ResponseBody
+	detail.EventBody = entry.EventBody
+}
+
+func (h *HybridLogStore) hydrateAgentLog(ctx context.Context, entry *AgentLog) {
+	if entry == nil || !entry.HasObject || entry.ContentHidden {
+		return
+	}
+	key := AgentLogObjectKey(h.prefix, entry.Timestamp, entry.ID)
+	if entry.PayloadReference != nil && *entry.PayloadReference != "" {
+		key = *entry.PayloadReference
+	}
+	data, err := h.objects.Get(ctx, key)
+	if err != nil {
+		h.logger.Warn("objectstore: failed to hydrate A2A log %s: %v", entry.ID, err)
+		return
+	}
+	if err := MergeAgentLogPayloadFromJSON(entry, data); err != nil {
+		h.logger.Warn("objectstore: failed to merge A2A log %s: %v", entry.ID, err)
+	}
+}
+
+func (h *HybridLogStore) GetAgentLogStats(ctx context.Context, filter AgentLogHistoryFilter) (*AgentLogStats, error) {
+	return h.inner.GetAgentLogStats(ctx, filter)
+}
+
+// GetAgentTopAgents delegates to the database store; the ranking uses only
+// database-resident columns.
+func (h *HybridLogStore) GetAgentTopAgents(ctx context.Context, filter AgentLogHistoryFilter, limit int) (*AgentTopAgentsResult, error) {
+	return h.inner.GetAgentTopAgents(ctx, filter, limit)
+}
+
+func (h *HybridLogStore) GetAgentFilterData(ctx context.Context, dimensions []string, limit int, query string) (*AgentFilterData, error) {
+	return h.inner.GetAgentFilterData(ctx, dimensions, limit, query)
+}
+
+func (h *HybridLogStore) GetAgentHistogram(ctx context.Context, filter AgentLogHistoryFilter, bucketSizeSeconds int64) (*AgentHistogramResult, error) {
+	return h.inner.GetAgentHistogram(ctx, filter, bucketSizeSeconds)
+}
+
+func (h *HybridLogStore) hydrateAgentLogFromObject(ctx context.Context, entry *AgentLog) error {
+	if entry == nil {
+		return nil
+	}
+	key := AgentLogObjectKey(h.prefix, entry.Timestamp, entry.ID)
+	if entry.PayloadReference != nil && *entry.PayloadReference != "" {
+		key = *entry.PayloadReference
+	}
+	data, err := h.objects.Get(ctx, key)
+	if err != nil {
+		return fmt.Errorf("objectstore: fetch Agent log payload for %s: %w", entry.ID, err)
+	}
+	if err := MergeAgentLogPayloadFromJSON(entry, data); err != nil {
+		return fmt.Errorf("objectstore: merge Agent log payload for %s: %w", entry.ID, err)
+	}
+	return nil
+}
+
+func applyAgentLogBodyUpdate(entry *AgentLog, field string, value any) error {
+	var body *string
+	switch value := value.(type) {
+	case nil:
+	case string:
+		body = &value
+	case *string:
+		body = value
+	default:
+		return fmt.Errorf("logstore: unsupported %s update type %T", field, value)
+	}
+	switch field {
+	case "request_body":
+		entry.RequestBody = body
+	case "response_body":
+		entry.ResponseBody = body
+	case "event_body":
+		entry.EventBody = body
+	}
+	return nil
+}
+
+func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry any) error {
+	updates, ok := entry.(map[string]interface{})
+	if !ok {
+		return h.inner.UpdateAgentLog(ctx, id, entry)
+	}
+	payloadUpdate := false
+	for _, field := range []string{"request_body", "response_body", "event_body"} {
+		if _, ok := updates[field]; ok {
+			payloadUpdate = true
+			break
+		}
+	}
+	if !payloadUpdate {
+		return h.inner.UpdateAgentLog(ctx, id, entry)
+	}
+
+	current, err := h.inner.FindAgentLog(ctx, id)
+	if err != nil {
+		return err
+	}
+	if current.HasObject {
+		if err := h.hydrateAgentLogFromObject(ctx, current); err != nil {
+			return err
+		}
+	}
+
+	dbUpdates := make(map[string]interface{}, len(updates)+1)
+	for field, value := range updates {
+		switch field {
+		case "request_body", "response_body", "event_body":
+			if err := applyAgentLogBodyUpdate(current, field, value); err != nil {
+				return err
+			}
+		default:
+			dbUpdates[field] = value
+		}
+	}
+	key := AgentLogObjectKey(h.prefix, current.Timestamp, current.ID)
+	if current.PayloadReference != nil && *current.PayloadReference != "" {
+		key = *current.PayloadReference
+	}
+	payload, err := MarshalAgentLogPayload(current)
+	if err != nil {
+		return fmt.Errorf("logstore: serialize Agent log update before offload: %w", err)
+	}
+	dbEntry := *current
+	PrepareAgentLogDBEntry(&dbEntry, key)
+	dbUpdates["request_body"] = dbEntry.RequestBody
+	dbUpdates["response_body"] = dbEntry.ResponseBody
+	dbUpdates["event_body"] = dbEntry.EventBody
+	dbUpdates["payload_reference"] = dbEntry.PayloadReference
+	dbUpdates["has_object"] = false
+	if err := h.inner.UpdateAgentLog(ctx, id, dbUpdates); err != nil {
+		return err
+	}
+	h.enqueueRawUpload(current.ID, current.Timestamp, key, uploadKindAgent, current.Status, payload, BuildAgentLogTags(current))
+	return nil
+}
+
+func (h *HybridLogStore) FlushAgentLogs(ctx context.Context, since time.Time) error {
+	// Time-based row cleanup intentionally leaves objects to the bucket lifecycle
+	// policy, which must expire the A2A prefix on the same retention schedule.
+	return h.inner.FlushAgentLogs(ctx, since)
+}
+
+// DeleteAgentLogs deletes the identified Agent log rows, correlated stream-event
+// rows, and every offloaded object belonging to those rows.
+func (h *HybridLogStore) DeleteAgentLogs(ctx context.Context, ids []string) error {
+	entries, err := h.inner.FindAgentLogsForDeletion(ctx, ids)
+	if err != nil {
+		return err
+	}
+	keys := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.HasObject {
+			continue
+		}
+		key := AgentLogObjectKey(h.prefix, entry.Timestamp, entry.ID)
+		if entry.PayloadReference != nil && *entry.PayloadReference != "" {
+			key = *entry.PayloadReference
+		}
+		keys = append(keys, key)
+	}
+	if err := h.inner.DeleteAgentLogs(ctx, ids); err != nil {
+		return err
+	}
+	if len(keys) > 0 {
+		if delErr := h.objects.DeleteBatch(ctx, keys); delErr != nil {
+			h.logger.Warn("objectstore: failed to batch delete %d A2A log objects: %v", len(keys), delErr)
+		}
+	}
 	return nil
 }
 

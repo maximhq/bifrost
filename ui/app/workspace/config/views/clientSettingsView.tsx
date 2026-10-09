@@ -569,7 +569,7 @@ export default function ClientSettingsView() {
 				controlsDisabled={isLoading || !hasSettingsUpdateAccess}
 			/>
 
-			<div className="flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				{hasSecurityHeaderError ? (
 					<Tooltip>
 						<TooltipTrigger asChild>

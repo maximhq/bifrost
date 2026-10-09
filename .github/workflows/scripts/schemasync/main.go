@@ -181,6 +181,7 @@ var ignoreGoFieldNames = map[string]string{
 var ignoreEnumPaths = map[string]string{
 	"/properties/governance/properties/complexity_analyzer_config/properties/semantic/properties/provider": "accepts custom provider names; enum would reject them",
 	"/properties/governance/properties/complexity_analyzer_config/properties/llm/properties/provider":      "accepts custom provider names; enum would reject them",
+	"/properties/governance/properties/complexity_analyzer_config/properties/decision/properties/provider": "accepts custom provider names (Laya, Nimble, Clef); enum would reject them",
 }
 
 // opaqueLeafTypes are named Go types that have custom JSON marshalling and

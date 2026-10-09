@@ -148,13 +148,20 @@ if [ -z "$SINGLE_JSON_ENV" ]; then
 fi
 
 # Build Newman command
-cmd=(newman run "$COLLECTION")
+# OSS locks /api behind the setup token while dashboard auth is not active, and
+# this suite provisions its virtual keys through that API.
+SETUP_TOKEN="${BIFROST_E2E_SETUP_TOKEN:-${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup-token}}"
+SETUP_COLLECTION="$REPORT_DIR/$(basename "$COLLECTION" .postman_collection.json)-setup-token.postman_collection.json"
+node "$SCRIPT_DIR/../add-setup-token-header.mjs" "$COLLECTION" "$SETUP_COLLECTION"
+
+cmd=(newman run "$SETUP_COLLECTION")
 [ -n "$GLOBALS_TMP" ] && [ -f "$GLOBALS_TMP" ] && cmd+=(-g "$GLOBALS_TMP")
 [ -n "$SINGLE_JSON_ENV" ] && [ -f "$SINGLE_JSON_ENV" ] && cmd+=(-e "$SINGLE_JSON_ENV")
 
 # Base URL override
 base_url="${BIFROST_BASE_URL:-http://localhost:8080}"
 cmd+=(--env-var "base_url=$base_url")
+cmd+=(--env-var "setup_token=$SETUP_TOKEN")
 
 # Script timeout is raised above the 120s default: the residual busy-wait to the
 # 3m grace boundary can reach ~110s and must never be killed mid-wait.

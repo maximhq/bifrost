@@ -45,11 +45,12 @@ func (s testWSHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 	return nil
 }
 
-func (s testWSHandlerStore) ShouldAllowPerRequestStorageOverride() bool { return false }
-func (s testWSHandlerStore) ShouldAllowPerRequestRawOverride() bool     { return false }
-func (s testWSHandlerStore) ShouldAllowDirectKeys() bool                { return false }
-func (s testWSHandlerStore) GetMCPExternalServerURL() string            { return "" }
-func (s testWSHandlerStore) GetMCPExternalClientURL() string            { return "" }
+func (s testWSHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { return false }
+func (s testWSHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
+func (s testWSHandlerStore) ShouldAllowDirectKeys() bool                     { return false }
+func (s testWSHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
+func (s testWSHandlerStore) GetMCPExternalServerURL() string                 { return "" }
+func (s testWSHandlerStore) GetMCPExternalClientURL() string                 { return "" }
 
 type timeoutNetError struct{}
 

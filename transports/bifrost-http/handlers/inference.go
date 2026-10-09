@@ -29,18 +29,11 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// forwardProviderHeaders forwards provider response headers to the HTTP response.
-func forwardProviderHeaders(ctx *fasthttp.RequestCtx, headers map[string]string) {
-	for key, value := range headers {
-		ctx.Response.Header.Set(key, value)
-	}
-}
-
 // forwardProviderHeadersFromContext extracts provider response headers from the bifrost context
 // and forwards them to the HTTP response. This ensures error responses also include provider headers.
 func forwardProviderHeadersFromContext(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) {
 	if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-		forwardProviderHeaders(ctx, headers)
+		lib.ForwardProviderResponseHeaders(ctx, headers)
 	}
 }
 
@@ -1024,24 +1017,9 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 
 // modelRetrieve handles GET /v1/models/{model} - retrieve a single model's metadata
 func (h *CompletionHandler) modelRetrieve(ctx *fasthttp.RequestCtx) {
-	rawModel, _ := ctx.UserValue("model").(string)
-	rawModel = strings.Trim(strings.TrimSpace(rawModel), "/")
-	if rawModel == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "model is required")
-		return
-	}
-
-	// ?provider= wins: ParseModelString only splits on a known provider, so a custom
-	// provider's name would otherwise be read as part of the model.
-	provider := schemas.ModelProvider(ctx.QueryArgs().Peek("provider"))
-	model := rawModel
-	if provider != "" {
-		model = strings.TrimPrefix(rawModel, string(provider)+"/")
-	} else {
-		provider, model = schemas.ParseModelString(rawModel, "")
-	}
-	if provider == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "provider is required: prefix the model with it or pass ?provider=")
+	provider, model, err := modelRetrieveTarget(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1067,6 +1045,34 @@ func (h *CompletionHandler) modelRetrieve(ctx *fasthttp.RequestCtx) {
 		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	SendJSON(ctx, resp)
+}
+
+// modelRetrieveTarget resolves the provider and model a GET /v1/models/{model} request names.
+func modelRetrieveTarget(ctx *fasthttp.RequestCtx) (schemas.ModelProvider, string, error) {
+	rawModel, _ := ctx.UserValue("model").(string)
+	// The router hands the catch-all over still percent-encoded, and OpenAI SDKs send "provider%2Fmodel".
+	decodedModel, err := url.PathUnescape(rawModel)
+	if err != nil {
+		return "", "", errors.New("invalid model encoding")
+	}
+	rawModel = strings.Trim(strings.TrimSpace(decodedModel), "/")
+	if rawModel == "" {
+		return "", "", errors.New("model is required")
+	}
+
+	// ?provider= wins: ParseModelString only splits on a known provider, so a custom
+	// provider's name would otherwise be read as part of the model.
+	provider := schemas.ModelProvider(ctx.QueryArgs().Peek("provider"))
+	model := rawModel
+	if provider != "" {
+		model = strings.TrimPrefix(rawModel, string(provider)+"/")
+	} else {
+		provider, model = schemas.ParseModelString(rawModel, "")
+	}
+	if provider == "" {
+		return "", "", errors.New("provider is required: prefix the model with it or pass ?provider=")
+	}
+	return provider, model, nil
 }
 
 // enrichModelRetrieveResponse applies the same catalog metadata list models applies,
@@ -2186,7 +2192,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 
 	// Forward provider response headers stored in context by streaming handlers
 	if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-		forwardProviderHeaders(ctx, headers)
+		lib.ForwardProviderResponseHeaders(ctx, headers)
 	}
 
 	// Routed-identity headers from the context snapshot — routing is final once

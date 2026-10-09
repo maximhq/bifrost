@@ -701,6 +701,7 @@ func HandleOpenAITextCompletionStreaming(
 		var finishReason *string
 		var messageID string
 		var created int
+		modelName := request.Model
 		lastChunkTime := startTime
 
 		for {
@@ -805,6 +806,10 @@ func HandleOpenAITextCompletionStreaming(
 				} else {
 					logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")
 				}
+			}
+
+			if response.Model != "" {
+				modelName = response.Model
 			}
 
 			// Only usage observed at or after finish_reason ends a wait_for_usage wait. Some
@@ -916,7 +921,7 @@ func HandleOpenAITextCompletionStreaming(
 			return
 		}
 
-		response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, request.Model, created)
+		response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, modelName, created)
 		if postResponseConverter != nil {
 			response = postResponseConverter(response)
 			if response == nil {
@@ -2361,6 +2366,12 @@ func HandleOpenAIResponsesStreaming(
 				// Per-event decode -> "response-parse" (Serialization) stream phase.
 				parseStart := time.Now()
 				umErr := sonic.UnmarshalString(jsonData, &response)
+				if umErr != nil {
+					// shell_call_output_content.delta sends `delta` as an object, which the
+					// string field rejects; without this fallback the event is dropped.
+					response = schemas.BifrostResponsesStreamResponse{}
+					umErr = schemas.UnmarshalResponsesStreamObjectDelta([]byte(jsonData), &response)
+				}
 				schemas.AddStreamParse(ctx, time.Since(parseStart))
 				if umErr != nil {
 					logger.Warn("Failed to parse stream response: %v", umErr)

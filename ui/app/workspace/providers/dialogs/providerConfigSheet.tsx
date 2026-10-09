@@ -9,6 +9,7 @@ import {
 	BetaHeadersFormFragment,
 	GovernanceFormFragment,
 	OpenAIConfigFormFragment,
+	PricingFormFragment,
 	ProxyFormFragment,
 } from "../fragments";
 import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
@@ -59,6 +60,10 @@ const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: bo
 	tabs.push({
 		id: "prompt-cache",
 		label: "Prompt Caching",
+	});
+	tabs.push({
+		id: "pricing",
+		label: "Pricing",
 	});
 	tabs.push({
 		id: "debugging",
@@ -154,6 +159,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 							</TabsContent>
 							<TabsContent value="prompt-cache">
 								<PromptCacheFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="pricing">
+								<PricingFormFragment provider={provider} />
 							</TabsContent>
 							<TabsContent value="debugging">
 								<DebuggingFormFragment provider={provider} />
