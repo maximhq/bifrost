@@ -218686,7 +218686,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai_websearch/gpt-4o-mini\",\n  \"tool_choice\": \"required\",\n  \"max_tokens\": 200,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"tools\": [\n    {\n      \"type\": \"web_search_20250305\",\n      \"name\": \"web_search\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use web search to look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n    }\n  ]\n}",
+              "raw": "{\n  \"model\": \"openai_websearch/gpt-4o-mini\",\n  \"tool_choice\": \"required\",\n  \"max_tokens\": 200,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"web_search_options\": {},\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use web search to look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n    }\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -218733,7 +218733,7 @@
                   "  pm.expect(raws.length, 'no raw_request in the stream (send_back_raw_request is on for this profile provider)').to.be.above(0);",
                   "  raws.forEach(function (raw) {",
                   "    pm.expect(raw, 'the MCP tool was not declared upstream: ' + raw).to.include('sse_mcp-web_search');",
-                  "    pm.expect(raw, 'the native web search reached the provider: ' + raw).to.not.include('web_search_20250305');",
+                  "    pm.expect(raw, 'native web_search_options reached the provider: ' + raw).to.not.include('web_search_options');",
                   "  });",
                   "});"
                 ]
