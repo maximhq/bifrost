@@ -2,7 +2,11 @@ package logstore
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,6 +36,8 @@ func agentLogsCreateError(_ []string, err error) error {
 	return err
 }
 
+// newTestHybrid creates a hybrid store with file-backed SQLite and in-memory object storage for
+// asynchronous upload tests.
 func newTestHybrid(t *testing.T) (*HybridLogStore, LogStore, *objectstore.InMemoryObjectStore) {
 	t.Helper()
 	ctx := context.Background()
@@ -42,7 +48,8 @@ func newTestHybrid(t *testing.T) (*HybridLogStore, LogStore, *objectstore.InMemo
 	require.NoError(t, err)
 
 	objStore := objectstore.NewInMemoryObjectStore()
-	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, nil, nil)
+	hybrid, err := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, nil, nil)
+	require.NoError(t, err)
 	return hybrid, inner, objStore
 }
 
@@ -659,6 +666,72 @@ func TestHybrid_UpdateMCPToolLogHydratesObjectBeforeHasObjectMarker(t *testing.T
 	assert.Equal(t, "done", found.ResultParsed.(map[string]interface{})["answer"])
 }
 
+// TestHybridMCPUpdateHandlesRemotePayloadState checks absent payloads, hydration
+// before the database marker, and read failures with or without an outbox.
+func TestHybridMCPUpdateHandlesRemotePayloadState(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		for _, hasObject := range []bool{false, true} {
+			for _, state := range []struct {
+				name    string
+				present bool
+				getErr  error
+			}{
+				{name: "missing"},
+				{name: "present", present: true},
+				{name: "read-failure", present: true, getErr: assert.AnError},
+				{name: "unrelated-not-found", getErr: fmt.Errorf("credentials file not found")},
+			} {
+				t.Run(fmt.Sprintf("outbox=%t/has-object=%t/%s", enabled, hasObject, state.name), func(t *testing.T) {
+					dir := ""
+					if enabled {
+						dir = t.TempDir()
+					}
+					t.Setenv(uploadOutboxDirEnv, dir)
+					t.Setenv(uploadOutboxMaxBytesEnv, "")
+					hybrid, inner, objects := newTestHybrid(t)
+					ctx := context.Background()
+					defer hybrid.Close(ctx)
+					entry := &MCPToolLog{
+						ID: "mcp-remote-payload", Timestamp: time.Now().UTC(), ToolName: "search", Status: "processing",
+						ArgumentsParsed: map[string]any{"input": strings.Repeat("full input ", 100)},
+					}
+					payload, err := MarshalMCPToolLogPayload(entry)
+					require.NoError(t, err)
+					dbEntry := *entry
+					PrepareMCPToolDBEntry(&dbEntry)
+					dbEntry.HasObject = hasObject
+					require.NoError(t, inner.CreateMCPToolLog(ctx, &dbEntry))
+					if state.present {
+						require.NoError(t, objects.Put(ctx, MCPToolObjectKey(hybrid.prefix, entry.Timestamp, entry.ID), payload, nil))
+					}
+					objects.GetErr = state.getErr
+					result := map[string]any{"answer": "completed"}
+					err = hybrid.UpdateMCPToolLog(ctx, entry.ID, MCPToolLog{Status: "success", ResultParsed: result})
+					if state.getErr != nil {
+						require.ErrorIs(t, err, state.getErr, "errors other than a missing object must propagate")
+						row, err := inner.FindMCPToolLog(ctx, entry.ID)
+						require.NoError(t, err)
+						assert.Equal(t, "processing", row.Status)
+						assert.Empty(t, row.Result)
+						return
+					}
+					require.NoError(t, err, "a confirmed missing remote payload must not block the update")
+					waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+					found, err := hybrid.FindMCPToolLog(ctx, entry.ID)
+					require.NoError(t, err)
+					assert.Equal(t, "success", found.Status)
+					assert.Equal(t, result, found.ResultParsed)
+					if state.present {
+						assert.Equal(t, entry.ArgumentsParsed, found.ArgumentsParsed, "remote hydration must not depend on HasObject")
+					} else {
+						assert.Equal(t, dbEntry.Arguments, found.Arguments, "missing payloads retain the available database preview")
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestHybrid_A2ACorrelationReconciliationUsesInnerStore(t *testing.T) {
 	hybrid, inner, _ := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
@@ -1112,6 +1185,527 @@ func TestHybrid_PutFailureDropsUpload(t *testing.T) {
 	assert.False(t, found.HasObject, "has_object should remain false when upload fails")
 }
 
+// TestHybridFailedUploadPersistsDiskOutbox checks that failed uploads retain full payloads and file
+// age until both upload and database marking succeed.
+func TestHybridFailedUploadPersistsDiskOutbox(t *testing.T) {
+	outboxDir := t.TempDir()
+	t.Setenv("BIFROST_LOG_UPLOAD_OUTBOX_DIR", outboxDir)
+	t.Setenv("BIFROST_LOG_UPLOAD_OUTBOX_MAX_BYTES", "")
+	hybrid, inner, objects := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	objects.PutErr = assert.AnError
+	entry := &Log{
+		ID: "outbox-failed-upload", Timestamp: time.Now().UTC(),
+		Provider: "openai", Model: "gpt-4o-mini", Status: "success",
+		InputHistoryParsed:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: strPtr("important input")}}},
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: strPtr("important output")}},
+	}
+	require.NoError(t, hybrid.CreateIfNotExists(context.Background(), entry))
+	var files []string
+	waitForUploads(t, func() bool {
+		files, _ = filepath.Glob(filepath.Join(outboxDir, "*.json"))
+		return len(files) > 0 || hybrid.DroppedUploads() > 0
+	})
+	require.Len(t, files, 1, "a failed upload must persist its payload in the disk outbox")
+	data, err := os.ReadFile(files[0])
+	require.NoError(t, err)
+	assert.Contains(t, string(data), entry.ID)
+	assert.Contains(t, string(data), "important input")
+	assert.Contains(t, string(data), "important output")
+	assert.Zero(t, hybrid.DroppedUploads(), "persisted uploads are pending, not dropped")
+	row, err := inner.FindByID(context.Background(), entry.ID)
+	require.NoError(t, err)
+	assert.False(t, row.HasObject, "has_object must only be set after a confirmed upload")
+	waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+	// Repeated failures retain the file, including its original age.
+	before, err := os.Stat(files[0])
+	require.NoError(t, err)
+	hybrid.sweepUploadOutbox(context.Background())
+	after, err := os.Stat(files[0])
+	require.NoError(t, err)
+	assert.Equal(t, before.ModTime(), after.ModTime())
+	objects.PutErr = nil
+	hybrid.sweepUploadOutbox(context.Background())
+	_, err = os.Stat(files[0])
+	assert.True(t, os.IsNotExist(err), "successful replay must remove the file")
+	found, err := hybrid.FindByID(context.Background(), entry.ID)
+	require.NoError(t, err)
+	assert.True(t, found.HasObject)
+	assert.Contains(t, found.InputHistory, "important input")
+	assert.Contains(t, found.OutputMessage, "important output")
+	assert.Zero(t, hybrid.DroppedUploads())
+}
+
+// TestHybridOutboxSurvivesRestart checks that a reopened store recovers complete payloads and tags
+// from the same outbox directory.
+func TestHybridOutboxSurvivesRestart(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	dbPath := filepath.Join(t.TempDir(), "restart.db")
+	ctx := context.Background()
+	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: dbPath}, hybridTestLogger{})
+	require.NoError(t, err)
+	objects := objectstore.NewInMemoryObjectStore()
+	objects.PutErr = assert.AnError
+	hybrid, err := newHybridLogStore(inner, objects, "test", hybridTestLogger{}, nil, nil)
+	require.NoError(t, err)
+	entry := &Log{ID: "restart-pending", Timestamp: time.Now().UTC(), Provider: "openai", Model: "gpt-4o-mini", Status: "success",
+		InputHistory:  `[{"role":"system","content":"earlier context"},{"role":"user","content":"latest input"}]`,
+		OutputMessage: `{"role":"assistant","content":"recovered output"}`}
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	require.NoError(t, hybrid.Close(ctx)) // Drains the upload queue to disk.
+	inner, err = newSqliteLogStore(ctx, &SQLiteConfig{Path: dbPath}, hybridTestLogger{})
+	require.NoError(t, err)
+	objects = objectstore.NewInMemoryObjectStore()
+	hybrid, err = newHybridLogStore(inner, objects, "test", hybridTestLogger{}, nil, nil)
+	require.NoError(t, err)
+	defer hybrid.Close(ctx)
+	hybrid.sweepUploadOutbox(ctx)
+	found, err := hybrid.FindByID(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.True(t, found.HasObject)
+	assert.Contains(t, found.InputHistory, "earlier context")
+	assert.Contains(t, found.OutputMessage, "recovered output")
+	assert.Equal(t, "openai", objects.GetTags(ObjectKey("test", entry.Timestamp, entry.ID))["provider"])
+	files, _, err := hybrid.outbox.files()
+	require.NoError(t, err)
+	assert.Empty(t, files)
+}
+
+// TestHybridOutboxEvictsOldestBeforeRetry checks that quota enforcement removes the oldest upload
+// and retains files within the budget.
+func TestHybridOutboxEvictsOldestBeforeRetry(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "1")
+	hybrid, _, objects := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	objects.PutErr = assert.AnError
+	ctx := context.Background()
+	for i := range 3 {
+		entry := &Log{ID: fmt.Sprintf("evict-%d", i), Timestamp: time.Now().UTC(), Status: "success", InputHistory: `[{"role":"user","content":"keep data"}]`}
+		require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	}
+	waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+	files, total, err := hybrid.outbox.files()
+	require.NoError(t, err)
+	require.Len(t, files, 3)
+	for i, file := range files {
+		age := time.Now().Add(time.Duration(i-3) * time.Hour)
+		require.NoError(t, os.Chtimes(file.path, age, age))
+	}
+	hybrid.outbox.maxBytes = total - files[0].info.Size()
+	hybrid.sweepUploadOutbox(ctx)
+	_, err = os.Stat(files[0].path)
+	assert.True(t, os.IsNotExist(err))
+	remaining, size, err := hybrid.outbox.files()
+	require.NoError(t, err)
+	assert.Len(t, remaining, 2)
+	assert.LessOrEqual(t, size, hybrid.outbox.maxBytes)
+	assert.Equal(t, int64(1), hybrid.DroppedUploads())
+}
+
+// TestUploadOutboxEnvironment checks disabled mode, byte-limit defaults, invalid limits, and
+// unusable directories.
+func TestUploadOutboxEnvironment(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, "")
+	t.Setenv(uploadOutboxMaxBytesEnv, "invalid")
+	outbox, err := newUploadOutboxFromEnv()
+	require.NoError(t, err)
+	assert.Nil(t, outbox)
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	for _, value := range []string{"invalid", "0", "-1", "10000000000000000000000"} {
+		t.Setenv(uploadOutboxMaxBytesEnv, value)
+		_, err = newUploadOutboxFromEnv()
+		require.ErrorContains(t, err, uploadOutboxMaxBytesEnv)
+	}
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	outbox, err = newUploadOutboxFromEnv()
+	require.NoError(t, err)
+	assert.Equal(t, int64(10_000_000_000), outbox.maxBytes)
+	t.Setenv(uploadOutboxMaxBytesEnv, "12345")
+	outbox, err = newUploadOutboxFromEnv()
+	require.NoError(t, err)
+	assert.Equal(t, int64(12345), outbox.maxBytes)
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	require.NoError(t, os.WriteFile(file, []byte("existing"), 0600))
+	t.Setenv(uploadOutboxDirEnv, file)
+	_, err = newUploadOutboxFromEnv()
+	require.Error(t, err)
+}
+
+// TestUploadOutboxKeepsNewestVersion checks that stale saves and removals preserve a newer pending
+// record and its private permissions.
+func TestUploadOutboxKeepsNewestVersion(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	outbox, err := newUploadOutboxFromEnv()
+	require.NoError(t, err)
+	old := &uploadWork{logID: "version", key: "test/key", timestamp: time.Now().UTC(), queuedAt: time.Now().UTC(), payload: []byte(`{"value":"old"}`)}
+	newer := *old
+	newer.queuedAt = old.queuedAt.Add(time.Second)
+	newer.payload = []byte(`{"value":"new"}`)
+	require.NoError(t, outbox.save(&newer))
+	require.NoError(t, outbox.save(old))
+	require.NoError(t, outbox.removeThrough(old))
+	got, err := outbox.read(outbox.path(old.key))
+	require.NoError(t, err)
+	assert.Equal(t, newer.payload, got.payload)
+	info, err := os.Stat(outbox.path(old.key))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0600), info.Mode().Perm())
+	require.NoError(t, outbox.removeThrough(&newer))
+}
+
+// TestHybridOutboxQueueOverflowAndDiskFailure checks persistence on queue or memory exhaustion and
+// drop accounting when disk writes fail.
+func TestHybridOutboxQueueOverflowAndDiskFailure(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	outbox, err := newUploadOutboxFromEnv()
+	require.NoError(t, err)
+	ctx := context.Background()
+	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "overflow.db")}, hybridTestLogger{})
+	require.NoError(t, err)
+	defer inner.Close(ctx)
+	for _, id := range []string{"queue-full", "memory-full", "disk-failure"} {
+		require.NoError(t, inner.CreateIfNotExists(ctx, &Log{ID: id, Timestamp: time.Now().UTC(), Status: "success"}))
+	}
+	hybrid := &HybridLogStore{inner: inner, outbox: outbox, logger: hybridTestLogger{}, uploadQueue: make(chan *uploadWork)}
+	hybrid.enqueueRawUpload("queue-full", time.Now().UTC(), "test/full", uploadKindLog, "", []byte(`{"content":"full"}`), nil)
+	assert.Zero(t, hybrid.pendingBytes.Load())
+	assert.Zero(t, hybrid.DroppedUploads())
+	hybrid.pendingBytes.Store(defaultMaxUploadQueueBytes)
+	hybrid.enqueueRawUpload("memory-full", time.Now().UTC(), "test/memory", uploadKindLog, "", []byte(`{"content":"memory"}`), nil)
+	files, _, err := outbox.files()
+	require.NoError(t, err)
+	assert.Len(t, files, 2)
+	require.NoError(t, os.RemoveAll(outbox.dir))
+	hybrid.enqueueRawUpload("disk-failure", time.Now().UTC(), "test/disk", uploadKindLog, "", []byte(`{"content":"disk"}`), nil)
+	assert.Equal(t, int64(1), hybrid.DroppedUploads())
+}
+
+// TestHybridOutboxRecoversMCPToolLog checks that a failed MCP upload becomes readable and its
+// outbox record is removed after recovery.
+func TestHybridOutboxRecoversMCPToolLog(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	hybrid, inner, objects := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	objects.PutErr = assert.AnError
+	entry := &MCPToolLog{ID: "mcp-outbox", Timestamp: time.Now().UTC(), Status: "success", ToolName: "test-tool", Arguments: `{"input":"original"}`, Result: `{"output":"recovered"}`}
+	require.NoError(t, hybrid.CreateMCPToolLog(context.Background(), entry))
+	waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+	files, _, err := hybrid.outbox.files()
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	objects.PutErr = nil
+	hybrid.sweepUploadOutbox(context.Background())
+	row, err := inner.FindMCPToolLog(context.Background(), entry.ID)
+	require.NoError(t, err)
+	assert.True(t, row.HasObject)
+	found, err := hybrid.FindMCPToolLog(context.Background(), entry.ID)
+	require.NoError(t, err)
+	assert.Contains(t, found.Result, "recovered")
+	files, _, err = hybrid.outbox.files()
+	require.NoError(t, err)
+	assert.Empty(t, files)
+}
+
+// TestHybridOutboxRecoversAgentLogs checks agent payload recovery, updates to pending bodies, and
+// deletion before retry.
+func TestHybridOutboxRecoversAgentLogs(t *testing.T) {
+	for _, action := range []string{"retry", "update", "delete"} {
+		t.Run(action, func(t *testing.T) {
+			t.Setenv(uploadOutboxDirEnv, t.TempDir())
+			t.Setenv(uploadOutboxMaxBytesEnv, "")
+			hybrid, inner, objects := newTestHybrid(t)
+			ctx := context.Background()
+			defer hybrid.Close(ctx)
+			objects.PutErr = assert.AnError
+			requestBody := `{"input":"` + strings.Repeat("a", maxA2APayloadPreviewRunes+100) + `"}`
+			responseBody := `{"output":"recovered"}`
+			entry := &AgentLog{
+				ID: "agent-outbox-" + action, Timestamp: time.Now().UTC(), RecordKind: "request",
+				Status: "success", Operation: "SendMessage", AgentName: "fixture", RequestID: "request-" + action,
+				RequestBody: &requestBody, ResponseBody: &responseBody,
+			}
+			require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+			waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+			files, _, err := hybrid.outbox.files()
+			require.NoError(t, err)
+			require.Len(t, files, 1)
+			pending, err := hybrid.outbox.read(files[0].path)
+			require.NoError(t, err)
+			assert.Equal(t, uploadKindAgent, pending.kind)
+			switch action {
+			case "update":
+				responseBody = `{"output":"updated"}`
+				require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{"response_body": responseBody}))
+				waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+			case "delete":
+				require.NoError(t, hybrid.DeleteAgentLogs(ctx, []string{entry.ID}))
+			}
+			objects.PutErr = nil
+			hybrid.sweepUploadOutbox(ctx)
+			files, _, err = hybrid.outbox.files()
+			require.NoError(t, err)
+			assert.Empty(t, files)
+			if action == "delete" {
+				assert.Zero(t, objects.Len(), "deleted agent logs must not be uploaded")
+				return
+			}
+			row, err := inner.FindAgentLog(ctx, entry.ID)
+			require.NoError(t, err)
+			assert.True(t, row.HasObject)
+			found, err := hybrid.FindAgentLog(ctx, entry.ID)
+			require.NoError(t, err)
+			require.NotNil(t, found.RequestBody)
+			require.NotNil(t, found.ResponseBody)
+			assert.Equal(t, requestBody, *found.RequestBody, "updates must preserve the full pending request")
+			assert.Equal(t, responseBody, *found.ResponseBody)
+		})
+	}
+}
+
+// TestHybridOutboxMCPUpdatePreservesPendingArguments checks that updating a failed MCP upload
+// retains full arguments beyond the database preview.
+func TestHybridOutboxMCPUpdatePreservesPendingArguments(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	hybrid, _, objects := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	objects.PutErr = assert.AnError
+	longInput := strings.Repeat("a", 300)
+	entry := &MCPToolLog{ID: "mcp-update-pending", Timestamp: time.Now().UTC(), Status: "processing", ToolName: "test-tool", ArgumentsParsed: map[string]any{"input": longInput}}
+	require.NoError(t, hybrid.CreateMCPToolLog(context.Background(), entry))
+	waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+	require.NoError(t, hybrid.UpdateMCPToolLog(context.Background(), entry.ID, MCPToolLog{Status: "success", ResultParsed: map[string]any{"output": "recovered"}}))
+	waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+	objects.PutErr = nil
+	hybrid.sweepUploadOutbox(context.Background())
+	found, err := hybrid.FindMCPToolLog(context.Background(), entry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, longInput, found.ArgumentsParsed.(map[string]interface{})["input"])
+	assert.Contains(t, found.Result, "recovered")
+}
+
+type outboxMarkerFailStore struct {
+	LogStore
+	fail atomic.Bool
+}
+
+// Update injects failures when an upload attempts to mark its database row as having an object.
+func (s *outboxMarkerFailStore) Update(ctx context.Context, id string, entry any) error {
+	if updates, ok := entry.(map[string]interface{}); ok && updates["has_object"] == true && s.fail.Load() {
+		return assert.AnError
+	}
+	return s.LogStore.Update(ctx, id, entry)
+}
+
+// TestHybridOutboxRetainsUploadUntilDatabaseMarkerSucceeds checks that a successful object write
+// remains retryable until its database marker is saved.
+func TestHybridOutboxRetainsUploadUntilDatabaseMarkerSucceeds(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	hybrid, inner, objects := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	store := &outboxMarkerFailStore{LogStore: inner}
+	store.fail.Store(true)
+	hybrid.inner = store
+	entry := &Log{ID: "marker-failed", Timestamp: time.Now().UTC(), Status: "success", InputHistory: `[{"role":"user","content":"must remain recoverable"}]`}
+	require.NoError(t, hybrid.CreateIfNotExists(context.Background(), entry))
+	waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+	assert.Equal(t, 1, objects.Len(), "S3 upload succeeded")
+	files, _, err := hybrid.outbox.files()
+	require.NoError(t, err)
+	require.Len(t, files, 1, "do not delete until readers can hydrate the object")
+	row, err := inner.FindByID(context.Background(), entry.ID)
+	require.NoError(t, err)
+	assert.False(t, row.HasObject)
+	store.fail.Store(false)
+	hybrid.sweepUploadOutbox(context.Background())
+	row, err = inner.FindByID(context.Background(), entry.ID)
+	require.NoError(t, err)
+	assert.True(t, row.HasObject)
+	files, _, err = hybrid.outbox.files()
+	require.NoError(t, err)
+	assert.Empty(t, files)
+}
+
+// TestHybridOutboxDoesNotReuploadDeletedLogs checks that deleting a pending log prevents its
+// payload from being uploaded later.
+func TestHybridOutboxDoesNotReuploadDeletedLogs(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	hybrid, _, objects := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	objects.PutErr = assert.AnError
+	entry := &Log{ID: "deleted-pending", Timestamp: time.Now().UTC(), Status: "success", InputHistory: `[{"role":"user","content":"delete this"}]`}
+	require.NoError(t, hybrid.CreateIfNotExists(context.Background(), entry))
+	waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+	require.NoError(t, hybrid.DeleteLog(context.Background(), entry.ID))
+	objects.PutErr = nil
+	hybrid.sweepUploadOutbox(context.Background())
+	assert.Zero(t, objects.Len())
+	files, _, err := hybrid.outbox.files()
+	require.NoError(t, err)
+	assert.Empty(t, files)
+}
+
+// TestHybridOutboxOlderQueuedFailureCannotOverwriteNewerUpload checks that an older queued failure
+// cannot replace a newer successful upload after its disk record is gone.
+func TestHybridOutboxOlderQueuedFailureCannotOverwriteNewerUpload(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	ctx := context.Background()
+	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "ordering.db")}, hybridTestLogger{})
+	require.NoError(t, err)
+	defer inner.Close(ctx)
+	outbox, err := newUploadOutboxFromEnv()
+	require.NoError(t, err)
+	objects := objectstore.NewInMemoryObjectStore()
+	hybrid := &HybridLogStore{inner: inner, objects: objects, prefix: "test", logger: hybridTestLogger{}, outbox: outbox, uploadQueue: make(chan *uploadWork, 2)}
+	entry := &Log{ID: "overlapping-uploads", Timestamp: time.Now().UTC(), Status: "success"}
+	require.NoError(t, inner.CreateIfNotExists(ctx, entry))
+	key := ObjectKey(hybrid.prefix, entry.Timestamp, entry.ID)
+	hybrid.enqueueRawUpload(entry.ID, entry.Timestamp, key, uploadKindLog, "", []byte(`{"output_message":"older"}`), nil)
+	hybrid.enqueueRawUpload(entry.ID, entry.Timestamp, key, uploadKindLog, "", []byte(`{"output_message":"newer"}`), nil)
+	older, newer := <-hybrid.uploadQueue, <-hybrid.uploadQueue
+	// Workers can be scheduled in a different order after receiving queue jobs.
+	hybrid.processUpload(newer)
+	assert.Nil(t, outbox.active[key].work, "completed payloads must not outlive their byte reservation")
+	objects.PutErr = assert.AnError
+	hybrid.processUpload(older)
+	objects.PutErr = nil
+	hybrid.sweepUploadOutbox(ctx)
+	payload, err := objects.Get(ctx, key)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"output_message":"newer"}`, string(payload))
+	assert.Zero(t, hybrid.pendingBytes.Load())
+	assert.Empty(t, outbox.active, "finished uploads must release their ordering metadata")
+}
+
+// TestHybridOutboxRetriesRespectUploadMemoryBudget checks that disk retries defer while live
+// uploads reserve the full memory budget.
+func TestHybridOutboxRetriesRespectUploadMemoryBudget(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	hybrid, inner, objects := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	objects.PutErr = assert.AnError
+	entry := &Log{ID: "retry-budget", Timestamp: time.Now().UTC(), Status: "success", InputHistory: `[{"role":"user","content":"pending"}]`}
+	require.NoError(t, hybrid.CreateIfNotExists(context.Background(), entry))
+	waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+	objects.PutErr = nil
+	hybrid.pendingBytes.Store(defaultMaxUploadQueueBytes)
+	hybrid.sweepUploadOutbox(context.Background())
+	assert.Zero(t, objects.Len(), "disk retries must wait while live uploads consume the memory budget")
+	files, _, err := hybrid.outbox.files()
+	require.NoError(t, err)
+	assert.Len(t, files, 1)
+	hybrid.pendingBytes.Store(0)
+	hybrid.sweepUploadOutbox(context.Background())
+	row, err := inner.FindByID(context.Background(), entry.ID)
+	require.NoError(t, err)
+	assert.True(t, row.HasObject)
+	assert.Zero(t, hybrid.pendingBytes.Load())
+}
+
+type outboxBlockingObjectStore struct {
+	*objectstore.InMemoryObjectStore
+	blockedKey string
+	started    chan struct{}
+	release    chan struct{}
+}
+
+// Put pauses the selected object write until the test releases it or the context is canceled.
+func (s *outboxBlockingObjectStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
+	if key == s.blockedKey {
+		close(s.started)
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return s.InMemoryObjectStore.Put(ctx, key, data, tags)
+}
+
+// TestHybridOutboxDisabledKeepsUploadsIndependent checks that disabled outboxes add no
+// serialization between uploads sharing a lock stripe.
+func TestHybridOutboxDisabledKeepsUploadsIndependent(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, "")
+	hybrid, inner, objects := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ts := time.Now().UTC()
+	firstKey := ObjectKey(hybrid.prefix, ts, "blocked-upload")
+	otherID := ""
+	for i := 0; ; i++ {
+		candidate := fmt.Sprintf("independent-%d", i)
+		if hybrid.uploadLock(ObjectKey(hybrid.prefix, ts, candidate)) == hybrid.uploadLock(firstKey) {
+			otherID = candidate
+			break
+		}
+	}
+	blocked := &outboxBlockingObjectStore{InMemoryObjectStore: objects, blockedKey: firstKey, started: make(chan struct{}), release: make(chan struct{})}
+	hybrid.objects = blocked
+	defer close(blocked.release)
+	for _, id := range []string{"blocked-upload", otherID} {
+		entry := &Log{ID: id, Timestamp: ts, Status: "success", InputHistory: `[{"role":"user","content":"independent upload"}]`}
+		require.NoError(t, hybrid.CreateIfNotExists(context.Background(), entry))
+		if id == "blocked-upload" {
+			select {
+			case <-blocked.started:
+			case <-time.After(time.Second):
+				t.Fatal("first upload never started")
+			}
+		}
+	}
+	assert.Eventually(t, func() bool {
+		row, err := inner.FindByID(context.Background(), otherID)
+		return err == nil && row.HasObject
+	}, time.Second, 10*time.Millisecond, "a blocked S3 upload must not serialize unrelated uploads when outbox is disabled")
+}
+
+// TestHybridOutboxCancelledRetryRetainsFileAndReleasesBudget checks that a canceled retry preserves
+// pending work and releases its memory reservation.
+func TestHybridOutboxCancelledRetryRetainsFileAndReleasesBudget(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	hybrid, _, objects := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	objects.PutErr = assert.AnError
+	entry := &Log{ID: "cancel-retry", Timestamp: time.Now().UTC(), Status: "success", InputHistory: `[{"role":"user","content":"keep pending"}]`}
+	require.NoError(t, hybrid.CreateIfNotExists(context.Background(), entry))
+	waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+	objects.PutErr = nil
+	blocked := &outboxBlockingObjectStore{InMemoryObjectStore: objects, blockedKey: ObjectKey(hybrid.prefix, entry.Timestamp, entry.ID), started: make(chan struct{}), release: make(chan struct{})}
+	hybrid.objects = blocked
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		hybrid.sweepUploadOutbox(ctx)
+		close(done)
+	}()
+	select {
+	case <-blocked.started:
+	case <-time.After(time.Second):
+		t.Fatal("retry never reached object storage")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("retry ignored cancellation")
+	}
+	files, _, err := hybrid.outbox.files()
+	require.NoError(t, err)
+	assert.Len(t, files, 1)
+	assert.Zero(t, hybrid.pendingBytes.Load())
+	assert.Zero(t, objects.Len())
+}
+
 func TestHybrid_DeleteLog(t *testing.T) {
 	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
@@ -1508,7 +2102,8 @@ func newTestHybridWithExclude(t *testing.T, excludeFields []string) (*HybridLogS
 	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "hybrid.db")}, hybridTestLogger{})
 	require.NoError(t, err)
 	objStore := objectstore.NewInMemoryObjectStore()
-	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, excludeFields, nil)
+	hybrid, err := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, excludeFields, nil)
+	require.NoError(t, err)
 	return hybrid, inner, objStore
 }
 
@@ -1622,4 +2217,659 @@ func TestHybrid_ExcludeFields_UnknownFieldIgnored(t *testing.T) {
 
 	// Standard behaviour: one object uploaded, input_history offloaded.
 	assert.Equal(t, 1, objStore.Len(), "upload should succeed with unknown exclude field")
+}
+
+type outboxAgentReadBarrier struct {
+	LogStore
+	blockNext atomic.Bool
+	loaded    chan struct{}
+	resume    chan struct{}
+}
+
+// FindAgentLog pauses one database read after loading the row so tests can interleave recovery and
+// an update.
+func (s *outboxAgentReadBarrier) FindAgentLog(ctx context.Context, id string) (*AgentLog, error) {
+	row, err := s.LogStore.FindAgentLog(ctx, id)
+	if err == nil && s.blockNext.CompareAndSwap(true, false) {
+		close(s.loaded)
+		select {
+		case <-s.resume:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return row, err
+}
+
+// TestHybridOutboxAgentUpdateRacingRecoveryPreservesFullRequest checks that an update rereads
+// recovered state before merging a body change.
+func TestHybridOutboxAgentUpdateRacingRecoveryPreservesFullRequest(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	hybrid, inner, objects := newTestHybrid(t)
+	ctx := context.Background()
+	defer hybrid.Close(ctx)
+	objects.PutErr = assert.AnError
+	requestBody := `{"input":"` + strings.Repeat("a", maxA2APayloadPreviewRunes+100) + `"}`
+	responseBody := `{"output":"initial"}`
+	entry := &AgentLog{ID: "review-recovery-update", Timestamp: time.Now().UTC(), RecordKind: "request", Status: "success", Operation: "SendMessage", AgentName: "fixture", RequestID: "review-request", RequestBody: &requestBody, ResponseBody: &responseBody}
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+	barrier := &outboxAgentReadBarrier{LogStore: inner, loaded: make(chan struct{}), resume: make(chan struct{})}
+	barrier.blockNext.Store(true)
+	hybrid.inner = barrier
+	objects.PutErr = nil
+	updated := make(chan error, 1)
+	go func() {
+		updated <- hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{"response_body": `{"output":"updated"}`})
+	}()
+	select {
+	case <-barrier.loaded:
+	case <-time.After(time.Second):
+		close(barrier.resume)
+		t.Fatal("update did not load its database snapshot")
+	}
+	// Recovery completes after the updater read has_object=false, before it reads the outbox.
+	hybrid.sweepUploadOutbox(ctx)
+	close(barrier.resume)
+	require.NoError(t, <-updated)
+	waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.RequestBody)
+	t.Logf("original request bytes=%d; recovered request bytes=%d", len(requestBody), len(*found.RequestBody))
+	assert.Equal(t, requestBody, *found.RequestBody, "a concurrent update must not replace a recovered full request with its DB preview")
+}
+
+// TestHybridOutboxQueueOverflowSpoolsWithoutWaitingForUnrelatedS3Put checks that disk persistence
+// proceeds while a colliding network upload is blocked.
+func TestHybridOutboxQueueOverflowSpoolsWithoutWaitingForUnrelatedS3Put(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	ctx := context.Background()
+	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "review.db")}, hybridTestLogger{})
+	require.NoError(t, err)
+	defer inner.Close(ctx)
+	outbox, err := newUploadOutboxFromEnv()
+	require.NoError(t, err)
+	objects := objectstore.NewInMemoryObjectStore()
+	hybrid := &HybridLogStore{inner: inner, objects: objects, prefix: "test", logger: hybridTestLogger{}, outbox: outbox, uploadQueue: make(chan *uploadWork)}
+	ts := time.Now().UTC()
+	firstID := "review-blocked-put"
+	firstKey := ObjectKey(hybrid.prefix, ts, firstID)
+	otherID, otherKey := "", ""
+	for i := 0; ; i++ {
+		otherID = fmt.Sprintf("review-unrelated-%d", i)
+		otherKey = ObjectKey(hybrid.prefix, ts, otherID)
+		if hybrid.uploadLock(otherKey) == hybrid.uploadLock(firstKey) {
+			break
+		}
+	}
+	for _, id := range []string{firstID, otherID} {
+		require.NoError(t, inner.CreateIfNotExists(ctx, &Log{ID: id, Timestamp: ts, Status: "success"}))
+	}
+	blocked := &outboxBlockingObjectStore{InMemoryObjectStore: objects, blockedKey: firstKey, started: make(chan struct{}), release: make(chan struct{})}
+	hybrid.objects = blocked
+	first := &uploadWork{logID: firstID, timestamp: ts, key: firstKey, kind: uploadKindLog, queuedAt: ts, payload: []byte(`{"input_history":"full original"}`)}
+	outbox.trackUpload(first)
+	hybrid.pendingBytes.Add(int64(len(first.payload)))
+	firstDone := make(chan struct{})
+	go func() { hybrid.processUpload(first); close(firstDone) }()
+	<-blocked.started
+	spooled := make(chan struct{})
+	go func() {
+		hybrid.enqueueRawUpload(otherID, ts, otherKey, uploadKindLog, "", []byte(`{"input_history":"must reach disk"}`), nil)
+		close(spooled)
+	}()
+	completed := false
+	select {
+	case <-spooled:
+		completed = true
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(blocked.release)
+	<-firstDone
+	if !completed {
+		<-spooled
+	}
+	assert.True(t, completed, "queue-overflow spooling must not wait for an unrelated blocked network upload")
+}
+
+// TestHybridOutboxDeleteDuringRetryDoesNotResurrectObject checks remote cleanup when a log is
+// deleted during an in-flight retry, including failed deletions.
+func TestHybridOutboxDeleteDuringRetryDoesNotResurrectObject(t *testing.T) {
+	for _, deleteFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("delete-fails=%t", deleteFails), func(t *testing.T) {
+			t.Setenv(uploadOutboxDirEnv, t.TempDir())
+			t.Setenv(uploadOutboxMaxBytesEnv, "")
+			hybrid, _, objects := newTestHybrid(t)
+			ctx := context.Background()
+			defer hybrid.Close(ctx)
+			objects.PutErr = assert.AnError
+			entry := &Log{ID: "review-delete-during-retry", Timestamp: time.Now().UTC(), Status: "success", InputHistory: `[{"role":"user","content":"delete my content"}]`}
+			require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+			waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+			objects.PutErr = nil
+			blocked := &outboxBlockingObjectStore{InMemoryObjectStore: objects, blockedKey: ObjectKey(hybrid.prefix, entry.Timestamp, entry.ID), started: make(chan struct{}), release: make(chan struct{})}
+			deletes := &outboxDeleteFailStore{ObjectStore: blocked}
+			deletes.fail.Store(deleteFails)
+			hybrid.objects = deletes
+			retried := make(chan struct{})
+			go func() { hybrid.sweepUploadOutbox(ctx); close(retried) }()
+			<-blocked.started
+			deleteErr := hybrid.DeleteLog(ctx, entry.ID)
+			close(blocked.release)
+			<-retried
+			require.NoError(t, deleteErr)
+			if deleteFails {
+				assert.Equal(t, 1, objects.Len(), "failed remote deletion leaves an object to clean up")
+				pending, err := hybrid.outbox.read(hybrid.outbox.deletionPath(blocked.blockedKey))
+				require.NoError(t, err)
+				assert.JSONEq(t, `null`, string(pending.payload), "cleanup must not retain deleted request content")
+				deletes.fail.Store(false)
+			}
+			// Retry any failed remote cleanup without putting the deleted payload again.
+			hybrid.sweepUploadOutbox(ctx)
+			files, _, err := hybrid.outbox.files()
+			require.NoError(t, err)
+			assert.Empty(t, files)
+			assert.Zero(t, objects.Len(), "a deleted log must not leave an object written by its disk retry")
+		})
+	}
+}
+
+// TestHybridOutboxAgentStatusUpdateKeepsPendingPayload checks that a scalar status update does not
+// discard a pending agent body.
+func TestHybridOutboxAgentStatusUpdateKeepsPendingPayload(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	hybrid, _, objects := newTestHybrid(t)
+	ctx := context.Background()
+	defer hybrid.Close(ctx)
+	objects.PutErr = assert.AnError
+	requestBody := `{"input":"` + strings.Repeat("a", maxA2APayloadPreviewRunes+100) + `"}`
+	entry := &AgentLog{ID: "review-status-update", Timestamp: time.Now().UTC(), RecordKind: "request", Status: "processing", Operation: "SendMessage", AgentName: "fixture", RequestID: "review-status-request", RequestBody: &requestBody}
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{"status": "error"}))
+	objects.PutErr = nil
+	hybrid.sweepUploadOutbox(ctx)
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.True(t, found.HasObject, "updating scalar status must not discard the only full request payload")
+	assert.Equal(t, 1, objects.Len())
+}
+
+// Each upload occupies its worker until the sweep ends, simulating an outage
+// whose slow failures exceed one cycle's retry budget.
+type outboxSlowObjectStore struct {
+	*objectstore.InMemoryObjectStore
+	attempts chan string
+}
+
+// Put records an attempted key and blocks until the sweep ends to simulate slow storage failures.
+func (s *outboxSlowObjectStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
+	s.attempts <- key
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestHybridOutboxRetryRotationDoesNotStarveLaterFiles checks that successive sweeps reach later
+// files when slow failures consume each cycle.
+func TestHybridOutboxRetryRotationDoesNotStarveLaterFiles(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	hybrid, inner, objects := newTestHybrid(t)
+	ctx := context.Background()
+	defer hybrid.Close(ctx)
+	slow := &outboxSlowObjectStore{InMemoryObjectStore: objects, attempts: make(chan string, 100)}
+	hybrid.objects = slow
+	ts := time.Now().UTC()
+	locks := make(map[any]bool)
+	for i := 0; len(locks) < 4*defaultUploadWorkers; i++ {
+		id := fmt.Sprintf("rotation-%d", i)
+		key := ObjectKey(hybrid.prefix, ts, id)
+		lock := hybrid.uploadLock(key)
+		if locks[lock] {
+			continue
+		}
+		locks[lock] = true
+		require.NoError(t, inner.CreateIfNotExists(ctx, &Log{ID: id, Timestamp: ts, Status: "success"}))
+		require.NoError(t, hybrid.outbox.save(&uploadWork{logID: id, key: key, timestamp: ts, queuedAt: ts, payload: []byte(`{"input_history":"pending"}`)}))
+	}
+	seen := make(map[string]bool)
+	for range 3 {
+		cycle, cancel := context.WithTimeout(ctx, 3*time.Second)
+		done := make(chan struct{})
+		go func() { hybrid.sweepUploadOutbox(cycle); close(done) }()
+		for range defaultUploadWorkers {
+			select {
+			case key := <-slow.attempts:
+				seen[key] = true
+			case <-cycle.Done():
+				t.Error("retry workers did not reach object storage")
+			}
+		}
+		cancel()
+		<-done
+		for len(slow.attempts) > 0 {
+			seen[<-slow.attempts] = true
+		}
+	}
+	assert.GreaterOrEqual(t, len(seen), 2*defaultUploadWorkers, "each sweep must resume after prior attempts, even when older uploads stay slow")
+	files, _, err := hybrid.outbox.files()
+	require.NoError(t, err)
+	assert.Len(t, files, 4*defaultUploadWorkers, "failed retries must retain their files")
+	assert.Zero(t, hybrid.pendingBytes.Load())
+}
+
+type outboxDeleteFailStore struct {
+	objectstore.ObjectStore
+	fail atomic.Bool
+}
+
+// Delete injects a remote deletion failure while enabled, then delegates to the wrapped object
+// store.
+func (s *outboxDeleteFailStore) Delete(ctx context.Context, key string) error {
+	if s.fail.Load() {
+		return assert.AnError
+	}
+	return s.ObjectStore.Delete(ctx, key)
+}
+
+// DeleteBatch injects a batch deletion failure while enabled, then delegates to the wrapped object
+// store.
+func (s *outboxDeleteFailStore) DeleteBatch(ctx context.Context, keys []string) error {
+	if s.fail.Load() {
+		return assert.AnError
+	}
+	return s.ObjectStore.DeleteBatch(ctx, keys)
+}
+
+// TestHybridOutboxExplicitDeletionRetiresPendingContent checks content removal and cleanup retries
+// for regular, MCP, and agent log deletions.
+func TestHybridOutboxExplicitDeletionRetiresPendingContent(t *testing.T) {
+	for _, kind := range []string{"log", "logs", "mcp", "agent"} {
+		for _, deleteFails := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/delete-fails=%t", kind, deleteFails), func(t *testing.T) {
+				t.Setenv(uploadOutboxDirEnv, t.TempDir())
+				t.Setenv(uploadOutboxMaxBytesEnv, "")
+				hybrid, _, objects := newTestHybrid(t)
+				ctx := context.Background()
+				defer hybrid.Close(ctx)
+				objects.PutErr = assert.AnError
+				id, ts := "erase-pending", time.Now().UTC()
+				secret := `{"private":"pending-sensitive-content"}`
+				switch kind {
+				case "log", "logs":
+					require.NoError(t, hybrid.CreateIfNotExists(ctx, &Log{ID: id, Timestamp: ts, Status: "success", InputHistory: secret}))
+				case "mcp":
+					require.NoError(t, hybrid.CreateMCPToolLog(ctx, &MCPToolLog{ID: id, Timestamp: ts, Status: "success", ToolName: "private-tool", Arguments: secret}))
+				case "agent":
+					require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{{ID: id, Timestamp: ts, RecordKind: "request", Status: "success", Operation: "SendMessage", RequestBody: &secret}})))
+				}
+				waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+				deletes := &outboxDeleteFailStore{ObjectStore: objects}
+				deletes.fail.Store(deleteFails)
+				hybrid.objects = deletes
+				switch kind {
+				case "log":
+					require.NoError(t, hybrid.DeleteLog(ctx, id))
+				case "logs":
+					require.NoError(t, hybrid.DeleteLogs(ctx, []string{id}))
+				case "mcp":
+					require.NoError(t, hybrid.DeleteMCPToolLogs(ctx, []string{id}))
+				case "agent":
+					require.NoError(t, hybrid.DeleteAgentLogs(ctx, []string{id}))
+				}
+				files, _, err := hybrid.outbox.files()
+				require.NoError(t, err)
+				if deleteFails {
+					require.Len(t, files, 1, "failed remote cleanup must remain retryable")
+					pending, err := hybrid.outbox.read(files[0].path)
+					require.NoError(t, err)
+					assert.JSONEq(t, `null`, string(pending.payload), "deletion must erase content immediately, retaining only cleanup metadata")
+					hybrid.sweepUploadOutbox(ctx)
+					files, _, err = hybrid.outbox.files()
+					require.NoError(t, err)
+					assert.Len(t, files, 1, "failed cleanup must survive another sweep")
+				} else {
+					assert.Empty(t, files, "successful deletion must immediately retire pending disk data")
+				}
+				deletes.fail.Store(false)
+				hybrid.sweepUploadOutbox(ctx)
+				files, _, err = hybrid.outbox.files()
+				require.NoError(t, err)
+				assert.Empty(t, files)
+				assert.Zero(t, objects.Len())
+			})
+		}
+	}
+}
+
+// TestHybridOutboxDeletionSurvivesEvictionAndRestart checks that cleanup identifiers survive
+// payload eviction and restart until the remote object can be deleted.
+func TestHybridOutboxDeletionSurvivesEvictionAndRestart(t *testing.T) {
+	for _, kind := range []string{"log", "logs", "mcp", "agent"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Setenv(uploadOutboxDirEnv, t.TempDir())
+			t.Setenv(uploadOutboxMaxBytesEnv, "")
+			ctx := context.Background()
+			dbPath := filepath.Join(t.TempDir(), "cleanup.db")
+			inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: dbPath}, hybridTestLogger{})
+			require.NoError(t, err)
+			objects := objectstore.NewInMemoryObjectStore()
+			deletes := &outboxDeleteFailStore{ObjectStore: objects}
+			hybrid, err := newHybridLogStore(inner, deletes, "test", hybridTestLogger{}, nil, nil)
+			require.NoError(t, err)
+			defer func() { hybrid.Close(ctx) }()
+			id, ts := "deleted-before-overflow", time.Now().UTC()
+			secret := `{"private":"content already uploaded to object storage"}`
+			switch kind {
+			case "log", "logs":
+				require.NoError(t, hybrid.CreateIfNotExists(ctx, &Log{ID: id, Timestamp: ts, Status: "success", InputHistory: secret}))
+			case "mcp":
+				require.NoError(t, hybrid.CreateMCPToolLog(ctx, &MCPToolLog{ID: id, Timestamp: ts, Status: "success", ToolName: "private-tool", Arguments: secret}))
+			case "agent":
+				require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{{ID: id, Timestamp: ts, RecordKind: "request", Status: "success", Operation: "SendMessage", RequestBody: &secret}})))
+			}
+			waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+			require.Equal(t, 1, objects.Len(), "the deleted log must have a real remote object")
+			deletes.fail.Store(true)
+			switch kind {
+			case "log":
+				require.NoError(t, hybrid.DeleteLog(ctx, id))
+			case "logs":
+				require.NoError(t, hybrid.DeleteLogs(ctx, []string{id}))
+			case "mcp":
+				require.NoError(t, hybrid.DeleteMCPToolLogs(ctx, []string{id}))
+			case "agent":
+				require.NoError(t, hybrid.DeleteAgentLogs(ctx, []string{id}))
+			}
+			files, _, err := hybrid.outbox.files()
+			require.NoError(t, err)
+			require.Len(t, files, 1)
+			cleanupPath := files[0].path
+			cleanup, err := hybrid.outbox.read(cleanupPath)
+			require.NoError(t, err)
+			require.JSONEq(t, `null`, string(cleanup.payload))
+			present, err := hybrid.uploadLogPresent(ctx, cleanup)
+			require.NoError(t, err)
+			require.False(t, present, "the database no longer retains the remote object's identifier")
+			hybrid.outbox.maxBytes = 1
+			hybrid.sweepUploadOutbox(ctx)
+			assert.FileExists(t, cleanupPath, "even a cleanup record larger than the budget must be retained")
+			age := ts.Add(-time.Hour)
+			require.NoError(t, os.Chtimes(cleanupPath, age, age))
+
+			// Fill the payload budget after deletion failed. Cleanup is the oldest
+			// file, but only the older of these two payloads should be evicted.
+			objects.PutErr = assert.AnError
+			for i := range 2 {
+				require.NoError(t, hybrid.CreateIfNotExists(ctx, &Log{ID: fmt.Sprintf("overflow-%d", i), Timestamp: ts, Status: "success", InputHistory: secret}))
+			}
+			waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+			oldPath := hybrid.outbox.path(ObjectKey("test", ts, "overflow-0"))
+			newPath := hybrid.outbox.path(ObjectKey("test", ts, "overflow-1"))
+			for i, path := range []string{oldPath, newPath} {
+				mtime := age.Add(time.Duration(i+1) * time.Minute)
+				require.NoError(t, os.Chtimes(path, mtime, mtime))
+			}
+			info, err := os.Stat(newPath)
+			require.NoError(t, err)
+			t.Setenv(uploadOutboxMaxBytesEnv, fmt.Sprint(info.Size()))
+			hybrid.outbox.maxBytes = info.Size()
+			hybrid.sweepUploadOutbox(ctx)
+			assert.FileExists(t, cleanupPath, "payload eviction must retain failed remote deletion identifiers")
+			assert.NoFileExists(t, oldPath)
+			assert.FileExists(t, newPath)
+			assert.Equal(t, int64(1), hybrid.DroppedUploads())
+
+			require.NoError(t, hybrid.Close(ctx))
+			inner, err = newSqliteLogStore(ctx, &SQLiteConfig{Path: dbPath}, hybridTestLogger{})
+			require.NoError(t, err)
+			hybrid, err = newHybridLogStore(inner, deletes, "test", hybridTestLogger{}, nil, nil)
+			require.NoError(t, err)
+			hybrid.sweepUploadOutbox(ctx)
+			assert.FileExists(t, cleanupPath, "failed cleanup must survive restart and another quota sweep")
+			assert.FileExists(t, newPath, "cleanup metadata must not consume the upload payload budget")
+			require.Equal(t, 1, objects.Len())
+			objects.PutErr = nil
+			deletes.fail.Store(false)
+			hybrid.sweepUploadOutbox(ctx)
+			_, err = objects.Get(ctx, cleanup.key)
+			assert.Error(t, err, "recovery must delete the object whose database row is gone")
+			found, err := inner.FindByID(ctx, "overflow-1")
+			require.NoError(t, err)
+			assert.True(t, found.HasObject)
+			assert.Equal(t, 1, objects.Len(), "only the surviving upload should remain in object storage")
+			files, _, err = hybrid.outbox.files()
+			require.NoError(t, err)
+			assert.Empty(t, files)
+		})
+	}
+}
+
+// TestUploadOutboxDeletionCannotBeReplacedOrRemovedByUpload checks that late upload completions
+// cannot erase or replace protected deletion metadata.
+func TestUploadOutboxDeletionCannotBeReplacedOrRemovedByUpload(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "1")
+	outbox, err := newUploadOutboxFromEnv()
+	require.NoError(t, err)
+	work := &uploadWork{logID: "deleted", timestamp: time.Now().UTC(), key: "test/deleted", payload: []byte(`{"secret":"must be erased"}`), status: "success", tags: map[string]string{"private": "tag"}}
+	outbox.trackUpload(work)
+	defer outbox.finishUpload(work)
+	require.NoError(t, outbox.save(work))
+	cleanup := *work
+	cleanup.deleteOnly = true
+	newer := *work
+	newer.queuedAt = work.queuedAt.Add(time.Second)
+	outbox.trackUpload(&newer)
+	defer outbox.finishUpload(&newer)
+	// Even a newer queued generation cannot prevent an explicit deletion.
+	require.NoError(t, outbox.save(&cleanup))
+	assert.NoFileExists(t, outbox.path(work.key))
+	assert.Same(t, outbox.fileLock(outbox.path(work.key)), outbox.fileLock(outbox.deletionPath(work.key)))
+	hybrid := &HybridLogStore{outbox: outbox}
+	assert.Same(t, hybrid.uploadLock(work.key), hybrid.outboxFileLock(outbox.deletionPath(work.key)))
+	// A delayed failure must not restore content; a delayed success must not
+	// erase the outstanding cleanup record, regardless of its queue timestamp.
+	require.NoError(t, outbox.save(&newer))
+	require.NoError(t, outbox.removeThrough(&newer))
+	pending, err := outbox.read(outbox.deletionPath(work.key))
+	require.NoError(t, err)
+	assert.True(t, pending.deleteOnly)
+	assert.JSONEq(t, `null`, string(pending.payload))
+	assert.Empty(t, pending.tags)
+	assert.Empty(t, pending.status)
+	files, size, err := outbox.files()
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	assert.True(t, files[0].deleteOnly)
+	assert.Zero(t, size, "deletion identifiers do not consume the upload budget")
+	assert.Equal(t, os.FileMode(0600), files[0].info.Mode().Perm())
+	require.NoError(t, outbox.removeThrough(pending))
+	assert.NoFileExists(t, outbox.deletionPath(work.key))
+}
+
+// TestHybridOutboxSameKeyOverflowSurvivesOlderUpload checks that an older upload completion
+// preserves a newer snapshot written by queue overflow.
+func TestHybridOutboxSameKeyOverflowSurvivesOlderUpload(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("older-put-fails=%t", failed), func(t *testing.T) {
+			t.Setenv(uploadOutboxDirEnv, t.TempDir())
+			t.Setenv(uploadOutboxMaxBytesEnv, "")
+			ctx := context.Background()
+			inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "samekey.db")}, hybridTestLogger{})
+			require.NoError(t, err)
+			defer inner.Close(ctx)
+			outbox, err := newUploadOutboxFromEnv()
+			require.NoError(t, err)
+			objects := objectstore.NewInMemoryObjectStore()
+			if failed {
+				objects.PutErr = assert.AnError
+			}
+			id, ts := "same-key-overflow", time.Now().UTC()
+			key := ObjectKey("test", ts, id)
+			require.NoError(t, inner.CreateIfNotExists(ctx, &Log{ID: id, Timestamp: ts, Status: "success"}))
+			blocked := &outboxBlockingObjectStore{InMemoryObjectStore: objects, blockedKey: key, started: make(chan struct{}), release: make(chan struct{})}
+			hybrid := &HybridLogStore{inner: inner, objects: blocked, prefix: "test", logger: hybridTestLogger{}, outbox: outbox, uploadQueue: make(chan *uploadWork)}
+			older := &uploadWork{logID: id, timestamp: ts, queuedAt: ts, key: key, payload: []byte(`{"input_history":"older"}`)}
+			outbox.trackUpload(older)
+			hybrid.pendingBytes.Add(int64(len(older.payload)))
+			done := make(chan struct{})
+			go func() { hybrid.processUpload(older); close(done) }()
+			<-blocked.started
+			spooled := make(chan struct{})
+			newer := []byte(`{"input_history":"newer full content"}`)
+			go func() { hybrid.enqueueRawUpload(id, ts, key, uploadKindLog, "", newer, nil); close(spooled) }()
+			select {
+			case <-spooled:
+			case <-time.After(time.Second):
+				close(blocked.release)
+				<-done
+				<-spooled
+				t.Fatal("same-key overflow waited for the network")
+			}
+			pending, readErr := outbox.read(outbox.path(key))
+			close(blocked.release)
+			<-done
+			require.NoError(t, readErr)
+			assert.JSONEq(t, string(newer), string(pending.payload))
+			pending, err = outbox.read(outbox.path(key))
+			require.NoError(t, err)
+			assert.JSONEq(t, string(newer), string(pending.payload), "older completion must neither remove nor replace newer disk data")
+			hybrid.objects = objects
+			objects.PutErr = nil
+			hybrid.sweepUploadOutbox(ctx)
+			stored, err := objects.Get(ctx, key)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(newer), string(stored))
+			assert.Zero(t, hybrid.pendingBytes.Load())
+			assert.Empty(t, outbox.active)
+		})
+	}
+}
+
+// TestHybridOutboxMCPStatusChangePreservesPayloadAndCurrentMetadata checks that retry combines full
+// pending MCP arguments with the current database status.
+func TestHybridOutboxMCPStatusChangePreservesPayloadAndCurrentMetadata(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	hybrid, inner, objects := newTestHybrid(t)
+	ctx := context.Background()
+	defer hybrid.Close(ctx)
+	objects.PutErr = assert.AnError
+	arguments := map[string]any{"input": strings.Repeat("full-argument-", 100)}
+	entry := &MCPToolLog{ID: "mcp-status-change", Timestamp: time.Now().UTC(), Status: "processing", ToolName: "tool", ArgumentsParsed: arguments}
+	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
+	waitForUploads(t, func() bool { return hybrid.pendingBytes.Load() == 0 })
+	// Represents a newer DB state committed before its replacement upload.
+	require.NoError(t, inner.UpdateMCPToolLog(ctx, entry.ID, map[string]interface{}{"status": "error"}))
+	objects.PutErr = nil
+	hybrid.sweepUploadOutbox(ctx)
+	found, err := hybrid.FindMCPToolLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.True(t, found.HasObject)
+	assert.Equal(t, "error", found.Status)
+	assert.Equal(t, arguments, found.ArgumentsParsed)
+}
+
+// TestHybridOutboxAgentUpdateCannotReplaceQueuedFullPayloadWithPreview checks that successive agent
+// updates merge queued full bodies even when the queue overflows.
+func TestHybridOutboxAgentUpdateCannotReplaceQueuedFullPayloadWithPreview(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	ctx := context.Background()
+	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "queued.db")}, hybridTestLogger{})
+	require.NoError(t, err)
+	defer inner.Close(ctx)
+	outbox, err := newUploadOutboxFromEnv()
+	require.NoError(t, err)
+	objects := objectstore.NewInMemoryObjectStore()
+	hybrid := &HybridLogStore{inner: inner, objects: objects, prefix: "test", logger: hybridTestLogger{}, outbox: outbox, uploadQueue: make(chan *uploadWork, 2)}
+	request := strings.Repeat("full request ", maxA2APayloadPreviewRunes)
+	entry := &AgentLog{ID: "queued-agent", Timestamp: time.Now().UTC(), RecordKind: "request", Status: "processing", Operation: "SendMessage", RequestBody: &request}
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	// Both the initial request and its first update are still queued. The
+	// next partial update must merge the newest complete in-memory snapshot.
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{"status": "success", "response_body": `{"result":"done"}`}))
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{"event_body": `{"event":"last"}`}))
+	// The third version overflows the two-slot queue and reaches disk. Neither
+	// superseded queued version may replace it or retain an unaccounted payload.
+	hybrid.processUpload(<-hybrid.uploadQueue)
+	hybrid.processUpload(<-hybrid.uploadQueue)
+	assert.Empty(t, outbox.active)
+	hybrid.sweepUploadOutbox(ctx)
+	recovered, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, recovered.RequestBody)
+	assert.Equal(t, request, *recovered.RequestBody)
+	assert.Equal(t, "success", recovered.Status)
+	require.NotNil(t, recovered.ResponseBody)
+	require.NotNil(t, recovered.EventBody)
+	assert.JSONEq(t, `{"result":"done"}`, *recovered.ResponseBody)
+	assert.JSONEq(t, `{"event":"last"}`, *recovered.EventBody)
+}
+
+// TestHybridOutboxCancelledRetryDoesNotWaitForBusyUploadLock checks that an already-canceled retry
+// returns before waiting on network work.
+func TestHybridOutboxCancelledRetryDoesNotWaitForBusyUploadLock(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	hybrid, _, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	key := ObjectKey(hybrid.prefix, time.Now().UTC(), "busy-key")
+	lock := hybrid.uploadLock(key)
+	lock.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() { hybrid.retryOutboxFile(ctx, hybrid.outbox.path(key)); close(done) }()
+	returned := false
+	select {
+	case <-done:
+		returned = true
+	case <-time.After(200 * time.Millisecond):
+	}
+	lock.Unlock()
+	<-done
+	assert.True(t, returned, "a cancelled sweep must not wait behind live network I/O")
+}
+
+// TestHybridOutboxMCPUpdatesMergeLatestQueuedPayload checks that MCP updates prefer newer queued
+// content over an older disk snapshot.
+func TestHybridOutboxMCPUpdatesMergeLatestQueuedPayload(t *testing.T) {
+	t.Setenv(uploadOutboxDirEnv, t.TempDir())
+	t.Setenv(uploadOutboxMaxBytesEnv, "")
+	ctx := context.Background()
+	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "queuedmcp.db")}, hybridTestLogger{})
+	require.NoError(t, err)
+	defer inner.Close(ctx)
+	outbox, err := newUploadOutboxFromEnv()
+	require.NoError(t, err)
+	objects := objectstore.NewInMemoryObjectStore()
+	hybrid := &HybridLogStore{inner: inner, objects: objects, prefix: "test", logger: hybridTestLogger{}, outbox: outbox, uploadQueue: make(chan *uploadWork, 2)}
+	arguments := map[string]any{"input": strings.Repeat("full-argument-", 100)}
+	entry := &MCPToolLog{ID: "queued-mcp", Timestamp: time.Now().UTC(), ToolName: "tool", Status: "processing", ArgumentsParsed: arguments}
+	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
+	original := <-hybrid.uploadQueue
+	// An older disk snapshot can coexist with a newer queued update.
+	require.NoError(t, outbox.save(original))
+	hybrid.uploadQueue <- original
+	result := map[string]any{"output": "complete result"}
+	require.NoError(t, hybrid.UpdateMCPToolLog(ctx, entry.ID, MCPToolLog{Status: "success", ResultParsed: result}))
+	require.NoError(t, hybrid.UpdateMCPToolLog(ctx, entry.ID, MCPToolLog{MetadataParsed: map[string]any{"phase": "finished"}}))
+	hybrid.processUpload(<-hybrid.uploadQueue)
+	hybrid.processUpload(<-hybrid.uploadQueue)
+	hybrid.sweepUploadOutbox(ctx)
+	recovered, err := hybrid.FindMCPToolLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, arguments, recovered.ArgumentsParsed)
+	assert.Equal(t, result, recovered.ResultParsed)
+	assert.Equal(t, "success", recovered.Status)
+	assert.Equal(t, "finished", recovered.MetadataParsed["phase"])
+	assert.Empty(t, outbox.active)
+	assert.Zero(t, hybrid.pendingBytes.Load())
 }

@@ -84,13 +84,16 @@ func TestHybrid_ContentHiddenStripsDBRowAndSkipsHydration(t *testing.T) {
 	assert.Empty(t, found.ContentSummary)
 }
 
+// TestHybrid_ContentHiddenIgnoresExclusionList checks that hiding content also clears fields
+// normally kept in the database by the exclusion list.
 func TestHybrid_ContentHiddenIgnoresExclusionList(t *testing.T) {
 	ctx := context.Background()
 	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "hybrid.db")}, hybridTestLogger{})
 	require.NoError(t, err)
 	objStore := objectstore.NewInMemoryObjectStore()
 	// params is configured to stay DB-resident and out of the object payload.
-	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, []string{"params"}, nil)
+	hybrid, err := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, []string{"params"}, nil)
+	require.NoError(t, err)
 	defer hybrid.Close(ctx)
 
 	normal := newContentHiddenTestEntry("normal-1")

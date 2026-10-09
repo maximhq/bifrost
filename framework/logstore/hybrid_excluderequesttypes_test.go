@@ -13,12 +13,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// newTestHybridWithExcludedRequestTypes creates a hybrid store that keeps the selected request
+// types in the database.
 func newTestHybridWithExcludedRequestTypes(t *testing.T, requestTypes []string) (*HybridLogStore, LogStore, *objectstore.InMemoryObjectStore) {
 	t.Helper()
 	inner, err := newSqliteLogStore(context.Background(), &SQLiteConfig{Path: filepath.Join(t.TempDir(), "hybrid.db")}, hybridTestLogger{})
 	require.NoError(t, err)
 	objStore := objectstore.NewInMemoryObjectStore()
-	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, nil, requestTypes)
+	hybrid, err := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, nil, requestTypes)
+	require.NoError(t, err)
 	return hybrid, inner, objStore
 }
 

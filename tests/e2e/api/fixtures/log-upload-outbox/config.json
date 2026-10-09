@@ -1,0 +1,57 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "client": {
+    "enable_logging": true,
+    "disable_content_logging": false,
+    "log_retention_days": 1000,
+    "enforce_auth_on_inference": false,
+    "initial_pool_size": 100,
+    "allowed_origins": [
+      "*"
+    ]
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "/app/data/config.db"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "/app/data/logs.db"
+    },
+    "object_storage": {
+      "type": "s3",
+      "bucket": "bifrost-test-logs",
+      "region": "us-east-1",
+      "endpoint": "http://s3:8080",
+      "access_key_id": "local-test-access",
+      "secret_access_key": "local-test-secret",
+      "force_path_style": true,
+      "prefix": "logs",
+      "compress": false
+    }
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "local-test",
+          "value": "sk-local-test-only",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://provider:8080/v1",
+        "allow_private_network": true,
+        "max_retries": 0
+      }
+    }
+  }
+}

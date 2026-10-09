@@ -5,8 +5,25 @@ package objectstore
 
 import (
 	"context"
+	"errors"
 	"time"
+
+	"cloud.google.com/go/storage"
+	"github.com/aws/smithy-go"
 )
+
+// ErrNotFound indicates that the requested object does not exist.
+var ErrNotFound = errors.New("objectstore: object not found")
+
+// IsNotFound reports whether an object read failed because the object is absent.
+// It recognizes wrapped errors from the in-memory, S3, and GCS stores.
+func IsNotFound(err error) bool {
+	if errors.Is(err, ErrNotFound) || errors.Is(err, storage.ErrObjectNotExist) {
+		return true
+	}
+	var apiErr smithy.APIError
+	return errors.As(err, &apiErr) && (apiErr.ErrorCode() == "NoSuchKey" || apiErr.ErrorCode() == "NotFound")
+}
 
 // ObjectInfo describes a stored object returned by listing operations.
 type ObjectInfo struct {
@@ -21,6 +38,7 @@ type ObjectStore interface {
 	Put(ctx context.Context, key string, data []byte, tags map[string]string) error
 
 	// Get retrieves and decompresses data for the given key.
+	// Use IsNotFound to distinguish a missing object from other read failures.
 	Get(ctx context.Context, key string) ([]byte, error)
 
 	// ListByPrefix returns objects matching the given prefix with metadata.

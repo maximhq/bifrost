@@ -360,6 +360,64 @@ Set `matview_refresh_interval` (Go duration string) to slow down refreshes when 
 
 Offload LLM request/response logs and MCP tool logs from the database to S3 or GCS. The database retains lightweight index records and fetches full payloads on demand. For MCP logs, the full tool log is stored in object storage and the database keeps dashboard/table fields plus a 200-character input preview.
 
+#### Retry failed uploads from disk
+
+Set `BIFROST_LOG_UPLOAD_OUTBOX_DIR` to enable a disk outbox for failed log
+uploads. This also applies to MCP tool logs, agent logs, and GCS object storage.
+
+```bash
+export BIFROST_LOG_UPLOAD_OUTBOX_DIR=/var/lib/bifrost/log-upload-outbox
+export BIFROST_LOG_UPLOAD_OUTBOX_MAX_BYTES=10000000000
+```
+
+| Environment variable | Description | Default |
+| --- | --- | --- |
+| `BIFROST_LOG_UPLOAD_OUTBOX_DIR` | Dedicated writable directory for failed uploads. An empty or unset value disables the outbox. | Disabled |
+| `BIFROST_LOG_UPLOAD_OUTBOX_MAX_BYTES` | Maximum combined size of pending upload files in bytes; excludes deletion records and must be a positive integer. | `10000000000` (10 GB) |
+
+Restart Bifrost after setting these variables. Every minute, a background task
+checks the pending upload size, deletes the oldest upload files until it is within the
+limit, and retries the remaining uploads. A file is removed after both the
+object upload and the database update succeed. Failed retries keep the file
+for the next attempt. Retries rotate through the pending files across sweeps so
+slow failures do not repeatedly block the same later files. Queue overflow is
+also saved to the outbox.
+Retry payloads share the live upload queue's memory budget. The existing
+1 GiB maximum upload payload size still applies.
+
+Use a private directory for each Bifrost instance. Mount it on a persistent
+volume to preserve pending uploads when recreating containers. The files contain
+request and response content and are created with permissions `0600`. An invalid
+size or unusable directory causes startup to fail. The limit is checked once per
+minute, so the directory can temporarily exceed it; eviction permanently discards
+the oldest pending payloads.
+
+If an agent log's full payload is lost through eviction or a failed disk write
+and is absent from object storage, later updates containing body fields fail.
+They do not apply other fields in the same update. Metadata-only updates, such
+as changing the status, continue to work.
+
+MCP tool log updates restore any pending or stored payload before merging new
+fields. If the remote object is missing and no pending payload remains, the
+update continues with the fields still available in the database. Other object
+storage read failures still fail the update.
+
+Explicitly deleting a log also removes its pending request/response content.
+If object deletion fails, the outbox retains only the identifiers needed to retry
+cleanup in separate `delete-*.json` files. These small records survive restarts
+and are excluded from size accounting and eviction. They are removed only after
+remote deletion succeeds, so the directory can exceed the configured upload
+budget while deletions are failing.
+
+Before disabling the outbox or rolling back to a version without it,
+let it drain or stop Bifrost and purge the dedicated directory; a disabled outbox
+does not process files left on disk. Purging abandons pending uploads and cleanup.
+
+Inference responses remain unaffected by object storage failures. Until a retry
+succeeds, the Logs UI shows the database preview; the full request and response
+become available after upload recovery. Without an outbox, failed uploads are
+dropped after any object storage SDK retries.
+
 #### AWS S3
 
 **Required IAM permissions**

@@ -4,9 +4,98 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"sort"
 	"testing"
+
+	"cloud.google.com/go/storage"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
+
+// TestIsNotFound distinguishes missing objects from unrelated storage failures,
+// including when either kind of error is wrapped by the object store or caller.
+func TestIsNotFound(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"sentinel", ErrNotFound, true},
+		{"s3-key", &types.NoSuchKey{}, true},
+		{"s3-not-found", &smithy.GenericAPIError{Code: "NotFound"}, true},
+		{"gcs-object", storage.ErrObjectNotExist, true},
+		{"s3-bucket", &types.NoSuchBucket{}, false},
+		{"gcs-bucket", storage.ErrBucketNotExist, false},
+		{"access-denied", &smithy.GenericAPIError{Code: "AccessDenied"}, false},
+		{"unavailable", &smithy.GenericAPIError{Code: "ServiceUnavailable"}, false},
+		{"credentials-file", &os.PathError{Op: "open", Path: "credentials.json", Err: os.ErrNotExist}, false},
+		{"error-text", fmt.Errorf("objectstore: object not found"), false},
+		{"cancelled", context.Canceled, false},
+		{"timeout", context.DeadlineExceeded, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsNotFound(tc.err); got != tc.want {
+				t.Fatalf("IsNotFound(%v) = %t, want %t", tc.err, got, tc.want)
+			}
+			if tc.err != nil {
+				wrapped := fmt.Errorf("fetch payload: %w", tc.err)
+				if got := IsNotFound(wrapped); got != tc.want {
+					t.Fatalf("IsNotFound(%v) = %t, want %t", wrapped, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestS3GetNotFound checks classification through the SDK's HTTP error decoding.
+func TestS3GetNotFound(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   bool
+	}{
+		{"missing-key", http.StatusNotFound, "<Error><Code>NoSuchKey</Code></Error>", true},
+		{"empty-not-found", http.StatusNotFound, "", true},
+		{"missing-bucket", http.StatusNotFound, "<Error><Code>NoSuchBucket</Code></Error>", false},
+		{"access-denied", http.StatusForbidden, "<Error><Code>AccessDenied</Code></Error>", false},
+		{"unavailable", http.StatusServiceUnavailable, "<Error><Code>ServiceUnavailable</Code></Error>", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/logs/missing.json" {
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/xml")
+				w.WriteHeader(tc.status)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer server.Close()
+			store := &S3ObjectStore{
+				bucket: "logs",
+				client: s3.New(s3.Options{
+					Region: "us-east-1", BaseEndpoint: aws.String(server.URL), UsePathStyle: true,
+					Credentials:      credentials.NewStaticCredentialsProvider("test", "test", ""),
+					RetryMaxAttempts: 1,
+				}),
+			}
+			_, err := store.Get(context.Background(), "missing.json")
+			if err == nil {
+				t.Fatal("expected Get to fail")
+			}
+			if got := IsNotFound(err); got != tc.want {
+				t.Fatalf("IsNotFound(%v) = %t, want %t", err, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestGzipRoundTrip(t *testing.T) {
 	original := []byte(`{"input_history":"[{\"role\":\"user\",\"content\":\"hello world\"}]","output_message":"{\"role\":\"assistant\",\"content\":\"hi there\"}"}`)
@@ -54,6 +143,7 @@ func TestEncodeTags(t *testing.T) {
 	}
 }
 
+// TestInMemoryObjectStore covers storage operations and missing-object errors.
 func TestInMemoryObjectStore(t *testing.T) {
 	ctx := context.Background()
 	store := NewInMemoryObjectStore()
@@ -83,8 +173,8 @@ func TestInMemoryObjectStore(t *testing.T) {
 
 	// Get missing key
 	_, err = store.Get(ctx, "missing")
-	if err == nil {
-		t.Fatal("expected error for missing key")
+	if !IsNotFound(err) {
+		t.Fatalf("expected missing-object error, got %v", err)
 	}
 
 	// Delete
