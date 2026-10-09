@@ -2656,7 +2656,6 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		// Haiku 5.5 is adaptive-only (#8155): the Haiku tier is no longer a
 		// blanket denylist.
 		{"claude-haiku-5-5", true},
-		{"claude-haiku-5-5-20261001", true},
 		{"global.anthropic.claude-haiku-5-5", true},
 		// Haiku 4.5 and 3.x Haiku stay budget_tokens-only.
 		{"claude-haiku-4-5", false},
@@ -2674,7 +2673,8 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{"claude-3-5-sonnet-20241022", false},
 		{"claude-3-opus", false},
 		{"claude-2.1", false},
-		// Fail-open: an unrecognized Claude id is assumed adaptive; a non-Claude id is not.
+		// Fail-open probe (synthetic id, not a real model): an unrecognized Claude id
+		// is assumed adaptive; a non-Claude id is not.
 		{"claude-newfamily-6", true},
 		{"gpt-4o-mini", false},
 		{"", false},
@@ -2868,9 +2868,8 @@ func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
 		// Sonnet 4.5 must NOT match the "sonnet-5" substring gate.
 		{"claude-sonnet-4-5", false},
 		{"claude-sonnet-4-5-20250929", false},
-		// Haiku 5.5 (#8155) and any unrecognized Claude id fail open to adaptive-only.
+		// Haiku 5.5 (#8155) and any unrecognized Claude id (synthetic probe) fail open to adaptive-only.
 		{"claude-haiku-5-5", true},
-		{"claude-haiku-5-5-20261001", true},
 		{"global.anthropic.claude-haiku-5-5", true},
 		{"claude-newfamily-6", true},
 		// Legacy budget_tokens-only models and non-Claude ids.
@@ -3005,7 +3004,6 @@ func TestSupportsEffortParameter(t *testing.T) {
 		{"global.anthropic.claude-fable-5", true},
 		// Haiku 5.5 takes effort (#8155); the Haiku tier is no longer denied wholesale.
 		{"claude-haiku-5-5", true},
-		{"claude-haiku-5-5-20261001", true},
 		{"global.anthropic.claude-haiku-5-5", true},
 		{"claude-opus-4-8", true},
 		{"claude-opus-4.8-20260601", true},

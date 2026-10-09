@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -1406,6 +1408,12 @@ func ApplyDefaultEagerInputStreamingToRawBody(jsonBody []byte, provider schemas.
 	return jsonBody, nil
 }
 
+// claudeOpusSonnet4MinorRe matches a Claude Opus/Sonnet 4.x model id and
+// captures its minor version when one is spelled out. The minor is 1-3 digits
+// right after "-4" or ".4" and must not be followed by another digit, so a
+// 2025xxxx date run after a bare "-4" is not read as a minor.
+var claudeOpusSonnet4MinorRe = regexp.MustCompile(`(?:opus|sonnet)-4(?:[-.](\d{1,3})(?:\D|$))?`)
+
 // claudeOpusSonnet4Minor extracts the minor version of a Claude Opus/Sonnet 4.x
 // model from a lowercased model id. It returns (minor, true) when m names such a
 // model, or (0, false) otherwise. Adaptive thinking arrived at the .6 minor, so
@@ -1420,41 +1428,19 @@ func ApplyDefaultEagerInputStreamingToRawBody(jsonBody []byte, provider schemas.
 //	claude-opus-4                 -> 0   (bare 4.0, alias)
 //	claude-opus-4.6               -> 6
 //	claude-opus-4-16              -> 16
-//
-// A numeric run of 4+ digits immediately after the major (e.g. a 2025xxxx date)
-// is treated as no explicit minor (bare 4.0 -> minor 0).
 func claudeOpusSonnet4Minor(m string) (int, bool) {
-	for _, fam := range []string{"opus-4", "sonnet-4"} {
-		idx := strings.Index(m, fam)
-		if idx == -1 {
-			continue
-		}
-		rest := m[idx+len(fam):]
-		if rest == "" {
-			return 0, true // bare "…-4"
-		}
-		if rest[0] != '-' && rest[0] != '.' {
-			return 0, true // "…-4v1" etc. — treat as bare 4.0
-		}
-		// Read the numeric run right after the separator.
-		j := 1
-		for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
-			j++
-		}
-		digits := rest[1:j]
-		if digits == "" {
-			return 0, true // "…-4-v1" (separator then non-digit)
-		}
-		if len(digits) >= 4 {
-			return 0, true // date run (e.g. -20250514) — bare 4.0
-		}
-		n := 0
-		for _, c := range digits {
-			n = n*10 + int(c-'0')
-		}
-		return n, true
+	sub := claudeOpusSonnet4MinorRe.FindStringSubmatch(m)
+	if sub == nil {
+		return 0, false
 	}
-	return 0, false
+	if sub[1] == "" {
+		return 0, true // bare 4.0
+	}
+	n, err := strconv.Atoi(sub[1])
+	if err != nil {
+		return 0, true
+	}
+	return n, true
 }
 
 // isLegacyBudgetTokensOnlyModel reports whether a lowercased Claude model id
