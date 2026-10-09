@@ -252332,7 +252332,7 @@
     },
     {
       "name": "209. Custom OpenAI-compatible provider mints its bearer from oauth_key_config (custom provider oauth)",
-      "description": "Pins the oauth_key_config wire contract for custom providers on the openai base. A key may carry no value and instead an OAuth2 client_credentials (or RFC 7523 jwt_bearer) block; OpenAIProvider resolves it at method entry through core/providers/utils/tokencache (ResolveBearer), the same path Databricks OAuth M2M uses, and the management API stores the block with its secrets encrypted and returns it redacted.\n\nEach case stands up a run-scoped custom provider through the management API and deletes it afterwards, sweeping leftovers older than ten minutes. The token endpoint is deliberately unreachable (https://127.0.0.1:9), so the inference case pins the shape of the failure rather than a live IdP: the request must fail at token minting with the token endpoint named and no secret echoed, never with the upstream's 401 that a static-bearer path would produce.\n\nRed before the change: POST /keys without a value is refused (Key value must not be empty), so the OAuth key never exists and the chat case has nothing to mint from. Green after: the key saves, round-trips redacted, and the chat request fails at the mint. The two refusal cases pin that allowing a valueless OAuth key did not loosen the empty-key or half-block checks.\n\nRun with FEATURE=\"custom provider oauth\".",
+      "description": "Pins the oauth_key_config wire contract for custom providers on the openai base. A key may carry no value and instead an OAuth2 client_credentials (or RFC 7523 jwt_bearer) block; OpenAIProvider resolves it at method entry through core/providers/utils/tokencache (ResolveBearer), the same path Databricks OAuth M2M uses, and the management API stores the block with its secrets encrypted and returns it redacted.\n\nEach case stands up a run-scoped custom provider through the management API and deletes it afterwards, sweeping leftovers older than ten minutes. The token endpoint is deliberately unreachable (https://127.0.0.1:9), so the inference case pins the shape of the failure rather than a live IdP: the request must fail at token minting with the token endpoint named and no secret echoed, never with the upstream's 401 that a static-bearer path would produce.\n\nRed before the change: POST /keys without a value is refused (Key value must not be empty), so the OAuth key never exists and the chat case has nothing to mint from. Green after: the key saves, round-trips redacted, and the chat request fails at the mint. The refusal cases pin that allowing a valueless OAuth key did not loosen the empty-key, half-block, token_url, auth_style or signing_algorithm checks. The body-placement case pins that auth_style and audience stay readable while client_id, client_secret and every extra_params value come back masked, and that an update which sends those masks back resolves them to the stored values instead of clearing them. The jwt_bearer cases pin the RFC 7523 grant on the same path: the PEM is stored masked and never echoed, the claims round-trip readable, the chat request fails at the exchange (the assertion signed, the endpoint unreachable), and a literal private_key that is not an RSA or EC PEM is refused at save naming the field, so it never reaches a mint. Refusal rows carry [EXPECT-400] and mint rows [EXPECT-502] (the unreachable token endpoint is a bad gateway), which the collection-level status test must expect.\n\nRun with FEATURE=\"custom provider oauth\".",
       "item": [
         {
           "name": "openai custom provider oauth_key_config key is accepted, served redacted and mints before the upstream call [EXPECT-502]",
@@ -252759,6 +252759,615 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"name\": \"http-oauth\",\n  \"models\": [\n    \"*\"\n  ],\n  \"weight\": 1,\n  \"oauth_key_config\": {\n    \"grant_type\": \"client_credentials\",\n    \"token_url\": \"http://idp.example/oauth2/token\",\n    \"client_id\": \"harness-client-id\",\n    \"client_secret\": \"harness-client-secret\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{oauthKeyProvider}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{oauthKeyProvider}}",
+                "keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai custom provider client_credentials oauth_key_config with body placement, audience and extra_params round-trips masked and survives an update that sends the masks back",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-oauthkey-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.openai.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped OpenAI-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('oauthKeyProvider', provider);",
+                  "sweepStale(function () {",
+                  "  createProvider(provider, function (ok) {",
+                  "    if (!ok) { return; }",
+                  "    mgmt('POST', '/api/providers/' + encodeURIComponent(provider) + '/keys', '{\"name\":' + JSON.stringify(provider + '-oauth') + ',\"models\":[\"*\"],\"weight\":1,\"oauth_key_config\":' + \"{\\\"grant_type\\\":\\\"client_credentials\\\",\\\"token_url\\\":\\\"https://127.0.0.1:9/oauth/token\\\",\\\"client_id\\\":\\\"harness-client-id\\\",\\\"client_secret\\\":\\\"harness-client-secret\\\",\\\"auth_style\\\":\\\"body\\\",\\\"scopes\\\":[\\\"inference\\\",\\\"models.read\\\"],\\\"audience\\\":\\\"api://harness-llm-gateway\\\",\\\"extra_params\\\":{\\\"resource\\\":\\\"api://harness-resource\\\",\\\"tenant\\\":\\\"harness-literal-param\\\"}}\" + '}', function (err, res) {",
+                  "      pm.test('a client_credentials key with body placement, audience and extra_params is accepted', function () {",
+                  "        pm.expect(err).to.equal(null);",
+                  "        pm.expect(res.code, res.text()).to.equal(200);",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('oauthKeyProvider');",
+                  "function cleanup() {",
+                  "  if (!provider) { return; }",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "function checkRedacted(label, cfg, text) {",
+                  "  pm.expect(cfg, text).to.be.an('object');",
+                  "  pm.expect(cfg.grant_type, label).to.equal('client_credentials');",
+                  "  pm.expect(cfg.auth_style, label + ': auth_style is a plain enum and stays readable').to.equal('body');",
+                  "  pm.expect(cfg.audience, label + ': audience is a plain string and stays readable').to.equal('api://harness-llm-gateway');",
+                  "  pm.expect(cfg.scopes, label).to.eql(['inference', 'models.read']);",
+                  "  pm.expect(cfg.extra_params, label).to.be.an('object');",
+                  "  pm.expect(cfg.extra_params.resource, label + ': extra_params values are masked as literal strings').to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(cfg.extra_params.resource, label).to.not.equal('api://harness-resource');",
+                  "  pm.expect(cfg.extra_params.tenant, label).to.not.equal('harness-literal-param');",
+                  "  pm.expect(cfg.client_secret.value, label + ': client_secret must be redacted').to.not.equal('harness-client-secret');",
+                  "  pm.expect(text, label + ': no literal may be echoed').to.not.include('harness-client-secret');",
+                  "  pm.expect(text, label).to.not.include('api://harness-resource');",
+                  "  pm.expect(text, label).to.not.include('harness-literal-param');",
+                  "}",
+                  "var keys = [];",
+                  "pm.test('the stored key lists auth_style and audience readable with every credential-bearing field masked', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(200);",
+                  "  keys = (pm.response.json() || {}).keys || [];",
+                  "  pm.expect(keys, pm.response.text()).to.have.lengthOf(1);",
+                  "  checkRedacted('GET', keys[0].oauth_key_config, pm.response.text());",
+                  "});",
+                  "if (!keys.length || !keys[0].oauth_key_config) { cleanup(); return; }",
+                  "var stored = keys[0];",
+                  "// The update body is written field by field in a fixed order, never re-serialized from the parsed GET.",
+                  "// Masked SecretVars go back as their masked string; the server resolves a mask to the stored value.",
+                  "var cfg = stored.oauth_key_config;",
+                  "function sv(v) { return JSON.stringify(v && typeof v === 'object' ? v.value : v); }",
+                  "var update = '{\"name\":' + JSON.stringify(stored.name) + ',\"models\":[\"*\"],\"weight\":1,\"oauth_key_config\":{' +",
+                  "  '\"grant_type\":' + JSON.stringify(cfg.grant_type) +",
+                  "  ',\"token_url\":' + sv(cfg.token_url) +",
+                  "  ',\"client_id\":' + sv(cfg.client_id) +",
+                  "  ',\"client_secret\":' + sv(cfg.client_secret) +",
+                  "  ',\"auth_style\":' + JSON.stringify(cfg.auth_style) +",
+                  "  ',\"scopes\":[' + (cfg.scopes || []).map(function (x) { return JSON.stringify(x); }).join(',') + ']' +",
+                  "  ',\"audience\":' + JSON.stringify(cfg.audience) +",
+                  "  ',\"extra_params\":{\"resource\":' + JSON.stringify(cfg.extra_params.resource) + ',\"tenant\":' + JSON.stringify(cfg.extra_params.tenant) + '}}}';",
+                  "mgmt('PUT', '/api/providers/' + encodeURIComponent(provider) + '/keys/' + encodeURIComponent(stored.id), update, function (err, res) {",
+                  "  pm.test('an update that sends the masked GET body back is accepted (masks resolve to the stored values)', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "  });",
+                  "  if (err || res.code !== 200) { cleanup(); return; }",
+                  "  mgmt('GET', '/api/providers/' + encodeURIComponent(provider) + '/keys', null, function (err2, res2) {",
+                  "    pm.test('after the update the key still carries body placement, audience, scopes and masked extra_params', function () {",
+                  "      pm.expect(err2).to.equal(null);",
+                  "      pm.expect(res2.code, res2.text()).to.equal(200);",
+                  "      var after = (res2.json() || {}).keys || [];",
+                  "      pm.expect(after, res2.text()).to.have.lengthOf(1);",
+                  "      checkRedacted('PUT round-trip', after[0].oauth_key_config, res2.text());",
+                  "    });",
+                  "    cleanup();",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{oauthKeyProvider}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{oauthKeyProvider}}",
+                "keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai custom provider client_credentials oauth_key_config with an unknown auth_style is refused at save [EXPECT-400]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-oauthkey-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.openai.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped OpenAI-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('oauthKeyProvider', provider);",
+                  "sweepStale(function () { createProvider(provider, function () {}); });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('oauthKeyProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('auth_style outside header/body is refused with 400 naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('auth_style');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"query-auth-style\",\n  \"models\": [\n    \"*\"\n  ],\n  \"weight\": 1,\n  \"oauth_key_config\": {\n    \"grant_type\": \"client_credentials\",\n    \"token_url\": \"https://idp.example/oauth2/token\",\n    \"client_id\": \"harness-client-id\",\n    \"client_secret\": \"harness-client-secret\",\n    \"auth_style\": \"query\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{oauthKeyProvider}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{oauthKeyProvider}}",
+                "keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai custom provider jwt_bearer oauth_key_config key is accepted, served with private_key redacted and mints before the upstream call [EXPECT-502]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-oauthkey-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.openai.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped OpenAI-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('oauthKeyProvider', provider);",
+                  "sweepStale(function () {",
+                  "  createProvider(provider, function (ok) {",
+                  "    if (!ok) { return; }",
+                  "    mgmt('POST', '/api/providers/' + encodeURIComponent(provider) + '/keys', '{\"name\":' + JSON.stringify(provider + '-oauth') + ',\"models\":[\"*\"],\"weight\":1,\"oauth_key_config\":' + \"{\\\"grant_type\\\":\\\"jwt_bearer\\\",\\\"token_url\\\":\\\"https://127.0.0.1:9/oauth/token\\\",\\\"private_key\\\":\\\"-----BEGIN PRIVATE KEY-----\\\\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgPRGI14LQwtUx25rt\\\\n+1l02+TsYAezzwKs49T6XLM37ZmhRANCAAS06cNQlnL0IAiijz4O5dkVNBWh2Fl9\\\\nrjGqe06oXP1NPnB+MN9wC8Cizwjv6UqvGsOMvuu3CITydqgXaGnQlU50\\\\n-----END PRIVATE KEY-----\\\",\\\"issuer\\\":\\\"harness-issuer\\\",\\\"subject\\\":\\\"harness-subject\\\",\\\"audience\\\":\\\"https://127.0.0.1:9/oauth/token\\\",\\\"key_id\\\":\\\"harness-kid-1\\\",\\\"signing_algorithm\\\":\\\"ES256\\\",\\\"assertion_lifetime_seconds\\\":120,\\\"scopes\\\":[\\\"inference\\\"]}\" + '}', function (err, res) {",
+                  "      pm.test('a key with oauth_key_config and no value is accepted', function () {",
+                  "        pm.expect(err).to.equal(null);",
+                  "        pm.expect(res.code, res.text()).to.equal(200);",
+                  "      });",
+                  "      if (err || res.code !== 200) { return; }",
+                  "      mgmt('GET', '/api/providers/' + encodeURIComponent(provider) + '/keys', null, function (err2, res2) {",
+                  "        pm.test('the stored jwt_bearer key round-trips with its claims readable and the private key redacted', function () {",
+                  "          pm.expect(err2).to.equal(null);",
+                  "          pm.expect(res2.code, res2.text()).to.equal(200);",
+                  "          var keys = (res2.json() || {}).keys || [];",
+                  "          pm.expect(keys, res2.text()).to.have.lengthOf(1);",
+                  "          var cfg = keys[0].oauth_key_config;",
+                  "          pm.expect(cfg, res2.text()).to.be.an('object');",
+                  "          pm.expect(cfg.grant_type).to.equal('jwt_bearer');",
+                  "          pm.expect(cfg.token_url.value).to.equal('https://127.0.0.1:9/oauth/token');",
+                  "          pm.expect(cfg.issuer).to.equal('harness-issuer');",
+                  "          pm.expect(cfg.subject).to.equal('harness-subject');",
+                  "          pm.expect(cfg.audience).to.equal('https://127.0.0.1:9/oauth/token');",
+                  "          pm.expect(cfg.key_id).to.equal('harness-kid-1');",
+                  "          pm.expect(cfg.signing_algorithm).to.equal('ES256');",
+                  "          pm.expect(cfg.assertion_lifetime_seconds).to.equal(120);",
+                  "          pm.expect(cfg.scopes).to.eql(['inference']);",
+                  "          pm.expect(cfg.private_key, 'private_key is present').to.be.an('object');",
+                  "          pm.expect(cfg.private_key.value, 'private_key must be redacted').to.not.include('BEGIN PRIVATE KEY');",
+                  "          pm.expect(res2.text(), 'no PEM material may be echoed').to.not.include('MIGHAgEAMBMGByqGSM49AgEG');",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('oauthKeyProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('the jwt_bearer request fails at token minting, not at the upstream', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.not.equal(200);",
+                  "  pm.expect(pm.response.code, 'a 401 here means the static-bearer path ran instead of the OAuth mint: ' + pm.response.text()).to.not.equal(401);",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, 'the assertion was signed and the exchange was attempted').to.include('oauth token request');",
+                  "  pm.expect(body, 'no PEM material may be echoed').to.not.include('MIGHAgEAMBMGByqGSM49AgEG');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{oauthKeyProvider}}/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai custom provider jwt_bearer oauth_key_config with an unknown signing_algorithm is refused at save [EXPECT-400]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-oauthkey-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.openai.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped OpenAI-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('oauthKeyProvider', provider);",
+                  "sweepStale(function () { createProvider(provider, function () {}); });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('oauthKeyProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('a signing_algorithm outside the supported list is refused with 400 naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('signing_algorithm');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"hs256-jwt\",\n  \"models\": [\n    \"*\"\n  ],\n  \"weight\": 1,\n  \"oauth_key_config\": {\n    \"grant_type\": \"jwt_bearer\",\n    \"token_url\": \"https://idp.example/oauth2/token\",\n    \"private_key\": \"-----BEGIN PRIVATE KEY-----\\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgPRGI14LQwtUx25rt\\n+1l02+TsYAezzwKs49T6XLM37ZmhRANCAAS06cNQlnL0IAiijz4O5dkVNBWh2Fl9\\nrjGqe06oXP1NPnB+MN9wC8Cizwjv6UqvGsOMvuu3CITydqgXaGnQlU50\\n-----END PRIVATE KEY-----\",\n    \"issuer\": \"harness-issuer\",\n    \"audience\": \"https://idp.example/oauth2/token\",\n    \"signing_algorithm\": \"HS256\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{oauthKeyProvider}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{oauthKeyProvider}}",
+                "keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai custom provider jwt_bearer oauth_key_config whose private_key is not a PEM is refused at save [EXPECT-400]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-oauthkey-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.openai.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped OpenAI-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('oauthKeyProvider', provider);",
+                  "sweepStale(function () { createProvider(provider, function () {}); });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('oauthKeyProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('a literal private_key that is not a PEM is refused with 400 naming the field, so a mangled key never persists and fails at the first mint', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('private_key');",
+                  "  pm.expect(pm.response.text()).to.include('PEM');",
+                  "  pm.expect(pm.response.text(), 'the key material must never be echoed').to.not.include('harness-not-a-pem-key');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"not-a-pem-jwt\",\n  \"models\": [\n    \"*\"\n  ],\n  \"weight\": 1,\n  \"oauth_key_config\": {\n    \"grant_type\": \"jwt_bearer\",\n    \"token_url\": \"https://idp.example/oauth2/token\",\n    \"private_key\": \"harness-not-a-pem-key\",\n    \"issuer\": \"harness-issuer\",\n    \"audience\": \"https://idp.example/oauth2/token\",\n    \"signing_algorithm\": \"ES256\"\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"
