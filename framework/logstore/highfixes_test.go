@@ -194,6 +194,7 @@ func TestHighFixesCleanerRetentionEndToEnd(t *testing.T) {
 	assert.Equal(t, []string{"mcp-new"}, hfLogIDs(t, store.db, "mcp_tool_logs"))
 }
 
+// TestLogsCleanerUpdateRetentionDays verifies changed and default retention for both log tables.
 func TestLogsCleanerUpdateRetentionDays(t *testing.T) {
 	for _, tc := range []struct {
 		name                     string
@@ -228,11 +229,13 @@ func TestLogsCleanerUpdateRetentionDays(t *testing.T) {
 	}
 }
 
+// retentionCutoffManager records cutoffs and can update retention during a pass.
 type retentionCutoffManager struct {
 	logCutoff, mcpCutoff time.Time
 	onLogsDelete         func()
 }
 
+// DeleteLogsBatch captures the logs cutoff and invokes the optional update callback.
 func (m *retentionCutoffManager) DeleteLogsBatch(_ context.Context, cutoff time.Time, _ int) (int64, error) {
 	m.logCutoff = cutoff
 	if m.onLogsDelete != nil {
@@ -241,11 +244,13 @@ func (m *retentionCutoffManager) DeleteLogsBatch(_ context.Context, cutoff time.
 	return 0, nil
 }
 
+// DeleteMCPToolLogsBatch captures the MCP cutoff from the same cleanup pass.
 func (m *retentionCutoffManager) DeleteMCPToolLogsBatch(_ context.Context, cutoff time.Time, _ int) (int64, error) {
 	m.mcpCutoff = cutoff
 	return 0, nil
 }
 
+// TestLogsCleanerRetentionUpdateDuringPass verifies updates only affect subsequent passes.
 func TestLogsCleanerRetentionUpdateDuringPass(t *testing.T) {
 	m := &retentionCutoffManager{}
 	cleaner := NewLogsCleaner(m, CleanerConfig{RetentionDays: 365}, testLogger{})
@@ -258,6 +263,7 @@ func TestLogsCleanerRetentionUpdateDuringPass(t *testing.T) {
 	}
 }
 
+// TestLogsCleanerRetentionUpdateConcurrent exercises retention reads and updates under the race detector.
 func TestLogsCleanerRetentionUpdateConcurrent(t *testing.T) {
 	m := &retentionCutoffManager{}
 	cleaner := NewLogsCleaner(m, CleanerConfig{RetentionDays: 7}, testLogger{})
