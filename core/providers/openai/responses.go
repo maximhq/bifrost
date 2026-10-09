@@ -531,7 +531,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	messages = make([]schemas.ResponsesMessage, 0, len(bifrostReq.Input))
 	// Tools lifted out of codex additional_tools items for providers that reject them.
 	var hoistedTools []schemas.ResponsesTool
-	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider)
+	// Models older than GPT-5 reject custom tools with "Invalid value: 'custom'", so
+	// each one is sent as a function tool and its replayed calls follow suit. Their
+	// additional_tools items are lifted to the top level so the tools inside them get
+	// the same rewrite; the item's tools live in raw bytes that are not rewritten in place.
+	customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
+	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider) && !customToolsAsFunctions
 	replayAssistantTextAsInput := isMantleGPTOSSResponses(ctx, bifrostReq.Provider, capModel)
 	replayComputerActions := bifrostReq.Params != nil && slices.ContainsFunc(bifrostReq.Params.Tools, func(t schemas.ResponsesTool) bool {
 		return t.Type == schemas.ResponsesToolTypeComputer
@@ -887,6 +892,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	params := bifrostReq.Params
 	asyncToolsSupported := caps.SupportsAsyncTools(defaultSupportsAsyncTools(capModel))
 	messages = normalizeAsyncCallItems(messages, asyncToolsSupported)
+	if customToolsAsFunctions {
+		messages = responsesCustomCallItemsAsFunctions(messages)
+	}
 	// Create the responses request with properly mapped parameters
 	req := &OpenAIResponsesRequest{
 		Model:    bifrostReq.Model,
@@ -1031,6 +1039,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 					return s == "message.output_text.logprobs"
 				})
 			}
+			// Codex asks for encrypted reasoning on every request; models that do not
+			// reason reject it ("Encrypted content is not supported with this model").
+			if !caps.SupportsReasoning(IsOpenAIReasoningModel(capModel)) &&
+				slices.Contains(req.ResponsesParameters.Include, "reasoning.encrypted_content") {
+				req.ResponsesParameters.Include = slices.DeleteFunc(slices.Clone(req.ResponsesParameters.Include), func(s string) bool {
+					return s == "reasoning.encrypted_content"
+				})
+			}
 		}
 	}
 
@@ -1062,6 +1078,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	if reserved := resolveReservedToolNamespaces(toolProvider, capModel); len(reserved) > 0 && len(req.Tools) > 0 {
 		substitute := toolProvider == schemas.BedrockMantle && caps.SupportsWebSearch(true)
 		req.Tools = dropReservedNamespaceTools(req.Tools, reserved, substitute)
+	}
+
+	// Runs before the normalization below so the rewritten tools are normalized too.
+	if customToolsAsFunctions {
+		req.Tools = responsesCustomToolsAsFunctions(req.Tools)
+		req.ToolChoice = responsesCustomToolChoiceAsFunction(req.ToolChoice)
 	}
 
 	// Normalize function tool parameters for deterministic JSON serialization, and

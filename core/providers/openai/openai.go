@@ -2084,6 +2084,11 @@ func HandleOpenAIResponsesRequest(
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
+	// Custom tools sent as function tools come back as function calls; restore them.
+	if names := customToolNamesToRestore(ctx, request); names != nil {
+		restoreCustomToolCalls(response.Output, names)
+	}
+
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
@@ -2192,6 +2197,8 @@ func HandleOpenAIResponsesStreaming(
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	// Restores custom tools that were sent as function tools; nil when none were.
+	customToolRestorer := newCustomToolStreamRestorer(customToolNamesToRestore(ctx, request))
 
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
@@ -2393,6 +2400,13 @@ func HandleOpenAIResponsesStreaming(
 				if sendBackRawResponse {
 					response.ExtraFields.RawResponse = jsonData
 				}
+			}
+
+			if prefix, drop := customToolRestorer.restore(&response); drop {
+				continue
+			} else if prefix != nil {
+				prefix.ExtraFields.ChunkIndex = prefix.SequenceNumber
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, prefix, nil, nil, nil), responseChan, postHookSpanFinalizer)
 			}
 
 			if response.Type == schemas.ResponsesStreamResponseTypeError {
