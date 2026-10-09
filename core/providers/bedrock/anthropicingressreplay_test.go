@@ -526,3 +526,54 @@ func TestAnthropicIngressBedrockReplayKeepsReasoningInItsOwnTurn(t *testing.T) {
 		})
 	}
 }
+
+// TestAnthropicIngressBedrockHaiku55KeepsAdaptiveThinking pins the Claude Code body
+// for Haiku 5.5 on Bedrock: adaptive thinking and its effort must reach Converse as
+// sent. Haiku 5.5 rejects thinking.type "enabled", so treating it as pre-adaptive
+// (Haiku 4.5) and rewriting to a budget 400s upstream. Haiku 4.5 keeps the rewrite.
+func TestAnthropicIngressBedrockHaiku55KeepsAdaptiveThinking(t *testing.T) {
+	cases := []struct {
+		model        string
+		wantType     string
+		wantEffort   string
+		wantNoBudget bool
+	}{
+		{"bedrock/claude-haiku-5-5", "adaptive", "medium", true},
+		{"bedrock/global.anthropic.claude-haiku-5-5", "adaptive", "medium", true},
+		{"bedrock/anthropic.claude-haiku-5-5-v1:0", "adaptive", "medium", true},
+		{"bedrock/claude-haiku-5", "enabled", "", false},
+		{"bedrock/claude-haiku-4-5", "enabled", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			body := `{"model":"` + tc.model + `","max_tokens":128000,` +
+				`"thinking":{"type":"adaptive","display":"omitted"},"output_config":{"effort":"medium"},` +
+				`"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
+			var ingressReq anthropic.AnthropicMessageRequest
+			require.NoError(t, json.Unmarshal([]byte(body), &ingressReq))
+
+			ctx := &schemas.BifrostContext{}
+			converseReq, err := bedrock.ToBedrockResponsesRequest(ctx, ingressReq.ToBifrostResponsesRequest(ctx))
+			require.NoError(t, err)
+
+			raw, err := json.Marshal(converseReq.AdditionalModelRequestFields)
+			require.NoError(t, err)
+			var fields struct {
+				Thinking struct {
+					Type         string `json:"type"`
+					BudgetTokens *int   `json:"budget_tokens"`
+				} `json:"thinking"`
+				OutputConfig struct {
+					Effort string `json:"effort"`
+				} `json:"output_config"`
+			}
+			require.NoError(t, json.Unmarshal(raw, &fields))
+
+			require.Equal(t, tc.wantType, fields.Thinking.Type, "fields: %s", raw)
+			require.Equal(t, tc.wantEffort, fields.OutputConfig.Effort, "fields: %s", raw)
+			if tc.wantNoBudget {
+				require.Nil(t, fields.Thinking.BudgetTokens, "adaptive must not carry budget_tokens: %s", raw)
+			}
+		})
+	}
+}
