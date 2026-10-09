@@ -795,6 +795,12 @@ func (t *ToolFunctionParameters) Normalized() *ToolFunctionParameters {
 	return &out
 }
 
+// IsExplicitEmptyObject reports whether the schema is a client-supplied raw
+// `{}` with no schema field set since: the one shape MarshalJSON emits as `{}`.
+func (t *ToolFunctionParameters) IsExplicitEmptyObject() bool {
+	return t != nil && t.explicitEmptyObject && !t.hasDefinedSchemaFields()
+}
+
 // hasDefinedSchemaFields reports whether the schema contains any real JSON Schema
 // fields, allowing MarshalJSON to distinguish an explicit raw `{}` from a
 // populated object schema such as `{"type":"object","properties":{}}`.

@@ -1009,6 +1009,30 @@ func TestToolFunctionParameters_ExplicitEmptyObjectWhitespacePreserved(t *testin
 	assert.Equal(t, `{}`, string(normalized))
 }
 
+// TestToolFunctionParameters_IsExplicitEmptyObject pins that only a decoded raw
+// `{}` with no schema field set since reports true: the exact shape MarshalJSON
+// emits as `{}`.
+func TestToolFunctionParameters_IsExplicitEmptyObject(t *testing.T) {
+	decode := func(t *testing.T, raw string) *ToolFunctionParameters {
+		t.Helper()
+		var params ToolFunctionParameters
+		require.NoError(t, Unmarshal([]byte(raw), &params))
+		return &params
+	}
+	assert.True(t, decode(t, `{}`).IsExplicitEmptyObject())
+	assert.True(t, decode(t, ` { } `).IsExplicitEmptyObject())
+	assert.True(t, decode(t, `{}`).Normalized().IsExplicitEmptyObject(), "Normalized keeps the flag")
+	assert.True(t, DeepCopyToolFunctionParameters(decode(t, `{}`)).IsExplicitEmptyObject(), "the deep copy keeps the flag")
+	assert.False(t, decode(t, `{"type":"object"}`).IsExplicitEmptyObject())
+	assert.False(t, decode(t, `{"properties":{}}`).IsExplicitEmptyObject())
+	assert.False(t, (&ToolFunctionParameters{}).IsExplicitEmptyObject(), "a programmatic zero value was never `{}` on the wire")
+	assert.False(t, (*ToolFunctionParameters)(nil).IsExplicitEmptyObject())
+
+	edited := decode(t, `{}`)
+	edited.Type = "object"
+	assert.False(t, edited.IsExplicitEmptyObject(), "a field set after decoding ends the raw `{}`")
+}
+
 func TestToolFunctionParameters_ExplicitObjectSchemaPreserved(t *testing.T) {
 	var params ToolFunctionParameters
 	err := Unmarshal([]byte(`{"type":"object","properties":{}}`), &params)
