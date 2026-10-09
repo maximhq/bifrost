@@ -37,5 +37,6 @@ description: "Helm v2.1.44 changelog - 2026-10-09"
 - `bifrost.governance.routingRules[].fallbacks` entries now accept an object `{ provider, model, provider_key_name }` that pins a provider key, alongside the `provider/model` string form (`governance.routing_rules[].fallbacks`).
 - Added `displayName` to the generic OIDC `bifrost.scim.config` (`scim_config.config.displayName`): the login button label (`Sign in with <displayName>`), default `SSO`.
 - Added `topologySpreadConstraints` (top-level value): pod topology spread constraints rendered into the Bifrost Deployment or StatefulSet pod spec, to spread replicas across nodes and zones. A constraint without a `labelSelector` defaults to the release's server pod labels, so only Bifrost's own replicas are counted.
+- Added `extraContainers` (top-level value): regular sidecar containers appended to the Bifrost pod after the Bifrost container. Native sidecars (Kubernetes 1.29+) follow the Kubernetes convention, an `initContainers` entry with `restartPolicy: Always`, and the chart now refuses to render one on clusters older than 1.29 instead of leaving the pod blocked on an init container that never exits.
 
 </Update>

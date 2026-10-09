@@ -6263,6 +6263,18 @@
       "items": {
         "type": "object"
       }
+    },
+    "extraContainers": {
+      "type": "array",
+      "description": "Regular sidecar containers appended to the Bifrost pod's containers. Standard Kubernetes container specs.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "image": { "type": "string", "minLength": 1 }
+        },
+        "required": ["name", "image"]
+      }
     }
   },
   "$defs": {
