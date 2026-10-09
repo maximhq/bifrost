@@ -276,12 +276,15 @@ func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest
 
 	req := &BedrockCohereEmbeddingRequest{}
 
-	// Text-only batches use texts[]; anything carrying media uses the mixed inputs[] shape.
+	// Text-only batches use texts[], lone images use images[] (the only image shape Embed v3
+	// accepts), and anything else uses the mixed inputs[] shape (Embed v4 only).
 	if schemas.EmbeddingInput(bifrostReq.Input).AllSingleText() {
 		req.Texts = make([]string, len(bifrostReq.Input))
 		for i, item := range bifrostReq.Input {
 			req.Texts[i] = *item.Content[0].Text
 		}
+	} else if images, ok := bedrockCohereSingleImages(bifrostReq.Input); ok {
+		req.Images = images
 	} else {
 		inputs := make([]BedrockCohereEmbeddingInput, 0, len(bifrostReq.Input))
 		for _, item := range bifrostReq.Input {
@@ -296,13 +299,9 @@ func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest
 					text := *part.Text
 					blocks = append(blocks, BedrockCohereEmbeddingContentBlock{Type: "text", Text: &text})
 				case schemas.EmbeddingContentPartTypeImage:
-					url := part.Image.URL
-					if url == nil {
-						url = part.Image.Data
-					}
 					blocks = append(blocks, BedrockCohereEmbeddingContentBlock{
 						Type:     "image_url",
-						ImageURL: &BedrockCohereEmbeddingImageURL{URL: *url},
+						ImageURL: &BedrockCohereEmbeddingImageURL{URL: bedrockCohereImageURL(part.Image)},
 					})
 				default:
 					return nil, providerUtils.InvalidRequestErrorf("this model supports only text and image parts, got %q", part.Type)
@@ -318,6 +317,10 @@ func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest
 		for k, v := range bifrostReq.Params.ExtraParams {
 			extra[k] = v
 		}
+		// The input shape is rebuilt from Input above; a native copy would add a second shape.
+		delete(extra, "texts")
+		delete(extra, "images")
+		delete(extra, "inputs")
 
 		if v, ok := extra["input_type"]; ok {
 			if s, ok := v.(string); ok {
@@ -366,11 +369,40 @@ func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest
 	// serialized as "" and rejected. SDKs that target Titan's single-field shape
 	// (LangChain's BedrockEmbeddings) never send it; both LangChain Python clients
 	// pick search_document client-side for exactly this case, so match them.
+	// Embed v3 rejects images[] under any input_type but "image"; v4 accepts it too.
 	if req.InputType == "" {
-		req.InputType = BedrockCohereInputTypeSearchDocument
+		if len(req.Images) > 0 {
+			req.InputType = BedrockCohereInputTypeImage
+		} else {
+			req.InputType = BedrockCohereInputTypeSearchDocument
+		}
 	}
 
 	return req, nil
+}
+
+// bedrockCohereSingleImages returns every item's image when each item is exactly one valid image part.
+func bedrockCohereSingleImages(input []schemas.EmbeddingInputItem) ([]string, bool) {
+	images := make([]string, 0, len(input))
+	for _, item := range input {
+		content := item.Content
+		if len(content) != 1 || content[0].Type != schemas.EmbeddingContentPartTypeImage || content[0].Validate() != nil {
+			return nil, false
+		}
+		images = append(images, bedrockCohereImageURL(content[0].Image))
+	}
+	return images, true
+}
+
+// bedrockCohereImageURL returns the image's URL, or its data as a data URI when a MIME type is given.
+func bedrockCohereImageURL(media *schemas.EmbeddingMediaPart) string {
+	if media.URL != nil {
+		return *media.URL
+	}
+	if media.MIMEType != nil && *media.MIMEType != "" && !strings.HasPrefix(*media.Data, "data:") {
+		return "data:" + *media.MIMEType + ";base64," + *media.Data
+	}
+	return *media.Data
 }
 
 // novaEmbeddingFormats maps the media types and file extensions a caller is likely to
