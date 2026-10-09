@@ -225,6 +225,9 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	// newly served model (or re-check a failing key) without waiting.
 	r.POST("/api/providers/{provider}/refresh-models", lib.ChainMiddlewares(h.refreshProviderModels, middlewares...))
 	r.POST("/api/providers/{provider}/keys/{key_id}/refresh-models", lib.ChainMiddlewares(h.refreshProviderKeyModels, middlewares...))
+	// GitHub OAuth device flow, to get a GitHub token for a GitHub Copilot key.
+	r.POST("/api/providers/{provider}/device-login/initiate", lib.ChainMiddlewares(h.initiateGithubDeviceLogin, middlewares...))
+	r.POST("/api/providers/{provider}/device-login/poll", lib.ChainMiddlewares(h.pollGithubDeviceLogin, middlewares...))
 	r.GET("/api/keys", lib.ChainMiddlewares(h.listKeys, middlewares...))
 	r.GET("/api/models", lib.ChainMiddlewares(h.listModels, middlewares...))
 	r.GET("/api/models/details", lib.ChainMiddlewares(h.listModelDetails, middlewares...))
