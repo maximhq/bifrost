@@ -1178,7 +1178,7 @@ func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pag
 	g.Go(func() error {
 		dataQuery := s.scopedLogsDB(gCtx).Model(&Log{})
 		dataQuery = s.applyFilters(dataQuery, filters)
-		dataQuery = applyKeysetCursor(dataQuery, pagination)
+		dataQuery = applyKeysetCursor(dataQuery, s.db.Dialector.Name(), pagination)
 		dataQuery = dataQuery.Order(orderClause).Select(selectColumns).Limit(limit)
 		if pagination.Offset > 0 {
 			dataQuery = dataQuery.Offset(pagination.Offset)
@@ -1228,19 +1228,22 @@ func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pag
 // applyKeysetCursor restricts query to rows strictly after the pagination
 // cursor in (timestamp, id) order. It applies only when SortBy is timestamp
 // (or the default) and both cursor fields are set. The direction follows
-// pagination.Order, the same rule logsOrderClause applies to the ORDER BY.
-func applyKeysetCursor(query *gorm.DB, pagination PaginationOptions) *gorm.DB {
+// pagination.Order, the same rule logsOrderClause applies to the ORDER BY. The
+// timestamp goes through timestampBound: bound at whole seconds on ClickHouse,
+// "= ?" never matched the cursor row and "> ?" re-read its second, so ascending
+// pages repeated forever.
+func applyKeysetCursor(query *gorm.DB, dialect string, pagination PaginationOptions) *gorm.DB {
 	if pagination.AfterTimestamp == nil || pagination.AfterID == "" {
 		return query
 	}
 	if pagination.SortBy != "" && pagination.SortBy != "timestamp" {
 		return query
 	}
-	ts := *pagination.AfterTimestamp
+	placeholder, ts := timestampBound(dialect, *pagination.AfterTimestamp, cursorTimeBound)
 	if pagination.Order != "asc" {
-		return query.Where("(timestamp < ? OR (timestamp = ? AND id < ?))", ts, ts, pagination.AfterID)
+		return query.Where("(timestamp < "+placeholder+" OR (timestamp = "+placeholder+" AND id < ?))", ts, ts, pagination.AfterID)
 	}
-	return query.Where("(timestamp > ? OR (timestamp = ? AND id > ?))", ts, ts, pagination.AfterID)
+	return query.Where("(timestamp > "+placeholder+" OR (timestamp = "+placeholder+" AND id > ?))", ts, ts, pagination.AfterID)
 }
 
 // attachChildAggregates populates ChildCount/ChildrenCost/ChildrenTokens on the

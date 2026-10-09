@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -745,6 +746,57 @@ func TestClickHouseDimensionFiltersMatchFanoutRankings(t *testing.T) {
 func TestClickHouseA2AAttributionFilters(t *testing.T) {
 	store := trySetupClickHouseStore(t)
 	assertA2AAttributionFilters(t, store.RDBLogStore, store.BatchCreateAgentLogsIfNotExists)
+}
+
+// The keyset cursor bound its timestamp as a time.Time, which the driver sends
+// at seconds precision. Ascending, every page re-read the rows earlier in the
+// cursor's second, and a second holding a full page never advanced; descending,
+// the rows between that second's start and the cursor were skipped. Cost
+// recalculation pages through logs this way.
+//
+// Three rows share the 200ms timestamp, and with two rows a page a boundary
+// falls inside that group in both directions (after 200-a ascending, after
+// 200-c descending), so only the id comparison decides what the next page
+// starts with.
+func TestClickHouseKeysetCursorKeepsMilliseconds(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	second := time.Now().UTC().Truncate(time.Second)
+
+	var ascending []string
+	for _, row := range []struct {
+		offset int
+		suffix string
+	}{{100, "a"}, {200, "a"}, {200, "b"}, {200, "c"}, {300, "a"}} {
+		entry := chTestLog(fmt.Sprintf("ch-keyset-%d-%s", row.offset, row.suffix), second.Add(time.Duration(row.offset)*time.Millisecond))
+		entry.Status = "success"
+		require.NoError(t, store.CreateIfNotExists(ctx, entry))
+		ascending = append(ascending, entry.ID)
+	}
+	descending := slices.Clone(ascending)
+	slices.Reverse(descending)
+
+	walk := func(order string) []string {
+		var seen []string
+		pagination := PaginationOptions{Limit: 2, SortBy: "timestamp", Order: order}
+		for page := 0; page < 10; page++ {
+			result, err := store.SearchLogs(ctx, SearchFilters{}, pagination)
+			require.NoError(t, err)
+			if len(result.Logs) == 0 {
+				return seen
+			}
+			for _, entry := range result.Logs {
+				seen = append(seen, entry.ID)
+			}
+			last := result.Logs[len(result.Logs)-1]
+			cursor := last.Timestamp
+			pagination.AfterTimestamp, pagination.AfterID = &cursor, last.ID
+		}
+		t.Fatalf("%s paging did not finish in 10 pages: %v", order, seen)
+		return nil
+	}
+	assert.Equal(t, ascending, walk("asc"), "every row once, in order")
+	assert.Equal(t, descending, walk("desc"), "every row once, in order")
 }
 
 func TestClickHouseDeleteLogs(t *testing.T) {

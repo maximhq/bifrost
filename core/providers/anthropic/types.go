@@ -2247,6 +2247,8 @@ type AnthropicStreamDelta struct {
 	// Container is the code-execution sandbox container, surfaced on the final
 	// message_delta of a response that used the code execution tool.
 	Container *AnthropicResponseContainer `json:"container,omitempty"`
+	// SafeguardResults carries Claude Code's auto-mode verdicts on the final message_delta.
+	SafeguardResults json.RawMessage `json:"safeguard_results,omitempty"`
 }
 
 // ==================== MODEL TYPES ====================

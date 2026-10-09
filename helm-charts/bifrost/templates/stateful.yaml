@@ -51,9 +51,9 @@ spec:
       {{- if .Values.terminationGracePeriodSeconds }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- end }}
-      {{- with .Values.initContainers }}
+      {{- with include "bifrost.initContainers" . }}
       initContainers:
-        {{- toYaml . | nindent 8 }}
+        {{- . | nindent 8 }}
       {{- end }}
       containers:
         - name: {{ .Chart.Name }}
@@ -288,6 +288,9 @@ spec:
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- with .Values.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       volumes:
         - name: config
           configMap:
@@ -302,6 +305,10 @@ spec:
       {{- with .Values.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- include "bifrost.topologySpreadConstraints" . | nindent 8 }}
       {{- end }}
       {{- with .Values.tolerations }}
       tolerations:

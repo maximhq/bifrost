@@ -11,6 +11,7 @@ import contextlib
 import os
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -19,6 +20,11 @@ from openai import AsyncOpenAI, OpenAI
 GATEWAY = os.environ.get("BIFROST_BASE_URL", "http://localhost:8080").rstrip("/")
 UPSTREAM = os.environ.get("LIVE_UPSTREAM", "fake")
 VIRTUAL_KEY = os.environ.get("BIFROST_VK", "")
+# OSS setup lock: /api needs the setup token while dashboard auth is not active; a deployed
+# gateway with dashboard auth needs the admin's Authorization header instead.
+ADMIN_HEADERS = {"X-Bifrost-Setup-Token": os.environ.get("BIFROST_SETUP_TOKEN", "bifrost-live-setup-token")}
+if os.environ.get("BIFROST_ADMIN_AUTH"):
+    ADMIN_HEADERS["Authorization"] = os.environ["BIFROST_ADMIN_AUTH"]
 RESTRICTED_VIRTUAL_KEY = os.environ.get("BIFROST_VK_RESTRICTED", "")
 VOICE_MODEL = os.environ.get("LIVE_VOICE_MODEL", "gpt-live-1")
 BACKEND_MODEL = os.environ.get("LIVE_BACKEND_MODEL", "gpt-5.6-luna")
@@ -178,33 +184,45 @@ def error_message(event) -> str:
 
 
 def fetch_log(log_id: str) -> dict:
-    row = httpx.get(f"{GATEWAY}/api/logs/{log_id}", timeout=10).raise_for_status().json()
+    row = httpx.get(f"{GATEWAY}/api/logs/{log_id}", headers=ADMIN_HEADERS, timeout=10).raise_for_status().json()
     return row.get("log", row)
+
+
+# Only rows logged since the suite began are looked at, and each row's payload is read once:
+# the list endpoint returns summaries without it, and a remote gateway makes every read count.
+SUITE_START = datetime.now(timezone.utc) - timedelta(seconds=5)
+_row_owner: dict[str, tuple[str, str]] = {}
+
+
+def _row_owner_of(log_id: str) -> tuple[str, str]:
+    """The provider session a row belongs to: as a session row, and as a download row."""
+    if log_id not in _row_owner:
+        row = fetch_log(log_id)
+        _row_owner[log_id] = (
+            (row.get("live_session") or {}).get("provider_session_id") or "",
+            (row.get("metadata") or {}).get("provider_session_id") or "",
+        )
+    return _row_owner[log_id]
+
+
+def _find_row(objects: str, provider_session_id: str, owner_index: int, timeout: float) -> dict:
+    deadline = time.monotonic() + timeout
+    while True:
+        params = {"objects": objects, "limit": 500, "start_time": SUITE_START.isoformat()}
+        listing = httpx.get(f"{GATEWAY}/api/logs", params=params, headers=ADMIN_HEADERS, timeout=10).raise_for_status().json()
+        for summary in listing.get("logs", []):
+            if _row_owner_of(summary["id"])[owner_index] == provider_session_id:
+                return fetch_log(summary["id"])
+        if time.monotonic() > deadline:
+            pytest.fail(f"no {objects} row for provider session {provider_session_id} within {timeout}s")
+        time.sleep(0.3)
 
 
 def find_live_row(provider_session_id: str, timeout: float = ROW_TIMEOUT) -> dict:
     """The one row a session leaves, found by the provider's session id."""
-    deadline = time.monotonic() + timeout
-    while True:
-        listing = httpx.get(f"{GATEWAY}/api/logs", params={"objects": "live.session", "limit": 200}, timeout=10).raise_for_status().json()
-        for summary in listing.get("logs", []):
-            row = fetch_log(summary["id"])
-            if (row.get("live_session") or {}).get("provider_session_id") == provider_session_id:
-                return row
-        if time.monotonic() > deadline:
-            pytest.fail(f"no live.session row for provider session {provider_session_id} within {timeout}s")
-        time.sleep(0.3)
+    return _find_row("live.session", provider_session_id, 0, timeout)
 
 
 def find_content_row(provider_session_id: str, timeout: float = ROW_TIMEOUT) -> dict:
     """The row a recording download leaves, found by the provider's session id in its metadata."""
-    deadline = time.monotonic() + timeout
-    while True:
-        listing = httpx.get(f"{GATEWAY}/api/logs", params={"objects": "live_content", "limit": 200}, timeout=10).raise_for_status().json()
-        for summary in listing.get("logs", []):
-            row = fetch_log(summary["id"])
-            if (row.get("metadata") or {}).get("provider_session_id") == provider_session_id:
-                return row
-        if time.monotonic() > deadline:
-            pytest.fail(f"no live_content row for provider session {provider_session_id} within {timeout}s")
-        time.sleep(0.3)
+    return _find_row("live_content", provider_session_id, 1, timeout)

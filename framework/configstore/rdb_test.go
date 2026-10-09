@@ -528,6 +528,93 @@ func TestLatestCreatedSkillVersionUsesCreationOrder(t *testing.T) {
 	assert.Equal(t, "1.0.2-1", skill.HighestVersion)
 }
 
+func setupSkillTestStore(t *testing.T) *RDBConfigStore {
+	store := setupRDBTestStore(t)
+	err := store.DB().AutoMigrate(
+		&tables.TableSkill{},
+		&tables.TableSkillVersion{},
+		&tables.TableSkillFile{},
+		&tables.TableSkillFileBlob{},
+	)
+	require.NoError(t, err)
+	return store
+}
+
+func skillURLFile(path string) tables.TableSkillFile {
+	sourceURL := "https://example.com/" + path
+	return tables.TableSkillFile{Path: path, SourceType: tables.SkillSourceTypeURL, SourceURL: &sourceURL}
+}
+
+// The config-driven skills registry passes a freshly built skill whose
+// LatestVersion is empty, so serving the new version must not depend on it.
+func TestUpdateSkillServesNewVersionWhenLatestVersionIsUnset(t *testing.T) {
+	store := setupSkillTestStore(t)
+	ctx := context.Background()
+
+	created := &tables.TableSkill{
+		Name:        "config-update",
+		Description: "first",
+		SkillMDBody: "body 1",
+		Files:       []tables.TableSkillFile{skillURLFile("references/v1.md")},
+	}
+	require.NoError(t, store.CreateSkill(ctx, created, "1.0.0", nil))
+
+	updated := &tables.TableSkill{
+		ID:          created.ID,
+		Name:        created.Name,
+		Description: "second",
+		SkillMDBody: "body 2",
+		Files:       []tables.TableSkillFile{skillURLFile("references/v2.md")},
+	}
+	require.NoError(t, store.UpdateSkill(ctx, updated, "1.1.0", true, nil))
+
+	assert.Equal(t, "1.1.0", updated.LatestVersion)
+	require.Len(t, updated.Files, 1)
+	assert.Equal(t, "references/v2.md", updated.Files[0].Path)
+
+	skill, err := store.GetSkill(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "1.1.0", skill.LatestVersion)
+	assert.Equal(t, "body 2", skill.SkillMDBody)
+	require.Len(t, skill.Files, 1)
+	assert.Equal(t, "references/v2.md", skill.Files[0].Path)
+}
+
+func TestUpdateSkillWithoutServeKeepsServingVersion(t *testing.T) {
+	store := setupSkillTestStore(t)
+	ctx := context.Background()
+
+	created := &tables.TableSkill{
+		Name:        "config-draft",
+		Description: "first",
+		SkillMDBody: "body 1",
+		Files:       []tables.TableSkillFile{skillURLFile("references/v1.md")},
+	}
+	require.NoError(t, store.CreateSkill(ctx, created, "1.0.0", nil))
+
+	updated := &tables.TableSkill{
+		ID:          created.ID,
+		Name:        created.Name,
+		Description: "second",
+		SkillMDBody: "body 2",
+		Files:       []tables.TableSkillFile{skillURLFile("references/v2.md")},
+	}
+	require.NoError(t, store.UpdateSkill(ctx, updated, "1.1.0", false, nil))
+
+	assert.Equal(t, "1.0.0", updated.LatestVersion)
+	require.Len(t, updated.Files, 1)
+	assert.Equal(t, "references/v1.md", updated.Files[0].Path)
+
+	skill, err := store.GetSkill(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "1.0.0", skill.LatestVersion)
+	assert.Equal(t, "body 1", skill.SkillMDBody)
+
+	version, err := store.GetSkillVersion(ctx, created.ID, "1.1.0")
+	require.NoError(t, err)
+	assert.Equal(t, "body 2", version.SkillMDBody)
+}
+
 // =============================================================================
 // Provider and Key Tests
 // =============================================================================

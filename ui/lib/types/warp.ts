@@ -171,6 +171,8 @@ export interface WarpStoredMessage {
 	content: string;
 	tool_calls?: WarpStoredToolCall[];
 	error?: string;
+	/** The error frame's code (budget_exceeded, access_denied, ...); absent on turns filed before codes were kept. */
+	error_code?: string;
 	finish_reason?: string;
 	/**
 	 * The structured clarifying question this turn ended with, when it ended by

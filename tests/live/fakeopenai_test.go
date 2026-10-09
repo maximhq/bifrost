@@ -57,6 +57,7 @@ type fakeSession struct {
 
 	recordingBytes int           // a recording of this size replaces the one-second default
 	recordingPace  time.Duration // pause between 1 MiB chunks of a large recording
+	recordingSent  int           // bytes of a large recording written so far
 	closed         bool
 }
 
@@ -378,8 +379,18 @@ func (f *fakeOpenAI) serveContent(w http.ResponseWriter, r *http.Request, id str
 		if flusher != nil {
 			flusher.Flush()
 		}
+		s.mu.Lock()
+		s.recordingSent = written
+		s.mu.Unlock()
 		time.Sleep(pace)
 	}
+}
+
+// RecordingSent is how much of a large recording the provider has written so far.
+func (s *fakeSession) RecordingSent() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.recordingSent
 }
 
 // SetRecording makes the session's recording size bytes long, written in paced 1 MiB chunks.

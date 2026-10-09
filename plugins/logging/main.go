@@ -679,6 +679,9 @@ func (p *LoggerPlugin) emitSettlementSpan(ctx context.Context, entry *logstore.L
 	setStr(schemas.AttrRequestModel, entry.Model)
 	setStr(schemas.AttrResponseModel, entry.Model)
 	setStr(schemas.AttrLegacyRequestType, entry.Object)
+	if entry.BatchDebugParsed != nil {
+		setStr(schemas.AttrBatchID, entry.BatchDebugParsed.BatchID)
+	}
 
 	// Enrichment dims from the log row (no request context at settlement time), so
 	// settled cost filters like live traffic.

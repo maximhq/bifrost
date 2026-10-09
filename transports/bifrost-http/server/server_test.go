@@ -17,7 +17,11 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/prompts"
+	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
@@ -1464,5 +1468,231 @@ func TestReloadProxyConfigAcceptsRemoval(t *testing.T) {
 	}
 	if got := factory.GetProxyConfig(); got != nil {
 		t.Fatalf("factory proxy = %+v, want none after removal", got)
+	}
+}
+
+// ctxSensitivePromptStore fails any read whose context is already cancelled. That is how
+// a test observes the context ReloadPlugin handed the plugin constructor: prompts.Init
+// calls loadCache(ctx) and returns its error.
+type ctxSensitivePromptStore struct {
+	configstore.ConfigStore
+	gotCtx context.Context
+}
+
+// errStopAfterInstantiation ends ReloadPlugin at the constructor, before it needs a live
+// Bifrost client, so the test can inspect the context the constructor was given.
+var errStopAfterInstantiation = errors.New("stop after instantiation")
+
+func (s *ctxSensitivePromptStore) GetPrompts(ctx context.Context, _ *string) ([]configstoreTables.TablePrompt, error) {
+	s.gotCtx = ctx
+	return nil, errStopAfterInstantiation
+}
+
+func (s *ctxSensitivePromptStore) GetAllPromptVersions(ctx context.Context) ([]configstoreTables.TablePromptVersion, error) {
+	return nil, ctx.Err()
+}
+
+// A plugin outlives the request that loaded it, so ReloadPlugin must hand its constructor
+// the server-lifetime context, never the pooled *fasthttp.RequestCtx an admin reload
+// arrives on. Deriving long-lived work from the request context is what produced the
+// "missing cancel error" panic on shutdown.
+func TestReloadPluginGivesTheConstructorTheServerContext(t *testing.T) {
+	SetLogger(bifrost.NewNoOpLogger())
+
+	serverCtx, cancelServer := schemas.NewBifrostContextWithCancel(
+		context.WithValue(context.Background(), schemas.BifrostContextKeyGovernancePluginName, "governance-custom"),
+	)
+	defer cancelServer()
+
+	store := &ctxSensitivePromptStore{}
+	s := &BifrostHTTPServer{Ctx: serverCtx, Config: &lib.Config{ConfigStore: store}}
+
+	// The admin reload request is already over by the time the constructor runs.
+	reloadReqCtx, cancelRequest := context.WithCancel(context.Background())
+	cancelRequest()
+
+	err := s.ReloadPlugin(reloadReqCtx, prompts.PluginName, nil, nil, nil, nil)
+
+	if store.gotCtx == nil {
+		t.Fatal("the plugin constructor never reached the store")
+	}
+	if cerr := store.gotCtx.Err(); cerr != nil {
+		t.Errorf("constructor context was already cancelled (%v); it must be the server context, not the reload request's", cerr)
+	}
+	if !errors.Is(err, errStopAfterInstantiation) {
+		t.Errorf("ReloadPlugin error = %v, want the constructor's own error", err)
+	}
+	if got := governancePluginNameFromContext(store.gotCtx); got != "governance-custom" {
+		t.Errorf("constructor context governance plugin name = %q, want it inherited from the server context", got)
+	}
+}
+
+// The accessor's own contract: it tracks the server, not the request that called it.
+func TestPluginInitContextOutlivesTheReloadRequest(t *testing.T) {
+	serverCtx, cancelServer := schemas.NewBifrostContextWithCancel(
+		context.WithValue(context.Background(), schemas.BifrostContextKeyGovernancePluginName, "governance-custom"),
+	)
+	defer cancelServer()
+	initCtx := (&BifrostHTTPServer{Ctx: serverCtx}).PluginInitContext()
+
+	if got := governancePluginNameFromContext(initCtx); got != "governance-custom" {
+		t.Errorf("governance plugin name = %q, want it inherited from the server context", got)
+	}
+	// Shutdown must still reach the plugin, or nothing releases its long-lived work.
+	cancelServer()
+	select {
+	case <-initCtx.Done():
+	case <-time.After(time.Second):
+		t.Error("plugin init context outlived server shutdown; it must be the server context")
+	}
+}
+
+// A server with no context yet must still yield a usable, never-cancelled context rather
+// than a nil one a constructor would panic on.
+func TestPluginInitContextFallsBackToBackground(t *testing.T) {
+	initCtx := (&BifrostHTTPServer{}).PluginInitContext()
+	if initCtx == nil {
+		t.Fatal("PluginInitContext returned nil")
+	}
+	select {
+	case <-initCtx.Done():
+		t.Error("fallback context is already cancelled")
+	default:
+	}
+}
+
+// The telemetry plugin reads config.CustomLabels, but the loader only ever seeded it
+// from client_config.prometheus_labels, so the plugin's own custom_labels were accepted
+// and ignored. Both name extra Prometheus labels, so they union.
+func TestMergeCustomLabels(t *testing.T) {
+	for _, tc := range []struct {
+		label  string
+		client []string
+		plugin []string
+		want   []string
+	}{
+		{"plugin labels alone are honoured", nil, []string{"team"}, []string{"team"}},
+		{"client labels alone still work", []string{"environment"}, nil, []string{"environment"}},
+		{"both sources union, client first", []string{"environment"}, []string{"team"}, []string{"environment", "team"}},
+		{"duplicates collapse", []string{"team"}, []string{"team", "region"}, []string{"team", "region"}},
+		{"blank entries are dropped", []string{""}, []string{"team", ""}, []string{"team"}},
+		{"neither set yields nil", nil, nil, nil},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			got := mergeCustomLabels(tc.client, tc.plugin)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("label %d = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// The merge must not write into either input's spare capacity, which is how the
+// duplicate-label 500s happened before.
+func TestMergeCustomLabelsDoesNotAliasItsInputs(t *testing.T) {
+	client := make([]string, 1, 8) // spare capacity for an append to scribble into
+	client[0] = "environment"
+
+	got := mergeCustomLabels(client, []string{"team"})
+	if len(client) != 1 || client[0] != "environment" {
+		t.Errorf("client slice mutated: %v", client)
+	}
+	got[0] = "clobbered"
+	if client[0] != "environment" {
+		t.Errorf("writing to the result changed the input: %v", client)
+	}
+}
+
+// newTelemetryPluginForTest builds a telemetry plugin with its own registry, so a test
+// can tell which instance recorded a request.
+func newTelemetryPluginForTest(t *testing.T) (*telemetry.PrometheusPlugin, *prometheus.Registry) {
+	t.Helper()
+	reg := prometheus.NewRegistry()
+	p, err := telemetry.Init(&telemetry.Config{Registry: reg}, nil, bifrost.NewNoOpLogger())
+	if err != nil {
+		t.Fatalf("telemetry.Init: %v", err)
+	}
+	return p, reg
+}
+
+func httpRequestsTotal(t *testing.T, reg *prometheus.Registry) float64 {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	var total float64
+	for _, f := range families {
+		if f.GetName() != "http_requests_total" {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			total += m.GetCounter().GetValue()
+		}
+	}
+	return total
+}
+
+// A config reload constructs a fresh telemetry plugin. The middleware is built once at
+// startup, so capturing the plugin pointer there left it recording into the orphaned
+// instance and http_* series stopped appearing on /metrics after any reload. Resolving
+// per request means the live instance gets the writes.
+func TestPrometheusHTTPMiddlewareFollowsAReloadedPlugin(t *testing.T) {
+	SetLogger(bifrost.NewNoOpLogger())
+
+	first, firstReg := newTelemetryPluginForTest(t)
+	second, secondReg := newTelemetryPluginForTest(t)
+
+	cfg := &lib.Config{}
+	cfg.BasePlugins.Store(&[]schemas.BasePlugin{first})
+	s := &BifrostHTTPServer{Config: cfg}
+
+	// Built once, as it is at startup, and reused across the reload below.
+	mw := s.prometheusHTTPMiddleware()
+	handler := mw(func(ctx *fasthttp.RequestCtx) { ctx.Response.SetStatusCode(200) })
+
+	send := func() {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/v1/chat/completions")
+		ctx.Request.Header.SetMethod("POST")
+		handler(ctx)
+	}
+
+	send()
+	if got := httpRequestsTotal(t, firstReg); got != 1 {
+		t.Fatalf("first instance recorded %v requests, want 1", got)
+	}
+
+	// The reload: a freshly constructed plugin replaces the one the middleware saw.
+	cfg.BasePlugins.Store(&[]schemas.BasePlugin{second})
+	send()
+
+	if got := httpRequestsTotal(t, secondReg); got != 1 {
+		t.Errorf("reloaded instance recorded %v requests, want 1; the middleware is still writing to the orphaned plugin", got)
+	}
+	if got := httpRequestsTotal(t, firstReg); got != 1 {
+		t.Errorf("orphaned instance recorded %v requests, want it left at 1", got)
+	}
+}
+
+// With no telemetry plugin loaded the request must still be served.
+func TestPrometheusHTTPMiddlewarePassesThroughWithoutThePlugin(t *testing.T) {
+	SetLogger(bifrost.NewNoOpLogger())
+
+	s := &BifrostHTTPServer{Config: &lib.Config{}}
+	served := false
+	handler := s.prometheusHTTPMiddleware()(func(ctx *fasthttp.RequestCtx) { served = true })
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/v1/chat/completions")
+	handler(ctx)
+
+	if !served {
+		t.Error("request was not served when no telemetry plugin is loaded")
 	}
 }

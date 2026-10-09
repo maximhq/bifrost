@@ -608,11 +608,15 @@ func TestEmitAggregateLogEmitsSettlementSpan(t *testing.T) {
 		TotalTokens:      150,
 		TeamID:           &teamID,
 		VirtualKeyID:     &vkID,
+		BatchDebugParsed: &schemas.BifrostBatchDebug{BatchID: "batch_abc123"},
 	}
 	plugin.EmitAggregateLog(context.Background(), entry)
 
 	select {
 	case attrs := <-capture.spans:
+		if got, _ := attrs[schemas.AttrBatchID].(string); got != "batch_abc123" {
+			t.Fatalf("span batch id = %v, want batch_abc123", attrs[schemas.AttrBatchID])
+		}
 		if got, _ := attrs[schemas.AttrUsageCost].(float64); got != cost {
 			t.Fatalf("span cost = %v, want %v", attrs[schemas.AttrUsageCost], cost)
 		}

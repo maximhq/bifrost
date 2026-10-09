@@ -102372,6 +102372,15 @@
                   "standard",
                   "pro"
                 ]
+              },
+              "summary": {
+                "type": "string",
+                "description": "OpenAI reasoning summary, sent as reasoning.summary when the chat request is served through the Responses API; other providers drop it. Not accepted on the /openai integration routes, where it must go under extra_params with x-bf-passthrough-extra-params.",
+                "enum": [
+                  "auto",
+                  "concise",
+                  "detailed"
+                ]
               }
             }
           },
@@ -125834,6 +125843,10 @@
           },
           "error": {
             "type": "string"
+          },
+          "error_code": {
+            "type": "string",
+            "description": "The failed turn's error code, as on the chat error frame (budget_exceeded, access_denied, ...). Absent on turns filed before codes were kept."
           },
           "finish_reason": {
             "type": "string",
