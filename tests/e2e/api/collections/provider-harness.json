@@ -166,6 +166,9 @@
           "    } else if (__u.indexOf('/api/session/is-auth-enabled') !== -1 && typeof j.inference_auth_enforced === 'boolean') {",
           "        shape = 'session-auth-status';",
           "        hasContent = typeof j.is_auth_enabled === 'boolean';",
+          "    } else if (j.object === 'model' || (j.extra_fields && j.extra_fields.request_type === 'model_retrieve')) {",
+          "        shape = 'model-object';",
+          "        hasContent = typeof j.id === 'string' && j.id.length > 0;",
           "    } else if (Array.isArray(j.data)) {",
           "        shape = 'list-data';",
           "        hasContent = j.data.length >= 0;",
@@ -199345,6 +199348,531 @@
                 "v1",
                 "chat",
                 "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "127. Retrieve model (GET /v1/models/{model})",
+      "description": "Pins the OpenAI-spec Retrieve model endpoint (GET /v1/models/{model}) requested by a customer integration that validates a model before use. Positive rows cover every provider with a native retrieve that the harness profile configures (OpenAI, Groq, xAI, Mistral, Anthropic, Gemini, Cohere; Ollama is not in the profile) on the native route, where the path carries provider/model and the body is served by the model_retrieve request type. The /openai drop-in row asserts the OpenAI Model object shape (object, id, created, owned_by). Anthropic resolves an alias to its dated id. Negative rows pin that an unknown model surfaces the provider 404 rather than an unsupported error, and that a provider without a retrieve endpoint (DeepSeek) returns 400 unsupported_operation. Encoded rows send the id the way OpenAI SDKs do (provider%2Fmodel), which the route must decode once before parsing, while an encoded ../ is still refused.",
+      "item": [
+        {
+          "name": "Retrieve model: openai/gpt-4o-mini (native /v1)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"OpenAI model metadata is returned\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  pm.expect(j.id, body).to.equal('openai/gpt-4o-mini');",
+                  "  pm.expect(j.created, 'created must be a unix timestamp: ' + body).to.be.a('number');",
+                  "  pm.expect(j.owned_by, body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/openai/gpt-4o-mini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "openai",
+                "gpt-4o-mini"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: gpt-4o-mini via /openai drop-in (OpenAI spec shape)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Response matches the OpenAI Model object\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.object, 'object must be \"model\": ' + body).to.equal('model');",
+                  "  pm.expect(j.id, body).to.be.a('string');",
+                  "  pm.expect(j.id.slice(-'gpt-4o-mini'.length), body).to.equal('gpt-4o-mini');",
+                  "  pm.expect(j.created, 'created must be a unix timestamp: ' + body).to.be.a('number');",
+                  "  pm.expect(j.owned_by, body).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/models/gpt-4o-mini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "models",
+                "gpt-4o-mini"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: groq/openai/gpt-oss-120b (namespaced id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Groq model metadata is returned\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  pm.expect(j.id, 'namespaced id must reach Groq as two path segments: ' + body).to.equal('groq/openai/gpt-oss-120b');",
+                  "  pm.expect(j.created, body).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/groq/openai/gpt-oss-120b",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "groq",
+                "openai",
+                "gpt-oss-120b"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: xai/grok-4-0709",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"xAI model metadata is returned\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  pm.expect(j.id.indexOf('xai/grok-4'), 'unexpected id: ' + body).to.equal(0);",
+                  "  pm.expect(j.created, body).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/xai/grok-4-0709",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "xai",
+                "grok-4-0709"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: mistral/mistral-small-latest",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Mistral model card is returned\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  pm.expect(j.id.indexOf('mistral/mistral-small'), 'unexpected id: ' + body).to.equal(0);",
+                  "  pm.expect(j.context_length, body).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/mistral/mistral-small-latest",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "mistral",
+                "mistral-small-latest"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: anthropic/claude-haiku-4-5 resolves the alias to a dated id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Anthropic resolves the alias to a dated model id\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  pm.expect(j.id, 'alias was not resolved to a dated id: ' + body).to.match(/^anthropic\\/claude-haiku-4-5-\\d{8}$/);",
+                  "  pm.expect(j.created, 'created_at must be converted to a unix timestamp: ' + body).to.be.above(0);",
+                  "  pm.expect(j.name, body).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/anthropic/claude-haiku-4-5",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "anthropic",
+                "claude-haiku-4-5"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: gemini/gemini-2.5-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Gemini models.get metadata is returned\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  pm.expect(j.id, body).to.equal('gemini/gemini-2.5-flash');",
+                  "  pm.expect(j.max_input_tokens, body).to.be.above(0);",
+                  "  pm.expect(j.context_length, 'context window must be the input limit, not input+output: ' + body).to.equal(j.max_input_tokens);",
+                  "  pm.expect(j.supported_methods, body).to.include('generateContent');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/gemini/gemini-2.5-flash",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "gemini",
+                "gemini-2.5-flash"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: cohere/command-a-03-2025",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Cohere model metadata is returned\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  pm.expect(j.id, body).to.equal('cohere/command-a-03-2025');",
+                  "  pm.expect(j.context_length, body).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/cohere/command-a-03-2025",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "cohere",
+                "command-a-03-2025"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] Retrieve model: openai unknown model surfaces the upstream 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"An unknown model is reported as not found, not unsupported\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'expected the upstream 404: ' + body).to.equal(404);",
+                  "  pm.expect(body.indexOf('unsupported_operation'), 'must reach the provider, not be refused as unsupported: ' + body).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/openai/bifrost-harness-no-such-model",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "openai",
+                "bifrost-harness-no-such-model"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] Retrieve model: deepseek/deepseek-v4-flash is reported unsupported",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"A provider without a retrieve endpoint returns unsupported_operation\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'expected 400 unsupported_operation: ' + body).to.equal(400);",
+                  "  pm.expect(body, 'expected an unsupported_operation error: ' + body).to.include('unsupported_operation');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/deepseek/deepseek-v4-flash",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "deepseek",
+                "deepseek-v4-flash"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: openai%2Fgpt-4o-mini, encoded the way OpenAI SDKs send it (native /v1)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"An SDK-encoded provider/model id is decoded before routing\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'not served by the retrieve path: ' + body).to.equal('model_retrieve');",
+                  "  pm.expect(j.id, body).to.equal('openai/gpt-4o-mini');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/openai%2Fgpt-4o-mini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "openai%2Fgpt-4o-mini"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: anthropic%2Fclaude-haiku-4-5 encoded via /openai drop-in",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"An SDK-encoded id on the drop-in reaches its provider\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.object, body).to.equal('model');",
+                  "  pm.expect(j.id, 'alias was not resolved to a dated id: ' + body).to.match(/^anthropic\\/claude-haiku-4-5-\\d{8}$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/models/anthropic%2Fclaude-haiku-4-5",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "models",
+                "anthropic%2Fclaude-haiku-4-5"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve model: groq%2Fopenai%2Fgpt-oss-120b encoded namespaced id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"An SDK-encoded namespaced id keeps its inner segment\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, body).to.equal('groq/openai/gpt-oss-120b');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/groq%2Fopenai%2Fgpt-oss-120b",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "groq%2Fopenai%2Fgpt-oss-120b"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] Retrieve model: openai encoded ../ traversal is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Decoding must not turn an encoded ../ into a path the provider resolves\", function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'expected the traversal to be refused: ' + body).to.equal(400);",
+                  "  pm.expect(body, 'expected the model id to be rejected: ' + body).to.include('invalid model');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models/openai%2F..%2F..%2Fchat%2Fcompletions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models",
+                "openai%2F..%2F..%2Fchat%2Fcompletions"
               ]
             }
           }
