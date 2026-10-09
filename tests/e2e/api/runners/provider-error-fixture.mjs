@@ -3,10 +3,18 @@ import http from "node:http";
 const port = Number(process.env.PROVIDER_ERROR_FIXTURE_PORT || "8791");
 
 // Per-model behaviour for POST /v1/chat/completions. The model name in the request
-// body selects the response, so one fixture serves every case.
+// body selects the response, so one fixture serves every case. A model may carry a
+// "~tag" suffix ("upstream-500~ps02-a-run-1"): the part before "~" selects the
+// behaviour and hits are counted under the full name, so a case that sends its own
+// tag (through a key alias) counts its own attempts without resetting anyone else's.
 const errorBody = (message, type, code) => JSON.stringify({ error: { message, type, code } });
 
+// How long upstream-slow waits before it answers, long enough that a 500ms first-token
+// deadline always fires first and short enough to stay inside any request timeout.
+const SLOW_MS = 2000;
+
 const behaviours = {
+	"upstream-500": () => ({ status: 500, headers: {}, body: errorBody("internal server error", "server_error", "internal_error") }),
 	"upstream-503": () => ({ status: 503, headers: {}, body: errorBody("service unavailable", "server_error", "service_unavailable") }),
 	"upstream-429": () => ({ status: 429, headers: { "Retry-After": "7" }, body: errorBody("rate limit exceeded", "rate_limit_error", "rate_limit_exceeded") }),
 	"upstream-429-ms": () => ({ status: 429, headers: { "retry-after-ms": "2500" }, body: errorBody("rate limit exceeded", "rate_limit_error", "rate_limit_exceeded") }),
@@ -22,6 +30,26 @@ const behaviours = {
 			usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
 		}),
 	}),
+};
+// upstream-slow answers as upstream-ok does, after SLOW_MS.
+behaviours["upstream-slow"] = () => ({ ...behaviours["upstream-ok"](), delayMs: SLOW_MS });
+// upstream-cut starts answering as upstream-ok does and drops the connection partway: a stream gets its first
+// content chunk and then a closed socket, a non-streamed request a closed socket.
+behaviours["upstream-cut"] = () => ({ ...behaviours["upstream-ok"](), cut: true });
+
+// A streamed chat request (stream: true) that a behaviour answers with a completion gets the same
+// answer as server-sent chunks: the role, the content, the finish reason, the usage when
+// stream_options.include_usage asks for it, then [DONE].
+const streamChunks = (completion, includeUsage) => {
+	const base = { id: completion.id, object: "chat.completion.chunk", created: completion.created, model: completion.model };
+	const choice = completion.choices[0];
+	const chunks = [
+		{ ...base, choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }] },
+		{ ...base, choices: [{ index: 0, delta: { content: choice.message.content }, finish_reason: null }] },
+		{ ...base, choices: [{ index: 0, delta: {}, finish_reason: choice.finish_reason }] },
+	];
+	if (includeUsage) chunks.push({ ...base, choices: [], usage: completion.usage });
+	return chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n";
 };
 
 // Hit counts per model let a case prove a failover really tried the primary once and the
@@ -111,10 +139,18 @@ const server = http.createServer((req, res) => {
 	req.on("data", (c) => chunks.push(c));
 	req.on("end", () => {
 		let model = "";
+		let parsed = {};
 		try {
-			model = JSON.parse(Buffer.concat(chunks).toString("utf8")).model || "";
+			parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) || {};
+			model = parsed.model || "";
 		} catch {}
 		hits[model] = (hits[model] || 0) + 1;
+		// test-key is the only credential the fixture accepts. A request bearing any other key is refused
+		// with 401 before its model is looked at, which is how a provider refuses a caller's direct key.
+		const auth = req.headers.authorization;
+		if (auth !== undefined && auth !== "Bearer test-key") {
+			return send(401, {}, errorBody("Incorrect API key provided", "invalid_request_error", "invalid_api_key"));
+		}
 		if (model === "upstream-fixed-length-short" || model === "upstream-fixed-length-ok") {
 			// finish_reason makes this semantically complete even without [DONE].
 			// Only the transport's Content-Length check can reject the short body.
@@ -132,7 +168,16 @@ const server = http.createServer((req, res) => {
 				if (truncated) socket.end(); // Graceful EOF without a Connection: close header.
 			});
 		}
+		// The model's behaviour picks the response, so only an own entry may be looked up: "constructor" or
+		// "toString" must be an unknown model, not an inherited function.
+		const name = model.split("~")[0];
 		if (path === "/v1/responses") {
+			// A Responses request whose model names an error behaviour gets that error; any other model gets the
+			// fixed reasoning response below.
+			const failing = Object.hasOwn(behaviours, name) ? behaviours[name]() : undefined;
+			if (failing && failing.status !== 200) {
+				return send(failing.status, failing.headers, failing.body);
+			}
 			let body = {};
 			try {
 				body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -140,14 +185,32 @@ const server = http.createServer((req, res) => {
 			const r = responsesFor(body, (k) => { hits[k] = (hits[k] || 0) + 1; });
 			return send(r.status, r.headers, r.body);
 		}
-		// The model comes from the request body, so only an own entry may be looked up: "constructor" or
-		// "toString" must be an unknown model, not an inherited function.
-		const behaviour = model === "azure-filtered" ? azureFiltered : Object.hasOwn(behaviours, model) ? behaviours[model] : undefined;
+		const behaviour = name === "azure-filtered" ? azureFiltered : Object.hasOwn(behaviours, name) ? behaviours[name] : undefined;
 		if (!behaviour) {
 			return send(404, {}, errorBody(`unknown fixture model ${model}`, "invalid_request_error", "model_not_found"));
 		}
 		const r = behaviour();
-		send(r.status, r.headers, r.body);
+		const answer = () => {
+			if (r.cut) {
+				if (parsed.stream !== true) {
+					return req.socket.destroy();
+				}
+				const first = streamChunks(JSON.parse(r.body), false).split("\n\n").slice(0, 2).join("\n\n") + "\n\n";
+				res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+				res.write(first);
+				return setTimeout(() => req.socket.destroy(), 100);
+			}
+			if (parsed.stream === true && r.status === 200 && path !== "/v1/responses") {
+				const completion = JSON.parse(r.body);
+				res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", ...r.headers });
+				return res.end(streamChunks(completion, !!(parsed.stream_options && parsed.stream_options.include_usage)));
+			}
+			send(r.status, r.headers, r.body);
+		};
+		if (r.delayMs) {
+			return setTimeout(answer, r.delayMs);
+		}
+		answer();
 	});
 });
 

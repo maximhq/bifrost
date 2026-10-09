@@ -787,6 +787,76 @@ test.describe("LLM Logs", () => {
     })
   })
 
+  test.describe('Attempt Trail', () => {
+    // One request whose first attempt hit a rate limit on Key A and whose second, on Key B, the caller
+    // cancelled. The row is mocked so the test does not depend on a provider failing on cue.
+    const now = Date.now()
+    const log = {
+      id: 'trail-row',
+      object: 'chat.completion',
+      timestamp: new Date(now - 5_000).toISOString(),
+      created_at: new Date(now - 5_000).toISOString(),
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+      number_of_retries: 1,
+      fallback_index: 0,
+      status: 'error',
+      stream: false,
+      latency: 120,
+      cost: 0,
+      input_history: [],
+      responses_input_history: [],
+      attempt_trail: [
+        { attempt: 0, key_id: 'key-a', key_name: 'Key A', failure_class: 'rate_limit', status_code: 429, fail_reason: 'rate_limit_error', triggered_rotation: true },
+        { attempt: 1, key_id: 'key-b', key_name: 'Key B', failure_class: 'cancelled', status_code: 499, triggered_rotation: false },
+      ],
+    }
+
+    test.beforeEach(async ({ page }) => {
+      await page.route(
+        (url) => url.pathname === '/api/logs',
+        async (route) => {
+          if (route.request().method() !== 'GET') return route.continue()
+          await route.fulfill({
+            json: {
+              logs: [log],
+              pagination: { limit: 50, offset: 0, sort_by: 'timestamp', order: 'desc' },
+              stats: {
+                total_requests: 1,
+                success_rate: 0,
+                user_facing_success_rate: 0,
+                user_facing_total_requests: 1,
+                average_latency: 120,
+                total_tokens: 0,
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_cost: 0,
+              },
+              has_logs: true,
+            },
+          })
+        },
+      )
+      await page.route(
+        (url) => url.pathname === `/api/logs/${log.id}`,
+        (route) => route.fulfill({ json: log }),
+      )
+    })
+
+    // A cancelled attempt has a class and a status but no fail_reason: it reads as cancelled, not as
+    // a success, and a provider's refusal reads as its fail_reason (PR #8231).
+    test('should show each attempt with its class or reason and its status', async ({ logsPage, page }) => {
+      await page.goto('/workspace/logs')
+      await logsPage.viewLogDetails(0)
+      await logsPage.logDetailSheet.getByRole('tab', { name: /Routing/ }).click()
+
+      const rows = logsPage.logDetailSheet.getByRole('row')
+      await expect(rows.filter({ hasText: 'Key A' })).toContainText('rate_limit_error · 429')
+      await expect(rows.filter({ hasText: 'Key B' })).toContainText('cancelled · 499')
+      await expect(rows.filter({ hasText: 'Key B' })).not.toContainText('success')
+    })
+  })
+
   test.describe("URL State Persistence", () => {
     test("should persist filters in URL", async ({ logsPage }) => {
       const searchVisible = await logsPage.searchInput
