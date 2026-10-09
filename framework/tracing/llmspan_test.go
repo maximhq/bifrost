@@ -1040,3 +1040,63 @@ func TestPopulateErrorAttributes_NilError(t *testing.T) {
 		t.Errorf("attrs = %v, want empty for a nil error", attrs)
 	}
 }
+
+// A failed request carries its own raw bodies on BifrostError.ExtraFields. They used to
+// be dropped entirely: ApplyResponse only reached buildResponseSide when resp != nil, and
+// the raw assignment lived only there, so the provider's error body — the most useful
+// thing to see for a failure — never reached a connector.
+func TestRawPayloadsCapturedOnFailedRequest(t *testing.T) {
+	newErr := func() *schemas.BifrostError {
+		e := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "model_not_found"}}
+		e.ExtraFields.RawRequest = map[string]any{"prompt": "failed-request-body"}
+		e.ExtraFields.RawResponse = map[string]any{"error": "failed-response-body"}
+		return e
+	}
+
+	t.Run("captured under demand with no response", func(t *testing.T) {
+		d := BuildLLMSpanData(nil, nil, newErr(), SpanBuildOptions{WantRawPayloads: true})
+		if !strings.Contains(d.RawRequest, "failed-request-body") {
+			t.Errorf("raw request not captured on failure: %q", d.RawRequest)
+		}
+		if !strings.Contains(d.RawResponse, "failed-response-body") {
+			t.Errorf("raw response not captured on failure: %q", d.RawResponse)
+		}
+	})
+
+	t.Run("still gated on demand", func(t *testing.T) {
+		d := BuildLLMSpanData(nil, nil, newErr(), SpanBuildOptions{})
+		if d.RawRequest != "" || d.RawResponse != "" {
+			t.Errorf("raw built without demand: req=%q resp=%q", d.RawRequest, d.RawResponse)
+		}
+	})
+
+	t.Run("via ApplyResponse, the live two-pass path", func(t *testing.T) {
+		d := BuildLLMSpanData(nil, nil, nil, SpanBuildOptions{WantRawPayloads: true})
+		ApplyResponse(d, nil, newErr(), SpanBuildOptions{WantRawPayloads: true})
+		if !strings.Contains(d.RawRequest, "failed-request-body") {
+			t.Errorf("raw request not captured via ApplyResponse: %q", d.RawRequest)
+		}
+		if !strings.Contains(d.RawResponse, "failed-response-body") {
+			t.Errorf("raw response not captured via ApplyResponse: %q", d.RawResponse)
+		}
+	})
+
+	// A cancelled stream arrives with BOTH an accumulated response and an error. The
+	// response side runs first and has the richer bodies; the error side must not
+	// overwrite them with its own.
+	t.Run("does not clobber payloads the response side already set", func(t *testing.T) {
+		resp := &schemas.BifrostResponse{
+			ChatResponse: &schemas.BifrostChatResponse{ID: "c1", Model: "gpt-4o-mini"},
+		}
+		resp.ChatResponse.ExtraFields.RawRequest = map[string]any{"prompt": "accumulated-request"}
+		resp.ChatResponse.ExtraFields.RawResponse = map[string]any{"text": "accumulated-response"}
+
+		d := BuildLLMSpanData(nil, resp, newErr(), SpanBuildOptions{WantRawPayloads: true})
+		if !strings.Contains(d.RawRequest, "accumulated-request") {
+			t.Errorf("response-side raw request was overwritten: %q", d.RawRequest)
+		}
+		if !strings.Contains(d.RawResponse, "accumulated-response") {
+			t.Errorf("response-side raw response was overwritten: %q", d.RawResponse)
+		}
+	})
+}
