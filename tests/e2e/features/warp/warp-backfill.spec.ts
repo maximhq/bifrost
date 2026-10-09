@@ -18,7 +18,7 @@ const configuredWarp = {
   embedding_model: 'text-embedding-3-small',
   embedding_dimension: 1536,
   log_vector_store_namespace: 'BifrostWarpLogs',
-  semantic_search_threshold: 0.7,
+  semantic_search_threshold: 0.5,
   semantic_search_limit: 10,
   vector_store_connected: true,
 }
@@ -167,5 +167,35 @@ test.describe('Warp backfill status after the embedding space is saved over', ()
     // to Start. The old run must not have been kept as this space's result.
     await expect(page.getByTestId('warp-backfill-start-btn')).toBeVisible()
     await expect(status).toHaveCount(0)
+  })
+})
+
+// The threshold is a 0-1 similarity on every vector store, and real topic
+// matches score 0.575 to 0.735 on it, so a deployment that never set one
+// starts at 0.5. A saved value is the operator's and is shown as saved.
+test.describe('Warp semantic search threshold', () => {
+  test('shows 0.5 when none is saved, and a saved value unchanged', async ({ page }) => {
+    await page.route('**/api/feature-flags', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue()
+      const response = await route.fetch()
+      const body = (await response.json()) as { flags: { id: string; enabled: boolean }[] }
+      body.flags = body.flags.map((flag) => (flag.id === 'warp' ? { ...flag, enabled: true } : flag))
+      await route.fulfill({ response, json: body })
+    })
+    let threshold = 0
+    await page.route('**/api/warp/config', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ...configuredWarp, semantic_search_threshold: threshold }),
+      }),
+    )
+
+    await page.goto('/workspace/config/warp')
+    await expect(page.getByTestId('warp-search-threshold-input')).toHaveValue('0.5')
+
+    threshold = 0.62
+    await page.reload()
+    await expect(page.getByTestId('warp-search-threshold-input')).toHaveValue('0.62')
   })
 })

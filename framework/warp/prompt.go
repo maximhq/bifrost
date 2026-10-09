@@ -200,7 +200,8 @@ type timeContext struct {
 const SemanticSearchGuidance = "\n- Warp's own queries are in the aggregates (see app \"Warp\" above), but semantic_search_logs does not include them, since a question you asked yourself is not a conversation to search." +
 	"\n- Use semantic_search_logs when the question is about what conversations meant, discussed, requested, or answered. " +
 	"It searches the meaning of logged user and assistant text. Use query_logs, count_logs, and query_metrics for exact fields, counts, totals, rankings, latency, cost, and trends." +
-	"\n- A topic question takes its sample with semantic_search_logs - one call per topic to check; do not also call query_logs for the same question. " +
+	"\n- A topic question takes its sample with semantic_search_logs - one call per topic, with two to five phrasings of it that describe the requests (\"users asking for help planning a trip\", \"travel itinerary for a city\"); do not also call query_logs for the same question. " +
+	"Its rows are ranked, not judged: before answering, drop every row whose content is not about the topic, and count and quote only what remains. A topic with no rows left has no matching conversations, whatever the scores were. " +
 	"A survey question takes the query_logs sample described above first: a description of what someone was doing (\"Rohan's work requests and activities\") is not a conversation and does not embed near one, so searching for it finds nothing. " +
 	"Once the sample suggests a theme or two, semantic_search_logs may probe each one, and the answer says those are probes of a theme, not counts of it."
 

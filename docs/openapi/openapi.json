@@ -125282,7 +125282,8 @@
             "type": "number",
             "exclusiveMinimum": 0,
             "maximum": 1,
-            "default": 0.8
+            "default": 0.5,
+            "description": "Minimum similarity for semantic log search, in 0..1 as (1 + cosine) / 2:\n0.5 is cosine 0 and 1 is cosine 1. The mapping holds for cosine-scored\nindexes only. A Pinecone score is read as cosine without checking the\nindex metric, so a Pinecone index must use the cosine metric.\n"
           },
           "semantic_search_limit": {
             "type": "integer",
@@ -125426,8 +125427,8 @@
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "default": 0.8,
-            "description": "Zero means \"use the default\". ValidateConfigInput resolves an explicit\nzero before validating, so the write is accepted; the resolved value on\nWarpConfig keeps the positive bound.\n"
+            "default": 0.5,
+            "description": "Minimum similarity for semantic log search, in 0..1 as (1 + cosine) / 2:\n0.5 is cosine 0 and 1 is cosine 1. The mapping holds for cosine-scored\nindexes only. A Pinecone score is read as cosine without checking the\nindex metric, so a Pinecone index must use the cosine metric.\nZero means \"use the default\". ValidateConfigInput resolves an explicit\nzero before validating, so the write is accepted; the resolved value on\nWarpConfig keeps the positive bound.\n"
           },
           "semantic_search_limit": {
             "type": "integer",
