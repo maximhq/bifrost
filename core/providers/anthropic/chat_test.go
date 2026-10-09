@@ -1379,13 +1379,13 @@ func TestToAnthropicChatRequest_StructuredOutput_ToolConversion_NoThinking(t *te
 }
 
 // TestToAnthropicChatRequest_StructuredOutput_Fable51_NoForcedToolChoice mirrors the
-// thinking-enabled case for Fable 5.1 / Mythos 5.1: the synthetic tool is still
+// thinking-enabled case for Fable 5.1 / Mythos 5.1 / Sonnet 5.5: the synthetic tool is still
 // added, but the pin is not, because those models reject tool_choice "tool" and
 // "any" with a 400. With only the bf_so_* tool bound the model reaches it under
 // the default "auto".
 func TestToAnthropicChatRequest_StructuredOutput_Fable51_NoForcedToolChoice(t *testing.T) {
 	for _, provider := range toolConversionProviders {
-		for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1"} {
+		for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1", "claude-sonnet-5-5"} {
 			t.Run(string(provider)+"/"+model, func(t *testing.T) {
 				rf := makeSOResponseFormat("my_schema")
 				bifrostReq := &schemas.BifrostChatRequest{

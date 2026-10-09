@@ -150,12 +150,12 @@ func TestToAnthropicResponsesRequest_StructuredOutput_ToolConversion(t *testing.
 
 // TestToAnthropicResponsesRequest_StructuredOutput_Fable51_NoForcedToolChoice is the
 // Fable 5.1 counterpart: the synthetic tool is still added, but the pin is not,
-// because Fable 5.1 / Mythos 5.1 reject tool_choice "tool" and "any" with a 400.
+// because Fable 5.1 / Mythos 5.1 / Sonnet 5.5 reject tool_choice "tool" and "any" with a 400.
 // The model reaches the tool under the default "auto" — with only the bf_so_*
 // tool bound there is nothing else it can call.
 func TestToAnthropicResponsesRequest_StructuredOutput_Fable51_NoForcedToolChoice(t *testing.T) {
 	for _, provider := range toolConversionProviders {
-		for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1"} {
+		for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1", "claude-sonnet-5-5"} {
 			t.Run(string(provider)+"/"+model, func(t *testing.T) {
 				req := &schemas.BifrostResponsesRequest{
 					Provider: provider,
