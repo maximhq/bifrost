@@ -218090,10 +218090,10 @@
     },
     {
       "name": "187. Bedrock chat prompt cache control preserved alongside guardrail tagging (#8215 / PR #8216) (bedrock-prompt-cache-guardrail)",
-      "description": "Pins that prompt cache control markers (cache_control) survive deep copying during Bedrock chat request guardrail tagging (#8215 / PR #8216).",
+      "description": "Pins that prompt cache control markers (cache_control) survive deep copying on the Bedrock Claude InvokeModel path during guardrail tagging, and map to Converse cachePoint blocks on the Converse path (#8215 / PR #8216).",
       "item": [
         {
-          "name": "Bedrock chat completions: cache_control survives guardrail deep copy (Haiku 4.5) - #8215",
+          "name": "Bedrock chat completions InvokeModel: cache_control survives guardrail deep copy (Haiku 4.5) - #8215",
           "event": [
             {
               "listen": "test",
@@ -218103,13 +218103,19 @@
                   "var txt = pm.response.text() || '';",
                   "var body = {};",
                   "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-                  "// #8215: when guardrailConfig / guard_content is supplied on a Bedrock chat request, the request is deep-copied",
-                  "// for tag synthesis. Before the fix, deepCopyChatContentBlock dropped cache_control, citations, and breakpoint fields.",
-                  "// The raw request capture proves cache_control survives through to the outbound request.",
-                  "pm.test('Bedrock chat completions cache_control alongside guardrail - #8215: request succeeds', function () {",
+                  "// #8215: when guardrailConfig / guard_content is supplied on a Bedrock Claude InvokeModel chat request (e.g. carrying compaction),",
+                  "// the request is deep-copied in invokeChatGuardTagging for tag synthesis. Before the fix, deepCopyChatContentBlock dropped",
+                  "// cache_control, citations, and breakpoint fields. The raw request capture proves cache_control survives to the Anthropic payload.",
+                  "pm.test('Bedrock chat completions InvokeModel cache_control alongside guardrail - #8215: request succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
                   "});",
-                  "pm.test('Bedrock chat completions cache_control alongside guardrail - #8215: prompt cache_control preserved in raw request', function () {",
+                  "pm.test('Bedrock chat completions InvokeModel cache_control alongside guardrail - #8215: raw request egresses via InvokeModel', function () {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "  pm.expect(raw, 'raw request capture missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(raw.anthropic_version, 'anthropic_version missing: request did not route to InvokeModel').to.eql('bedrock-2023-05-31');",
+                  "});",
+                  "pm.test('Bedrock chat completions InvokeModel cache_control alongside guardrail - #8215: prompt cache_control preserved in raw request', function () {",
                   "  var raw = (body.extra_fields || {}).raw_request;",
                   "  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
                   "  pm.expect(raw, 'raw request capture missing: ' + txt.slice(0, 400)).to.be.an('object');",
@@ -218117,6 +218123,67 @@
                   "  pm.expect(blocks.length, 'expected at least 2 content blocks: ' + JSON.stringify(blocks)).to.be.at.least(2);",
                   "  var cached = blocks.filter(function (b) { return b && b.cache_control && b.cache_control.type === 'ephemeral'; });",
                   "  pm.expect(cached.length, 'cache_control was stripped by deep copy during guardrail tagging: ' + JSON.stringify(blocks)).to.eql(1);",
+                  "  var guarded = blocks.filter(function (b) { return b && typeof b.text === 'string' && b.text.indexOf('amazon-bedrock-guardrails-query_h7q2') !== -1; });",
+                  "  pm.expect(guarded.length, 'guardrail tag missing on guarded block: ' + JSON.stringify(blocks)).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Context prefix to cache.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the capital of France?\",\n          \"guard_content\": {\n            \"qualifiers\": [\n              \"query\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"context_management\": {\n    \"edits\": [\n      {\n        \"type\": \"compact_20260112\",\n        \"trigger\": {\n          \"type\": \"input_tokens\",\n          \"value\": 50000\n        }\n      }\n    ]\n  },\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n    \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n    \"tagSuffix\": \"h7q2\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock chat completions Converse: cache_control converts to cachePoint block (Haiku 4.5) - #8215",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "// On the standard Bedrock Converse chat completions path, cache_control converts to a separate { cachePoint: { type: \"default\" } } block.",
+                  "pm.test('Bedrock chat completions Converse cachePoint alongside guardrail - #8215: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('Bedrock chat completions Converse cachePoint alongside guardrail - #8215: cachePoint block present in raw request', function () {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "  pm.expect(raw, 'raw request capture missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var blocks = ((raw.messages || [])[0] || {}).content || [];",
+                  "  var cachePoints = blocks.filter(function (b) { return b && b.cachePoint && b.cachePoint.type === 'default'; });",
+                  "  pm.expect(cachePoints.length, 'expected exactly one cachePoint block in Converse request: ' + JSON.stringify(blocks)).to.eql(1);",
+                  "  var guarded = blocks.filter(function (b) { return b && b.guardContent && b.guardContent.text && b.guardContent.text.text === 'What is the capital of France?'; });",
+                  "  pm.expect(guarded.length, 'guardContent entry missing in Converse request: ' + JSON.stringify(blocks)).to.eql(1);",
+                  "  pm.expect(guarded[0].guardContent.text.qualifiers, 'qualifiers not forwarded').to.eql(['query']);",
                   "});"
                 ]
               }
