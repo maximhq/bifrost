@@ -238,16 +238,27 @@ func TestWarpAgentNamesAGovernanceRefusal(t *testing.T) {
 		require.Contains(t, last.Message, "access not found", "the deployment's own reason is kept for whoever has to fix it")
 	})
 
-	t.Run("any other policy refusal keeps its own reason", func(t *testing.T) {
-		for _, kind := range []schemas.ErrorType{
-			schemas.ErrorTypePolicyBudgetExceeded, schemas.ErrorTypePolicyRateLimited,
-			schemas.ErrorTypePolicyModelBlocked, schemas.ErrorTypePolicyProviderBlocked,
+	// A spent budget filed under access_denied was headlined "Your account doesn't
+	// have access to Warp's model" to someone who has access and simply used it
+	// up. Each kind of refusal gets its own code so the headline says which.
+	t.Run("every other policy refusal names its kind and keeps its reason", func(t *testing.T) {
+		for kind, code := range map[schemas.ErrorType]string{
+			schemas.ErrorTypePolicyBudgetExceeded:  ErrBudgetExceeded,
+			schemas.ErrorTypePolicyRateLimited:     ErrRateLimited,
+			schemas.ErrorTypePolicyModelBlocked:    ErrModelBlocked,
+			schemas.ErrorTypePolicyProviderBlocked: ErrModelBlocked,
 		} {
-			last := run(refused("blocked", kind, "budget exceeded for team platform"))
-			require.Equal(t, ErrAccessDenied, last.Code, kind)
-			require.Contains(t, last.Message, "budget exceeded for team platform", kind)
+			last := run(refused("blocked", kind, "user budget exceeded: 0.0600 >= 0.0500 dollars"))
+			require.Equal(t, code, last.Code, kind)
+			require.Contains(t, last.Message, "user budget exceeded: 0.0600 >= 0.0500 dollars", kind)
 			require.NotContains(t, last.Message, "access profile", kind)
 		}
+	})
+
+	t.Run("an access refusal that is not a missing credential is still access_denied", func(t *testing.T) {
+		last := run(refused("access_blocked", schemas.ErrorTypePolicyAccessDenied, "virtual key is inactive"))
+		require.Equal(t, ErrAccessDenied, last.Code)
+		require.Contains(t, last.Message, "virtual key is inactive")
 	})
 
 	t.Run("a provider failure is still an upstream error", func(t *testing.T) {

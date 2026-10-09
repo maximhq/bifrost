@@ -202996,7 +202996,7 @@
     },
     {
       "name": "174. Warp chat names a model call governance refused (warp-refusal) [SERIAL]",
-      "description": "Warp's model calls are governed as whoever asked: the chat handler settles a grant from the dashboard request, including a virtual key sent in x-bf-vk. When governance refused that call - no access configured for the caller, an exhausted budget, a blocked model - Warp reported it as upstream_error, the code it uses for a provider outage, so the dashboard said Warp's model could not be reached and pointed the reader at the provider key. A signed-in user with no model access was told a credential had been revoked. Governance refusals now carry their own code, access_denied, and the no-access case says what to ask an administrator for while keeping governance's own reason. The case sends one chat with a virtual key that does not exist, which governance refuses before any provider is called, so no model tokens are spent. Red before the change: error.code was upstream_error. Requires the warp flag to be unlocked and the governance plugin enabled; the flag and the previous Warp config are restored at the end.",
+      "description": "Warp's model calls are governed as whoever asked: the chat handler settles a grant from the dashboard request, including a virtual key sent in x-bf-vk. When governance refused that call - no access configured for the caller, an exhausted budget, a blocked model - Warp reported it as upstream_error, the code it uses for a provider outage, so the dashboard said Warp's model could not be reached and pointed the reader at the provider key. A signed-in user with no model access was told a credential had been revoked. Governance refusals now carry their own code, access_denied, and the no-access case says what to ask an administrator for while keeping governance's own reason. The case sends one chat with a virtual key that does not exist, which governance refuses before any provider is called, so no model tokens are spent. Red before the change: error.code was upstream_error. Every other governance refusal then shared access_denied too, so a spent budget was headlined to the user as having no access to Warp's model; each kind now has its own code (budget_exceeded, rate_limited, model_blocked). A second chat uses a run-scoped virtual key that allows only gpt-4o while Warp runs on gpt-4o-mini, which governance refuses as a blocked model before any provider is called, and expects model_blocked. Red before that change: error.code was access_denied. Requires the warp flag to be unlocked and the governance plugin enabled; the flag and the previous Warp config are restored at the end.",
       "item": [
         {
           "name": "openai warp-refusal setup: read warp feature flag",
@@ -203233,6 +203233,185 @@
               }
             },
             "url": "{{baseUrl}}/api/warp/chat"
+          }
+        },
+        {
+          "name": "openai warp-refusal setup: create a virtual key that does not allow gpt-4o-mini",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('warpRefusalBlockedVkId');",
+                  "  pm.collectionVariables.unset('warpRefusalBlockedVkValue');",
+                  "  pm.collectionVariables.set('warpRefusalBlockedVkName', 'harness-warp-refusal-blocked-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "// Its id is the only reference to it, so it is cleared only once the delete is confirmed.",
+                  "var staleVkId = pm.collectionVariables.get('warpRefusalBlockedVkId');",
+                  "if (!staleVkId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleVkId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('warp-refusal: the retained virtual key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleVkId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleVkId + ' not deleted: ' + response.text()).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    // Keep the id so cleanup and the next run retry the delete, and drop the value",
+                  "    // so the blocked-model case skips instead of running on the stale key.",
+                  "    pm.collectionVariables.unset('warpRefusalBlockedVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal: model-restricted virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('warp-refusal: the virtual key has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('warpRefusalBlockedVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('warpRefusalBlockedVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{warpRefusalBlockedVkName}}\",\"provider_configs\":[{\"provider\":\"openai\",\"allowed_models\":[\"gpt-4o\"],\"weight\":1}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-refusal: a blocked model is model_blocked, not access_denied",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without the restricted key this call would run as the dashboard caller and spend",
+                  "// tokens; the failed setup request above already reports why it is missing.",
+                  "if (!pm.collectionVariables.get('warpRefusalBlockedVkValue')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal blocked: chat responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('warp-refusal blocked: the turn failed without an answer', function () {",
+                  "  pm.expect(body.error, 'expected a refused turn: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.answer, 'a refused turn has no answer: ' + pm.response.text()).to.equal('');",
+                  "});",
+                  "pm.test('warp-refusal blocked: the refusal is named as a blocked model, not as missing access', function () {",
+                  "  pm.expect(body.error.code, 'wrong code: ' + pm.response.text()).to.equal('model_blocked');",
+                  "});",
+                  "pm.test('warp-refusal blocked: the message keeps the governance reason', function () {",
+                  "  pm.expect(body.error.message, pm.response.text()).to.include('gpt-4o-mini');",
+                  "  pm.expect(body.error.message, pm.response.text()).to.include('not allowed');",
+                  "  pm.expect(body.error.message, pm.response.text()).to.not.include('access profile');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{warpRefusalBlockedVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/chat"
+          }
+        },
+        {
+          "name": "openai warp-refusal cleanup: delete the model-restricted virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('warpRefusalBlockedVkId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-refusal: model-restricted virtual key deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Keep the id when the key is still there, so the next setup retries the delete.",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('warpRefusalBlockedVkId');",
+                  "  pm.collectionVariables.unset('warpRefusalBlockedVkValue');",
+                  "  pm.collectionVariables.unset('warpRefusalBlockedVkName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{warpRefusalBlockedVkId}}"
           }
         },
         {
