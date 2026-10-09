@@ -2673,6 +2673,14 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{"claude-3-5-sonnet-20241022", false},
 		{"claude-3-opus", false},
 		{"claude-2.1", false},
+		{"anthropic.claude-v2:1", false},
+		{"anthropic.claude-v2", false},
+		{"anthropic.claude-instant-v1", false},
+		// Version-first deployment aliases keep their dev-era classification.
+		{"claude-4.6-sonnet", true},
+		{"claude-4.5-sonnet", false},
+		{"claude-4-sonnet", false},
+		{"claude-4.5-haiku", false},
 		// Fail-open probe (synthetic id, not a real model): an unrecognized Claude id
 		// is assumed adaptive; a non-Claude id is not.
 		{"claude-newfamily-6", true},
@@ -2717,7 +2725,15 @@ func TestClaudeOpusSonnet4Minor(t *testing.T) {
 		{"claude-opus-4-0", 0, true},
 		{"claude-opus-4", 0, true},   // alias, end of string
 		{"claude-sonnet-4", 0, true}, // alias, end of string
+		// Version-first deployment aliases.
+		{"claude-4.6-sonnet", 6, true},
+		{"claude-4-6-sonnet", 6, true},
+		{"claude-4.5-sonnet", 5, true},
+		{"claude-4-5-sonnet-global", 5, true},
+		{"claude-4-sonnet", 0, true},
+		{"claude-4.1-opus", 1, true},
 		// Not an Opus/Sonnet 4.x model.
+		{"claude-opus-40", 0, false}, // no boundary after the major
 		{"claude-sonnet-5", 0, false},
 		{"claude-opus-5", 0, false},
 		{"claude-3-7-sonnet", 0, false},
@@ -2882,6 +2898,11 @@ func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
 		{"claude-3-7-sonnet", false},
 		{"claude-3-5-haiku-20241022", false},
 		{"claude-2.1", false},
+		{"anthropic.claude-v2:1", false},
+		{"anthropic.claude-instant-v1", false},
+		{"claude-4.6-sonnet", false}, // dual-mode alias
+		{"claude-4.5-sonnet", false},
+		{"claude-4.5-haiku", false},
 		{"gpt-4o-mini", false},
 		{"", false},
 	}
@@ -3044,6 +3065,12 @@ func TestSupportsEffortParameter(t *testing.T) {
 		// Pre-4 generation.
 		{"claude-3-5-sonnet-20241022", false},
 		{"claude-3-opus", false},
+		{"anthropic.claude-v2:1", false},
+		{"anthropic.claude-instant-v1", false},
+		// Version-first aliases: Sonnet 4.6 takes effort, Sonnet/Haiku 4.5 do not.
+		{"claude-4.6-sonnet", true},
+		{"claude-4.5-sonnet", false},
+		{"claude-4.5-haiku", false},
 		// Defensive cases.
 		{"", false},
 		{"gpt-4o-mini", false},

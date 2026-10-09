@@ -1408,11 +1408,14 @@ func ApplyDefaultEagerInputStreamingToRawBody(jsonBody []byte, provider schemas.
 	return jsonBody, nil
 }
 
-// claudeOpusSonnet4MinorRe matches a Claude Opus/Sonnet 4.x model id and
-// captures its minor version when one is spelled out. The minor is 1-3 digits
-// right after "-4" or ".4" and must not be followed by another digit, so a
-// 2025xxxx date run after a bare "-4" is not read as a minor.
-var claudeOpusSonnet4MinorRe = regexp.MustCompile(`(?:opus|sonnet)-4(?:[-.](\d{1,3})(?:\D|$))?`)
+// claudeOpusSonnet4MinorRe matches a Claude Opus/Sonnet 4.x model id in either
+// spelling, family-first ("claude-opus-4-6-20250514") or version-first
+// ("claude-4.6-sonnet", a common deployment alias), and captures the minor
+// when one is spelled out. The minor is 1-3 digits right after "-4" or ".4"
+// and must not be followed by another digit, so a 2025xxxx date run after a
+// bare "-4" is not read as a minor. After the major, a non-digit or the end of
+// the id is required, so "opus-40" is not a 4.x model.
+var claudeOpusSonnet4MinorRe = regexp.MustCompile(`(?:opus|sonnet)-4(?:[-.](\d{1,3})(?:\D|$)|\D|$)|claude-4(?:[-.](\d{1,3}))?-(?:opus|sonnet)`)
 
 // claudeOpusSonnet4Minor extracts the minor version of a Claude Opus/Sonnet 4.x
 // model from a lowercased model id. It returns (minor, true) when m names such a
@@ -1428,15 +1431,21 @@ var claudeOpusSonnet4MinorRe = regexp.MustCompile(`(?:opus|sonnet)-4(?:[-.](\d{1
 //	claude-opus-4                 -> 0   (bare 4.0, alias)
 //	claude-opus-4.6               -> 6
 //	claude-opus-4-16              -> 16
+//	claude-4.6-sonnet             -> 6   (version-first alias)
+//	claude-4-sonnet               -> 0   (version-first bare 4.0)
 func claudeOpusSonnet4Minor(m string) (int, bool) {
 	sub := claudeOpusSonnet4MinorRe.FindStringSubmatch(m)
 	if sub == nil {
 		return 0, false
 	}
-	if sub[1] == "" {
+	digits := sub[1]
+	if digits == "" {
+		digits = sub[2]
+	}
+	if digits == "" {
 		return 0, true // bare 4.0
 	}
-	n, err := strconv.Atoi(sub[1])
+	n, err := strconv.Atoi(digits)
 	if err != nil {
 		return 0, true
 	}
@@ -1476,13 +1485,18 @@ func classifyClaudeThinking(m string) claudeThinkingTier {
 	if !strings.Contains(m, "claude") {
 		return claudeTierNotClaude
 	}
-	// Pre-Claude-4 generations, including every 3.x Haiku.
-	if strings.Contains(m, "claude-2") || strings.Contains(m, "claude-instant") || strings.Contains(m, "claude-3") {
+	// Pre-Claude-4 generations, including every 3.x Haiku and the Bedrock
+	// spellings anthropic.claude-v1 / claude-v2:1 / claude-instant-v1.
+	if strings.Contains(m, "claude-2") || strings.Contains(m, "claude-3") ||
+		strings.Contains(m, "claude-v1") || strings.Contains(m, "claude-v2") ||
+		strings.Contains(m, "claude-instant") {
 		return claudeTierLegacy
 	}
-	// Haiku 4.5 is the one budget_tokens-only Haiku. Match it explicitly rather
-	// than any "haiku" so a newer Haiku (Haiku 5.5 is adaptive-only) fails open.
-	if strings.Contains(m, "haiku-4-5") || strings.Contains(m, "haiku-4.5") {
+	// Haiku 4.5 is the one budget_tokens-only Haiku. Match it explicitly (both
+	// spellings) rather than any "haiku" so a newer Haiku (Haiku 5.5 is
+	// adaptive-only) fails open.
+	if strings.Contains(m, "haiku-4-5") || strings.Contains(m, "haiku-4.5") ||
+		strings.Contains(m, "4-5-haiku") || strings.Contains(m, "4.5-haiku") {
 		return claudeTierLegacy
 	}
 	if minor, ok := claudeOpusSonnet4Minor(m); ok {
@@ -1508,10 +1522,10 @@ func DefaultSupportsAdaptiveThinking(model string) bool {
 // (Opus 4.7+, Sonnet 5+, Haiku 5.5, Fable, and any newer Claude) adds xhigh.
 func DefaultEffortControl(model string) *schemas.EffortControl {
 	levels := []string{schemas.ReasoningEffortLow, schemas.ReasoningEffortMedium, schemas.ReasoningEffortHigh}
-	switch {
-	case DefaultAdaptiveOnlyThinking(model):
+	switch classifyClaudeThinking(strings.ToLower(model)) {
+	case claudeTierAdaptiveOnly:
 		levels = append(levels, schemas.ReasoningEffortXHigh, schemas.ReasoningEffortMax)
-	case DefaultSupportsAdaptiveThinking(model):
+	case claudeTierDualMode:
 		levels = append(levels, schemas.ReasoningEffortMax)
 	}
 	return &schemas.EffortControl{Levels: levels}
