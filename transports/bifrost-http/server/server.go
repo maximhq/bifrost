@@ -3057,6 +3057,24 @@ func (s *BifrostHTTPServer) GetAllRedactedRoutingRules(ctx context.Context, ids 
 	return routingRules
 }
 
+// prometheusHTTPMiddleware records Prometheus HTTP metrics. The plugin is resolved per
+// request rather than captured once, for the same reason as the otel middleware: a config
+// reload swaps in a freshly constructed instance, and a pointer captured at startup kept
+// recording into the orphaned one, so http_* series stopped appearing on /metrics after
+// any reload. Requests still pass through when no telemetry plugin is loaded.
+func (s *BifrostHTTPServer) prometheusHTTPMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			prometheusPlugin, err := lib.FindPluginAs[*telemetry.PrometheusPlugin](s.Config, telemetry.PluginName)
+			if err != nil {
+				next(ctx)
+				return
+			}
+			prometheusPlugin.HTTPMiddleware(next)(ctx)
+		}
+	}
+}
+
 // PrepareCommonMiddlewares gets the common middlewares for the Bifrost HTTP server
 func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMiddleware {
 	commonMiddlewares := []schemas.BifrostHTTPMiddleware{}
@@ -3074,13 +3092,7 @@ func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMidd
 		}
 	})
 	// Preparing middlewares
-	// Initializing prometheus plugin
-	prometheusPlugin, err := lib.FindPluginAs[*telemetry.PrometheusPlugin](s.Config, telemetry.PluginName)
-	if err == nil {
-		commonMiddlewares = append(commonMiddlewares, prometheusPlugin.HTTPMiddleware)
-	} else {
-		logger.Warn("prometheus plugin not found, skipping telemetry middleware")
-	}
+	commonMiddlewares = append(commonMiddlewares, s.prometheusHTTPMiddleware())
 	// OTel HTTP metrics (http_requests_total etc., pushed via OTLP). The otel plugin is
 	// resolved per request rather than captured here: a config reload swaps in a freshly
 	// constructed plugin instance, and a pointer captured at startup would keep recording
