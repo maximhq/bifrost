@@ -176,8 +176,9 @@ type ServerConfig struct {
 	// variable overrides the local bind port without changing what cards
 	// advertise. Deploy-time only: all values are read at startup and gRPC stays
 	// disabled while the domain or advertised port is unset.
-	A2AGRPCBaseDomain string `json:"a2a_grpc_base_domain,omitempty"`
-	A2AGRPCPort       int    `json:"a2a_grpc_port,omitempty"`
+	A2AGRPCBaseDomain            string `json:"a2a_grpc_base_domain,omitempty"`
+	A2AGRPCPort                  int    `json:"a2a_grpc_port,omitempty"`
+	A2AAllowPrivatePushCallbacks bool   `json:"a2a_allow_private_push_callbacks,omitempty"` // test environments only; default false
 }
 
 // ConfigData represents the configuration data for the Bifrost HTTP transport.

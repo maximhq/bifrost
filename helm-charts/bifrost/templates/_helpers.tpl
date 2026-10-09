@@ -460,6 +460,9 @@ false
 {{- if .Values.bifrost.server.a2aGrpcPort }}
 {{- $_ := set $server "a2a_grpc_port" (.Values.bifrost.server.a2aGrpcPort | int) }}
 {{- end }}
+{{- if .Values.bifrost.server.a2aAllowPrivatePushCallbacks }}
+{{- $_ := set $server "a2a_allow_private_push_callbacks" true }}
+{{- end }}
 {{- if $server }}
 {{- $_ := set $config "server" $server }}
 {{- end }}

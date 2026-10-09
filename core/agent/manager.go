@@ -503,13 +503,14 @@ type UpdateRequest struct {
 // describe the advertised endpoint; the transport layer owns the actual gRPC
 // listener. When GRPCBaseDomain is empty no gRPC interface is advertised.
 type ManagerConfig struct {
-	Tracer                schemas.Tracer
-	TracerProvider        func() schemas.Tracer
-	AuthPolicy            schemas.AgentGatewayAuthPolicy
-	PluginPipelineAcquire func() PluginPipeline
-	PluginPipelineRelease func(PluginPipeline)
-	GRPCBaseDomain        string
-	GRPCPort              int
+	Tracer                    schemas.Tracer
+	TracerProvider            func() schemas.Tracer
+	AuthPolicy                schemas.AgentGatewayAuthPolicy
+	PluginPipelineAcquire     func() PluginPipeline
+	PluginPipelineRelease     func(PluginPipeline)
+	GRPCBaseDomain            string
+	GRPCPort                  int
+	AllowPrivatePushCallbacks bool // test environments only; see newPushDeliveryClient
 	// ExternalURLProvider, when set, is consulted on every use of the public
 	// base URL so admin configuration changes apply without a process restart,
 	// matching how MCP reads the same setting per request. The constructor's
@@ -554,7 +555,7 @@ func NewManager(ctx context.Context, store Store, logger schemas.Logger, externa
 		externalURL:        strings.TrimRight(externalURL, "/"),
 		externalURLFn:      config.ExternalURLProvider,
 		httpClient:         client,
-		pushDeliveryClient: newPushDeliveryClient(),
+		pushDeliveryClient: newPushDeliveryClient(config.AllowPrivatePushCallbacks),
 		pushRelayID:        uuid.NewString(),
 		oauthTokens:        make(map[string]oauthToken),
 		oauthFingerprints:  make(map[string][sha256.Size]byte),

@@ -714,6 +714,10 @@
               "minimum": 1,
               "maximum": 65535,
               "description": "Port advertised for A2A gRPC endpoints on served agent cards, and the default local bind port for the shared gRPC listener (override the bind with the BIFROST_A2A_GRPC_LISTEN_PORT env var when a load balancer maps ports). gRPC stays disabled while unset. Deploy-time only. Renders into server.a2a_grpc_port."
+            },
+            "a2aAllowPrivatePushCallbacks": {
+              "type": "boolean",
+              "description": "Allows Agent push delivery to loopback and private network destinations. Intended only for controlled development and test environments. Disabled by default. Renders into server.a2a_allow_private_push_callbacks."
             }
           },
           "additionalProperties": false
