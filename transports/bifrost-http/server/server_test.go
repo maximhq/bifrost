@@ -3,19 +3,25 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/agent"
 	"github.com/maximhq/bifrost/core/network"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -1561,6 +1567,223 @@ func TestPluginInitContextFallsBackToBackground(t *testing.T) {
 	}
 }
 
+// issue8212CleanupEvent records when a real deletion ran and which cutoff it used.
+type issue8212CleanupEvent struct {
+	startedAt time.Time
+	cutoff    time.Time
+	deleted   int64
+	err       error
+}
+
+// issue8212RetentionObserver records real SQLite deletions without changing
+// the cutoff, batch size, or result.
+type issue8212RetentionObserver struct {
+	manager logstore.LogRetentionManager
+	events  chan issue8212CleanupEvent
+}
+
+// failingRetentionConfigStore simulates a failed configuration save.
+type failingRetentionConfigStore struct {
+	configstore.ConfigStore
+}
+
+// UpdateClientConfig rejects the save so the test can verify retention stays unchanged.
+func (failingRetentionConfigStore) UpdateClientConfig(context.Context, *configstore.ClientConfig) error {
+	return fmt.Errorf("client config persistence failed")
+}
+
+// DeleteLogsBatch delegates to SQLite and reports the completed deletion.
+func (m *issue8212RetentionObserver) DeleteLogsBatch(ctx context.Context, cutoff time.Time, size int) (int64, error) {
+	startedAt := time.Now()
+	deleted, err := m.manager.DeleteLogsBatch(ctx, cutoff, size)
+	m.events <- issue8212CleanupEvent{startedAt: startedAt, cutoff: cutoff, deleted: deleted, err: err}
+	return deleted, err
+}
+
+// issue8212AwaitCleanup waits for a deletion and fails if it errors or never runs.
+func issue8212AwaitCleanup(t *testing.T, m *issue8212RetentionObserver) issue8212CleanupEvent {
+	t.Helper()
+	select {
+	case event := <-m.events:
+		if event.err != nil {
+			t.Fatalf("real SQLite deletion failed: %v", event.err)
+		}
+		return event
+	case <-time.After(10 * time.Second):
+		t.Fatal("scheduled cleanup did not run")
+		return issue8212CleanupEvent{}
+	}
+}
+
+// TestIssue8212RetentionChange verifies saved retention reaches the next scheduled
+// pass of the same running cleaner, using virtual time and real SQLite stores.
+func TestIssue8212RetentionChange(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		oldDays, newDays     int
+		wantStatus, wantDays int
+		failPersistence      bool
+	}{
+		{"increase_365_to_1000", 365, 1000, 200, 1000, false},
+		{"decrease_1000_to_365", 1000, 365, 200, 365, false},
+		{"reject_zero", 365, 0, 400, 365, false},
+		{"reject_negative", 365, -1, 400, 365, false},
+		{"persistence_failure", 365, 1000, 500, 365, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx := context.Background()
+				logger = noopTestLogger{}
+				handlers.SetLogger(noopTestLogger{})
+				cs, err := configstore.NewConfigStore(ctx, &configstore.Config{
+					Enabled: true, Type: configstore.ConfigStoreTypeSQLite,
+					Config: &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+				}, noopTestLogger{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer cs.Close(ctx)
+				ls, err := logstore.NewLogStore(ctx, &logstore.Config{
+					Enabled: true, Type: logstore.LogStoreTypeSQLite,
+					Config: &logstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "logs.db")},
+				}, noopTestLogger{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer ls.Close(ctx)
+				initial := &configstore.ClientConfig{LogRetentionDays: tc.oldDays}
+				if err := cs.UpdateClientConfig(ctx, initial); err != nil {
+					t.Fatal(err)
+				}
+				initial, err = cs.GetClientConfig(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg := &lib.Config{ConfigStore: cs, LogsStore: ls, ClientConfig: initial}
+				s := &BifrostHTTPServer{Config: cfg}
+				manager, ok := ls.(logstore.LogRetentionManager)
+				if !ok {
+					t.Fatal("SQLite store does not support retention")
+				}
+				observer := &issue8212RetentionObserver{manager: manager, events: make(chan issue8212CleanupEvent, 64)}
+				s.LogsCleaner = logstore.NewLogsCleaner(observer, logstore.CleanerConfig{RetentionDays: initial.LogRetentionDays}, noopTestLogger{})
+				s.LogsCleaner.StartCleanupRoutine()
+				defer func() {
+					s.LogsCleaner.StopCleanupRoutine()
+					synctest.Wait()
+				}()
+				startup := issue8212AwaitCleanup(t, observer)
+				if startup.deleted != 0 {
+					t.Fatalf("expected empty startup pass, got %d deletions", startup.deleted)
+				}
+				// Wait for the initial pass to finish and the daily timer to be armed.
+				// Virtual time stays still while this goroutine seeds and saves.
+				synctest.Wait()
+				if tc.failPersistence {
+					cfg.ConfigStore = failingRetentionConfigStore{ConfigStore: cs}
+				}
+
+				seed := func(id string, ageDays int) {
+					ts := time.Now().UTC().AddDate(0, 0, -ageDays)
+					if err := ls.Create(ctx, &logstore.Log{ID: id, Timestamp: ts, CreatedAt: ts,
+						Object: "chat_completion", Provider: "openai", Model: "test", Status: "success"}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for _, age := range []int{200, 500, 1200} {
+					seed(fmt.Sprintf("age-%d", age), age)
+				}
+				for _, age := range []int{200, 500, 1200} {
+					present, err := ls.IsLogEntryPresent(ctx, fmt.Sprintf("age-%d", age))
+					if err != nil || !present {
+						t.Fatalf("seed age %d missing before save: %v", age, err)
+					}
+				}
+
+				// Exercise the production route and the actual server reload callback.
+				r := router.New()
+				handlers.NewConfigHandler(s, cfg).RegisterRoutes(r)
+				var req fasthttp.Request
+				req.Header.SetMethod("PUT")
+				req.Header.SetContentType("application/json")
+				req.SetRequestURI("/api/config")
+				saveConfig := *initial
+				saveConfig.LogRetentionDays = tc.newDays
+				body, err := providerUtils.MarshalSorted(struct {
+					ClientConfig *configstore.ClientConfig `json:"client_config"`
+				}{ClientConfig: &saveConfig})
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.SetBody(body)
+				var requestCtx fasthttp.RequestCtx
+				requestCtx.Init(&req, nil, nil)
+				r.Handler(&requestCtx)
+				if requestCtx.Response.StatusCode() != tc.wantStatus {
+					t.Fatalf("PUT /api/config returned %d, want %d: %s", requestCtx.Response.StatusCode(), tc.wantStatus, requestCtx.Response.Body())
+				}
+				savedAt := time.Now()
+				persisted, err := cs.GetClientConfig(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if persisted.LogRetentionDays != tc.wantDays || cfg.ClientConfig.LogRetentionDays != tc.wantDays {
+					t.Fatalf("unexpected retention: DB=%d live=%d expected=%d", persisted.LogRetentionDays, cfg.ClientConfig.LogRetentionDays, tc.wantDays)
+				}
+				t.Logf("PUT /api/config status=%d; DB retention=%d; live retention=%d", requestCtx.Response.StatusCode(), persisted.LogRetentionDays, cfg.ClientConfig.LogRetentionDays)
+				// Cross the production interval (24h plus 15-30m jitter) without
+				// restarting the cleaner or changing its scheduler.
+				time.Sleep(25 * time.Hour)
+				synctest.Wait()
+
+				next := issue8212AwaitCleanup(t, observer)
+				if !next.startedAt.After(savedAt) {
+					t.Fatal("expected a cleanup pass that started after the save")
+				}
+				usedDays := int(math.Round(time.Since(next.cutoff).Hours() / 24))
+				t.Logf("next scheduled cleanup: retention=%d days; actual SQLite deletions=%d", usedDays, next.deleted)
+				for _, age := range []int{200, 500, 1200} {
+					present, err := ls.IsLogEntryPresent(ctx, fmt.Sprintf("age-%d", age))
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := age < tc.wantDays
+					t.Logf("log age=%d days: present=%t; expected=%t", age, present, want)
+					if present != want {
+						t.Errorf("log age %d days present=%t, want %t for retention=%d", age, present, want, tc.wantDays)
+					}
+				}
+				if usedDays != tc.wantDays {
+					t.Errorf("scheduled cleaner used the wrong retention: got %d days, want %d", usedDays, tc.wantDays)
+				}
+
+				// A fresh cleaner from persisted settings is the process-restart control.
+				s.LogsCleaner.StopCleanupRoutine()
+				synctest.Wait()
+				func() {
+					seed("restart-age-500", 500)
+					freshObserver := &issue8212RetentionObserver{manager: manager, events: make(chan issue8212CleanupEvent, 64)}
+					fresh := logstore.NewLogsCleaner(freshObserver, logstore.CleanerConfig{RetentionDays: persisted.LogRetentionDays}, noopTestLogger{})
+					fresh.StartCleanupRoutine()
+					defer func() {
+						fresh.StopCleanupRoutine()
+						synctest.Wait()
+					}()
+					event := issue8212AwaitCleanup(t, freshObserver)
+					freshDays := int(math.Round(time.Since(event.cutoff).Hours() / 24))
+					present, err := ls.IsLogEntryPresent(ctx, "restart-age-500")
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Logf("fresh cleaner retention=%d; 500-day log present=%t", freshDays, present)
+					if freshDays != tc.wantDays || present != (500 < tc.wantDays) {
+						t.Fatal("fresh cleaner did not honor saved retention")
+					}
+				}()
+			})
+		})
+  }
+}
 // The telemetry plugin reads config.CustomLabels, but the loader only ever seeded it
 // from client_config.prometheus_labels, so the plugin's own custom_labels were accepted
 // and ignored. Both name extra Prometheus labels, so they union.
