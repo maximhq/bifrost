@@ -9298,7 +9298,10 @@ func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.Respons
 		anthropicTool.Strict = tool.ResponsesToolFunction.Strict
 	}
 	if tool.ResponsesToolFunction != nil && tool.ResponsesToolFunction.Parameters != nil {
-		anthropicTool.InputSchema = tool.ResponsesToolFunction.Parameters
+		// Anthropic requires `"type":"object"` at the input_schema root; a
+		// typeless root gets it on a copy (a root composition was already
+		// rewritten into an object schema by the caller).
+		anthropicTool.InputSchema = withAnthropicObjectRootType(tool.ResponsesToolFunction.Parameters)
 	} else {
 		// Anthropic requires input_schema for custom tools, provide empty object schema if missing
 		anthropicTool.InputSchema = &schemas.ToolFunctionParameters{
