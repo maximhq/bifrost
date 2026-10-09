@@ -161918,7 +161918,7 @@
       ]
     },
     {
-      "name": "106. Typesafe decisions provider (typesafe-decisions)",
+      "name": "106. Native decisions providers (native-decisions)",
       "item": [
         {
           "name": "/v1/decisions - mixed kinds return typed answers - typesafe/jev-1.13.0",
@@ -162172,6 +162172,58 @@
                 "v1",
                 "models"
               ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - native choice returns normalized answer - perplexity/pplx-decider-v1-27b",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('native Perplexity decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('choice answer uses the shared decision contract', function () {",
+                  "    pm.expect(body.model).to.eql('pplx-decider-v1-27b');",
+                  "    pm.expect(body.answers.category.kind).to.eql('choice');",
+                  "    pm.expect(['hardware', 'billing', 'other']).to.include(body.answers.category.value);",
+                  "    pm.expect(body.answers.category.confidence).to.be.a('number');",
+                  "    pm.expect(body.answers.category.probabilities).to.be.an('object');",
+                  "});",
+                  "pm.test('input usage is normalized', function () {",
+                  "    pm.expect(body.usage.prompt_tokens, 'usage: ' + JSON.stringify(body.usage)).to.be.above(0);",
+                  "    pm.expect(body.usage.total_tokens).to.eql(body.usage.prompt_tokens);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"perplexity/pplx-decider-v1-27b\",\n  \"state\": {\n    \"content\": \"My laptop will not start and the power light stays off.\"\n  },\n  \"questions\": {\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Choose the best support category.\",\n      \"criteria\": {\n        \"hardware\": {\n          \"description\": \"Physical computer or device problem\"\n        },\n        \"billing\": \"Charges, invoices, or refunds\",\n        \"other\": null\n      }\n    }\n  }\n}"
             }
           },
           "response": []
