@@ -215,16 +215,24 @@ func (h *syncFloat64Histogram) Record(ctx context.Context, value float64, opts .
 	}
 }
 
-// NewMetricsExporter creates a new OTEL metrics exporter
-func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExporter, error) {
-	// Resource attrs; serviceInstanceID is also emitted as a datapoint label.
-	res, err := resource.Merge(
+// newMetricsResource builds the metrics resource. service.instance.id stays here because
+// OTLP-native backends read instance identity off the resource with no conversion; the
+// per-replica datapoint label is named bifrost_instance_id so that a collector with
+// resource_to_telemetry_conversion, which turns this attribute into a service_instance_id
+// label, cannot collide with it and drop the metric.
+func newMetricsResource(serviceName string) (*resource.Resource, error) {
+	return resource.Merge(
 		resource.Default(),
 		resource.NewSchemaless(
-			semconv.ServiceName(config.ServiceName),
+			semconv.ServiceName(serviceName),
 			semconv.ServiceInstanceID(serviceInstanceID),
 		),
 	)
+}
+
+// NewMetricsExporter creates a new OTEL metrics exporter
+func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExporter, error) {
+	res, err := newMetricsResource(config.ServiceName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resource: %w", err)
 	}
@@ -631,9 +639,13 @@ func (m *MetricsExporter) RecordHTTPResponseSize(ctx context.Context, sizeBytes 
 // Retry depth is intentionally NOT included here; it is reported via the dedicated
 // bifrost_request_retries histogram (recorded once per request) rather than as a label
 // on every per-attempt counter.
-// serviceInstanceID is this replica's id (hostname, timestamped fallback). Emitted
-// as both a resource attribute and a datapoint label so per-replica breakdown works
-// even when the collector drops resource attributes.
+// serviceInstanceID is this replica's id (hostname, timestamped fallback). Emitted as the
+// service.instance.id resource attribute and, under the distinct name
+// bifrost_instance_id, as a datapoint label, so per-replica breakdown works whether or
+// not the collector forwards resource attributes. The names differ deliberately: a
+// collector with resource_to_telemetry_conversion renders the resource attribute as
+// service_instance_id, and a datapoint label of that name would duplicate it and make
+// the Prometheus exporter drop the metric.
 var serviceInstanceID = resolveServiceInstanceID()
 
 func resolveServiceInstanceID() string {
@@ -664,7 +676,7 @@ func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyNam
 		attribute.String("business_unit_name", businessUnitNames),
 		attribute.String("project_id", projectID),
 		attribute.String("project_name", projectName),
-		attribute.String("service_instance_id", serviceInstanceID),
+		attribute.String("bifrost_instance_id", serviceInstanceID),
 	}
 }
 

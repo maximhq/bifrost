@@ -1,6 +1,7 @@
 package tracing
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -1099,4 +1100,59 @@ func TestRawPayloadsCapturedOnFailedRequest(t *testing.T) {
 			t.Errorf("response-side raw response was overwritten: %q", d.RawResponse)
 		}
 	})
+}
+
+// A chat request carried every other parameter onto the span but never its tools, so
+// gen_ai.request.tools was absent on chat while Responses emitted it — the connector e2e
+// failed this on kafka, pubsub and otel at once.
+func TestChatRequestExportsTools(t *testing.T) {
+	desc := "Look up the weather"
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Params: &schemas.ChatParameters{
+				Tools: []schemas.ChatTool{
+					{Type: "function", Function: &schemas.ChatToolFunction{Name: "get_weather", Description: &desc}},
+					{Type: "function", Function: &schemas.ChatToolFunction{Name: "get_time"}},
+					{Type: "web_search"}, // built-in: no function, falls back to the type
+				},
+			},
+		},
+	}
+
+	attrs := BuildLLMSpanData(req, nil, nil, SpanBuildOptions{WantContent: true}).Attributes()
+
+	raw, ok := attrs[schemas.AttrTools].(string)
+	if !ok {
+		t.Fatalf("%s missing or not a string: %#v", schemas.AttrTools, attrs[schemas.AttrTools])
+	}
+	var got []schemas.ToolSummary
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("%s is not valid JSON: %v (%s)", schemas.AttrTools, err, raw)
+	}
+	want := []schemas.ToolSummary{
+		{Name: "get_weather", Description: "Look up the weather"},
+		{Name: "get_time"},
+		{Name: "web_search"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d tools, want %d: %s", len(got), len(want), raw)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("tool %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// A chat request without tools must not emit an empty tools attribute.
+func TestChatRequestWithoutToolsOmitsAttribute(t *testing.T) {
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Params: &schemas.ChatParameters{}},
+	}
+	attrs := BuildLLMSpanData(req, nil, nil, SpanBuildOptions{WantContent: true}).Attributes()
+	if _, present := attrs[schemas.AttrTools]; present {
+		t.Errorf("%s present with no tools configured", schemas.AttrTools)
+	}
 }

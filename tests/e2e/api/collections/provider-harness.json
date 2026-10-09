@@ -218375,6 +218375,251 @@
           ]
         }
       ]
+    },
+    {
+      "name": "188. Plugin config round-trip keeps a lone \"*\" header pattern (PR #8228)",
+      "description": "A lone \"*\" is a legitimate request_headers pattern, but restoreRedactedValue treated any all-asterisk string as the UI's redaction placeholder and substituted the stored value, so request_headers: [\"*\"] silently became whatever was saved before and captured nothing. The cases run in order: seed a disabled otel row with a distinct pattern, update it to [\"*\"], read it back, then delete the row so a rerun starts clean. The plugin is created disabled so nothing loads and no exporter is started; only the config round-trip is under test. The folder first checks that the gateway has no otel row of its own: if it does, the mutating cases skip instead of overwriting and deleting a configuration this run did not create.",
+      "item": [
+        {
+          "name": "[PREVIEW] openai plugin-config-roundtrip precondition no otel row - #8228",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var __list = (pm.response.json() || {}).plugins || [];",
+                  "var __found = __list.filter(function (p) { return p && p.name === 'otel'; }).length > 0;",
+                  "pm.collectionVariables.set('h188Preexisting', __found ? 'true' : 'false');",
+                  "pm.test('gateway has no otel row for this folder to create', function () {",
+                  "  pm.expect(__found, 'this gateway already configures otel; the round-trip cases are skipped rather than overwrite and delete a row this run did not create, so point the folder at a gateway without one').to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] openai plugin-config-roundtrip seed disabled otel row - #8228",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"otel\",\n  \"enabled\": false,\n  \"config\": {\n    \"request_headers\": [\n      \"x-bf-roundtrip-seed\"\n    ]\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These cases create, rewrite and delete a plugin row, so they run only after the",
+                  "// precondition above confirms there is no otel row to clobber. Skipping when that check",
+                  "// did not run keeps a filtered run from mutating an unchecked gateway.",
+                  "if (pm.collectionVariables.get('h188Preexisting') !== 'false') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('seeded the otel plugin row', function () {",
+                  "  pm.expect(pm.response.code, 'seed failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] openai plugin-config-roundtrip update request_headers to star - #8228",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/otel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "otel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false,\n  \"config\": {\n    \"request_headers\": [\n      \"*\"\n    ]\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These cases create, rewrite and delete a plugin row, so they run only after the",
+                  "// precondition above confirms there is no otel row to clobber. Skipping when that check",
+                  "// did not run keeps a filtered run from mutating an unchecked gateway.",
+                  "if (pm.collectionVariables.get('h188Preexisting') !== 'false') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('update accepted', function () {",
+                  "  pm.expect(pm.response.code, 'update failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] openai plugin-config-roundtrip star survives the read back - #8228",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/otel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "otel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These cases create, rewrite and delete a plugin row, so they run only after the",
+                  "// precondition above confirms there is no otel row to clobber. Skipping when that check",
+                  "// did not run keeps a filtered run from mutating an unchecked gateway.",
+                  "if (pm.collectionVariables.get('h188Preexisting') !== 'false') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request_headers round-trips a lone \"*\"', function () {",
+                  "  pm.expect(pm.response.code, 'read failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var body = pm.response.json();",
+                  "  var plugin = body.plugin || body;",
+                  "  var cfg = plugin.config || {};",
+                  "  var headers = cfg.request_headers;",
+                  "  pm.expect(headers, 'request_headers missing from the stored config: ' + pm.response.text()).to.be.an('array');",
+                  "  pm.expect(headers.length, 'expected exactly one pattern, got ' + JSON.stringify(headers)).to.eql(1);",
+                  "  pm.expect(headers[0], 'a lone \"*\" was replaced by the stored pattern: restoreRedactedValue treated it as a redaction placeholder').to.eql('*');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] openai plugin-config-roundtrip remove the otel row - #8228",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/otel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "otel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These cases create, rewrite and delete a plugin row, so they run only after the",
+                  "// precondition above confirms there is no otel row to clobber. Skipping when that check",
+                  "// did not run keeps a filtered run from mutating an unchecked gateway.",
+                  "if (pm.collectionVariables.get('h188Preexisting') !== 'false') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleaned up the otel plugin row', function () {",
+                  "  pm.expect(pm.response.code, 'cleanup failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
