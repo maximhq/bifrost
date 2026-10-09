@@ -28,7 +28,7 @@ func newLogStoreQueue(ctx context.Context, cfg *Config, deps Dependencies, logge
 	default:
 		return nil, fmt.Errorf("invalid logstore queue config: %T", cfg.Config)
 	}
-	store, err := newLogStoreBackend(ctx, deps, logger)
+	store, err := newLogStoreBackend(ctx, deps, engine.WithDefaults(), logger)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +37,7 @@ func newLogStoreQueue(ctx context.Context, cfg *Config, deps Dependencies, logge
 
 // newLogStoreBackend picks the Store implementation for the logstore's
 // database dialect.
-func newLogStoreBackend(ctx context.Context, deps Dependencies, logger schemas.Logger) (Store, error) {
+func newLogStoreBackend(ctx context.Context, deps Dependencies, engine EngineConfig, logger schemas.Logger) (Store, error) {
 	if deps.LogStore == nil {
 		return nil, errors.New("queue: the logstore queue needs a logstore")
 	}
@@ -60,6 +60,15 @@ func newLogStoreBackend(ctx context.Context, deps Dependencies, logger schemas.L
 		return newSQLStore(ctx, db, logger)
 	case "postgres":
 		return newSQLStore(ctx, db, logger)
+	case "clickhouse":
+		schema, ok := deps.LogStore.(chSchemaStore)
+		if !ok {
+			return nil, fmt.Errorf("%w: clickhouse logstore %T cannot create extension tables", ErrUnsupported, deps.LogStore)
+		}
+		if deps.Locker == nil && logger != nil {
+			logger.Warn("queue: no distributed locker configured; the clickhouse logstore queue can publish but not consume")
+		}
+		return newClickHouseStore(ctx, db, schema, deps.Locker, engine.Retention(), logger)
 	default:
 		return nil, fmt.Errorf("%w: logstore dialect %q", ErrUnsupported, name)
 	}

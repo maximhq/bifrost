@@ -396,6 +396,14 @@ func contractExtend(t *testing.T, s Store) {
 
 func contractPurge(t *testing.T, s Store) {
 	ctx := context.Background()
+	// Earlier cases share the store; drain what they left that is purgeable
+	// at any age, such as ClickHouse's acked tombstones.
+	for range 20 {
+		if n, err := s.Purge(ctx, PurgePolicy{DeadRetention: time.Hour, AckedRetention: time.Hour}, 1000); err != nil || n == 0 {
+			require.NoError(t, err)
+			break
+		}
+	}
 	topic := uniqueTopic(t)
 	mustGroup(t, s, topic, "g", StartFromLatest)
 	dead, pending := newMsg(topic, "", "dead"), newMsg(topic, "", "pending")
@@ -416,9 +424,9 @@ func contractPurge(t *testing.T, s Store) {
 	time.Sleep(50 * time.Millisecond)
 	_, err = s.Purge(ctx, PurgePolicy{DeadRetention: time.Millisecond, AckedRetention: time.Millisecond}, 100)
 	require.NoError(t, err)
-	// Backends may keep young dead rows longer than asked (ClickHouse floors
-	// the age); what every backend guarantees is that a purge never revives a
-	// dead delivery and never drops a live one.
+	// Backends may keep young dead rows longer than asked; what every backend
+	// guarantees is that a purge never revives a dead delivery and never
+	// drops a live one.
 	st, err := s.Stats(ctx, topic, "g")
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), st.Pending, "pending kept")

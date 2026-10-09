@@ -53,6 +53,10 @@
 // of Bifrost instances. Leases and retry times are computed on the database
 // clock, every write after a claim is fenced on the claim's token, and
 // per-key ordering is evaluated against committed state. ClickHouse has no
-// row locks, so consuming on ClickHouse requires a shared distributed locker.
-// The SQLite and memory backends are single-process only.
+// row locks or transactions, so consuming on ClickHouse requires a shared
+// distributed locker, through which claims, publishes and group
+// registrations on a topic are also serialised. An instance without one can
+// still publish, serialising only its own publishes, so per-key order between
+// two such publishers is not guaranteed. The SQLite and memory backends are
+// single-process only.
 package queue

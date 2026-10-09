@@ -167,6 +167,11 @@ func (q *storeQueue) Subscribe(ctx context.Context, topic, group string, h Handl
 	if q.isClosed() {
 		return nil, ErrClosed
 	}
+	if c, ok := q.store.(ConsumeChecker); ok {
+		if err := c.CanConsume(); err != nil {
+			return nil, err
+		}
+	}
 	if err := q.withRetry(ctx, func(ctx context.Context) error { return q.store.EnsureGroup(ctx, topic, group, o.StartFrom) }); err != nil {
 		return nil, fmt.Errorf("queue: register group %s on %s: %w", group, topic, err)
 	}
