@@ -38,7 +38,6 @@ type ClientCredentialsConfig struct {
 // from the endpoint are held to the same https-or-loopback rule as token_url itself, since a
 // 307/308 replays the credential to wherever it points.
 func ClientCredentialsMinter(cfg ClientCredentialsConfig, hc *http.Client) Minter[string] {
-	hc = guardRedirects(hc)
 	authStyle := cfg.AuthStyle
 	if authStyle == oauth2.AuthStyleAutoDetect {
 		// Auto-detect retries a rejected header-style request with the secret in the body,
@@ -68,6 +67,8 @@ func ClientCredentialsMinter(cfg ClientCredentialsConfig, hc *http.Client) Minte
 		margin = DefaultRefreshMargin
 	}
 
+	// Bounded first, then guarded: a nil client gets the fallback timeout and the redirect policy.
+	hc = guardRedirects(exchangeClient(hc))
 	return func(ctx context.Context, _ *Entry[string]) (*Entry[string], *schemas.BifrostError) {
 		ctx = context.WithValue(ctx, oauth2.HTTPClient, hc)
 		token, err := conf.Token(ctx)

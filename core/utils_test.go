@@ -557,6 +557,89 @@ func TestValidateKeyGithubCopilot(t *testing.T) {
 	}
 }
 
+func TestValidateKeyOAuthKeyConfig(t *testing.T) {
+	cc := func(mutate func(*schemas.OAuthKeyConfig)) *schemas.OAuthKeyConfig {
+		c := &schemas.OAuthKeyConfig{
+			GrantType:    schemas.OAuthGrantClientCredentials,
+			TokenURL:     *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+			ClientID:     schemas.NewSecretVar("id"),
+			ClientSecret: schemas.NewSecretVar("secret"),
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+	jb := func(mutate func(*schemas.OAuthKeyConfig)) *schemas.OAuthKeyConfig {
+		c := &schemas.OAuthKeyConfig{
+			GrantType:  schemas.OAuthGrantJWTBearer,
+			TokenURL:   *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+			PrivateKey: schemas.NewSecretVar("pem"),
+			Issuer:     "client",
+			Audience:   "https://idp.example/oauth2/token",
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+
+	tests := []struct {
+		name      string
+		key       schemas.Key
+		wantError string
+	}{
+		{name: "client_credentials is sufficient", key: schemas.Key{OAuthKeyConfig: cc(nil)}},
+		{name: "jwt_bearer is sufficient", key: schemas.Key{OAuthKeyConfig: jb(nil)}},
+		{name: "a value alongside a config is still validated", key: schemas.Key{Value: *schemas.NewSecretVar("sk"), OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.ClientSecret = nil })}, wantError: "client_secret"},
+		{name: "missing grant", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.GrantType = "" })}, wantError: "grant_type is required"},
+		{name: "unknown grant", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.GrantType = "password" })}, wantError: "must be client_credentials or jwt_bearer"},
+		{name: "missing token url", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar(" ") })}, wantError: "token_url is required"},
+		{name: "relative token url", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("/token") })}, wantError: "must be https"},
+		{name: "plain http on a public host", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://idp.example/token") })}, wantError: "must be https"},
+		{name: "plain http on loopback is accepted", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://127.0.0.1:9/token") })}},
+		{name: "jwt_bearer negative lifetime names the accepted range", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.AssertionLifetimeSeconds = -1 })}, wantError: "between 0 (default) and 3600"},
+		{name: "missing client id", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.ClientID = schemas.NewSecretVar(" ") })}, wantError: "client_id and oauth_key_config.client_secret are required"},
+		{name: "bad auth style", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.AuthStyle = "query" })}, wantError: "auth_style must be header or body"},
+		{name: "jwt_bearer missing key", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = nil })}, wantError: "private_key is required"},
+		{name: "jwt_bearer missing issuer", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.Issuer = "" })}, wantError: "issuer is required"},
+		{name: "jwt_bearer missing audience", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.Audience = "" })}, wantError: "audience is required"},
+		{name: "jwt_bearer symmetric algorithm", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.SigningAlgorithm = "HS256" })}, wantError: "signing_algorithm must be one of"},
+		{name: "jwt_bearer lifetime too long", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.AssertionLifetimeSeconds = 7200 })}, wantError: "assertion_lifetime_seconds"},
+		{name: "env-backed references count as present", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("env.IDP_TOKEN_URL_UNSET_IN_TEST")
+			c.ClientSecret = schemas.NewSecretVar("env.IDP_SECRET_UNSET_IN_TEST")
+		})}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := tt.key
+			err := validateKey(schemas.OpenAI, &key)
+			if tt.wantError == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantError)
+		})
+	}
+
+	t.Run("a key with oauth_key_config may have no value on an openai-based provider", func(t *testing.T) {
+		assert.True(t, keyValueMayBeEmpty(schemas.OpenAI, &schemas.Key{OAuthKeyConfig: cc(nil)}))
+		assert.False(t, keyValueMayBeEmpty(schemas.OpenAI, &schemas.Key{}))
+		assert.False(t, keyValueMayBeEmpty(schemas.Anthropic, &schemas.Key{OAuthKeyConfig: cc(nil)}))
+		assert.True(t, keyValueMayBeEmpty(schemas.Databricks, &schemas.Key{}))
+	})
+
+	t.Run("oauth_key_config is refused on a provider that does not resolve it", func(t *testing.T) {
+		key := schemas.Key{OAuthKeyConfig: cc(nil)}
+		err := validateKey(schemas.Anthropic, &key)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only supported on openai")
+	})
+}
+
 // A request cancelled at the same instant its backoff expires must still be
 // reported as cancelled: Go's select picks uniformly among ready cases, so a
 // timer-only check lets roughly half of such requests run one more attempt

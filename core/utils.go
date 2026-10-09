@@ -217,7 +217,33 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 			}
 		}
 	}
+	// oauth_key_config lets a key mint its bearer instead of carrying a static value. Only the
+	// OpenAI provider resolves it, so it is honoured on openai and on every custom provider
+	// built on that base; elsewhere it would be silently ignored, which reads as a working
+	// key that 401s, so it is refused instead. A present config must be whole, since a
+	// half-configured one can never authenticate.
+	if key.OAuthKeyConfig != nil {
+		if !ProviderSupportsOAuthKeyConfig(providerKey) {
+			return fmt.Errorf("oauth_key_config is only supported on openai and on custom providers whose base_provider_type is openai")
+		}
+		if err := key.OAuthKeyConfig.Validate(); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// ProviderSupportsOAuthKeyConfig reports whether a provider (the base provider for a custom
+// one) resolves oauth_key_config into a bearer token.
+func ProviderSupportsOAuthKeyConfig(providerKey schemas.ModelProvider) bool {
+	return providerKey == schemas.OpenAI
+}
+
+// keyValueMayBeEmpty reports whether a key with no value is still usable: either the provider
+// carries its credentials in its own key config (CanProviderKeyValueBeEmpty), or the key
+// mints its bearer from oauth_key_config on a provider that honours it.
+func keyValueMayBeEmpty(providerKey schemas.ModelProvider, key *schemas.Key) bool {
+	return CanProviderKeyValueBeEmpty(providerKey) || (key.OAuthKeyConfig != nil && ProviderSupportsOAuthKeyConfig(providerKey))
 }
 
 // routingErrorSummary produces a sanitized, audit-safe one-line summary of a

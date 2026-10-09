@@ -1,8 +1,12 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -2422,5 +2426,213 @@ func TestOpenAIInbound_ReasoningSummaryIsNotForwarded(t *testing.T) {
 	}
 	if responses.Params.Reasoning.Summary != nil {
 		t.Fatalf("reasoning.summary leaked through the openai integration: %q", *responses.Params.Reasoning.Summary)
+	}
+}
+
+// oauthTokenStub answers every token request with one fixed bearer and counts hits.
+func oauthTokenStub(t testing.TB) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var hits atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"minted-token","token_type":"Bearer","expires_in":3600}`))
+	}))
+	t.Cleanup(server.Close)
+	return server, &hits
+}
+
+func oauthTestProvider(t testing.TB) *OpenAIProvider {
+	t.Helper()
+	return NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: "https://llm.example", DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, nil)
+}
+
+func oauthKey(name, tokenURL string) schemas.Key {
+	return schemas.Key{Name: name, Models: []string{"*"}, OAuthKeyConfig: &schemas.OAuthKeyConfig{
+		GrantType:    schemas.OAuthGrantClientCredentials,
+		TokenURL:     *schemas.NewSecretVar(tokenURL),
+		ClientID:     schemas.NewSecretVar(name + "-id"),
+		ClientSecret: schemas.NewSecretVar(name + "-secret"),
+	}}
+}
+
+// TestResolveKeysKeepsTheWorkingKeys pins that a multi-key operation is not failed by one key
+// whose token endpoint is down: the keys that resolve are returned, so the per-key loops in
+// FileRetrieve, BatchRetrieve and ListModels can try them. Only when no key resolves does
+// the error surface.
+func TestResolveKeysKeepsTheWorkingKeys(t *testing.T) {
+	stub, _ := oauthTokenStub(t)
+	provider := oauthTestProvider(t)
+	keys := []schemas.Key{
+		oauthKey("down", "http://127.0.0.1:1/token"),
+		oauthKey("up", stub.URL+"/token"),
+		{Name: "static", Value: *schemas.NewSecretVar("sk-static"), Models: []string{"*"}},
+	}
+
+	resolved, bErr := provider.resolveKeys(context.Background(), keys)
+	if bErr != nil {
+		t.Fatalf("one failing key must not fail the operation: %v", bErr.Error.Message)
+	}
+	if len(resolved) != 2 || resolved[0].Name != "up" || resolved[1].Name != "static" {
+		names := make([]string, 0, len(resolved))
+		for _, k := range resolved {
+			names = append(names, k.Name)
+		}
+		t.Fatalf("resolved = %v, want [up static]", names)
+	}
+	if resolved[0].Value.GetValue() != "minted-token" || resolved[1].Value.GetValue() != "sk-static" {
+		t.Fatalf("resolved values = %q %q", resolved[0].Value.GetValue(), resolved[1].Value.GetValue())
+	}
+
+	_, bErr = provider.resolveKeys(context.Background(), []schemas.Key{oauthKey("down", "http://127.0.0.1:1/token")})
+	if bErr == nil {
+		t.Fatal("when no key resolves the error must surface")
+	}
+}
+
+// TestFileListCursorSelectsTheKeyByPosition pins that a serial pagination cursor keeps
+// addressing the key it was issued for. The cursor stores a position, so a failed mint on an
+// earlier key must not shift the later keys: the cursor for key 2 queries key 2.
+func TestFileListCursorSelectsTheKeyByPosition(t *testing.T) {
+	stub, _ := oauthTokenStub(t)
+	var authSeen atomic.Value
+	files := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authSeen.Store(r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"file-1","object":"file","bytes":1,"created_at":1,"filename":"a.txt","purpose":"assistants"}],"has_more":false}`))
+	}))
+	t.Cleanup(files.Close)
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: files.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, nil)
+	keys := []schemas.Key{
+		oauthKey("down", "http://127.0.0.1:1/token"),
+		oauthKey("up", stub.URL+"/token"),
+	}
+	cursor := schemas.EncodeSerialCursor(schemas.NewSerialCursor(1, ""))
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bErr := provider.FileList(ctx, keys, &schemas.BifrostFileListRequest{After: &cursor})
+	if bErr != nil {
+		t.Fatalf("the cursor names the working key, so the list must succeed: %v", bErr.Error.Message)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != "file-1" {
+		t.Fatalf("data = %+v, want the second key's one file", resp.Data)
+	}
+	if got, _ := authSeen.Load().(string); got != "Bearer minted-token" {
+		t.Fatalf("Authorization = %q, want the second key's minted bearer", got)
+	}
+
+	// The cursor for the failed key surfaces that key's error instead of silently serving a
+	// different key's files.
+	cursor = schemas.EncodeSerialCursor(schemas.NewSerialCursor(0, ""))
+	_, bErr = provider.FileList(ctx, keys, &schemas.BifrostFileListRequest{After: &cursor})
+	if bErr == nil {
+		t.Fatal("the cursor for the key whose mint fails must return that failure")
+	}
+}
+
+// TestDecisionMintsOAuthBearer pins that the native decisions path resolves an OAuth key: the
+// single-key method must carry the minted bearer, not the key's empty static value.
+func TestDecisionMintsOAuthBearer(t *testing.T) {
+	stub, _ := oauthTokenStub(t)
+	var authSeen atomic.Value
+	decisions := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authSeen.Store(r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"dec_1","model":"gpt-6-luna","answers":[{"type":"predicate","probability":0.9}],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}`))
+	}))
+	t.Cleanup(decisions.Close)
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: decisions.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, nil)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bErr := provider.Decision(ctx, oauthKey("dec", stub.URL+"/token"), &schemas.BifrostDecisionRequest{
+		Provider:  schemas.OpenAI,
+		Model:     "gpt-6-luna",
+		Input:     schemas.DecisionInput{Text: schemas.Ptr("this is unacceptable")},
+		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("angry")}},
+	})
+	if bErr != nil {
+		t.Fatalf("decision failed: %v", bErr.Error.Message)
+	}
+	if len(resp.Answers) != 1 {
+		t.Fatalf("answers = %+v, want one", resp.Answers)
+	}
+	if got, _ := authSeen.Load().(string); got != "Bearer minted-token" {
+		t.Fatalf("Authorization = %q, want the minted bearer", got)
+	}
+
+	// A key whose token endpoint is down fails the request with the mint error, not a bare 401.
+	_, bErr = provider.Decision(ctx, oauthKey("down", "http://127.0.0.1:1/token"), &schemas.BifrostDecisionRequest{
+		Provider:  schemas.OpenAI,
+		Model:     "gpt-6-luna",
+		Input:     schemas.DecisionInput{Text: schemas.Ptr("x")},
+		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("angry")}},
+	})
+	if bErr == nil || !strings.Contains(bErr.Error.Message, "oauth token") {
+		t.Fatalf("want the token mint failure, got %+v", bErr)
+	}
+}
+
+// TestWebSocketHeadersMintOAuthBearer pins that the native WebSocket path carries the minted
+// bearer for an OAuth key instead of dialing with an empty Authorization header.
+func TestWebSocketHeadersMintOAuthBearer(t *testing.T) {
+	stub, hits := oauthTokenStub(t)
+	provider := oauthTestProvider(t)
+	key := oauthKey("ws", stub.URL+"/token")
+
+	headers := provider.WebSocketHeaders(key)
+	if headers["Authorization"] != "Bearer minted-token" {
+		t.Fatalf("Authorization = %q, want the minted bearer", headers["Authorization"])
+	}
+	headers = provider.WebSocketHeaders(key)
+	if headers["Authorization"] != "Bearer minted-token" || hits.Load() != 1 {
+		t.Fatalf("second call: Authorization = %q, mints = %d, want the cached bearer and one mint", headers["Authorization"], hits.Load())
+	}
+
+	// A key whose endpoint is down keeps today's behaviour: no Authorization header, so the
+	// transport falls back to the HTTP bridge.
+	headers = provider.WebSocketHeaders(oauthKey("down", "http://127.0.0.1:1/token"))
+	if _, ok := headers["Authorization"]; ok {
+		t.Fatalf("a failed mint must not send an Authorization header, got %q", headers["Authorization"])
+	}
+	if provider.WebSocketHeaders(schemas.Key{Value: *schemas.NewSecretVar("sk")})["Authorization"] != "Bearer sk" {
+		t.Fatal("a static key is unchanged")
+	}
+}
+
+// BenchmarkResolveKeyOAuthWarm is the per-request cost of an OAuth key once its token is
+// cached: the cache-key hash, the warm cache lookup and the SecretVar copy. The token is
+// minted once before the timer.
+func BenchmarkResolveKeyOAuthWarm(b *testing.B) {
+	stub, _ := oauthTokenStub(b)
+	provider := oauthTestProvider(b)
+	key := oauthKey("bench", stub.URL+"/token")
+	if _, bErr := provider.resolveKey(context.Background(), key); bErr != nil {
+		b.Fatal(bErr.Error.Message)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, bErr := provider.resolveKey(context.Background(), key); bErr != nil {
+			b.Fatal(bErr.Error.Message)
+		}
+	}
+}
+
+// BenchmarkResolveKeyStatic is the cost every OpenAI request now pays at method entry when
+// the key carries a value: it must stay at two comparisons and zero allocations.
+func BenchmarkResolveKeyStatic(b *testing.B) {
+	provider := &OpenAIProvider{}
+	key := schemas.Key{Value: *schemas.NewSecretVar("sk-static")}
+	b.ReportAllocs()
+	for range b.N {
+		if _, bErr := provider.resolveKey(context.Background(), key); bErr != nil {
+			b.Fatal(bErr)
+		}
 	}
 }

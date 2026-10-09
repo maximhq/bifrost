@@ -302,6 +302,20 @@ func (b Backoff) For(attempts int) time.Duration {
 	return delay
 }
 
+// fallbackExchangeClient serves minters handed no client. It is bounded by the exchange
+// timeout, unlike http.DefaultClient, so a stalled token endpoint cannot hold a cold-path
+// mint (and every caller queued behind it) indefinitely. Providers always pass their own
+// proxy-aware client; this exists for SDK callers and tests.
+var fallbackExchangeClient = &http.Client{Timeout: DefaultExchangeTimeout}
+
+// exchangeClient returns hc, or the bounded fallback when hc is nil.
+func exchangeClient(hc *http.Client) *http.Client {
+	if hc != nil {
+		return hc
+	}
+	return fallbackExchangeClient
+}
+
 // IsPermanentError reports whether a mint failure is a configuration fault rather than a
 // transient one. Rate limits, server errors and failures with no HTTP status (the endpoint
 // could not be reached) are transient; any other upstream status means something about the

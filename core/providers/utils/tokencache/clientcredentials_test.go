@@ -200,6 +200,14 @@ func TestClientCredentialsMinter(t *testing.T) {
 		assert.False(t, IsPermanentError(bErr))
 	})
 
+	t.Run("a nil client gets a bounded fallback client", func(t *testing.T) {
+		ts := newTokenServer(t)
+		mint := ClientCredentialsMinter(ClientCredentialsConfig{TokenURL: ts.URL, ClientID: "id", ClientSecret: "s"}, nil)
+		e, bErr := mint(context.Background(), nil)
+		require.Nil(t, bErr)
+		assert.Equal(t, "minted", e.Value)
+	})
+
 	t.Run("an empty access_token is rejected and blocks fallbacks", func(t *testing.T) {
 		ts := newTokenServer(t)
 		ts.set(http.StatusOK, `{"access_token":"","token_type":"Bearer","expires_in":60}`, nil)

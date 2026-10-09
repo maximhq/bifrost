@@ -48,6 +48,10 @@ func (provider *OpenAIProvider) CreateLiveWebRTCSession(ctx *schemas.BifrostCont
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.LiveRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 	headers, bifrostErr := provider.LiveHeaders(ctx, key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -98,6 +102,10 @@ func (provider *OpenAIProvider) CreateLiveWebRTCSession(ctx *schemas.BifrostCont
 func (provider *OpenAIProvider) LiveSessionContent(ctx *schemas.BifrostContext, key schemas.Key, sessionID string) (*schemas.LiveContentResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.LiveRequest); err != nil {
 		return nil, err
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 	escapedID, bifrostErr := providerUtils.EscapeResourceID(sessionID, "session_id")
 	if bifrostErr != nil {
