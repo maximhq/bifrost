@@ -2631,3 +2631,135 @@ func TestWarpDescribeFilterSpaceSaysItsListsComeFromTraffic(t *testing.T) {
 	require.Contains(t, out["guidance"], "A virtual key with no traffic is never listed here")
 	require.Contains(t, out["guidance"], "describe_virtual_key")
 }
+
+// A calendar day is resolved here, in the asker's zone, rather than by the
+// model. The model used to be handed the zone name and told to work out each
+// date's UTC offset itself - the same arithmetic relative offsets exist to
+// take away from it - so a wrong offset moved a day's boundary by hours and
+// the answer still read as "yesterday".
+func TestWarpParseFiltersResolvesCalendarDaysInTheAskersZone(t *testing.T) {
+	kolkata, err := time.LoadLocation("Asia/Kolkata")
+	require.NoError(t, err)
+	// 08:30 on Oct 5th in Kolkata, which is still 03:00 UTC.
+	now := time.Date(2026, 10, 5, 3, 0, 0, 0, time.UTC).In(kolkata)
+	utc := func(year int, month time.Month, day, hour, minute int) time.Time {
+		return time.Date(year, month, day, hour, minute, 0, 0, time.UTC)
+	}
+
+	t.Run("today starts at local midnight and ends now", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "today"}, now)
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 10, 4, 18, 30), *filters.StartTime)
+		require.Equal(t, now.UTC(), *filters.EndTime)
+	})
+
+	t.Run("yesterday is the whole previous local day", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "yesterday", "end_time": "Yesterday"}, now)
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 10, 3, 18, 30), *filters.StartTime)
+		require.Equal(t, utc(2026, 10, 4, 18, 30).Add(-time.Microsecond), *filters.EndTime)
+	})
+
+	t.Run("a date names its whole local day", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "2026-09-01", "end_time": "2026-09-03"}, now)
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 8, 31, 18, 30), *filters.StartTime)
+		require.Equal(t, utc(2026, 9, 3, 18, 30).Add(-time.Microsecond), *filters.EndTime)
+	})
+
+	t.Run("a day still in progress ends now, not at a midnight that has not happened", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "yesterday", "end_time": "today"}, now)
+		require.NoError(t, err)
+		require.Equal(t, now.UTC(), *filters.EndTime)
+	})
+
+	t.Run("a time with no offset is the asker's wall clock", func(t *testing.T) {
+		for _, text := range []string{"2026-09-03T14:00", "2026-09-03 14:00", "2026-09-03T14:00:00"} {
+			filters, err := parseFilters(map[string]any{"start_time": text}, now)
+			require.NoError(t, err, text)
+			require.Equal(t, utc(2026, 9, 3, 8, 30), *filters.StartTime, text)
+		}
+	})
+
+	t.Run("an explicit offset is still taken as written", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "2026-09-03T14:00:00Z"}, now)
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 9, 3, 14, 0), *filters.StartTime)
+	})
+
+	t.Run("each date takes its own offset across a daylight saving change", func(t *testing.T) {
+		newYork, err := time.LoadLocation("America/New_York")
+		require.NoError(t, err)
+		// Clocks went forward on March 8th 2026, so that day is 23 hours long:
+		// it starts at UTC-5 and ends at UTC-4.
+		filters, err := parseFilters(map[string]any{"start_time": "2026-03-08", "end_time": "2026-03-08"}, now.In(newYork))
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 3, 8, 5, 0), *filters.StartTime)
+		require.Equal(t, utc(2026, 3, 9, 4, 0).Add(-time.Microsecond), *filters.EndTime)
+	})
+
+	// Clocks in New York went from 02:00 straight to 03:00 on March 8th 2026.
+	// Go reads a wall time inside that hour as a different, real one, so the
+	// bound would silently be an hour away from what was written.
+	t.Run("a local time that never happened is rejected", func(t *testing.T) {
+		newYork, err := time.LoadLocation("America/New_York")
+		require.NoError(t, err)
+		_, err = parseFilters(map[string]any{"start_time": "2026-03-08T02:30"}, now.In(newYork))
+		require.ErrorContains(t, err, "start_time")
+		require.ErrorContains(t, err, "does not exist")
+
+		filters, err := parseFilters(map[string]any{"start_time": "2026-03-08T03:30"}, now.In(newYork))
+		require.NoError(t, err)
+		require.Equal(t, utc(2026, 3, 8, 7, 30), *filters.StartTime)
+	})
+
+	t.Run("a rolling window is unaffected by the zone", func(t *testing.T) {
+		filters, err := parseFilters(map[string]any{"start_time": "-7d"}, now)
+		require.NoError(t, err)
+		require.Equal(t, now.UTC().Add(-7*24*time.Hour), *filters.StartTime)
+	})
+
+	t.Run("a date that does not exist is rejected", func(t *testing.T) {
+		_, err := parseFilters(map[string]any{"start_time": "2026-02-30"}, now)
+		require.ErrorContains(t, err, "start_time")
+	})
+}
+
+// The schema is the one description every model reads at the moment it fills
+// the argument in, so it has to say which way end_time's day is counted.
+func TestWarpFilterSchemaSaysEndTimeIsInclusive(t *testing.T) {
+	require.Contains(t, FilterSchema, "end_time is inclusive")
+	require.Contains(t, FilterSchema, "never the day after")
+}
+
+// askerLocation is what puts the zone on the clock the tools read. The named
+// zone wins because only it knows a past date's offset; the bare offset is the
+// fallback for a client that sent no usable name.
+func TestWarpAskerLocation(t *testing.T) {
+	instant := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+	hourIn := func(location *time.Location) int { return instant.In(location).Hour() }
+
+	// New York is UTC-5 in January even when the offset sent is July's UTC-4.
+	require.Equal(t, 7, hourIn(askerLocation("America/New_York", -240)))
+	require.Equal(t, 17, hourIn(askerLocation("", 330)), "with no zone name the current offset is all there is")
+	require.Equal(t, 17, hourIn(askerLocation("Not/AZone", 330)))
+	require.Equal(t, time.UTC, askerLocation("", 0))
+}
+
+// Every tool call in a turn measures from the same instant. Each used to read
+// the clock for itself, so "-7d" named a slightly different window per call and
+// a total and its breakdown, fetched seconds apart, covered different requests.
+func TestWarpToolsReadTheTurnsPinnedClock(t *testing.T) {
+	pinned := time.Date(2026, 10, 5, 3, 0, 0, 0, time.UTC)
+	original := Now
+	Now = func() time.Time { return pinned.Add(42 * time.Second) }
+	defer func() { Now = original }()
+
+	fake := &fakeLogReader{}
+	_, err := runTool(t, "query_logs", &ToolDeps{logManager: fake, clock: pinned}, map[string]any{
+		"filters": map[string]any{"start_time": "-7d"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, pinned.Add(-7*24*time.Hour), *fake.searchFilters.StartTime)
+	require.Equal(t, pinned, *fake.searchFilters.EndTime)
+}

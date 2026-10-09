@@ -4,17 +4,30 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.45
+**Latest Version:** 2.1.46
 
 ## Changelog
 
 ### Upcoming
 
-- Added `bifrost.governance.complexityAnalyzerConfig.jev.criteria` (renders into `complexity_analyzer_config.jev.criteria`): per-tier overrides of the Typesafe Jev `definition`, `signals`, and `examples`, keyed by `SIMPLE`, `MEDIUM`, or `COMPLEX` (exact case). Any tier or field left out sends the shipped default; a definition is at most 500 characters, and each list at most 12 items of 300 characters.
+- Added `storage.logsStore.clickhouse.maxQuerySize` (renders into `logs_store.config.max_query_size`), the ClickHouse `max_query_size` setting in bytes. Defaults to 16 MiB so team-scoped log reads with thousands of member and virtual key ids no longer fail against the 256 KiB server default.
+- Added `bifrost.governance.complexityAnalyzerConfig.decision` (renders into `complexity_analyzer_config.decision`): a decision-model classifier for the complexity router. `provider` and `model` select any decision model (default `typesafe`/`jev-latest`). Laya, Nimble (by Bespoke), and Cloudflare Clef work too when served by a custom provider with `base_provider_type: typesafe`; requests go through Bifrost's `/v1/decisions` to that provider's System One endpoint (`/v1/systemone`, or the full-URL `decisions` override for Clef). `criteria` holds per-tier overrides of the shipped `definition`, `signals`, and `examples`, keyed by `SIMPLE`, `MEDIUM`, or `COMPLEX` (exact case). Any tier or field left out sends the shipped default; a definition is at most 500 characters, and each list at most 12 items of 300 characters.
 - Added `bifrost.mcp.toolManagerConfig.maxInstructionsPerClient` and `.maxInstructionsTotal` (`max_instructions_per_client` / `max_instructions_total`) to bound forwarded MCP server instructions in bytes; 0 keeps the built-in defaults.
+- Added `access_profile` to `bifrost.governance.customers[]`, `.teams[]`, and `.businessUnits[]` (renders into `governance.{customers,teams,business_units}[].access_profile`), the enterprise access profile the entity holds in place of its own budgets and rate limit.
+- `bifrost.governance.roles[].dac` and `.entity_dac` now accept `business-unit-data` and `customer-data` (`governance.roles[].dac` / `entity_dac`).
+- Documented `ttft_timeout_ms` on `bifrost.governance.routingRules[].targets[]` (`governance.routing_rules[].targets[].ttft_timeout_ms`) in the values schema.
+- Added `bifrost.proxyConfig` (renders into the top-level `proxy_config`): the global outbound proxy from the dashboard's proxy settings page, including `enableForScim` (`enable_for_scim`), `enableForInference` and `enableForApi`; reconciled with the same config hash as the other sections.
 - Added `bifrost.scim.config.attributeProjectMappings` (`{ attribute, value, project }`, every SSO provider) — renders into `scim_config.config.attributeProjectMappings`. Every matching rule adds the user to that project by name (projects are never auto-created); memberships a rule added are removed when it stops matching, while members added from the dashboard are kept.
 - Added `bifrost.scim.config.bulkSyncInterval` (default `24h`, every SSO provider) — renders into `scim_config.config.bulkSyncInterval`. How often the directory reconcile deprovisions users the IdP no longer returns: whole days or h/m/s pairs (`12h`, `1h30m`, `7d`), between 1h and 30d. Inert when SCIM is enabled or the provider has no directory API access.
+- Added `bifrost.mcp.toolManagerConfig.codeModeLimits` (`maxSourceBytes`, `maxSteps`, `maxMemoryBytes`, `maxLogBytes`, `maxToolCalls`, `maxValueBytes`, `maxNestingDepth`) to tune the limits on each code mode execution; an omitted or 0 field keeps the built-in default. Renders into `mcp.tool_manager_config.code_mode_limits`. Code mode no longer limits concurrent executions.
 - Added a template-time guard: the chart now fails to render when `bifrost.client.mcpServerAuthMode` is `oauth` or `both` and `bifrost.client.oauth2ServerConfig.issuerUrl` (`client.oauth2_server_config.issuer_url`) is empty or unset, instead of letting the pod crash-loop on Bifrost's startup check. `env.VAR_NAME` references pass.
+
+### 2.1.46
+
+- Added `bifrost.agents[]` — declarative A2A agent registrations rendered into the config.json `agents` section. Each entry takes `name`, `agent_card_url`, and optionally `tenant`, `enabled`, `allow_by_default`, `forward_accepted_credential`, `forward_accepted_credential_overrides_auth`, `discovery_auth`, `runtime_auth`, `extension_uris`, and `virtual_key_ids`. Reconciled by name on startup: created if absent, updated when the declaration changes, and left alone otherwise (merge mode). When `bifrost.sourceOfTruth` is `config.json` and `agents` is present, stored registrations absent from the rendered list are removed; set `agents: []` to remove all stored registrations.
+- Added `bifrost.client.a2aExternalClientUrl` (`a2a_external_client_url`) — Bifrost's public base URL for served agent cards and A2A push-notification callback URLs. Push notifications stay disabled while unset. Supports `env.` syntax.
+- Added `bifrost.server.a2aGrpcBaseDomain` (`a2a_grpc_base_domain`) and `bifrost.server.a2aGrpcPort` (`a2a_grpc_port`) — enable the shared A2A gRPC listener; per-agent hostnames are advertised as `<agent-name>.<base-domain>:<port>`. gRPC stays disabled while either is unset.
+- Added `bifrost.server.a2aAllowPrivatePushCallbacks` (`a2a_allow_private_push_callbacks`) — lets A2A push delivery reach loopback and private network callback targets. Off by default; intended only for controlled development and test environments.
 
 ### 2.1.44
 
@@ -734,6 +747,7 @@ Bifrost supports two storage backends (SQLite and PostgreSQL) that can be config
 | `storage.logsStore.type`                       | Logs store backend: `sqlite`, `postgres`, or `""`                       | `""` (uses `storage.mode`) |
 | `storage.logsStore.postgres.enabled`           | Point the logs store at a separate external PostgreSQL than the config store (only applies when the logs store is postgres). When `false`, a postgres logs store shares the top-level `postgresql` connection. | `false` |
 | `storage.logsStore.objectStorageExcludeFields` | Payload DB fields to keep in DB instead of offloading to object storage | `[]`                       |
+| `storage.logsStore.objectStorageExcludeRequestTypes` | Request types whose logs stay in the DB and are not offloaded (e.g. `list_models`). Hidden logs are still offloaded | `[]` |
 
 #### Mixed Backend Example
 

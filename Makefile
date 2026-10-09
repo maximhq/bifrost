@@ -228,9 +228,9 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 	$(ECHO) "$(YELLOW)Starting UI development server...$(NC)"; \
 	$(USE_NODE); if [ -n "$(DISABLE_PROFILER)" ]; then \
 		$(ECHO) "$(CYAN)DevProfiler disabled for testing$(NC)"; \
-		(cd ui && BIFROST_DISABLE_PROFILER=1 npm run dev) & \
+		(cd ui && BIFROST_PORT=$(PORT) BIFROST_DISABLE_PROFILER=1 npm run dev) & \
 	else \
-		(cd ui && npm run dev) & \
+		(cd ui && BIFROST_PORT=$(PORT) npm run dev) & \
 	fi; \
 	ui_pid="$$!"; \
 	$(ECHO) "$(YELLOW)[make dev] UI dev server started with pid $$ui_pid$(NC)"; \
@@ -314,9 +314,9 @@ dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve)
 	$(ECHO) "$(YELLOW)Starting UI development server...$(NC)"; \
 	$(USE_NODE); if [ -n "$(DISABLE_PROFILER)" ]; then \
 		$(ECHO) "$(CYAN)DevProfiler disabled for testing$(NC)"; \
-		(cd ui && BIFROST_DISABLE_PROFILER=1 npm run dev) & \
+		(cd ui && BIFROST_PORT=$(PORT) BIFROST_DISABLE_PROFILER=1 npm run dev) & \
 	else \
-		(cd ui && npm run dev) & \
+		(cd ui && BIFROST_PORT=$(PORT) npm run dev) & \
 	fi; \
 	ui_pid="$$!"; \
 	$(ECHO) "$(YELLOW)[make dev-pulse] UI dev server started with pid $$ui_pid$(NC)"; \
@@ -1980,6 +1980,42 @@ test-cli: install-gotestsum ## Run CLI tests
 # the single most important line in the output.
 CLI_HARNESS_FILTER = awk '/^=== /||/^[ \t]*--- (PASS|FAIL|SKIP)[: ]/||/^(PASS|FAIL)$$/||/^ok[ \t]/||/^FAIL\t/||/unsupported for /||/not configured in bifrost/{next} {print; fflush()}'
 
+test-live: install-gotestsum ## Run GPT Live e2e tests against a running gateway (Usage: make test-live [TESTCASE=TestName|PATTERN=substring] [LIVE_UPSTREAM=fake|real] [BIFROST_BASE_URL=http://localhost:8080]; fake mode: start the gateway with APP_DIR=$$(pwd)/tests/live)
+	@$(EXPOSE_ENV); \
+	$(ECHO) "$(GREEN)Running GPT Live e2e tests ($${LIVE_UPSTREAM:-fake} upstream)...$(NC)"; \
+	mkdir -p $(TEST_REPORTS_DIR); \
+	if [ -n "$(PATTERN)" ] && [ -n "$(TESTCASE)" ]; then \
+		$(ECHO) "$(RED)Error: PATTERN and TESTCASE are mutually exclusive$(NC)"; exit 1; \
+	fi; \
+	RUN_FLAG=""; \
+	if [ -n "$(TESTCASE)" ]; then RUN_FLAG="-run ^$(TESTCASE)$$"; elif [ -n "$(PATTERN)" ]; then RUN_FLAG="-run .*$(PATTERN).*"; \
+	elif [ "$${LIVE_UPSTREAM:-fake}" = "real" ]; then RUN_FLAG="-run ^Test(Real|SDK)"; fi; \
+	REPORT_FILE="$(TEST_REPORTS_DIR)/live.xml"; \
+	cd tests/live && GOWORK=off gotestsum \
+		--format=$(GOTESTSUM_FORMAT) \
+		--junitfile=../../$$REPORT_FILE \
+		-- -v -timeout 900s $$RUN_FLAG; \
+	STATUS=$$?; \
+	cd ../..; \
+	$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+	exit $$STATUS
+
+test-live-long: install-gotestsum ## Run the long GPT Live sessions: 17 min on the fake, 15 min per transport on the real upstream (Usage: make test-live-long [TESTCASE=TestName] [LIVE_UPSTREAM=fake|real] [BIFROST_BASE_URL=http://localhost:8080])
+	@$(EXPOSE_ENV); \
+	$(ECHO) "$(GREEN)Running long GPT Live sessions ($${LIVE_UPSTREAM:-fake} upstream)...$(NC)"; \
+	mkdir -p $(TEST_REPORTS_DIR); \
+	RUN_FLAG="-run Long"; \
+	if [ -n "$(TESTCASE)" ]; then RUN_FLAG="-run ^$(TESTCASE)$$"; fi; \
+	REPORT_FILE="$(TEST_REPORTS_DIR)/live-long.xml"; \
+	cd tests/live && LIVE_LONG=1 GOWORK=off gotestsum \
+		--format=$(GOTESTSUM_FORMAT) \
+		--junitfile=../../$$REPORT_FILE \
+		-- -v -timeout 90m $$RUN_FLAG; \
+	STATUS=$$?; \
+	cd ../..; \
+	$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+	exit $$STATUS
+
 run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non-interactive, multi-turn JSON streams). Prints one line per cell plus a progress table; MIRROR=1 adds the raw CLI stream, VERBOSE=1 adds go test -v. Usage: make run-cli-harness-test [TESTCASE='TestCLIs/...'] [CLI=claude|codex|opencode] [PROVIDER=openai|anthropic|azure|gemini|bedrock|vertex] [MODEL=<id-substring>] [SCENARIO=simple-chat|conversation-memory|...] [PARALLEL=4] [BASE_URL=http://localhost:8080] [API_KEY=...] [TIMEOUT=60m] [MIRROR=1] [VERBOSE=1] [QUIET=1]
 	@$(EXPOSE_ENV); \
 	$(ECHO) "$(GREEN)Running CLI harness E2E tests...$(NC)"; \
@@ -2073,7 +2109,7 @@ NEWMAN_HTMLEXTRA_VERSION ?= 1.23.1
 # Every provider fork the harness knows how to run. Also the provider set the
 # status table lists, including the deferred cache-parity pass, so it lives in
 # one place rather than being restated per newman invocation.
-HARNESS_PROVIDERS := openai anthropic bedrock bedrock_mantle gemini vertex azure passthrough openrouter huggingface
+HARNESS_PROVIDERS := openai anthropic bedrock bedrock_mantle gemini vertex azure passthrough openrouter huggingface groq xai mistral cohere deepseek
 
 # Second parallelism axis. Each provider fork is sharded again by modality class so the run is not
 # bound by one provider's whole sequential item list: openai alone is ~1264 requests, and its

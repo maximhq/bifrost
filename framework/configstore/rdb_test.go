@@ -66,6 +66,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableWebhookJob{},
 	)
 	require.NoError(t, err, "Failed to migrate test database")
+	require.NoError(t, migrationAddAgentGatewayTables(context.Background(), db, testMigrationLogger), "Failed to migrate Agent Gateway tables")
 
 	// Virtual MCP tables (separate call: the in-batch AutoMigrate above does not create
 	// enterprise_mcp_tool_groups reliably). MCP client create now cross-checks slugs against them.
@@ -2497,6 +2498,59 @@ func TestUpdateClientConfig_VKRotationCooldownRoundTrip(t *testing.T) {
 	assert.Equal(t, 5*time.Minute, result.VKRotationCooldown.D())
 }
 
+func TestUpdateClientConfig_MCPCodeModeLimitsRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := func(limits *schemas.MCPCodeModeLimits) *ClientConfig {
+		return &ClientConfig{
+			EnableLogging:        new(true),
+			InitialPoolSize:      100,
+			LogRetentionDays:     30,
+			MaxRequestBodySizeMB: 50,
+			MCPCodeModeLimits:    limits,
+		}
+	}
+	limits := &schemas.MCPCodeModeLimits{MaxSteps: 5_000_000, MaxToolCalls: 500, MaxNestingDepth: 128}
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(limits)))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, limits, result.MCPCodeModeLimits)
+
+	mcpConfig, err := store.GetMCPConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, mcpConfig)
+	require.NotNil(t, mcpConfig.ToolManagerConfig)
+	assert.Equal(t, limits, mcpConfig.ToolManagerConfig.CodeModeLimits, "the MCP config built from the store must carry the limits")
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(nil)))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, result.MCPCodeModeLimits, "clearing the limits must persist")
+}
+
+func TestGenerateClientConfigHash_MCPCodeModeLimits(t *testing.T) {
+	hash := func(limits *schemas.MCPCodeModeLimits) string {
+		h, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, MCPCodeModeLimits: limits}).GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+	base := hash(nil)
+	baseHash, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, base, "unset limits must not change existing hashes")
+	assert.NotEqual(t, base, hash(&schemas.MCPCodeModeLimits{MaxSteps: 5}))
+	assert.NotEqual(t, hash(&schemas.MCPCodeModeLimits{MaxSteps: 5}), hash(&schemas.MCPCodeModeLimits{MaxSteps: 6}))
+
+	cc := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
+	withoutLimits, err := cc.GenerateClientConfigHashWithToolManager(&schemas.MCPToolManagerConfig{MaxAgentDepth: 10})
+	require.NoError(t, err)
+	withLimits, err := cc.GenerateClientConfigHashWithToolManager(&schemas.MCPToolManagerConfig{MaxAgentDepth: 10, CodeModeLimits: &schemas.MCPCodeModeLimits{MaxToolCalls: 5}})
+	require.NoError(t, err)
+	assert.NotEqual(t, withoutLimits, withLimits, "tool_manager_config.code_mode_limits must take part in the file hash")
+}
+
 func TestUpdateClientConfig_CompatAzureDeepseekRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -2522,6 +2576,41 @@ func TestUpdateClientConfig_CompatAzureDeepseekRoundTrip(t *testing.T) {
 	assert.True(t, result.Compat.AzureDeepseek, "re-enabling the toggle must persist")
 }
 
+func TestUpdateClientConfig_CompatForceReasoningOnlyModelsToResponsesRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := func(enabled bool) *ClientConfig {
+		return &ClientConfig{
+			EnableLogging:        new(true),
+			InitialPoolSize:      100,
+			LogRetentionDays:     30,
+			MaxRequestBodySizeMB: 50,
+			Compat:               CompatConfig{ForceReasoningOnlyModelsToResponses: enabled},
+		}
+	}
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(false)))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.Compat.ForceReasoningOnlyModelsToResponses, "disabling the toggle must persist")
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(true)))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.Compat.ForceReasoningOnlyModelsToResponses, "re-enabling the toggle must persist")
+}
+
+func TestGenerateClientConfigHash_CompatForceReasoningOnlyModelsToResponses(t *testing.T) {
+	on := &ClientConfig{InitialPoolSize: 100, Compat: CompatConfig{ForceReasoningOnlyModelsToResponses: true}}
+	off := &ClientConfig{InitialPoolSize: 100}
+	onHash, err := on.GenerateClientConfigHash()
+	require.NoError(t, err)
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, onHash, offHash, "toggling force_reasoning_only_models_to_responses must change the hash")
+}
+
 func TestGenerateClientConfigHash_VKRotationCooldown(t *testing.T) {
 	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
 	baseHash, err := base.GenerateClientConfigHash()
@@ -2539,6 +2628,25 @@ func TestGenerateClientConfigHash_VKRotationCooldown(t *testing.T) {
 	cooldownHash, err := withCooldown.GenerateClientConfigHash()
 	require.NoError(t, err)
 	assert.NotEqual(t, baseHash, cooldownHash)
+}
+
+func TestGenerateClientConfigHash_A2AExternalClientURL(t *testing.T) {
+	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+
+	// An unset A2A external client URL must not change the hash: existing
+	// deployments see no config drift after upgrade.
+	unset := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, A2AExternalClientURL: schemas.NewSecretVar("")}
+	unsetHash, err := unset.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, unsetHash)
+
+	// A configured URL is a meaningful config change.
+	withURL := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, A2AExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com")}
+	urlHash, err := withURL.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, urlHash)
 }
 
 func TestClientConfigVKRotationCooldown_UnmarshalDurationString(t *testing.T) {
@@ -4628,6 +4736,45 @@ func TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate(t *testing.T) {
 	})
 }
 
+// TestRDBConfigStore_RoutingRuleDuplicatePriority pins the conflict two rules sharing a priority in
+// one scope raise on create and update: it is ErrAlreadyExists, so the API answers 409 rather than
+// 500, and its message names the scope ID rather than the address of the pointer that holds it.
+func TestRDBConfigStore_RoutingRuleDuplicatePriority(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	scoped := func(id string, priority int, scopeID string) *tables.TableRoutingRule {
+		rule := routingRuleFixture(id, priority, "openai")
+		rule.Scope = "virtual_key"
+		rule.ScopeID = &scopeID
+		return rule
+	}
+
+	require.NoError(t, store.CreateRoutingRule(ctx, routingRuleFixture("global-a", 5, "openai")))
+	err := store.CreateRoutingRule(ctx, routingRuleFixture("global-b", 5, "openai"))
+	require.ErrorIs(t, err, ErrAlreadyExists)
+	require.ErrorIs(t, err, ErrRoutingRulePriorityTaken, "a priority conflict is told apart from other conflicts")
+	require.Contains(t, err.Error(), "priority 5")
+	require.Contains(t, err.Error(), "scope 'global'")
+
+	require.NoError(t, store.CreateRoutingRule(ctx, scoped("vk-a", 7, "vk-1")))
+	err = store.CreateRoutingRule(ctx, scoped("vk-b", 7, "vk-1"))
+	require.ErrorIs(t, err, ErrAlreadyExists)
+	require.Contains(t, err.Error(), "'vk-1'")
+	require.NotContains(t, err.Error(), "0x", "the scope ID must be printed, not its pointer")
+
+	// The same priority in another scope, or under another scope ID, is no conflict.
+	require.NoError(t, store.CreateRoutingRule(ctx, scoped("vk-c", 5, "vk-1")))
+	require.NoError(t, store.CreateRoutingRule(ctx, scoped("vk-d", 7, "vk-2")))
+
+	require.NoError(t, store.CreateRoutingRule(ctx, routingRuleFixture("global-c", 8, "openai")))
+	err = store.UpdateRoutingRule(ctx, routingRuleFixture("global-c", 5, "openai"))
+	require.ErrorIs(t, err, ErrAlreadyExists)
+	err = store.UpdateRoutingRule(ctx, scoped("vk-d", 7, "vk-1"))
+	require.ErrorIs(t, err, ErrAlreadyExists)
+	require.Contains(t, err.Error(), "'vk-1'")
+	require.NotContains(t, err.Error(), "0x", "the scope ID must be printed, not its pointer")
+}
+
 // TestRDBConfigStore_RoutingTargetTTFTTimeoutRoundTrip pins a target's
 // ttft_timeout_ms through create, read, update and clearing it back to nil.
 func TestRDBConfigStore_RoutingTargetTTFTTimeoutRoundTrip(t *testing.T) {
@@ -5039,4 +5186,44 @@ func TestUpsertModelPricesBatch_PriorityAbove272kCacheCreation_SurvivesResync(t 
 	require.Len(t, got, 1)
 	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove272kTokensPriority)
 	assert.InDelta(t, 0.00006, *got[0].CacheCreationInputTokenCostAbove272kTokensPriority, 1e-12)
+}
+
+// TestUpsertModelPricesBatch_Above100kColumns_SurviveResync guards the
+// pricingSyncUpdateColumns entries for the >100k tier columns.
+func TestUpsertModelPricesBatch_Above100kColumns_SurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	pricing := []tables.TableModelPricing{{
+		Model: "claude-haiku-5-5", Provider: "anthropic", Mode: "chat",
+		InputCostPerToken:                                  new(1e-07),
+		InputCostPerTokenAbove100kTokens:                   new(4e-07),
+		OutputCostPerTokenAbove100kTokens:                  new(2e-06),
+		CacheCreationInputTokenCostAbove100kTokens:         new(5e-07),
+		CacheReadInputTokenCostAbove100kTokens:             new(4e-08),
+		CacheCreationInputTokenCostAbove1hrAbove100kTokens: new(8e-07),
+	}}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	pricing[0].InputCostPerTokenAbove100kTokens = new(5e-07)
+	pricing[0].OutputCostPerTokenAbove100kTokens = new(2.5e-06)
+	pricing[0].CacheCreationInputTokenCostAbove100kTokens = new(6.25e-07)
+	pricing[0].CacheReadInputTokenCostAbove100kTokens = new(5e-08)
+	pricing[0].CacheCreationInputTokenCostAbove1hrAbove100kTokens = new(1e-06)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].InputCostPerTokenAbove100kTokens)
+	assert.InDelta(t, 5e-07, *got[0].InputCostPerTokenAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].OutputCostPerTokenAbove100kTokens)
+	assert.InDelta(t, 2.5e-06, *got[0].OutputCostPerTokenAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove100kTokens)
+	assert.InDelta(t, 6.25e-07, *got[0].CacheCreationInputTokenCostAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].CacheReadInputTokenCostAbove100kTokens)
+	assert.InDelta(t, 5e-08, *got[0].CacheReadInputTokenCostAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove1hrAbove100kTokens)
+	assert.InDelta(t, 1e-06, *got[0].CacheCreationInputTokenCostAbove1hrAbove100kTokens, 1e-15)
 }

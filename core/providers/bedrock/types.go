@@ -481,6 +481,9 @@ type BedrockToolSpec struct {
 	// DeferLoading carries Anthropic's per-tool defer_loading across the invoke
 	// ingress. Converse has no such field, so json:"-" keeps it off that wire.
 	DeferLoading *bool `json:"-"`
+	// EagerInputStreaming carries Anthropic's per-tool eager_input_streaming
+	// across the invoke ingress; json:"-" for the same reason.
+	EagerInputStreaming *bool `json:"-"`
 }
 
 // BedrockToolInputSchema represents the input schema for a tool (union type)
@@ -1058,6 +1061,9 @@ type BedrockCohereEmbeddingInput struct {
 // BedrockCohereInputTypeSearchDocument is the input_type applied when a caller omits
 // one. AWS requires the field and defines no default.
 const BedrockCohereInputTypeSearchDocument = "search_document"
+
+// BedrockCohereInputTypeImage is the input_type applied to images[] when a caller omits one.
+const BedrockCohereInputTypeImage = "image"
 
 type BedrockCohereEmbeddingRequest struct {
 	InputType       string                        `json:"input_type"`                 // Required

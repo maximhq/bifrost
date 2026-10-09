@@ -90,6 +90,8 @@ Virtual keys can also be passed via `Authorization: Bearer vk-*`, `x-api-key: vk
 
 Bifrost supports selecting a specific key by **ID** or **name**. When both are present, ID takes priority.
 
+A key belongs to one provider. When the request leaves the provider to routing (a bare model such as `gpt-4o`) and routing offers the key's provider further down the chain, that provider is tried first, on the pinned key, and the rest of the chain keeps its order behind it. A chain entry that a routing rule fallback or the load balancer pinned to a key of its own keeps its place. A request that names its provider (`openai/gpt-4o`) stays on it, so a pin on another provider's key fails key selection there and the fallbacks run without the pin. A key pinned by a matched routing rule takes precedence over these headers.
+
 #### By ID
 
 **Context Key:** `BifrostContextKeyAPIKeyID`
@@ -187,8 +189,16 @@ A direct key is **not** authentication. If [`enforce_auth_on_inference`](../depl
 </Note>
 
 <Warning>
-A direct key only replaces the provider credential — it bypasses the **key pool**: no weighted selection, no rotation or fallback across alternate keys, and no per-key model restrictions. **Governance still applies:** with a virtual key alongside it, that key's budgets, rate limits, allow-lists, and routing are enforced and the spend counts against its budget. Enable `allow_direct_keys` only when callers should manage their own provider credentials.
+A direct key only replaces the provider credential — it bypasses the **key pool**: no weighted selection, no rotation or fallback across alternate keys, and no per-key model restrictions. It also takes precedence over every key pin: a matched routing rule's target `key_id` and the caller's `x-bf-api-key-id` / `x-bf-api-key` are not used for the attempt that uses the caller's key. **Governance still applies:** with a virtual key alongside it, that key's budgets, rate limits, allow-lists, and routing are enforced and the spend counts against its budget. Enable `allow_direct_keys` only when callers should manage their own provider credentials.
 </Warning>
+
+<Note>
+A direct key is tried only on the first provider of the request's chain; fallback providers run on their own configured keys. With a bare model that first provider is whatever routing or [session affinity](/providers/session-affinity) puts first. Name the provider (`openai/gpt-4o`) and a session never moves the request away from it. A fallback that serves a request with a direct key does not become the session's provider.
+</Note>
+
+<Note>
+A direct key belongs to one provider, so listing models with one never fans out to every provider. The drop-in model routes list only their own provider (`/openai/v1/models` lists OpenAI, `/anthropic/v1/models` Anthropic, `/genai/v1beta/models` Gemini), and answer `400` when that provider is not configured; `x-bf-model-provider` names another one. `GET /v1/models` must name the provider with `?provider=`, and a listing across all providers (`/v1/models` without one, or `x-bf-model-provider: all`) is refused with `400`.
+</Note>
 
 <Tabs>
 <Tab title="Gateway (cURL)">
@@ -232,14 +242,14 @@ response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 
 Keep a session on what served it before, so a conversation keeps hitting the same provider prompt cache. Affinity works at two levels:
 
-- **Provider**: when routing offers more than one provider for what the caller asked for (virtual key weights, load balancing, model catalog candidates), the provider that last served the session is tried first, as long as routing still offers it. Routing decides which providers are allowed; the session only decides their order. A request that names its provider (`openai/gpt-4o`) is never reordered: the caller asked for that provider, so only the key level applies to it, even when a fallback served an earlier turn.
+- **Provider**: when routing offers more than one provider for what the caller asked for (virtual key weights, load balancing, model catalog candidates), the provider that last served the session is tried first, as long as routing still offers it. Routing decides which providers are allowed; the session only decides their order. A request that names its provider (`openai/gpt-4o`) is never reordered: the caller asked for that provider, so only the key level applies to it, even when a fallback served an earlier turn. Nor is one that pins one of the routed provider's keys with [`x-bf-api-key-id` or `x-bf-api-key`](#api-key-selection), since that key exists only there.
 - **Key**: within a provider, the key that last served the session is used while it stays eligible.
 
 Bindings are written when a request is served, never when it fails, and are scoped to the virtual key and user the request is attributed to. A fallback that serves becomes the session's new home. Bindings live in the KV store for the session TTL, refreshed by every served request.
 
 **Retry and Fallback Behavior:**
 - **Retries**: A bound key is used for every retry of a request. A session with no key binding yet rotates keys on rate limits like any other request, and the key that serves is the one that gets bound.
-- **Fallbacks**: Fallback providers select keys freely. When a fallback serves, the session is rebound to that provider and its key, so the next request starts there.
+- **Fallbacks**: Fallback providers select keys freely. When a fallback serves, the session is rebound to that provider and its key, so the next request starts there. A request with a [direct key](#direct-api-key) is the exception: the fallback served on the gateway's keys, so only its key is bound and the next request follows the routing decision.
 - **Switch**: `x-bf-session-affinity: off` turns affinity off for a request, at both levels; `on` is the default.
 - **Routing trail**: Decisions the session made appear in the request's routing logs under the `session-affinity` engine, which is also listed among the routing engines used. The UI labels it **Session**.
 
@@ -343,7 +353,7 @@ Input: messages,
 **Type:** `string`
 **Required:** No
 
-Set a custom request ID for tracking and correlation. If not provided, Bifrost generates a UUID.
+Set a custom request ID for tracking and correlation. If not provided, Bifrost generates a UUID. Either way, the gateway returns it in the `x-bifrost-request-id` response header (see [Correlation response headers](#correlation-response-headers)).
 
 <Tabs>
 <Tab title="Gateway (cURL)">
@@ -379,10 +389,15 @@ Every traced gateway request echoes the correlation IDs so you can pivot from a 
 
 | Response header | Description |
 | --- | --- |
-| `x-request-id` | The request ID you sent, or the UUID Bifrost generated when none was provided. |
+| `x-bifrost-request-id` | The request ID you sent, or the UUID Bifrost generated when none was provided. It is also the ID of the request's log entry (`GET /api/logs/{id}`). |
 | `x-bifrost-trace-id` | The trace ID linking all spans for the request. Inherited from an incoming W3C `traceparent` when present, otherwise generated. |
+| `x-request-id` | **Deprecated** for reading Bifrost's request ID; use `x-bifrost-request-id`. Carries the same value unless the provider answers with its own `x-request-id` (OpenAI does), in which case it is the provider's request ID. |
 
 The same `trace_id` and `request_id` appear as fields on Bifrost's structured access logs, so the value returned to the caller can be searched directly in your log store.
+
+<Note>
+Provider response headers are forwarded to the caller, except the `x-bifrost-*` names Bifrost writes itself. When the upstream is another Bifrost gateway, its `x-bifrost-*` headers describe its own hop and are not forwarded, so they can never replace this gateway's request ID, trace ID or routing headers.
+</Note>
 
 ### Send Back Raw Request
 

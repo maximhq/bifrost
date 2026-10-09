@@ -1291,24 +1291,30 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 			wantBodyHas: "x-model-provider",
 		},
 		{
+			name: "account operation is refused", uri: "/anthropic_passthrough/v1/files", wantStatus: fasthttp.StatusForbidden, wantBodyHas: "inference endpoint",
+		},
+		{
+			name: "batch operation is refused", uri: "/anthropic_passthrough/v1/messages/batches", wantStatus: fasthttp.StatusForbidden, wantBodyHas: "inference endpoint",
+		},
+		{
 			name:         "well-formed anthropic path is forwarded",
 			uri:          "/anthropic_passthrough/v1/messages?beta=true",
 			wantStatus:   fasthttp.StatusOK,
 			wantUpstream: "/v1/messages?beta=true",
 		},
 		{
-			name:         "versioned genai prefix is stripped at the boundary",
-			uri:          "/genai_passthrough/v1beta/models/claude:generateContent",
-			provider:     "anthropic",
-			wantStatus:   fasthttp.StatusOK,
-			wantUpstream: "/models/claude:generateContent",
+			name:        "versioned genai prefix is stripped at the boundary",
+			uri:         "/genai_passthrough/v1beta/models/claude:generateContent",
+			provider:    "anthropic",
+			wantStatus:  fasthttp.StatusBadRequest,
+			wantBodyHas: "provider does not match",
 		},
 		{
-			name:         "longer first segment falls back to the shorter prefix",
-			uri:          "/genai_passthrough/v1beta1foo/x",
-			provider:     "anthropic",
-			wantStatus:   fasthttp.StatusOK,
-			wantUpstream: "/v1beta1foo/x",
+			name:        "longer first segment falls back to the shorter prefix",
+			uri:         "/genai_passthrough/v1beta1foo/x",
+			provider:    "anthropic",
+			wantStatus:  fasthttp.StatusForbidden,
+			wantBodyHas: "inference endpoint",
 		},
 	}
 
@@ -1340,6 +1346,115 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 			require.Equal(t, "sk-ant-test-operator-key", got[0].apiKey)
 		})
 	}
+}
+
+// directKeyHandlerStore is the shared mock store with direct keys allowed.
+type directKeyHandlerStore struct{ *mockHandlerStore }
+
+func (directKeyHandlerStore) ShouldAllowDirectKeys() bool { return true }
+
+// directKeyTestAccount configures OpenAI and Anthropic, each against its own upstream.
+type directKeyTestAccount struct{ openAIURL, anthropicURL string }
+
+func (a directKeyTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic}, nil
+}
+
+func (a directKeyTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "operator-" + string(p), Value: *schemas.NewSecretVar("sk-operator-" + string(p)), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
+}
+
+func (a directKeyTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	nc := schemas.DefaultNetworkConfig
+	switch p {
+	case schemas.OpenAI:
+		nc.BaseURL = a.openAIURL
+	case schemas.Anthropic:
+		nc.BaseURL = a.anthropicURL
+	default:
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	return &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// A direct key is the caller's credential for the provider whose SDK called the route. A drop-in
+// model listing that names no provider used to ask every configured provider and send the key to
+// each of them; it now asks only the route's own provider, refuses when that provider is not
+// configured, and refuses an explicit "all".
+func TestListModelsDirectKeyStaysOnTheRouteProvider(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string][]string{}
+	recording := func(name string, body string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			seen[name] = append(seen[name], r.Header.Get("Authorization")+r.Header.Get("x-api-key"))
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+		}))
+	}
+	openAISrv := recording("openai", `{"object":"list","data":[{"id":"gpt-4o-mini","object":"model","created":1700000000,"owned_by":"test"}]}`)
+	defer openAISrv.Close()
+	anthropicSrv := recording("anthropic", `{"data":[{"id":"claude-test","type":"model","display_name":"Claude Test","created_at":"2026-01-01T00:00:00Z"}],"has_more":false}`)
+	defer anthropicSrv.Close()
+	take := func() map[string][]string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := seen
+		seen = map[string][]string{}
+		return out
+	}
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: directKeyTestAccount{openAIURL: openAISrv.URL, anthropicURL: anthropicSrv.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	store := directKeyHandlerStore{&mockHandlerStore{availableProviders: []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic}}}
+	NewOpenAIRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewAnthropicRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	list := func(uri string, headers map[string]string) *fasthttp.RequestCtx {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI(uri)
+		ctx.Request.Header.Set("x-bf-direct-key", "true")
+		for k, v := range headers {
+			ctx.Request.Header.Set(k, v)
+		}
+		r.Handler(&ctx)
+		return &ctx
+	}
+
+	ctx := list("/openai/v1/models", map[string]string{"Authorization": "Bearer sk-caller-openai"})
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	require.Equal(t, map[string][]string{"openai": {"Bearer sk-caller-openai"}}, take(), "the caller's OpenAI key must reach OpenAI only")
+
+	ctx = list("/anthropic/v1/models", map[string]string{"x-api-key": "sk-caller-anthropic"})
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	require.Equal(t, map[string][]string{"anthropic": {"sk-caller-anthropic"}}, take(), "the caller's Anthropic key must reach Anthropic only")
+
+	ctx = list("/openai/v1/models", map[string]string{"Authorization": "Bearer sk-caller-openai", "x-bf-model-provider": "all"})
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	require.Contains(t, string(ctx.Response.Body()), "must name its provider")
+	require.Empty(t, take(), "a refused listing must reach no provider")
+
+	// The same route on a gateway where its provider is not configured has no provider to ask.
+	anthropicOnly := router.New()
+	NewOpenAIRouter(client, directKeyHandlerStore{&mockHandlerStore{availableProviders: []schemas.ModelProvider{schemas.Anthropic}}}, nil, &testLogger{}).RegisterRoutes(anthropicOnly, identity)
+	var unconfigured fasthttp.RequestCtx
+	unconfigured.Request.Header.SetMethod(fasthttp.MethodGet)
+	unconfigured.Request.SetRequestURI("/openai/v1/models")
+	unconfigured.Request.Header.Set("x-bf-direct-key", "true")
+	unconfigured.Request.Header.Set("Authorization", "Bearer sk-caller-openai")
+	anthropicOnly.Handler(&unconfigured)
+	require.Equal(t, fasthttp.StatusBadRequest, unconfigured.Response.StatusCode(), "body: %s", unconfigured.Response.Body())
+	require.Contains(t, string(unconfigured.Response.Body()), "provider openai is not configured")
+	require.Empty(t, take(), "a listing for an unconfigured provider must reach no provider")
 }
 
 // The Bedrock passthrough is a restricted route: it targets the Bedrock provider and is mounted
@@ -1385,4 +1500,88 @@ func TestPassthroughConfigStreamsDecision(t *testing.T) {
 	assert.False(t, custom.streams(http.MethodPost, "/other", false))
 	assert.False(t, custom.streams(http.MethodPost, "/stream/other", false), "when the provider supplies a route predicate it replaces the generic path marker")
 	assert.False(t, custom.streams(http.MethodPost, "/other", true), "and the generic body marker")
+}
+
+func TestPassthroughInferenceRoutes(t *testing.T) {
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		path     string
+	}{
+		{schemas.OpenAI, "/v1/chat/completions"}, {schemas.OpenAI, "/v1/responses"},
+		{schemas.OpenAI, "/v1/audio/transcriptions"}, {schemas.Anthropic, "/v1/messages"},
+		{schemas.Anthropic, "/v1/messages/count_tokens"}, {schemas.Azure, "/openai/deployments/gpt-4o/chat/completions"},
+		{schemas.Azure, "/openai/v1/responses"}, {schemas.Gemini, "/models/gemini-2.5-flash:streamGenerateContent"},
+		{schemas.Gemini, "/projects/p/locations/us/publishers/google/models/gemini-2.5-flash:generateContent"},
+		{schemas.Runware, "/v1"},
+	} {
+		cfg := &PassthroughConfig{Provider: tc.provider}
+		require.True(t, passthroughInferenceRoute(cfg, "POST", tc.path), "%s %s", tc.provider, tc.path)
+		for _, method := range []string{"GET", "DELETE", "PATCH", "PUT", "HEAD"} {
+			require.False(t, passthroughInferenceRoute(cfg, method, tc.path), "%s %s", method, tc.path)
+		}
+	}
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Azure, schemas.Gemini, schemas.Runware} {
+		for _, path := range []string{"/v1/files", "/v1/fine_tuning/jobs", "/v1/organization/users", "/v1/chat/completions/id/messages", "/v1/messages/batches", "/v1/responses/id", "/models/m:delete", "/v1/./responses", "/v1/%72esponses", "/models/x:generateContent/extra"} {
+			require.False(t, passthroughInferenceRoute(&PassthroughConfig{Provider: provider}, "POST", path), "%s %s", provider, path)
+		}
+	}
+}
+
+// The Bedrock passthrough forwards only the operations the provider allow-lists, so the
+// route policy must accept exactly those and nothing else.
+func TestPassthroughInferenceRoutesBedrockUsesProviderAllowList(t *testing.T) {
+	cfg := &PassthroughConfig{Provider: schemas.Bedrock}
+	for _, path := range []string{
+		"/agents/AGENT12345/agentAliases/ALIAS12345/sessions/s1/text",
+		"/knowledgebases/KB12345678/retrieve",
+		"/guardrail/gr1a2b3c4d5e/version/DRAFT/apply",
+	} {
+		require.True(t, passthroughInferenceRoute(cfg, "POST", path), path)
+		require.False(t, passthroughInferenceRoute(cfg, "GET", path), "GET %s", path)
+	}
+	for _, path := range []string{
+		"/model/amazon.titan-text-express-v1/invoke",
+		"/knowledgebases/KB12345678/retrieve/extra",
+		"/knowledgebases/kb-with-dash/retrieve",
+		"/agents/AGENT12345/agentAliases/ALIAS12345/sessions/../text",
+	} {
+		require.False(t, passthroughInferenceRoute(cfg, "POST", path), path)
+	}
+}
+
+// Requests outside the Bedrock allow-list are refused by the route policy with 403
+// before the provider, key selection, or AWS is reached.
+func TestBedrockPassthroughRefusalsUseRoutePolicy(t *testing.T) {
+	r := router.New()
+	NewBedrockPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+	for _, tc := range []struct{ method, uri string }{
+		{"POST", "/bedrock_passthrough/model/amazon.titan-text-express-v1/invoke"},
+		{"POST", "/bedrock_passthrough/agents/..%2Fmodel/agentAliases/a/sessions/s/text"},
+		{"GET", "/bedrock_passthrough/knowledgebases/KB12345678/retrieve"},
+		{"POST", "/bedrock_passthrough/agents/AGENT123456/agentAliases/ALIAS12345/sessions/.../text"},
+	} {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(tc.method)
+		ctx.Request.SetRequestURI(tc.uri)
+		r.Handler(&ctx)
+		require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), "%s %s: %s", tc.method, tc.uri, ctx.Response.Body())
+		require.Contains(t, string(ctx.Response.Body()), "supported inference endpoint", "%s %s", tc.method, tc.uri)
+	}
+}
+
+func TestPassthroughManagementRoutesNeverForward(t *testing.T) {
+	r := router.New()
+	NewOpenAIPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+	NewAnthropicPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+	NewAzurePassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+	NewGenAIPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+	for _, prefix := range []string{"openai", "anthropic", "azure", "genai"} {
+		for _, method := range []string{"GET", "POST", "DELETE", "PUT", "PATCH", "HEAD"} {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(method)
+			ctx.Request.SetRequestURI("/" + prefix + "_passthrough/v1/files")
+			r.Handler(&ctx)
+			require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), "%s %s: %s", prefix, method, ctx.Response.Body())
+		}
+	}
 }

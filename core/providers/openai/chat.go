@@ -14,6 +14,12 @@ func (req *OpenAIChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 	if params.MaxCompletionTokens == nil && req.MaxTokens != nil {
 		params.MaxCompletionTokens = req.MaxTokens
 	}
+	// OpenAI chat has no reasoning.summary; on this integration it is only sent via passthrough extra_params.
+	if params.Reasoning != nil && params.Reasoning.Summary != nil {
+		reasoning := *params.Reasoning
+		reasoning.Summary = nil
+		params.Reasoning = &reasoning
+	}
 
 	return &schemas.BifrostChatRequest{
 		Provider:  provider,

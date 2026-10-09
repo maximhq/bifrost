@@ -1284,11 +1284,13 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 		}
 
 		// Handle Reasoning from reasoning_effort
-		if cr.Params.Reasoning != nil && (cr.Params.Reasoning.Enabled != nil || cr.Params.Reasoning.Effort != nil || cr.Params.Reasoning.MaxTokens != nil || cr.Params.Reasoning.Type != nil) {
+		if cr.Params.Reasoning != nil && (cr.Params.Reasoning.Enabled != nil || cr.Params.Reasoning.Effort != nil || cr.Params.Reasoning.MaxTokens != nil || cr.Params.Reasoning.Type != nil || cr.Params.Reasoning.Mode != nil || cr.Params.Reasoning.Summary != nil) {
 			brr.Params.Reasoning = &ResponsesParametersReasoning{
 				Effort:    cr.Params.Reasoning.Effort,
 				MaxTokens: cr.Params.Reasoning.MaxTokens,
 				Type:      cr.Params.Reasoning.Type,
+				Mode:      cr.Params.Reasoning.Mode,
+				Summary:   cr.Params.Reasoning.Summary,
 			}
 		}
 
@@ -1385,6 +1387,8 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 				Effort:    brr.Params.Reasoning.Effort,
 				MaxTokens: brr.Params.Reasoning.MaxTokens,
 				Type:      brr.Params.Reasoning.Type,
+				Mode:      brr.Params.Reasoning.Mode,
+				Summary:   brr.Params.Reasoning.Summary,
 			}
 		}
 

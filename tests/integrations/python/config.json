@@ -1,5 +1,6 @@
 {
   "$schema": "https://www.getbifrost.ai/schema",
+  "setup_token": "bifrost-e2e-setup-token",
   "mcp": {
     "client_configs": [
       {
@@ -1110,9 +1111,7 @@
             "weight": 1
           }
         ],
-        "fallbacks": [
-          "openai_pc_auto/gpt-4o-mini"
-        ]
+        "fallbacks": ["openai_pc_auto/gpt-4o-mini"]
       },
       {
         "id": "harness-custom-provider-fallback-boot-provider-only",
@@ -1291,6 +1290,7 @@
   },
   "client": {
     "allow_per_request_raw_override": true,
+    "allow_direct_keys": true,
     "drop_excess_requests": false,
     "initial_pool_size": 300,
     "allowed_origins": ["*"],

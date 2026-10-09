@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { PRICING_FIELDS, pricingFieldError, pricingFieldUnit } from "./pricingFields";
+import { getRequestTypeGroup, PRICING_FIELDS, pricingFieldError, pricingFieldUnit, REQUEST_TYPE_OPTIONS } from "./pricingFields";
 
 describe("pricingFieldUnit", () => {
 	// Character-priced fields carry a "/ character" label, so rendering them
@@ -29,6 +29,8 @@ describe("pricingFieldUnit", () => {
 	it("keeps the token unit across context-tier and service-tier suffixes", () => {
 		for (const key of [
 			"input_cost_per_token_above_128k_tokens",
+			"input_cost_per_token_above_100k_tokens",
+			"cache_creation_input_token_cost_above_1hr_above_100k_tokens",
 			"input_cost_per_token_ultrafast",
 			"output_cost_per_token_ultrafast",
 			"cache_read_input_token_cost_ultrafast",
@@ -89,7 +91,7 @@ describe("pricingFieldUnit", () => {
 			expect(byUnit[unit], `${field.key} resolved to unexpected unit ${unit}`).toBeDefined();
 			byUnit[unit].push(field.key);
 		}
-		expect(PRICING_FIELDS).toHaveLength(112);
+		expect(PRICING_FIELDS).toHaveLength(117);
 		expect(byUnit.multiplier).toEqual(["inference_geo_us_multiplier", "off_peak_cost_multiplier"]);
 		expect(byUnit.character).toEqual(["input_cost_per_character"]);
 		// Sanity: the split is real, not everything collapsing into one bucket.
@@ -125,5 +127,14 @@ describe("pricingFieldError", () => {
 		expect(pricingFieldError("off_peak_cost_multiplier", "0")).toBe("Must be greater than 0 and at most 1");
 		expect(pricingFieldError("off_peak_cost_multiplier", "-0.5")).toBe("Must be greater than 0 and at most 1");
 		expect(pricingFieldError("off_peak_cost_multiplier", "1.5")).toBe("Must be greater than 0 and at most 1");
+	});
+});
+describe("request type groups", () => {
+	// GPT Live bills voice time per second, so its overrides use the audio fields.
+	it("offers live under the audio group with per-second pricing", () => {
+		expect(REQUEST_TYPE_OPTIONS).toContain("live");
+		expect(getRequestTypeGroup("live")).toBe("Audio");
+		const perSecond = PRICING_FIELDS.find((f) => f.key === "input_cost_per_second");
+		expect(perSecond?.requestTypeGroups).toContain("audio");
 	});
 });

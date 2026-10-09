@@ -380,6 +380,33 @@ type ConfigStore interface {
 	CreateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	UpdateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	DeleteVirtualKey(ctx context.Context, id string, tx ...*gorm.DB) error
+	ReplaceVirtualKeyAgentGrants(ctx context.Context, virtualKeyID string, agentNames []string, tx ...*gorm.DB) error
+
+	// Agent Gateway registration CRUD. Declared on the interface (not just the
+	// RDB implementation) so wrappers that embed ConfigStore — like the
+	// enterprise config store — forward them and still satisfy agent.Store.
+	CreateAgentRegistration(ctx context.Context, registration *schemas.AgentRegistration) error
+	UpdateAgentRegistration(ctx context.Context, registration *schemas.AgentRegistration) error
+	ListAgentRegistrations(ctx context.Context) ([]schemas.AgentRegistration, error)
+	GetAgentRegistration(ctx context.Context, name string) (*schemas.AgentRegistration, error)
+	DeleteAgentRegistration(ctx context.Context, name string) error
+
+	// Agent Gateway push relay persistence, mirroring agent.PushStore for the
+	// same wrapper-forwarding reason as the registration CRUD above.
+	SaveAgentPushConfig(ctx context.Context, config *schemas.AgentPushConfig) error
+	BindAgentPushConfigTask(ctx context.Context, agentName, ingressTokenHash, pendingTaskID, taskID string) error
+	GetAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (*schemas.AgentPushConfig, error)
+	GetAgentPushConfigByIngressTokenHash(ctx context.Context, agentName, hash string) (*schemas.AgentPushConfig, error)
+	ListAgentPushConfigs(ctx context.Context, agentName, taskID string) ([]schemas.AgentPushConfig, error)
+	ListAgentPushConfigsPaginated(ctx context.Context, query schemas.AgentPushConfigQuery) ([]schemas.AgentPushConfig, int64, error)
+	ListAgentPushConfigAgentNames(ctx context.Context) ([]string, error)
+	DeleteAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (bool, error)
+	DeletePendingAgentPushConfig(ctx context.Context, agentName, ingressTokenHash, pendingTaskID string) (bool, error)
+	CreateAgentPushDeliveryIfNotExists(ctx context.Context, delivery *schemas.AgentPushDelivery) (bool, error)
+	ListDueAgentPushDeliveries(ctx context.Context, now time.Time, limit int) ([]schemas.AgentPushDelivery, error)
+	ClaimAgentPushDelivery(ctx context.Context, id, runnerID string, leaseUntil time.Time) (*schemas.AgentPushDelivery, error)
+	UpdateAgentPushDeliveryOutcome(ctx context.Context, delivery *schemas.AgentPushDelivery, runnerID string, leaseUntil time.Time) error
+	PruneAgentPushDeliveries(ctx context.Context, before time.Time) error
 
 	// Virtual key provider config CRUD
 	GetVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string) ([]tables.TableVirtualKeyProviderConfig, error)
@@ -452,6 +479,13 @@ type ConfigStore interface {
 	// Budget CRUD
 	GetBudgets(ctx context.Context) ([]tables.TableBudget, error)
 	GetBudget(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableBudget, error)
+	// GetVirtualKeyBudgets returns the budgets a virtual key holds directly, through virtual_key_id:
+	// the ones config.json declares inline on the key. Budgets held through a model config are not
+	// included.
+	GetVirtualKeyBudgets(ctx context.Context, virtualKeyID string, tx ...*gorm.DB) ([]tables.TableBudget, error)
+	// GetVirtualKeyProviderConfigBudgets returns the budgets a virtual key provider config holds
+	// directly, through provider_config_id. Budgets held through a model config are not included.
+	GetVirtualKeyProviderConfigBudgets(ctx context.Context, providerConfigID uint, tx ...*gorm.DB) ([]tables.TableBudget, error)
 	CreateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error
 	UpdateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error
 	// UpdateBudgetOverride updates only the override state and returns the refreshed budget.

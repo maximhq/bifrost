@@ -187,7 +187,8 @@ func TestToCohereEmbeddingResponseOrdersByIndex(t *testing.T) {
 			{Index: 0, Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0}}},
 		},
 	})
-	assert.Equal(t, "embeddings_floats", *plain.ResponseType)
+	// The object form is always built, and Cohere's v2 API labels it embeddings_by_type.
+	assert.Equal(t, "embeddings_by_type", *plain.ResponseType)
 	assert.Equal(t, [][]float64{{0}, {1}, {2}}, plain.Embeddings.Float)
 }
 

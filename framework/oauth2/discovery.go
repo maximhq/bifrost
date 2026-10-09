@@ -72,6 +72,13 @@ func oauthDialContext(timeout time.Duration, proxies ...*url.URL) func(ctx conte
 		if _, ok := trusted[addr]; ok {
 			return direct(ctx, netw, addr)
 		}
+		// The global proxy is configuration that can change at runtime, so it is
+		// looked up per dial rather than captured like the environment proxies.
+		if factory := network.DefaultHTTPClientFactory(); factory != nil {
+			if p := factory.ProxyURLForPurpose(network.ClientPurposeAPI); p != nil && proxyDialAddr(p) == addr {
+				return direct(ctx, netw, addr)
+			}
+		}
 		return guarded(ctx, netw, addr)
 	}
 }
@@ -114,7 +121,7 @@ func proxiesFromEnvironment() []*url.URL {
 // test dialer override gets its own transport so it never mutates the shared one.
 func newOAuthDiscoveryTransport(dial func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
 	return &http.Transport{
-		Proxy:               oauthProxySelector(http.ProxyFromEnvironment),
+		Proxy:               oauthProxySelector(network.DefaultProxyFunc(network.ClientPurposeAPI)),
 		DialContext:         dial,
 		MaxIdleConns:        32,
 		MaxIdleConnsPerHost: 4,
@@ -123,8 +130,9 @@ func newOAuthDiscoveryTransport(dial func(ctx context.Context, network, addr str
 	}
 }
 
-// oauthProxySelector wraps a proxy chooser (http.ProxyFromEnvironment in
-// production) so proxy-only installations keep working without losing the
+// oauthProxySelector wraps a proxy chooser (network.DefaultProxyFunc in
+// production: the global proxy when it is enabled for API traffic, else the
+// environment) so proxy-only installations keep working without losing the
 // destination guard. When a proxy is chosen, http.Transport hands DialContext
 // the proxy's address rather than the OAuth endpoint's, so the dial-time check
 // alone would validate the proxy and let it forward to a blocked target. What
