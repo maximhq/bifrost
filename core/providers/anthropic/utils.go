@@ -1443,63 +1443,64 @@ func claudeOpusSonnet4Minor(m string) (int, bool) {
 	return n, true
 }
 
-// isLegacyBudgetTokensOnlyModel reports whether a lowercased Claude model id
-// predates adaptive thinking and therefore only accepts budget_tokens extended
-// thinking (and still accepts temperature/top_p/top_k). This is the closed set
-// of legacy Claude models: Claude 2.x/3.x (incl. 3.x Haiku), Haiku 4.5, and
-// Opus/Sonnet 4.x below the .6 adaptive cutoff. Every other Claude model is
-// assumed to support adaptive thinking — the fail-open default so a new/unknown
-// Claude model is not downgraded to budget_tokens (which every Claude model
-// since Opus 4.7 rejects with a 400).
-func isLegacyBudgetTokensOnlyModel(m string) bool {
-	// Pre-Claude-4 generations, including every 3.x Haiku (claude-3-haiku,
-	// claude-3-5-haiku).
-	if strings.Contains(m, "claude-2") || strings.Contains(m, "claude-instant") {
-		return true
+// claudeThinkingTier is the request surface a Claude model id implies for
+// thinking and sampling parameters, from the model name alone. The datasheet
+// row overrides it wherever ModelCaps has an opinion.
+type claudeThinkingTier int
+
+const (
+	// claudeTierNotClaude: not a Claude id at all (empty, or another vendor).
+	claudeTierNotClaude claudeThinkingTier = iota
+	// claudeTierLegacy: budget_tokens extended thinking only, sampling params
+	// accepted. Claude 2.x/3.x (incl. 3.x Haiku), Haiku 4.5, Opus/Sonnet 4.x
+	// below the .6 minor.
+	claudeTierLegacy
+	// claudeTierDualMode: adaptive and budget_tokens both accepted, sampling
+	// params accepted. Opus 4.6 and Sonnet 4.6 only.
+	claudeTierDualMode
+	// claudeTierAdaptiveOnly: budget_tokens removed, temperature/top_p/top_k
+	// rejected with a 400. Opus 4.7+, Sonnet 5+, Haiku 5.5, Fable/Mythos, and
+	// by fail-open default every Claude id not matched above.
+	claudeTierAdaptiveOnly
+)
+
+// classifyClaudeThinking buckets a lowercased model id into a
+// claudeThinkingTier with one pass of substring checks and at most one regexp
+// match. It fails open on purpose: the previous allowlist treated every newly
+// released Claude model as pre-adaptive until someone added it, so Bifrost
+// rewrote adaptive thinking to budget_tokens and the model rejected the request
+// with a 400 (Haiku 5.5, #8155). New Claude models have shipped adaptive-only
+// since Opus 4.7, so an unrecognized Claude id means adaptive-only now, and
+// only the closed legacy and dual-mode sets are carved out.
+func classifyClaudeThinking(m string) claudeThinkingTier {
+	if !strings.Contains(m, "claude") {
+		return claudeTierNotClaude
 	}
-	if strings.Contains(m, "claude-3") {
-		return true
+	// Pre-Claude-4 generations, including every 3.x Haiku.
+	if strings.Contains(m, "claude-2") || strings.Contains(m, "claude-instant") || strings.Contains(m, "claude-3") {
+		return claudeTierLegacy
 	}
 	// Haiku 4.5 is the one budget_tokens-only Haiku. Match it explicitly rather
-	// than any "haiku" so a newer Haiku (Haiku 5.5 is adaptive-only) fails open
-	// to adaptive like any other new model.
+	// than any "haiku" so a newer Haiku (Haiku 5.5 is adaptive-only) fails open.
 	if strings.Contains(m, "haiku-4-5") || strings.Contains(m, "haiku-4.5") {
-		return true
+		return claudeTierLegacy
 	}
-	// Opus/Sonnet 4.x below the .6 adaptive cutoff (incl. bare 4.0).
-	if minor, ok := claudeOpusSonnet4Minor(m); ok && minor < 6 {
-		return true
+	if minor, ok := claudeOpusSonnet4Minor(m); ok {
+		switch {
+		case minor < 6:
+			return claudeTierLegacy
+		case minor == 6:
+			return claudeTierDualMode
+		}
 	}
-	return false
-}
-
-// isDualModeThinkingModel reports whether a lowercased Claude model id supports
-// BOTH adaptive thinking and budget_tokens extended thinking (and still accepts
-// sampling params) — adaptive is available but not the only mode. Only Opus 4.6
-// and Sonnet 4.6 qualify.
-func isDualModeThinkingModel(m string) bool {
-	minor, ok := claudeOpusSonnet4Minor(m)
-	return ok && minor == 6
+	return claudeTierAdaptiveOnly
 }
 
 // DefaultSupportsAdaptiveThinking: thinking.type "adaptive" is accepted on every
-// Claude model except the known legacy budget_tokens-only set (Claude 2.x/3.x,
-// Haiku 4.5, Opus/Sonnet 4.x below .6 — see isLegacyBudgetTokensOnlyModel).
-//
-// This fails open on purpose. The previous allowlist (Opus 4.6+, Sonnet 4.6+,
-// Fable/Mythos) classified every newly released Claude model as pre-adaptive
-// until someone added it, so Bifrost rewrote adaptive thinking to budget_tokens
-// and the model rejected the request with a 400 (Haiku 5.5, #8155). New models
-// have shipped adaptive-only since Opus 4.7, so "unknown Claude" means
-// "adaptive" now. The datasheet row still wins when it has an opinion.
-//
-// Empty and non-Claude model strings return false.
+// Claude model except the legacy budget_tokens-only set (see
+// classifyClaudeThinking). Empty and non-Claude model strings return false.
 func DefaultSupportsAdaptiveThinking(model string) bool {
-	m := strings.ToLower(model)
-	if !strings.Contains(m, "claude") {
-		return false
-	}
-	return !isLegacyBudgetTokensOnlyModel(m)
+	return classifyClaudeThinking(strings.ToLower(model)) >= claudeTierDualMode
 }
 
 // DefaultEffortControl: the output_config.effort ladder per family, for rows that publish none.
@@ -1555,16 +1556,11 @@ func fitRawThinkingBudget(jsonBody []byte, maxTokens int) ([]byte, error) {
 
 // DefaultAdaptiveOnlyThinking: models where budget_tokens thinking is removed
 // and temperature/top_p/top_k are rejected — adaptive is the only thinking mode.
-// Covers Opus 4.7+, Sonnet 5+, Haiku 5.5, the Fable/Mythos family, and by the
-// same fail-open rule as DefaultSupportsAdaptiveThinking any new or unrecognized
-// Claude model. Only the known legacy models and the dual-mode Opus 4.6 /
-// Sonnet 4.6 (which still take budget_tokens and sampling params) are excluded.
+// Opus 4.7+, Sonnet 5+, Haiku 5.5, Fable/Mythos, and by fail-open default any
+// unrecognized Claude id (see classifyClaudeThinking). The legacy set and the
+// dual-mode Opus 4.6 / Sonnet 4.6 are excluded.
 func DefaultAdaptiveOnlyThinking(model string) bool {
-	m := strings.ToLower(model)
-	if !DefaultSupportsAdaptiveThinking(m) {
-		return false // legacy (budget_tokens-only) or non-Claude
-	}
-	return !isDualModeThinkingModel(m)
+	return classifyClaudeThinking(strings.ToLower(model)) == claudeTierAdaptiveOnly
 }
 
 // DefaultCanDisableReasoning: the Fable/Mythos family, Opus 5.5 and Sonnet 5.5
@@ -1627,20 +1623,14 @@ func SupportsNativeEffort(caps schemas.ModelCaps) bool {
 // Source: https://platform.claude.com/docs/en/build-with-claude/effort
 func DefaultSupportsNativeEffort(model string) bool {
 	m := strings.ToLower(model)
-	if !strings.Contains(m, "claude") {
-		return false
-	}
-	// Every adaptive-capable Claude model takes effort, and so does every model
-	// released since (Haiku 5.5 included), so fail open and deny only the known
-	// pre-effort set.
-	if !isLegacyBudgetTokensOnlyModel(m) {
+	switch classifyClaudeThinking(m) {
+	case claudeTierDualMode, claudeTierAdaptiveOnly:
+		// Every adaptive-capable Claude model takes effort, Haiku 5.5 included.
 		return true
-	}
-	// Opus 4.5 is the one legacy model that accepts effort (with budget_tokens
-	// thinking). Sonnet 4.5, Haiku 4.5 and everything older reject it.
-	if strings.Contains(m, "opus") {
-		minor, ok := claudeOpusSonnet4Minor(m)
-		return ok && minor == 5
+	case claudeTierLegacy:
+		// Opus 4.5 is the one legacy model that accepts effort (with
+		// budget_tokens thinking). Sonnet 4.5, Haiku 4.5 and older reject it.
+		return strings.Contains(m, "opus-4-5") || strings.Contains(m, "opus-4.5")
 	}
 	return false
 }
