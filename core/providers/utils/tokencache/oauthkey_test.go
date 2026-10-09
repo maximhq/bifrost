@@ -97,7 +97,21 @@ func TestMinterForConfig(t *testing.T) {
 		{"plain http on a public host", func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://idp.example/oauth2/token") }, "must be https"},
 		{"missing grant", func(c *schemas.OAuthKeyConfig) { c.GrantType = "" }, "grant_type is required"},
 		{"unknown grant", func(c *schemas.OAuthKeyConfig) { c.GrantType = "password" }, "must be client_credentials or jwt_bearer"},
-		{"jwt bearer not yet", func(c *schemas.OAuthKeyConfig) { c.GrantType = schemas.OAuthGrantJWTBearer }, "not supported yet"},
+		{"jwt bearer without key", func(c *schemas.OAuthKeyConfig) {
+			c.GrantType = schemas.OAuthGrantJWTBearer
+			c.Issuer = "i"
+			c.Audience = "a"
+		}, "private_key, oauth_key_config.issuer and oauth_key_config.audience are required"},
+		{"jwt bearer without issuer", func(c *schemas.OAuthKeyConfig) {
+			c.GrantType = schemas.OAuthGrantJWTBearer
+			c.PrivateKey = schemas.NewSecretVar("pem")
+			c.Audience = "a"
+		}, "private_key, oauth_key_config.issuer and oauth_key_config.audience are required"},
+		{"jwt bearer bad algorithm", func(c *schemas.OAuthKeyConfig) {
+			c.GrantType = schemas.OAuthGrantJWTBearer
+			c.PrivateKey = schemas.NewSecretVar("pem")
+			c.Issuer, c.Audience, c.SigningAlgorithm = "i", "a", "HS256"
+		}, "signing_algorithm must be one of"},
 		{"missing client id", func(c *schemas.OAuthKeyConfig) { c.ClientID = schemas.NewSecretVar("") }, "client_id and oauth_key_config.client_secret are required"},
 		{"bad auth style", func(c *schemas.OAuthKeyConfig) { c.AuthStyle = "query" }, "auth_style must be header or body"},
 	} {
@@ -146,6 +160,21 @@ func TestMinterForConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("a jwt_bearer config yields a minter that signs on the cold path only", func(t *testing.T) {
+		cfg := &schemas.OAuthKeyConfig{
+			GrantType:  schemas.OAuthGrantJWTBearer,
+			TokenURL:   *schemas.NewSecretVar("https://idp.example/token"),
+			PrivateKey: schemas.NewSecretVar("not parsed until mint"),
+			Issuer:     "i",
+			Audience:   "a",
+		}
+		_, mint, bErr := MinterForConfig(cfg, nil)
+		require.Nil(t, bErr)
+		_, bErr = mint(context.Background(), nil)
+		require.NotNil(t, bErr, "the bad PEM surfaces at mint time")
+		assert.Contains(t, bErr.Error.Message, "PKCS#1 or PKCS#8")
+	})
+
 	t.Run("valid config yields a stable key and a minter", func(t *testing.T) {
 		k1, m1, bErr := MinterForConfig(ccConfig("https://idp.example/token"), nil)
 		require.Nil(t, bErr)
@@ -175,6 +204,11 @@ func TestOAuthKeyCacheKey(t *testing.T) {
 		{"audience", func(c *schemas.OAuthKeyConfig) { c.Audience = "aud" }},
 		{"auth style", func(c *schemas.OAuthKeyConfig) { c.AuthStyle = schemas.OAuthAuthStyleBody }},
 		{"extra params", func(c *schemas.OAuthKeyConfig) { c.ExtraParams = map[string]string{"resource": "r"} }},
+		{"grant", func(c *schemas.OAuthKeyConfig) {
+			c.GrantType = schemas.OAuthGrantJWTBearer
+			c.PrivateKey = schemas.NewSecretVar("pem")
+			c.Issuer, c.Audience = "i", "a"
+		}},
 	} {
 		t.Run(tc.name+" changes the key", func(t *testing.T) {
 			c := base()
@@ -182,6 +216,34 @@ func TestOAuthKeyCacheKey(t *testing.T) {
 			assert.NotEqual(t, ref, key(c))
 		})
 	}
+
+	t.Run("jwt_bearer fields each change the key", func(t *testing.T) {
+		jwtBase := func() *schemas.OAuthKeyConfig {
+			return &schemas.OAuthKeyConfig{
+				GrantType:  schemas.OAuthGrantJWTBearer,
+				TokenURL:   *schemas.NewSecretVar("https://idp.example/token"),
+				PrivateKey: schemas.NewSecretVar("pem"),
+				Issuer:     "i",
+				Audience:   "a",
+			}
+		}
+		jwtRef := key(jwtBase())
+		for _, tc := range []struct {
+			name string
+			edit func(*schemas.OAuthKeyConfig)
+		}{
+			{"private key", func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar("pem2") }},
+			{"issuer", func(c *schemas.OAuthKeyConfig) { c.Issuer = "i2" }},
+			{"subject", func(c *schemas.OAuthKeyConfig) { c.Subject = "s" }},
+			{"audience", func(c *schemas.OAuthKeyConfig) { c.Audience = "a2" }},
+			{"key id", func(c *schemas.OAuthKeyConfig) { c.KeyID = "k" }},
+			{"algorithm", func(c *schemas.OAuthKeyConfig) { c.SigningAlgorithm = "RS512" }},
+		} {
+			c := jwtBase()
+			tc.edit(c)
+			assert.NotEqual(t, jwtRef, key(c), tc.name)
+		}
+	})
 
 	t.Run("extra params hash in a stable order", func(t *testing.T) {
 		a, b := base(), base()

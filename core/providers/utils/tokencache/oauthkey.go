@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -89,7 +91,22 @@ func MinterForConfig(cfg *schemas.OAuthKeyConfig, hc *http.Client) (string, Mint
 		}, hc)
 		return cacheKey, mint, nil
 	case schemas.OAuthGrantJWTBearer:
-		return "", nil, configurationError("oauth_key_config.grant_type jwt_bearer is not supported yet")
+		if alg := cfg.SigningAlgorithm; alg != "" && !slices.Contains(schemas.OAuthSigningAlgorithms, alg) {
+			return "", nil, configurationError("oauth_key_config.signing_algorithm must be one of " + strings.Join(schemas.OAuthSigningAlgorithms, ", "))
+		}
+		mint := JWTBearerMinter(JWTBearerConfig{
+			TokenURL:      tokenURL,
+			PrivateKeyPEM: secret(cfg.PrivateKey),
+			Issuer:        strings.TrimSpace(cfg.Issuer),
+			Subject:       strings.TrimSpace(cfg.Subject),
+			Audience:      strings.TrimSpace(cfg.Audience),
+			KeyID:         cfg.KeyID,
+			Scopes:        cfg.Scopes,
+			Algorithm:     cfg.SigningAlgorithm,
+			Lifetime:      time.Duration(cfg.AssertionLifetimeSeconds) * time.Second,
+			ExtraParams:   extraParams(cfg.ExtraParams),
+		}, hc)
+		return cacheKey, mint, nil
 	default:
 		return "", nil, configurationError("oauth_key_config.grant_type must be client_credentials or jwt_bearer")
 	}
@@ -115,6 +132,9 @@ func validateConfig(cfg *schemas.OAuthKeyConfig) (string, *schemas.BifrostError)
 			return "", configurationError("oauth_key_config.client_id and oauth_key_config.client_secret are required for the client_credentials grant")
 		}
 	case schemas.OAuthGrantJWTBearer:
+		if secret(cfg.PrivateKey) == "" || strings.TrimSpace(cfg.Issuer) == "" || strings.TrimSpace(cfg.Audience) == "" {
+			return "", configurationError("oauth_key_config.private_key, oauth_key_config.issuer and oauth_key_config.audience are required for the jwt_bearer grant")
+		}
 	case "":
 		return "", configurationError("oauth_key_config.grant_type is required")
 	default:
