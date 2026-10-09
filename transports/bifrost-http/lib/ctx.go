@@ -927,6 +927,9 @@ func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
 	if host == "" {
 		return ""
 	}
+	if strings.ContainsAny(host, "/ \t\r\n\\@?#") {
+		return ""
+	}
 	return fmt.Sprintf("%s://%s", scheme, host)
 }
 
