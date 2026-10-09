@@ -252,7 +252,8 @@ func BenchmarkAnthropicStreamTurnToBifrost(b *testing.B) {
 }
 
 // BenchmarkAnthropicStreamTurnParseAndConvert adds the per-event JSON parse
-// that the provider loop pays before the conversion above.
+// that the provider loop pays before the conversion above, through the same
+// decode the loop uses.
 func BenchmarkAnthropicStreamTurnParseAndConvert(b *testing.B) {
 	raw := benchAnthropicStreamEvents()
 	payloads := make([][]byte, len(raw))
@@ -265,7 +266,7 @@ func BenchmarkAnthropicStreamTurnParseAndConvert(b *testing.B) {
 		state := NewAnthropicStreamState()
 		for i, payload := range payloads {
 			var event AnthropicStreamEvent
-			if err := schemas.Unmarshal(payload, &event); err != nil {
+			if err := decodeAnthropicStreamEvent(payload, &event); err != nil {
 				b.Fatalf("unmarshal stream event %d: %v", i, err)
 			}
 			_, bifrostErr, _ := event.ToBifrostChatCompletionStream(ctx, "", state)
