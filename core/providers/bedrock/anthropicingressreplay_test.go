@@ -526,3 +526,60 @@ func TestAnthropicIngressBedrockReplayKeepsReasoningInItsOwnTurn(t *testing.T) {
 		})
 	}
 }
+
+// Issue #8082: a compaction block replayed on the Anthropic ingress with a `bedrock/`
+// model has to reach the provider. The grouped converter used for Bedrock dropped it,
+// so the upstream got the full history again and compacted on every step.
+func TestAnthropicIngressBedrockReplayKeepsCompaction(t *testing.T) {
+	body := `{
+		"model": "bedrock/us.anthropic.claude-opus-4-8",
+		"max_tokens": 1024,
+		"messages": [
+			{"role": "user", "content": "Refactor the parser"},
+			{"role": "assistant", "content": [
+				{"type": "compaction", "content": "Summary of the earlier turns"},
+				{"type": "text", "text": "Continuing from the summary."}
+			]},
+			{"role": "user", "content": "Go on"}
+		]
+	}`
+	var ingressReq anthropic.AnthropicMessageRequest
+	require.NoError(t, json.Unmarshal([]byte(body), &ingressReq))
+
+	ctx := &schemas.BifrostContext{}
+	bifrostReq := ingressReq.ToBifrostResponsesRequest(ctx)
+	require.NotNil(t, bifrostReq)
+	require.Equal(t, schemas.Bedrock, bifrostReq.Provider)
+
+	// Converse has no compaction block, so the summary is sent as text in the assistant turn.
+	converseReq, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	var assistantTexts []string
+	for _, msg := range converseReq.Messages {
+		if msg.Role != bedrock.BedrockMessageRoleAssistant {
+			continue
+		}
+		for _, block := range msg.Content {
+			if block.Text != nil {
+				assistantTexts = append(assistantTexts, *block.Text)
+			}
+		}
+	}
+	require.Equal(t, []string{"Summary of the earlier turns", "Continuing from the summary."}, assistantTexts)
+
+	// The Anthropic-shaped body (InvokeModel) carries the compaction block itself.
+	anthropicReq, err := anthropic.ToAnthropicResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	var compaction *anthropic.AnthropicContentBlock
+	for i := range anthropicReq.Messages {
+		for j := range anthropicReq.Messages[i].Content.ContentBlocks {
+			if anthropicReq.Messages[i].Content.ContentBlocks[j].Type == anthropic.AnthropicContentBlockTypeCompaction {
+				compaction = &anthropicReq.Messages[i].Content.ContentBlocks[j]
+			}
+		}
+	}
+	require.NotNil(t, compaction, "compaction block was dropped")
+	require.NotNil(t, compaction.Content)
+	require.NotNil(t, compaction.Content.ContentStr)
+	require.Equal(t, "Summary of the earlier turns", *compaction.Content.ContentStr)
+}

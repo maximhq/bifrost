@@ -792,3 +792,69 @@ func TestMixedTextThenToolCallsStreamMapsStopReasonToToolUse(t *testing.T) {
 		t.Fatal("expected message_stop event in mixed text+tool_use stream")
 	}
 }
+
+// TestReplayedCompactionBlockSurvivesConversion pins issue #8082: a compaction
+// block replayed in an assistant turn must reach the provider. Bedrock requests
+// use the grouped converter, which used to drop the block, so every later step
+// resent the full history and compacted again.
+func TestReplayedCompactionBlockSurvivesConversion(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	summary := "Summary of the earlier turns"
+	messages := []AnthropicMessage{
+		anthMsg(AnthropicMessageRoleUser, "Refactor the parser"),
+		{Role: AnthropicMessageRoleAssistant, Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{
+			{Type: AnthropicContentBlockTypeCompaction, Content: &AnthropicContent{ContentStr: &summary}},
+			{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr("Continuing from the summary.")},
+		}}},
+		anthMsg(AnthropicMessageRoleUser, "Go on"),
+	}
+
+	for _, keepToolsGrouped := range []bool{false, true} {
+		out := ConvertAnthropicMessagesToBifrostMessages(ctx, messages, nil, false, keepToolsGrouped)
+
+		compactionIndex, textIndex := -1, -1
+		for i := range out {
+			if isCompactionItem(&out[i]) {
+				compactionIndex = i
+				block := out[i].Content.ContentBlocks[0]
+				if block.ResponsesOutputMessageContentCompaction == nil || block.ResponsesOutputMessageContentCompaction.Summary != summary {
+					t.Errorf("keepToolsGrouped=%v: compaction summary = %+v, want %q", keepToolsGrouped, block.ResponsesOutputMessageContentCompaction, summary)
+				}
+				if out[i].Status == nil || *out[i].Status != "completed" {
+					t.Errorf("keepToolsGrouped=%v: replayed compaction item has status %v, want completed", keepToolsGrouped, out[i].Status)
+				}
+			} else if out[i].Content != nil && len(out[i].Content.ContentBlocks) > 0 && out[i].Content.ContentBlocks[0].Text != nil &&
+				*out[i].Content.ContentBlocks[0].Text == "Continuing from the summary." {
+				textIndex = i
+			}
+		}
+		if compactionIndex == -1 {
+			t.Fatalf("keepToolsGrouped=%v: compaction block was dropped", keepToolsGrouped)
+		}
+		if textIndex == -1 || compactionIndex > textIndex {
+			t.Errorf("keepToolsGrouped=%v: compaction item at %d, text at %d; want the compaction first", keepToolsGrouped, compactionIndex, textIndex)
+		}
+
+		// Converting back must restore the compaction block in the assistant turn.
+		anthropicMessages, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, out, true, schemas.ResolveModelCaps(schemas.Bedrock, "claude-opus-5-5"))
+		var restored *AnthropicContentBlock
+		for i := range anthropicMessages {
+			if anthropicMessages[i].Role != AnthropicMessageRoleAssistant {
+				continue
+			}
+			for j := range anthropicMessages[i].Content.ContentBlocks {
+				if anthropicMessages[i].Content.ContentBlocks[j].Type == AnthropicContentBlockTypeCompaction {
+					restored = &anthropicMessages[i].Content.ContentBlocks[j]
+				}
+			}
+		}
+		if restored == nil {
+			t.Fatalf("keepToolsGrouped=%v: compaction block missing after converting back", keepToolsGrouped)
+		}
+		if restored.Content == nil || restored.Content.ContentStr == nil || *restored.Content.ContentStr != summary {
+			t.Errorf("keepToolsGrouped=%v: restored compaction content = %+v, want %q", keepToolsGrouped, restored.Content, summary)
+		}
+	}
+}

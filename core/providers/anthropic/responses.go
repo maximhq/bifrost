@@ -6378,6 +6378,36 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 				}
 			}
 
+		case AnthropicContentBlockTypeCompaction:
+			// A replayed compaction block becomes its own compaction item, as in the
+			// ungrouped converter; dropping it makes the upstream compact again (#8082).
+			if block.Content != nil {
+				var summaryText string
+				if block.Content.ContentStr != nil {
+					summaryText = *block.Content.ContentStr
+				}
+				bifrostMsg := schemas.ResponsesMessage{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role: role,
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type:         schemas.ResponsesOutputMessageContentTypeCompaction,
+								CacheControl: block.CacheControl,
+								ResponsesOutputMessageContentCompaction: &schemas.ResponsesOutputMessageContentCompaction{
+									Summary: summaryText,
+								},
+							},
+						},
+					},
+				}
+				if isOutputMessage {
+					bifrostMsg.ID = schemas.Ptr("cmp_" + schemas.GetRandomString(50))
+					bifrostMsg.Status = schemas.Ptr("completed")
+				}
+				bifrostMessages = append(bifrostMessages, bifrostMsg)
+			}
+
 		case AnthropicContentBlockTypeImage:
 			// Don't emit accumulated text or tool_use blocks for images
 			if block.Source != nil && block.Source.SourceObj != nil {
