@@ -224,6 +224,89 @@ VLLMKeyConfig:
       type: string
       description: Exact model name served on this vLLM instance
 
+OAuthKeyConfig:
+  type: object
+  description: OAuth-minted bearer for OpenAI-compatible providers (including custom providers on the openai base). Set this and leave value empty; Bifrost mints, caches and refreshes the access token. A non-empty value always wins. Secrets are redacted in responses.
+  required:
+    - grant_type
+    - token_url
+  properties:
+    grant_type:
+      type: string
+      enum: [client_credentials, jwt_bearer]
+      description: client_credentials (RFC 6749 §4.4) or jwt_bearer (RFC 7523, Bifrost signs an assertion with private_key)
+    token_url:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: Token endpoint, absolute https URL
+    client_id:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: client_credentials client ID (redacted in responses)
+    client_secret:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: client_credentials client secret (redacted in responses)
+    private_key:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: jwt_bearer RSA or EC private key, PEM (redacted in responses)
+    scopes:
+      type: array
+      items:
+        type: string
+      description: Scopes requested, sent space-joined
+    audience:
+      type: string
+      description: jwt_bearer aud claim (required for that grant); client_credentials optional audience form parameter
+    issuer:
+      type: string
+      description: jwt_bearer iss claim (required for that grant)
+    subject:
+      type: string
+      description: jwt_bearer sub claim (defaults to issuer)
+    key_id:
+      type: string
+      description: jwt_bearer kid header
+    signing_algorithm:
+      type: string
+      enum: [RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512]
+      default: RS256
+      description: jwt_bearer assertion signing algorithm
+    auth_style:
+      type: string
+      enum: [header, body]
+      default: header
+      description: client_credentials credential placement (HTTP Basic header or form body)
+    extra_params:
+      type: object
+      additionalProperties:
+        type: string
+      description: Extra form parameters sent on the token request
+    assertion_lifetime_seconds:
+      type: integer
+      minimum: 0
+      maximum: 3600
+      default: 300
+      description: >-
+        jwt_bearer: seconds from issue until the assertion expires (exp = now + value); 0 or
+        omitted uses the default of 300. iat is
+        backdated by 30 seconds for clock skew, so the assertion's exp - iat span is this value plus 30.
+  additionalProperties: false
+  allOf:
+    - if:
+        required: [grant_type]
+        properties:
+          grant_type:
+            const: client_credentials
+      then:
+        required: [client_id, client_secret]
+        description: client_credentials needs the client ID and secret
+    - if:
+        required: [grant_type]
+        properties:
+          grant_type:
+            const: jwt_bearer
+      then:
+        required: [private_key, issuer, audience]
+        description: jwt_bearer needs the signing key plus the iss and aud claims
+
 Key:
   type: object
   description: API key configuration
@@ -272,6 +355,8 @@ Key:
       $ref: '#/SglKeyConfig'
     replicate_key_config:
       $ref: '#/ReplicateKeyConfig'
+    oauth_key_config:
+      $ref: '#/OAuthKeyConfig'
     enabled:
       type: boolean
       description: Whether the key is active (defaults to true)

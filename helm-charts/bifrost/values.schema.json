@@ -7182,6 +7182,146 @@
           "required": ["app_id", "installation_id", "repository_id", "private_key"],
           "additionalProperties": false
         },
+        "oauth_key_config": {
+          "type": "object",
+          "description": "OAuth-minted bearer for OpenAI-compatible providers, including custom providers built on the openai base. Set this and leave value empty: Bifrost mints the access token from the token endpoint, caches it per credential and refreshes it before expiry. A non-empty value always wins.",
+          "properties": {
+            "grant_type": {
+              "type": "string",
+              "enum": [
+                "client_credentials",
+                "jwt_bearer"
+              ],
+              "description": "client_credentials (RFC 6749 §4.4) or jwt_bearer (RFC 7523: Bifrost signs an assertion with private_key)."
+            },
+            "token_url": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Token endpoint, absolute https URL (can use env. prefix)"
+            },
+            "client_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "client_credentials: client ID (can use env. prefix)"
+            },
+            "client_secret": {
+              "type": "string",
+              "minLength": 1,
+              "description": "client_credentials: client secret (can use env. prefix)"
+            },
+            "private_key": {
+              "type": "string",
+              "minLength": 1,
+              "description": "jwt_bearer: RSA or EC private key in PEM form (can use env. prefix)"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Scopes requested, sent space-joined"
+            },
+            "audience": {
+              "type": "string",
+              "description": "jwt_bearer: aud claim (required); client_credentials: optional audience form parameter"
+            },
+            "issuer": {
+              "type": "string",
+              "minLength": 1,
+              "description": "jwt_bearer: iss claim (required)"
+            },
+            "subject": {
+              "type": "string",
+              "description": "jwt_bearer: sub claim (defaults to issuer)"
+            },
+            "key_id": {
+              "type": "string",
+              "description": "jwt_bearer: kid header, when the server selects keys by id"
+            },
+            "signing_algorithm": {
+              "type": "string",
+              "enum": [
+                "RS256",
+                "RS384",
+                "RS512",
+                "PS256",
+                "PS384",
+                "PS512",
+                "ES256",
+                "ES384",
+                "ES512"
+              ],
+              "default": "RS256",
+              "description": "jwt_bearer: assertion signing algorithm"
+            },
+            "auth_style": {
+              "type": "string",
+              "enum": [
+                "header",
+                "body"
+              ],
+              "default": "header",
+              "description": "client_credentials: send the client credentials as HTTP Basic auth (header) or as form fields (body)"
+            },
+            "extra_params": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Extra form parameters sent on the token request"
+            },
+            "assertion_lifetime_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3600,
+              "default": 300,
+              "description": "jwt_bearer: seconds from issue until the assertion expires (exp = now + value); 0 or omitted uses the default of 300. iat is backdated by 30 seconds for clock skew, so the assertion's exp - iat span is this value plus 30."
+            }
+          },
+          "required": [
+            "grant_type",
+            "token_url"
+          ],
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "grant_type": {
+                    "const": "client_credentials"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "client_id",
+                  "client_secret"
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "grant_type": {
+                    "const": "jwt_bearer"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "private_key",
+                  "issuer",
+                  "audience"
+                ],
+                "properties": {
+                  "audience": {
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          ],
+          "additionalProperties": false
+        },
         "aliases": {
           "type": "object",
           "additionalProperties": {

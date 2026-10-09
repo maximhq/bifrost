@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
@@ -820,6 +821,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 				GithubDomain:   *key.GithubCopilotKeyConfig.GithubDomain.Redacted(),
 			}
 		}
+
+		if key.OAuthKeyConfig != nil {
+			redactedConfig.Keys[i].OAuthKeyConfig = key.OAuthKeyConfig.Redacted()
+		}
 	}
 	return &redactedConfig
 }
@@ -993,9 +998,10 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
-	// Hash Aliases
+	// Hash Aliases. A map, so the encoding must sort keys or the same key hashes differently
+	// between restarts and is reconciled as edited.
 	if key.Aliases != nil {
-		data, err := sonic.Marshal(key.Aliases)
+		data, err := providerUtils.MarshalSorted(key.Aliases)
 		if err != nil {
 			return "", err
 		}
@@ -1044,6 +1050,15 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash GithubCopilotKeyConfig
 	if key.GithubCopilotKeyConfig != nil {
 		data, err := sonic.Marshal(key.GithubCopilotKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash OAuthKeyConfig. extra_params is a map, so the encoding must sort keys or the same
+	// key hashes differently between restarts and reconciliation replaces dashboard edits.
+	if key.OAuthKeyConfig != nil {
+		data, err := providerUtils.MarshalSorted(key.OAuthKeyConfig)
 		if err != nil {
 			return "", err
 		}
