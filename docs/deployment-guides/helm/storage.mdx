@@ -417,11 +417,17 @@ storage:
     type: postgres
     maxIdleConns: 5
     maxOpenConns: 50
+    statementTimeout: "120s"                 # server-side statement_timeout per pool connection
+    idleInTransactionSessionTimeout: "120s"  # ends sessions left idle inside an open transaction
   logsStore:
     type: postgres
     maxIdleConns: 10
     maxOpenConns: 100
+    statementTimeout: "120s"
+    idleInTransactionSessionTimeout: "120s"
 ```
+
+`statementTimeout` and `idleInTransactionSessionTimeout` are Go duration strings (default `120s`) that Bifrost sets on every runtime pool connection, so a runaway query or an abandoned transaction cannot hold a connection and its locks indefinitely. Set `"0"` to keep the PostgreSQL server default. Migrations and background index builds are never bound by `statementTimeout`.
 
 ---
 
@@ -501,6 +507,7 @@ helm install bifrost bifrost/bifrost -f clickhouse-logs-values.yaml
 | `storage.logsStore.clickhouse.protocol` | Wire protocol: `native` or `http` | `native` |
 | `storage.logsStore.clickhouse.secure` | Enable TLS | `false` |
 | `storage.logsStore.clickhouse.dialTimeout` | Connection dial timeout in milliseconds | `10000` |
+| `storage.logsStore.clickhouse.maxQuerySize` | ClickHouse `max_query_size` in bytes, the longest SQL text the server parses. Raise it if team-scoped log reads fail with "Max query size exceeded" | `16777216` |
 | `storage.logsStore.clickhouse.cluster` | Optional cluster name; runs DDL `ON CLUSTER` with replicated engines | `""` |
 
 <Note>
@@ -556,6 +563,8 @@ storage:
   logsStore:
     objectStorageExcludeFields:
       - output_message
+    objectStorageExcludeRequestTypes:
+      - list_models
     objectStorage:
       enabled: true
       type: s3
@@ -584,6 +593,8 @@ bifrost:
 ```
 
 `storage.logsStore.objectStorageExcludeFields` keeps selected LLM log payload fields in Postgres while still offloading the rest to object storage. Use DB payload field names such as `output_message`, `input_history`, `raw_request`, or `raw_response`. MCP logs always offload the full tool log and keep dashboard/table fields plus a 200-character input preview in Postgres.
+
+`storage.logsStore.objectStorageExcludeRequestTypes` keeps whole request types out of object storage (for example `list_models` or `embedding`). Their logs are written to the logs database in full instead. Hidden logs (content logging disabled with `retainContentInObjectStorage` on) are still offloaded, so their content never lands in the database.
 
 **Using IAM role (IRSA / instance profile) instead of static keys:**
 

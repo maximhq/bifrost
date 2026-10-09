@@ -118,6 +118,11 @@ var ignoreSchemaProps = map[string]string{
 // ignoreGoFields keys are "schemaPath|fieldName"; value is the reason.
 var ignoreGoFields = map[string]string{
 	"|auth_config": "deprecated; moved to governance.auth_config",
+	// The client columns store the MCP instruction caps, but config.json sets them only under
+	// mcp.tool_manager_config (applyToolManagerToClientConfig); the schema deliberately has no
+	// client-level twin. Mirrors excludedGoFields in transports/bifrost-http/lib/config_test.go.
+	"/properties/client|mcp_max_instructions_per_client": "storage column; configured only via mcp.tool_manager_config.max_instructions_per_client",
+	"/properties/client|mcp_max_instructions_total":      "storage column; configured only via mcp.tool_manager_config.max_instructions_total",
 	// provider_key_id is the internal DB column resolved from provider_key_name at config load time;
 	// schema documents only the human-readable provider_key_name alias.
 	"/properties/governance/properties/pricing_overrides/items|provider_key_id": "internal DB column; config uses provider_key_name alias instead",
@@ -162,6 +167,12 @@ var ignoreGoFields = map[string]string{
 	// read paths so list responses can report it without loading the full VirtualKeys
 	// relation; never config.json input.
 	"/properties/governance/properties/customers/items|virtual_key_count": "response-only; derived count populated on read (TableCustomer.VirtualKeyCount), not user-configurable via config.json",
+	// team_count is the same class: a non-persisted (gorm:"-") count the customer list read
+	// path sets so the table can show it without loading the Teams relation.
+	"/properties/governance/properties/customers/items|team_count": "response-only; derived count populated on read (TableCustomer.TeamCount), not user-configurable via config.json",
+	// business_unit is a non-persisted (gorm:"-") display object the governance read paths fill
+	// from the enterprise resolver; config.json links a key to a unit through business_unit_id.
+	"/properties/governance/properties/virtual_keys/items|business_unit": "response-only; resolved on read from business_unit_id (TableVirtualKey.BusinessUnit), not user-configurable via config.json",
 }
 
 // ignoreGoFieldNames are field names (regardless of parent path) that are
@@ -182,6 +193,28 @@ var ignoreEnumPaths = map[string]string{
 	"/properties/governance/properties/complexity_analyzer_config/properties/semantic/properties/provider": "accepts custom provider names; enum would reject them",
 	"/properties/governance/properties/complexity_analyzer_config/properties/llm/properties/provider":      "accepts custom provider names; enum would reject them",
 	"/properties/governance/properties/complexity_analyzer_config/properties/decision/properties/provider": "accepts custom provider names (Laya, Nimble, Clef); enum would reject them",
+}
+
+// narrowedEnumPaths are schema paths whose enum intentionally omits some of the Go
+// type's consts, because the Go type is shared with a feature that accepts more values
+// than this config path does. Only the listed consts are excused; any new Go const
+// still surfaces as enum drift.
+var narrowedEnumPaths = map[string]struct {
+	excluded []string
+	reason   string
+}{
+	"/properties/proxy_config/properties/type": {
+		excluded: []string{"socks5", "tcp"},
+		reason:   "global proxy rejects socks5/tcp at load (lib/configproxy.go) and on the API; only http is supported today",
+	},
+	"/properties/agents/items/properties/discovery_auth/properties/type": {
+		excluded: []string{"per_user_headers", "per_user_oauth", "token_exchange"},
+		reason:   "UpstreamAuth reuses MCPAuthType; Agent Gateway accepts only none, headers, and oauth (agent.validateUpstreamAuth)",
+	},
+	"/properties/agents/items/properties/runtime_auth/properties/type": {
+		excluded: []string{"per_user_headers", "per_user_oauth", "token_exchange"},
+		reason:   "UpstreamAuth reuses MCPAuthType; Agent Gateway accepts only none, headers, and oauth (agent.validateUpstreamAuth)",
+	},
 }
 
 // opaqueLeafTypes are named Go types that have custom JSON marshalling and
@@ -986,9 +1019,15 @@ func (c *checker) checkEnum(goVals []string, schemaNode map[string]any, schemaPa
 	for _, v := range goVals {
 		goSet[v] = true
 	}
+	excused := map[string]bool{}
+	if narrowed, ok := narrowedEnumPaths[schemaPath]; ok {
+		for _, v := range narrowed.excluded {
+			excused[v] = true
+		}
+	}
 	var missingInSchema, extraInSchema []string
 	for v := range goSet {
-		if !schemaSet[v] {
+		if !schemaSet[v] && !excused[v] {
 			missingInSchema = append(missingInSchema, v)
 		}
 	}
