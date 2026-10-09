@@ -388,6 +388,130 @@ func TestClampMaxTokensRecognisesAliasedProfile(t *testing.T) {
 	})
 }
 
+// capsForBounds is capsFor with both output-token bounds, for the ceiling tests.
+func capsForBounds(t *testing.T, model string, min, max *int) schemas.ModelCaps {
+	t.Helper()
+	if min != nil || max != nil {
+		schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+			if m != model {
+				return nil
+			}
+			return &schemas.ModelCapabilities{MinOutputTokens: min, MaxOutputTokens: max}
+		})
+		t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	}
+	return schemas.ResolveModelCaps(schemas.Bedrock, model)
+}
+
+// ---- max_output_tokens ceiling (#8060) ----
+
+// A routing rule that retargets a request sized for Opus (Claude Code sends
+// max_tokens > 64000) onto claude-haiku-4-5 forwarded the value unchanged and
+// Bedrock answered 400. #7732 fixed this on the Anthropic-family builders only;
+// Converse builds its own body, so it needs its own clamp.
+func TestClampMaxTokensCeilingFromStaticClaudeTable(t *testing.T) {
+	cases := []struct {
+		model string
+		given int
+		want  int
+	}{
+		// Lowered to the ceiling.
+		{"anthropic.claude-haiku-4-5", 100000, 64000},
+		{"us.anthropic.claude-haiku-4-5", 100000, 64000},
+		{"anthropic.claude-haiku-4-5-20251001-v1:0", 200000, 64000},
+		// At or below the ceiling - untouched.
+		{"anthropic.claude-haiku-4-5", 64000, 64000},
+		{"anthropic.claude-haiku-4-5", 8192, 8192},
+		// Not in the Claude table: no ceiling to apply.
+		{"amazon.nova-pro-v1:0", 100000, 100000},
+		{"meta.llama3-70b-instruct-v1:0", 100000, 100000},
+	}
+	for _, tc := range cases {
+		caps := capsFor(t, tc.model, nil)
+		got := clampMaxTokens(surfaceTestCtx(), &tc.given, caps)
+		if got == nil || *got != tc.want {
+			t.Errorf("clampMaxTokens(%d, %q) = %v, want %d", tc.given, tc.model, got, tc.want)
+		}
+	}
+}
+
+// The datasheet row is authoritative over the static table, in both directions.
+func TestClampMaxTokensCeilingDatasheetOverridesTable(t *testing.T) {
+	t.Run("lowers below what the table would allow", func(t *testing.T) {
+		ceiling := 4096
+		caps := capsForBounds(t, "anthropic.claude-haiku-4-5", nil, &ceiling)
+		given := 100000
+		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 4096 {
+			t.Errorf("got %v, want 4096", got)
+		}
+	})
+	t.Run("raises the ceiling the table would impose", func(t *testing.T) {
+		ceiling := 128000
+		caps := capsForBounds(t, "anthropic.claude-haiku-4-5", nil, &ceiling)
+		given := 100000
+		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 100000 {
+			t.Errorf("got %v, want 100000 (datasheet ceiling is higher)", got)
+		}
+	})
+	t.Run("a model with no ceiling anywhere is forwarded as-is", func(t *testing.T) {
+		caps := capsFor(t, "amazon.nova-pro-v1:0", nil)
+		given := 1000000
+		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 1000000 {
+			t.Errorf("got %v, want 1000000", got)
+		}
+	})
+}
+
+// A row publishing both bounds must land the value inside the range, not at
+// whichever bound happens to be checked last.
+func TestClampMaxTokensCeilingAndFloorTogether(t *testing.T) {
+	floor, ceiling := 16, 4096
+	caps := capsForBounds(t, "openai.gpt-5.6-luna", &floor, &ceiling)
+	t.Run("above the ceiling comes down", func(t *testing.T) {
+		given := 99999
+		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 4096 {
+			t.Errorf("got %v, want 4096", got)
+		}
+	})
+	t.Run("below the floor goes up", func(t *testing.T) {
+		given := 1
+		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 16 {
+			t.Errorf("got %v, want 16", got)
+		}
+	})
+	t.Run("inside the range is untouched", func(t *testing.T) {
+		given := 1024
+		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 1024 {
+			t.Errorf("got %v, want 1024", got)
+		}
+	})
+}
+
+// The guard that keeps this change honest. An application inference profile
+// whose model_id is an opaque resource id identifies no model, so no ceiling is
+// known and the request is forwarded unchanged. The floor may lean on the alias
+// chain -- a wrong floor only under-requests and the model still answers -- but
+// a ceiling taken from the alias *key* would be a claim about which model the
+// profile really serves. Guessing high reintroduces the 400; guessing low
+// truncates a legitimate request.
+func TestClampMaxTokensOpaqueProfileGetsNoCeiling(t *testing.T) {
+	given := 100000
+	t.Run("opaque id with no alias", func(t *testing.T) {
+		ctx := surfaceTestCtx()
+		caps := schemas.ResolveModelCaps(schemas.Bedrock, "3dnkdwuaalc7")
+		if got := clampMaxTokens(ctx, &given, caps); got == nil || *got != 100000 {
+			t.Errorf("got %v, want 100000 (nothing identifies the model)", got)
+		}
+	})
+	t.Run("a claude-named alias key is not read as the target model", func(t *testing.T) {
+		ctx := withAlias("claude-haiku-4-5", "3dnkdwuaalc7", appProfileARN)
+		caps := schemas.ResolveModelCaps(schemas.Bedrock, schemas.ResolveCanonicalModel(ctx, "3dnkdwuaalc7"))
+		if got := clampMaxTokens(ctx, &given, caps); got == nil || *got != 100000 {
+			t.Errorf("got %v, want 100000 (the alias key must not supply a ceiling)", got)
+		}
+	})
+}
+
 // ---- Converse reasoning shape ----
 
 // reasoningFields converts a Responses request and returns the
