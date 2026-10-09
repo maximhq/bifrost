@@ -118,7 +118,8 @@ func ToOpenAIEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest, provi
 	}
 
 	if bifrostReq.Params != nil {
-		openaiReq.EmbeddingParameters = *bifrostReq.Params
+		openaiReq.EncodingFormat = bifrostReq.Params.EncodingFormat
+		openaiReq.Dimensions = bifrostReq.Params.Dimensions
 		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
 	}
 
