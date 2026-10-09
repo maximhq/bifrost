@@ -65,10 +65,47 @@ export function evalChainCondition(cond: string, vars: Record<string, string>): 
 	return null; // too complex — skip
 }
 
+/**
+ * For each index in `s`, whether it sits inside a quoted string literal.
+ *
+ * Routing conditions carry operators and brackets inside their literals --
+ * `headers["x-env"] == "staging||canary"`, `model.matches("[(]")` -- and a
+ * scanner that does not know where a literal begins splits clauses apart on an
+ * operator that is really part of a value, or leaves bracket depth unbalanced so
+ * a whole expression stays one clause. A backslash escapes the next character,
+ * a quote preceded by a backslash does not close the literal. An unterminated
+ * quote marks the remainder as literal, which keeps the parser from splitting
+ * inside a broken expression.
+ */
+function literalMask(s: string): boolean[] {
+	const mask: boolean[] = new Array<boolean>(s.length).fill(false);
+	let quote: '"' | "'" | null = null;
+	for (let i = 0; i < s.length; i++) {
+		const ch = s[i];
+		if (quote === null) {
+			if (ch === '"' || ch === "'") {
+				quote = ch;
+				mask[i] = true;
+			}
+			continue;
+		}
+		mask[i] = true;
+		if (ch === "\\") {
+			if (i + 1 < s.length) mask[i + 1] = true;
+			i++;
+			continue;
+		}
+		if (ch === quote) quote = null;
+	}
+	return mask;
+}
+
 function isWrappedInParens(s: string): boolean {
 	if (!s.startsWith("(") || !s.endsWith(")")) return false;
+	const mask = literalMask(s);
 	let d = 0;
 	for (let i = 0; i < s.length; i++) {
+		if (mask[i]) continue;
 		if (s[i] === "(") d++;
 		else if (s[i] === ")") d--;
 		if (d === 0 && i < s.length - 1) return false;
@@ -79,19 +116,22 @@ function isWrappedInParens(s: string): boolean {
 function splitOn(expr: string, op: "&&" | "||"): string[] {
 	const trimmed = expr.trim();
 	const s = isWrappedInParens(trimmed) ? trimmed.slice(1, -1) : trimmed;
+	const mask = literalMask(s);
 	const parts: string[] = [];
 	let depth = 0,
 		current = "";
 	for (let i = 0; i < s.length; i++) {
 		const ch = s[i];
-		if (ch === "(" || ch === "[") depth++;
-		else if (ch === ")" || ch === "]") depth--;
-		else if (depth === 0 && s.slice(i, i + 2) === op) {
-			const p = current.trim();
-			if (p) parts.push(p);
-			current = "";
-			i++;
-			continue;
+		if (!mask[i]) {
+			if (ch === "(" || ch === "[") depth++;
+			else if (ch === ")" || ch === "]") depth--;
+			else if (depth === 0 && !mask[i + 1] && s.slice(i, i + 2) === op) {
+				const p = current.trim();
+				if (p) parts.push(p);
+				current = "";
+				i++;
+				continue;
+			}
 		}
 		current += ch;
 	}
@@ -151,8 +191,29 @@ export function expandCEL(cel: string): string[][] {
  * Collapses whitespace around operators so "a == b" and "a==b" are the same key.
  */
 export function normalizeCond(cond: string): string {
-	return cond
-		.trim()
-		.replace(/\s*(==|!=|>=|<=|>|<)\s*/g, (_, op) => ` ${op} `)
-		.replace(/\s+/g, " ");
+	const s = cond.trim();
+	const mask = literalMask(s);
+	let out = "";
+	for (let i = 0; i < s.length; i++) {
+		if (mask[i]) {
+			out += s[i];
+			continue;
+		}
+		const two = s.slice(i, i + 2);
+		if (two === "==" || two === "!=" || two === ">=" || two === "<=") {
+			out = out.trimEnd() + ` ${two} `;
+			i++;
+			continue;
+		}
+		if (s[i] === ">" || s[i] === "<") {
+			out = out.trimEnd() + ` ${s[i]} `;
+			continue;
+		}
+		if (/\s/.test(s[i])) {
+			if (!out.endsWith(" ")) out += " ";
+			continue;
+		}
+		out += s[i];
+	}
+	return out.trim();
 }
