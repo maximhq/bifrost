@@ -218376,5 +218376,210 @@
         }
       ]
     }
+    ,
+    {
+      "name": "188. Anthropic Haiku 5.5 Adaptive Thinking (#8155 / PR #4829)",
+      "description": "Regression for #8155 / PR #4829: the model-name fallback rewrote Claude Haiku 5.5 adaptive thinking to enabled with budget_tokens and stripped output_config.effort, causing a provider 400. The chat case pins the converted Anthropic request, the native messages case pins the Claude Code thinking/display/effort shape without streaming, and the Bedrock chat case pins the existing global Anthropic model-ID convention through Converse. Raw request assertions require adaptive thinking and medium effort to survive each route.",
+      "item": [
+        {
+          "name": "anthropic claude-haiku-5-5 adaptive thinking + effort=medium /v1/chat/completions - #8155",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('adaptive thinking request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "  pm.expect(pm.response.text(), 'thinking was rewritten: ' + pm.response.text()).to.not.include('\"thinking.type.enabled\" is not supported');",
+                  "});",
+                  "pm.test('response content is present', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.choices, 'choices missing: ' + pm.response.text()).to.be.an('array').and.not.empty;",
+                  "  pm.expect(body.choices[0].message.content, 'content missing: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('adaptive thinking and output_config.effort survive Bifrost', function () {",
+                  "  var body = pm.response.json();",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  var fields = raw;",
+                  "  pm.expect(fields.thinking, 'thinking missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(fields.thinking.type, 'adaptive rewritten: ' + pm.response.text()).to.eql('adaptive');",
+                  "  pm.expect(fields.thinking, 'budget_tokens added: ' + pm.response.text()).to.not.have.property('budget_tokens');",
+                  "  pm.expect(fields.output_config, 'output_config missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(fields.output_config.effort, 'effort dropped: ' + pm.response.text()).to.eql('medium');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-5-5\",\n  \"max_completion_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"reasoning\": {\n    \"type\": \"adaptive\",\n    \"effort\": \"medium\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-haiku-5-5 adaptive thinking + effort=medium /anthropic/v1/messages - #8155",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-5-5\",\n  \"max_tokens\": 256,\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"display\": \"omitted\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"stream\": false,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('adaptive thinking request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "  pm.expect(pm.response.text(), 'thinking was rewritten: ' + pm.response.text()).to.not.include('\"thinking.type.enabled\" is not supported');",
+                  "});",
+                  "pm.test('response content is present', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.content, 'content missing: ' + pm.response.text()).to.be.an('array').and.not.empty;",
+                  "});",
+                  "pm.test('adaptive thinking and output_config.effort survive Bifrost', function () {",
+                  "  var body = pm.response.json();",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  var fields = raw;",
+                  "  pm.expect(fields.thinking, 'thinking missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(fields.thinking.type, 'adaptive rewritten: ' + pm.response.text()).to.eql('adaptive');",
+                  "  pm.expect(fields.thinking, 'budget_tokens added: ' + pm.response.text()).to.not.have.property('budget_tokens');",
+                  "  pm.expect(fields.output_config, 'output_config missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(fields.output_config.effort, 'effort dropped: ' + pm.response.text()).to.eql('medium');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock global.anthropic.claude-haiku-5-5 adaptive thinking + effort=medium /v1/chat/completions - #8155",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('adaptive thinking request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "  pm.expect(pm.response.text(), 'thinking was rewritten: ' + pm.response.text()).to.not.include('\"thinking.type.enabled\" is not supported');",
+                  "});",
+                  "pm.test('response content is present', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.choices, 'choices missing: ' + pm.response.text()).to.be.an('array').and.not.empty;",
+                  "  pm.expect(body.choices[0].message.content, 'content missing: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('adaptive thinking and output_config.effort survive Bifrost', function () {",
+                  "  var body = pm.response.json();",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(raw.additionalModelRequestFields, 'Converse fields missing: ' + pm.response.text()).to.be.an('object');",
+                  "  var fields = raw.additionalModelRequestFields;",
+                  "  pm.expect(fields.thinking, 'thinking missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(fields.thinking.type, 'adaptive rewritten: ' + pm.response.text()).to.eql('adaptive');",
+                  "  pm.expect(fields.thinking, 'budget_tokens added: ' + pm.response.text()).to.not.have.property('budget_tokens');",
+                  "  pm.expect(fields.output_config, 'output_config missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(fields.output_config.effort, 'effort dropped: ' + pm.response.text()).to.eql('medium');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_completion_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"reasoning\": {\n    \"type\": \"adaptive\",\n    \"effort\": \"medium\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    }
   ]
 }

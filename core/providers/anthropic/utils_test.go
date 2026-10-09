@@ -2653,9 +2653,30 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{"global.anthropic.claude-fable-5", true},
 		{"claude-opus-4-5-20241022", false},
 		{"claude-sonnet-4-5-20241022", false},
-		{"claude-haiku-4-6-20250514", false}, // haiku does not support adaptive
-		{"claude-haiku-4-7-20260401", false}, // haiku, not opus
-		{"claude-haiku-4-8-20260601", false}, // haiku, not opus
+		// Haiku 5.5 is adaptive-only (#8155): the Haiku tier is no longer a
+		// blanket denylist.
+		{"claude-haiku-5-5", true},
+		{"claude-haiku-5-5-20261001", true},
+		{"global.anthropic.claude-haiku-5-5", true},
+		// Haiku 4.5 and 3.x Haiku stay budget_tokens-only.
+		{"claude-haiku-4-5", false},
+		{"claude-haiku-4-5-20251001", false},
+		{"anthropic.claude-haiku-4-5-20251001-v1:0", false},
+		{"claude-3-5-haiku-20241022", false},
+		{"claude-3-haiku", false},
+		// Legacy stays budget_tokens-only (must NOT flip to adaptive).
+		{"claude-sonnet-4-20250514", false}, // bare Sonnet 4.0 (dated)
+		{"claude-opus-4-20250514", false},   // bare Opus 4.0 (dated)
+		{"claude-opus-4-1", false},
+		{"claude-opus-4-0", false},
+		{"anthropic.claude-opus-4-v1", false}, // bare Opus 4.0 (bedrock)
+		{"claude-3-7-sonnet", false},
+		{"claude-3-5-sonnet-20241022", false},
+		{"claude-3-opus", false},
+		{"claude-2.1", false},
+		// Fail-open: an unrecognized Claude id is assumed adaptive; a non-Claude id is not.
+		{"claude-newfamily-6", true},
+		{"gpt-4o-mini", false},
 		{"", false},
 	}
 
@@ -2664,6 +2685,54 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 			got := schemas.ResolveModelCaps(schemas.Anthropic, tt.model).SupportsAdaptiveThinking(DefaultSupportsAdaptiveThinking(tt.model))
 			if got != tt.expected {
 				t.Errorf("schemas.ResolveModelCaps(schemas.Anthropic, %q).SupportsAdaptiveThinking() = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestClaudeOpusSonnet4Minor pins the Opus/Sonnet 4.x minor-version parser that
+// the legacy denylist is built on, across every id form Anthropic, Bedrock and
+// Vertex use.
+func TestClaudeOpusSonnet4Minor(t *testing.T) {
+	tests := []struct {
+		model     string
+		wantMinor int
+		wantOK    bool
+	}{
+		// Explicit minors (hyphen and dot forms, with/without date suffix).
+		{"claude-opus-4-6-20250514", 6, true},
+		{"claude-opus-4.6", 6, true},
+		{"claude-sonnet-4-6-20250514", 6, true},
+		{"claude-opus-4-7-20260401", 7, true},
+		{"claude-opus-4-8", 8, true},
+		{"claude-opus-4-5-20241022", 5, true},
+		{"claude-sonnet-4-5-20250929", 5, true},
+		{"claude-opus-4-1-20250805", 1, true},
+		{"claude-opus-4-16", 16, true}, // multi-digit minor
+		// Bare 4.0 forms -> minor 0.
+		{"claude-sonnet-4-20250514", 0, true}, // dated
+		{"claude-opus-4-20250514", 0, true},   // dated
+		{"anthropic.claude-opus-4-v1", 0, true},
+		{"us.anthropic.claude-sonnet-4-v1:0", 0, true},
+		{"claude-opus-4-0", 0, true},
+		{"claude-opus-4", 0, true},   // alias, end of string
+		{"claude-sonnet-4", 0, true}, // alias, end of string
+		// Not an Opus/Sonnet 4.x model.
+		{"claude-sonnet-5", 0, false},
+		{"claude-opus-5", 0, false},
+		{"claude-3-7-sonnet", 0, false},
+		{"claude-3-5-sonnet-20241022", 0, false},
+		{"claude-haiku-4-5", 0, false},
+		{"claude-haiku-5-5", 0, false},
+		{"claude-fable-5", 0, false},
+		{"", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			gotMinor, gotOK := claudeOpusSonnet4Minor(strings.ToLower(tt.model))
+			if gotOK != tt.wantOK || (gotOK && gotMinor != tt.wantMinor) {
+				t.Errorf("claudeOpusSonnet4Minor(%q) = (%d, %v), want (%d, %v)",
+					tt.model, gotMinor, gotOK, tt.wantMinor, tt.wantOK)
 			}
 		})
 	}
@@ -2799,9 +2868,22 @@ func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
 		// Sonnet 4.5 must NOT match the "sonnet-5" substring gate.
 		{"claude-sonnet-4-5", false},
 		{"claude-sonnet-4-5-20250929", false},
-		// Other.
+		// Haiku 5.5 (#8155) and any unrecognized Claude id fail open to adaptive-only.
+		{"claude-haiku-5-5", true},
+		{"claude-haiku-5-5-20261001", true},
+		{"global.anthropic.claude-haiku-5-5", true},
+		{"claude-newfamily-6", true},
+		// Legacy budget_tokens-only models and non-Claude ids.
 		{"claude-opus-4-5", false},
 		{"claude-haiku-4-5", false},
+		{"claude-haiku-4-5-20251001", false},
+		{"claude-sonnet-4-20250514", false}, // bare Sonnet 4.0 (dated)
+		{"claude-opus-4-1", false},
+		{"anthropic.claude-opus-4-v1", false},
+		{"claude-3-7-sonnet", false},
+		{"claude-3-5-haiku-20241022", false},
+		{"claude-2.1", false},
+		{"gpt-4o-mini", false},
 		{"", false},
 	}
 
@@ -2921,6 +3003,10 @@ func TestSupportsEffortParameter(t *testing.T) {
 		{"claude-mythos-5", true},
 		{"claude-mythos-preview", true},
 		{"global.anthropic.claude-fable-5", true},
+		// Haiku 5.5 takes effort (#8155); the Haiku tier is no longer denied wholesale.
+		{"claude-haiku-5-5", true},
+		{"claude-haiku-5-5-20261001", true},
+		{"global.anthropic.claude-haiku-5-5", true},
 		{"claude-opus-4-8", true},
 		{"claude-opus-4.8-20260601", true},
 		{"claude-opus-5", true},
@@ -2948,7 +3034,7 @@ func TestSupportsEffortParameter(t *testing.T) {
 		{"claude-haiku-4-5", false},
 		{"claude-haiku-4-5-20251001", false},
 		{"anthropic.claude-haiku-4-5-20251001-v1:0", false},
-		{"claude-haiku-4-6-20250514", false},
+		{"claude-3-5-haiku-20241022", false},
 		// Sonnet < 4.6 not in the supported list.
 		{"claude-sonnet-4-5", false},
 		{"claude-sonnet-4-5-20250929", false},
@@ -2962,7 +3048,7 @@ func TestSupportsEffortParameter(t *testing.T) {
 		{"claude-3-opus", false},
 		// Defensive cases.
 		{"", false},
-		{"some-non-claude-model", false},
+		{"gpt-4o-mini", false},
 	}
 
 	for _, tt := range tests {

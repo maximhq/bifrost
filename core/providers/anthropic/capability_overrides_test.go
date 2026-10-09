@@ -36,11 +36,11 @@ func setOverride(t *testing.T, model string, ov schemas.ModelCapabilities) {
 }
 
 func TestSupportsNativeEffort_OverrideHit(t *testing.T) {
-	model := "non-claude-test-model-effort-yes"
+	model := "non-anthropic-test-model-effort-yes"
 	yes := true
 	setOverride(t, model, schemas.ModelCapabilities{SupportsNativeEffort: &yes})
 
-	// Substring fallback would return false (no "opus") — override wins.
+	// Substring fallback would return false (not a Claude id) — override wins.
 	assert.True(t, SupportsNativeEffort(schemas.ResolveModelCaps(schemas.Anthropic, model)))
 }
 
@@ -75,7 +75,7 @@ func TestSupportsNativeEffort_DerivedFalseWhenAdaptive(t *testing.T) {
 }
 
 func TestSupportsEffortParameter_OverrideHit(t *testing.T) {
-	model := "non-claude-effort-param-yes"
+	model := "non-anthropic-effort-param-yes"
 	yes := true
 	setOverride(t, model, schemas.ModelCapabilities{SupportsNativeEffort: &yes})
 	// Substring fallback would return false — override wins.
