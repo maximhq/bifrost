@@ -304,10 +304,12 @@ func (s *RDBLogStore) applyAgentContextFilter(baseQuery *gorm.DB, agentNames []s
 		Where("agent_name IN ?", agentNames).
 		Where("context_id IS NOT NULL AND context_id <> ''")
 	if startTime != nil {
-		contexts = contexts.Where("timestamp >= ?", *startTime)
+		placeholder, arg := timestampBound(s.db.Dialector.Name(), *startTime, lowerTimeBound)
+		contexts = contexts.Where("timestamp >= "+placeholder, arg)
 	}
 	if endTime != nil {
-		contexts = contexts.Where("timestamp <= ?", *endTime)
+		placeholder, arg := timestampBound(s.db.Dialector.Name(), *endTime, upperTimeBound)
+		contexts = contexts.Where("timestamp <= "+placeholder, arg)
 	}
 	return baseQuery.Where("session_id IN (?)", contexts)
 }
@@ -429,10 +431,12 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("id = ?", filters.RequestID)
 	} else {
 		if filters.StartTime != nil {
-			baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)
+			placeholder, arg := timestampBound(s.db.Dialector.Name(), *filters.StartTime, lowerTimeBound)
+			baseQuery = baseQuery.Where("timestamp >= "+placeholder, arg)
 		}
 		if filters.EndTime != nil {
-			baseQuery = baseQuery.Where("timestamp <= ?", *filters.EndTime)
+			placeholder, arg := timestampBound(s.db.Dialector.Name(), *filters.EndTime, upperTimeBound)
+			baseQuery = baseQuery.Where("timestamp <= "+placeholder, arg)
 		}
 	}
 	if filters.MinLatency != nil {
