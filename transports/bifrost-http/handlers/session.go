@@ -41,6 +41,10 @@ func (h *SessionHandler) SetSetupLock(m *AuthMiddleware) {
 	h.setupLock = m
 }
 
+func isSecureRequest(ctx *fasthttp.RequestCtx) bool {
+	return ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https"
+}
+
 // setSetupSessionCookie writes (or, with an empty value, expires) the HttpOnly setup session
 // cookie. SameSite=Strict: it only ever needs to ride the dashboard's own requests.
 func setSetupSessionCookie(ctx *fasthttp.RequestCtx, value string, expires time.Time) {
@@ -52,9 +56,7 @@ func setSetupSessionCookie(ctx *fasthttp.RequestCtx, value string, expires time.
 	cookie.SetPath("/")
 	cookie.SetHTTPOnly(true)
 	cookie.SetSameSite(fasthttp.CookieSameSiteStrictMode)
-	if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-		cookie.SetSecure(true)
-	}
+	cookie.SetSecure(isSecureRequest(ctx))
 	ctx.Response.Header.SetCookie(cookie)
 }
 
@@ -236,10 +238,7 @@ func (h *SessionHandler) login(ctx *fasthttp.RequestCtx) {
 	cookie.SetPath("/")
 	cookie.SetHTTPOnly(true)
 	cookie.SetSameSite(fasthttp.CookieSameSiteLaxMode)
-	// Check if source is https then set secure
-	if string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-		cookie.SetSecure(true)
-	}
+	cookie.SetSecure(isSecureRequest(ctx))
 	ctx.Response.Header.SetCookie(cookie)
 
 	SendJSON(ctx, map[string]any{
@@ -271,10 +270,7 @@ func (h *SessionHandler) logout(ctx *fasthttp.RequestCtx) {
 	cookie.SetPath("/")
 	cookie.SetHTTPOnly(true)
 	cookie.SetSameSite(fasthttp.CookieSameSiteLaxMode)
-	// Check if source is https then set secure
-	if string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-		cookie.SetSecure(true)
-	}
+	cookie.SetSecure(isSecureRequest(ctx))
 	ctx.Response.Header.SetCookie(cookie)
 
 	// Drop any setup session as well, so a later return to the setup lock (auth disabled
