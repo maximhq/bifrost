@@ -32,6 +32,11 @@
         "a2a_grpc_port": {
           "type": "integer",
           "description": "Advertised (public) port for the Agent Gateway's shared gRPC listener. When a load balancer or port mapping sits in front, the BIFROST_A2A_GRPC_LISTEN_PORT environment variable overrides the local bind port without changing what agent cards advertise. Deploy-time only; gRPC stays disabled while this or a2a_grpc_base_domain is unset."
+        },
+        "a2a_allow_private_push_callbacks": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allows Agent push delivery to loopback and private network destinations. Intended only for controlled development and test environments. Disabled by default; all other outbound SSRF protections are unchanged."
         }
       },
       "required": [

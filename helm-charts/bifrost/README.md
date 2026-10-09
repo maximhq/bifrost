@@ -27,6 +27,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `bifrost.agents[]` — declarative A2A agent registrations rendered into the config.json `agents` section. Each entry takes `name`, `agent_card_url`, and optionally `tenant`, `enabled`, `allow_by_default`, `forward_accepted_credential`, `forward_accepted_credential_overrides_auth`, `discovery_auth`, `runtime_auth`, `extension_uris`, and `virtual_key_ids`. Reconciled by name on startup: created if absent, updated when the declaration changes, and left alone otherwise (merge mode). When `bifrost.sourceOfTruth` is `config.json` and `agents` is present, stored registrations absent from the rendered list are removed; set `agents: []` to remove all stored registrations.
 - Added `bifrost.client.a2aExternalClientUrl` (`a2a_external_client_url`) — Bifrost's public base URL for served agent cards and A2A push-notification callback URLs. Push notifications stay disabled while unset. Supports `env.` syntax.
 - Added `bifrost.server.a2aGrpcBaseDomain` (`a2a_grpc_base_domain`) and `bifrost.server.a2aGrpcPort` (`a2a_grpc_port`) — enable the shared A2A gRPC listener; per-agent hostnames are advertised as `<agent-name>.<base-domain>:<port>`. gRPC stays disabled while either is unset.
+- Added `bifrost.server.a2aAllowPrivatePushCallbacks` (`a2a_allow_private_push_callbacks`) — lets A2A push delivery reach loopback and private network callback targets. Off by default; intended only for controlled development and test environments.
 
 ### 2.1.44
 
