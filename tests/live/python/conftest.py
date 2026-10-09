@@ -19,6 +19,8 @@ from openai import AsyncOpenAI, OpenAI
 GATEWAY = os.environ.get("BIFROST_BASE_URL", "http://localhost:8080").rstrip("/")
 UPSTREAM = os.environ.get("LIVE_UPSTREAM", "fake")
 VIRTUAL_KEY = os.environ.get("BIFROST_VK", "")
+# OSS setup lock: /api needs the setup token while dashboard auth is not active.
+ADMIN_HEADERS = {"X-Bifrost-Setup-Token": os.environ.get("BIFROST_SETUP_TOKEN", "bifrost-live-setup-token")}
 RESTRICTED_VIRTUAL_KEY = os.environ.get("BIFROST_VK_RESTRICTED", "")
 VOICE_MODEL = os.environ.get("LIVE_VOICE_MODEL", "gpt-live-1")
 BACKEND_MODEL = os.environ.get("LIVE_BACKEND_MODEL", "gpt-5.6-luna")
@@ -178,7 +180,7 @@ def error_message(event) -> str:
 
 
 def fetch_log(log_id: str) -> dict:
-    row = httpx.get(f"{GATEWAY}/api/logs/{log_id}", timeout=10).raise_for_status().json()
+    row = httpx.get(f"{GATEWAY}/api/logs/{log_id}", headers=ADMIN_HEADERS, timeout=10).raise_for_status().json()
     return row.get("log", row)
 
 
@@ -186,7 +188,7 @@ def find_live_row(provider_session_id: str, timeout: float = ROW_TIMEOUT) -> dic
     """The one row a session leaves, found by the provider's session id."""
     deadline = time.monotonic() + timeout
     while True:
-        listing = httpx.get(f"{GATEWAY}/api/logs", params={"objects": "live.session", "limit": 200}, timeout=10).raise_for_status().json()
+        listing = httpx.get(f"{GATEWAY}/api/logs", params={"objects": "live.session", "limit": 200}, headers=ADMIN_HEADERS, timeout=10).raise_for_status().json()
         for summary in listing.get("logs", []):
             row = fetch_log(summary["id"])
             if (row.get("live_session") or {}).get("provider_session_id") == provider_session_id:
@@ -200,7 +202,7 @@ def find_content_row(provider_session_id: str, timeout: float = ROW_TIMEOUT) -> 
     """The row a recording download leaves, found by the provider's session id in its metadata."""
     deadline = time.monotonic() + timeout
     while True:
-        listing = httpx.get(f"{GATEWAY}/api/logs", params={"objects": "live_content", "limit": 200}, timeout=10).raise_for_status().json()
+        listing = httpx.get(f"{GATEWAY}/api/logs", params={"objects": "live_content", "limit": 200}, headers=ADMIN_HEADERS, timeout=10).raise_for_status().json()
         for summary in listing.get("logs", []):
             row = fetch_log(summary["id"])
             if (row.get("metadata") or {}).get("provider_session_id") == provider_session_id:

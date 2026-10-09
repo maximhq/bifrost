@@ -807,6 +807,15 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.googAPIKey)
 		}
 	}
+	// The caller's own provider key, under the same gate as on HTTP, set before the identity
+	// settles so governance sees a resolved credential.
+	var directKey string
+	if v := auth.headers["x-bf-direct-key"]; len(v) > 0 {
+		directKey = v[0]
+	}
+	if key, ok := lib.DirectKeyFromHeaders(handlerStore, directKey, auth.authorization, auth.apiKey, auth.googAPIKey); ok {
+		ctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
+	}
 	// The headers captured at upgrade are all this connection will ever present, so the identity is
 	// settled here the way the HTTP path settles it, a connection that presented nothing included:
 	// governance refuses a request nobody settled, and a keyless connection is not that.
