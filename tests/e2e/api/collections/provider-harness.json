@@ -218163,6 +218163,244 @@
           ]
         }
       ]
+    },
+    {
+      "name": "187. Responses multi-part assistant output_text maps to chat text (#8196 / PR #8208) (responses-multipart-output-text)",
+      "description": "Gateway regression for #8196. A Responses-API client (Zed's agent in the report) replays an assistant turn whose text is split across more than one output_text part. ToChatMessages in core/schemas/mux.go maps output_text to text only in its single-part short-circuit; the multi-part switch had no case for it, so the block fell through default: and carried the Responses-only output_text spelling into the chat messages[] Bifrost builds for a chat-only provider. Chat completions defines exactly four content parts (text, image_url, input_audio, file), so the request died with HTTP 422 \"unknown variant output_text\" naming an index in Bifrost's internal array rather than the client's input[]. The route is /v1/responses against deepseek, whose Responses handler falls back to ChatCompletion via ToChatRequest() - the reporter's own repro, and provider-independent per the issue. The rows read the outbound body with x-bf-send-back-raw-request so they pin the translated spelling rather than one provider's choice of error code. Cases: (1) two output_text parts, the reporter's exact body, red pre-fix; (2) a mixed output_text + input_text turn, also 422 pre-fix, pinning that the mapping is per-part and not a whole-turn special case; (3) a single output_text part, which the short-circuit already handled and which must keep working - a guard against fixing the multi-part path by breaking the collapse. Run with FEATURE=responses-multipart-output-text.",
+      "item": [
+        {
+          "name": "[EXPECT-200] deepseek/deepseek-v4-flash /v1/responses two output_text parts in one assistant turn translate to chat text - responses-multipart-output-text - #8196",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"hi\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"a\"\n        },\n        {\n          \"type\": \"output_text\",\n          \"text\": \"b\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"say ok\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('187.1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('187.1 outbound body captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "pm.test('187.1 the assistant turn reached the provider as chat text parts (pre-fix: HTTP 422 unknown variant output_text) - #8196', function () {",
+                  "  pm.expect(wire.indexOf('output_text'), 'the Responses-only spelling survived into the chat body: ' + wire.slice(0, 600)).to.equal(-1);",
+                  "  var msgs = (rr || {}).messages || [];",
+                  "  var asst = null;",
+                  "  for (var i = 0; i < msgs.length; i++) { if (msgs[i] && msgs[i].role === 'assistant') { asst = msgs[i]; break; } }",
+                  "  pm.expect(asst, 'no assistant message in the translated chat body: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(asst.content, 'assistant content must stay a 2-part array: ' + JSON.stringify(asst.content)).to.be.an('array').with.lengthOf(2);",
+                  "  var want = [\"a\",\"b\"];",
+                  "  for (var p = 0; p < want.length; p++) {",
+                  "    pm.expect(asst.content[p].type, 'part ' + p + ': ' + JSON.stringify(asst.content[p])).to.equal('text');",
+                  "    pm.expect(asst.content[p].text, 'part ' + p + ' text').to.equal(want[p]);",
+                  "  }",
+                  "});",
+                  "pm.test('187.1 no deserialization error naming the unknown variant - #8196', function () {",
+                  "  pm.expect(txt.indexOf('unknown variant'), 'gateway rejected its own translated body: ' + txt.slice(0, 600)).to.equal(-1);",
+                  "});",
+                  "pm.test('187.1 the model answered', function () {",
+                  "  pm.expect(body.output, 'no output: ' + txt.slice(0, 400)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] deepseek/deepseek-v4-flash /v1/responses mixed output_text and input_text parts in one assistant turn - responses-multipart-output-text - #8196",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"hi\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"a\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"b\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"say ok\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('187.2: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('187.2 outbound body captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "pm.test('187.2 the assistant turn reached the provider as chat text parts (pre-fix: HTTP 422 unknown variant output_text) - #8196', function () {",
+                  "  pm.expect(wire.indexOf('output_text'), 'the Responses-only spelling survived into the chat body: ' + wire.slice(0, 600)).to.equal(-1);",
+                  "  var msgs = (rr || {}).messages || [];",
+                  "  var asst = null;",
+                  "  for (var i = 0; i < msgs.length; i++) { if (msgs[i] && msgs[i].role === 'assistant') { asst = msgs[i]; break; } }",
+                  "  pm.expect(asst, 'no assistant message in the translated chat body: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(asst.content, 'assistant content must stay a 2-part array: ' + JSON.stringify(asst.content)).to.be.an('array').with.lengthOf(2);",
+                  "  var want = [\"a\",\"b\"];",
+                  "  for (var p = 0; p < want.length; p++) {",
+                  "    pm.expect(asst.content[p].type, 'part ' + p + ': ' + JSON.stringify(asst.content[p])).to.equal('text');",
+                  "    pm.expect(asst.content[p].text, 'part ' + p + ' text').to.equal(want[p]);",
+                  "  }",
+                  "});",
+                  "pm.test('187.2 no deserialization error naming the unknown variant - #8196', function () {",
+                  "  pm.expect(txt.indexOf('unknown variant'), 'gateway rejected its own translated body: ' + txt.slice(0, 600)).to.equal(-1);",
+                  "});",
+                  "pm.test('187.2 the model answered', function () {",
+                  "  pm.expect(body.output, 'no output: ' + txt.slice(0, 400)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] deepseek/deepseek-v4-flash /v1/responses single output_text assistant part still collapses - responses-multipart-output-text - #8196",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"hi\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"a\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"say ok\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('187.3: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('187.3 outbound body captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "pm.test('187.3 the single-part short-circuit still collapses the turn to plain text - #8196', function () {",
+                  "  pm.expect(wire.indexOf('output_text'), 'the Responses-only spelling survived into the chat body: ' + wire.slice(0, 600)).to.equal(-1);",
+                  "  var msgs = (rr || {}).messages || [];",
+                  "  var asst = null;",
+                  "  for (var i = 0; i < msgs.length; i++) { if (msgs[i] && msgs[i].role === 'assistant') { asst = msgs[i]; break; } }",
+                  "  pm.expect(asst, 'no assistant message in the translated chat body: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(asst.content, 'single-part assistant content: ' + JSON.stringify(asst.content)).to.equal('a');",
+                  "});",
+                  "pm.test('187.3 the model answered', function () {",
+                  "  pm.expect(body.output, 'no output: ' + txt.slice(0, 400)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
