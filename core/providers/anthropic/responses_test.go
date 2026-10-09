@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -827,6 +828,126 @@ func TestAnthropicResponsesTruncatedOutputItemIncomplete(t *testing.T) {
 	}
 }
 
+// TestConvertBifrostMessages_ShellCallKeepsCommands verifies that a shell_call
+// replayed to Anthropic keeps its commands instead of collapsing to a bare type name.
+func TestConvertBifrostMessages_ShellCallKeepsCommands(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+	callID := "shell_call_1"
+	timeout := 5000
+	shellCall := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeShellCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: &callID,
+			Action: &schemas.ResponsesToolMessageActionStruct{
+				ResponsesShellToolCallAction: &schemas.ResponsesShellToolCallAction{
+					Commands:  []string{"ls -la", "cat go.mod"},
+					TimeoutMS: &timeout,
+				},
+			},
+			ResponsesShellCall: &schemas.ResponsesShellCall{
+				Environment: &schemas.ResponsesShellCallEnvironment{Type: "local"},
+			},
+		},
+	}
+
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{shellCall}, true, caps)
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d: %+v", len(msgs), msgs)
+	}
+	if len(msgs[0].Content.ContentBlocks) != 1 || msgs[0].Content.ContentBlocks[0].Text == nil {
+		t.Fatalf("expected a single text block, got %+v", msgs[0].Content.ContentBlocks)
+	}
+
+	text := *msgs[0].Content.ContentBlocks[0].Text
+	for _, want := range []string{"ls -la", "cat go.mod", `"timeout_ms":5000`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("shell call text missing %q, got:\n%s", want, text)
+		}
+	}
+}
+
+// TestConvertBifrostMessages_ShellCallOutputKeepsOutcome pins the replayed output:
+// without the outcome a failed command reads like a successful one, and a silent
+// command used to produce no message at all.
+func TestConvertBifrostMessages_ShellCallOutputKeepsOutcome(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+	callID := "shell_call_1"
+	exit127 := 127
+	exit0 := 0
+
+	tests := []struct {
+		name    string
+		output  []schemas.ResponsesShellCallOutputContent
+		want    []string
+		notWant []string
+	}{
+		{
+			name:   "failure keeps stderr and the exit code",
+			output: []schemas.ResponsesShellCallOutputContent{{Stderr: "bash: nope: command not found", Outcome: schemas.ResponsesShellCallOutcome{Type: "exit", ExitCode: &exit127}}},
+			want:   []string{"command not found", "[exit code 127]"},
+		},
+		{
+			name:   "silent success still reaches the model",
+			output: []schemas.ResponsesShellCallOutputContent{{Outcome: schemas.ResponsesShellCallOutcome{Type: "exit", ExitCode: &exit0}}},
+			want:   []string{"[exit code 0]"},
+		},
+		{
+			name:   "timeout is named",
+			output: []schemas.ResponsesShellCallOutputContent{{Stdout: "partial", Outcome: schemas.ResponsesShellCallOutcome{Type: "timeout"}}},
+			want:   []string{"partial", "[command timed out]"},
+		},
+		{
+			name:   "no text and no outcome still emits a message",
+			output: []schemas.ResponsesShellCallOutputContent{{}},
+			want:   []string{"[no output]"},
+		},
+		{
+			name:    "success with output does not gain noise",
+			output:  []schemas.ResponsesShellCallOutputContent{{Stdout: "go.mod", Outcome: schemas.ResponsesShellCallOutcome{Type: "exit", ExitCode: &exit0}}},
+			want:    []string{"go.mod", "[exit code 0]"},
+			notWant: []string{"[no output]"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeShellCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: &callID,
+					Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesShellCallOutput: tt.output},
+				},
+			}
+
+			msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{msg}, true, caps)
+			if len(msgs) != 1 {
+				t.Fatalf("expected 1 message, got %d: %+v", len(msgs), msgs)
+			}
+			if len(msgs[0].Content.ContentBlocks) != 1 || msgs[0].Content.ContentBlocks[0].Text == nil {
+				t.Fatalf("expected a single text block, got %+v", msgs[0].Content.ContentBlocks)
+			}
+
+			text := *msgs[0].Content.ContentBlocks[0].Text
+			for _, want := range tt.want {
+				if !strings.Contains(text, want) {
+					t.Errorf("replayed output missing %q, got:\n%s", want, text)
+				}
+			}
+			for _, notWant := range tt.notWant {
+				if strings.Contains(text, notWant) {
+					t.Errorf("replayed output must not contain %q, got:\n%s", notWant, text)
+				}
+			}
+		})
+	}
+}
+
 func assertAnthropicLastOutputItemStatus(t *testing.T, label string, output []schemas.ResponsesMessage, want string) {
 	t.Helper()
 	if len(output) == 0 {
@@ -977,6 +1098,96 @@ func TestToAnthropicResponsesRequest_PerMessageEffortFromNeutralInput(t *testing
 		t.Fatalf("forwarded messages = %d, want 2 (neutral per-message effort was dropped): %s", len(msgs), wire)
 	}
 	assertEffortOnlySystemMessage(t, msgs[1], "low", wire)
+}
+
+// TestToAnthropicResponsesRequest_PerMessageEffortSurvivesTextFallbacks: a system item that
+// carries text AND a per-message effort can only go out natively when its placement is
+// valid. On the hoist (leading run) and inline (rejected placement) fallbacks the text cannot
+// carry the override, so it is re-emitted as an effort-only system message, which Anthropic
+// exempts from placement rules ("It can appear anywhere in messages, including as the first
+// entry", https://platform.claude.com/docs/en/build-with-claude/effort). Without it the
+// caller's effort change is silently lost (PR #8018 review).
+func TestToAnthropicResponsesRequest_PerMessageEffortSurvivesTextFallbacks(t *testing.T) {
+	t.Parallel()
+
+	convert := func(t *testing.T, provider schemas.ModelProvider, inputJSON string) ([]map[string]any, string, *AnthropicMessageRequest) {
+		t.Helper()
+		var input []schemas.ResponsesMessage
+		if err := schemas.Unmarshal([]byte(inputJSON), &input); err != nil {
+			t.Fatalf("decode neutral input: %v", err)
+		}
+		out, err := ToAnthropicResponsesRequest(effortTestCtx(t), &schemas.BifrostResponsesRequest{
+			Provider: provider,
+			Model:    "claude-opus-5-5",
+			Input:    input,
+			Params:   &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(128)},
+		})
+		if err != nil {
+			t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+		}
+		msgs, wire := jsonArrayOfObjects(t, out.Messages)
+		return msgs, wire, out
+	}
+
+	t.Run("hoisted leading system item keeps its effort", func(t *testing.T) {
+		t.Parallel()
+		msgs, wire, out := convert(t, schemas.Anthropic, `[
+			{"type":"message","role":"system","content":"Be terse.","output_config":{"effort":"low"}},
+			{"type":"message","role":"user","content":"Say hello."}
+		]`)
+		system, _ := sonic.Marshal(out.System)
+		if !strings.Contains(string(system), "Be terse.") {
+			t.Fatalf("leading system text was not hoisted into system: %s", system)
+		}
+		if len(msgs) != 2 {
+			t.Fatalf("messages = %d, want 2 (effort-only override + user): %s", len(msgs), wire)
+		}
+		assertEffortOnlySystemMessage(t, msgs[0], "low", wire)
+		if msgs[1]["role"] != "user" {
+			t.Fatalf("messages[1].role = %v, want user: %s", msgs[1]["role"], wire)
+		}
+	})
+
+	t.Run("inlined mid-conversation system item keeps its effort", func(t *testing.T) {
+		t.Parallel()
+		// Followed by a user turn, so the native placement is rejected and the text is inlined.
+		msgs, wire, _ := convert(t, schemas.Anthropic, `[
+			{"type":"message","role":"user","content":"First question."},
+			{"type":"message","role":"system","content":"Be terse.","output_config":{"effort":"low"}},
+			{"type":"message","role":"user","content":"Second question."}
+		]`)
+		effortAt := -1
+		for i, m := range msgs {
+			if m["role"] == "system" {
+				if effortAt != -1 {
+					t.Fatalf("more than one system message: %s", wire)
+				}
+				effortAt = i
+				assertEffortOnlySystemMessage(t, m, "low", wire)
+			}
+		}
+		if effortAt == -1 {
+			t.Fatalf("per-message effort lost on the inline fallback: %s", wire)
+		}
+		if effortAt+1 >= len(msgs) {
+			t.Fatalf("effort-only message must precede the inlined reminder: %s", wire)
+		}
+		next, _ := sonic.Marshal(msgs[effortAt+1])
+		if !strings.Contains(string(next), "system-reminder") || !strings.Contains(string(next), "Be terse.") {
+			t.Fatalf("message after the effort-only override is not the inlined reminder: %s", wire)
+		}
+	})
+
+	t.Run("unsupported surface emits no override on the hoist", func(t *testing.T) {
+		t.Parallel()
+		msgs, wire, _ := convert(t, schemas.Vertex, `[
+			{"type":"message","role":"system","content":"Be terse.","output_config":{"effort":"low"}},
+			{"type":"message","role":"user","content":"Say hello."}
+		]`)
+		if len(msgs) != 1 || msgs[0]["role"] != "user" {
+			t.Fatalf("Vertex must receive only the user turn: %s", wire)
+		}
+	})
 }
 
 // TestAnthropicRoundTrip_PerMessageEffortDroppedWhenModelLacksSupport pins the fail-soft
@@ -1297,6 +1508,1023 @@ func TestStopSequence_StreamingRoundTrip(t *testing.T) {
 				t.Fatalf("completed egress missing message_delta: %+v", events)
 			}
 			assertStopFields(t, *events[0].Delta.StopReason, events[0].Delta.StopSequence, tt.wantReason, tt.wantSeq)
+		})
+	}
+}
+
+// TestConvertBifrostMessages_UnsupportedToolCallWithoutShellAction verifies the
+// generic fallback still applies to non-shell unsupported tool calls.
+func TestConvertBifrostMessages_UnsupportedToolCallWithoutShellAction(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+	callID := "fs_1"
+	fileSearch := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeFileSearchCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: &callID,
+			Name:   schemas.Ptr("file_search"),
+		},
+	}
+
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{fileSearch}, true, caps)
+	if len(msgs) != 1 || len(msgs[0].Content.ContentBlocks) != 1 || msgs[0].Content.ContentBlocks[0].Text == nil {
+		t.Fatalf("expected a single text block, got %+v", msgs)
+	}
+	if text := *msgs[0].Content.ContentBlocks[0].Text; !strings.Contains(text, "Tool call: file_search") {
+		t.Fatalf("unexpected fallback text: %s", text)
+	}
+}
+
+// TestConvertBifrostToolsToAnthropicDropsMCPAllowedCallers pins the drop. Anthropic
+// answers "tools.0.mcp_toolset.allowed_callers: Extra inputs are not permitted", so the
+// restriction is not expressible on a toolset and must not fail the request either.
+func TestConvertBifrostToolsToAnthropicDropsMCPAllowedCallers(t *testing.T) {
+	caps := schemas.ModelCaps{}
+	mcpTool := func(callers []string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{
+			Type:           schemas.ResponsesToolTypeMCP,
+			AllowedCallers: callers,
+			ResponsesToolMCP: &schemas.ResponsesToolMCP{
+				ServerLabel: "docs",
+				ServerURL:   schemas.Ptr("https://mcp.example.com"),
+			},
+		}
+	}
+
+	for _, tc := range []struct {
+		name    string
+		callers []string
+	}{
+		{"no callers", nil},
+		{"direct", []string{"direct"}},
+		{"programmatic", []string{"programmatic"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tools, servers, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{mcpTool(tc.callers)}, schemas.Anthropic)
+			if err != nil {
+				t.Fatalf("convert failed: %v", err)
+			}
+			if len(servers) != 1 || len(tools) != 1 || tools[0].MCPToolset == nil {
+				t.Fatalf("expected one mcp server and one toolset, got %d servers and %+v", len(servers), tools)
+			}
+			data, err := sonic.Marshal(tools[0])
+			if err != nil {
+				t.Fatalf("marshal failed: %v", err)
+			}
+			if strings.Contains(string(data), "allowed_callers") {
+				t.Fatalf("mcp_toolset must not carry allowed_callers: %s", data)
+			}
+		})
+	}
+
+	// The callers are dropped, so they must not reach the shared code-execution
+	// resolution either: no version raise, and no failure on a legacy version.
+	t.Run("does not raise the code execution version", func(t *testing.T) {
+		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+			{Type: schemas.ResponsesToolTypeCodeInterpreter, ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{}},
+			mcpTool([]string{"programmatic"}),
+		}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("convert failed: %v", err)
+		}
+		assertCodeExecutionVersion(t, tools, "code_execution_20250825")
+	})
+
+	t.Run("does not trip the legacy version guard", func(t *testing.T) {
+		_, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+			{
+				Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+				ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Version: schemas.Ptr("code_execution_20250522")},
+			},
+			mcpTool([]string{"programmatic"}),
+		}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("an mcp caller must not fail the request: %v", err)
+		}
+	})
+
+	// A real programmatic caller alongside an mcp tool is still translated.
+	t.Run("a function tool beside it still gets its caller", func(t *testing.T) {
+		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+			mcpTool([]string{"programmatic"}),
+			{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  schemas.Ptr("query_database"),
+				AllowedCallers:        []string{"programmatic"},
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+			},
+		}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("convert failed: %v", err)
+		}
+		assertToolCallers(t, tools, "query_database", []string{"code_execution_20260120"})
+	})
+}
+
+// TestConvertBifrostToolsToAnthropicTranslatesProgrammaticCaller runs the rewrite
+// through the request converter, including the code_interpreter version it has to
+// raise so programmatic tool calling exists at all.
+func TestConvertBifrostToolsToAnthropicTranslatesProgrammaticCaller(t *testing.T) {
+	caps := schemas.ModelCaps{}
+	queryTool := schemas.ResponsesTool{
+		Type:                  schemas.ResponsesToolTypeFunction,
+		Name:                  schemas.Ptr("query_database"),
+		AllowedCallers:        []string{"programmatic"},
+		ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+	}
+
+	t.Run("version-less code_interpreter is raised to 20260120", func(t *testing.T) {
+		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+			{Type: schemas.ResponsesToolTypeCodeInterpreter, ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{}},
+			queryTool,
+		}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("convert failed: %v", err)
+		}
+		assertToolCallers(t, tools, "query_database", []string{"code_execution_20260120"})
+		assertCodeExecutionVersion(t, tools, "code_execution_20260120")
+	})
+
+	t.Run("explicit version is matched, not raised", func(t *testing.T) {
+		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+			{
+				Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+				ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Version: schemas.Ptr("code_execution_20250825")},
+			},
+			queryTool,
+		}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("convert failed: %v", err)
+		}
+		assertToolCallers(t, tools, "query_database", []string{"code_execution_20250825"})
+		assertCodeExecutionVersion(t, tools, "code_execution_20250825")
+	})
+
+	t.Run("no code execution tool falls back to the auto-injected version", func(t *testing.T) {
+		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{queryTool}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("convert failed: %v", err)
+		}
+		assertToolCallers(t, tools, "query_database", []string{"code_execution_20260120"})
+	})
+
+	// Legacy 20250522 has no allowed_callers value at all. Dropping the caller would
+	// hand the model a tool the request said was sandbox-only, so this fails instead.
+	t.Run("legacy 20250522 is rejected rather than silently widened", func(t *testing.T) {
+		_, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+			{
+				Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+				ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Version: schemas.Ptr("code_execution_20250522")},
+			},
+			queryTool,
+		}, schemas.Anthropic)
+		if err == nil {
+			t.Fatal("expected a conversion error for a programmatic caller on code_execution_20250522")
+		}
+		if !strings.Contains(err.Error(), "code_execution_20250522") {
+			t.Fatalf("error must name the offending version: %v", err)
+		}
+	})
+
+	// Beside web search the interpreter is never sent (Anthropic injects its own code
+	// execution), so its legacy version must not block the request.
+	legacyInterpreter := func(callers ...string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{
+			Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+			AllowedCallers:               callers,
+			ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Version: schemas.Ptr("code_execution_20250522")},
+		}
+	}
+	webSearch := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebSearch}
+
+	t.Run("a dropped legacy interpreter with a programmatic caller does not block the request", func(t *testing.T) {
+		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{webSearch, legacyInterpreter("programmatic")}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("convert failed: %v", err)
+		}
+		if len(tools) != 1 || tools[0].Type == nil || !strings.HasPrefix(string(*tools[0].Type), "web_search") {
+			t.Fatalf("want only the web_search tool, got %+v", tools)
+		}
+	})
+
+	t.Run("a dropped legacy interpreter does not decide another tool's caller", func(t *testing.T) {
+		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{webSearch, legacyInterpreter(), queryTool}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("convert failed: %v", err)
+		}
+		assertToolCallers(t, tools, "query_database", []string{"code_execution_20260120"})
+	})
+
+	t.Run("a request without programmatic callers is untouched", func(t *testing.T) {
+		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+			{Type: schemas.ResponsesToolTypeCodeInterpreter, ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{}},
+			{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  schemas.Ptr("query_database"),
+				AllowedCallers:        []string{"direct"},
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+			},
+		}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("convert failed: %v", err)
+		}
+		assertToolCallers(t, tools, "query_database", []string{"direct"})
+		// The default version stands when nothing asks for programmatic tool calling.
+		assertCodeExecutionVersion(t, tools, "code_execution_20250825")
+	})
+}
+
+func assertToolCallers(t *testing.T, tools []AnthropicTool, name string, want []string) {
+	t.Helper()
+	for _, tool := range tools {
+		if tool.Name != name {
+			continue
+		}
+		if len(tool.AllowedCallers) != len(want) {
+			t.Fatalf("%s allowed_callers = %v, want %v", name, tool.AllowedCallers, want)
+		}
+		for i := range want {
+			if tool.AllowedCallers[i] != want[i] {
+				t.Fatalf("%s allowed_callers = %v, want %v", name, tool.AllowedCallers, want)
+			}
+		}
+		return
+	}
+	t.Fatalf("tool %s missing from %+v", name, tools)
+}
+
+func assertCodeExecutionVersion(t *testing.T, tools []AnthropicTool, want string) {
+	t.Helper()
+	for _, tool := range tools {
+		if tool.Name != string(AnthropicToolNameCodeExecution) {
+			continue
+		}
+		if tool.Type == nil || string(*tool.Type) != want {
+			t.Fatalf("code_execution type = %v, want %s", tool.Type, want)
+		}
+		return
+	}
+	t.Fatalf("code_execution tool missing from %+v", tools)
+}
+
+// TestConvertBifrostMessages_ApplyPatchCallKeepsOperation verifies that an
+// apply_patch_call replayed to Anthropic keeps its file operation.
+func TestConvertBifrostMessages_ApplyPatchCallKeepsOperation(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation schemas.ResponsesApplyPatchOperation
+		want      []string
+		notWant   []string
+	}{
+		{
+			name:      "create_file",
+			operation: schemas.ResponsesApplyPatchOperation{Type: "create_file", Path: "hello.txt", Diff: schemas.Ptr("+hello\n")},
+			want:      []string{`"type":"create_file"`, `"path":"hello.txt"`, "+hello"},
+		},
+		{
+			name:      "update_file",
+			operation: schemas.ResponsesApplyPatchOperation{Type: "update_file", Path: "main.go", Diff: schemas.Ptr("-old\n+new\n")},
+			want:      []string{`"type":"update_file"`, `"path":"main.go"`, "-old", "+new"},
+		},
+		{
+			name:      "delete_file carries no diff",
+			operation: schemas.ResponsesApplyPatchOperation{Type: "delete_file", Path: "gone.txt"},
+			want:      []string{`"type":"delete_file"`, `"path":"gone.txt"`},
+			notWant:   []string{"diff"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+			operation := tt.operation
+			applyPatchCall := schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeApplyPatchCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:                  schemas.Ptr("apply_patch_call_1"),
+					ResponsesApplyPatchCall: &schemas.ResponsesApplyPatchCall{Operation: &operation},
+				},
+			}
+
+			msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{applyPatchCall}, true, caps)
+			if len(msgs) != 1 || len(msgs[0].Content.ContentBlocks) != 1 || msgs[0].Content.ContentBlocks[0].Text == nil {
+				t.Fatalf("expected a single text block, got %+v", msgs)
+			}
+
+			text := *msgs[0].Content.ContentBlocks[0].Text
+			if !strings.Contains(text, "apply_patch_call") {
+				t.Errorf("apply_patch call text missing the item type, got:\n%s", text)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(text, want) {
+					t.Errorf("apply_patch call text missing %q, got:\n%s", want, text)
+				}
+			}
+			for _, notWant := range tt.notWant {
+				if strings.Contains(text, notWant) {
+					t.Errorf("apply_patch call text unexpectedly contains %q, got:\n%s", notWant, text)
+				}
+			}
+		})
+	}
+}
+
+// TestConvertBifrostMessages_UnsupportedToolCallTurnOrder verifies that an unsupported
+// tool call replayed as text keeps the reasoning before it and follows earlier tool calls.
+func TestConvertBifrostMessages_UnsupportedToolCallTurnOrder(t *testing.T) {
+	applyPatchCall := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeApplyPatchCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("call_patch"),
+			ResponsesApplyPatchCall: &schemas.ResponsesApplyPatchCall{
+				Operation: &schemas.ResponsesApplyPatchOperation{Type: "update_file", Path: "main.go", Diff: schemas.Ptr("-a\n+b\n")},
+			},
+		},
+	}
+	user := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("fix the bug")},
+	}
+	convert := func(t *testing.T, input []schemas.ResponsesMessage) []AnthropicMessage {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, input, true, schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929"))
+		return msgs
+	}
+
+	t.Run("reasoning leads the call turn", func(t *testing.T) {
+		reasoning := schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary: []schemas.ResponsesReasoningSummary{{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "patch main.go"}},
+			},
+		}
+		msgs := convert(t, []schemas.ResponsesMessage{user, reasoning, applyPatchCall})
+		if len(msgs) != 2 {
+			t.Fatalf("expected user + assistant, got %+v", msgs)
+		}
+		blocks := msgs[1].Content.ContentBlocks
+		if len(blocks) != 2 || blocks[0].Type != AnthropicContentBlockTypeThinking || blocks[1].Type != AnthropicContentBlockTypeText {
+			t.Fatalf("expected [thinking, text] on the call turn, got %+v", blocks)
+		}
+	})
+
+	t.Run("call follows a pending tool_use", func(t *testing.T) {
+		functionCall := schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:    schemas.Ptr("call_read"),
+				Name:      schemas.Ptr("read"),
+				Arguments: schemas.Ptr("{}"),
+			},
+		}
+		msgs := convert(t, []schemas.ResponsesMessage{user, functionCall, applyPatchCall})
+		if len(msgs) != 3 {
+			t.Fatalf("expected user + tool_use + call text, got %+v", msgs)
+		}
+		if b := msgs[1].Content.ContentBlocks; len(b) != 1 || b[0].Type != AnthropicContentBlockTypeToolUse {
+			t.Fatalf("expected the tool_use turn first, got %+v", b)
+		}
+		if b := msgs[2].Content.ContentBlocks; len(b) != 1 || b[0].Text == nil || !strings.Contains(*b[0].Text, "apply_patch_call") {
+			t.Fatalf("expected the apply_patch text after the tool_use, got %+v", b)
+		}
+	})
+
+	// Anthropic rejects a user turn whose tool_result is not first, so a held
+	// function result must be written before a text-rendered tool output.
+	for _, outputType := range []schemas.ResponsesMessageType{
+		schemas.ResponsesMessageTypeShellCallOutput,
+		schemas.ResponsesMessageTypeApplyPatchCallOutput,
+		schemas.ResponsesMessageTypeLocalShellCallOutput,
+		schemas.ResponsesMessageTypeCustomToolCallOutput,
+	} {
+		t.Run("pending tool_result precedes "+string(outputType), func(t *testing.T) {
+			functionCall := schemas.ResponsesMessage{
+				Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_fn"), Name: schemas.Ptr("get_time"), Arguments: schemas.Ptr("{}")},
+			}
+			functionOutput := schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_fn"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("12:00")}},
+			}
+			toolOutput := schemas.ResponsesMessage{
+				Type: schemas.Ptr(outputType),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_patch"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("done")}},
+			}
+			// Either output order must replay the same way.
+			for name, outputs := range map[string][]schemas.ResponsesMessage{
+				"function output first": {functionOutput, toolOutput},
+				"tool output first":     {toolOutput, functionOutput},
+			} {
+				t.Run(name, func(t *testing.T) {
+					msgs := convert(t, append([]schemas.ResponsesMessage{user, functionCall, applyPatchCall}, outputs...))
+					if len(msgs) != 5 {
+						t.Fatalf("expected user, tool_use, call text, tool_result, output text; got %+v", msgs)
+					}
+					if b := msgs[3].Content.ContentBlocks; len(b) != 1 || b[0].Type != AnthropicContentBlockTypeToolResult {
+						t.Fatalf("expected the tool_result before the tool output text, got %+v", msgs[3])
+					}
+					if b := msgs[4].Content.ContentBlocks; msgs[4].Role != AnthropicMessageRoleUser || len(b) != 1 || b[0].Type != AnthropicContentBlockTypeText {
+						t.Fatalf("expected the tool output text as the last user turn, got %+v", msgs[4])
+					}
+				})
+			}
+		})
+	}
+}
+
+// A failed apply_patch whose output text is absent must still replay as a message.
+// Dropping it leaves the turn looking like the patch was never attempted, so the model
+// retries or assumes success.
+func TestConvertBifrostToolOutputFailureWithoutOutputText(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  schemas.ResponsesMessage
+		want string
+	}{
+		{
+			name: "failed status with error string",
+			msg: schemas.ResponsesMessage{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeApplyPatchCallOutput),
+				Status: schemas.Ptr("failed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("ap_1"),
+					Error: &schemas.ResponsesToolMessageError{
+						ResponsesToolMessageErrorStr: schemas.Ptr("context lines did not match"),
+					},
+				},
+			},
+			want: "[tool call failed: context lines did not match]",
+		},
+		{
+			name: "failed status with structured error message",
+			msg: schemas.ResponsesMessage{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeApplyPatchCallOutput),
+				Status: schemas.Ptr("failed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("ap_2"),
+					Error: &schemas.ResponsesToolMessageError{
+						ResponsesToolMessageErrorStruct: &schemas.ResponsesToolMessageErrorStruct{
+							Type:    "invalid_patch",
+							Message: schemas.Ptr("file not found"),
+						},
+					},
+				},
+			},
+			want: "[tool call failed: file not found]",
+		},
+		{
+			name: "structured error falls back to its type",
+			msg: schemas.ResponsesMessage{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeApplyPatchCallOutput),
+				Status: schemas.Ptr("failed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("ap_3"),
+					Error: &schemas.ResponsesToolMessageError{
+						ResponsesToolMessageErrorStruct: &schemas.ResponsesToolMessageErrorStruct{Type: "invalid_patch"},
+					},
+				},
+			},
+			want: "[tool call failed: invalid_patch]",
+		},
+		{
+			name: "failed status with no error detail",
+			msg: schemas.ResponsesMessage{
+				Type:                 schemas.Ptr(schemas.ResponsesMessageTypeApplyPatchCallOutput),
+				Status:               schemas.Ptr("failed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("ap_4")},
+			},
+			want: "[tool call failed]",
+		},
+		{
+			name: "error without a failed status",
+			msg: schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeApplyPatchCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("ap_5"),
+					Error: &schemas.ResponsesToolMessageError{
+						ResponsesToolMessageErrorStr: schemas.Ptr("patch rejected"),
+					},
+				},
+			},
+			want: "[tool call error: patch rejected]",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := convertBifrostToolOutputToAnthropicMessage(&tc.msg)
+			if got == nil {
+				t.Fatalf("message dropped; want replay text %q", tc.want)
+			}
+			if len(got.Content.ContentBlocks) != 1 || got.Content.ContentBlocks[0].Text == nil {
+				t.Fatalf("content = %+v, want one text block", got.Content)
+			}
+			if text := *got.Content.ContentBlocks[0].Text; text != tc.want {
+				t.Fatalf("text = %q, want %q", text, tc.want)
+			}
+			if got.Role != AnthropicMessageRoleUser {
+				t.Fatalf("role = %q, want user", got.Role)
+			}
+		})
+	}
+}
+
+// computerCallHistoryRequest builds an OpenAI-shaped history with one computer_call and its screenshot output.
+func computerCallHistoryRequest(t *testing.T, computerCall string) *AnthropicMessageRequest {
+	t.Helper()
+	body := `{"provider":"anthropic","model":"claude-sonnet-4-6","input":[
+		{"type":"message","role":"user","content":"click then type"},
+		` + computerCall + `,
+		{"type":"computer_call_output","call_id":"call_1","output":{"type":"computer_screenshot","image_url":"data:image/png;base64,iVBORw0KGgo="}}],
+		"params":{"tools":[{"type":"computer_use_preview","display_width":1280,"display_height":800,"environment":"browser"}]}}`
+	var req schemas.BifrostResponsesRequest
+	if err := sonic.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	out, err := ToAnthropicResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &req)
+	if err != nil {
+		t.Fatalf("convert failed: %v", err)
+	}
+	if len(out.Messages) != 3 {
+		t.Fatalf("expected user, assistant, user messages, got %d", len(out.Messages))
+	}
+	return out
+}
+
+// A batched computer_call becomes one tool_use per action, and the single
+// screenshot output gains a filler result for each earlier action.
+func TestToAnthropicResponsesRequest_ComputerCallActionsSplit(t *testing.T) {
+	out := computerCallHistoryRequest(t, `{"type":"computer_call","id":"cu_1","call_id":"call_1","status":"completed",
+		"actions":[{"type":"click","button":"left","x":100,"y":200},{"type":"type","text":"hi"}]}`)
+
+	calls := out.Messages[1].Content.ContentBlocks
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 tool_use blocks, got %d", len(calls))
+	}
+	wantCalls := []struct{ id, input string }{
+		{"call_1_0", `{"action":"left_click","coordinate":[100,200]}`},
+		{"call_1", `{"action":"type","text":"hi"}`},
+	}
+	for i, want := range wantCalls {
+		if calls[i].ID == nil || *calls[i].ID != want.id {
+			t.Fatalf("tool_use %d: expected id %q, got %v", i, want.id, calls[i].ID)
+		}
+		if string(calls[i].Input) != want.input {
+			t.Fatalf("tool_use %d: expected input %s, got %s", i, want.input, calls[i].Input)
+		}
+	}
+
+	results := out.Messages[2].Content.ContentBlocks
+	if len(results) != 2 {
+		t.Fatalf("expected 2 tool_result blocks, got %d", len(results))
+	}
+	if *results[0].ToolUseID != "call_1_0" || results[0].Content == nil || results[0].Content.ContentStr == nil {
+		t.Fatalf("expected a text filler result for call_1_0, got %+v", results[0])
+	}
+	if *results[1].ToolUseID != "call_1" || results[1].Content == nil || len(results[1].Content.ContentBlocks) != 1 ||
+		results[1].Content.ContentBlocks[0].Type != AnthropicContentBlockTypeImage {
+		t.Fatalf("expected the screenshot on call_1, got %+v", results[1])
+	}
+}
+
+// A computer_call with the single action field keeps one tool_use under the call id.
+func TestToAnthropicResponsesRequest_ComputerCallSingleAction(t *testing.T) {
+	out := computerCallHistoryRequest(t, `{"type":"computer_call","id":"cu_1","call_id":"call_1","status":"completed",
+		"action":{"type":"click","button":"left","x":100,"y":200}}`)
+
+	calls := out.Messages[1].Content.ContentBlocks
+	if len(calls) != 1 || calls[0].ID == nil || *calls[0].ID != "call_1" {
+		t.Fatalf("expected one tool_use with id call_1, got %+v", calls)
+	}
+	if string(calls[0].Input) != `{"action":"left_click","coordinate":[100,200]}` {
+		t.Fatalf("unexpected input %s", calls[0].Input)
+	}
+	results := out.Messages[2].Content.ContentBlocks
+	if len(results) != 1 || *results[0].ToolUseID != "call_1" {
+		t.Fatalf("expected one tool_result for call_1, got %+v", results)
+	}
+}
+
+// assertComputerCallActions checks a computer_call carries its action in both action and actions.
+func assertComputerCallActions(t *testing.T, item schemas.ResponsesMessage) {
+	t.Helper()
+	if item.Type == nil || *item.Type != schemas.ResponsesMessageTypeComputerCall {
+		t.Fatalf("expected computer_call, got %v", item.Type)
+	}
+	data, err := sonic.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	for _, want := range []string{
+		`"action":{"type":"click","x":100,"y":200,"button":"left"}`,
+		`"actions":[{"type":"click","x":100,"y":200,"button":"left"}]`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("expected %s in %s", want, data)
+		}
+	}
+}
+
+// A Claude computer tool_use reaches the client with both action and actions.
+func TestToBifrostResponsesResponse_ComputerCallActions(t *testing.T) {
+	var resp AnthropicMessageResponse
+	if err := sonic.Unmarshal([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","stop_reason":"tool_use",
+		"content":[{"type":"tool_use","id":"toolu_1","name":"computer","input":{"action":"left_click","coordinate":[100,200]}}],
+		"usage":{"input_tokens":1,"output_tokens":1}}`), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	out := resp.ToBifrostResponsesResponse(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	if len(out.Output) != 1 {
+		t.Fatalf("expected one output item, got %d", len(out.Output))
+	}
+	assertComputerCallActions(t, out.Output[0])
+}
+
+// The streaming computer_call output_item.done carries both action and actions.
+func TestToBifrostResponsesStream_ComputerCallActions(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
+
+	var done *schemas.ResponsesMessage
+	for seq, raw := range []string{
+		`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"computer","input":{}}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"action\":\"left_click\","}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"coordinate\":[100,200]}"}}`,
+		`{"type":"content_block_stop","index":0}`,
+	} {
+		var chunk AnthropicStreamEvent
+		if err := sonic.Unmarshal([]byte(raw), &chunk); err != nil {
+			t.Fatalf("unmarshal event: %v", err)
+		}
+		responses, bErr, _ := chunk.ToBifrostResponsesStream(ctx, seq, state)
+		if bErr != nil {
+			t.Fatalf("ToBifrostResponsesStream error: %v", bErr)
+		}
+		for _, r := range responses {
+			if r.Type == schemas.ResponsesStreamResponseTypeOutputItemDone && r.Item != nil {
+				done = r.Item
+			}
+		}
+	}
+	if done == nil {
+		t.Fatal("expected an output_item.done for the computer_call")
+	}
+	assertComputerCallActions(t, *done)
+}
+
+// OpenAI rejects a replayed computer_call whose id does not begin with "cu", so the
+// item minted for an assistant computer tool_use must not reuse the function call prefix.
+func TestAnthropicComputerToolUseReplaysWithComputerCallID(t *testing.T) {
+	msgs := []AnthropicMessage{
+		{Role: AnthropicMessageRoleUser, Content: AnthropicContent{ContentStr: schemas.Ptr("Take a screenshot.")}},
+		{Role: AnthropicMessageRoleAssistant, Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{{
+			Type: AnthropicContentBlockTypeToolUse, ID: schemas.Ptr("call_turn2"), Name: schemas.Ptr("computer"), Input: json.RawMessage(`{"action":"screenshot"}`),
+		}}}},
+	}
+	for _, grouped := range []bool{true, false} {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		var call *schemas.ResponsesMessage
+		out := convertAnthropicMessagesToBifrostMessages(ctx, msgs, nil, false, grouped, false)
+		cancel()
+		for i := range out {
+			if out[i].Type != nil && *out[i].Type == schemas.ResponsesMessageTypeComputerCall {
+				call = &out[i]
+			}
+		}
+		if call == nil || call.ID == nil || !strings.HasPrefix(*call.ID, "cu_") {
+			t.Fatalf("grouped=%v: want a computer_call with a cu_ id, got %+v", grouped, call)
+		}
+	}
+}
+
+// A computer_call's actions only arrive on output_item.done, often as actions with no
+// action (OpenAI), so each action must stream as a complete tool_use block, matching the
+// non-streaming conversion.
+func TestToAnthropicResponsesStream_ComputerCallActions(t *testing.T) {
+	type block struct {
+		index int
+		id    string
+		input string
+	}
+	collect := func(t *testing.T, ctx *schemas.BifrostContext, events []*schemas.BifrostResponsesStreamResponse) []block {
+		var blocks []block
+		open := map[int]*block{}
+		for _, ev := range events {
+			for _, out := range ToAnthropicResponsesStreamResponse(ctx, ev) {
+				switch out.Type {
+				case AnthropicStreamEventTypeContentBlockStart:
+					if out.ContentBlock == nil || out.ContentBlock.Type != AnthropicContentBlockTypeToolUse {
+						continue
+					}
+					b := &block{index: *out.Index}
+					if out.ContentBlock.ID != nil {
+						b.id = *out.ContentBlock.ID
+					}
+					open[*out.Index] = b
+				case AnthropicStreamEventTypeContentBlockDelta:
+					if b := open[*out.Index]; b != nil && out.Delta != nil && out.Delta.PartialJSON != nil {
+						b.input += *out.Delta.PartialJSON
+					}
+				case AnthropicStreamEventTypeContentBlockStop:
+					if b := open[*out.Index]; b != nil {
+						blocks = append(blocks, *b)
+						delete(open, *out.Index)
+					}
+				}
+			}
+		}
+		if len(open) != 0 {
+			t.Fatalf("tool_use blocks left open: %+v", open)
+		}
+		return blocks
+	}
+	computerCall := func(status string, actions ...schemas.ResponsesComputerToolCallAction) *schemas.ResponsesMessage {
+		return &schemas.ResponsesMessage{
+			ID:     schemas.Ptr("cu_1"),
+			Type:   schemas.Ptr(schemas.ResponsesMessageTypeComputerCall),
+			Status: schemas.Ptr(status),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:                    schemas.Ptr("call_1"),
+				ResponsesComputerToolCall: &schemas.ResponsesComputerToolCall{Actions: actions},
+			},
+		}
+	}
+	stream := func(prefix []*schemas.BifrostResponsesStreamResponse, done *schemas.ResponsesMessage) []*schemas.BifrostResponsesStreamResponse {
+		oi := len(prefix)
+		return append(prefix,
+			&schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(oi), Item: computerCall("in_progress")},
+			&schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: schemas.Ptr(oi), Item: done},
+		)
+	}
+	actionOf := func(t *testing.T, input string) string {
+		var m map[string]any
+		if err := sonic.Unmarshal([]byte(input), &m); err != nil {
+			t.Fatalf("tool_use input %q is not JSON: %v", input, err)
+		}
+		a, _ := m["action"].(string)
+		return a
+	}
+	newCtx := func() *schemas.BifrostContext { return schemas.NewBifrostContext(context.Background(), time.Time{}) }
+
+	t.Run("single action sent only as actions", func(t *testing.T) {
+		blocks := collect(t, newCtx(), stream(nil, computerCall("completed", schemas.ResponsesComputerToolCallAction{Type: "screenshot"})))
+		if len(blocks) != 1 || blocks[0].id != "call_1" || actionOf(t, blocks[0].input) != "screenshot" {
+			t.Fatalf("want one screenshot tool_use with the call id, got %+v", blocks)
+		}
+	})
+
+	t.Run("batched actions become one block each", func(t *testing.T) {
+		blocks := collect(t, newCtx(), stream(nil, computerCall("completed",
+			schemas.ResponsesComputerToolCallAction{Type: "click", X: schemas.Ptr(100), Y: schemas.Ptr(200), Button: schemas.Ptr("left")},
+			schemas.ResponsesComputerToolCallAction{Type: "type", Text: schemas.Ptr("hello")},
+		)))
+		if len(blocks) != 2 {
+			t.Fatalf("want two tool_use blocks, got %+v", blocks)
+		}
+		if blocks[0].id != "call_1_0" || blocks[1].id != "call_1" {
+			t.Fatalf("ids = %q, %q; want call_1_0, call_1 (the last keeps the call id)", blocks[0].id, blocks[1].id)
+		}
+		if actionOf(t, blocks[0].input) != "left_click" || actionOf(t, blocks[1].input) != "type" {
+			t.Fatalf("inputs = %s, %s", blocks[0].input, blocks[1].input)
+		}
+		if blocks[1].index != blocks[0].index+1 {
+			t.Fatalf("indices = %d, %d; want consecutive", blocks[0].index, blocks[1].index)
+		}
+	})
+
+	t.Run("a preceding text block keeps its index", func(t *testing.T) {
+		ctx := newCtx()
+		text := []*schemas.BifrostResponsesStreamResponse{
+			{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(0), Item: &schemas.ResponsesMessage{
+				ID: schemas.Ptr("msg_1"), Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant)}},
+			{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: schemas.Ptr(0), Item: &schemas.ResponsesMessage{
+				ID: schemas.Ptr("msg_1"), Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant)}},
+		}
+		blocks := collect(t, ctx, stream(text, computerCall("completed", schemas.ResponsesComputerToolCallAction{Type: "screenshot"})))
+		if len(blocks) != 1 || blocks[0].index != 1 {
+			t.Fatalf("want the tool_use at index 1 after the text block, got %+v", blocks)
+		}
+	})
+
+	t.Run("Claude computer stream round-trips", func(t *testing.T) {
+		ctx := newCtx()
+		state := AcquireAnthropicResponsesStreamState()
+		defer ReleaseAnthropicResponsesStreamState(state)
+		var neutral []*schemas.BifrostResponsesStreamResponse
+		for seq, raw := range []string{
+			`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"computer","input":{}}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"action\":\"left_click\",\"coordinate\":[100,200]}"}}`,
+			`{"type":"content_block_stop","index":0}`,
+		} {
+			var chunk AnthropicStreamEvent
+			if err := sonic.Unmarshal([]byte(raw), &chunk); err != nil {
+				t.Fatalf("unmarshal event: %v", err)
+			}
+			responses, bErr, _ := chunk.ToBifrostResponsesStream(ctx, seq, state)
+			if bErr != nil {
+				t.Fatalf("ToBifrostResponsesStream error: %v", bErr)
+			}
+			neutral = append(neutral, responses...)
+		}
+		blocks := collect(t, ctx, neutral)
+		if len(blocks) != 1 || blocks[0].id != "toolu_1" || actionOf(t, blocks[0].input) != "left_click" {
+			t.Fatalf("want the left_click tool_use back unchanged, got %+v", blocks)
+		}
+	})
+}
+
+// The fallback must not disturb the existing paths: real output text still wins, and an
+// output carrying neither text nor a failure is still dropped rather than replayed as
+// an empty user turn.
+func TestConvertBifrostToolOutputFallbackPreservesExistingBehavior(t *testing.T) {
+	t.Run("output text wins over the failure fallback", func(t *testing.T) {
+		msg := schemas.ResponsesMessage{
+			Type:   schemas.Ptr(schemas.ResponsesMessageTypeApplyPatchCallOutput),
+			Status: schemas.Ptr("failed"),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("ap_6"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{
+					ResponsesToolCallOutputStr: schemas.Ptr("failed to apply patch to greet.txt"),
+				},
+				Error: &schemas.ResponsesToolMessageError{
+					ResponsesToolMessageErrorStr: schemas.Ptr("should not be used"),
+				},
+			},
+		}
+		got := convertBifrostToolOutputToAnthropicMessage(&msg)
+		if got == nil {
+			t.Fatal("message dropped")
+		}
+		if text := *got.Content.ContentBlocks[0].Text; text != "failed to apply patch to greet.txt" {
+			t.Fatalf("text = %q, want the original output text", text)
+		}
+	})
+
+	t.Run("no text and no failure is still dropped", func(t *testing.T) {
+		msg := schemas.ResponsesMessage{
+			Type:                 schemas.Ptr(schemas.ResponsesMessageTypeApplyPatchCallOutput),
+			Status:               schemas.Ptr("completed"),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("ap_7")},
+		}
+		if got := convertBifrostToolOutputToAnthropicMessage(&msg); got != nil {
+			t.Fatalf("message = %+v, want nil", got)
+		}
+	})
+}
+
+// TestConvertBifrostToolsToAnthropic_ServerToolCacheControl pins that a
+// cache_control breakpoint on a server tool reaches Anthropic for every branch
+// of convertBifrostToolToAnthropic, not only the generic function path.
+func TestConvertBifrostToolsToAnthropic_ServerToolCacheControl(t *testing.T) {
+	const cc = `"cache_control":{"type":"ephemeral"}`
+	for _, tc := range []struct {
+		name  string
+		model string
+		raw   string
+	}{
+		{"function", "claude-sonnet-4-6", `{"type":"function","name":"get_weather",` + cc + `}`},
+		{"computer dated", "claude-sonnet-4-6", `{"type":"computer_use_preview","display_width":1280,"display_height":800,"environment":"browser",` + cc + `}`},
+		{"computer toolset", "claude-opus-5-5", `{"type":"computer_use_preview","display_width":1280,"display_height":800,"environment":"browser",` + cc + `}`},
+		{"code interpreter", "claude-sonnet-4-6", `{"type":"code_interpreter",` + cc + `}`},
+		{"web search", "claude-sonnet-4-6", `{"type":"web_search",` + cc + `}`},
+		{"web fetch", "claude-sonnet-4-6", `{"type":"web_fetch",` + cc + `}`},
+		{"memory", "claude-sonnet-4-6", `{"type":"memory_20250818","name":"memory",` + cc + `}`},
+		{"tool search", "claude-sonnet-4-6", `{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex",` + cc + `}`},
+		{"local shell", "claude-sonnet-4-6", `{"type":"local_shell",` + cc + `}`},
+		{"text editor", "claude-sonnet-4-6", `{"type":"text_editor_20250728","name":"str_replace_based_edit_tool",` + cc + `}`},
+		{"advisor", "claude-sonnet-4-6", `{"type":"advisor_20260301","name":"advisor","model":"claude-opus-4-8",` + cc + `}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caps := schemas.ResolveModelCaps(schemas.Anthropic, tc.model)
+			tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{responsesToolFromJSON(t, tc.raw)}, schemas.Anthropic)
+			if err != nil {
+				t.Fatalf("convert failed: %v", err)
+			}
+			if len(tools) != 1 {
+				t.Fatalf("expected one tool, got %d", len(tools))
+			}
+			data, err := sonic.Marshal(tools[0])
+			if err != nil {
+				t.Fatalf("marshal failed: %v", err)
+			}
+			if !strings.Contains(string(data), cc) {
+				t.Fatalf("cache_control dropped: %s", data)
+			}
+		})
+	}
+}
+
+// TestAnthropicToolsRoundTrip_ServerToolCacheControl pins that a cache_control
+// breakpoint on an inbound /v1/messages server tool survives the Anthropic ->
+// Responses -> Anthropic round trip, not only on the function tool path.
+// The outgoing tool must own its cache_control: stripping the scope for a cloud
+// surface must not reach the caller's tool, or an Anthropic fallback built from the
+// same request loses the scope it asked for.
+func TestServerToolCacheControlStripLeavesSourceUnchanged(t *testing.T) {
+	const model = "claude-sonnet-4-6"
+	strippedForVertex := func(t *testing.T, tools []AnthropicTool) {
+		t.Helper()
+		req := &AnthropicMessageRequest{Model: model, Tools: tools}
+		stripUnsupportedAnthropicFields(req, schemas.Vertex, model)
+		if cc := req.Tools[0].CacheControl; cc != nil && cc.Scope != nil {
+			t.Fatalf("precondition: Vertex strip kept the scope %q", *cc.Scope)
+		}
+	}
+
+	t.Run("responses tool to anthropic", func(t *testing.T) {
+		source := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebSearch,
+			CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, Scope: schemas.Ptr("global")}}
+		tools, _, err := convertBifrostToolsToAnthropic(schemas.ResolveModelCaps(schemas.Vertex, model), []schemas.ResponsesTool{source}, schemas.Vertex)
+		if err != nil || len(tools) != 1 {
+			t.Fatalf("convert: %v, %+v", err, tools)
+		}
+		strippedForVertex(t, tools)
+		if source.CacheControl.Scope == nil || *source.CacheControl.Scope != "global" {
+			t.Fatalf("the caller's tool lost its scope: %+v", source.CacheControl)
+		}
+	})
+
+	t.Run("anthropic tool through responses and back", func(t *testing.T) {
+		var req AnthropicMessageRequest
+		raw := `{"model":"anthropic/` + model + `","max_tokens":64,"messages":[{"role":"user","content":"hi"}],` +
+			`"tools":[{"type":"web_search_20250305","name":"web_search","cache_control":{"type":"ephemeral","scope":"global"}}]}`
+		if err := sonic.Unmarshal([]byte(raw), &req); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		bifrostReq := req.ToBifrostResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+		tools, _, err := convertBifrostToolsToAnthropic(schemas.ResolveModelCaps(schemas.Vertex, model), bifrostReq.Params.Tools, schemas.Vertex)
+		if err != nil || len(tools) != 1 {
+			t.Fatalf("convert: %v, %+v", err, tools)
+		}
+		strippedForVertex(t, tools)
+		if cc := bifrostReq.Params.Tools[0].CacheControl; cc == nil || cc.Scope == nil || *cc.Scope != "global" {
+			t.Fatalf("the neutral tool lost its scope: %+v", cc)
+		}
+		if cc := req.Tools[0].CacheControl; cc == nil || cc.Scope == nil || *cc.Scope != "global" {
+			t.Fatalf("the client's tool lost its scope: %+v", cc)
+		}
+	})
+}
+
+func TestAnthropicToolsRoundTrip_ServerToolCacheControl(t *testing.T) {
+	const cc = `"cache_control":{"type":"ephemeral"}`
+	for _, tc := range []struct {
+		name  string
+		model string
+		raw   string
+	}{
+		{"custom", "claude-sonnet-4-6", `{"name":"get_weather","input_schema":{"type":"object","properties":{}},` + cc + `}`},
+		{"web search", "claude-sonnet-4-6", `{"type":"web_search_20250305","name":"web_search",` + cc + `}`},
+		{"web fetch", "claude-sonnet-4-6", `{"type":"web_fetch_20250910","name":"web_fetch",` + cc + `}`},
+		{"computer dated", "claude-sonnet-4-6", `{"type":"computer_20251124","name":"computer","display_width_px":1280,"display_height_px":800,` + cc + `}`},
+		{"computer toolset", "claude-opus-5-5", `{"type":"computer_toolset_20260801",` + cc + `}`},
+		{"code execution", "claude-sonnet-4-6", `{"type":"code_execution_20250825","name":"code_execution",` + cc + `}`},
+		{"memory", "claude-sonnet-4-6", `{"type":"memory_20250818","name":"memory",` + cc + `}`},
+		{"tool search", "claude-sonnet-4-6", `{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex",` + cc + `}`},
+		{"bash", "claude-sonnet-4-6", `{"type":"bash_20250124","name":"bash",` + cc + `}`},
+		{"text editor", "claude-sonnet-4-6", `{"type":"text_editor_20250728","name":"str_replace_based_edit_tool",` + cc + `}`},
+		{"advisor", "claude-sonnet-4-6", `{"type":"advisor_20260301","name":"advisor","model":"claude-opus-4-8",` + cc + `}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := `{"model":"anthropic/` + tc.model + `","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"tools":[` + tc.raw + `]}`
+			var req AnthropicMessageRequest
+			if err := sonic.Unmarshal([]byte(raw), &req); err != nil {
+				t.Fatalf("unmarshal failed: %v", err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq := req.ToBifrostResponsesRequest(ctx)
+			if bifrostReq.Params == nil || len(bifrostReq.Params.Tools) != 1 {
+				t.Fatalf("expected one responses tool, got %+v", bifrostReq.Params)
+			}
+			if bifrostReq.Params.Tools[0].CacheControl == nil {
+				t.Fatalf("cache_control dropped on ingress: %+v", bifrostReq.Params.Tools[0])
+			}
+			out, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("convert failed: %v", err)
+			}
+			if len(out.Tools) != 1 {
+				t.Fatalf("expected one anthropic tool, got %d", len(out.Tools))
+			}
+			data, err := sonic.Marshal(out.Tools[0])
+			if err != nil {
+				t.Fatalf("marshal failed: %v", err)
+			}
+			if !strings.Contains(string(data), cc) {
+				t.Fatalf("cache_control dropped on egress: %s", data)
+			}
 		})
 	}
 }

@@ -2,13 +2,16 @@ package server
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/agent"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -19,8 +22,31 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
+
+func TestAgentRegistrationCallbacksRejectUninitializedGateway(t *testing.T) {
+	t.Parallel()
+
+	server := &BifrostHTTPServer{}
+	ctx := context.Background()
+
+	_, err := server.CreateAgentRegistration(ctx, agent.CreateRequest{})
+	if !errors.Is(err, errAgentGatewayNotInitialized) {
+		t.Fatalf("CreateAgentRegistration error = %v, want %v", err, errAgentGatewayNotInitialized)
+	}
+
+	_, err = server.UpdateAgentRegistration(ctx, "fixture", agent.UpdateRequest{})
+	if !errors.Is(err, errAgentGatewayNotInitialized) {
+		t.Fatalf("UpdateAgentRegistration error = %v, want %v", err, errAgentGatewayNotInitialized)
+	}
+
+	err = server.DeleteAgentRegistration(ctx, "fixture")
+	if !errors.Is(err, errAgentGatewayNotInitialized) {
+		t.Fatalf("DeleteAgentRegistration error = %v, want %v", err, errAgentGatewayNotInitialized)
+	}
+}
 
 // reloadVirtualKeyConfigStore provides the persistence calls used by ReloadVirtualKey.
 type reloadVirtualKeyConfigStore struct {
@@ -221,6 +247,100 @@ func TestReloadVirtualKeysMatchesPerKeyReload(t *testing.T) {
 	}
 	if store.governanceDataCalls != 0 {
 		t.Fatalf("GetGovernanceData called %d times, want 0", store.governanceDataCalls)
+	}
+}
+
+// agentGatewayRouteStore satisfies only the persistence calls the Agent Gateway
+// startup path makes, so route registration can be exercised without a database.
+type agentGatewayRouteStore struct {
+	configstore.ConfigStore
+}
+
+func (*agentGatewayRouteStore) CreateAgentRegistration(context.Context, *schemas.AgentRegistration) error {
+	return nil
+}
+func (*agentGatewayRouteStore) UpdateAgentRegistration(context.Context, *schemas.AgentRegistration) error {
+	return nil
+}
+func (*agentGatewayRouteStore) ListAgentRegistrations(context.Context) ([]schemas.AgentRegistration, error) {
+	return nil, nil
+}
+func (*agentGatewayRouteStore) GetAgentRegistration(context.Context, string) (*schemas.AgentRegistration, error) {
+	return nil, agent.ErrNotFound
+}
+func (*agentGatewayRouteStore) DeleteAgentRegistration(context.Context, string) error { return nil }
+func (*agentGatewayRouteStore) ListDueAgentPushDeliveries(context.Context, time.Time, int) ([]schemas.AgentPushDelivery, error) {
+	return nil, nil
+}
+func (*agentGatewayRouteStore) PruneAgentPushDeliveries(context.Context, time.Time) error { return nil }
+func (*agentGatewayRouteStore) GetVirtualKey(context.Context, string) (*configstoreTables.TableVirtualKey, error) {
+	return nil, configstore.ErrNotFound
+}
+func (*agentGatewayRouteStore) GetVirtualKeyByValue(context.Context, string) (*configstoreTables.TableVirtualKey, error) {
+	return nil, configstore.ErrNotFound
+}
+
+type agentGatewayRouteLogger struct{}
+
+func (agentGatewayRouteLogger) Debug(string, ...any)                   {}
+func (agentGatewayRouteLogger) Info(string, ...any)                    {}
+func (agentGatewayRouteLogger) Warn(string, ...any)                    {}
+func (agentGatewayRouteLogger) Error(string, ...any)                   {}
+func (agentGatewayRouteLogger) Fatal(string, ...any)                   {}
+func (agentGatewayRouteLogger) SetLevel(schemas.LogLevel)              {}
+func (agentGatewayRouteLogger) SetOutputType(schemas.LoggerOutputType) {}
+func (agentGatewayRouteLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
+
+func TestAgentGatewayRoutesRegisteredAfterStartupInitialization(t *testing.T) {
+	store := &agentGatewayRouteStore{}
+	s := &BifrostHTTPServer{
+		Config: &lib.Config{
+			ConfigStore:  store,
+			ClientConfig: &configstore.ClientConfig{},
+		},
+		Router: router.New(),
+	}
+
+	requireNoError := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	SetLogger(agentGatewayRouteLogger{})
+	t.Cleanup(func() { SetLogger(nil) })
+	requireNoError(s.InitializeAgentGateway(context.Background(), nil, nil))
+	firstHandler := s.AgentGatewayHandler
+	if firstHandler == nil {
+		t.Fatal("expected Agent Gateway handler to be initialized")
+	}
+	defer s.CloseAgentGateway()
+	requireNoError(s.InitializeAgentGateway(context.Background(), nil, nil))
+	if s.AgentGatewayHandler != firstHandler {
+		t.Fatal("expected Agent Gateway handler to be constructed only once")
+	}
+
+	s.AgentGatewayHandler.RegisterManagementRoutes(s.Router)
+	s.AgentGatewayHandler.RegisterProtocolRoutes(s.Router)
+	s.Router.NotFound = func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(fasthttp.StatusTeapot) }
+
+	for _, route := range []struct {
+		method     string
+		path       string
+		wantStatus int
+	}{
+		{fasthttp.MethodGet, "/api/agents", fasthttp.StatusOK},
+		{fasthttp.MethodGet, "/agents/a2a/missing/.well-known/agent-card.json", fasthttp.StatusNotFound},
+	} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(route.method)
+		ctx.Request.SetRequestURI(route.path)
+		s.Router.Handler(ctx)
+		if ctx.Response.StatusCode() != route.wantStatus {
+			t.Fatalf("route %s returned %d, want %d", route.path, ctx.Response.StatusCode(), route.wantStatus)
+		}
 	}
 }
 
@@ -808,7 +928,7 @@ func TestReloadProvider_FailedRefetchKeepsPreviousCatalog(t *testing.T) {
 
 	server := newReloadProviderServer(catalog, "custom-provider", []schemas.Key{{ID: "key-1"}}, false)
 
-	if _, err := server.ReloadProvider(context.Background(), "custom-provider"); err != nil {
+	if _, err := server.ReloadProvider(context.Background(), "custom-provider", false); err != nil {
 		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
 	}
 
@@ -843,7 +963,7 @@ func TestReloadProvider_PrunesRemovedAndDisabledKeys(t *testing.T) {
 	}
 	server := newReloadProviderServer(catalog, "custom-provider", keys, false)
 
-	if _, err := server.ReloadProvider(context.Background(), "custom-provider"); err != nil {
+	if _, err := server.ReloadProvider(context.Background(), "custom-provider", false); err != nil {
 		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
 	}
 
@@ -870,7 +990,7 @@ func TestReloadProvider_KeylessProviderRetainsSentinelEntry(t *testing.T) {
 
 	server := newReloadProviderServer(catalog, "keyless-provider", nil, true)
 
-	if _, err := server.ReloadProvider(context.Background(), "keyless-provider"); err != nil {
+	if _, err := server.ReloadProvider(context.Background(), "keyless-provider", false); err != nil {
 		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
 	}
 
@@ -892,7 +1012,7 @@ func TestReloadProvider_NoKeysDropsEverything(t *testing.T) {
 
 	server := newReloadProviderServer(catalog, "custom-provider", nil, false)
 
-	if _, err := server.ReloadProvider(context.Background(), "custom-provider"); err != nil {
+	if _, err := server.ReloadProvider(context.Background(), "custom-provider", false); err != nil {
 		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
 	}
 
@@ -932,7 +1052,7 @@ func TestReloadProvider_ConcurrentReloadsAndReadsAreRaceFree(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range iterations {
-				if _, err := server.ReloadProvider(context.Background(), "custom-provider"); err != nil {
+				if _, err := server.ReloadProvider(context.Background(), "custom-provider", false); err != nil {
 					t.Errorf("concurrent ReloadProvider returned error: %v", err)
 					return
 				}

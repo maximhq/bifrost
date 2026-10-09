@@ -321,6 +321,7 @@ bifrost:
     # allowDirectKeys: false                 # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
     # vkRotationCooldown: "5m"              # Grace period after a virtual key rotation during which the previous value still authenticates ("0" disables; max 30d)
     # mcpExternalClientUrl: ""               # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
+    # a2aExternalClientUrl: ""               # Public base URL for served agent cards and A2A push-notification callback URLs (push is disabled when unset). Supports env.VAR_NAME
 
     # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth
     # mcpServerAuthMode: "headers"
@@ -338,6 +339,12 @@ bifrost:
     # pluginDownloadPrivateAllowlist:
     #   - "artifacts.internal.corp"
     #   - "10.0.0.0/8"
+    # Shared gRPC listener for the A2A agent gateway; gRPC stays disabled while either field is unset.
+    # Served agent cards advertise <agent-name>.<a2aGrpcBaseDomain>:<a2aGrpcPort>.
+    # a2aGrpcBaseDomain: "a2a.example.com"
+    # a2aGrpcPort: 9095
+    # Lets A2A push delivery reach loopback/private callback targets. Only for controlled dev/test environments; keep unset in production.
+    # a2aAllowPrivatePushCallbacks: true
 
   # Framework configuration
   framework:
@@ -1079,10 +1086,12 @@ bifrost:
       #   request_types: ["chat_completion"]
       #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
     complexityAnalyzerConfig: null
-      # classifier: "jev"                  # Primary classifier: semantic (default) or jev
-      # jev:                               # Uses the configured Typesafe provider and its enabled key
+      # classifier: "decision"             # Primary classifier: semantic (default) or decision
+      # decision:                          # Decision model; credentials come from its provider's enabled key
+      #   provider: "typesafe"             # Provider serving the model (typesafe, or a custom provider with base_provider_type typesafe)
+      #   model: "jev-latest"              # Set together with provider; omit both for typesafe/jev-latest
       #   previous_message_count: 1        # Earlier user messages sent with the current request (0-5)
-      #   timeout: "1.5s"                  # Maximum wait for one Jev decision; usage counts toward request cost and budgets
+      #   timeout: "1.5s"                  # Maximum wait for one decision-model call; usage counts toward request cost and budgets
       #   criteria:                        # Optional: per-tier overrides; tiers are SIMPLE, MEDIUM, COMPLEX
       #     COMPLEX:
       #       definition: "..."            # Replaces the shipped definition of this tier (max 500 chars)
@@ -1104,7 +1113,7 @@ bifrost:
       #                                      #                   storage_mode on /api/routing/complexity-analyzer-status, and logged).
       #                                      #                   Qdrant, Weaviate, Redis and Pinecone are all supported here; chromem is
       #                                      #                   node-local even with a path, so it is private per pod.
-      #   fallback: "none"                 # none (default) | llm (requires llm below) | jev (uses Typesafe); runs when semantic produces no tier
+      #   fallback: "none"                 # none (default) | llm (requires llm below) | decision (uses the decision block); runs when semantic produces no tier
       # llm:                                # Chat-completion fallback classifier — inert unless semantic.fallback is "llm"
       #   provider: "openai"               # Provider used for the classification chat completion (must have an enabled key in bifrost.providers)
       #   model: "gpt-4o-mini"             # Small, fast chat model — every fallback classification waits on one completion from it
@@ -1112,9 +1121,9 @@ bifrost:
       #   prompt: ""                       # Replaces the shipped classification guidance (max 4000 chars); empty uses the shipped guidance
       #   message_history_count: 1         # Recent user messages sent to the classifier, oldest first (1 = latest only)
       #   count_toward_budgets: false      # Count classification completion cost toward virtual-key budgets (record-only, never enforced)
-      # session:                            # Optional session-aware routing; works with semantic or Jev primary
+      # session:                            # Optional session-aware routing; works with semantic or decision primary
       #   enabled: true                     # Retain the highest tier across sequential turns for 24 hours; overlapping requests are best-effort
-      # keywords:                          # Required when complexityAnalyzerConfig is non-null; Jev does not read these phrases
+      # keywords:                          # Required when complexityAnalyzerConfig is non-null; the decision model does not read these phrases
       #   simple_keywords: ["what is a mutex?", "fix the grammar in this sentence."]
       #   medium_keywords: ["add api-key auth: hash the keys, reject revoked ones, and never log them."]
       #   complex_keywords: ["balance testing, prescribing rules, and staffing against rising resistant infections."]
@@ -1574,6 +1583,27 @@ bifrost:
   #     max_response_payload_kbs: 256
   #     max_concurrent_deliveries: 10
 
+  # Agents: A2A agent registrations synced into the database at startup, reconciled by name.
+  # Rendered directly as top-level `agents` in config.json.
+  # agents:
+  #   - name: "library-research"
+  #     agent_card_url: "http://agent.internal:9087/.well-known/agent-card.json"
+  #     enabled: true                                  # Defaults to true when omitted
+  #     allow_by_default: false                        # Reachable by any virtual key without an explicit grant
+  #     forward_accepted_credential: false             # Forward the accepted Bifrost credential upstream as x-bf-vk
+  #     forward_accepted_credential_overrides_auth: false # Forward it as Authorization, replacing configured runtime auth
+  #     tenant: ""                                     # Optional tenant label
+  #     extension_uris: []                             # A2A extension URIs to advertise
+  #     virtual_key_ids: []                            # Virtual key IDs granted access to this agent
+  #     discovery_auth:                                # Auth for fetching the agent card (types: none, headers, oauth)
+  #       type: "headers"
+  #       headers:
+  #         Authorization: "env.AGENT_DISCOVERY_TOKEN"
+  #     runtime_auth:                                  # Auth attached to proxied agent requests
+  #       type: "headers"
+  #       headers:
+  #         Authorization: "env.AGENT_RUNTIME_AUTH"
+
   # Audit logs configuration for CADF-compliant activity logging
   auditLogs:
     disabled: false
@@ -1756,6 +1786,7 @@ storage:
     #   protocol: "native"    # Options: native, http (default: native)
     #   secure: false         # Enable TLS
     #   dialTimeout: 10000    # Connection dial timeout in milliseconds
+    #   maxQuerySize: 16777216  # ClickHouse max_query_size in bytes; raise it if team-scoped reads fail with "Max query size exceeded"
     #   cluster: ""           # Optional cluster name; runs DDL ON CLUSTER with replicated engines
     # Async writer queue and batch tuning. Omitted fields use Bifrost defaults.
     # writer:
@@ -1767,6 +1798,10 @@ storage:
     # Keep selected payload fields in DB instead of offloading to object storage.
     # Uses log payload DB column names (e.g., input_history, output_message, raw_request, raw_response).
     objectStorageExcludeFields: []
+    # Request types whose logs are never offloaded to object storage (e.g., list_models).
+    # These logs are kept in full in the logs database instead. Hidden logs (content
+    # logging disabled with retainContentInObjectStorage on) are still offloaded.
+    objectStorageExcludeRequestTypes: []
 
     # Object storage for offloading large log payloads (optional)
     # When enabled, request/response payloads are stored in S3/GCS

@@ -44,6 +44,19 @@ IsAuthEnabledResponse:
         or user token) on every inference route, including the /v1/* routes and the
         provider SDK integration routes. A locked dashboard (is_auth_enabled: true) does
         not by itself protect inference. Check this field too.
+    setup_required:
+      type: boolean
+      description: >-
+        OSS only. True while dashboard auth is not active (no admin account, or auth
+        disabled). In that state every non-public /api call needs the operator's setup
+        token in the X-Bifrost-Setup-Token header. Always false on Bifrost Enterprise.
+    setup_token_configured:
+      type: boolean
+      description: >-
+        OSS only. Whether the operator configured a setup token (setup_token in
+        config.json or the BIFROST_SETUP_TOKEN environment variable). When
+        setup_required is true and this is false, every /api call is rejected until a
+        token is configured and Bifrost is restarted.
 
 LogoutResponse:
   type: object

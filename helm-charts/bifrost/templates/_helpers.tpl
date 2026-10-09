@@ -424,6 +424,9 @@ false
 {{- if .Values.bifrost.client.mcpExternalClientUrl }}
 {{- $_ := set $client "mcp_external_client_url" .Values.bifrost.client.mcpExternalClientUrl }}
 {{- end }}
+{{- if .Values.bifrost.client.a2aExternalClientUrl }}
+{{- $_ := set $client "a2a_external_client_url" .Values.bifrost.client.a2aExternalClientUrl }}
+{{- end }}
 {{- if .Values.bifrost.client.mcpServerAuthMode }}
 {{- if or (eq .Values.bifrost.client.mcpServerAuthMode "oauth") (eq .Values.bifrost.client.mcpServerAuthMode "both") }}
 {{- $issuerSet := false }}
@@ -450,6 +453,15 @@ false
 {{- end }}
 {{- if .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
 {{- $_ := set $server "plugin_download_private_allowlist" .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
+{{- end }}
+{{- if .Values.bifrost.server.a2aGrpcBaseDomain }}
+{{- $_ := set $server "a2a_grpc_base_domain" .Values.bifrost.server.a2aGrpcBaseDomain }}
+{{- end }}
+{{- if .Values.bifrost.server.a2aGrpcPort }}
+{{- $_ := set $server "a2a_grpc_port" (.Values.bifrost.server.a2aGrpcPort | int) }}
+{{- end }}
+{{- if .Values.bifrost.server.a2aAllowPrivatePushCallbacks }}
+{{- $_ := set $server "a2a_allow_private_push_callbacks" true }}
 {{- end }}
 {{- if $server }}
 {{- $_ := set $config "server" $server }}
@@ -940,6 +952,23 @@ false
 {{- end }}
 {{- $_ := set $config "webhooks" .Values.bifrost.webhooks }}
 {{- end }}
+{{- /* Agents (A2A agent registrations) */ -}}
+{{- if hasKey .Values.bifrost "agents" }}
+{{- $seenAgentNames := list }}
+{{- range .Values.bifrost.agents }}
+{{- if not .name }}
+{{- fail "ERROR: bifrost.agents[].name is required for every agent registration." }}
+{{- end }}
+{{- if has .name $seenAgentNames }}
+{{- fail (printf "ERROR: bifrost.agents[].name '%s' is used by more than one agent. Names must be unique; startup reconciliation identifies agents by name." .name) }}
+{{- end }}
+{{- $seenAgentNames = append $seenAgentNames .name }}
+{{- if not .agent_card_url }}
+{{- fail (printf "ERROR: bifrost.agents[].agent_card_url is required for agent '%s'." .name) }}
+{{- end }}
+{{- end }}
+{{- $_ := set $config "agents" .Values.bifrost.agents }}
+{{- end }}
 {{- /* Config Store */ -}}
 {{- if .Values.storage.configStore.enabled }}
 {{- $configStoreType := .Values.storage.configStore.type | default .Values.storage.mode }}
@@ -1067,6 +1096,7 @@ false
 {{- with $ch.protocol }}{{- $_ := set $chConfig "protocol" . }}{{- end }}
 {{- if hasKey $ch "secure" }}{{- $_ := set $chConfig "secure" $ch.secure }}{{- end }}
 {{- with $ch.dialTimeout }}{{- $_ := set $chConfig "dial_timeout" (. | int) }}{{- end }}
+{{- with $ch.maxQuerySize }}{{- $_ := set $chConfig "max_query_size" (. | int) }}{{- end }}
 {{- with $ch.cluster }}{{- $_ := set $chConfig "cluster" . }}{{- end }}
 {{- $clickhouseLogsStore := dict "enabled" true "type" "clickhouse" "config" $chConfig }}
 {{- if .Values.storage.logsStore.writer }}
@@ -1152,6 +1182,9 @@ false
 {{- end }}
 {{- if .Values.storage.logsStore.objectStorageExcludeFields }}
 {{- $_ := set (index $config "logs_store") "object_storage_exclude_fields" .Values.storage.logsStore.objectStorageExcludeFields }}
+{{- end }}
+{{- if .Values.storage.logsStore.objectStorageExcludeRequestTypes }}
+{{- $_ := set (index $config "logs_store") "object_storage_exclude_request_types" .Values.storage.logsStore.objectStorageExcludeRequestTypes }}
 {{- end }}
 {{- end }}
 {{- /* Vector Store */ -}}

@@ -197,6 +197,51 @@ func TestApplyBifrostResponseHeaders(t *testing.T) {
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoPrimaryModel)))
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoServerSideFallbackModel)))
 	})
+
+	// The provider is another Bifrost: its x-bifrost-* headers describe its own hop and must not
+	// replace or add to this gateway's, including the ones this hop leaves unset. Its other
+	// headers, x-request-id among them, are forwarded as before.
+	t.Run("a chained upstream's x-bifrost headers are not forwarded", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Response.Header.Set("x-bifrost-request-id", "gateway-req")
+		bifrostCtx := newBifrostCtx()
+
+		ApplyBifrostResponseHeaders(ctx, bifrostCtx, schemas.BifrostResponseExtraFields{
+			Provider: schemas.OpenAI,
+			ProviderResponseHeaders: map[string]string{
+				"X-Bifrost-Request-Id":       "upstream-req",
+				"X-Bifrost-Routing-Info-Key": "upstream-key",
+				"X-Request-Id":               "req_upstream",
+				"x-ratelimit-remaining":      "41",
+			},
+		})
+
+		assert.Equal(t, "gateway-req", string(ctx.Response.Header.Peek("x-bifrost-request-id")))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoKey)),
+			"the upstream hop's key name must not surface as this hop's")
+		assert.Equal(t, "openai", string(ctx.Response.Header.Peek(HeaderBifrostProvider)))
+		assert.Equal(t, "req_upstream", string(ctx.Response.Header.Peek("x-request-id")))
+		assert.Equal(t, "41", string(ctx.Response.Header.Peek("x-ratelimit-remaining")))
+	})
+}
+
+// TestIsGatewayOwnedResponseHeader pins which provider response header names are never forwarded:
+// the x-bifrost-* family in any case, and nothing that merely shares its first letters.
+func TestIsGatewayOwnedResponseHeader(t *testing.T) {
+	for name, want := range map[string]bool{
+		"x-bifrost-request-id":           true,
+		"X-Bifrost-Trace-Id":             true,
+		"X-BIFROST-ROUTING-INFO-KEY":     true,
+		"x-bifrost-":                     true,
+		"x-bifrost":                      false,
+		"x-bifrostish":                   false,
+		"x-request-id":                   false,
+		"x-bf-vk":                        false,
+		"x-ratelimit-remaining-requests": false,
+		"":                               false,
+	} {
+		assert.Equal(t, want, IsGatewayOwnedResponseHeader(name), name)
+	}
 }
 
 // TestApplyBifrostStreamResponseHeaders covers the streaming variant: identity

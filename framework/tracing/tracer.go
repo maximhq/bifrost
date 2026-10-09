@@ -75,19 +75,27 @@ type Tracer struct {
 	cachedHdrPatterns atomic.Pointer[[]string]
 	cachedDemand      atomic.Pointer[TraceDemand]
 	flushWG           sync.WaitGroup
+	// Trace IDs whose completion the HTTP side must skip because a worker still owns them.
+	deferredCompletions sync.Map
 }
 
 // NewTracer creates a new Tracer wrapping the given TraceStore.
 // The accumulator is embedded for centralized streaming chunk accumulation.
 // The pricingManager is used for cost calculation in span attributes.
 func NewTracer(store *TraceStore, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) *Tracer {
-	return &Tracer{
+	t := &Tracer{
 		store:          store,
 		accumulator:    streaming.NewAccumulator(pricingManager, logger),
 		pricingManager: pricingManager,
 		logger:         logger,
 		obsPlugins:     atomic.Pointer[[]*obsPluginSlot]{},
 	}
+	// The store sweeps expired traces but cannot export them; route them here so a
+	// completion that never arrived still reaches the connectors.
+	if store != nil {
+		store.onExpire = t.FlushExpiredTrace
+	}
+	return t
 }
 
 // SetObservabilityPlugins updates the plugins that receive completed traces. limits is
@@ -493,14 +501,15 @@ func (t *Tracer) PopulateLLMRequestAttributes(handle schemas.SpanHandle, req *sc
 	// The typed record is the source of truth; the attribute map is rendered
 	// from it so both paths cannot drift. Connectors read span.LLM directly as
 	// they migrate off the map.
-	span.LLM = BuildLLMSpanData(req, nil, nil, t.spanBuildOptions())
+	llm := BuildLLMSpanData(req, nil, nil, t.spanBuildOptions())
+	span.LLM = llm
 	// Rendering the record into the attribute map is only worth doing when a
 	// connector will read it; it is the single largest allocation left on the
 	// path. The typed record is always attached, so a connector registered
 	// mid-flight still finds the data, just not the map form.
 	var attrs map[string]any
 	if t.Demand().Any {
-		attrs = span.LLM.Attributes()
+		attrs = llm.Attributes()
 		span.SetAttributes(attrs)
 	}
 
@@ -548,13 +557,16 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	if span == nil {
 		return
 	}
-	if span.LLM == nil {
-		span.LLM = &schemas.LLMSpanData{}
+	// Hold the payload rather than re-reading span.LLM below: ReleaseTrace resets a
+	// pooled span mid-call, nils the field, and the later derefs would panic.
+	llm := span.EnsureLLMIfMatch(h.spanID)
+	if llm == nil {
+		return
 	}
-	ApplyResponse(span.LLM, resp, err, t.spanBuildOptions())
+	ApplyResponse(llm, resp, err, t.spanBuildOptions())
 	var respAttrs map[string]any
 	if t.Demand().Any {
-		respAttrs = span.LLM.ResponseAttributes()
+		respAttrs = llm.ResponseAttributes()
 	}
 	// A cancelled stream arrives here with an accumulated response whose usage
 	// is missing the final chunk, so its aggregate token counts read zero. When
@@ -563,11 +575,18 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	// > 0, so a zero stamped here would survive the merge and turn "not
 	// recorded" into a false zero on the span.
 	billed := err != nil && err.ExtraFields.BilledUsage != nil
+	// The billed usage carries the provider-reported usage.cost. When the
+	// provider is configured with ignore_provider_cost, keep it off the span so
+	// only Bifrost's own pricing below can set the cost attributes.
+	dropProviderCost := billed && t.pricingManager.IsProviderCostIgnored(err.ExtraFields.Provider)
 	for k, v := range respAttrs {
 		if billed && (k == schemas.AttrInputTokens || k == schemas.AttrOutputTokens || k == schemas.AttrTotalTokens) {
 			if n, ok := v.(int); ok && n == 0 {
 				continue
 			}
+		}
+		if dropProviderCost && (k == schemas.AttrUsageCost || strings.HasPrefix(k, "bifrost.cost.")) {
+			continue
 		}
 		if k == schemas.AttrFinishReasons {
 			// Spec: gen_ai.response.finish_reasons (string[]) belongs on the GenAI (llm.call) span.
@@ -586,7 +605,7 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	// ExtraFields.RequestType is empty until the request settles.
 	// Prefer the typed record; fall back to the attribute for spans whose request
 	// side was never populated (a failure before dispatch).
-	requestType := string(span.LLM.RequestType)
+	requestType := string(llm.RequestType)
 	if requestType == "" {
 		if raw, ok := span.GetAttribute(schemas.AttrLegacyRequestType); ok {
 			requestType, _ = raw.(string)
@@ -653,8 +672,9 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 		)
 		// When the catalog cannot price the model, fall back to the cost the
 		// provider itself reported (deep-copied into BilledUsage by
-		// attachBilledUsageFromContext) rather than discarding it.
-		if cost == 0 && ef.BilledUsage.Cost != nil {
+		// attachBilledUsageFromContext) rather than discarding it, unless the
+		// provider is configured with ignore_provider_cost.
+		if cost == 0 && ef.BilledUsage.Cost != nil && !t.pricingManager.IsProviderCostIgnored(ef.Provider) {
 			cost = ef.BilledUsage.Cost.TotalCost
 		}
 		// Guarded write: a resp == nil failure emitted no cost attribute before
@@ -667,7 +687,7 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	} else if priceable && resp != nil {
 		scopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(resp.GetExtraFields().Provider))
 		if breakdown := t.pricingManager.CalculateCostBreakdown(resp, scopes); breakdown != nil {
-			span.LLM.Cost = breakdown
+			llm.Cost = breakdown
 			span.SetAttributes(schemas.CostAttributes(breakdown))
 		} else {
 			span.SetAttribute(schemas.AttrUsageCost, 0.0)
@@ -705,6 +725,80 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 			rootSpan.SetAttribute(schemas.AttrFinishReasons, v)
 		}
 	}
+}
+
+// Marks a trace as still being written by a worker, so the HTTP side skips
+// CompleteAndFlushTrace. The stored channel closes once the transport has attached its
+// own logs, which the worker waits for.
+func (t *Tracer) DeferTraceCompletion(traceID string) {
+	if t == nil || traceID == "" {
+		return
+	}
+	t.deferredCompletions.LoadOrStore(traceID, make(chan struct{}))
+}
+
+// Reports that the transport is done, releasing the worker to complete the trace.
+// Idempotent: the defer can run more than once.
+func (t *Tracer) SignalTransportHandoff(traceID string) {
+	if t == nil || traceID == "" {
+		return
+	}
+	if v, ok := t.deferredCompletions.Load(traceID); ok {
+		if ch, ok := v.(chan struct{}); ok {
+			select {
+			case <-ch: // already signalled
+			default:
+				close(ch)
+			}
+		}
+	}
+}
+
+// AwaitTransportHandoff blocks until the transport has handed the trace over.
+func (t *Tracer) AwaitTransportHandoff(traceID string) {
+	if t == nil || traceID == "" {
+		return
+	}
+	t.awaitTransportHandoff(traceID, transportHandoffBudget)
+}
+
+// Only has to cover a transport that died before reaching its defer.
+const transportHandoffBudget = 5 * time.Second
+
+// Normally already closed, since the transport defer runs as soon as the handler returns.
+func (t *Tracer) awaitTransportHandoff(traceID string, budget time.Duration) {
+	v, ok := t.deferredCompletions.Load(traceID)
+	if !ok {
+		return
+	}
+	ch, ok := v.(chan struct{})
+	if !ok {
+		return
+	}
+	select {
+	case <-ch:
+	case <-time.After(budget):
+		if t.logger != nil {
+			t.logger.Warn("tracing: transport never handed off trace %s; completing without its plugin logs", traceID)
+		}
+	}
+}
+
+// Reports whether a worker still owns this trace.
+func (t *Tracer) IsTraceCompletionDeferred(traceID string) bool {
+	if t == nil || traceID == "" {
+		return false
+	}
+	_, ok := t.deferredCompletions.Load(traceID)
+	return ok
+}
+
+// Drops the marker once the worker has completed the trace.
+func (t *Tracer) ClearTraceCompletionDeferral(traceID string) {
+	if t == nil || traceID == "" {
+		return
+	}
+	t.deferredCompletions.Delete(traceID)
 }
 
 // StoreDeferredSpan stores a span handle for later completion (used for streaming requests).
@@ -935,10 +1029,17 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 	accumCtx.SetValue(schemas.BifrostContextKeyAccumulatorID, traceID)
 	accumCtx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, isFinalChunk)
 
-	// Forward relevant context values to the new context
+	// Forward everything PricingLookupScopesFromContext reads, so the streamed
+	// total is priced with the same scopes as the request's cost breakdown. The
+	// grant carries the user; the deprecated key covers contexts built without one.
 	if ctx != nil {
+		if g := ctx.Grant(); g != nil {
+			accumCtx.SetGrant(g)
+		}
 		accumCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, ctx.Value(schemas.BifrostContextKeySelectedKeyID))
 		accumCtx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID))
+		accumCtx.SetValue(schemas.BifrostContextKeyUserID, ctx.Value(schemas.BifrostContextKeyUserID))
+		accumCtx.SetValue(schemas.BifrostContextKeyRequestStartTime, ctx.Value(schemas.BifrostContextKeyRequestStartTime))
 	}
 
 	processedResp, processErr := t.accumulator.ProcessStreamingResponse(accumCtx, result, err)
@@ -992,7 +1093,17 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 		accResult.FinishReason = processedResp.Data.FinishReason
 		accResult.RawResponse = processedResp.Data.RawResponse
 
-		if (accResult.Cost == nil || *accResult.Cost == 0.0) && accResult.TokenUsage != nil && accResult.TokenUsage.Cost != nil {
+		// Fall back to the provider-reported cost when the catalog could not price
+		// the stream, unless the provider is configured with ignore_provider_cost.
+		// Key the check on the routed provider, as pricing does.
+		provider := processedResp.Provider
+		if result != nil {
+			if ef := result.GetExtraFields(); ef != nil && ef.RoutingInfo.Provider != "" {
+				provider = ef.RoutingInfo.Provider
+			}
+		}
+		if (accResult.Cost == nil || *accResult.Cost == 0.0) && accResult.TokenUsage != nil && accResult.TokenUsage.Cost != nil &&
+			!t.pricingManager.IsProviderCostIgnored(provider) {
 			accResult.Cost = &accResult.TokenUsage.Cost.TotalCost
 		}
 	}
@@ -1088,6 +1199,14 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 		if completedTrace == nil {
 			return
 		}
+		t.exportAndRelease(completedTrace, slots)
+	})
+}
+
+// exportAndRelease snapshots an ended trace, fans it out to every connector, and
+// returns it to the pool. Shared by the normal completion path and the TTL sweep.
+func (t *Tracer) exportAndRelease(completedTrace *schemas.Trace, slots []*obsPluginSlot) {
+	{
 		// Defer release so the pooled trace is returned even if a plugin panics;
 		// otherwise an unrecovered panic in this detached goroutine leaks the
 		// trace object and takes down the whole process.
@@ -1172,7 +1291,36 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 		// This assumes Inject does not retain the trace past its return; the
 		// built-in connectors all convert or marshal synchronously.
 		exportTrace.ReleaseSnapshot()
-	})
+	}
+}
+
+// FlushExpiredTrace exports a trace the TTL sweep is about to discard. A trace only
+// expires when its completion never arrived, so dropping it unexported would hide the
+// request from every connector while billing still recorded it.
+func (t *Tracer) FlushExpiredTrace(trace *schemas.Trace) {
+	if t == nil || trace == nil {
+		return
+	}
+	t.deferredCompletions.Delete(trace.TraceID)
+	// Spans left open would export with a zero EndTime, so close them as timed out.
+	now := time.Now()
+	if trace.EndTime.IsZero() {
+		trace.EndTime = now
+	}
+	for _, span := range trace.Spans {
+		if span != nil {
+			span.EndIfOpen(now, schemas.SpanStatusError, "trace expired before completion")
+		}
+	}
+	var slots []*obsPluginSlot
+	if loaded := t.obsPlugins.Load(); loaded != nil {
+		slots = *loaded
+	}
+	if len(slots) == 0 {
+		t.ReleaseTrace(trace)
+		return
+	}
+	t.flushWG.Go(func() { t.exportAndRelease(trace, slots) })
 }
 
 // ObservabilityDropCounts returns, per observability plugin name, how many traces were

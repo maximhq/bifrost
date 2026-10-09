@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"regexp"
 	"slices"
@@ -174,6 +175,11 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if err := validateWeight(key.Weight); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid weight: %v", err))
+		return
+	}
+
 	if key.ID == "" {
 		key.ID = uuid.NewString()
 	}
@@ -286,6 +292,11 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 
 	if err := mergedKey.Aliases.Validate(baseProvider); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid aliases: %v", err))
+		return
+	}
+
+	if err := validateWeight(mergedKey.Weight); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid weight: %v", err))
 		return
 	}
 
@@ -840,6 +851,17 @@ func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
 	return decoded, nil
 }
 
+// validateWeight rejects a provider key or virtual key provider-config weight that weighted
+// selection cannot draw by: a negative one, or one that is not a finite number. Selection counts such
+// a weight as zero, but storing it would leave an entry that is never drawn beside weighted siblings
+// while reading as configured.
+func validateWeight(weight float64) error {
+	if weight < 0 || math.IsNaN(weight) || math.IsInf(weight, 0) {
+		return fmt.Errorf("must be a finite number greater than or equal to 0, got %v", weight)
+	}
+	return nil
+}
+
 // validateProviderKeyServerURLs holds the key-level server URLs (Ollama/SGL/VLLM) to the
 // same destination rule as a provider base URL: link-local (cloud metadata) and unspecified
 // addresses are refused; private and loopback hosts stay allowed because a self-hosted
@@ -1092,16 +1114,6 @@ func changedDialTargets(old *schemas.Key, next schemas.Key) []string {
 	}
 	slices.Sort(changed)
 	return changed
-}
-
-// isAuthBypassed reports whether ctx was let through the auth middleware's fail-open branch
-// (dashboard auth disabled/unconfigured) rather than a genuine credential check. Handlers
-// gating a capability that's fine for a real admin but dangerous for anyone on the network
-// (e.g. pointing a dial destination somewhere new) should check this, not
-// IsLocalAdminContextKey, which is also true for genuinely authenticated sessions.
-func isAuthBypassed(ctx *fasthttp.RequestCtx) bool {
-	bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
-	return bypassed
 }
 
 // requireGenuineAuthForEndpointChange rejects a provider-key create/update that sets, moves

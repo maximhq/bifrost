@@ -460,6 +460,16 @@ func (c ModelCaps) SupportsMidConversationSystem(fallback bool) bool {
 	return fallback
 }
 
+// SupportsMidConvOutputConfig reports whether the pair accepts output_config.effort
+// on a role:"system" message inside messages (per-message effort). The record is keyed per
+// (provider, model), so it decides for both the provider and the model when set.
+func (c ModelCaps) SupportsMidConvOutputConfig(fallback bool) bool {
+	if c.record != nil && c.record.SupportsMidConvOutputConfig != nil {
+		return *c.record.SupportsMidConvOutputConfig
+	}
+	return fallback
+}
+
 // SupportsMCP reports whether the model accepts MCP connector servers.
 func (c ModelCaps) SupportsMCP(fallback bool) bool {
 	if c.record != nil && c.record.SupportsMCP != nil {
@@ -702,6 +712,16 @@ func (c ModelCaps) BedrockAPIs() []BedrockAPI {
 func (c ModelCaps) MinOutputTokens(fallback int) int {
 	if c.record != nil && c.record.MinOutputTokens != nil {
 		return *c.record.MinOutputTokens
+	}
+	return fallback
+}
+
+// MaxOutputTokens returns the ceiling the model enforces on max_output_tokens.
+// A row with a positive max_output_tokens wins; absent or non-positive returns
+// fallback. Zero means no ceiling, so callers clamp only above zero.
+func (c ModelCaps) MaxOutputTokens(fallback int) int {
+	if c.record != nil && c.record.MaxOutputTokens != nil && *c.record.MaxOutputTokens > 0 {
+		return *c.record.MaxOutputTokens
 	}
 	return fallback
 }

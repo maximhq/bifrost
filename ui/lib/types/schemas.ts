@@ -872,6 +872,7 @@ export const allowedRequestsSchema = z.object({
 	model_retrieve: z.boolean().optional(),
 	websocket_responses: z.boolean(),
 	realtime: z.boolean(),
+	live: z.boolean().optional(),
 });
 
 // Custom provider config schema
@@ -929,6 +930,7 @@ export const modelProviderConfigSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	ignore_provider_cost: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 });
 
@@ -946,6 +948,7 @@ export const formModelProviderConfigSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	ignore_provider_cost: z.boolean().optional(),
 	custom_provider_config: formCustomProviderConfigSchema.optional(),
 });
 
@@ -964,6 +967,7 @@ export const addProviderRequestSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	ignore_provider_cost: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
@@ -978,6 +982,7 @@ export const updateProviderRequestSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	ignore_provider_cost: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
@@ -1022,7 +1027,7 @@ export const coreConfigSchema = z.object({
 	prometheus_labels: z.array(z.string()).default([]),
 	enable_logging: z.boolean().default(true),
 	disable_content_logging: z.boolean().default(false),
-	enforce_auth_on_inference: z.boolean().default(false),
+	enforce_auth_on_inference: z.boolean().default(true),
 	hide_deleted_virtual_keys_in_filters: z.boolean().default(false),
 	delete_expired_virtual_keys: z.boolean().default(false),
 	hidden_request_types: z.array(z.string()).default([]),
@@ -1104,6 +1109,13 @@ export const debuggingFormSchema = z.object({
 });
 
 export type DebuggingFormSchema = z.infer<typeof debuggingFormSchema>;
+
+// Pricing tab (provider-reported cost handling)
+export const pricingFormSchema = z.object({
+	ignore_provider_cost: z.boolean(),
+});
+
+export type PricingFormSchema = z.infer<typeof pricingFormSchema>;
 
 // Beta Headers tab
 export const betaHeadersFormSchema = z.object({
@@ -1641,3 +1653,9 @@ export type GlobalHeaderFilterConfigSchema = z.infer<typeof globalHeaderFilterCo
 export type GlobalHeaderFilterFormSchema = z.infer<typeof globalHeaderFilterFormSchema>;
 export type RoutingRuleSchema = z.infer<typeof routingRuleSchema>;
 export type BudgetOverrideFormSchema = z.infer<typeof budgetOverrideFormSchema>;
+// OSS setup lock: the operator's setup token entered on the login setup view.
+export const setupTokenFormSchema = z.object({
+	setup_token: z.string().trim().min(1, "Enter the setup token configured for this Bifrost instance"),
+});
+
+export type SetupTokenFormSchema = z.infer<typeof setupTokenFormSchema>;

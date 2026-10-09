@@ -249,8 +249,15 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 
 	// A provider that reported its own cost is right about its own bill. Without
 	// this a full reprice would quietly replace an exact figure with an estimate.
+	// The calculator decides, so a provider configured to ignore its cost reprices.
 	if accounting.ProviderCost != nil && *accounting.ProviderCost > 0 {
-		return &RepricedCost{Cost: *accounting.ProviderCost}, nil
+		details := pricing.CalculateVideoCostDetails(modelcatalog.VideoPricingDimensions{
+			Model:        entry.Model,
+			ProviderCost: accounting.ProviderCost,
+		}, schemas.ModelProvider(entry.Provider), nil)
+		if details.ProviderCostUsed {
+			return &RepricedCost{Cost: details.Cost}, nil
+		}
 	}
 
 	// A failed generation settled at a real price of zero, not an absent one.

@@ -1587,20 +1587,26 @@ func (r *GeminiBatchEmbeddingRequest) GetExtraParams() map[string]interface{} {
 
 // GeminiEmbeddingRequest represents a single embedding request in a batch.
 type GeminiEmbeddingRequest struct {
-	Content              *Content               `json:"content,omitempty"`
-	DocumentOCR          *bool                  `json:"documentOcr,omitempty"`
-	AudioTrackExtraction *bool                  `json:"audioTrackExtraction,omitempty"`
-	TaskType             *string                `json:"taskType,omitempty"`
-	Title                *string                `json:"title,omitempty"`
-	OutputDimensionality *int                   `json:"outputDimensionality,omitempty"`
-	Model                string                 `json:"model,omitempty"`
-	Fallbacks            []string               `json:"fallbacks,omitempty"`
-	ExtraParams          map[string]interface{} `json:"-"` // Optional: Extra parameters
+	Content              *Content                  `json:"content,omitempty"`
+	EmbedContentConfig   *GeminiEmbedContentConfig `json:"embedContentConfig,omitempty"`
+	TaskType             *string                   `json:"taskType,omitempty"`
+	Title                *string                   `json:"title,omitempty"`
+	OutputDimensionality *int                      `json:"outputDimensionality,omitempty"`
+	Model                string                    `json:"model,omitempty"`
+	Fallbacks            []string                  `json:"fallbacks,omitempty"`
+	ExtraParams          map[string]interface{}    `json:"-"` // Optional: Extra parameters
 }
 
 // GetExtraParams implements the RequestBodyWithExtraParams interface
 func (r *GeminiEmbeddingRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
+}
+
+// GeminiEmbedContentConfig carries the embedding options Gemini and Vertex accept only
+// under embedContentConfig, never at the top level of a request.
+type GeminiEmbedContentConfig struct {
+	DocumentOCR          *bool `json:"documentOcr,omitempty"`
+	AudioTrackExtraction *bool `json:"audioTrackExtraction,omitempty"`
 }
 
 // Content contains the multi-part content of a message.

@@ -237,6 +237,7 @@ ClickHouse is a **`logs_store`-only** backend. The `config_store` supports only 
 | `protocol` | `native` | Wire protocol: `"native"` or `"http"` |
 | `secure` | `false` | Enable TLS |
 | `dial_timeout` | `10000` | Connection dial timeout in **milliseconds** |
+| `max_query_size` | `16777216` | ClickHouse `max_query_size` setting in **bytes**. Team-scoped log reads put every member and virtual key id in the SQL, so large teams need more than the 256 KiB server default. Lower it if your ClickHouse profile caps this setting |
 | `cluster` | - | Optional cluster name. When set, DDL runs `ON CLUSTER` with replicated table engines for a clustered ClickHouse deployment |
 
 **TLS + HTTP protocol** against a managed ClickHouse (e.g. ClickHouse Cloud):

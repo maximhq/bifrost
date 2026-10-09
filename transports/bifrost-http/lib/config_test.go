@@ -457,18 +457,62 @@ func TestLoadClientConfig_InferenceAuthExistingAndAbsentClient(t *testing.T) {
 	}
 }
 
-// File-only deployments (no config store) with dashboard auth must still boot, and
-// must not get the first-admin inference default since there is no stored auth to compare.
+// File-only deployments (no config store) with dashboard auth must still boot. With no
+// stored client config to honor, an omitted enforce_auth_on_inference takes the secure
+// default (true), the same as any fresh deployment.
 func TestLoadClientConfig_InferenceAuthWithoutConfigStore(t *testing.T) {
 	SetLogger(&testLogger{})
 	var data ConfigData
 	require.NoError(t, json.Unmarshal([]byte(`{"client":{"log_retention_days":7},"auth_config":{"is_enabled":true,"admin_username":"admin","admin_password":"StrongPassword1!"}}`), &data))
 	cfg := &Config{}
 	require.NoError(t, loadClientConfig(context.Background(), cfg, &data))
-	assert.False(t, cfg.ClientConfig.EnforceAuthOnInference)
+	assert.True(t, cfg.ClientConfig.EnforceAuthOnInference)
 	require.NoError(t, loadAuthConfig(context.Background(), cfg, &data))
 	require.NotNil(t, cfg.GovernanceConfig.AuthConfig)
 	assert.True(t, cfg.GovernanceConfig.AuthConfig.IsEnabled)
+}
+
+// TestLoadClientConfig_InferenceAuthDefaultsOnForFreshDeployments pins the default flip:
+// with no admin account involved, a fresh deployment (no stored client config) gets
+// enforce_auth_on_inference=true when the file omits it, an existing deployment keeps its
+// stored value, and an explicit false is honored and persisted as false.
+func TestLoadClientConfig_InferenceAuthDefaultsOnForFreshDeployments(t *testing.T) {
+	SetLogger(&testLogger{})
+	for _, tt := range []struct {
+		name   string
+		stored *bool
+		file   string
+		want   bool
+	}{
+		{name: "fresh, no client section", file: `{}`, want: true},
+		{name: "fresh, client omits field", file: `{"client":{"log_retention_days":7}}`, want: true},
+		{name: "fresh, explicit false", file: `{"client":{"log_retention_days":7,"enforce_auth_on_inference":false}}`, want: false},
+		{name: "existing false, client omits field", stored: new(false), file: `{"client":{"log_retention_days":7}}`, want: false},
+		{name: "existing false, no client section", stored: new(false), file: `{}`, want: false},
+		{name: "existing true, client omits field", stored: new(true), file: `{"client":{"log_retention_days":7}}`, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewMockConfigStore()
+			if tt.stored != nil {
+				store.clientConfig = &configstore.ClientConfig{EnforceAuthOnInference: *tt.stored}
+			}
+			var data ConfigData
+			require.NoError(t, json.Unmarshal([]byte(tt.file), &data))
+			cfg := &Config{ConfigStore: store}
+			require.NoError(t, loadClientConfig(context.Background(), cfg, &data))
+			assert.Equal(t, tt.want, cfg.ClientConfig.EnforceAuthOnInference)
+			persisted, err := store.GetClientConfig(context.Background())
+			require.NoError(t, err)
+			require.NotNil(t, persisted)
+			assert.Equal(t, tt.want, persisted.EnforceAuthOnInference, "stored value")
+
+			// A restart with the same file must not flip the resolved value.
+			var restart ConfigData
+			require.NoError(t, json.Unmarshal([]byte(tt.file), &restart))
+			require.NoError(t, loadClientConfig(context.Background(), cfg, &restart))
+			assert.Equal(t, tt.want, cfg.ClientConfig.EnforceAuthOnInference, "after restart")
+		})
+	}
 }
 
 type inferenceAuthFailingStore struct {
@@ -1011,6 +1055,14 @@ func (m *MockConfigStore) DeleteRateLimit(ctx context.Context, id string, tx ...
 	return nil
 }
 
+func (m *MockConfigStore) GetVirtualKeyBudgets(ctx context.Context, virtualKeyID string, tx ...*gorm.DB) ([]tables.TableBudget, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetVirtualKeyProviderConfigBudgets(ctx context.Context, providerConfigID uint, tx ...*gorm.DB) ([]tables.TableBudget, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) DeleteBudget(ctx context.Context, id string, tx ...*gorm.DB) error {
 	if m.governanceConfig == nil || len(m.governanceConfig.Budgets) == 0 {
 		return nil
@@ -1114,6 +1166,86 @@ func (m *MockConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ..
 
 func (m *MockConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error) {
 	return nil, nil
+}
+
+func (m *MockConfigStore) ReplaceVirtualKeyAgentGrants(ctx context.Context, virtualKeyID string, agentNames []string, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) CreateAgentRegistration(ctx context.Context, registration *schemas.AgentRegistration) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdateAgentRegistration(ctx context.Context, registration *schemas.AgentRegistration) error {
+	return nil
+}
+
+func (m *MockConfigStore) ListAgentRegistrations(ctx context.Context) ([]schemas.AgentRegistration, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetAgentRegistration(ctx context.Context, name string) (*schemas.AgentRegistration, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) DeleteAgentRegistration(ctx context.Context, name string) error {
+	return nil
+}
+
+func (m *MockConfigStore) SaveAgentPushConfig(ctx context.Context, config *schemas.AgentPushConfig) error {
+	return nil
+}
+
+func (m *MockConfigStore) BindAgentPushConfigTask(ctx context.Context, agentName, ingressTokenHash, pendingTaskID, taskID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (*schemas.AgentPushConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetAgentPushConfigByIngressTokenHash(ctx context.Context, agentName, hash string) (*schemas.AgentPushConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ListAgentPushConfigs(ctx context.Context, agentName, taskID string) ([]schemas.AgentPushConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ListAgentPushConfigsPaginated(ctx context.Context, query schemas.AgentPushConfigQuery) ([]schemas.AgentPushConfig, int64, error) {
+	return nil, 0, nil
+}
+
+func (m *MockConfigStore) ListAgentPushConfigAgentNames(ctx context.Context) ([]string, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) DeleteAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (bool, error) {
+	return false, nil
+}
+
+func (m *MockConfigStore) DeletePendingAgentPushConfig(ctx context.Context, agentName, ingressTokenHash, pendingTaskID string) (bool, error) {
+	return false, nil
+}
+
+func (m *MockConfigStore) CreateAgentPushDeliveryIfNotExists(ctx context.Context, delivery *schemas.AgentPushDelivery) (bool, error) {
+	return false, nil
+}
+
+func (m *MockConfigStore) ListDueAgentPushDeliveries(ctx context.Context, now time.Time, limit int) ([]schemas.AgentPushDelivery, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ClaimAgentPushDelivery(ctx context.Context, id, runnerID string, leaseUntil time.Time) (*schemas.AgentPushDelivery, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) UpdateAgentPushDeliveryOutcome(ctx context.Context, delivery *schemas.AgentPushDelivery, runnerID string, leaseUntil time.Time) error {
+	return nil
+}
+
+func (m *MockConfigStore) PruneAgentPushDeliveries(context.Context, time.Time) error {
+	return nil
 }
 
 func (m *MockConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {
@@ -13424,6 +13556,48 @@ func TestSQLite_Team_MigratedToProfile_SplitSkipsAnEditedBudget(t *testing.T) {
 	assert.EqualValues(t, 100, limit, "the edited budget was applied to a team an access profile governs")
 }
 
+// TestSQLite_Team_MigratedToProfile_SplitRewriteSkipsItsInlineBudgets: a split-mode restart that
+// rewrites a governed team's entry - here a new inline budget id - saves the team without the inline
+// budgets, which the save would otherwise write as the team's own beside the profile.
+func TestSQLite_Team_MigratedToProfile_SplitRewriteSkipsItsInlineBudgets(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	teamWithInlineBudget := func(budgetID string) *ConfigData {
+		configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+		configData.Governance = &configstore.GovernanceConfig{
+			Teams: []tables.TableTeam{{ID: "team-1", Name: "Team One", Budgets: []tables.TableBudget{
+				{ID: budgetID, MaxLimit: 100, ResetDuration: "1M"},
+			}}},
+		}
+		return configData
+	}
+	createConfigFile(t, tempDir, teamWithInlineBudget("team-1-inline"))
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	exists, _ := countBudget(t, config1, "team-1-inline")
+	require.True(t, exists)
+	// What the enterprise migration does to the legacy budget.
+	require.NoError(t, config1.ConfigStore.DB().Where("id = ?", "team-1-inline").Delete(&tables.TableBudget{}).Error)
+	config1.Close(ctx)
+
+	governance.RegisterLegacyLimitGuard(migratedTeamGuard)
+	defer governance.RegisterLegacyLimitGuard(nil)
+	createConfigFile(t, tempDir, teamWithInlineBudget("team-1-inline-2"))
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+	for _, id := range []string{"team-1-inline", "team-1-inline-2"} {
+		exists, _ = countBudget(t, config2, id)
+		assert.False(t, exists, "inline budget %s was written beside the profile governing the team", id)
+	}
+	var team tables.TableTeam
+	require.NoError(t, config2.ConfigStore.DB().Where("id = ?", "team-1").First(&team).Error)
+	assert.NotEmpty(t, team.ConfigHash, "the rest of the entry still applies, hash and all")
+}
+
 // TestSQLite_Team_GuardLookupFails_SkipsItsLimitsAndBoots: a lookup that fails does not stop the
 // load. The team's limits are skipped this boot, as if a profile governed it, and the rest applies.
 func TestSQLite_Team_GuardLookupFails_SkipsItsLimitsAndBoots(t *testing.T) {
@@ -15092,6 +15266,215 @@ func TestSQLite_SourceOfTruthConfigJSON_LimitPruneGuardKeepsWhatItProtects(t *te
 	assert.ElementsMatch(t, []string{"file-rl", "guarded-rl"}, rateLimits)
 }
 
+// fatalRecordingLogger is the silent test logger, except that it keeps each Fatal message: LoadConfig
+// reports a failed sync through Fatal, which the test logger otherwise swallows.
+type fatalRecordingLogger struct {
+	testLogger
+	fatals []string
+}
+
+// Fatal records the message instead of exiting.
+func (l *fatalRecordingLogger) Fatal(msg string, args ...any) {
+	l.fatals = append(l.fatals, fmt.Sprintf(msg, args...))
+}
+
+// TestSQLite_SourceOfTruthConfigJSON_KeepsInlineLimitsAcrossRestarts: budgets and rate limits declared
+// inline on a team, customer, virtual key or provider config are the file's, so the prune of
+// governance.budgets and governance.rate_limits keeps them. Pruned, a budget was deleted on one boot and
+// rewritten by its owner on the next, leaving the owner unfunded every other restart, and a rate limit
+// still linked by its owner failed the whole prune on the foreign key, which stops startup.
+//
+// Each section is present on its own, since a failure pruning one rolls back the other.
+func TestSQLite_SourceOfTruthConfigJSON_KeepsInlineLimitsAcrossRestarts(t *testing.T) {
+	requestMax := int64(5)
+	requestDur := "1m"
+	inlineRateLimit := func(id string) *tables.TableRateLimit {
+		return &tables.TableRateLimit{ID: id, RequestMaxLimit: &requestMax, RequestResetDuration: &requestDur}
+	}
+	inlineBudget := func(id string) []tables.TableBudget {
+		return []tables.TableBudget{{ID: id, MaxLimit: 10, ResetDuration: "1M"}}
+	}
+	for _, tc := range []struct {
+		name       string
+		governance configstore.GovernanceConfig
+		budgets    []string
+		rateLimits []string
+	}{
+		{
+			name: "budgets",
+			governance: configstore.GovernanceConfig{
+				Budgets:   []tables.TableBudget{{ID: "file-budget", MaxLimit: 100, ResetDuration: "1d"}},
+				Teams:     []tables.TableTeam{{ID: "team-1", Name: "Team One", Budgets: inlineBudget("team-budget")}},
+				Customers: []tables.TableCustomer{{ID: "customer-1", Name: "Customer One", Budgets: inlineBudget("customer-budget")}},
+				VirtualKeys: []tables.TableVirtualKey{{ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: schemas.Ptr(true),
+					Budgets: inlineBudget("vk-budget"),
+					ProviderConfigs: []tables.TableVirtualKeyProviderConfig{{Provider: "openai", Weight: ptrFloat64(1), AllowedModels: []string{"*"},
+						Budgets: inlineBudget("pc-budget")}}}},
+			},
+			budgets: []string{"file-budget", "team-budget", "customer-budget", "vk-budget", "pc-budget"},
+		},
+		{
+			name: "rate limits",
+			governance: configstore.GovernanceConfig{
+				RateLimits: []tables.TableRateLimit{*inlineRateLimit("file-rl")},
+				Teams:      []tables.TableTeam{{ID: "team-1", Name: "Team One", RateLimit: inlineRateLimit("team-rl")}},
+				Customers:  []tables.TableCustomer{{ID: "customer-1", Name: "Customer One", RateLimit: inlineRateLimit("customer-rl")}},
+				VirtualKeys: []tables.TableVirtualKey{{ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: schemas.Ptr(true),
+					RateLimit: inlineRateLimit("vk-rl")}},
+			},
+			rateLimits: []string{"file-rl", "team-rl", "customer-rl", "vk-rl"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := &fatalRecordingLogger{}
+			SetLogger(recorder)
+			defer initTestLogger()
+			tempDir := createTempDir(t)
+			configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+				"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
+			}, tempDir)
+			configData.SourceOfTruth = SourceOfTruthConfigJSON
+			configData.Governance = &tc.governance
+			createConfigFile(t, tempDir, configData)
+
+			ctx := context.Background()
+			for boot := 1; boot <= 3; boot++ {
+				config, err := LoadConfig(ctx, tempDir)
+				require.NoError(t, err)
+				for _, id := range tc.budgets {
+					exists, _ := countBudget(t, config, id)
+					assert.True(t, exists, "boot %d: budget %s was pruned", boot, id)
+				}
+				for _, id := range tc.rateLimits {
+					var count int64
+					require.NoError(t, config.ConfigStore.DB().Model(&tables.TableRateLimit{}).Where("id = ?", id).Count(&count).Error)
+					assert.EqualValues(t, 1, count, "boot %d: rate limit %s was pruned", boot, id)
+				}
+				assert.Empty(t, recorder.fatals, "boot %d: the prune failed", boot)
+				config.Close(ctx)
+			}
+		})
+	}
+}
+
+// TestSQLite_VirtualKeyInlineBudgetsFollowTheFile: a virtual key's inline budgets and its provider
+// config's are written from config.json on every reload of the key, not only when the key or provider
+// config is created. An edited max_limit under the same id is applied with the spend kept, a budget a
+// model config has taken over keeps that owner, a budget moved between the key and its provider config
+// is deleted from one and created fresh under the other in the same reload, a new id is created under
+// its owner, a dropped one is deleted, and a governance.budgets row the key also holds is left alone. Split mode reloads a key only when its entry
+// changed, so each step there edits the description too.
+func TestSQLite_VirtualKeyInlineBudgetsFollowTheFile(t *testing.T) {
+	for _, sourceOfTruth := range []string{"", SourceOfTruthConfigJSON} {
+		t.Run("source_of_truth="+sourceOfTruth, func(t *testing.T) {
+			initTestLogger()
+			tempDir := createTempDir(t)
+			declare := func(step string, limit float64, keyBudgetIDs, providerBudgetIDs []string) *ConfigData {
+				budgets := func(ids []string) []tables.TableBudget {
+					rows := make([]tables.TableBudget, 0, len(ids))
+					for _, id := range ids {
+						rows = append(rows, tables.TableBudget{ID: id, MaxLimit: limit, ResetDuration: "1M"})
+					}
+					return rows
+				}
+				configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+					"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
+				}, tempDir)
+				configData.SourceOfTruth = sourceOfTruth
+				configData.Governance = &configstore.GovernanceConfig{
+					Budgets: []tables.TableBudget{{ID: "top-level-budget", MaxLimit: 5, ResetDuration: "1d", VirtualKeyID: schemas.Ptr("vk-1")}},
+					// Declared so source_of_truth config.json keeps it: the key's budget is moved onto it below.
+					ModelConfigs: []tables.TableModelConfig{{ID: "mc-vk-1", ModelName: tables.ModelConfigAllModels, Scope: tables.ModelConfigScopeVirtualKey, ScopeID: schemas.Ptr("vk-1")}},
+					VirtualKeys: []tables.TableVirtualKey{{
+						ID: "vk-1", Name: "vk-1", Description: step, Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: schemas.Ptr(true),
+						Budgets: budgets(keyBudgetIDs),
+						ProviderConfigs: []tables.TableVirtualKeyProviderConfig{{
+							Provider: "openai", Weight: ptrFloat64(1), AllowedModels: []string{"*"}, Budgets: budgets(providerBudgetIDs),
+						}},
+					}},
+				}
+				return configData
+			}
+			ctx := context.Background()
+			boot := func(configData *ConfigData) *Config {
+				t.Helper()
+				createConfigFile(t, tempDir, configData)
+				config, err := LoadConfig(ctx, tempDir)
+				require.NoError(t, err)
+				return config
+			}
+			stored := func(config *Config, id string) *tables.TableBudget {
+				t.Helper()
+				budget, err := config.ConfigStore.GetBudget(ctx, id)
+				if errors.Is(err, configstore.ErrNotFound) {
+					return nil
+				}
+				require.NoError(t, err)
+				return budget
+			}
+			heldBy := func(budget *tables.TableBudget) string {
+				switch {
+				case budget.ModelConfigID != nil:
+					return "model config " + *budget.ModelConfigID
+				case budget.VirtualKeyID != nil:
+					return "virtual key " + *budget.VirtualKeyID
+				case budget.ProviderConfigID != nil:
+					return "provider config"
+				}
+				return "nothing"
+			}
+			assertBudget := func(config *Config, step, id string, maxLimit, usage float64, owner string) {
+				t.Helper()
+				budget := stored(config, id)
+				if !assert.NotNil(t, budget, "%s: budget %s is missing", step, id) {
+					return
+				}
+				assert.EqualValues(t, maxLimit, budget.MaxLimit, "%s: budget %s", step, id)
+				assert.EqualValues(t, usage, budget.CurrentUsage, "%s: budget %s", step, id)
+				assert.Equal(t, owner, heldBy(budget), "%s: budget %s", step, id)
+			}
+
+			first := boot(declare("first", 10, []string{"key-budget", "moving-budget"}, []string{"provider-budget"}))
+			for _, id := range []string{"key-budget", "moving-budget", "provider-budget"} {
+				require.NoError(t, first.ConfigStore.UpdateBudgetUsage(ctx, id, 7))
+			}
+			// What the VK governance migration does: the key's budget moves onto its model config.
+			migrated := stored(first, "key-budget")
+			migrated.ModelConfigID, migrated.VirtualKeyID = schemas.Ptr("mc-vk-1"), nil
+			require.NoError(t, first.ConfigStore.UpdateBudget(ctx, migrated))
+			first.Close(ctx)
+
+			edited := boot(declare("edited", 20, []string{"key-budget", "moving-budget"}, []string{"provider-budget"}))
+			assertBudget(edited, "edited", "key-budget", 20, 7, "model config mc-vk-1")
+			assertBudget(edited, "edited", "moving-budget", 20, 7, "virtual key vk-1")
+			assertBudget(edited, "edited", "provider-budget", 20, 7, "provider config")
+			edited.Close(ctx)
+
+			// A move is a new budget: created fresh under its new owner, in the reload that moves it.
+			down := boot(declare("moved to the provider config", 20, []string{"key-budget"}, []string{"provider-budget", "moving-budget"}))
+			assertBudget(down, "moved to the provider config", "moving-budget", 20, 0, "provider config")
+			require.NoError(t, down.ConfigStore.UpdateBudgetUsage(ctx, "moving-budget", 7))
+			down.Close(ctx)
+
+			up := boot(declare("moved back to the key", 20, []string{"key-budget", "moving-budget"}, []string{"provider-budget"}))
+			assertBudget(up, "moved back to the key", "moving-budget", 20, 0, "virtual key vk-1")
+			up.Close(ctx)
+
+			swapped := boot(declare("swapped", 20, []string{"key-budget", "moving-budget", "key-budget-2"}, []string{"provider-budget-2"}))
+			defer swapped.Close(ctx)
+			if added := stored(swapped, "key-budget-2"); assert.NotNil(t, added, "a budget added to the key was not created") {
+				assert.Equal(t, "virtual key vk-1", heldBy(added))
+			}
+			if added := stored(swapped, "provider-budget-2"); assert.NotNil(t, added, "a budget added to the provider config was not created") {
+				assert.Equal(t, "provider config", heldBy(added))
+			}
+			assert.Nil(t, stored(swapped, "provider-budget"), "a budget dropped from the provider config was kept")
+			assertBudget(swapped, "swapped", "key-budget", 20, 7, "model config mc-vk-1")
+			assert.NotNil(t, stored(swapped, "top-level-budget"), "the governance.budgets row the key holds was deleted")
+		})
+	}
+}
+
 // TestSQLite_SourceOfTruthConfigJSON_LimitPruneGuardFailureKeepsEveryCandidate: when the guard cannot
 // say which rows it owns, no budget or rate limit is pruned this boot rather than deleting one the
 // enterprise build still uses; the next boot prunes them once the guard answers.
@@ -15263,6 +15646,7 @@ func TestUpdateGovernanceConfigInStore_RejectsSharedGovernanceIDs(t *testing.T) 
 			providerAdds, providerUpdates,
 			nil,
 			false,
+			nil,
 		)
 	}
 
@@ -18204,6 +18588,7 @@ func getSchemaTypeMappings() []schemaTypeMapping {
 		{"governance.virtual_keys", reflect.TypeOf(tables.TableVirtualKey{}), true},
 		{"governance.virtual_keys.provider_configs", reflect.TypeOf(tables.TableVirtualKeyProviderConfig{}), true},
 		{"governance.virtual_keys.mcp_configs", reflect.TypeOf(tables.TableVirtualKeyMCPConfig{}), true},
+		{"governance.virtual_keys.agent_grants", reflect.TypeOf(tables.TableVirtualKeyAgentGrant{}), true},
 		{"governance.auth_config", reflect.TypeOf(configstore.AuthConfig{}), false},
 		{"governance.complexity_analyzer_config", reflect.TypeOf(configstore.ComplexityAnalyzerConfig{}), false},
 		{"governance.complexity_analyzer_config.tier_boundaries", reflect.TypeOf(configstore.ComplexityTierBoundaries{}), false},
@@ -18312,6 +18697,9 @@ var excludedGoFields = map[string]map[string]bool{
 	},
 	"tables.TableVirtualKeyMCPConfig": {
 		"mcp_client": true, // GORM relation
+	},
+	"tables.TableVirtualKeyAgentGrant": {
+		"created_at": true, // DB metadata; set on write
 	},
 	// MCP types have internal state fields
 	"schemas.MCPConfig": {
@@ -20189,7 +20577,7 @@ func assertDefaultClientConfigValues(t *testing.T, cc configstore.ClientConfig) 
 	require.NotNil(t, cc.EnableLogging, "EnableLogging should not be nil")
 	require.Equal(t, true, *cc.EnableLogging, "EnableLogging should default to true")
 	require.Equal(t, false, cc.DisableContentLogging, "DisableContentLogging should default to false")
-	require.Equal(t, false, cc.EnforceAuthOnInference, "EnforceAuthOnInference should default to false")
+	require.Equal(t, true, cc.EnforceAuthOnInference, "EnforceAuthOnInference should default to true")
 	require.Equal(t, []string{"*"}, cc.AllowedOrigins, "AllowedOrigins should default to [*]")
 	require.Equal(t, 100, cc.MaxRequestBodySizeMB, "MaxRequestBodySizeMB should default to 100")
 	require.Equal(t, 10, cc.MCPAgentDepth, "MCPAgentDepth should default to 10")
@@ -20199,6 +20587,8 @@ func assertDefaultClientConfigValues(t *testing.T, cc configstore.ClientConfig) 
 	require.Equal(t, false, cc.Compat.ConvertChatToResponses, "Compat.ConvertChatToResponses should default to false")
 	require.Equal(t, false, cc.Compat.ShouldDropParams, "Compat.ShouldDropParams should default to false")
 	require.Equal(t, false, cc.Compat.ShouldConvertParams, "Compat.ShouldConvertParams should default to false")
+	require.Equal(t, false, cc.Compat.AzureDeepseek, "Compat.AzureDeepseek should default to false")
+	require.Equal(t, true, cc.Compat.ForceReasoningOnlyModelsToResponses, "Compat.ForceReasoningOnlyModelsToResponses should default to true")
 	require.Equal(t, false, cc.HideDeletedVirtualKeysInFilters, "HideDeletedVirtualKeysInFilters should default to false")
 }
 
@@ -21405,6 +21795,214 @@ func TestLoadWebhooksConfigWithoutSection(t *testing.T) {
 	assert.Len(t, webhookNamesInStore(t, store), 1)
 	_, ok := config.WebhookEndpointByName("db-only")
 	assert.True(t, ok, "database endpoints load into memory even with no file section")
+}
+
+// agentNamesInStore maps each stored agent registration name to its card URL.
+func agentNamesInStore(t *testing.T, store configstore.ConfigStore) map[string]string {
+	t.Helper()
+	registrations, err := store.ListAgentRegistrations(context.Background())
+	require.NoError(t, err)
+	names := make(map[string]string, len(registrations))
+	for _, registration := range registrations {
+		names[registration.Name] = registration.AgentCardURL
+	}
+	return names
+}
+
+// apiCreatedAgent simulates an API-created registration: written through the
+// same store CRUD the manager uses, with no ConfigHash.
+func apiCreatedAgent(t *testing.T, store configstore.ConfigStore, name string) {
+	t.Helper()
+	now := time.Now().UTC()
+	require.NoError(t, store.CreateAgentRegistration(context.Background(), &schemas.AgentRegistration{
+		Name: name, AgentCardURL: "https://example.com/" + name, Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}))
+}
+
+func TestLoadAgentsConfigMerge(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	// One valid declaration, one invalid name (skipped with a warning).
+	configData := parseConfigData(t, `{
+		"agents": [
+			{"name": "from-file", "agent_card_url": "https://example.com/card"},
+			{"name": "Bad_Name", "agent_card_url": "https://example.com/card"}
+		]
+	}`)
+	loadAgentsConfig(context.Background(), config, configData)
+
+	names := agentNamesInStore(t, store)
+	require.Len(t, names, 1)
+	assert.Contains(t, names, "from-file")
+
+	// Enabled defaults to true when omitted, and the file hash is checkpointed.
+	created, err := store.GetAgentRegistration(context.Background(), "from-file")
+	require.NoError(t, err)
+	assert.True(t, created.Enabled)
+	assert.NotEmpty(t, created.ConfigHash)
+
+	// An unchanged file is a no-op (hash match): the row is not rewritten.
+	firstUpdatedAt := created.UpdatedAt
+	loadAgentsConfig(context.Background(), config, configData)
+	unchanged, err := store.GetAgentRegistration(context.Background(), "from-file")
+	require.NoError(t, err)
+	assert.Equal(t, firstUpdatedAt, unchanged.UpdatedAt, "a hash match must not rewrite the row")
+
+	// A registration created outside the file survives a merge reload.
+	apiCreatedAgent(t, store, "from-api")
+
+	// A changed card URL in the file updates the existing row instead of duplicating.
+	configData = parseConfigData(t, `{
+		"agents": [
+			{"name": "from-file", "agent_card_url": "https://example.com/card2"}
+		]
+	}`)
+	loadAgentsConfig(context.Background(), config, configData)
+
+	names = agentNamesInStore(t, store)
+	require.Len(t, names, 2)
+	assert.Equal(t, "https://example.com/card2", names["from-file"])
+	assert.Contains(t, names, "from-api")
+}
+
+func TestLoadAgentsConfigDuplicateNamesAreSkipped(t *testing.T) {
+	initTestLogger()
+
+	for _, sourceOfTruth := range []bool{false, true} {
+		t.Run(fmt.Sprintf("source_of_truth=%t", sourceOfTruth), func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, t.TempDir())
+			config := &Config{ConfigStore: store}
+			apiCreatedAgent(t, store, "duplicate")
+
+			source := ""
+			if sourceOfTruth {
+				source = `"source_of_truth": "config.json",`
+			}
+			configData := parseConfigData(t, fmt.Sprintf(`{
+				%s
+				"agents": [
+					{"name": "duplicate", "agent_card_url": "https://example.com/first", "allow_by_default": true},
+					{"name": " duplicate ", "agent_card_url": "https://example.com/second"}
+				]
+			}`, source))
+			loadAgentsConfig(context.Background(), config, configData)
+
+			registration, err := store.GetAgentRegistration(context.Background(), "duplicate")
+			require.NoError(t, err)
+			assert.Equal(t, "https://example.com/duplicate", registration.AgentCardURL)
+			assert.False(t, registration.AllowByDefault)
+		})
+	}
+}
+
+func TestLoadAgentsConfigSourceOfTruthPrunes(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	apiCreatedAgent(t, store, "db-only")
+
+	configData := parseConfigData(t, `{
+		"source_of_truth": "config.json",
+		"agents": [
+			{"name": "from-file", "agent_card_url": "https://example.com/card"}
+		]
+	}`)
+	require.True(t, configData.isConfigJSONSourceOfTruth(), "fixture must opt into file-as-source-of-truth")
+	loadAgentsConfig(context.Background(), config, configData)
+
+	names := agentNamesInStore(t, store)
+	require.Len(t, names, 1)
+	assert.Contains(t, names, "from-file")
+	assert.NotContains(t, names, "db-only", "rows absent from the file are pruned when it is the source of truth")
+
+	// Re-running with an unchanged file is a no-op (hash match).
+	loadAgentsConfig(context.Background(), config, configData)
+	assert.Len(t, agentNamesInStore(t, store), 1)
+}
+
+func TestLoadAgentsConfigInvalidDeclarationKeepsRegistration(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	// A valid registration exists in the DB and is re-declared in the file,
+	// but this run's declaration is malformed (bad card URL). The
+	// source-of-truth prune must NOT delete the working row over a typo.
+	apiCreatedAgent(t, store, "keep-me")
+
+	configData := parseConfigData(t, `{
+		"source_of_truth": "config.json",
+		"agents": [
+			{"name": "keep-me", "agent_card_url": "not-a-valid-url"}
+		]
+	}`)
+	require.True(t, configData.isConfigJSONSourceOfTruth())
+	loadAgentsConfig(context.Background(), config, configData)
+
+	assert.Contains(t, agentNamesInStore(t, store), "keep-me", "an invalid declaration must not prune its existing registration")
+}
+
+func TestLoadAgentsConfigWithoutSection(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	apiCreatedAgent(t, store, "db-only")
+
+	// Source-of-truth mode without an agents section must not prune —
+	// presence of the section is what authorizes it.
+	configData := parseConfigData(t, `{"source_of_truth": "config.json"}`)
+	loadAgentsConfig(context.Background(), config, configData)
+
+	assert.Len(t, agentNamesInStore(t, store), 1)
+}
+
+func TestLoadAgentsConfigSecretRefsAndGrants(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	require.NoError(t, store.CreateVirtualKey(context.Background(), &tables.TableVirtualKey{
+		ID: "vk-1", Name: "VK One", Value: *schemas.NewSecretVar("vk-1-value"), IsActive: schemas.Ptr(true),
+	}))
+
+	configData := parseConfigData(t, `{
+		"agents": [
+			{
+				"name": "granted",
+				"agent_card_url": "https://example.com/card",
+				"virtual_key_ids": ["vk-1"],
+				"discovery_auth": {
+					"type": "headers",
+					"headers": {"Authorization": "env.AGENT_TEST_TOKEN_UNSET"}
+				}
+			},
+			{
+				"name": "bad-grant",
+				"agent_card_url": "https://example.com/card",
+				"virtual_key_ids": ["missing-vk"]
+			}
+		]
+	}`)
+	loadAgentsConfig(context.Background(), config, configData)
+
+	// The registration referencing a nonexistent virtual key fails the
+	// store's grant validation and is skipped with a warning.
+	names := agentNamesInStore(t, store)
+	require.Len(t, names, 1)
+	assert.Contains(t, names, "granted")
+
+	granted, err := store.GetAgentRegistration(context.Background(), "granted")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"vk-1"}, granted.VirtualKeyIDs, "grant rows follow the API create path")
+
+	header := granted.DiscoveryAuth.Headers["Authorization"]
+	assert.True(t, header.IsFromSecret(), "env references pass through as secret refs")
+	assert.Equal(t, "env.AGENT_TEST_TOKEN_UNSET", header.GetRawRef())
+	assert.Empty(t, header.GetValue(), "unset env refs stay unresolved rather than becoming literals")
 }
 
 func TestResolveSetupToken_Unset(t *testing.T) {
