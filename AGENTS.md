@@ -220,6 +220,17 @@ Client HTTP Request
 - **Plugin pipeline symmetry**: Pre-hooks execute in registration order, post-hooks in **reverse** order (LIFO). For every pre-hook executed, the corresponding post-hook is guaranteed to run.
 - **Streaming**: SSE chunks flow through `chan chan *schemas.BifrostStreamChunk`. Accumulated into full response for post-hooks via `framework/streaming/accumulator.go`.
 
+### Every change states its cost on the request flow
+
+Bifrost's value is ~11µs of overhead at 5,000 RPS, so every change is evaluated for the memory allocations and processing time it adds to the end-to-end flow, not only for correctness. Before a PR is opened:
+
+- **Measure, do not assert.** Code on the request path (handlers, plugins, providers, streaming, key selection, auth) ships with a `Benchmark*` in the existing `_test.go` file, run with `-benchmem`, and the PR body records allocs/op and ns/op before and after. A change that cannot be benchmarked states plainly why ("config load only", "runs once per provider rebuild").
+- **The common case must not regress.** A feature that is off by default, or only applies to some keys/providers, adds zero allocations and at most a nil/empty check to requests that do not use it. Put the work behind that check, not in front of it.
+- **Per-credential or per-stream state lives in a manager, not per request.** Caches keyed by credential or `RequestID` are built once and reused (see the token cache in `core/providers/utils/tokencache` and the streaming accumulator); the per-request cost is a map load, never a rebuild.
+- **Name the memory that is retained.** Anything cached for longer than a request (tokens, connections, slots, buffers) states its bound in the PR body: what it is keyed by, how large an entry is, and when it is freed.
+
+Reviewers treat a missing cost statement the same way as missing tests.
+
 ### BifrostContext — Custom Context
 
 `BifrostContext` (`core/schemas/context.go`) is a custom `context.Context` with **thread-safe mutable values**. Unlike standard Go contexts, values can be set after creation:
