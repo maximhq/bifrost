@@ -271,6 +271,20 @@ false
 {{- if .Values.bifrost.setupToken }}
 {{- $_ := set $config "setup_token" .Values.bifrost.setupToken }}
 {{- end }}
+{{- with .Values.bifrost.proxyConfig }}
+{{- $proxy := dict "enabled" (.enabled | default false) }}
+{{- if .type }}{{- $_ := set $proxy "type" .type }}{{- end }}
+{{- if .url }}{{- $_ := set $proxy "url" .url }}{{- end }}
+{{- if .username }}{{- $_ := set $proxy "username" .username }}{{- end }}
+{{- if .password }}{{- $_ := set $proxy "password" .password }}{{- end }}
+{{- if .noProxy }}{{- $_ := set $proxy "no_proxy" .noProxy }}{{- end }}
+{{- if hasKey . "timeout" }}{{- $_ := set $proxy "timeout" (.timeout | int) }}{{- end }}
+{{- if hasKey . "skipTlsVerify" }}{{- $_ := set $proxy "skip_tls_verify" .skipTlsVerify }}{{- end }}
+{{- if hasKey . "enableForScim" }}{{- $_ := set $proxy "enable_for_scim" .enableForScim }}{{- end }}
+{{- if hasKey . "enableForInference" }}{{- $_ := set $proxy "enable_for_inference" .enableForInference }}{{- end }}
+{{- if hasKey . "enableForApi" }}{{- $_ := set $proxy "enable_for_api" .enableForApi }}{{- end }}
+{{- $_ := set $config "proxy_config" $proxy }}
+{{- end }}
 {{- if .Values.bifrost.client }}
 {{- $client := dict }}
 {{- if hasKey .Values.bifrost.client "dropExcessRequests" }}
@@ -410,6 +424,9 @@ false
 {{- if .Values.bifrost.client.mcpExternalClientUrl }}
 {{- $_ := set $client "mcp_external_client_url" .Values.bifrost.client.mcpExternalClientUrl }}
 {{- end }}
+{{- if .Values.bifrost.client.a2aExternalClientUrl }}
+{{- $_ := set $client "a2a_external_client_url" .Values.bifrost.client.a2aExternalClientUrl }}
+{{- end }}
 {{- if .Values.bifrost.client.mcpServerAuthMode }}
 {{- if or (eq .Values.bifrost.client.mcpServerAuthMode "oauth") (eq .Values.bifrost.client.mcpServerAuthMode "both") }}
 {{- $issuerSet := false }}
@@ -436,6 +453,15 @@ false
 {{- end }}
 {{- if .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
 {{- $_ := set $server "plugin_download_private_allowlist" .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
+{{- end }}
+{{- if .Values.bifrost.server.a2aGrpcBaseDomain }}
+{{- $_ := set $server "a2a_grpc_base_domain" .Values.bifrost.server.a2aGrpcBaseDomain }}
+{{- end }}
+{{- if .Values.bifrost.server.a2aGrpcPort }}
+{{- $_ := set $server "a2a_grpc_port" (.Values.bifrost.server.a2aGrpcPort | int) }}
+{{- end }}
+{{- if .Values.bifrost.server.a2aAllowPrivatePushCallbacks }}
+{{- $_ := set $server "a2a_allow_private_push_callbacks" true }}
 {{- end }}
 {{- if $server }}
 {{- $_ := set $config "server" $server }}
@@ -584,6 +610,7 @@ false
 {{- if .profile }}{{- $_ := set $bu "profile" .profile }}{{- end }}
 {{- if .config }}{{- $_ := set $bu "config" .config }}{{- end }}
 {{- if .claims }}{{- $_ := set $bu "claims" .claims }}{{- end }}
+{{- if .access_profile }}{{- $_ := set $bu "access_profile" .access_profile }}{{- end }}
 {{- if .teamIds }}{{- $_ := set $bu "team_ids" .teamIds }}{{- end }}
 {{- $businessUnits = append $businessUnits $bu }}
 {{- end }}
@@ -925,6 +952,23 @@ false
 {{- end }}
 {{- $_ := set $config "webhooks" .Values.bifrost.webhooks }}
 {{- end }}
+{{- /* Agents (A2A agent registrations) */ -}}
+{{- if hasKey .Values.bifrost "agents" }}
+{{- $seenAgentNames := list }}
+{{- range .Values.bifrost.agents }}
+{{- if not .name }}
+{{- fail "ERROR: bifrost.agents[].name is required for every agent registration." }}
+{{- end }}
+{{- if has .name $seenAgentNames }}
+{{- fail (printf "ERROR: bifrost.agents[].name '%s' is used by more than one agent. Names must be unique; startup reconciliation identifies agents by name." .name) }}
+{{- end }}
+{{- $seenAgentNames = append $seenAgentNames .name }}
+{{- if not .agent_card_url }}
+{{- fail (printf "ERROR: bifrost.agents[].agent_card_url is required for agent '%s'." .name) }}
+{{- end }}
+{{- end }}
+{{- $_ := set $config "agents" .Values.bifrost.agents }}
+{{- end }}
 {{- /* Config Store */ -}}
 {{- if .Values.storage.configStore.enabled }}
 {{- $configStoreType := .Values.storage.configStore.type | default .Values.storage.mode }}
@@ -1052,6 +1096,7 @@ false
 {{- with $ch.protocol }}{{- $_ := set $chConfig "protocol" . }}{{- end }}
 {{- if hasKey $ch "secure" }}{{- $_ := set $chConfig "secure" $ch.secure }}{{- end }}
 {{- with $ch.dialTimeout }}{{- $_ := set $chConfig "dial_timeout" (. | int) }}{{- end }}
+{{- with $ch.maxQuerySize }}{{- $_ := set $chConfig "max_query_size" (. | int) }}{{- end }}
 {{- with $ch.cluster }}{{- $_ := set $chConfig "cluster" . }}{{- end }}
 {{- $clickhouseLogsStore := dict "enabled" true "type" "clickhouse" "config" $chConfig }}
 {{- if .Values.storage.logsStore.writer }}
@@ -1137,6 +1182,9 @@ false
 {{- end }}
 {{- if .Values.storage.logsStore.objectStorageExcludeFields }}
 {{- $_ := set (index $config "logs_store") "object_storage_exclude_fields" .Values.storage.logsStore.objectStorageExcludeFields }}
+{{- end }}
+{{- if .Values.storage.logsStore.objectStorageExcludeRequestTypes }}
+{{- $_ := set (index $config "logs_store") "object_storage_exclude_request_types" .Values.storage.logsStore.objectStorageExcludeRequestTypes }}
 {{- end }}
 {{- end }}
 {{- /* Vector Store */ -}}
@@ -1419,6 +1467,34 @@ false
 {{- end }}
 {{- if .Values.bifrost.mcp.toolManagerConfig.maxInstructionsTotal }}
 {{- $_ := set $tmConfig "max_instructions_total" .Values.bifrost.mcp.toolManagerConfig.maxInstructionsTotal }}
+{{- end }}
+{{- if hasKey .Values.bifrost.mcp.toolManagerConfig "codeModeLimits" }}
+{{- $limits := dict }}
+{{- with .Values.bifrost.mcp.toolManagerConfig.codeModeLimits }}
+{{- if .maxSourceBytes }}
+{{- $_ := set $limits "max_source_bytes" .maxSourceBytes }}
+{{- end }}
+{{- if .maxSteps }}
+{{- $_ := set $limits "max_steps" .maxSteps }}
+{{- end }}
+{{- if .maxMemoryBytes }}
+{{- $_ := set $limits "max_memory_bytes" .maxMemoryBytes }}
+{{- end }}
+{{- if .maxLogBytes }}
+{{- $_ := set $limits "max_log_bytes" .maxLogBytes }}
+{{- end }}
+{{- if .maxToolCalls }}
+{{- $_ := set $limits "max_tool_calls" .maxToolCalls }}
+{{- end }}
+{{- if .maxValueBytes }}
+{{- $_ := set $limits "max_value_bytes" .maxValueBytes }}
+{{- end }}
+{{- if .maxNestingDepth }}
+{{- $_ := set $limits "max_nesting_depth" .maxNestingDepth }}
+{{- end }}
+{{- end }}
+{{- /* Render the key even when every limit is 0, so an explicit setting resets stored limits to defaults. */}}
+{{- $_ := set $tmConfig "code_mode_limits" $limits }}
 {{- end }}
 {{- if $tmConfig }}
 {{- $_ := set $mcpConfig "tool_manager_config" $tmConfig }}

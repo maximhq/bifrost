@@ -219,14 +219,40 @@ func pendingMigrationStepIDs(ctx context.Context, db *gorm.DB, steps []migration
 	return migrator.PendingIDs(ctx, db, migrator.DefaultOptions, migrationStepIDs(steps))
 }
 
-// runMigrationSteps runs migration steps in their declared order.
+// runMigrationSteps runs migration steps in their declared order. It reads the
+// pending IDs once and skips steps whose IDs are all recorded, so a deploy with
+// one new migration does not pay a round trip per already-applied step. If the
+// preflight read fails, every step runs and each one checks its own row.
 func runMigrationSteps(ctx context.Context, db *gorm.DB, logger schemas.Logger, steps []migrationStep) error {
+	pending, err := pendingMigrationStepIDs(ctx, db, steps)
+	var pendingSet map[string]struct{}
+	if err != nil {
+		logger.Warn("[logstore] migration preflight failed; running every step: %v", err)
+	} else {
+		pendingSet = make(map[string]struct{}, len(pending))
+		for _, id := range pending {
+			pendingSet[id] = struct{}{}
+		}
+	}
 	for _, step := range steps {
+		if pendingSet != nil && !stepHasPendingID(step, pendingSet) {
+			continue
+		}
 		if err := step.run(ctx, db, logger); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// stepHasPendingID reports whether any ID the step writes is still pending.
+func stepHasPendingID(step migrationStep, pending map[string]struct{}) bool {
+	for _, id := range step.IDs {
+		if _, ok := pending[id]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // logstoreMigrationSteps is the ordered source of truth for logstore migration
@@ -330,6 +356,8 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_embedding_input_column"}, run: migrationAddEmbeddingInputColumn},
 	{IDs: []string{"logs_add_owner_timestamp_indexes"}, run: migrationAddOwnerTimestampIndexes},
 	{IDs: []string{"logs_add_ranking_name_timestamp_indexes"}, run: migrationAddRankingNameTimestampIndexes},
+	{IDs: []string{"logs_add_live_session_column"}, run: migrationAddLiveSessionColumn},
+	{IDs: []string{"agent_logs_init"}, run: migrationCreateAgentLogsTable},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -2997,6 +3025,21 @@ var performanceIndexes = []performanceIndexDef{
 		sql:  "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_session_id_timestamp ON logs(session_id, timestamp) WHERE session_id IS NOT NULL",
 	},
 	{
+		table: "logs",
+		name:  "idx_logs_agent_correlation_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_agent_correlation_id ON logs(agent_correlation_id) WHERE agent_correlation_id IS NOT NULL",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_session_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_session_id ON mcp_tool_logs(session_id) WHERE session_id IS NOT NULL",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_agent_correlation_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_agent_correlation_id ON mcp_tool_logs(agent_correlation_id) WHERE agent_correlation_id IS NOT NULL",
+	},
+	{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_customer_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_customer_id ON mcp_tool_logs(customer_id)",
@@ -4932,6 +4975,132 @@ func migrationAddServerSideFallbackModelColumn(ctx context.Context, db *gorm.DB,
 	return nil
 }
 
+// migrationCreateAgentLogsTable is the single unshipped relational migration for
+// Agent Gateway observability. It adds the agent correlation columns and
+// indexes to the logs and mcp_tool_logs tables and creates the agent_logs table.
+// AutoMigrate keeps table creation idempotent while the feature remains
+// unshipped and ensures fresh SQLite/PostgreSQL stores receive the same columns
+// and declared indexes. Postgres correlation indexes come from
+// performanceIndexes instead.
+func migrationCreateAgentLogsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "agent_logs_init"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			for _, column := range []struct {
+				model any
+				name  string
+			}{
+				{&Log{}, "agent_correlation_id"},
+				{&MCPToolLog{}, "session_id"},
+				{&MCPToolLog{}, "agent_correlation_id"},
+			} {
+				if err := addColumnIfNotExists(tx, logger, column.model, column.name); err != nil {
+					return err
+				}
+			}
+			if tx.Dialector.Name() != "postgres" {
+				for _, index := range []struct {
+					model any
+					name  string
+				}{
+					{&Log{}, "idx_logs_agent_correlation_id"},
+					{&MCPToolLog{}, "idx_mcp_logs_session_id"},
+					{&MCPToolLog{}, "idx_mcp_logs_agent_correlation_id"},
+				} {
+					if !tx.Migrator().HasIndex(index.model, index.name) {
+						if err := tx.Migrator().CreateIndex(index.model, index.name); err != nil {
+							return fmt.Errorf("create %s index: %w", index.name, err)
+						}
+					}
+				}
+			}
+			return tx.AutoMigrate(&AgentLog{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackAgentLogsMigration(tx.WithContext(ctx), logger)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running Agent Gateway logstore migration: %w", err)
+	}
+	return nil
+}
+
+func rollbackAgentLogsMigration(tx *gorm.DB, logger schemas.Logger) error {
+	if err := boundDDLLockWait(tx); err != nil {
+		return err
+	}
+	migrator := tx.Migrator()
+	if tx.Dialector.Name() == "postgres" {
+		for _, table := range []string{"agent_logs", "logs", "mcp_tool_logs"} {
+			if migrator.HasTable(table) {
+				if err := tx.Exec("LOCK TABLE " + table + " IN ACCESS EXCLUSIVE MODE").Error; err != nil {
+					return fmt.Errorf("could not lock %s before Agent log rollback: %w", table, err)
+				}
+			}
+		}
+	}
+
+	if migrator.HasTable(&AgentLog{}) {
+		var present []struct{ One int }
+		if err := tx.Model(&AgentLog{}).Select("1 AS one").Limit(1).Find(&present).Error; err != nil {
+			return fmt.Errorf("could not check Agent log history before rollback: %w", err)
+		}
+		if len(present) > 0 {
+			return fmt.Errorf("agent_logs_init is non-rollbackable: agent_logs holds recorded Agent history, and dropping it would delete that content rather than reverse a schema change; clear the history first if the rollback is genuinely intended")
+		}
+	}
+
+	for _, correlation := range []struct {
+		model  any
+		table  string
+		column string
+	}{
+		{&Log{}, "logs", "agent_correlation_id"},
+		{&MCPToolLog{}, "mcp_tool_logs", "session_id"},
+		{&MCPToolLog{}, "mcp_tool_logs", "agent_correlation_id"},
+	} {
+		if !migrator.HasTable(correlation.model) || !migrator.HasColumn(correlation.model, correlation.column) {
+			continue
+		}
+		var present []struct{ One int }
+		if err := tx.Table(correlation.table).Select("1 AS one").Where(correlation.column + " IS NOT NULL").Limit(1).Find(&present).Error; err != nil {
+			return fmt.Errorf("could not check %s.%s before Agent log rollback: %w", correlation.table, correlation.column, err)
+		}
+		if len(present) > 0 {
+			return fmt.Errorf("agent_logs_init is non-rollbackable: %s.%s holds recorded correlation data, and dropping it would delete that content rather than reverse a schema change; clear the correlation data first if the rollback is genuinely intended", correlation.table, correlation.column)
+		}
+	}
+
+	if migrator.HasTable(&AgentLog{}) {
+		if err := migrator.DropTable(&AgentLog{}); err != nil {
+			return err
+		}
+	}
+	for _, column := range []struct {
+		model any
+		name  string
+	}{
+		{&MCPToolLog{}, "agent_correlation_id"},
+		{&MCPToolLog{}, "session_id"},
+		{&Log{}, "agent_correlation_id"},
+	} {
+		if err := dropColumnIfExists(tx, logger, column.model, column.name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // migrationAddBillingFidelityColumns adds the served-tier columns cost recomputation
 // needs in order to reprice a row at the rates it was actually served at:
 // service_tier, speed, and inference_geo.
@@ -5452,6 +5621,37 @@ func migrationAddEmbeddingInputColumn(ctx context.Context, db *gorm.DB, logger s
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding embedding_input column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddLiveSessionColumn adds the live_session column to the logs table: a GPT Live
+// session's typed log payload (transcript, delegations, voice and backend cost).
+func migrationAddLiveSessionColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_live_session_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &Log{}, "live_session")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &Log{}, "live_session")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding live session column: %s", err.Error())
 	}
 	return nil
 }

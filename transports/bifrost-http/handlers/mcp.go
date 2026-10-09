@@ -1908,6 +1908,64 @@ func rejectStdioMCPClientIfAuthBypassed(ctx *fasthttp.RequestCtx, connType strin
 	return true
 }
 
+// mcpClientSecretReferences lists the credential-bearing fields of an MCP
+// client request whose value is an env./vault. reference rather than a literal.
+// Keys are wire field names so a refusal can name what to change.
+func mcpClientSecretReferences(headers map[string]schemas.SecretVar, connectionString *schemas.SecretVar, oauth *OAuthConfigRequest, tokenExchange *schemas.MCPTokenExchangeConfig, tlsConfig *schemas.MCPTLSConfig) []string {
+	var refs []string
+	isRef := func(v *schemas.SecretVar) bool { return v != nil && v.Type() != schemas.SecretTypePlainText }
+	for name, value := range headers {
+		if isRef(&value) {
+			refs = append(refs, "headers."+name)
+		}
+	}
+	sort.Strings(refs)
+	if isRef(connectionString) {
+		refs = append(refs, "connection_string")
+	}
+	if oauth != nil {
+		if isRef(oauth.ClientID) {
+			refs = append(refs, "oauth_config.client_id")
+		}
+		if isRef(oauth.ClientSecret) {
+			refs = append(refs, "oauth_config.client_secret")
+		}
+	}
+	if tokenExchange != nil {
+		if isRef(tokenExchange.ClientID) {
+			refs = append(refs, "token_exchange.client_id")
+		}
+		if isRef(tokenExchange.ClientSecret) {
+			refs = append(refs, "token_exchange.client_secret")
+		}
+	}
+	if tlsConfig != nil && isRef(tlsConfig.CACertPEM) {
+		refs = append(refs, "tls_config.ca_cert_pem")
+	}
+	return refs
+}
+
+// rejectSecretReferencesIfAuthBypassed refuses an MCP client create/update
+// that resolves env./vault. references when the caller was let through only
+// because dashboard auth is unconfigured or disabled. SecretVar expands those
+// references from the gateway's own process environment or vault at decode
+// time, and the resolved values are then sent to the client's target on
+// connect. A real admin uses them to keep credentials out of config; a caller
+// with no credential check must not be able to read the gateway's secrets by
+// naming them. Literal values are unaffected, and config.json provisioning is
+// not gated. Returns true if the request was rejected (the error response has
+// already been written).
+func rejectSecretReferencesIfAuthBypassed(ctx *fasthttp.RequestCtx, refs []string) bool {
+	if len(refs) == 0 {
+		return false
+	}
+	if bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); !bypassed {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Using env./vault. references in MCP client fields (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication, or provision this client via config.json instead.", strings.Join(refs, ", ")))
+	return true
+}
+
 // addMCPClient handles POST /api/mcp/client - Add a new MCP client
 // endpointSlugDerivable reports whether a usable /mcp/<slug> can be derived from the caller's
 // endpoint_slug, or failing that the name. The create handlers check this before any upstream dial
@@ -1948,6 +2006,9 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	// Bifrost spawn the subprocess / dial the target, so a refusal has to land
 	// before any of that work is scheduled.
 	if rejectStdioMCPClientIfAuthBypassed(ctx, req.ConnectionType) {
+		return
+	}
+	if rejectSecretReferencesIfAuthBypassed(ctx, mcpClientSecretReferences(req.Headers, req.ConnectionString, req.OauthConfig, req.TokenExchange, req.TLSConfig)) {
 		return
 	}
 	if rejectPrivateMCPTargetIfAuthBypassed(ctx, req.ConnectionType, req.ConnectionString) {
@@ -2580,6 +2641,9 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusNotFound, "MCP client not found")
 		return
 	}
+	if rejectSecretReferencesIfAuthBypassed(ctx, mcpClientSecretReferences(req.Headers, nil, req.OauthConfig, req.TokenExchange, req.TLSConfig)) {
+		return
+	}
 	if err := validateNeedsSessionStickiness(req.NeedsSessionStickiness, existingConfig.ConnectionType); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -2776,13 +2840,14 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		// The GET response redacts the exchange credentials; a round-tripped
-		// redacted value means "keep the stored one", mirroring the header
-		// and TLS redacted-merge behavior above.
+		// masked value means "keep the stored one", mirroring the header
+		// and TLS redacted-merge behavior above. An env/vault reference is
+		// never a placeholder, so switching a credential to one is written.
 		if existingConfig.TokenExchange != nil {
-			if req.TokenExchange.ClientID.IsRedacted() {
+			if req.TokenExchange.ClientID.IsMaskedPlaceholder() {
 				req.TokenExchange.ClientID = existingConfig.TokenExchange.ClientID
 			}
-			if req.TokenExchange.ClientSecret.IsRedacted() {
+			if req.TokenExchange.ClientSecret.IsMaskedPlaceholder() {
 				req.TokenExchange.ClientSecret = existingConfig.TokenExchange.ClientSecret
 			}
 		}

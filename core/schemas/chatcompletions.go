@@ -34,19 +34,20 @@ func (cr *BifrostChatRequest) GetExtraParams() map[string]interface{} {
 
 // BifrostChatResponse represents the complete result from a chat completion request.
 type BifrostChatResponse struct {
-	ID                string                     `json:"id"`
-	Choices           []BifrostResponseChoice    `json:"choices"`
-	Created           int                        `json:"created"` // The Unix timestamp (in seconds).
-	Model             string                     `json:"model"`
-	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
-	ServiceTier       *BifrostServiceTier        `json:"service_tier,omitempty"`
-	Speed             *string                    `json:"speed,omitempty"`         // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
-	InferenceGeo      *string                    `json:"inference_geo,omitempty"` // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
-	Diagnostics       *CacheDiagnostics          `json:"diagnostics,omitempty"`   // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
-	SystemFingerprint string                     `json:"system_fingerprint"`
-	Usage             *BifrostLLMUsage           `json:"usage"`
-	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
-	ExtraParams       map[string]interface{}     `json:"-"`
+	ID                  string                     `json:"id"`
+	Choices             []BifrostResponseChoice    `json:"choices"`
+	Created             int                        `json:"created"` // The Unix timestamp (in seconds).
+	Model               string                     `json:"model"`
+	Object              string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
+	ServiceTier         *BifrostServiceTier        `json:"service_tier,omitempty"`
+	Speed               *string                    `json:"speed,omitempty"`         // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
+	InferenceGeo        *string                    `json:"inference_geo,omitempty"` // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
+	Diagnostics         *CacheDiagnostics          `json:"diagnostics,omitempty"`   // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
+	SystemFingerprint   string                     `json:"system_fingerprint"`
+	PromptFilterResults json.RawMessage            `json:"prompt_filter_results,omitempty"` // Azure content-filter annotations for the prompt, passed through untouched
+	Usage               *BifrostLLMUsage           `json:"usage"`
+	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraParams         map[string]interface{}     `json:"-"`
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`
@@ -342,6 +343,8 @@ type ChatReasoning struct {
 	MaxTokens *int    `json:"max_tokens,omitempty"` // Maximum number of tokens to generate for the reasoning output (required for anthropic)
 	Display   *string `json:"display,omitempty"`    // Anthropic thinking.display: "summarized" | "omitted" (requires model support for adaptive thinking)
 	Type      *string `json:"type,omitempty"`       // Anthropic thinking.type: "between_tools" (no up-front thinking); independent of effort
+	Mode      *string `json:"mode,omitempty"`       // OpenAI reasoning.mode: "standard" | "pro" (Responses API only; routes OpenAI/Azure chat through Responses)
+	Summary   *string `json:"summary,omitempty"`    // OpenAI reasoning.summary: "auto" | "concise" | "detailed" (sent when chat is served by the Responses API)
 }
 
 // ChatPrediction represents predicted output content for the model to reference (OpenAI only).
@@ -437,7 +440,7 @@ type ChatTool struct {
 	// ignored by providers that don't support them. Gating per ProviderFeatures
 	// in core/providers/anthropic/types.go.
 	DeferLoading        *bool                  `json:"defer_loading,omitempty"`         // Anthropic advanced-tool-use: defer loading of tool definition
-	AllowedCallers      []string               `json:"allowed_callers,omitempty"`       // Anthropic advanced-tool-use: which callers can invoke this tool ("direct", "code_execution_20250825", "code_execution_20260120")
+	AllowedCallers      []string               `json:"allowed_callers,omitempty"`       // Which callers can invoke this tool; see ResponsesToolCaller* for the two vendor vocabularies
 	InputExamples       []ChatToolInputExample `json:"input_examples,omitempty"`        // Anthropic tool-examples-2025-10-29: example inputs for the tool
 	EagerInputStreaming *bool                  `json:"eager_input_streaming,omitempty"` // Anthropic fine-grained-tool-streaming-2025-05-14: stream input_json_delta before full args are determined (custom tools only)
 
@@ -1759,9 +1762,10 @@ type ChatAudioMessageAudio struct {
 // IMPORTANT: Only one of TextCompletionResponseChoice, NonStreamResponseChoice or StreamResponseChoice
 // should be non-nil at a time.
 type BifrostResponseChoice struct {
-	Index        int              `json:"index"`
-	FinishReason *string          `json:"finish_reason"`
-	LogProbs     *BifrostLogProbs `json:"logprobs"`
+	Index                int              `json:"index"`
+	FinishReason         *string          `json:"finish_reason"`
+	LogProbs             *BifrostLogProbs `json:"logprobs"`
+	ContentFilterResults json.RawMessage  `json:"content_filter_results,omitempty"` // Azure content-filter annotations for this choice, passed through untouched
 
 	*TextCompletionResponseChoice
 	*ChatNonStreamResponseChoice
@@ -1958,6 +1962,11 @@ type BifrostLLMUsage struct {
 	Cost        *BifrostCost `json:"cost,omitempty"` // Only for the providers which support cost calculation
 	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
 	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`
+	// Laya decision usage: state token accounting and truncation, reported on /v1/decisions.
+	StateTokens        *int     `json:"state_tokens,omitempty"`
+	StateTokensDropped *int     `json:"state_tokens_dropped,omitempty"`
+	Truncated          *bool    `json:"truncated,omitempty"`
+	TruncatedQuestions []string `json:"truncated_questions,omitempty"`
 	// Served Anthropic tier (fast mode / data residency), carried internally so
 	// cancel/timeout billing (which reads a bare usage via BilledUsage) can apply
 	// the tier multiplier. json:"-" keeps them out of every serialized usage payload.
@@ -2517,6 +2526,15 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 	if u.Speed != nil {
 		s := *u.Speed
 		c.Speed = &s
+	}
+	c.StateTokens = copyIntPtr(u.StateTokens)
+	c.StateTokensDropped = copyIntPtr(u.StateTokensDropped)
+	if u.Truncated != nil {
+		tr := *u.Truncated
+		c.Truncated = &tr
+	}
+	if u.TruncatedQuestions != nil {
+		c.TruncatedQuestions = append([]string(nil), u.TruncatedQuestions...)
 	}
 	if u.InferenceGeo != nil {
 		g := *u.InferenceGeo

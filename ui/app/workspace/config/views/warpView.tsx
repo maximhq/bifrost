@@ -47,9 +47,9 @@ import {
 	isFiniteNumber,
 	retainedWarpBackfillForSpace,
 	retainFinishedWarpBackfill,
-	type RetainedWarpBackfill,
 	validateWarpRetentionDays,
 	warpSavedSpaceKey,
+	type RetainedWarpBackfill,
 } from "./warpView.utils";
 
 /**
@@ -68,7 +68,7 @@ const DEFAULT_HISTORY_RETENTION_DAYS = 30;
 const DEFAULT_TEMPERATURE = 1;
 const DEFAULT_EMBEDDING_DIMENSION = 1536;
 const DEFAULT_VECTOR_NAMESPACE = "BifrostWarpLogs";
-const DEFAULT_SEARCH_THRESHOLD = 0.7;
+const DEFAULT_SEARCH_THRESHOLD = 0.5;
 const DEFAULT_SEARCH_LIMIT = 10;
 const DEFAULT_BACKFILL_PERIOD = "7d";
 
@@ -526,7 +526,7 @@ export default function WarpView() {
 	};
 
 	return (
-		<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="warp-config-view">
+		<div className="mx-auto w-full max-w-4xl space-y-4" data-testid="warp-config-view">
 			<form onSubmit={onSubmit} className="space-y-4">
 				<PageTitle title="Warp">
 					Warp answers questions about your Bifrost data in natural language. It runs on its own model, configured here and kept separate
@@ -927,7 +927,7 @@ export default function WarpView() {
 								<WarpField
 									label="Similarity threshold"
 									htmlFor="warp-search-threshold"
-									hint="0.01 to 1. Higher returns fewer, closer matches."
+									hint="0.01 to 1, where 0.5 is unrelated and 1 is identical. Higher returns fewer, closer matches."
 								>
 									<Input
 										id="warp-search-threshold"

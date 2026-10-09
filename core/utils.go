@@ -349,6 +349,28 @@ func stampRequestedRoute(ctx *schemas.BifrostContext, requested schemas.Route) {
 	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, model)
 }
 
+// layerFallbackIdentity marks an attempt's routing info as a fallback's when the request is on one,
+// naming the primary from the previous attempt's record: the primary's own, or the primary it
+// carried on a later fallback (clearCtxForFallback keeps the record).
+func layerFallbackIdentity(ctx *schemas.BifrostContext, info *schemas.RoutingInfo) {
+	if fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); fallbackIndex <= 0 {
+		return
+	}
+	info.IsFallback = true
+	prev, ok := ctx.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo)
+	if !ok {
+		return
+	}
+	if prev.IsFallback && prev.PrimaryProvider != nil {
+		info.PrimaryProvider = prev.PrimaryProvider
+		info.PrimaryModel = prev.PrimaryModel
+	} else if prev.Provider != "" {
+		primaryProvider, primaryModel := prev.Provider, prev.Model
+		info.PrimaryProvider = &primaryProvider
+		info.PrimaryModel = &primaryModel
+	}
+}
+
 // clearCtxForFallback clears the ctx values which are not applicable for fallback requests.
 func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
@@ -375,6 +397,18 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	// inherit it. Cleared here, not when the invoke method returns, because the
 	// in-flight stream still reads it asynchronously (#6825).
 	ctx.ClearValue(schemas.BifrostContextKeySSEReaderFactory)
+}
+
+// restoreProviderResponseHeaders puts headers, the primary attempt's provider response headers,
+// back on ctx before the primary's error is returned once every fallback failed. Each fallback
+// attempt replaces them with its own provider's, so without this the transport forwards the last
+// fallback's headers (its request-id, rate-limit headers) with the primary's error body.
+func restoreProviderResponseHeaders(ctx *schemas.BifrostContext, headers map[string]string) {
+	if headers == nil {
+		ctx.ClearValue(schemas.BifrostContextKeyProviderResponseHeaders)
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 }
 
 // ClearContextForInternalRequest clears context state that is specific to the
@@ -816,6 +850,7 @@ func isPromptOptionalVideoEditType(t *string) bool {
 // responses produced by a type-converted request are converted back to the
 // caller's original type before the post-hook runs.
 func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, targetType schemas.RequestType) schemas.PostHookRunner {
+	roleSent := false
 	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		if result != nil {
 			switch targetType {
@@ -830,6 +865,7 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 				// chat→responses: convert responses stream chunk back to chat
 				if result.ResponsesStreamResponse != nil {
 					if converted := result.ResponsesStreamResponse.ToBifrostChatResponse(); converted != nil {
+						roleSent = setAssistantRoleOnce(converted, roleSent)
 						result = &schemas.BifrostResponse{ChatResponse: converted}
 					}
 				}
@@ -837,4 +873,21 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 		}
 		return postHookRunner(ctx, result, bifrostErr)
 	}
+}
+
+// setAssistantRoleOnce puts the assistant role on the first delta of a
+// converted chat stream and clears it from later deltas. OpenAI-compatible
+// clients read the role from the first chunk only, and some concatenate a
+// repeated one. The stream converter emits a single choice per event. It
+// reports whether the role has been sent.
+func setAssistantRoleOnce(resp *schemas.BifrostChatResponse, roleSent bool) bool {
+	if len(resp.Choices) == 0 || resp.Choices[0].ChatStreamResponseChoice == nil || resp.Choices[0].Delta == nil {
+		return roleSent
+	}
+	if roleSent {
+		resp.Choices[0].Delta.Role = nil
+	} else {
+		resp.Choices[0].Delta.Role = schemas.Ptr(string(schemas.ChatMessageRoleAssistant))
+	}
+	return true
 }

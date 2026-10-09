@@ -68,6 +68,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -543,6 +544,18 @@ type PassthroughConfig struct {
 	// AllowedRoutes, when non-empty, restricts the passthrough catch-all to exactly
 	// these method+path pairs instead of forwarding every request under StripPrefix.
 	AllowedRoutes []PassthroughRoute
+	StreamingPath func(method, path string) bool // optional: decides which requests stream, replacing the generic markers
+}
+
+// streams reports whether a passthrough request is served by the streaming handler. When the provider
+// supplies StreamingPath its answer is final, because a restricted route knows exactly which operations
+// stream and an accepted identifier (a knowledge-base id containing "stream") must not change that.
+// Without it the path names a stream or the body asks for one.
+func (c *PassthroughConfig) streams(method, path string, bodyStream bool) bool {
+	if c.StreamingPath != nil {
+		return c.StreamingPath(method, path)
+	}
+	return strings.Contains(strings.ToLower(path), "stream") || bodyStream
 }
 
 // PassthroughRoute is an exact method+path pair a restricted passthrough router
@@ -962,6 +975,23 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 	}
 }
 
+// directKeyListModelsProvider is the provider a drop-in model listing asks when the caller sent a
+// direct key and named no provider. The key is the caller's credential for the provider whose SDK
+// called the route; listing every provider would send it to each of them, which ListAllModels
+// refuses. A route type that implies no single provider returns "", so that listing needs
+// x-bf-model-provider.
+func directKeyListModelsProvider(routeType RouteConfigType) schemas.ModelProvider {
+	switch routeType {
+	case RouteConfigTypeOpenAI:
+		return schemas.OpenAI
+	case RouteConfigTypeAnthropic:
+		return schemas.Anthropic
+	case RouteConfigTypeGenAI:
+		return schemas.Gemini
+	}
+	return ""
+}
+
 // handleNonStreamingRequest handles regular (non-streaming) requests
 func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, bifrostReq *schemas.BifrostRequest, bifrostCtx *schemas.BifrostContext) {
 	// Use the cancellable context from ConvertToBifrostContext
@@ -985,7 +1015,21 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		listModelsProvider := strings.ToLower(string(ctx.Request.Header.Peek("x-bf-model-provider")))
 		switch listModelsProvider {
 		case "":
-			// keep any provider already set on the request
+			// keep any provider already set on the request; a direct key with none asks the
+			// route's own provider (see directKeyListModelsProvider)
+			if bifrostReq.ListModelsRequest.Provider == "" {
+				if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+					if provider := directKeyListModelsProvider(config.Type); provider != "" {
+						if !g.handlerStore.IsProviderConfigured(provider) {
+							g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostErrorWithCode(nil,
+								fmt.Sprintf("provider %s is not configured: a model listing with a direct key asks only this route's provider; name a configured one with x-bf-model-provider", provider),
+								fasthttp.StatusBadRequest))
+							return
+						}
+						bifrostReq.ListModelsRequest.Provider = provider
+					}
+				}
+			}
 		case "all":
 			bifrostReq.ListModelsRequest.Provider = ""
 		default:
@@ -2751,9 +2795,7 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 
 	// Forward provider response headers stored in context by streaming handlers
 	if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-		for key, value := range headers {
-			ctx.Response.Header.Set(key, value)
-		}
+		lib.ForwardProviderResponseHeaders(ctx, headers)
 	}
 
 	// Routed-identity headers from the context snapshot — routing is final once
@@ -3402,29 +3444,68 @@ func extractModelFromPath(path string) string {
 	return ""
 }
 
-// parsePassthroughBody extracts model and streaming flag from the request body in a
-// single unmarshal pass. Pass the raw Content-Type header value so multipart boundaries
-// are resolved from the header rather than scraped from the body bytes.
-func parsePassthroughBody(contentType string, body []byte) (model string, isStream bool) {
+// parsePassthroughBody extracts model and streaming flag from the request body.
+// Pass the raw Content-Type header value so multipart boundaries are resolved from
+// the header rather than scraped from the body bytes.
+//
+// The body is forwarded upstream byte for byte, so the model this reports is what
+// governance checks while the upstream decides for itself what it executes. The two
+// must agree: a JSON body may carry the model key at most once, spelled exactly
+// "model", holding a string. A body that breaks that rule is refused with an error
+// rather than guessed at, because a different decoder's guess (case-folded key,
+// last duplicate wins, whole decode dropped on an unrelated field) is exactly what
+// would let one model be checked while another runs. Bodies with no model key are
+// fine; many passthrough endpoints have none.
+func parsePassthroughBody(contentType string, body []byte) (model string, isStream bool, err error) {
 	if len(body) == 0 {
 		return
 	}
-	mediaType, params, err := mime.ParseMediaType(contentType)
-	if err == nil && strings.HasPrefix(mediaType, "multipart/") {
+	mediaType, params, mimeErr := mime.ParseMediaType(contentType)
+	if mimeErr == nil && strings.HasPrefix(mediaType, "multipart/") {
 		if boundary := params["boundary"]; boundary != "" {
-			return parseMultipartPassthroughBody(body, boundary)
+			model, isStream = parseMultipartPassthroughBody(body, boundary)
+			return
 		}
 	}
-	// JSON (or unknown) body — one unmarshal for both fields.
-	var parsed struct {
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
+	if !gjson.ValidBytes(body) {
+		if mimeErr == nil && isJSONMediaType(mediaType) {
+			return "", false, errors.New("passthrough request body is not valid JSON")
+		}
+		// Not JSON and not declared as JSON: nothing here to govern or stream on.
+		return
 	}
-	if err := sonic.Unmarshal(body, &parsed); err == nil {
-		model = strings.TrimSpace(parsed.Model)
-		isStream = parsed.Stream
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() {
+		return
 	}
+	var modelKeys int
+	var modelValue gjson.Result
+	root.ForEach(func(key, value gjson.Result) bool {
+		if strings.EqualFold(key.Str, "model") {
+			modelKeys++
+			if key.Str == "model" {
+				modelValue = value
+			}
+		}
+		return true
+	})
+	switch {
+	case modelKeys > 1:
+		return "", false, errors.New("passthrough request body must carry the model key at most once")
+	case modelKeys == 1 && !modelValue.Exists():
+		return "", false, errors.New("passthrough request body model key must be spelled \"model\"")
+	case modelKeys == 1 && modelValue.Type != gjson.String:
+		return "", false, errors.New("passthrough request body model must be a string")
+	case modelKeys == 1:
+		model = strings.TrimSpace(modelValue.Str)
+	}
+	isStream = root.Get("stream").Type == gjson.True
 	return
+}
+
+// isJSONMediaType reports whether a parsed media type declares a JSON body.
+func isJSONMediaType(mediaType string) bool {
+	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
 }
 
 // parseMultipartPassthroughBody scans multipart parts and extracts model and stream.
@@ -3528,16 +3609,25 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if !passthroughInferenceRoute(cfg, string(ctx.Method()), path) {
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "passthrough requires a supported inference endpoint and method", fasthttp.StatusForbidden))
+		return
+	}
+
 	body := ctx.Request.Body()
 	// Parse body once to get both model and stream flag.
 	contentType := string(ctx.Request.Header.ContentType())
-	bodyModel, bodyStream := parsePassthroughBody(contentType, body)
+	bodyModel, bodyStream, err := parsePassthroughBody(contentType, body)
+	if err != nil {
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
+		return
+	}
 	resolvedModel := extractPassthroughModel(path, bodyModel)
 	provider := cfg.Provider
 	if cfg.ProviderDetector != nil {
 		provider = cfg.ProviderDetector(ctx, bodyModel)
 	}
-	provider, err := getPassthroughProvider(ctx, provider)
+	provider, err = getPassthroughProvider(ctx, provider)
 	if err != nil {
 		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
 		return
@@ -3545,7 +3635,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
 	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, provider, callerAuth, cfg.UpstreamURL)
-	isStreaming := strings.Contains(strings.ToLower(path), "stream") || bodyStream
+	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream)
 
 	passthroughReq := &schemas.BifrostPassthroughRequest{
 		Method:      string(ctx.Method()),
@@ -3584,6 +3674,9 @@ func (g *GenericRouter) handlePassthroughNonStream(
 
 	ctx.SetStatusCode(resp.StatusCode)
 	for k, v := range resp.Headers {
+		if lib.IsGatewayOwnedResponseHeader(k) {
+			continue
+		}
 		switch strings.ToLower(k) {
 		case "connection", "transfer-encoding", "set-cookie", "proxy-authenticate", "www-authenticate":
 			// drop
@@ -3692,6 +3785,9 @@ func (g *GenericRouter) handlePassthroughStream(
 	ctx.Response.Header.Set("Connection", "keep-alive")
 	ctx.Response.Header.Set("X-Accel-Buffering", "no")
 	for k, v := range passthroughResp.Headers {
+		if lib.IsGatewayOwnedResponseHeader(k) {
+			continue
+		}
 		switch strings.ToLower(k) {
 		case "connection", "transfer-encoding", "content-length", "content-type",
 			"cache-control", "x-accel-buffering",

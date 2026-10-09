@@ -25,9 +25,28 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// validateProviderBaseURLShape keeps appended operation paths in the URL path.
+// Destination validation follows authentication so anonymous callers cannot
+// trigger DNS lookups while submitting endpoint changes.
+func validateProviderBaseURLShape(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid base URL: %w", err)
+	}
+	if u.User != nil || strings.ContainsAny(raw, "?#") {
+		return errors.New("base URL must not contain credentials, a query, or a fragment")
+	}
+	return nil
+}
+
 // ModelsManager defines the interface for managing provider models
 type ModelsManager interface {
-	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
+	// ReloadProvider reloads a provider after a write; isNew is set when the add endpoint created
+	// it, and unset when the update endpoint edited it.
+	ReloadProvider(ctx context.Context, provider schemas.ModelProvider, isNew bool) (*tables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	GetModelsForProvider(provider schemas.ModelProvider) []string
 	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
@@ -102,6 +121,7 @@ type ProviderResponse struct {
 	SendBackRawRequest       bool                             `json:"send_back_raw_request"`            // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                             `json:"send_back_raw_response"`           // Include raw response in BifrostResponse
 	StoreRawRequestResponse  bool                             `json:"store_raw_request_response"`       // Capture raw request/response for internal logging only
+	IgnoreProviderCost       bool                             `json:"ignore_provider_cost"`             // Ignore provider-reported usage.cost and price from Bifrost's catalog
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`          // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`           // Prompt-cache breakpoint injection
@@ -131,6 +151,7 @@ type providerCreatePayload struct {
 	SendBackRawRequest       *bool                             `json:"send_back_raw_request,omitempty"`
 	SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`
 	StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"`
+	IgnoreProviderCost       *bool                             `json:"ignore_provider_cost,omitempty"`
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"` // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
@@ -143,6 +164,7 @@ type providerUpdatePayload struct {
 	SendBackRawRequest       *bool                            `json:"send_back_raw_request,omitempty"`
 	SendBackRawResponse      *bool                            `json:"send_back_raw_response,omitempty"`
 	StoreRawRequestResponse  *bool                            `json:"store_raw_request_response,omitempty"`
+	IgnoreProviderCost       *bool                            `json:"ignore_provider_cost,omitempty"`
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"` // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
@@ -359,6 +381,10 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		// fail-open bypass could otherwise set both fields together and self-authorize its
 		// own SSRF target. The flag alone also widens what ConfigureDialer lets key-level
 		// URLs (Ollama/SGL/VLLM) reach.
+		if err := validateProviderBaseURLShape(payload.NetworkConfig.BaseURL); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 		if isAuthBypassed(ctx) && providerDialTargetChanged(nil, *payload.NetworkConfig) {
 			SendError(ctx, fasthttp.StatusForbidden, providerDialTargetForbiddenMsg)
 			return
@@ -389,6 +415,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		SendBackRawRequest:       payload.SendBackRawRequest != nil && *payload.SendBackRawRequest,
 		SendBackRawResponse:      payload.SendBackRawResponse != nil && *payload.SendBackRawResponse,
 		StoreRawRequestResponse:  payload.StoreRawRequestResponse != nil && *payload.StoreRawRequestResponse,
+		IgnoreProviderCost:       payload.IgnoreProviderCost != nil && *payload.IgnoreProviderCost,
 		CustomProviderConfig:     payload.CustomProviderConfig,
 		OpenAIConfig:             payload.OpenAIConfig,
 		PromptCache:              payload.PromptCache,
@@ -443,6 +470,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			SendBackRawRequest:       config.SendBackRawRequest,
 			SendBackRawResponse:      config.SendBackRawResponse,
 			StoreRawRequestResponse:  config.StoreRawRequestResponse,
+			IgnoreProviderCost:       config.IgnoreProviderCost,
 			CustomProviderConfig:     config.CustomProviderConfig,
 			OpenAIConfig:             config.OpenAIConfig,
 			PromptCache:              config.PromptCache,
@@ -543,6 +571,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
 		PromptCache:              oldConfigRaw.PromptCache,
 		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
+		IgnoreProviderCost:       oldConfigRaw.IgnoreProviderCost,
 		Status:                   oldConfigRaw.Status,
 		Description:              oldConfigRaw.Description,
 	}
@@ -578,6 +607,10 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	// Validate retry backoff values
 	if err := validateRetryBackoff(&nc); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid retry backoff: %v", err))
+		return
+	}
+	if err := validateProviderBaseURLShape(nc.BaseURL); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 	if isAuthBypassed(ctx) && providerDialTargetChanged(oldConfigRaw.NetworkConfig, nc) {
@@ -630,6 +663,9 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	if payload.StoreRawRequestResponse != nil {
 		config.StoreRawRequestResponse = *payload.StoreRawRequestResponse
 	}
+	if payload.IgnoreProviderCost != nil {
+		config.IgnoreProviderCost = *payload.IgnoreProviderCost
+	}
 
 	// Add provider to store if it doesn't exist (upsert behavior)
 	if _, err := h.inMemoryStore.GetProviderConfigRaw(provider); err != nil {
@@ -663,7 +699,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	if payload.CustomProviderConfig != nil && payload.CustomProviderConfig.IsKeyLess {
 		ctxWithTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if _, reloadErr := h.modelsManager.ReloadProvider(ctxWithTimeout, provider); reloadErr != nil {
+		if _, reloadErr := h.modelsManager.ReloadProvider(ctxWithTimeout, provider, false); reloadErr != nil {
 			logger.Warn("ReloadProvider failed for keyless provider %s: %v", provider, reloadErr)
 		}
 	} else {
@@ -688,6 +724,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			SendBackRawRequest:       config.SendBackRawRequest,
 			SendBackRawResponse:      config.SendBackRawResponse,
 			StoreRawRequestResponse:  config.StoreRawRequestResponse,
+			IgnoreProviderCost:       config.IgnoreProviderCost,
 			CustomProviderConfig:     config.CustomProviderConfig,
 			OpenAIConfig:             config.OpenAIConfig,
 			PromptCache:              config.PromptCache,
@@ -1482,11 +1519,12 @@ func (h *ProviderHandler) reloadProviderAfterCreate(ctx *fasthttp.RequestCtx, pr
 	ctxWithTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	_, err := h.modelsManager.ReloadProvider(ctxWithTimeout, provider)
+	_, err := h.modelsManager.ReloadProvider(ctxWithTimeout, provider, true)
 	return err
 }
 
-// attemptModelDiscovery performs model discovery with timeout
+// attemptModelDiscovery performs model discovery with timeout. It runs after an update, which edits
+// a provider the add endpoint created, so the reload is told the provider is not new.
 func (h *ProviderHandler) attemptModelDiscovery(ctx *fasthttp.RequestCtx, provider schemas.ModelProvider, customProviderConfig *schemas.CustomProviderConfig) error {
 	// Determine if we should attempt model discovery
 	shouldDiscoverModels := customProviderConfig == nil ||
@@ -1500,7 +1538,7 @@ func (h *ProviderHandler) attemptModelDiscovery(ctx *fasthttp.RequestCtx, provid
 	ctxWithTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	_, err := h.modelsManager.ReloadProvider(ctxWithTimeout, provider)
+	_, err := h.modelsManager.ReloadProvider(ctxWithTimeout, provider, false)
 	if err != nil {
 		return err
 	}
@@ -1524,6 +1562,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		SendBackRawRequest:       config.SendBackRawRequest,
 		SendBackRawResponse:      config.SendBackRawResponse,
 		StoreRawRequestResponse:  config.StoreRawRequestResponse,
+		IgnoreProviderCost:       config.IgnoreProviderCost,
 		CustomProviderConfig:     config.CustomProviderConfig,
 		OpenAIConfig:             config.OpenAIConfig,
 		PromptCache:              config.PromptCache,

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { getPasswordPolicyFailures, hasCopilotApiToken, isRedacted, isValidVertexAuthCredentials } from "./validation";
+import { BaseProviderNames } from "../types/config";
+import {
+	getPasswordPolicyFailures,
+	hasCopilotApiToken,
+	isRedacted,
+	isRequestTypeDisabled,
+	isValidVertexAuthCredentials,
+} from "./validation";
 
 describe("isRedacted", () => {
 	it.each(["<redacted>", "<REDACTED>", "[redacted]", "[REDACTED]"])("recognizes the backend sentinel %s", (value) => {
@@ -82,5 +89,32 @@ describe("isValidVertexAuthCredentials", () => {
 	it("accepts references and masked previews without parsing them", () => {
 		expect(isValidVertexAuthCredentials("env.VERTEX_CREDENTIALS")).toBe(true);
 		expect(isValidVertexAuthCredentials("vault.secret/vertex")).toBe(true);
+	});
+});
+
+describe("isRequestTypeDisabled", () => {
+	it("offers typesafe as a custom provider base format", () => {
+		expect(BaseProviderNames).toContain("typesafe");
+	});
+
+	it("enables only decisions and list models for a typesafe base", () => {
+		expect(isRequestTypeDisabled("typesafe", "decisions")).toBe(false);
+		expect(isRequestTypeDisabled("typesafe", "list_models")).toBe(false);
+		expect(isRequestTypeDisabled("typesafe", "chat_completion")).toBe(true);
+		expect(isRequestTypeDisabled("typesafe", "embedding")).toBe(true);
+	});
+
+	it("offers live sessions on an openai base, which is the one provider that serves them", () => {
+		expect(isRequestTypeDisabled("openai", "live")).toBe(false);
+		expect(isRequestTypeDisabled("anthropic", "live")).toBe(true);
+	});
+
+	it("keeps decisions off for bases that do not serve them natively", () => {
+		expect(isRequestTypeDisabled("openai", "decisions")).toBe(true);
+		expect(isRequestTypeDisabled("anthropic", "decisions")).toBe(true);
+	});
+
+	it("allows everything when no base format is picked", () => {
+		expect(isRequestTypeDisabled(undefined, "decisions")).toBe(false);
 	});
 });

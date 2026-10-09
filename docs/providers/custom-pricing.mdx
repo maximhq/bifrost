@@ -97,6 +97,12 @@ Scope identifiers are exclusive to their scope kind - you cannot mix them. For e
 
 ---
 
+## Providers that report their own cost
+
+Some providers return a `usage.cost` with each response, and Bifrost uses it in place of catalog pricing whenever it is above zero, so overrides don't apply to them. If that figure is in another unit or currency, as with Cortecs credits, enable `ignore_provider_cost` on the provider. Bifrost then prices those requests from the catalog and your overrides. See [Ignore provider-reported cost](../quickstart/gateway/provider-configuration#ignore-provider-reported-cost).
+
+---
+
 ## Pattern matching
 
 The `pattern` field controls which model names the override applies to. The `match_type` field controls how the pattern is interpreted.
@@ -322,6 +328,8 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 |-------|-------------|
 | `input_cost_per_token_above_128k_tokens` | Input cost above 128k context |
 | `output_cost_per_token_above_128k_tokens` | Output cost above 128k context |
+| `input_cost_per_token_above_100k_tokens` | Input cost above 100k context |
+| `output_cost_per_token_above_100k_tokens` | Output cost above 100k context |
 | `input_cost_per_token_above_200k_tokens` | Input cost above 200k context |
 | `input_cost_per_token_above_200k_tokens_priority` | Input cost above 200k context for priority requests |
 | `output_cost_per_token_above_200k_tokens` | Output cost above 200k context |
@@ -356,6 +364,9 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | `cache_creation_input_audio_token_cost` | Cache creation cost for audio tokens |
 | `cache_creation_input_token_cost_above_1hr` | Cache creation cost for 1hr+ TTL entries |
 | `cache_creation_input_token_cost_above_1hr_above_200k_tokens` | Cache creation cost for 1hr+ TTL entries above 200k context |
+| `cache_creation_input_token_cost_above_100k_tokens` | Cache creation above 100k context |
+| `cache_read_input_token_cost_above_100k_tokens` | Cache read above 100k context |
+| `cache_creation_input_token_cost_above_1hr_above_100k_tokens` | Cache creation cost for 1hr+ TTL entries above 100k context |
 | `cache_creation_input_token_cost_above_272k_tokens` | Cache creation above 272k context |
 | `cache_creation_input_token_cost_flex` | Flex cache creation cost |
 | `cache_creation_input_token_cost_flex_above_272k_tokens` | Cache creation above 272k context for flex requests |

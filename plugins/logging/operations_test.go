@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/framework/streaming"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/stretchr/testify/require"
 )
 
 type testLogger struct{}
@@ -204,6 +205,26 @@ func newTestStore(t *testing.T) logstore.LogStore {
 		t.Fatalf("NewLogStore() error = %v", err)
 	}
 	return store
+}
+
+func TestProcessBatchReconcilesA2ACorrelationAfterInsert(t *testing.T) {
+	store := newTestStore(t)
+	t.Cleanup(func() { require.NoError(t, store.Close(context.Background())) })
+	plugin := &LoggerPlugin{ctx: context.Background(), store: store, logger: testLogger{}}
+	taskID, contextID := "task-1", "context-1"
+	now := time.Now().UTC()
+
+	plugin.processBatch(context.Background(), []*writeQueueEntry{{agentLog: &logstore.AgentLog{
+		ID: "request-first", Timestamp: now, RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "request-1",
+	}}})
+	plugin.processBatch(context.Background(), []*writeQueueEntry{{agentLog: &logstore.AgentLog{
+		ID: "event-later", Timestamp: now.Add(time.Second), RecordKind: "event", Status: "success", AgentName: "fixture", RequestID: "request-1", TaskID: &taskID, ContextID: &contextID,
+	}}})
+
+	found, err := store.FindAgentLog(context.Background(), "request-first")
+	require.NoError(t, err)
+	require.Equal(t, taskID, *found.TaskID)
+	require.Equal(t, contextID, *found.ContextID)
 }
 
 func TestUserAgentFromContextUsesRequestHeaders(t *testing.T) {
@@ -423,9 +444,11 @@ func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-error-no-pending")
+	agentCorrelationID := strings.Repeat("a", maxPersistedAgentCorrelationIDLen+1)
 	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
-		"x-bf-lh-tenant": "acme",
-		"x-custom-log":   "custom-value",
+		"x-bf-lh-tenant":            "acme",
+		"x-custom-log":              "custom-value",
+		"X-Bf-Agent-Correlation-Id": agentCorrelationID,
 	})
 	ctx.SetValue(schemas.BifrostContextKeyDimensions, map[string]string{
 		"region": "us-east",
@@ -486,6 +509,9 @@ func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 	}
 	if logEntry.SessionID == nil || *logEntry.SessionID != "session-no-pending-error" {
 		t.Fatalf("expected session ID on the minimal-error entry, got %v", logEntry.SessionID)
+	}
+	if logEntry.AgentCorrelationID == nil || *logEntry.AgentCorrelationID != agentCorrelationID[:maxPersistedAgentCorrelationIDLen] {
+		t.Fatalf("minimal-error agent correlation ID = %v, want %q", logEntry.AgentCorrelationID, agentCorrelationID[:maxPersistedAgentCorrelationIDLen])
 	}
 }
 
@@ -582,11 +608,15 @@ func TestEmitAggregateLogEmitsSettlementSpan(t *testing.T) {
 		TotalTokens:      150,
 		TeamID:           &teamID,
 		VirtualKeyID:     &vkID,
+		BatchDebugParsed: &schemas.BifrostBatchDebug{BatchID: "batch_abc123"},
 	}
 	plugin.EmitAggregateLog(context.Background(), entry)
 
 	select {
 	case attrs := <-capture.spans:
+		if got, _ := attrs[schemas.AttrBatchID].(string); got != "batch_abc123" {
+			t.Fatalf("span batch id = %v, want batch_abc123", attrs[schemas.AttrBatchID])
+		}
 		if got, _ := attrs[schemas.AttrUsageCost].(float64); got != cost {
 			t.Fatalf("span cost = %v, want %v", attrs[schemas.AttrUsageCost], cost)
 		}
@@ -1582,6 +1612,21 @@ func TestBuildCompleteLogEntryPreservesUserAgent(t *testing.T) {
 	}
 }
 
+func TestBuildCompleteLogEntryBoundsAgentCorrelationID(t *testing.T) {
+	agentCorrelationID := strings.Repeat("a", maxPersistedAgentCorrelationIDLen+1)
+	entry := buildCompleteLogEntryFromPending(&PendingLogData{
+		RequestID: "req-complete-agent-correlation",
+		Timestamp: time.Now().UTC(),
+		InitialData: &InitialLogData{
+			AgentCorrelationID: agentCorrelationID,
+		},
+	})
+
+	if entry.AgentCorrelationID == nil || *entry.AgentCorrelationID != agentCorrelationID[:maxPersistedAgentCorrelationIDLen] {
+		t.Fatalf("complete log agent correlation ID = %v, want %q", entry.AgentCorrelationID, agentCorrelationID[:maxPersistedAgentCorrelationIDLen])
+	}
+}
+
 func TestBuildLogEntriesOmitEmptyUserAgent(t *testing.T) {
 	pending := &PendingLogData{
 		RequestID:     "req-empty-user-agent",
@@ -1606,6 +1651,21 @@ func TestBuildLogEntriesOmitEmptyUserAgent(t *testing.T) {
 	}
 }
 
+func TestApplyMCPCorrelationFieldsBoundsAgentCorrelationID(t *testing.T) {
+	agentCorrelationID := strings.Repeat("a", maxPersistedAgentCorrelationIDLen+1)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"x-bf-agent-correlation-id": agentCorrelationID,
+	})
+	entry := &logstore.MCPToolLog{}
+
+	applyMCPCorrelationFieldsToEntry(ctx, entry)
+
+	if entry.AgentCorrelationID == nil || *entry.AgentCorrelationID != agentCorrelationID[:maxPersistedAgentCorrelationIDLen] {
+		t.Fatalf("MCP agent correlation ID = %v, want %q", entry.AgentCorrelationID, agentCorrelationID[:maxPersistedAgentCorrelationIDLen])
+	}
+}
+
 // TestMCPHooksPersistPluginLogs verifies PostMCPHook stores the plugin-log
 // snapshot accumulated before logging's post-hook runs.
 func TestMCPHooksPersistPluginLogs(t *testing.T) {
@@ -1622,6 +1682,10 @@ func TestMCPHooksPersistPluginLogs(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, "team-1")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, "customer-1")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceBusinessUnitID, "bu-1")
+	ctx.SetValue(schemas.BifrostContextKeySessionID, "session-mcp-normal")
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"x-bf-agent-correlation-id": "agent-mcp-normal",
+	})
 	schemas.SetRedactionDataOnContext(ctx, schemas.RedactionData{
 		ReversibleMappings: schemas.RedactionMapsByPhase{
 			Input:  map[string]string{"EMAIL-1": "private@example.com"},
@@ -1714,6 +1778,12 @@ func TestMCPHooksPersistPluginLogs(t *testing.T) {
 		t.Fatalf("expected guardrails plugin log to be persisted, got %#v", pluginLogs)
 	}
 	assertMCPLogGovernanceFields(t, logEntry, "user-1", "team-1", "customer-1", "bu-1")
+	if logEntry.SessionID == nil || *logEntry.SessionID != "session-mcp-normal" {
+		t.Fatalf("expected MCP session ID, got %v", logEntry.SessionID)
+	}
+	if logEntry.AgentCorrelationID == nil || *logEntry.AgentCorrelationID != "agent-mcp-normal" {
+		t.Fatalf("expected MCP agent correlation ID, got %v", logEntry.AgentCorrelationID)
+	}
 }
 
 // TestPostMCPHookDropsArgumentsWhenContentIsDisabledLate pins the MCP hook ordering hole: logging's
@@ -2265,6 +2335,10 @@ func TestPostMCPHookFallbackStampsGovernanceFields(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, "team-fallback")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, "customer-fallback")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceBusinessUnitID, "bu-fallback")
+	ctx.SetValue(schemas.BifrostContextKeySessionID, "session-mcp-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"X-BF-Agent-Correlation-ID": "agent-mcp-fallback",
+	})
 
 	result := `{"answer":"fallback"}`
 	_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
@@ -2291,6 +2365,12 @@ func TestPostMCPHookFallbackStampsGovernanceFields(t *testing.T) {
 		t.Fatalf("FindMCPToolLog() error = %v", err)
 	}
 	assertMCPLogGovernanceFields(t, logEntry, "user-fallback", "team-fallback", "customer-fallback", "bu-fallback")
+	if logEntry.SessionID == nil || *logEntry.SessionID != "session-mcp-fallback" {
+		t.Fatalf("expected fallback MCP session ID, got %v", logEntry.SessionID)
+	}
+	if logEntry.AgentCorrelationID == nil || *logEntry.AgentCorrelationID != "agent-mcp-fallback" {
+		t.Fatalf("expected fallback MCP agent correlation ID, got %v", logEntry.AgentCorrelationID)
+	}
 }
 
 // TestCleanupStalePendingMCPLogsPersistsErrorFallback verifies stale pending
@@ -2417,6 +2497,33 @@ func TestIdlePendingEntryEvicted(t *testing.T) {
 	if _, ok := plugin.pendingLogsEntries.Load("req-idle"); ok {
 		t.Fatal("expected idle pending entry to be evicted by cleanup")
 	}
+}
+
+func TestCleanupStalePendingAgentLogsUsesTimestamp(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, plugin.Cleanup())
+	})
+
+	freshKey := a2aPendingKey("req-agent-fresh", schemas.A2ARequestTypeSendMessage)
+	staleKey := a2aPendingKey("req-agent-stale", schemas.A2ARequestTypeSendMessage)
+	plugin.pendingAgentLogs.Store(freshKey, &logstore.AgentLog{
+		RequestID: "req-agent-fresh",
+		Timestamp: time.Now(),
+	})
+	plugin.pendingAgentLogs.Store(staleKey, &logstore.AgentLog{
+		RequestID: "req-agent-stale",
+		Timestamp: time.Now().Add(-pendingLogTTL - time.Minute),
+	})
+
+	plugin.cleanupStalePendingLogs()
+
+	_, freshExists := plugin.pendingAgentLogs.Load(freshKey)
+	require.True(t, freshExists, "fresh Agent request should survive cleanup")
+	_, staleExists := plugin.pendingAgentLogs.Load(staleKey)
+	require.False(t, staleExists, "expired Agent request should be removed")
 }
 
 // TestPreMCPHookSkipsPrefixedCodemodeTool verifies that PreMCP skips codemode
@@ -4279,5 +4386,471 @@ func TestEmitAggregateLogEmitsSettlementCostBreakdown(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no settlement span injected to the observability connector")
+	}
+}
+
+func TestObserveA2AEventEnqueuesCorrelatedBoundedEventRow(t *testing.T) {
+	plugin := &LoggerPlugin{writeQueue: make(chan *writeQueueEntry, 1), logger: testLogger{}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "operation-1")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, "Validation key")
+	ctx.SetValue(schemas.BifrostContextKeyUserID, "user-1")
+	ctx.SetValue(schemas.BifrostContextKeyUserName, "Validation user")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamIDs, []string{"team-1", "team-2"})
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamNames, []string{"Team One", "Team Two"})
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerIDs, []string{"customer-1"})
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerNames, []string{"Customer One"})
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceBusinessUnitIDs, []string{"bu-1"})
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceBusinessUnitNames, []string{"Business Unit One"})
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceProjectID, "project-1")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceProjectName, "Project One")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, []string{"budget-1"})
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, []string{"rate-limit-1"})
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+	ctx.SetValue(schemas.BifrostContextKeyA2ADownstreamTransport, "JSONRPC")
+	ctx.SetValue(schemas.BifrostContextKeyA2AUpstreamTransport, "GRPC")
+	body := `{"kind":"status-update","taskId":"task-1"}`
+
+	plugin.ObserveA2AEvent(ctx, &schemas.BifrostA2AEvent{
+		RequestType: schemas.A2ARequestTypeSubscribeToTask,
+		AgentName:   "fixture",
+		EventType:   schemas.A2AEventTypeStatusUpdate,
+		Sequence:    2,
+		TaskID:      "task-1",
+		ContextID:   "context-1",
+		MessageID:   "message-1",
+		ArtifactID:  "artifact-1",
+		TaskState:   "working",
+		ContentType: "text/plain",
+		Body:        &body,
+	})
+
+	queued := <-plugin.writeQueue
+	require.NotNil(t, queued.agentLog)
+	entry := queued.agentLog
+	require.Equal(t, "event", entry.RecordKind)
+	require.Equal(t, "SubscribeToTask", entry.Operation)
+	require.Equal(t, "operation-1", entry.RequestID)
+	require.Equal(t, int64(2), *entry.EventSequence)
+	require.Equal(t, "status_update", *entry.EventType)
+	require.Equal(t, "fixture", entry.AgentName)
+	require.Equal(t, "vk-1", *entry.VirtualKeyID)
+	require.Equal(t, "Validation key", *entry.VirtualKeyName)
+	require.Equal(t, "user-1", *entry.UserID)
+	require.Equal(t, "Validation user", *entry.UserName)
+	require.Equal(t, []string{"team-1", "team-2"}, entry.TeamIDsParsed)
+	require.Equal(t, []string{"Team One", "Team Two"}, entry.TeamNamesParsed)
+	require.Equal(t, []string{"customer-1"}, entry.CustomerIDsParsed)
+	require.Equal(t, []string{"Customer One"}, entry.CustomerNamesParsed)
+	require.Equal(t, []string{"bu-1"}, entry.BusinessUnitIDsParsed)
+	require.Equal(t, []string{"Business Unit One"}, entry.BusinessUnitNamesParsed)
+	require.Equal(t, "project-1", *entry.ProjectID)
+	require.Equal(t, "Project One", *entry.ProjectName)
+	require.Equal(t, []string{"budget-1"}, entry.BudgetIDsParsed)
+	require.Equal(t, []string{"rate-limit-1"}, entry.RateLimitIDsParsed)
+	require.Equal(t, "trace-1", *entry.TraceID)
+	require.Equal(t, "JSONRPC", *entry.DownstreamTransport)
+	require.Equal(t, "GRPC", *entry.UpstreamTransport)
+	require.Equal(t, "task-1", *entry.TaskID)
+	require.Equal(t, "context-1", *entry.ContextID)
+	require.Equal(t, "message-1", *entry.MessageID)
+	require.Equal(t, "artifact-1", *entry.ArtifactID)
+	require.Equal(t, "working", *entry.TaskState)
+	require.Equal(t, "text/plain", *entry.ContentType)
+	require.Equal(t, body, *entry.EventBody)
+}
+
+func TestObserveA2AEventQueueFailureDoesNotPanic(t *testing.T) {
+	plugin := &LoggerPlugin{writeQueue: make(chan *writeQueueEntry), logger: testLogger{}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "operation-1")
+	require.NotPanics(t, func() {
+		plugin.ObserveA2AEvent(ctx, &schemas.BifrostA2AEvent{Sequence: 1})
+	})
+	require.Equal(t, int64(1), plugin.droppedRequests.Load())
+}
+
+func TestSerializePluginLogsBoundedKeepsValidNewestEntries(t *testing.T) {
+	logs := []schemas.PluginLogEntry{
+		{PluginName: "fixture", Level: schemas.LogLevelInfo, Message: strings.Repeat("old", maxA2APluginLogsLen)},
+		{PluginName: "fixture", Level: schemas.LogLevelInfo, Message: "newest"},
+	}
+
+	serialized := serializePluginLogsBounded(logs, maxA2APluginLogsLen)
+	require.LessOrEqual(t, len(serialized), maxA2APluginLogsLen)
+
+	var grouped map[string][]schemas.PluginLogEntry
+	require.NoError(t, json.Unmarshal([]byte(serialized), &grouped))
+	require.Equal(t, []schemas.PluginLogEntry{logs[1]}, grouped["fixture"])
+}
+
+func TestA2AHooksApplyFinalContentPolicy(t *testing.T) {
+	requestBody := `{"jsonrpc":"2.0","method":"SendMessage"}`
+	responseBody := `{"jsonrpc":"2.0","result":{"id":"task-1"}}`
+
+	for _, test := range []struct {
+		name         string
+		plugin       *LoggerPlugin
+		wantHidden   bool
+		wantPayloads bool
+	}{
+		{name: "dropped", plugin: policyTestPlugin(nil, nil, true), wantPayloads: false},
+		{name: "hidden", plugin: policyTestPlugin(nil, boolPtr(true), true), wantHidden: true, wantPayloads: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.plugin.writeQueue = make(chan *writeQueueEntry, 1)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-a2a-policy-"+test.name)
+			req := &schemas.BifrostA2ARequest{RequestType: schemas.A2ARequestTypeSendMessage, AgentName: "fixture", RequestBody: &requestBody}
+			_, short, err := test.plugin.PreA2AHook(ctx, req)
+			require.NoError(t, err)
+			require.Nil(t, short)
+
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+			resp := &schemas.BifrostA2AResponse{ResponseBody: &responseBody, ExtraFields: schemas.BifrostA2AResponseExtraFields{A2ARequestType: schemas.A2ARequestTypeSendMessage, AgentName: "fixture"}}
+			_, _, err = test.plugin.PostA2AHook(ctx, resp, nil)
+			require.NoError(t, err)
+			entry := (<-test.plugin.writeQueue).agentLog
+			require.Equal(t, test.wantHidden, entry.ContentHidden)
+			if test.wantPayloads {
+				require.Equal(t, requestBody, *entry.RequestBody)
+				require.Equal(t, responseBody, *entry.ResponseBody)
+			} else {
+				require.Nil(t, entry.RequestBody)
+				require.Nil(t, entry.ResponseBody)
+			}
+		})
+	}
+}
+
+func TestPostA2AHookSanitizesErrorPayloadsByContentPolicy(t *testing.T) {
+	rawRequest := map[string]any{"secret": "request"}
+	rawResponse := map[string]any{"secret": "response"}
+
+	for _, test := range []struct {
+		name           string
+		plugin         *LoggerPlugin
+		shouldStoreRaw bool
+		wantRaw        bool
+	}{
+		{name: "visible raw disabled", plugin: policyTestPlugin(nil, nil, true)},
+		{name: "visible raw enabled", plugin: policyTestPlugin(nil, nil, true), shouldStoreRaw: true, wantRaw: true},
+		{name: "hidden", plugin: policyTestPlugin(nil, boolPtr(true), true), shouldStoreRaw: true},
+		{name: "dropped", plugin: policyTestPlugin(nil, nil, true), shouldStoreRaw: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.plugin.writeQueue = make(chan *writeQueueEntry, 1)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-a2a-error-policy-"+test.name)
+			ctx.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, test.shouldStoreRaw)
+			req := &schemas.BifrostA2ARequest{RequestType: schemas.A2ARequestTypeSendMessage, AgentName: "fixture"}
+			_, short, err := test.plugin.PreA2AHook(ctx, req)
+			require.NoError(t, err)
+			require.Nil(t, short)
+			if test.name == "hidden" || test.name == "dropped" {
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+			}
+
+			bifrostErr := &schemas.BifrostError{ExtraFields: schemas.BifrostErrorExtraFields{RawRequest: rawRequest, RawResponse: rawResponse}}
+			resp := &schemas.BifrostA2AResponse{ExtraFields: schemas.BifrostA2AResponseExtraFields{A2ARequestType: schemas.A2ARequestTypeSendMessage, AgentName: "fixture"}}
+			_, _, err = test.plugin.PostA2AHook(ctx, resp, bifrostErr)
+			require.NoError(t, err)
+
+			entry := (<-test.plugin.writeQueue).agentLog
+			require.NotNil(t, entry.ErrorDetailsParsed)
+			if test.wantRaw {
+				require.Equal(t, rawRequest, entry.ErrorDetailsParsed.ExtraFields.RawRequest)
+				require.Equal(t, rawResponse, entry.ErrorDetailsParsed.ExtraFields.RawResponse)
+			} else {
+				require.Nil(t, entry.ErrorDetailsParsed.ExtraFields.RawRequest)
+				require.Nil(t, entry.ErrorDetailsParsed.ExtraFields.RawResponse)
+			}
+			require.Equal(t, rawRequest, bifrostErr.ExtraFields.RawRequest)
+			require.Equal(t, rawResponse, bifrostErr.ExtraFields.RawResponse)
+		})
+	}
+}
+
+func TestObserveA2AEventAppliesContentPolicy(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, map[schemas.BifrostContextKey]bool{schemas.BifrostContextKeyGovernanceDisableContentLogging: true})
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "operation-policy")
+	body := `{"kind":"status-update"}`
+
+	plugin.ObserveA2AEvent(ctx, &schemas.BifrostA2AEvent{RequestType: schemas.A2ARequestTypeSubscribeToTask, AgentName: "fixture", Sequence: 1, Body: &body})
+
+	entry := (<-plugin.writeQueue).agentLog
+	require.Nil(t, entry.EventBody)
+	require.False(t, entry.ContentHidden)
+}
+
+func TestA2AResponseCorrelationPreservesRequestValuesWhenResponseOmitsThem(t *testing.T) {
+	entry := &logstore.AgentLog{}
+	applyA2ARequestCorrelation(entry, &schemas.BifrostA2ARequest{
+		BifrostA2ASendMessageRequest: &schemas.BifrostA2ASendMessageRequest{
+			TaskID:    "request-task",
+			ContextID: "request-context",
+		},
+		BifrostA2APushRequest: &schemas.BifrostA2APushRequest{
+			PushConfigID: "request-config",
+			DeliveryID:   "request-delivery",
+			AttemptID:    "request-attempt",
+		},
+	})
+
+	applyA2AResponseCorrelation(entry, &schemas.BifrostA2AResponse{
+		BifrostA2ASendMessageResponse: &schemas.BifrostA2ASendMessageResponse{},
+		BifrostA2ATaskResponse:        &schemas.BifrostA2ATaskResponse{},
+		BifrostA2APushResponse:        &schemas.BifrostA2APushResponse{},
+	})
+
+	require.Equal(t, "request-task", *entry.TaskID)
+	require.Equal(t, "request-context", *entry.ContextID)
+	require.Equal(t, "request-config", *entry.PushConfigID)
+	require.Equal(t, "request-delivery", *entry.DeliveryID)
+	require.Equal(t, "request-attempt", *entry.AttemptID)
+
+	applyA2AResponseCorrelation(entry, &schemas.BifrostA2AResponse{
+		BifrostA2ASendMessageResponse: &schemas.BifrostA2ASendMessageResponse{
+			TaskID:    "response-task",
+			ContextID: "response-context",
+		},
+		BifrostA2APushResponse: &schemas.BifrostA2APushResponse{
+			PushConfigID: "response-config",
+			DeliveryID:   "response-delivery",
+			AttemptID:    "response-attempt",
+		},
+	})
+
+	require.Equal(t, "response-task", *entry.TaskID)
+	require.Equal(t, "response-context", *entry.ContextID)
+	require.Equal(t, "response-config", *entry.PushConfigID)
+	require.Equal(t, "response-delivery", *entry.DeliveryID)
+	require.Equal(t, "response-attempt", *entry.AttemptID)
+}
+
+func TestA2AHooksCaptureRequestPayload(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-a2a-payload")
+	requestBody := `{"jsonrpc":"2.0","method":"message/send"}`
+	req := &schemas.BifrostA2ARequest{
+		RequestType: schemas.A2ARequestTypeSendMessage,
+		AgentName:   "fixture",
+		RequestBody: &requestBody,
+	}
+
+	_, short, err := plugin.PreA2AHook(ctx, req)
+	if err != nil {
+		t.Fatalf("PreA2AHook() error = %v", err)
+	}
+	if short != nil {
+		t.Fatal("PreA2AHook() unexpectedly short-circuited")
+	}
+	pending, ok := plugin.pendingAgentLogs.Load(a2aPendingKey("req-a2a-payload", schemas.A2ARequestTypeSendMessage))
+	if !ok {
+		t.Fatal("missing pending A2A payload log")
+	}
+	entry, ok := pending.(*logstore.AgentLog)
+	if !ok || entry == nil {
+		t.Fatalf("pending payload log has type %T", pending)
+	}
+	if entry.RequestBody == nil || *entry.RequestBody != requestBody {
+		t.Fatalf("request body = %v, want %q", entry.RequestBody, requestBody)
+	}
+}
+
+func TestA2AHooksRecordPublicAgentCardOperationAndBody(t *testing.T) {
+	plugin := &LoggerPlugin{writeQueue: make(chan *writeQueueEntry, 1)}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-public-card")
+	req := &schemas.BifrostA2ARequest{
+		RequestType: schemas.A2ARequestTypeGetAgentCard,
+		AgentName:   "fixture",
+	}
+	_, short, err := plugin.PreA2AHook(ctx, req)
+	require.NoError(t, err)
+	require.Nil(t, short)
+	pending, ok := plugin.pendingAgentLogs.Load(a2aPendingKey("req-public-card", schemas.A2ARequestTypeGetAgentCard))
+	require.True(t, ok)
+	entry := pending.(*logstore.AgentLog)
+	require.Equal(t, "GetAgentCard", entry.Operation)
+
+	body := `{"name":"fixture","version":"1"}`
+	resp := &schemas.BifrostA2AResponse{
+		BifrostA2AGetAgentCardResponse: &schemas.BifrostA2AGetAgentCardResponse{},
+		ResponseBody:                   &body,
+		ExtraFields: schemas.BifrostA2AResponseExtraFields{
+			A2ARequestType: schemas.A2ARequestTypeGetAgentCard,
+			AgentName:      "fixture",
+		},
+	}
+	_, _, err = plugin.PostA2AHook(ctx, resp, nil)
+	require.NoError(t, err)
+	queued := <-plugin.writeQueue
+	require.NotNil(t, queued.agentLog)
+	require.Equal(t, "GetAgentCard", queued.agentLog.Operation)
+	require.Equal(t, "success", queued.agentLog.Status)
+	require.NotNil(t, queued.agentLog.ResponseBody)
+	require.Equal(t, body, *queued.agentLog.ResponseBody)
+}
+
+// TestPostA2AHookCopiesLatencyBreakdown verifies the provisional upstream and
+// overhead measured by the agent gate are copied onto the request row.
+func TestPostA2AHookCopiesLatencyBreakdown(t *testing.T) {
+	plugin := &LoggerPlugin{writeQueue: make(chan *writeQueueEntry, 1)}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-a2a-latency")
+	up, ov := int64(7), int64(3)
+	resp := &schemas.BifrostA2AResponse{
+		ExtraFields: schemas.BifrostA2AResponseExtraFields{
+			A2ARequestType:  schemas.A2ARequestTypeSendMessage,
+			AgentName:       "fixture",
+			Latency:         10,
+			UpstreamLatency: &up,
+			OverheadLatency: &ov,
+		},
+	}
+	_, _, err := plugin.PostA2AHook(ctx, resp, nil)
+	require.NoError(t, err)
+	queued := <-plugin.writeQueue
+	require.NotNil(t, queued.agentLog)
+	require.Equal(t, float64(10), *queued.agentLog.Latency)
+	require.Equal(t, float64(7), *queued.agentLog.UpstreamLatency)
+	require.Equal(t, float64(3), *queued.agentLog.OverheadLatency)
+}
+
+// TestInject_BackfillsA2ARequestRow verifies a parked A2A request row receives
+// the authoritative upstream/overhead from root-span attributes and the
+// overhead breakdown, mirroring the LLM Inject backfill.
+func TestInject_BackfillsA2ARequestRow(t *testing.T) {
+	plugin := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 1)}
+	traceID := "trace-a2a-backfill"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	provisionalUp, provisionalOv := 6.0, 4.0
+	entry := &logstore.AgentLog{
+		ID: "a2a-row", Timestamp: time.Now().UTC(), RecordKind: "request", Status: "success",
+		AgentName: "fixture", RequestID: "req-a2a-backfill",
+		UpstreamLatency: &provisionalUp, OverheadLatency: &provisionalOv,
+	}
+	plugin.storeOrEnqueueAgentEntry(ctx, entry)
+	if _, parked := plugin.pendingAgentLogsToInject.Load(traceID); !parked {
+		t.Fatal("expected entry to be parked for Inject")
+	}
+	base := time.Now().UTC()
+	trace := &schemas.Trace{
+		TraceID: traceID,
+		RootSpan: &schemas.Span{
+			Attributes: map[string]any{
+				schemas.AttrBifrostUpstreamDurationMs: 10.0,
+				schemas.AttrBifrostOverheadDurationMs: 5.0,
+			},
+		},
+		Spans: []*schemas.Span{
+			{SpanID: "s1", Kind: schemas.SpanKindPlugin, Name: "plugin.logging.a2a_prehook", StartTime: base, EndTime: base.Add(2 * time.Millisecond)},
+		},
+	}
+	require.NoError(t, plugin.Inject(context.Background(), trace))
+	queued := <-plugin.writeQueue
+	require.NotNil(t, queued.agentLog)
+	require.Equal(t, float64(10), *queued.agentLog.UpstreamLatency)
+	require.Equal(t, float64(5), *queued.agentLog.OverheadLatency)
+	require.Equal(t, float64(15), *queued.agentLog.Latency)
+	require.NotEmpty(t, queued.agentLog.OverheadBreakdownParsed)
+	if _, parked := plugin.pendingAgentLogsToInject.Load(traceID); parked {
+		t.Fatal("expected pendingAgentLogsToInject to be cleaned up after Inject")
+	}
+}
+
+func TestInject_BackfillsA2ARequestInsteadOfNewerStreamEvent(t *testing.T) {
+	plugin := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 2)}
+	traceID := "trace-a2a-stream-backfill"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	base := time.Now().UTC()
+	request := &logstore.AgentLog{ID: "request", Timestamp: base, RecordKind: "request"}
+	event := &logstore.AgentLog{ID: "event", Timestamp: base.Add(time.Millisecond), RecordKind: "event"}
+	plugin.storeOrEnqueueAgentEntry(ctx, request)
+	plugin.storeOrEnqueueAgentEntry(ctx, event)
+
+	trace := &schemas.Trace{
+		TraceID: traceID,
+		RootSpan: &schemas.Span{Attributes: map[string]any{
+			schemas.AttrBifrostUpstreamDurationMs: 10.0,
+			schemas.AttrBifrostOverheadDurationMs: 5.0,
+			schemas.AttrBifrostStreamConvertMs:    1.0,
+		}},
+		Spans: []*schemas.Span{{
+			SpanID: "s1", Kind: schemas.SpanKindPlugin, Name: "plugin.logging.a2a_prehook",
+			StartTime: base, EndTime: base.Add(2 * time.Millisecond),
+		}},
+	}
+	require.NoError(t, plugin.Inject(context.Background(), trace))
+
+	queuedRequest := (<-plugin.writeQueue).agentLog
+	queuedEvent := (<-plugin.writeQueue).agentLog
+	require.Equal(t, "request", queuedRequest.ID)
+	require.Equal(t, "event", queuedEvent.ID)
+	require.NotNil(t, queuedRequest.UpstreamLatency)
+	require.NotNil(t, queuedRequest.OverheadLatency)
+	require.Equal(t, float64(3), *queuedRequest.OverheadLatency)
+	require.Equal(t, float64(12), *queuedRequest.UpstreamLatency)
+	require.Equal(t, float64(15), *queuedRequest.Latency)
+	require.NotEmpty(t, queuedRequest.OverheadBreakdownParsed)
+	require.Nil(t, queuedEvent.UpstreamLatency)
+	require.Nil(t, queuedEvent.OverheadLatency)
+	require.Empty(t, queuedEvent.OverheadBreakdownParsed)
+}
+
+func TestA2AHooksCaptureOnlyActualOperationNames(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-a2a-operations")
+
+	operations := []schemas.A2ARequestType{
+		schemas.A2ARequestTypeSendMessage,
+		schemas.A2ARequestTypeCancelTask,
+	}
+	for _, operation := range operations {
+		req := &schemas.BifrostA2ARequest{RequestType: operation, AgentName: "fixture"}
+		_, short, err := plugin.PreA2AHook(ctx, req)
+		if err != nil {
+			t.Fatalf("PreA2AHook(%s) error = %v", operation, err)
+		}
+		if short != nil {
+			t.Fatalf("PreA2AHook(%s) unexpectedly short-circuited", operation)
+		}
+
+		pending, ok := plugin.pendingAgentLogs.Load(a2aPendingKey("req-a2a-operations", operation))
+		if !ok {
+			t.Fatalf("missing pending log for %s", operation)
+		}
+		entry, ok := pending.(*logstore.AgentLog)
+		if !ok || entry == nil {
+			t.Fatalf("pending log for %s has type %T", operation, pending)
+		}
+		if entry.Operation != operation.OperationName() {
+			t.Fatalf("operation = %q, want %q", entry.Operation, operation.OperationName())
+		}
+	}
+
+	var captured []string
+	plugin.pendingAgentLogs.Range(func(_, value any) bool {
+		entry, _ := value.(*logstore.AgentLog)
+		if entry != nil {
+			captured = append(captured, entry.Operation)
+		}
+		return true
+	})
+	if len(captured) != len(operations) {
+		t.Fatalf("captured operations = %v, want exactly %d actual operations", captured, len(operations))
+	}
+	for _, operation := range captured {
+		if strings.Contains(strings.ToLower(operation), "authorize") {
+			t.Fatalf("captured synthetic authorization operation %q", operation)
+		}
 	}
 }

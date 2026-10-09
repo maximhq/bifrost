@@ -24,7 +24,7 @@ icon: "shield"
 
 Every request that matches a circuit breaker policy passes through two hooks:
 
-1. **Pre-request hook** — checks whether the circuit is open. If open, the request is immediately rerouted to the fallback provider and model. The original target is not contacted.
+1. **Pre-request hook** — checks whether the circuit is open. If open, the request is immediately rerouted to the fallback provider and model. The original target is not contacted. If the fallback target's own circuit is open too, the request follows that target's policy in turn, until it reaches a target whose circuit is closed; a chain that leads back to a target it already passed stops at the last new one. Entries in the request's fallback chain whose circuit is open are redirected the same way.
 2. **Post-response hook** — evaluates the response headers from the primary target against the policy's condition. If the condition matches, the circuit opens for the configured cooldown duration.
 
 The circuit closes automatically once the cooldown expires. The next request to the primary is a probe — if the signal fires again, the circuit reopens; otherwise it stays closed.

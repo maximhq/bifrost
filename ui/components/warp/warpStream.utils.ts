@@ -170,7 +170,8 @@ export function turnsFromStoredMessages(messages: WarpStoredMessage[]): WarpTurn
 				textOffset: call.text_offset,
 			}));
 		}
-		if (message.error) turn.error = message.error;
+		// Encoded like a live turn's error, so a stored message's own colon is never read as a code.
+		if (message.error) turn.error = encodeTurnError(message.error_code || undefined, message.error);
 		if (isPartialAnswer(message.finish_reason)) turn.partial = true;
 		// Must be marked as a question, or the server counts the reply as a fresh question on replay.
 		if (isWarpQuestionFinish(message.finish_reason)) {
@@ -368,6 +369,52 @@ export function warpErrorDetail(code: string | undefined, message: string | unde
 				],
 				raw,
 			};
+		case "access_denied":
+			return {
+				summary: "Your account doesn't have access to Warp's model.",
+				cause:
+					"This deployment's governance rules refused the request before it reached the provider. Warp's model calls count as yours, so they need the same access any of your requests would.",
+				suggestions: [
+					"Ask an administrator to give your account model access, such as an access profile that allows Warp's model.",
+					"If you do have access, the details below say which rule refused it.",
+				],
+				raw,
+			};
+		case "budget_exceeded":
+			return {
+				summary: "You've used up your budget.",
+				cause:
+					"A budget that covers your account is spent for this cycle, so governance refused Warp's model call. Warp's model calls count as yours, so they spend the same budget as any of your requests.",
+				suggestions: [
+					"Wait for the budget to reset at the start of the next cycle.",
+					"Ask an administrator to raise the limit if you need more this cycle.",
+					"The details below say which budget refused it.",
+				],
+				raw,
+			};
+		case "rate_limited":
+			return {
+				summary: "You've hit a rate limit.",
+				cause:
+					"Your account sent more requests or tokens than a rate limit allows in its window, so governance refused Warp's model call. Warp's model calls count as yours, so they share the same limits.",
+				suggestions: [
+					"Wait a moment and ask again.",
+					"Ask an administrator to raise the limit if it keeps happening.",
+					"The details below say which limit refused it.",
+				],
+				raw,
+			};
+		case "model_blocked":
+			return {
+				summary: "Warp's model isn't allowed for your account.",
+				cause:
+					"This deployment's governance rules block the model or provider Warp is set to use for your account, so the request was refused before it reached the provider.",
+				suggestions: [
+					"Ask an administrator to allow Warp's model for your account.",
+					"Or set Warp to a model your account is allowed to use in Warp settings.",
+				],
+				raw,
+			};
 		case "tool_error":
 			return {
 				summary: "A query failed.",
@@ -391,7 +438,18 @@ export function encodeTurnError(code: string | undefined, message: string): stri
 	return `${code ?? ""}:${message}`;
 }
 
-const WARP_ERROR_CODES = new Set(["not_configured", "upstream_error", "tool_error", "max_iterations", "timeout", "cancelled"]);
+const WARP_ERROR_CODES = new Set([
+	"not_configured",
+	"upstream_error",
+	"access_denied",
+	"budget_exceeded",
+	"rate_limited",
+	"model_blocked",
+	"tool_error",
+	"max_iterations",
+	"timeout",
+	"cancelled",
+]);
 
 /** Checks against known codes, since plain messages often contain colons ("TypeError: Failed to fetch"). */
 export function isEncodedTurnError(error: string): boolean {

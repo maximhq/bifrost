@@ -3,15 +3,22 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"net"
+	"net/url"
 	"runtime"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -97,8 +104,9 @@ func RecoveryMiddleware(cors *CorsMiddleware) schemas.BifrostHTTPMiddleware {
 	}
 }
 
-// restoreCorrelationHeaders re-sets the x-request-id and x-bifrost-trace-id response
-// headers TracingMiddleware set, after RecoveryMiddleware resets a panicked response.
+// restoreCorrelationHeaders re-sets the x-bifrost-request-id, x-request-id and
+// x-bifrost-trace-id response headers TracingMiddleware set, after RecoveryMiddleware
+// resets a panicked response.
 // It reads them back from the request header and user value Tracing wrote, so nothing
 // is saved up front on the normal path. It is a no-op when Tracing did not run.
 func restoreCorrelationHeaders(ctx *fasthttp.RequestCtx) {
@@ -106,8 +114,10 @@ func restoreCorrelationHeaders(ctx *fasthttp.RequestCtx) {
 	if !ok || exportTraceID == "" {
 		return
 	}
-	ctx.Response.Header.SetBytesV("x-request-id", ctx.Request.Header.Peek("x-request-id"))
-	ctx.Response.Header.Set("x-bifrost-trace-id", exportTraceID)
+	requestID := ctx.Request.Header.Peek("x-request-id")
+	ctx.Response.Header.SetBytesV(lib.HeaderBifrostRequestID, requestID)
+	ctx.Response.Header.SetBytesV(lib.HeaderRequestID, requestID)
+	ctx.Response.Header.Set(lib.HeaderBifrostTraceID, exportTraceID)
 }
 
 // panicSummary describes a recovered panic value without echoing arbitrary content.
@@ -276,7 +286,9 @@ func (c *CorsMiddleware) applyHeaders(ctx *fasthttp.RequestCtx, cfg *corsMiddlew
 		isLocalhostOrigin(origin) ||
 		slices.Contains(cfg.allowedOrigins, origin)
 
-	allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID"}
+	// SetupTokenHeader is sent by the dashboard on every call while the OSS setup lock is
+	// active, so a UI served from another origin must be able to preflight it.
+	allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID", SetupTokenHeader}
 	if slices.Contains(cfg.allowedHeaders, "*") {
 		if credentialed {
 			// Per the Fetch spec, Access-Control-Allow-Headers: * is NOT treated as a
@@ -1045,6 +1057,22 @@ func fasthttpResponseToHTTPResponse(ctx *fasthttp.RequestCtx, resp *schemas.HTTP
 	if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
 		return
 	}
+	// Same rule for any handler that installed a body stream directly without the
+	// defer-trace flag, e.g. the Agent Gateway SSE bridge. Body() on a body-stream
+	// response blocks until upstream EOF and drains the stream into memory, so the
+	// downstream client would receive nothing until the stream ended.
+	//
+	// Such handlers intentionally do not use DeferTraceCompletion: that flag exists
+	// for LLM/MCP streaming, whose authoritative telemetry (trace completion,
+	// transport post-hooks) is produced by this middleware chain and must therefore
+	// be deferred until the stream drains. The Agent Gateway records its telemetry
+	// in the A2A plugin pipeline instead (per-event rows during the stream, and the
+	// aggregate row with full-stream latency in PostA2A at stream end), so it needs
+	// nothing deferred here — only this guard, so the post-hook body capture never
+	// touches a live stream.
+	if ctx.Response.IsBodyStream() {
+		return
+	}
 	// Skip response body copy when large payload/response mode is active — the response is
 	// streamed directly to the client and materializing it here would spike memory.
 	if isLargePayload, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
@@ -1155,6 +1183,7 @@ func virtualKeyFromHeaders(ctx *fasthttp.RequestCtx) string {
 type AuthMiddleware struct {
 	store             configstore.ConfigStore
 	whitelistedRoutes atomic.Pointer[[]string]
+	allowedOrigins    atomic.Pointer[[]string] // client_config.allowed_origins; read while auth is disabled
 	authConfig        atomic.Pointer[configstore.AuthConfig]
 	wsTicketStore     *WSTicketStore
 	tempTokensService *temptoken.Service // optional; when nil, temp-token fallback is disabled
@@ -1222,6 +1251,7 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 	clientConfig, err := store.GetClientConfig(context.Background())
 	if err == nil && clientConfig != nil {
 		am.whitelistedRoutes.Store(&clientConfig.WhitelistedRoutes)
+		am.allowedOrigins.Store(&clientConfig.AllowedOrigins)
 		am.tempTokensEnabled.Store(clientConfig.MCPEnableTempTokenAuth)
 	} else {
 		emptyRoutes := []string{}
@@ -1274,6 +1304,73 @@ func (m *AuthMiddleware) CheckConfiguredSetupToken(token string) bool {
 // UpdateWhitelistedRoutes updates the configured whitelisted routes that bypass auth middleware.
 func (m *AuthMiddleware) UpdateWhitelistedRoutes(routes []string) {
 	m.whitelistedRoutes.Store(&routes)
+}
+
+// UpdateAllowedOrigins updates the allowed origins the auth-disabled branch consults
+// (see refuseCrossOriginWhileAuthDisabled). Called alongside UpdateWhitelistedRoutes
+// whenever the client config is reloaded.
+func (m *AuthMiddleware) UpdateAllowedOrigins(origins []string) {
+	m.allowedOrigins.Store(&origins)
+}
+
+// originExplicitlyAllowed reports whether origin is a localhost origin or matches an
+// allowed_origins entry other than the bare "*" wildcard. A "*.example.com" pattern
+// counts as explicit: the operator named that domain.
+func originExplicitlyAllowed(origin string, allowedOrigins []string) bool {
+	if isLocalhostOrigin(origin) {
+		return true
+	}
+	explicit := slices.DeleteFunc(slices.Clone(allowedOrigins), func(entry string) bool { return entry == "*" })
+	return IsOriginAllowed(origin, explicit)
+}
+
+// isSameOrigin reports whether origin names the host the request was sent to. Browsers send
+// Origin on same-origin writes too, so the bundled dashboard served from any address carries its
+// own origin on PUT /api/config and similar calls; that is not a cross-origin request. Hosts are
+// compared case-insensitively with default ports (80 for http, 443 for https) made explicit.
+func isSameOrigin(origin, host string) bool {
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Host == "" || host == "" {
+		return false
+	}
+	defaultPort := map[string]string{"http": "80", "https": "443"}[strings.ToLower(parsed.Scheme)]
+	if defaultPort == "" {
+		return false
+	}
+	withPort := func(hostport string) string {
+		hostport = strings.ToLower(hostport)
+		if _, _, err := net.SplitHostPort(hostport); err == nil {
+			return hostport
+		}
+		return net.JoinHostPort(strings.Trim(hostport, "[]"), defaultPort)
+	}
+	return withPort(parsed.Host) == withPort(host)
+}
+
+// refuseCrossOriginWhileAuthDisabled closes the one browser path into the open
+// management API. With dashboard auth disabled the API is intentionally reachable
+// by anyone who can route to the port, on the assumption that network position is
+// the control. A web page the operator visits has that position too, and the
+// default allowed_origins of "*" would let it read and change the config from any
+// origin. So while auth is disabled, a request carrying an Origin header reaches a
+// management route only from a localhost origin, its own origin, or one the operator
+// listed by name; the bare "*" does not count. Requests without an Origin (CLI, SDKs, same-origin
+// dashboard navigation) and inference routes are unaffected. Returns true if the
+// request was refused (the error response has already been written).
+func (m *AuthMiddleware) refuseCrossOriginWhileAuthDisabled(ctx *fasthttp.RequestCtx) bool {
+	origin := string(ctx.Request.Header.Peek("Origin"))
+	if origin == "" {
+		return false
+	}
+	var allowed []string
+	if stored := m.allowedOrigins.Load(); stored != nil {
+		allowed = *stored
+	}
+	if originExplicitlyAllowed(origin, allowed) || isSameOrigin(origin, string(ctx.Host())) {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Cross-origin requests to the management API from %q are refused while dashboard auth is disabled; enable dashboard authentication, or list the origin explicitly in client_config.allowed_origins (localhost origins are always allowed).", origin))
+	return true
 }
 
 // UpdateTempTokenAuthEnabled updates whether scoped temp-token fallback auth is accepted.
@@ -1359,6 +1456,74 @@ func (m *AuthMiddleware) InferenceMiddleware() schemas.BifrostHTTPMiddleware {
 	}, true)
 }
 
+// apiSystemWhitelistedRoutes are exact API paths that never require a credential.
+var apiSystemWhitelistedRoutes = []string{
+	"/api/session/is-auth-enabled",
+	"/api/session/login",
+	// Idempotent: the handler clears the cookie and returns 200 whether or
+	// not a session token is present, so a repeat logout must not 401 here.
+	"/api/session/logout",
+	"/api/oauth/callback",
+	"/health",
+	"/login",
+	"/favicon.ico",
+	"/assets/*",
+	"/api/scim/oauth/config",
+	"/api/scim/oauth/callback",
+	"/api/scim/oauth/refresh",
+	"/api/scim/oauth/logout",
+	"/health",
+	"/api/version",
+}
+
+// apiWhitelistedPrefixes are API path prefixes that never require a credential.
+var apiWhitelistedPrefixes = []string{
+	// "/api/oauth/callback" is also in apiSystemWhitelistedRoutes above as an
+	// exact match — that's the only OAuth route that must be public (it's
+	// hit by the browser after the upstream provider redirects back, with
+	// no cookie context). DO NOT add a broad "/api/oauth" prefix here:
+	// it would whitelist /api/oauth/per-user/* (auth-via-temp-token) and
+	// /api/oauth/config/* (admin-only) and bypass the temp-token fallback
+	// in tryTempTokenOrUnauthorized.
+	// Trailing slash is required: the dev routes live under "/api/dev/pprof".
+	// A bare "/api/dev" prefix also matches "/api/devices" (and any other
+	// "/api/dev*" route), which would silently bypass auth on those routes.
+	"/api/dev/",
+	// Skills serving endpoints are public — marketplace URLs cannot carry
+	// credentials securely. Management endpoints under /api/skills (without
+	// /serve/) remain authenticated.
+	"/api/skills/serve/",
+	// OAuth2 discovery endpoints (RFC 8414 AS metadata, RFC 9728 protected
+	// resource metadata, RFC 7517 JWKS) must be reachable without auth so
+	// clients can bootstrap the flow. Each handler still gates availability
+	// behind discoveryEnabled() and serves 404 when OAuth mode is off.
+	"/.well-known/",
+}
+
+// isAPIRouteWhitelisted reports whether url (the raw PathOriginal) is a public API route:
+// a system route, a system prefix, or an operator-configured whitelisted route. Shared by
+// APIMiddleware and SetupLockMiddleware so both agree on what never needs a credential.
+func (m *AuthMiddleware) isAPIRouteWhitelisted(url string) bool {
+	if slices.Contains(apiSystemWhitelistedRoutes, url) ||
+		slices.IndexFunc(apiWhitelistedPrefixes, func(prefix string) bool {
+			return strings.HasPrefix(url, prefix)
+		}) != -1 {
+		return true
+	}
+	// Check user-configured whitelisted routes
+	if configuredRoutes := m.whitelistedRoutes.Load(); configuredRoutes != nil {
+		if slices.Contains(*configuredRoutes, url) || slices.IndexFunc(*configuredRoutes, func(route string) bool {
+			if before, ok := strings.CutSuffix(route, "*"); ok {
+				return strings.HasPrefix(url, before)
+			}
+			return false
+		}) != -1 {
+			return true
+		}
+	}
+	return false
+}
+
 // APIMiddleware is for API requests if authConfig is set, it will verify authentication based on the request type.
 // Three authentication methods are supported:
 //   - Basic auth: Uses username + password validation (no session tracking). Used for inference API calls.
@@ -1368,66 +1533,158 @@ func (m *AuthMiddleware) InferenceMiddleware() schemas.BifrostHTTPMiddleware {
 // Basic auth may be acceptable for limited use cases, while Bearer and WebSocket flows provide
 // session-based authentication suitable for production environments.
 func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
-	systemWhitelistedRoutes := []string{
-		"/api/session/is-auth-enabled",
-		"/api/session/login",
-		// Idempotent: the handler clears the cookie and returns 200 whether or
-		// not a session token is present, so a repeat logout must not 401 here.
-		"/api/session/logout",
-		"/api/oauth/callback",
-		"/health",
-		"/login",
-		"/favicon.ico",
-		"/assets/*",
-		"/api/scim/oauth/config",
-		"/api/scim/oauth/callback",
-		"/api/scim/oauth/refresh",
-		"/api/scim/oauth/logout",
-		"/health",
-		"/api/version",
-	}
-	whitelistedPrefixes := []string{
-		// "/api/oauth/callback" is also in systemWhitelistedRoutes above as an
-		// exact match — that's the only OAuth route that must be public (it's
-		// hit by the browser after the upstream provider redirects back, with
-		// no cookie context). DO NOT add a broad "/api/oauth" prefix here:
-		// it would whitelist /api/oauth/per-user/* (auth-via-temp-token) and
-		// /api/oauth/config/* (admin-only) and bypass the temp-token fallback
-		// in tryTempTokenOrUnauthorized.
-		// Trailing slash is required: the dev routes live under "/api/dev/pprof".
-		// A bare "/api/dev" prefix also matches "/api/devices" (and any other
-		// "/api/dev*" route), which would silently bypass auth on those routes.
-		"/api/dev/",
-		// Skills serving endpoints are public — marketplace URLs cannot carry
-		// credentials securely. Management endpoints under /api/skills (without
-		// /serve/) remain authenticated.
-		"/api/skills/serve/",
-		// OAuth2 discovery endpoints (RFC 8414 AS metadata, RFC 9728 protected
-		// resource metadata, RFC 7517 JWKS) must be reachable without auth so
-		// clients can bootstrap the flow. Each handler still gates availability
-		// behind discoveryEnabled() and serves 404 when OAuth mode is off.
-		"/.well-known/",
-	}
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
-		if slices.Contains(systemWhitelistedRoutes, url) ||
-			slices.IndexFunc(whitelistedPrefixes, func(prefix string) bool {
-				return strings.HasPrefix(url, prefix)
-			}) != -1 {
-			return true
-		}
-		// Check user-configured whitelisted routes
-		if configuredRoutes := m.whitelistedRoutes.Load(); configuredRoutes != nil {
-			if slices.Contains(*configuredRoutes, url) || slices.IndexFunc(*configuredRoutes, func(route string) bool {
-				if before, ok := strings.CutSuffix(route, "*"); ok {
-					return strings.HasPrefix(url, before)
-				}
-				return false
-			}) != -1 {
-				return true
-			}
-		}
-		return false
+		return m.isAPIRouteWhitelisted(url)
 	}, false)
+}
+
+// SetupTokenHeader carries the operator-configured setup token (config.json setup_token
+// or BIFROST_SETUP_TOKEN) on API calls made while dashboard auth is not active.
+const SetupTokenHeader = "X-Bifrost-Setup-Token"
+
+// SetupSessionCookie is the HttpOnly cookie the dashboard holds in place of the setup
+// token. POST /api/session/setup trades the token for it once; the browser then sends it on
+// every call (including reloads and WebSocket upgrades) and no script can read it.
+const SetupSessionCookie = "bifrost_setup_session"
+
+// SetupSessionTTL bounds how long a setup session cookie stays valid.
+const SetupSessionTTL = 12 * time.Hour
+
+const setupSessionVersion = "v1"
+
+// setupSessionKey derives the HMAC key for setup session cookies from the configured setup
+// token. Every node configured with the same token verifies the same cookies, and changing
+// the token invalidates every cookie issued under the old one.
+func setupSessionKey(token string) []byte {
+	sum := sha256.Sum256([]byte("bifrost-setup-session:" + token))
+	return sum[:]
+}
+
+func signSetupSession(key []byte, payload string) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(payload))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// IssueSetupSession mints a setup session cookie value: "v1.<expiry>.<nonce>.<hmac>". It
+// carries no part of the token, only an expiry and a random nonce, signed with a key
+// derived from the token. It fails when no setup token is configured.
+func (m *AuthMiddleware) IssueSetupSession(now time.Time) (string, time.Time, error) {
+	current := m.setupToken.Load()
+	if current == nil {
+		return "", time.Time{}, fmt.Errorf("no setup token is configured")
+	}
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", time.Time{}, err
+	}
+	expires := now.Add(SetupSessionTTL)
+	payload := fmt.Sprintf("%s.%d.%s", setupSessionVersion, expires.Unix(), hex.EncodeToString(nonce))
+	return payload + "." + signSetupSession(setupSessionKey(*current), payload), expires, nil
+}
+
+// validSetupSession reports whether value is an unexpired setup session cookie signed under
+// the currently configured setup token.
+func (m *AuthMiddleware) validSetupSession(value string, now time.Time) bool {
+	current := m.setupToken.Load()
+	if current == nil || value == "" {
+		return false
+	}
+	idx := strings.LastIndexByte(value, '.')
+	if idx <= 0 {
+		return false
+	}
+	payload, sig := value[:idx], value[idx+1:]
+	parts := strings.Split(payload, ".")
+	if len(parts) != 3 || parts[0] != setupSessionVersion {
+		return false
+	}
+	expiry, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || !now.Before(time.Unix(expiry, 0)) {
+		return false
+	}
+	return hmac.Equal([]byte(sig), []byte(signSetupSession(setupSessionKey(*current), payload)))
+}
+
+// IsDashboardAuthActive reports whether an admin account exists and dashboard auth is on.
+func (m *AuthMiddleware) IsDashboardAuthActive() bool {
+	authConfig := m.authConfig.Load()
+	return authConfig != nil && authConfig.IsEnabled
+}
+
+// HasSetupToken reports whether the operator configured a setup token.
+func (m *AuthMiddleware) HasSetupToken() bool {
+	return m.setupToken.Load() != nil
+}
+
+// SetupLockMiddleware locks the OSS admin API while dashboard auth is not active (no admin
+// account, or an admin account with auth disabled). In that state every non-public /api call
+// must carry the operator's setup token in SetupTokenHeader, or the setup session cookie the
+// dashboard got for it (POST /api/session/setup); with either, the request runs as the admin. Once dashboard auth is enabled this middleware is a no-op and APIMiddleware's normal
+// session/Basic auth applies, so the setup token stops working.
+//
+// It must run before APIMiddleware, whose auth-off branch lets every request through. It is
+// registered by the OSS server only: enterprise builds its own chain around APIMiddleware and
+// never installs this gate.
+func (m *AuthMiddleware) SetupLockMiddleware() schemas.BifrostHTTPMiddleware {
+	if !m.IsDashboardAuthActive() {
+		logger.Warn("================================================================")
+		if m.authConfig.Load() == nil {
+			logger.Warn("No admin account is configured for this Bifrost instance yet.")
+		} else {
+			logger.Warn("Dashboard auth is disabled for this Bifrost instance.")
+		}
+		if m.HasSetupToken() {
+			logger.Warn("The /api surface is locked until dashboard auth is enabled. Open")
+			logger.Warn("the dashboard and enter the setup token, or send it in the")
+			logger.Warn("%s header.", SetupTokenHeader)
+		} else {
+			logger.Warn("The /api surface is locked and no setup token is configured. Set")
+			logger.Warn("setup_token in config.json (or the BIFROST_SETUP_TOKEN environment")
+			logger.Warn("variable) and restart to finish setup.")
+		}
+		logger.Warn("================================================================")
+	}
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if m.IsDashboardAuthActive() {
+				next(ctx)
+				return
+			}
+			if isAPIKeyAuth, ok := ctx.UserValue(schemas.IsAPIKeyAuthContextKey).(bool); ok && isAPIKeyAuth {
+				next(ctx)
+				return
+			}
+			// Raw path, for the same router-congruence reason as middleware().
+			if m.isAPIRouteWhitelisted(string(ctx.Request.URI().PathOriginal())) {
+				next(ctx)
+				return
+			}
+			if m.setupToken.Load() == nil {
+				SendError(ctx, fasthttp.StatusForbidden, "dashboard auth is not configured and no setup token is set; set setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and restart Bifrost")
+				return
+			}
+			// An explicit header wins: API clients send it, and a wrong one is a 403 even if
+			// a setup session cookie is also present.
+			if token := string(ctx.Request.Header.Peek(SetupTokenHeader)); token != "" {
+				if !m.CheckConfiguredSetupToken(token) {
+					SendError(ctx, fasthttp.StatusForbidden, "invalid setup token")
+					return
+				}
+				ctx.SetUserValue(schemas.BifrostContextKeySetupTokenAuthenticated, true)
+				next(ctx)
+				return
+			}
+			// The dashboard holds an HttpOnly setup session cookie instead of the token.
+			// Browsers send it on WebSocket upgrades too, so no ticket is needed.
+			if m.validSetupSession(string(ctx.Request.Header.Cookie(SetupSessionCookie)), time.Now()) {
+				ctx.SetUserValue(schemas.BifrostContextKeySetupTokenAuthenticated, true)
+				next(ctx)
+				return
+			}
+			SendError(ctx, fasthttp.StatusUnauthorized, fmt.Sprintf("dashboard auth is not configured; send the setup token in the %s header", SetupTokenHeader))
+		}
+	}
 }
 
 // middleware is the core authentication middleware that checks if the request should be authenticated or not.
@@ -1441,8 +1698,16 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				return
 			}
 			authConfig := m.authConfig.Load()
+			// Match the whitelist against the RAW request path (PathOriginal); see the comment below.
+			url := string(ctx.Request.URI().PathOriginal())
 			if authConfig == nil || !authConfig.IsEnabled {
 				// logger.Debug("auth middleware is disabled because auth config is not present or not enabled")
+				// The open management API is still not a cross-origin one: a browser
+				// page from an unlisted origin is refused, while whitelisted routes
+				// (health, login, assets) and inference routes keep today's behaviour.
+				if !allowVirtualKeyAuth && !shouldSkip(authConfig, url) && m.refuseCrossOriginWhileAuthDisabled(ctx) {
+					return
+				}
 				ctx.SetUserValue(schemas.BifrostContextKeySessionToken, "")
 				// Mark as local admin so downstream RBAC bypasses cleanly when
 				// auth is fully disabled; otherwise RBAC 401s and the UI enters
@@ -1453,7 +1718,11 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				// checked at all" so handlers gating especially dangerous capabilities
 				// (e.g. native plugin/subprocess loading) can require real authentication
 				// even while the rest of the API is intentionally left open.
-				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+				// A request the OSS setup-lock gate already authenticated with the
+				// setup token did pass a credential check, so it is not a bypass.
+				if setupAuthed, _ := ctx.UserValue(schemas.BifrostContextKeySetupTokenAuthenticated).(bool); !setupAuthed {
+					ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+				}
 				next(ctx)
 				return
 			}
@@ -1468,7 +1737,6 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			// while the router dispatched it to a protected, parameterized admin handler.
 			// Using the same raw string the router uses keeps this decision congruent with
 			// router dispatch for every route, not just the specific one in a given PoC.
-			url := string(ctx.Request.URI().PathOriginal())
 			// We skip authorization for the login route
 			if shouldSkip(authConfig, url) {
 				// No credential was checked, so handlers that gate on genuine auth
@@ -1745,8 +2013,11 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			if headerTraceID == "" {
 				headerTraceID = traceID
 			}
-			ctx.Response.Header.Set("x-request-id", requestID)
-			ctx.Response.Header.Set("x-bifrost-trace-id", headerTraceID)
+			// x-bifrost-request-id is the one to read: a provider that answers with its own
+			// x-request-id replaces the deprecated header, which is kept for compatibility.
+			ctx.Response.Header.Set(lib.HeaderBifrostRequestID, requestID)
+			ctx.Response.Header.Set(lib.HeaderRequestID, requestID)
+			ctx.Response.Header.Set(lib.HeaderBifrostTraceID, headerTraceID)
 			// Store dimensions and session ID at the trace level (not as span
 			// attributes) so connectors like BigQuery can export them without
 			// changing the OTEL/Datadog span payloads.
@@ -1856,6 +2127,12 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			}
 			defer func() {
 				deferred, _ := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool)
+				// Completing here would flush an incomplete trace and recycle the span
+				// the worker is still writing to.
+				workerOwned := tracer.IsTraceCompletionDeferred(traceID)
+				if !deferred && workerOwned {
+					deferred = true
+				}
 				// Record response status on the root span
 				if rootSpan != nil {
 					tracer.SetAttribute(rootSpan, schemas.AttrHTTPResponseStatusCode, ctx.Response.StatusCode())
@@ -1881,6 +2158,14 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				// If deferred, the streaming handler will complete the trace (and end the
 				// root span via the trace completer) after the stream ends.
 				if deferred {
+					// Only this defer can see the transport logs, and the worker completes
+					// the trace, so attach them and release it.
+					if workerOwned {
+						if transportLogs, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry); ok && len(transportLogs) > 0 {
+							tracer.AttachPluginLogs(traceID, transportLogs)
+						}
+						tracer.SignalTransportHandoff(traceID)
+					}
 					return
 				}
 				// Attach transport plugin logs to trace before completion

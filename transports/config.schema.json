@@ -24,6 +24,19 @@
             "type": "string"
           },
           "description": "Hostnames, IP addresses, or CIDR ranges that custom plugin (.so) downloads are allowed to reach even when they resolve to a private/loopback/link-local/CGNAT address (blocked by default to prevent SSRF). Use only for trusted internal artifact hosts. Deploy-time only - read from config.json/environment at startup, never settable via the plugin admin API."
+        },
+        "a2a_grpc_base_domain": {
+          "type": "string",
+          "description": "Base domain for the Agent Gateway's shared gRPC listener. Served agent cards advertise per-agent hostnames (<agent-name>.<base-domain>:<port>); a wildcard DNS record for *.<base-domain> must point at this server, and requests are routed by the first DNS label of the dialed authority. Deploy-time only; gRPC stays disabled while this or a2a_grpc_port is unset."
+        },
+        "a2a_grpc_port": {
+          "type": "integer",
+          "description": "Advertised (public) port for the Agent Gateway's shared gRPC listener. When a load balancer or port mapping sits in front, the BIFROST_A2A_GRPC_LISTEN_PORT environment variable overrides the local bind port without changing what agent cards advertise. Deploy-time only; gRPC stays disabled while this or a2a_grpc_base_domain is unset."
+        },
+        "a2a_allow_private_push_callbacks": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allows Agent push delivery to loopback and private network destinations. Intended only for controlled development and test environments. Disabled by default; all other outbound SSRF protections are unchanged."
         }
       },
       "required": [
@@ -63,7 +76,7 @@
     "setup_token": {
       "type": "string",
       "pattern": "\\S",
-      "description": "Operator-provisioned bootstrap secret required to create the very first admin account when no admin account is configured yet. You can set the value as env.<ENV_VAR_NAME> to use an environment variable, or as vault.<path> to use a Vault secret reference. We also read the setup token from the BIFROST_SETUP_TOKEN environment variable. Identical across every node in a multi-node deployment (unlike a randomly generated value), so any node can authorize first-admin creation. Never persisted and never logged; if left unset, creating the first admin account is rejected until this is configured. Whitespace-only values are rejected."
+      "description": "Operator-provisioned bootstrap secret required to create the very first admin account when no admin account is configured yet. In OSS, while dashboard auth is not active (no admin account, or auth disabled), every /api call must carry this value in the X-Bifrost-Setup-Token header. You can set the value as env.<ENV_VAR_NAME> to use an environment variable, or as vault.<path> to use a Vault secret reference. We also read the setup token from the BIFROST_SETUP_TOKEN environment variable. Identical across every node in a multi-node deployment (unlike a randomly generated value), so any node can authorize first-admin creation. Never persisted and never logged; if left unset, creating the first admin account is rejected until this is configured. Whitespace-only values are rejected."
     },
     "client": {
       "type": "object",
@@ -112,7 +125,7 @@
               }
             ]
           },
-          "description": "CORS allowed origins (supports \"*\" or URI strings)"
+          "description": "CORS allowed origins: exact URI strings, wildcard-host patterns such as https://*.example.com, or \"*\". While dashboard auth is disabled, browser requests to the management API are accepted only from localhost origins, the gateway's own origin, and origins listed here explicitly; the \"*\" entry does not admit them."
         },
         "enable_logging": {
           "type": "boolean",
@@ -172,7 +185,8 @@
         },
         "enforce_auth_on_inference": {
           "type": "boolean",
-          "description": "Require auth (VK, API key, or user token) on inference endpoints. Defaults to true when creating the first enabled admin account if omitted; explicit false opts out. Existing deployments retain their setting when omitted."
+          "default": true,
+          "description": "Require auth (VK, API key, or user token) on inference endpoints. Defaults to true on new deployments and when creating the first enabled admin account if omitted; explicit false opts out. Existing deployments retain their stored setting when omitted."
         },
         "dual_credential_conflict_behavior": {
           "type": "string",
@@ -217,6 +231,11 @@
               "type": "boolean",
               "description": "Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses.",
               "default": false
+            },
+            "force_reasoning_only_models_to_responses": {
+              "type": "boolean",
+              "description": "Convert chat completion requests to responses for models whose datasheet sets supports_reasoning_with_tool_calls to false, so reasoning is kept instead of being forced off.",
+              "default": true
             }
           },
           "additionalProperties": false
@@ -340,6 +359,10 @@
           "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use mcp.tool_manager_config.disable_auto_tool_inject.",
           "default": false
         },
+        "mcp_code_mode_limits": {
+          "$ref": "#/$defs/mcp_code_mode_limits",
+          "description": "Per-execution code mode limits, as stored and served by the config API. In config.json prefer mcp.tool_manager_config.code_mode_limits, which takes precedence when both are set."
+        },
         "mcp_enable_temp_token_auth": {
           "type": "boolean",
           "description": "When true, Bifrost mints and accepts scoped temp tokens for MCP per-user OAuth and per-user-headers auth pages so anonymous browser visitors can complete the flow without a dashboard session. User-mode flows are never minted regardless of this setting \u2014 they always require SSO login.",
@@ -385,6 +408,40 @@
           ],
           "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is reached via a different URL than its server-side metadata. Supports env var syntax: \"env.MY_VAR\"."
         },
+        "a2a_external_client_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string"
+                },
+                "ref": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "plain_text",
+                    "env",
+                    "vault"
+                  ]
+                },
+                "env_var": {
+                  "type": "string"
+                },
+                "from_env": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "Bifrost's public base URL for the Agent Gateway, used in served agent cards and push-notification callback URLs. If unset, served agent cards fall back to the incoming Host header and A2A push notifications are disabled. Supports env var syntax: \"env.MY_VAR\"."
+        },
         "mcp_server_auth_mode": {
           "type": "string",
           "enum": [
@@ -397,6 +454,12 @@
         "oauth2_server_config": {
           "type": "object",
           "properties": {
+            "allowed_redirect_uris": {
+              "type": "array",
+              "items": { "type": "string", "format": "uri" },
+              "default": [],
+              "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries. Remote callbacks are denied by default; changing this list through the API requires dashboard authentication."
+            },
             "issuer_url": {
               "anyOf": [
                 {
@@ -903,6 +966,10 @@
                 "type": "string",
                 "description": "Associated rate limit ID"
               },
+              "access_profile": {
+                "type": "string",
+                "description": "Name of the access profile (defined in access_profiles) this customer holds. The profile governs everything under the customer and replaces its own budgets and rate limit, so it cannot be combined with them. Under source_of_truth \"split\" the declaration is applied when it is new or changed and dashboard changes are kept otherwise; under \"config.json\" it is enforced on every startup and an entry without access_profile has its profile removed."
+              },
               "calendar_aligned": {
                 "type": "boolean",
                 "description": "Snap the customer's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
@@ -974,6 +1041,10 @@
                 "type": "object",
                 "description": "Team claims data"
               },
+              "access_profile": {
+                "type": "string",
+                "description": "Name of the access profile (defined in access_profiles) this team holds. The profile governs everything under the team and replaces its own budgets and rate limit, so it cannot be combined with them. Under source_of_truth \"split\" the declaration is applied when it is new or changed and dashboard changes are kept otherwise; under \"config.json\" it is enforced on every startup and an entry without access_profile has its profile removed."
+              },
               "calendar_aligned": {
                 "type": "boolean",
                 "description": "Snap the team's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
@@ -1027,6 +1098,10 @@
                 "type": "object",
                 "description": "Business unit claims data"
               },
+              "access_profile": {
+                "type": "string",
+                "description": "Name of the access profile (defined in access_profiles) this business unit holds. The profile governs everything under the business unit and replaces its own budgets and rate limit, so it cannot be combined with them. Under source_of_truth \"split\" the declaration is applied when it is new or changed and dashboard changes are kept otherwise; under \"config.json\" it is enforced on every startup and an entry without access_profile has its profile removed."
+              },
               "team_ids": {
                 "type": "array",
                 "description": "Team IDs to assign to this business unit",
@@ -1058,10 +1133,12 @@
               },
               "dac": {
                 "type": "string",
-                "description": "Data Access Control scope: own-data (user's own records), team-data (user's team records), all-data (unrestricted). Defaults to all-data.",
+                "description": "Data Access Control scope: own-data (user's own records), team-data (plus records of the user's teams), business-unit-data (plus records of the user's business units), customer-data (everything under the customers the user reaches through their teams or business units), all-data (unrestricted). Defaults to all-data.",
                 "enum": [
                   "own-data",
                   "team-data",
+                  "business-unit-data",
+                  "customer-data",
                   "all-data"
                 ],
                 "default": "all-data"
@@ -1074,6 +1151,8 @@
                   "enum": [
                     "own-data",
                     "team-data",
+                    "business-unit-data",
+                    "customer-data",
                     "all-data"
                   ]
                 }
@@ -1236,6 +1315,13 @@
                 "description": "MCP configurations for this virtual key (empty array means no MCP tools allowed, deny-by-default)",
                 "items": {
                   "$ref": "#/$defs/virtual_key_mcp_config"
+                }
+              },
+              "agent_grants": {
+                "type": "array",
+                "description": "Agent grants directly assigned to this virtual key (empty array means no agents allowed, deny-by-default)",
+                "items": {
+                  "$ref": "#/$defs/virtual_key_agent_grant"
                 }
               }
             },
@@ -1446,6 +1532,10 @@
               "store_raw_request_response": {
                 "type": "boolean",
                 "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+              },
+              "ignore_provider_cost": {
+                "type": "boolean",
+                "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
               },
               "network_config": {
                 "$ref": "#/$defs/network_config"
@@ -2043,6 +2133,72 @@
           "name",
           "url",
           "events"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "agents": {
+      "type": "array",
+      "description": "Declarative A2A agent registrations reconciled into the config store at startup. Matching is by name with hash-based change detection: entries are created if new and updated if changed. In 'split' source-of-truth mode other stored registrations are left untouched; in 'config.json' mode stored registrations absent from this list are pruned.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Unique registration name (URL-safe slug). Forms the gateway routes /agents/a2a/<name>/... and the gRPC hostname label."
+          },
+          "agent_card_url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$",
+            "description": "Absolute http(s) URL of the upstream agent's Agent Card (typically .../.well-known/agent-card.json)."
+          },
+          "tenant": {
+            "type": "string",
+            "description": "Optional tenant label for the registration."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the agent is enabled (default: true when omitted)."
+          },
+          "allow_by_default": {
+            "type": "boolean",
+            "description": "Allow access for any identified caller without an explicit virtual-key grant (default: false)."
+          },
+          "forward_accepted_credential": {
+            "type": "boolean",
+            "description": "Forward the accepted Bifrost credential to the upstream agent so its callback LLM/MCP requests route back through Bifrost (default: false)."
+          },
+          "forward_accepted_credential_overrides_auth": {
+            "type": "boolean",
+            "description": "When forwarding the accepted credential, replace the configured runtime auth Authorization header with it instead of sending it alongside (default: false)."
+          },
+          "discovery_auth": {
+            "$ref": "#/$defs/agent_upstream_auth",
+            "description": "Authentication used when fetching the upstream Agent Card."
+          },
+          "runtime_auth": {
+            "$ref": "#/$defs/agent_upstream_auth",
+            "description": "Authentication attached to proxied upstream agent requests."
+          },
+          "extension_uris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "A2A extension URIs to activate for this agent."
+          },
+          "virtual_key_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Virtual key IDs granted access to this agent. Declares the exact grant set: changes here are reconciled like any other field."
+          }
+        },
+        "required": [
+          "name",
+          "agent_card_url"
         ],
         "additionalProperties": false
       }
@@ -3008,6 +3164,12 @@
                     "minimum": 1,
                     "default": 10000
                   },
+                  "max_query_size": {
+                    "type": "integer",
+                    "description": "ClickHouse max_query_size setting in bytes, the longest SQL text the server will parse (default: 16777216)",
+                    "minimum": 1,
+                    "default": 16777216
+                  },
                   "cluster": {
                     "type": "string",
                     "description": "Optional cluster name; when set, DDL runs ON CLUSTER with replicated table engines"
@@ -3499,9 +3661,16 @@
             "additionalProperties": false
           }
         },
+        "object_storage_exclude_request_types": {
+          "type": "array",
+          "description": "Request types (log object type, e.g. list_models, embedding) whose logs are not offloaded to object storage. These logs are written to the logs database in full instead. Hidden logs (content logging disabled with client.retain_content_in_object_storage on) are still offloaded, so their content never lands in the database.",
+          "items": {
+            "type": "string"
+          }
+        },
         "object_storage_exclude_fields": {
           "type": "array",
-          "description": "LLM log payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored. MCP logs always offload the full log and keep dashboard/table fields plus a 200-character input preview in the database.",
+          "description": "LLM log payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored. error_details always remains in the database (except on content-hidden logs), since the error type, error code and status code breakdowns query it; any raw provider bodies inside it are offloaded unless error_details is listed here. MCP logs always offload the full log and keep dashboard/table fields plus a 200-character input preview in the database.",
           "items": {
             "type": "string"
           }
@@ -4844,11 +5013,75 @@
     },
     "circuit_breaker_config": {
       "$ref": "#/$defs/circuit_breaker_config"
+    },
+    "proxy_config": {
+      "$ref": "#/$defs/global_proxy_config"
     }
   },
   "additionalProperties": false,
   "$defs": {
-    "complexity_jev_tier_criteria": {
+    "global_proxy_config": {
+      "type": "object",
+      "description": "Global outbound proxy (the dashboard's proxy settings page) and which components use it. Under source_of_truth \"split\" it is applied when new or changed and dashboard edits are kept otherwise; under \"config.json\" it is applied on every startup. Omit to manage the proxy from the dashboard. Not the same as a provider's own proxy_config.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Turn the proxy on",
+          "default": false
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "http"
+          ],
+          "default": "http",
+          "description": "Proxy type. Only http is supported."
+        },
+        "url": {
+          "type": "string",
+          "description": "Proxy URL, e.g. http://proxy.example.com:8080 (supports env.VAR_NAME). Required when enabled."
+        },
+        "username": {
+          "type": "string",
+          "description": "Username for proxy authentication (supports env.VAR_NAME)"
+        },
+        "password": {
+          "type": "string",
+          "description": "Password for proxy authentication (supports env.VAR_NAME)"
+        },
+        "no_proxy": {
+          "type": "string",
+          "description": "Comma-separated hosts that bypass the proxy: exact hosts, .example.com (domain and subdomains), *.example.com (subdomains), or *"
+        },
+        "timeout": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Connection timeout in seconds"
+        },
+        "skip_tls_verify": {
+          "type": "boolean",
+          "default": false,
+          "description": "Skip TLS certificate verification for the proxy"
+        },
+        "enable_for_scim": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enterprise: route SCIM directory sync and identity-provider requests through the proxy"
+        },
+        "enable_for_inference": {
+          "type": "boolean",
+          "default": false,
+          "description": "Route inference requests through the proxy"
+        },
+        "enable_for_api": {
+          "type": "boolean",
+          "default": false,
+          "description": "Route API requests through the proxy"
+        }
+      },
+      "additionalProperties": false
+    },
+    "complexity_decision_tier_criteria": {
       "type": "object",
       "properties": {
         "definition": {
@@ -5412,6 +5645,22 @@
       ],
       "additionalProperties": false
     },
+    "virtual_key_agent_grant": {
+      "type": "object",
+      "description": "Agent grant for a virtual key",
+      "properties": {
+        "virtual_key_id": {
+          "type": "string",
+          "description": "Associated virtual key ID"
+        },
+        "agent_name": {
+          "type": "string",
+          "description": "Registered agent name granted to this virtual key"
+        }
+      },
+      "required": ["agent_name"],
+      "additionalProperties": false
+    },
     "virtual_key_mcp_config": {
       "type": "object",
       "description": "MCP configuration for a virtual key",
@@ -5569,7 +5818,7 @@
     },
     "complexity_analyzer_config": {
       "type": "object",
-      "description": "Runtime configuration for complexity_tier CEL routing with Semantic or Typesafe Jev classification",
+      "description": "Runtime configuration for complexity_tier CEL routing with semantic or decision-model classification",
       "properties": {
         "tier_boundaries": {
           "$ref": "#/$defs/complexity_tier_boundaries"
@@ -5581,7 +5830,7 @@
           "type": "string",
           "enum": [
             "semantic",
-            "jev"
+            "decision"
           ],
           "default": "semantic",
           "description": "Primary complexity classifier. Defaults to semantic."
@@ -5589,8 +5838,8 @@
         "semantic": {
           "$ref": "#/$defs/complexity_semantic_config"
         },
-        "jev": {
-          "$ref": "#/$defs/complexity_jev_config"
+        "decision": {
+          "$ref": "#/$defs/complexity_decision_config"
         },
         "llm": {
           "$ref": "#/$defs/complexity_llm_config"
@@ -5626,7 +5875,7 @@
               ],
               "properties": {
                 "classifier": {
-                  "const": "jev"
+                  "const": "decision"
                 }
               }
             }
@@ -5736,9 +5985,9 @@
           "enum": [
             "none",
             "llm",
-            "jev"
+            "decision"
           ],
-          "description": "What answers when semantic classification produces no tier: none (default), the configured llm classifier, or Typesafe Jev."
+          "description": "What answers when semantic classification produces no tier: none (default), the configured llm classifier, or the configured decision model."
         }
       },
       "required": [
@@ -5886,7 +6135,7 @@
         "base_url": {
           "type": "string",
           "format": "uri",
-          "description": "Base URL for the provider (optional, required for Ollama)"
+          "description": "Base URL for the provider (optional, required for Ollama). Management API updates accept an origin and optional path, without credentials, query parameters, or fragments."
         },
         "extra_headers": {
           "type": "object",
@@ -6929,6 +7178,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -6969,6 +7222,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7011,6 +7268,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7051,6 +7312,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7093,6 +7358,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7133,6 +7402,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7175,6 +7448,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7215,6 +7492,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7257,6 +7538,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7298,6 +7583,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7336,6 +7625,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7373,6 +7666,10 @@
         "store_raw_request_response": {
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7415,6 +7712,10 @@
           "type": "boolean",
           "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
         },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7423,6 +7724,143 @@
         "keys"
       ],
       "additionalProperties": false
+    },
+    "agent_upstream_auth": {
+      "type": "object",
+      "description": "Authentication for upstream A2A agent requests. Secret values support env.<VAR> and vault.<key> references.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "none",
+            "headers",
+            "oauth"
+          ],
+          "description": "Authentication type."
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Headers to attach (for type 'headers'). Values can use env. or vault. prefix."
+        },
+        "oauth": {
+          "type": "object",
+          "description": "OAuth client-credentials configuration (for type 'oauth').",
+          "properties": {
+            "provider_url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$"
+            },
+            "discovery_url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$"
+            },
+            "token_url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$"
+            },
+            "client_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "OAuth client ID (can use env. or vault. prefix)."
+            },
+            "client_secret": {
+              "type": "string",
+              "minLength": 1,
+              "description": "OAuth client secret (can use env. or vault. prefix)."
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "resource": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "security_schemes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Agent Card security scheme names this auth satisfies."
+        },
+        "advanced": {
+          "type": "boolean"
+        },
+        "tls": {
+          "type": "object",
+          "description": "Upstream TLS overrides.",
+          "properties": {
+            "insecure_skip_verify": {
+              "type": "boolean"
+            },
+            "ca_cert_pem": {
+              "type": "string"
+            },
+            "client_cert_pem": {
+              "type": "string"
+            },
+            "client_key_pem": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "oauth"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "oauth"
+            ],
+            "properties": {
+              "oauth": {
+                "required": [
+                  "client_id",
+                  "client_secret"
+                ],
+                "anyOf": [
+                  {
+                    "required": [
+                      "provider_url"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "discovery_url"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "token_url"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
     },
     "mcp_client_config": {
       "type": "object",
@@ -7912,6 +8350,66 @@
           "minimum": 0,
           "description": "Byte bound on the whole forwarded aggregate across every visible MCP server. Rides on every MCP-bearing request that carries tools, so raising it raises per-request tokens. 0 uses the built-in default of 16384.",
           "default": 0
+        },
+        "code_mode_limits": {
+          "$ref": "#/$defs/mcp_code_mode_limits"
+        }
+      }
+    },
+    "mcp_code_mode_limits": {
+      "type": "object",
+      "description": "Limits applied to each code mode (executeToolCode) execution. Every field is optional; omit it or set 0 to use the built-in default. There is no limit on how many executions run concurrently.",
+      "additionalProperties": false,
+      "properties": {
+        "max_source_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum size of the submitted code in bytes. 0 uses the default of 65536 (64 KiB).",
+          "default": 0
+        },
+        "max_steps": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum interpreter computation steps per execution, including work inside builtins. 0 uses the default of 1000000.",
+          "default": 0
+        },
+        "max_memory_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Estimated allocation budget per execution in bytes, enforced by the interpreter and value converters before allocating. 0 uses the default of 67108864 (64 MiB).",
+          "default": 0
+        },
+        "max_log_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum print and tool log output per execution in bytes, including newlines. 0 uses the default of 65536 (64 KiB).",
+          "default": 0
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum nested MCP tool calls per execution. 0 uses the default of 64.",
+          "default": 0
+        },
+        "max_value_bytes": {
+          "type": "integer",
+          "anyOf": [
+            {
+              "const": 0
+            },
+            {
+              "minimum": 1024
+            }
+          ],
+          "description": "Size budget in bytes for each tool payload and converted result, counted conservatively for JSON escaping. Must be 0 (default of 1048576, 1 MiB) or at least 1024.",
+          "default": 0
+        },
+        "max_nesting_depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000,
+          "description": "Maximum nesting depth of values crossing the tool boundary. 0 uses the default of 64; at most 1000.",
+          "default": 0
         }
       }
     },
@@ -8378,7 +8876,7 @@
         },
         "ca_cert_pem": {
           "type": "string",
-          "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (for SSL-intercepting proxies, supports env.VAR_NAME)"
+          "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (for SSL-intercepting proxies, and for the proxy itself when the URL is https://, supports env.VAR_NAME)"
         }
       },
       "required": [
@@ -8838,7 +9336,7 @@
         },
         "apiToken": {
           "type": "string",
-          "description": "Okta API token for Admin API access (optional; enables 24-hour background user/group reconciliation)"
+          "description": "Okta API token for Admin API access (optional; enables background user/group reconciliation on the bulkSyncInterval schedule, 24h by default)"
         },
         "audience": {
           "type": "string",
@@ -8883,6 +9381,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -8974,6 +9478,12 @@
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
+        },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
         },
@@ -9048,6 +9558,12 @@
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
+        },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
         }
@@ -9112,6 +9628,10 @@
             "type": "string"
           }
         },
+        "displayName": {
+          "type": "string",
+          "description": "Label for the login button (\"Sign in with <displayName>\"). Defaults to \"SSO\"."
+        },
         "attributeRoleMappings": {
           "$ref": "#/$defs/scim_attribute_role_mappings"
         },
@@ -9129,6 +9649,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -9202,6 +9728,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -9292,6 +9824,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -9421,6 +9959,12 @@
         },
         "attributeAccessProfileMappings": {
           "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
+        "attributeProjectMappings": {
+          "$ref": "#/$defs/scim_attribute_project_mappings"
+        },
+        "bulkSyncInterval": {
+          "$ref": "#/$defs/scim_bulk_sync_interval"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -11584,6 +12128,9 @@
             "realtime": {
               "type": "boolean"
             },
+            "live": {
+              "type": "boolean"
+            },
             "cached_content_create": {
               "type": "boolean"
             },
@@ -11831,6 +12378,39 @@
         "additionalProperties": false
       }
     },
+    "scim_attribute_project_mappings": {
+      "type": "array",
+      "description": "Attribute -> project mappings. Every matching rule applies: the user is added to each project it matches. Projects are never auto-created; a rule naming a missing project is dropped. Memberships added this way are removed when the rule stops matching; members added from the dashboard are kept.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+          },
+          "value": {
+            "type": "string",
+            "description": "Claim value to match (case-insensitive). '*' matches whenever the claim carries any non-empty value; glob patterns (e.g. 'bifrost-*') are also supported."
+          },
+          "project": {
+            "type": "string",
+            "description": "Name of the project to add the user to on match"
+          }
+        },
+        "required": [
+          "attribute",
+          "value",
+          "project"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "scim_bulk_sync_interval": {
+      "type": "string",
+      "pattern": "^([0-9]+d|([0-9]+(\\.[0-9]+)?(h|m|s))+)$",
+      "default": "24h",
+      "description": "How often the directory reconcile lists the IdP's users through its admin API and deprovisions the ones it no longer returns, as whole days or h/m/s pairs (e.g. '12h', '1h30m', '7d'). Must be between 1h and 30d. Defaults to 24h. Inert when SCIM provisioning is enabled or the provider has no directory API access (e.g. Okta without apiToken)."
+    },
     "scim_attribute_business_unit_mappings": {
       "type": "array",
       "description": "Attribute -> business-unit mappings (all matches apply).",
@@ -11857,10 +12437,18 @@
         "additionalProperties": false
       }
     },
-    "complexity_jev_config": {
+    "complexity_decision_config": {
       "type": "object",
-      "description": "Typesafe Jev complexity-classifier request settings. Uses the configured Typesafe provider credentials.",
+      "description": "Decision-model complexity-classifier request settings. Credentials come from the selected provider's configuration.",
       "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Provider serving the decision model, e.g. typesafe, or a custom provider with base_provider_type typesafe (Laya, Nimble, Clef). Set together with model; leave both empty for typesafe/jev-latest."
+        },
+        "model": {
+          "type": "string",
+          "description": "Decision model to call on the provider, e.g. jev-latest, nimble-latest, english, clef. Set together with provider; leave both empty for typesafe/jev-latest."
+        },
         "previous_message_count": {
           "type": "integer",
           "minimum": 0,
@@ -11869,7 +12457,7 @@
           "description": "Number of preceding user messages sent with the current request. Assistant messages are excluded."
         },
         "timeout": {
-          "description": "Maximum Jev classification latency (duration string or milliseconds as a number; default 1500ms).",
+          "description": "Maximum decision-model classification latency (duration string or milliseconds as a number; default 1500ms).",
           "oneOf": [
             {
               "type": "string",
@@ -11884,11 +12472,11 @@
         },
         "criteria": {
           "type": "object",
-          "description": "Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.",
+          "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
           "properties": {
-            "SIMPLE": { "$ref": "#/$defs/complexity_jev_tier_criteria" },
-            "MEDIUM": { "$ref": "#/$defs/complexity_jev_tier_criteria" },
-            "COMPLEX": { "$ref": "#/$defs/complexity_jev_tier_criteria" }
+            "SIMPLE": { "$ref": "#/$defs/complexity_decision_tier_criteria" },
+            "MEDIUM": { "$ref": "#/$defs/complexity_decision_tier_criteria" },
+            "COMPLEX": { "$ref": "#/$defs/complexity_decision_tier_criteria" }
           },
           "additionalProperties": false
         }

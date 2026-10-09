@@ -104,6 +104,10 @@ var reviewedSites = map[string]siteReview{
 		status: covered,
 		test:   "TestRemapRawToolVersionsForProvider_AllocationScaling",
 	},
+	"anthropic.ApplyDefaultEagerInputStreamingToRawBody": {
+		status: covered,
+		test:   "TestApplyDefaultEagerInputStreamingToRawBody_AllocationScaling",
+	},
 	"anthropic.StripUnsupportedFieldsFromRawBody": {
 		status: covered,
 		test:   "TestStripUnsupportedFieldsFromRawBody_AllocationScaling",
@@ -139,6 +143,10 @@ var reviewedSites = map[string]siteReview{
 		status: elementSized,
 		reason: "writes accumulate into small local values (a single schema branch, an enum array), " +
 			"never the request body; the quadratic term is in enum cardinality, which is schema-bounded",
+	},
+	"mistral.normalizeMistralStreamContent": {
+		status: elementSized,
+		reason: "rewrites each choice-sized delta once, then replaces the choices array outside the loop",
 	},
 	"anthropic.BuildAnthropicChatRequestBody": {
 		status: bounded,

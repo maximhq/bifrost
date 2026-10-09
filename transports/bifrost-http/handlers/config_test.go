@@ -12,17 +12,20 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
@@ -220,6 +223,198 @@ func TestUpdateConfig_InferenceAuthSetup(t *testing.T) {
 	}
 }
 
+// TestUpdateConfig_FirstAdminAcceptsSetupTokenHeader pins that a first-admin PUT the OSS
+// setup-lock gate already authenticated (X-Bifrost-Setup-Token) does not have to repeat the
+// token in auth_config.setup_token, while an unauthenticated one without it is still refused.
+func TestUpdateConfig_FirstAdminAcceptsSetupTokenHeader(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, tt := range []struct {
+		name        string
+		setupAuthed bool
+		status      int
+	}{
+		{name: "header authenticated", setupAuthed: true, status: 200},
+		{name: "no token anywhere", setupAuthed: false, status: 403},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+			h := &ConfigHandler{store: cfg, configManager: setupConfigManager{store: store, validToken: false}}
+			ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"auth_config":{"is_enabled":true,"admin_username":"admin","admin_password":"StrongPassword1!"}}`)
+			if tt.setupAuthed {
+				ctx.SetUserValue(schemas.BifrostContextKeySetupTokenAuthenticated, true)
+			}
+			h.updateConfig(ctx)
+			require.Equal(t, tt.status, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			auth, err := store.GetAuthConfig(bgCtx())
+			require.NoError(t, err)
+			if tt.status == 200 {
+				require.NotNil(t, auth)
+				assert.True(t, auth.IsEnabled)
+			} else {
+				assert.Nil(t, auth)
+			}
+		})
+	}
+}
+
+// TestIsAuthEnabled_ReportsSetupLockState pins the fields the dashboard uses to choose the
+// setup screen: setup_required follows the gate's lock state, setup_token_configured whether
+// a token exists, and both stay false when the gate is not installed (enterprise).
+func TestIsAuthEnabled_ReportsSetupLockState(t *testing.T) {
+	SetLogger(&mockLogger{})
+	token := "s3cret"
+	enabled := &configstore.AuthConfig{AdminUserName: schemas.NewSecretVar("admin"), AdminPassword: schemas.NewSecretVar("stored"), IsEnabled: true}
+	for _, tt := range []struct {
+		name                     string
+		gate                     bool
+		token                    string
+		admin                    *configstore.AuthConfig
+		wantRequired, wantConfig bool
+	}{
+		{name: "no gate (enterprise)", gate: false, token: token},
+		{name: "locked with token", gate: true, token: token, wantRequired: true, wantConfig: true},
+		{name: "locked without token", gate: true, wantRequired: true},
+		{name: "auth enabled", gate: true, token: token, admin: enabled, wantConfig: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			if tt.admin != nil {
+				require.NoError(t, store.UpdateAuthConfig(bgCtx(), tt.admin))
+			}
+			h := &SessionHandler{configStore: store}
+			if tt.gate {
+				am := &AuthMiddleware{}
+				if tt.token != "" {
+					am.setupToken.Store(&tt.token)
+				}
+				am.UpdateAuthConfig(tt.admin)
+				h.SetSetupLock(am)
+			}
+			ctx := putConfigCtx("")
+			h.isAuthEnabled(ctx)
+			var reported struct {
+				SetupRequired        *bool `json:"setup_required"`
+				SetupTokenConfigured *bool `json:"setup_token_configured"`
+			}
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &reported), string(ctx.Response.Body()))
+			require.NotNil(t, reported.SetupRequired)
+			require.NotNil(t, reported.SetupTokenConfigured)
+			assert.Equal(t, tt.wantRequired, *reported.SetupRequired)
+			assert.Equal(t, tt.wantConfig, *reported.SetupTokenConfigured)
+		})
+	}
+}
+
+// TestStartSetupSession_IssuesHttpOnlyCookie pins POST /api/session/setup: it trades a valid
+// setup token for an HttpOnly, SameSite=Strict cookie the gate accepts, refuses a wrong token,
+// and refuses outright when the setup lock is not active. Logout expires the cookie.
+func TestStartSetupSession_IssuesHttpOnlyCookie(t *testing.T) {
+	SetLogger(&mockLogger{})
+	token := "s3cret"
+	newLocked := func() (*SessionHandler, *AuthMiddleware) {
+		am := &AuthMiddleware{}
+		am.setupToken.Store(&token)
+		h := &SessionHandler{configStore: newRealOAuth2Store(t)}
+		h.SetSetupLock(am)
+		return h, am
+	}
+	post := func(h *SessionHandler, header string) *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("POST")
+		ctx.Request.SetRequestURI("/api/session/setup")
+		if header != "" {
+			ctx.Request.Header.Set(SetupTokenHeader, header)
+		}
+		h.startSetupSession(ctx)
+		return ctx
+	}
+
+	t.Run("valid token", func(t *testing.T) {
+		h, am := newLocked()
+		ctx := post(h, token)
+		require.Equal(t, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		cookie := fasthttp.AcquireCookie()
+		defer fasthttp.ReleaseCookie(cookie)
+		cookie.SetKey(SetupSessionCookie)
+		require.True(t, ctx.Response.Header.Cookie(cookie), "Set-Cookie %s missing", SetupSessionCookie)
+		assert.True(t, cookie.HTTPOnly(), "setup session cookie must be HttpOnly")
+		assert.Equal(t, fasthttp.CookieSameSiteStrictMode, cookie.SameSite())
+		assert.Equal(t, "/", string(cookie.Path()))
+		assert.NotContains(t, string(cookie.Value()), token, "cookie must not carry the token")
+		assert.True(t, am.validSetupSession(string(cookie.Value()), time.Now()), "issued cookie must pass the gate")
+	})
+	t.Run("forwarded https sets Secure", func(t *testing.T) {
+		h, _ := newLocked()
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("POST")
+		ctx.Request.Header.Set(SetupTokenHeader, token)
+		ctx.Request.Header.Set("X-Forwarded-Proto", "https")
+		h.startSetupSession(ctx)
+		require.Equal(t, 200, ctx.Response.StatusCode())
+		cookie := fasthttp.AcquireCookie()
+		defer fasthttp.ReleaseCookie(cookie)
+		cookie.SetKey(SetupSessionCookie)
+		require.True(t, ctx.Response.Header.Cookie(cookie))
+		assert.True(t, cookie.Secure())
+	})
+	t.Run("wrong or missing token", func(t *testing.T) {
+		h, _ := newLocked()
+		for _, header := range []string{"nope", ""} {
+			ctx := post(h, header)
+			assert.Equal(t, 403, ctx.Response.StatusCode(), "header %q", header)
+			assert.Empty(t, ctx.Response.Header.PeekCookie(SetupSessionCookie))
+		}
+	})
+	t.Run("lock not active", func(t *testing.T) {
+		enterprise := &SessionHandler{configStore: newRealOAuth2Store(t)}
+		assert.Equal(t, 409, post(enterprise, token).Response.StatusCode(), "no gate installed")
+		h, am := newLocked()
+		am.UpdateAuthConfig(&configstore.AuthConfig{AdminUserName: schemas.NewSecretVar("admin"), AdminPassword: schemas.NewSecretVar("x"), IsEnabled: true})
+		assert.Equal(t, 409, post(h, token).Response.StatusCode(), "dashboard auth enabled")
+	})
+	t.Run("logout expires the cookie", func(t *testing.T) {
+		h, _ := newLocked()
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("POST")
+		h.logout(ctx)
+		cookie := fasthttp.AcquireCookie()
+		defer fasthttp.ReleaseCookie(cookie)
+		cookie.SetKey(SetupSessionCookie)
+		require.True(t, ctx.Response.Header.Cookie(cookie), "logout must clear %s", SetupSessionCookie)
+		assert.Empty(t, string(cookie.Value()))
+		assert.True(t, cookie.Expire().Before(time.Now()))
+	})
+}
+
+// TestUpdateConfig_SetupTokenFirstAdminCanLogIn pins the full first-admin path through the
+// OSS setup lock: an admin created by a setup-token-authenticated PUT (the security view's
+// payload shape) can then log in with exactly the credentials it was created with.
+func TestUpdateConfig_SetupTokenFirstAdminCanLogIn(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: setupConfigManager{store: store, validToken: false}}
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"auth_config":{"is_enabled":true,"admin_username":{"value":"admin","ref":""},"admin_password":{"value":"StrongPassword1!","ref":""}}}`)
+	ctx.SetUserValue(schemas.BifrostContextKeySetupTokenAuthenticated, true)
+	h.updateConfig(ctx)
+	require.Equal(t, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	for _, tc := range []struct {
+		name, body string
+		status     int
+	}{
+		{name: "same credentials", body: `{"username":"admin","password":"StrongPassword1!"}`, status: 200},
+		{name: "wrong password", body: `{"username":"admin","password":"StrongPassword1"}`, status: 401},
+	} {
+		login := putConfigCtx(tc.body)
+		(&SessionHandler{configStore: store}).login(login)
+		assert.Equal(t, tc.status, login.Response.StatusCode(), "%s: %s", tc.name, login.Response.Body())
+	}
+}
+
 func TestGetPasswordPolicyFailures(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -261,6 +456,34 @@ func TestGetPasswordPolicyFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUpdateConfig_A2AExternalClientURLPresence(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.A2AExternalClientURL = schemas.NewSecretVar("https://bifrost.example.com")
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	require.NotNil(t, cfg.ClientConfig.A2AExternalClientURL)
+	assert.Equal(t, "https://bifrost.example.com", cfg.ClientConfig.A2AExternalClientURL.GetValue())
+	persisted, err := store.GetClientConfig(bgCtx())
+	require.NoError(t, err)
+	require.NotNil(t, persisted.A2AExternalClientURL)
+	assert.Equal(t, "https://bifrost.example.com", persisted.A2AExternalClientURL.GetValue())
+
+	cleared := putConfigCtx(`{"client_config":{"log_retention_days":8,"a2a_external_client_url":null}}`)
+	h.updateConfig(cleared)
+	require.Equal(t, fasthttp.StatusOK, cleared.Response.StatusCode(), string(cleared.Response.Body()))
+	assert.Nil(t, cfg.ClientConfig.A2AExternalClientURL)
+	persisted, err = store.GetClientConfig(bgCtx())
+	require.NoError(t, err)
+	require.NotNil(t, persisted.A2AExternalClientURL)
+	assert.Empty(t, persisted.A2AExternalClientURL.GetValue())
 }
 
 // TestUpdateConfig_EmptyDatasheetURLsResetToDefaults pins the regression where
@@ -421,6 +644,31 @@ func TestCheckURLAccessibility_RejectsFileURLs(t *testing.T) {
 		err := checkURLAccessibility(raw)
 		require.Error(t, err, raw)
 		assert.Contains(t, err.Error(), "config.json", raw)
+	}
+}
+
+// TestCheckURLAccessibility_ReachesConfiguredPrivateProxy pins that the URL check works
+// behind a global API proxy on a private or loopback address. The proxy is dialed with
+// the private-network policy; a direct dial keeps the public-only check, so saving a
+// URL override does not fail just because the proxy is self-hosted.
+func TestCheckURLAccessibility_ReachesConfiguredPrivateProxy(t *testing.T) {
+	SetLogger(&mockLogger{})
+	var seen atomic.Value
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.Store(r.URL.Host)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer proxy.Close()
+	network.SetDefaultHTTPClientFactory(network.NewHTTPClientFactory(&network.GlobalProxyConfig{
+		Enabled: true, Type: network.GlobalProxyTypeHTTP, URL: proxy.URL, EnableForAPI: true,
+	}, nil))
+	t.Cleanup(func() { network.SetDefaultHTTPClientFactory(nil) })
+
+	if err := checkURLAccessibility("http://203.0.113.10/pricing.json"); err != nil {
+		t.Fatalf("a loopback API proxy must be usable for the URL check, got %v", err)
+	}
+	if got, _ := seen.Load().(string); got != "203.0.113.10" {
+		t.Fatalf("proxy saw target %q, want 203.0.113.10", got)
 	}
 }
 
@@ -701,4 +949,197 @@ func TestUpdateConfig_FirstAdminStillRequiresSetupToken(t *testing.T) {
 			assert.Nil(t, stored, "no admin account may be created without the setup token")
 		})
 	}
+}
+
+// recordingToolManagerConfig records the code mode limits handed to the MCP hot reload.
+type recordingToolManagerConfig struct {
+	stubConfigManager
+	calls  int
+	limits *schemas.MCPCodeModeLimits
+}
+
+func (r *recordingToolManagerConfig) UpdateMCPToolManagerConfig(_ context.Context, _ int, _ int, _ string, _ bool, _ int, _ int, limits *schemas.MCPCodeModeLimits) error {
+	r.calls++
+	r.limits = limits
+	return nil
+}
+
+func TestUpdateConfig_MCPCodeModeLimits(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.MCPConfig = &schemas.MCPConfig{}
+	recorder := &recordingToolManagerConfig{}
+	h := &ConfigHandler{store: cfg, configManager: recorder}
+
+	save := func(t *testing.T, limitsJSON string) *fasthttp.RequestCtx {
+		t.Helper()
+		body := `{"client_config":{"log_retention_days":7}}`
+		if limitsJSON != "" {
+			body = `{"client_config":{"log_retention_days":7,"mcp_code_mode_limits":` + limitsJSON + `}}`
+		}
+		ctx := putConfigCtx(body)
+		h.updateConfig(ctx)
+		return ctx
+	}
+	persisted := func(t *testing.T) *schemas.MCPCodeModeLimits {
+		t.Helper()
+		stored, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return stored.MCPCodeModeLimits
+	}
+	limits := &schemas.MCPCodeModeLimits{MaxSteps: 5_000_000, MaxToolCalls: 500}
+
+	ctx := save(t, `{"max_steps":5000000,"max_tool_calls":500}`)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Equal(t, limits, persisted(t), "limits must persist")
+	assert.Equal(t, limits, cfg.ClientConfig.MCPCodeModeLimits, "limits must apply in memory")
+	assert.Equal(t, limits, cfg.MCPConfig.ToolManagerConfig.CodeModeLimits, "the in-memory MCP config must carry the limits")
+	assert.Equal(t, limits, recorder.limits, "limits must be hot-reloaded")
+
+	calls := recorder.calls
+	ctx = save(t, "")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Equal(t, limits, persisted(t), "an update that omits the limits must keep them")
+	assert.Equal(t, calls, recorder.calls, "an update that omits the limits must not reload")
+
+	for _, invalid := range []string{`{"max_steps":-1}`, `{"max_nesting_depth":5000}`, `{"max_value_bytes":10}`} {
+		ctx = save(t, invalid)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "%s: %s", invalid, ctx.Response.Body())
+		assert.Equal(t, limits, persisted(t), "rejected limits %s must not persist", invalid)
+	}
+
+	// A save rejected after the MCP section must not have reloaded or published the limits.
+	calls = recorder.calls
+	ctx = putConfigCtx(`{"client_config":{"log_retention_days":0,"mcp_code_mode_limits":{"max_tool_calls":7}}}`)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Equal(t, calls, recorder.calls, "a rejected save must not hot-reload the limits")
+	assert.Equal(t, limits, recorder.limits, "a rejected save must leave the runtime limits alone")
+	assert.Equal(t, limits, cfg.MCPConfig.ToolManagerConfig.CodeModeLimits, "a rejected save must leave the in-memory MCP config alone")
+	assert.Equal(t, limits, persisted(t), "a rejected save must not persist")
+
+	ctx = save(t, `{}`)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Equal(t, &schemas.MCPCodeModeLimits{}, persisted(t), "empty limits must reset to the defaults")
+	assert.Equal(t, &schemas.MCPCodeModeLimits{}, recorder.limits, "the reset must be hot-reloaded")
+}
+
+// recordingCompatConfigManager records compat plugin reloads and removals.
+type recordingCompatConfigManager struct {
+	stubConfigManager
+	reloaded   []*compat.Config
+	removed    []string
+	failReload bool
+}
+
+func (m *recordingCompatConfigManager) ReloadPlugin(_ context.Context, name string, _ *string, cfg any, _ *schemas.PluginPlacement, _ *int) error {
+	if name == compat.PluginName {
+		m.reloaded = append(m.reloaded, cfg.(*compat.Config))
+		if m.failReload {
+			return errors.New("compat reload failed")
+		}
+	}
+	return nil
+}
+
+func (m *recordingCompatConfigManager) RemovePlugin(_ context.Context, name string) error {
+	m.removed = append(m.removed, name)
+	return nil
+}
+
+// TestUpdateConfig_CompatAllFlagsOffKeepsPluginLoaded pins that disabling every
+// compat flag reloads the plugin instead of removing it, so per-request compat
+// header overrides keep working.
+func TestUpdateConfig_CompatAllFlagsOffKeepsPluginLoaded(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.Compat = configstore.CompatConfig{ConvertTextToChat: true}
+	cm := &recordingCompatConfigManager{}
+	h := &ConfigHandler{store: cfg, configManager: cm}
+
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"compat":{"convert_text_to_chat":false,"convert_chat_to_responses":false,"should_drop_params":false,"should_convert_params":false,"azure_deepseek":false,"force_reasoning_only_models_to_responses":false}}}`)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	assert.NotContains(t, cm.removed, compat.PluginName, "compat plugin must stay loaded for per-request overrides")
+	require.Len(t, cm.reloaded, 1, "compat plugin must be reloaded with the new config")
+	assert.Equal(t, compat.Config{}, *cm.reloaded[0])
+}
+
+const compatAllOffPayload = `{"client_config":{"log_retention_days":7,"compat":{"convert_text_to_chat":false,"convert_chat_to_responses":false,"should_drop_params":false,"should_convert_params":false,"azure_deepseek":false,"force_reasoning_only_models_to_responses":false}}}`
+
+// TestUpdateConfig_CompatReloadWaitsForPersistence pins that a failed save never
+// reaches the compat plugin, so runtime compat cannot run ahead of the database.
+func TestUpdateConfig_CompatReloadWaitsForPersistence(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(inferenceSetupFailureStore{store, "write"}, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.Compat = configstore.CompatConfig{ConvertTextToChat: true}
+	cm := &recordingCompatConfigManager{}
+	h := &ConfigHandler{store: cfg, configManager: cm}
+
+	ctx := putConfigCtx(compatAllOffPayload)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	assert.Empty(t, cm.reloaded, "compat plugin must not change when the save fails")
+	assert.True(t, cfg.ClientConfig.Compat.ConvertTextToChat, "in-memory compat must stay unchanged")
+}
+
+// TestUpdateConfig_CompatReloadFailureRestoresPersistedConfig pins that a failed
+// compat reload after a successful save rolls the persisted compat setting back.
+func TestUpdateConfig_CompatReloadFailureRestoresPersistedConfig(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.Compat = configstore.CompatConfig{ConvertTextToChat: true}
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	cm := &recordingCompatConfigManager{failReload: true}
+	h := &ConfigHandler{store: cfg, configManager: cm}
+
+	ctx := putConfigCtx(compatAllOffPayload)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	persisted, err := store.GetClientConfig(bgCtx())
+	require.NoError(t, err)
+	assert.True(t, persisted.Compat.ConvertTextToChat, "persisted compat must be restored after a failed reload")
+	assert.True(t, cfg.ClientConfig.Compat.ConvertTextToChat, "in-memory compat must stay unchanged")
+}
+
+// failingRestoreStore fails every UpdateClientConfig after the first, so the
+// compensating restore write fails.
+type failingRestoreStore struct {
+	configstore.ConfigStore
+	writes *int
+}
+
+func (s failingRestoreStore) UpdateClientConfig(ctx context.Context, c *configstore.ClientConfig) error {
+	*s.writes++
+	if *s.writes > 1 {
+		return errors.New("restore write failed")
+	}
+	return s.ConfigStore.UpdateClientConfig(ctx, c)
+}
+
+// TestUpdateConfig_CompatReloadFailureReportsFailedRestore pins that a failed restore
+// is reported as a server error instead of the clean-rollback 400.
+func TestUpdateConfig_CompatReloadFailureReportsFailedRestore(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	writes := 0
+	cfg := newTestOAuth2Config(failingRestoreStore{store, &writes}, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.Compat = configstore.CompatConfig{ConvertTextToChat: true}
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	cm := &recordingCompatConfigManager{failReload: true}
+	h := &ConfigHandler{store: cfg, configManager: cm}
+
+	ctx := putConfigCtx(compatAllOffPayload)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Contains(t, string(ctx.Response.Body()), "could not be restored")
+	assert.Equal(t, 2, writes, "the handler must attempt the restore write")
+	assert.True(t, cfg.ClientConfig.Compat.ConvertTextToChat, "in-memory compat must stay unchanged")
 }

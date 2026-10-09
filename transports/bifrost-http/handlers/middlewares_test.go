@@ -27,6 +27,7 @@ import (
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/stretchr/testify/assert"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttputil"
 )
@@ -84,7 +85,7 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Methods")) != "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD" {
 				t.Errorf("Access-Control-Allow-Methods header not set correctly")
 			}
-			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID" {
+			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID, X-Bifrost-Setup-Token" {
 				t.Errorf("Access-Control-Allow-Headers header not set correctly")
 			}
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Credentials")) != "true" {
@@ -166,6 +167,33 @@ func TestCorsMiddleware_NonAllowedOrigins(t *testing.T) {
 }
 
 // TestCorsMiddleware_PreflightAllowedOrigin tests OPTIONS preflight requests for allowed origins
+// TestCorsMiddleware_PreflightAllowsSetupTokenHeader pins that the dashboard's
+// X-Bifrost-Setup-Token header passes a cross-origin preflight with no allowed_headers
+// configured. allowed_origins "*" only governs the origin check; without the header in the
+// default list, every locked-dashboard call from a separate UI origin fails CORS.
+func TestCorsMiddleware_PreflightAllowsSetupTokenHeader(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, origins := range [][]string{{"*"}, {"https://dash.example.com"}} {
+		t.Run(strings.Join(origins, ","), func(t *testing.T) {
+			config := &lib.Config{ClientConfig: &configstore.ClientConfig{AllowedOrigins: origins}}
+			for _, origin := range []string{"http://localhost:3000", "https://dash.example.com"} {
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.Header.SetMethod("OPTIONS")
+				ctx.Request.Header.Set("Origin", origin)
+				ctx.Request.Header.Set("Access-Control-Request-Headers", "content-type, x-bifrost-setup-token")
+				NewCorsMiddleware(config).Middleware()(func(ctx *fasthttp.RequestCtx) {})(ctx)
+				if ctx.Response.StatusCode() != fasthttp.StatusOK {
+					t.Fatalf("%s: preflight status = %d", origin, ctx.Response.StatusCode())
+				}
+				allowHeaders := strings.ToLower(string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")))
+				if !strings.Contains(allowHeaders, "x-bifrost-setup-token") {
+					t.Errorf("%s: Access-Control-Allow-Headers %q must include X-Bifrost-Setup-Token", origin, allowHeaders)
+				}
+			}
+		})
+	}
+}
+
 func TestCorsMiddleware_PreflightAllowedOrigin(t *testing.T) {
 	config := &lib.Config{
 		ClientConfig: &configstore.ClientConfig{
@@ -591,6 +619,9 @@ func TestRecoveryMiddleware_TracingRecordsPanicAsError(t *testing.T) {
 	if got := string(ctx.Response.Header.Peek("x-request-id")); got != "req-panic-1" {
 		t.Errorf("x-request-id = %q, want req-panic-1", got)
 	}
+	if got := string(ctx.Response.Header.Peek("x-bifrost-request-id")); got != "req-panic-1" {
+		t.Errorf("x-bifrost-request-id = %q, want req-panic-1", got)
+	}
 	if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
 		t.Error("expected x-bifrost-trace-id on the recovered 500")
 	}
@@ -849,6 +880,100 @@ func TestAuthMiddleware_DisabledAuthConfig(t *testing.T) {
 	if !nextCalled {
 		t.Error("Next handler should be called when auth is disabled")
 	}
+}
+
+// TestAuthMiddleware_DisabledAuthConfig_CrossOrigin: while dashboard auth is disabled, a browser
+// request from an origin the operator did not name is refused on management routes. Localhost
+// origins, explicitly listed origins and domain patterns pass; the bare "*" default does not count.
+// Requests without an Origin, whitelisted routes and inference routes are unaffected.
+func TestAuthMiddleware_DisabledAuthConfig_CrossOrigin(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	run := func(am *AuthMiddleware, middleware schemas.BifrostHTTPMiddleware, path, origin string) (nextCalled bool, status int) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(path)
+		if origin != "" {
+			ctx.Request.Header.Set("Origin", origin)
+		}
+		middleware(func(ctx *fasthttp.RequestCtx) { nextCalled = true })(ctx)
+		return nextCalled, ctx.Response.StatusCode()
+	}
+
+	t.Run("auth config nil, default origins", func(t *testing.T) {
+		am := &AuthMiddleware{}
+		api := am.APIMiddleware()
+
+		called, _ := run(am, api, "/api/providers", "")
+		assert.True(t, called, "no Origin header: CLI/SDK callers are unaffected")
+		called, _ = run(am, api, "/api/providers", "http://localhost:3000")
+		assert.True(t, called, "localhost origins are always allowed")
+		called, _ = run(am, api, "/api/providers", "http://[::1]:3000")
+		assert.True(t, called)
+		called, status := run(am, api, "/api/providers", "https://evil.example")
+		assert.False(t, called, "an unlisted origin must not reach the open management API")
+		assert.Equal(t, fasthttp.StatusForbidden, status)
+		called, _ = run(am, api, "/health", "https://evil.example")
+		assert.True(t, called, "whitelisted routes keep today's behaviour")
+		called, _ = run(am, am.InferenceMiddleware(), "/v1/chat/completions", "https://evil.example")
+		assert.True(t, called, "inference routes are governed by the governance plugin, not by this check")
+	})
+
+	t.Run("auth disabled, configured origins", func(t *testing.T) {
+		am := &AuthMiddleware{}
+		am.UpdateAuthConfig(&configstore.AuthConfig{
+			AdminUserName: schemas.NewSecretVar("admin"),
+			AdminPassword: schemas.NewSecretVar("password"),
+			IsEnabled:     false,
+		})
+		api := am.APIMiddleware()
+
+		am.UpdateAllowedOrigins([]string{"*"})
+		called, status := run(am, api, "/api/providers", "https://evil.example")
+		assert.False(t, called, "the bare wildcard does not name an origin")
+		assert.Equal(t, fasthttp.StatusForbidden, status)
+
+		am.UpdateAllowedOrigins([]string{"https://app.example.com", "https://*.corp.example"})
+		called, _ = run(am, api, "/api/providers", "https://app.example.com")
+		assert.True(t, called, "an explicitly listed origin passes")
+		called, _ = run(am, api, "/api/providers", "https://tools.corp.example")
+		assert.True(t, called, "a domain pattern names the origin")
+		called, status = run(am, api, "/api/providers", "https://app.example.com.evil.example")
+		assert.False(t, called)
+		assert.Equal(t, fasthttp.StatusForbidden, status)
+
+		// The dashboard served from a non-localhost address sends its own Origin on writes;
+		// a same-origin request (Origin host:port equals Host) is not cross-origin.
+		sameOrigin := &fasthttp.RequestCtx{}
+		sameOrigin.Request.SetRequestURI("/api/config")
+		sameOrigin.Request.Header.SetMethod(fasthttp.MethodPut)
+		sameOrigin.Request.Header.SetHost("10.0.0.5:8080")
+		sameOrigin.Request.Header.Set("Origin", "http://10.0.0.5:8080")
+		sameOriginCalled := false
+		api(func(*fasthttp.RequestCtx) { sameOriginCalled = true })(sameOrigin)
+		assert.True(t, sameOriginCalled, "the dashboard's own same-origin write must not be refused (status %d)", sameOrigin.Response.StatusCode())
+
+		defaultPort := &fasthttp.RequestCtx{}
+		defaultPort.Request.SetRequestURI("/api/config")
+		defaultPort.Request.Header.SetHost("bifrost.internal:443")
+		defaultPort.Request.Header.Set("Origin", "https://bifrost.internal")
+		defaultPortCalled := false
+		api(func(*fasthttp.RequestCtx) { defaultPortCalled = true })(defaultPort)
+		assert.True(t, defaultPortCalled, "an explicit default port in Host is the same origin")
+
+		crossHost := &fasthttp.RequestCtx{}
+		crossHost.Request.SetRequestURI("/api/config")
+		crossHost.Request.Header.SetHost("10.0.0.5:8080")
+		crossHost.Request.Header.Set("Origin", "http://10.0.0.5:9090")
+		crossHostCalled := false
+		api(func(*fasthttp.RequestCtx) { crossHostCalled = true })(crossHost)
+		assert.False(t, crossHostCalled, "a different port is a different origin")
+		assert.Equal(t, fasthttp.StatusForbidden, crossHost.Response.StatusCode())
+
+		// Operator-configured whitelisted routes are exempt like the system ones.
+		am.UpdateWhitelistedRoutes([]string{"/api/public/*"})
+		called, _ = run(am, api, "/api/public/status", "https://evil.example")
+		assert.True(t, called)
+	})
 }
 
 // TestAuthMiddleware_EnabledAuthConfig_NoAuth tests that auth middleware blocks unauthenticated requests
@@ -1452,6 +1577,233 @@ func TestAuthMiddleware_BootstrapToken_ValidatesAndClears(t *testing.T) {
 	}
 }
 
+// runOSSAPIChain runs a request through the OSS /api chain (SetupLockMiddleware then
+// APIMiddleware, as wired in server.go) and reports whether the handler ran.
+func runOSSAPIChain(am *AuthMiddleware, ctx *fasthttp.RequestCtx) bool {
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) { nextCalled = true }
+	am.SetupLockMiddleware()(am.APIMiddleware()(next))(ctx)
+	return nextCalled
+}
+
+func newSetupLockedAuthMiddleware(setupToken string, authConfig *configstore.AuthConfig) *AuthMiddleware {
+	am := &AuthMiddleware{}
+	if setupToken != "" {
+		am.setupToken.Store(&setupToken)
+	}
+	am.UpdateAuthConfig(authConfig)
+	return am
+}
+
+// TestSetupLockMiddleware_LocksAPIWhileAuthInactive pins the OSS lockout: with no admin
+// account, or an admin account with auth disabled, every non-public /api call needs the
+// setup token (401 when missing, 403 when wrong or when none is configured).
+func TestSetupLockMiddleware_LocksAPIWhileAuthInactive(t *testing.T) {
+	SetLogger(&mockLogger{})
+	disabled := &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("password"),
+		IsEnabled:     false,
+	}
+	states := map[string]*configstore.AuthConfig{"no admin": nil, "auth disabled": disabled}
+	for name, authConfig := range states {
+		t.Run(name, func(t *testing.T) {
+			cases := []struct {
+				name       string
+				setupToken string
+				header     string
+				wantNext   bool
+				wantStatus int
+			}{
+				{name: "missing header", setupToken: "s3cret", wantStatus: fasthttp.StatusUnauthorized},
+				{name: "wrong header", setupToken: "s3cret", header: "nope", wantStatus: fasthttp.StatusForbidden},
+				{name: "no token configured", header: "s3cret", wantStatus: fasthttp.StatusForbidden},
+				{name: "correct header", setupToken: "s3cret", header: "s3cret", wantNext: true, wantStatus: fasthttp.StatusOK},
+			}
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					am := newSetupLockedAuthMiddleware(tc.setupToken, authConfig)
+					ctx := &fasthttp.RequestCtx{}
+					ctx.Request.SetRequestURI("/api/providers")
+					if tc.header != "" {
+						ctx.Request.Header.Set(SetupTokenHeader, tc.header)
+					}
+					if got := runOSSAPIChain(am, ctx); got != tc.wantNext {
+						t.Fatalf("next called = %v, want %v (status %d, body %s)", got, tc.wantNext, ctx.Response.StatusCode(), ctx.Response.Body())
+					}
+					if ctx.Response.StatusCode() != tc.wantStatus {
+						t.Errorf("status = %d, want %d (body %s)", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+					}
+					if tc.wantNext {
+						if authed, _ := ctx.UserValue(schemas.BifrostContextKeySetupTokenAuthenticated).(bool); !authed {
+							t.Error("setup-token request should be marked BifrostContextKeySetupTokenAuthenticated")
+						}
+						if admin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool); !admin {
+							t.Error("setup-token request should run as the local admin")
+						}
+						if bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); bypassed {
+							t.Error("setup-token request passed a credential check and must not be marked as an auth bypass")
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestSetupLockMiddleware_PublicRoutesStayOpen pins that the setup screen can bootstrap:
+// health, version and is-auth-enabled answer without the setup token while locked.
+func TestSetupLockMiddleware_PublicRoutesStayOpen(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, path := range []string{"/health", "/api/version", "/api/session/is-auth-enabled"} {
+		am := newSetupLockedAuthMiddleware("s3cret", nil)
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(path)
+		if !runOSSAPIChain(am, ctx) {
+			t.Errorf("%s should stay public while locked, got %d", path, ctx.Response.StatusCode())
+		}
+	}
+}
+
+// TestSetupLockMiddleware_IgnoredOnceAuthEnabled pins that the setup token stops working
+// the moment dashboard auth is enabled; normal session auth applies.
+func TestSetupLockMiddleware_IgnoredOnceAuthEnabled(t *testing.T) {
+	SetLogger(&mockLogger{})
+	am := newSetupLockedAuthMiddleware("s3cret", &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.Header.Set(SetupTokenHeader, "s3cret")
+	if runOSSAPIChain(am, ctx) {
+		t.Fatal("setup token must not authenticate once dashboard auth is enabled")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", ctx.Response.StatusCode())
+	}
+}
+
+// TestSetupLockMiddleware_LiftsWhenAdminEnabled pins that saving an enabled admin unlocks
+// the API without a restart (UpdateAuthConfig swaps the pointer the gate reads).
+func TestSetupLockMiddleware_LiftsWhenAdminEnabled(t *testing.T) {
+	SetLogger(&mockLogger{})
+	am := newSetupLockedAuthMiddleware("s3cret", nil)
+	handler := am.SetupLockMiddleware()(func(ctx *fasthttp.RequestCtx) {})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/api/providers")
+	handler(ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Fatalf("locked status = %d, want 401", ctx.Response.StatusCode())
+	}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+	nextCalled := false
+	ctx2 := &fasthttp.RequestCtx{}
+	ctx2.Request.SetRequestURI("/api/providers")
+	am.SetupLockMiddleware()(func(ctx *fasthttp.RequestCtx) { nextCalled = true })(ctx2)
+	if !nextCalled {
+		t.Error("gate should hand off to APIMiddleware once dashboard auth is enabled")
+	}
+}
+
+// TestSetupLockMiddleware_SetupSessionCookie pins the dashboard path: the HttpOnly cookie
+// from POST /api/session/setup stands in for the header (WebSocket upgrades included), and a
+// tampered, expired, or other-token cookie is refused.
+func TestSetupLockMiddleware_SetupSessionCookie(t *testing.T) {
+	SetLogger(&mockLogger{})
+	am := newSetupLockedAuthMiddleware("s3cret", nil)
+	now := time.Now()
+	valid, expires, err := am.IssueSetupSession(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := expires.Sub(now); got != SetupSessionTTL {
+		t.Errorf("expiry = %v, want %v", got, SetupSessionTTL)
+	}
+	if strings.Contains(valid, "s3cret") {
+		t.Fatal("setup session cookie must not carry the setup token")
+	}
+	other := newSetupLockedAuthMiddleware("another-token", nil)
+	otherCookie, _, err := other.IssueSetupSession(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired, _, err := am.IssueSetupSession(now.Add(-SetupSessionTTL - time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := valid[:len(valid)-2] + "xx"
+	for _, tc := range []struct {
+		name, cookie, header string
+		websocket            bool
+		wantNext             bool
+		wantStatus           int
+	}{
+		{name: "valid cookie", cookie: valid, wantNext: true, wantStatus: fasthttp.StatusOK},
+		{name: "valid cookie on websocket upgrade", cookie: valid, websocket: true, wantNext: true, wantStatus: fasthttp.StatusOK},
+		{name: "tampered cookie", cookie: tampered, wantStatus: fasthttp.StatusUnauthorized},
+		{name: "expired cookie", cookie: expired, wantStatus: fasthttp.StatusUnauthorized},
+		{name: "cookie signed under another token", cookie: otherCookie, wantStatus: fasthttp.StatusUnauthorized},
+		{name: "garbage cookie", cookie: "v1.notanumber.zz.zz", wantStatus: fasthttp.StatusUnauthorized},
+		{name: "wrong header beats a valid cookie", cookie: valid, header: "nope", wantStatus: fasthttp.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI("/api/providers")
+			ctx.Request.Header.SetCookie(SetupSessionCookie, tc.cookie)
+			if tc.header != "" {
+				ctx.Request.Header.Set(SetupTokenHeader, tc.header)
+			}
+			if tc.websocket {
+				ctx.Request.Header.Set("Upgrade", "websocket")
+			}
+			if got := runOSSAPIChain(am, ctx); got != tc.wantNext {
+				t.Fatalf("next called = %v, want %v (status %d, body %s)", got, tc.wantNext, ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Errorf("status = %d, want %d", ctx.Response.StatusCode(), tc.wantStatus)
+			}
+			if tc.wantNext {
+				if bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); bypassed {
+					t.Error("cookie-authenticated request must not be marked as an auth bypass")
+				}
+			}
+		})
+	}
+
+	// Once dashboard auth is on, the cookie is no credential: APIMiddleware wants a session.
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.Header.SetCookie(SetupSessionCookie, valid)
+	if runOSSAPIChain(am, ctx) || ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Errorf("setup session cookie must not authenticate once dashboard auth is enabled, got %d", ctx.Response.StatusCode())
+	}
+}
+
+// TestSetupLockMiddleware_InferenceUnaffected pins that the gate is API-only: inference
+// keeps delegating to governance (enforce_auth_on_inference) while dashboard auth is off.
+func TestSetupLockMiddleware_InferenceUnaffected(t *testing.T) {
+	SetLogger(&mockLogger{})
+	am := newSetupLockedAuthMiddleware("s3cret", nil)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/v1/chat/completions")
+	nextCalled := false
+	am.InferenceMiddleware()(func(ctx *fasthttp.RequestCtx) { nextCalled = true })(ctx)
+	if !nextCalled {
+		t.Error("InferenceMiddleware must not require the setup token")
+	}
+}
+
 // TestAuthMiddleware_UpdateAuthConfig_EnabledToDisabled tests disabling auth after it was enabled
 func TestAuthMiddleware_UpdateAuthConfig_EnabledToDisabled(t *testing.T) {
 	SetLogger(&mockLogger{})
@@ -1607,7 +1959,7 @@ func TestCorsMiddleware_DefaultHeaders(t *testing.T) {
 	handler(ctx)
 
 	// Check default headers are set
-	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID"
+	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID, X-Bifrost-Setup-Token"
 	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
 	if actualHeaders != expectedHeaders {
 		t.Errorf("Expected Access-Control-Allow-Headers to be %s, got %s", expectedHeaders, actualHeaders)
@@ -2844,8 +3196,8 @@ func TestCollectDimensionHeaders(t *testing.T) {
 }
 
 // TestTracingMiddleware_SetsCorrelationHeaders asserts that every traced response
-// carries x-request-id and x-bifrost-trace-id so callers can pivot a request into
-// its logs and trace in Grafana/Tempo/Loki (BF-1041).
+// carries x-bifrost-request-id, x-bifrost-trace-id and the deprecated x-request-id so
+// callers can pivot a request into its logs and trace in Grafana/Tempo/Loki (BF-1041).
 func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 	SetLogger(&mockLogger{})
 
@@ -2869,8 +3221,12 @@ func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
 			t.Error("expected x-bifrost-trace-id response header to be set")
 		}
-		if got := string(ctx.Response.Header.Peek("x-request-id")); got == "" {
-			t.Error("expected x-request-id response header to be set")
+		got := string(ctx.Response.Header.Peek("x-bifrost-request-id"))
+		if got == "" {
+			t.Error("expected x-bifrost-request-id response header to be set")
+		}
+		if legacy := string(ctx.Response.Header.Peek("x-request-id")); legacy != got {
+			t.Errorf("x-request-id = %q, want the generated request id %q", legacy, got)
 		}
 	})
 
@@ -2879,11 +3235,39 @@ func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 		ctx.Request.Header.Set("x-request-id", "req-abc-123")
 		mw(func(*fasthttp.RequestCtx) {})(ctx)
 
+		if got := string(ctx.Response.Header.Peek("x-bifrost-request-id")); got != "req-abc-123" {
+			t.Errorf("x-bifrost-request-id = %q, want req-abc-123", got)
+		}
 		if got := string(ctx.Response.Header.Peek("x-request-id")); got != "req-abc-123" {
 			t.Errorf("x-request-id = %q, want req-abc-123", got)
 		}
 		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
 			t.Error("expected x-bifrost-trace-id response header to be set")
+		}
+	})
+
+	// An upstream that answers with its own x-request-id (OpenAI does) takes over the deprecated
+	// header, as it always has. x-bifrost-request-id and x-bifrost-trace-id stay this gateway's,
+	// even against a chained upstream Bifrost that sends its own.
+	t.Run("provider headers never replace the gateway's correlation headers", func(t *testing.T) {
+		ctx := newCtx()
+		ctx.Request.Header.Set("x-request-id", "req-abc-123")
+		mw(func(c *fasthttp.RequestCtx) {
+			lib.ForwardProviderResponseHeaders(c, map[string]string{
+				"X-Request-Id":         "req_upstream",
+				"X-Bifrost-Request-Id": "upstream-hop",
+				"X-Bifrost-Trace-Id":   "upstream-trace",
+			})
+		})(ctx)
+
+		if got := string(ctx.Response.Header.Peek("x-bifrost-request-id")); got != "req-abc-123" {
+			t.Errorf("x-bifrost-request-id = %q, want req-abc-123", got)
+		}
+		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" || got == "upstream-trace" {
+			t.Errorf("x-bifrost-trace-id = %q, want this gateway's trace id", got)
+		}
+		if got := string(ctx.Response.Header.Peek("x-request-id")); got != "req_upstream" {
+			t.Errorf("x-request-id = %q, want the provider's req_upstream", got)
 		}
 	})
 
@@ -2901,6 +3285,9 @@ func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 		}
 		if got := string(ctx.Response.Header.Peek("x-request-id")); got == "" {
 			t.Error("expected x-request-id to survive the error path")
+		}
+		if got := string(ctx.Response.Header.Peek("x-bifrost-request-id")); got == "" {
+			t.Error("expected x-bifrost-request-id to survive the error path")
 		}
 	})
 }
@@ -4102,4 +4489,118 @@ func TestRecoveryMiddleware_PanicBecomesInternalServerErrorAndServerKeepsServing
 	if status != fasthttp.StatusOK || string(body) != "ok" {
 		t.Fatalf("follow-up request got %d %q, want 200 ok", status, body)
 	}
+}
+
+// A disconnected caller leaves its worker still writing, so flushing at handler return
+// would send every connector a trace with no cost or model.
+func TestTracingMiddleware_DeferredCompletionWaitsForWorker(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	plugin := &captureRootAttrsPlugin{done: make(chan struct{})}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
+
+	var traceID string
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+
+	NewTracingMiddleware(tracer).Middleware()(func(c *fasthttp.RequestCtx) {
+		traceID, _ = c.UserValue(schemas.BifrostContextKeyTraceID).(string)
+		// The caller's context ended and the worker won the handoff.
+		tracer.DeferTraceCompletion(traceID)
+		c.Response.SetStatusCode(499)
+	})(ctx)
+
+	// Handler returned and the defer ran; nothing may be exported yet.
+	select {
+	case <-plugin.done:
+		t.Fatal("trace was flushed at handler return despite a worker still owning it")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	// The worker now finishes: it writes the late attributes, then completes the trace.
+	if h := tracer.GetSpanHandleByID(traceID, nil); h != nil {
+		tracer.SetAttribute(h, "gen_ai.usage.cost", 0.0421)
+	}
+	tracer.ClearTraceCompletionDeferral(traceID)
+	tracer.CompleteAndFlushTrace(traceID)
+
+	select {
+	case <-plugin.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker completion did not flush the trace")
+	}
+
+	// Exported exactly once, and carrying the worker's late write.
+	if got := plugin.attrs["gen_ai.usage.cost"]; got != 0.0421 {
+		t.Errorf("exported cost = %#v, want 0.0421 (the worker's late write must be in the snapshot)", got)
+	}
+	if tracer.IsTraceCompletionDeferred(traceID) {
+		t.Error("deferral marker outlived completion")
+	}
+}
+
+// Only the transport defer sees the transport plugin logs, so without the handoff the
+// worker can flush before they are attached.
+func TestTracingMiddleware_TransportLogsSurviveWorkerCompletion(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	plugin := &capturePluginLogsPlugin{done: make(chan struct{})}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
+
+	var traceID string
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+
+	NewTracingMiddleware(tracer).Middleware()(func(c *fasthttp.RequestCtx) {
+		traceID, _ = c.UserValue(schemas.BifrostContextKeyTraceID).(string)
+		tracer.DeferTraceCompletion(traceID)
+		c.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, []schemas.PluginLogEntry{
+			{PluginName: "transport-probe", Message: "transport-log-marker"},
+		})
+		c.Response.SetStatusCode(499)
+	})(ctx)
+
+	// The worker completes only after the handoff.
+	tracer.AwaitTransportHandoff(traceID)
+	tracer.ClearTraceCompletionDeferral(traceID)
+	tracer.CompleteAndFlushTrace(traceID)
+
+	select {
+	case <-plugin.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("trace never reached the connector")
+	}
+	if !plugin.sawTransportLog {
+		t.Error("transport plugin logs were dropped; only the transport defer can see them")
+	}
+}
+
+// Records whether the transport's own log entry survived.
+type capturePluginLogsPlugin struct {
+	done            chan struct{}
+	sawTransportLog bool
+}
+
+func (p *capturePluginLogsPlugin) GetName() string { return "capture-plugin-logs" }
+func (p *capturePluginLogsPlugin) Cleanup() error  { return nil }
+func (p *capturePluginLogsPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
+	defer close(p.done)
+	for _, entry := range trace.PluginLogs {
+		if entry.Message == "transport-log-marker" {
+			p.sawTransportLog = true
+		}
+	}
+	return nil
 }

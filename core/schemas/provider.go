@@ -278,7 +278,20 @@ type ProxyConfig struct {
 	URL       *SecretVar `json:"url"`         // URL of the proxy server (supports env.*)
 	Username  *SecretVar `json:"username"`    // Username for proxy authentication (supports env.*)
 	Password  *SecretVar `json:"password"`    // Password for proxy authentication (supports env.*)
-	CACertPEM *SecretVar `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
+	CACertPEM *SecretVar `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy, and for the proxy itself when its URL is https:// (supports env.*)
+
+	// NoProxy is a comma-separated list of hosts that connect directly instead of
+	// through the proxy (".example.com" for a domain and its subdomains, "*.example.com"
+	// for subdomains only, "*" for everything). Runtime-only: it is filled in when a
+	// provider inherits the global proxy, whose no_proxy list it carries, and is never
+	// serialized with the provider's own config.
+	NoProxy string `json:"-"`
+
+	// SkipTLSVerify skips verifying the proxy's certificate for an https:// proxy URL
+	// (and, like the global setting it comes from, every TLS session through the
+	// proxy). Runtime-only: it is filled in when a provider inherits a global proxy
+	// with skip_tls_verify on, and is never serialized with the provider's own config.
+	SkipTLSVerify bool `json:"-"`
 }
 
 // MarshalForStorage serializes proxy settings for persistence (e.g. proxy_config_json).
@@ -394,6 +407,7 @@ type AllowedRequests struct {
 	PassthroughStream     bool `json:"passthrough_stream"`
 	WebSocketResponses    bool `json:"websocket_responses"`
 	Realtime              bool `json:"realtime"`
+	Live                  bool `json:"live"`
 	CachedContentCreate   bool `json:"cached_content_create"`
 	CachedContentList     bool `json:"cached_content_list"`
 	CachedContentRetrieve bool `json:"cached_content_retrieve"`
@@ -524,6 +538,10 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.WebSocketResponses
 	case RealtimeRequest:
 		return ar.Realtime
+	case LiveRequest:
+		return ar.Live
+	case LiveContentRequest:
+		return ar.Live
 	case CachedContentCreateRequest:
 		return ar.CachedContentCreate
 	case CachedContentListRequest:
@@ -570,6 +588,7 @@ type ProviderConfig struct {
 	SendBackRawRequest      bool                  `json:"send_back_raw_request"`      // Send raw request back in the bifrost response (default: false)
 	SendBackRawResponse     bool                  `json:"send_back_raw_response"`     // Send raw response back in the bifrost response (default: false)
 	StoreRawRequestResponse bool                  `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
+	IgnoreProviderCost      bool                  `json:"ignore_provider_cost"`       // Ignore provider-reported usage.cost and price the request from Bifrost's catalog and overrides (default: false)
 	CustomProviderConfig    *CustomProviderConfig `json:"custom_provider_config,omitempty"`
 	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
 	PromptCache             *PromptCacheConfig    `json:"prompt_cache,omitempty"`

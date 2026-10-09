@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { createRoutingRuleData } from './routing-rules.data'
 
@@ -303,6 +304,45 @@ test.describe('Routing Rules', () => {
       await routingRulesPage.cancelRule()
     })
 
+    test('should show a mixed TTFT state and keep per-target deadlines on an unrelated save', async ({ routingRulesPage, request }) => {
+      // The form writes one value to every target, so a mixed rule can only come from the API.
+      const name = `TTFT Mixed ${Date.now()}-${randomUUID().slice(0, 8)}`
+      const created = await request.post('/api/routing/rules', {
+        data: {
+          name,
+          description: '',
+          cel_expression: '',
+          targets: [
+            { provider: 'openai', model: 'gpt-4o', weight: 0.5, ttft_timeout_ms: 1500 },
+            { provider: 'anthropic', model: 'claude-sonnet-4-5', weight: 0.5 },
+          ],
+          fallbacks: [],
+          scope: 'global',
+          priority: 0,
+          enabled: false,
+        },
+      })
+      expect(created.ok(), await created.text()).toBeTruthy()
+      const ruleId = (await created.json()).rule.id as string
+      createdRules.push(name)
+
+      await routingRulesPage.goto()
+      await routingRulesPage.openEditSheet(name)
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue('')
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveAttribute('placeholder', 'Mixed')
+      // No fallbacks and an active deadline on one target: the warning must still show.
+      await expect(routingRulesPage.sheet.getByTestId('routing-rule-ttft-timeout-no-fallback-warning')).toBeVisible()
+
+      // An unrelated save must not touch the per-target deadlines.
+      await routingRulesPage.saveBtn.click()
+      await expect(routingRulesPage.sheet).not.toBeVisible()
+      const after = await request.get(`/api/routing/rules/${ruleId}`)
+      expect(after.ok(), await after.text()).toBeTruthy()
+      const targets = (await after.json()).rule.targets as { provider: string; ttft_timeout_ms?: number | null }[]
+      expect(targets.find((t) => t.provider === 'openai')?.ttft_timeout_ms).toBe(1500)
+      expect(targets.find((t) => t.provider === 'anthropic')?.ttft_timeout_ms ?? null).toBeNull()
+    })
+
     test('should warn about a TTFT cutoff without fallbacks and reject out-of-range values', async ({ routingRulesPage }) => {
       await routingRulesPage.createBtn.click()
       await expect(routingRulesPage.sheet).toBeVisible()
@@ -557,6 +597,53 @@ test.describe('Routing Rules', () => {
       // Verify rule was created
       const exists = await routingRulesPage.ruleExists(ruleName)
       expect(exists).toBe(true)
+    })
+  })
+
+  test.describe('Routing Tree Visualization', () => {
+    test('should display all rules and accurate count when rule count exceeds 100', async ({ page }) => {
+      // Generate 105 mock rules
+      const mockRules = Array.from({ length: 105 }, (_, i) => {
+        const padded = String(i + 1).padStart(3, '0')
+        return {
+          id: `rule-${padded}`,
+          name: `Test Rule ${padded}`,
+          description: `Test rule ${padded}`,
+          cel_expression: `model == "gpt-${padded}"`,
+          enabled: true,
+          chain_rule: false,
+          priority: i + 1,
+          targets: [{ provider: 'openai', model: 'gpt-4', weight: 1 }],
+          scope: 'global',
+        }
+      })
+
+      // Mock the unbounded GET /api/routing/rules endpoint
+      await page.route('**/api/routing/rules', async (route) => {
+        if (route.request().method() === 'GET') {
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              rules: mockRules,
+              count: mockRules.length,
+              total_count: mockRules.length,
+              limit: mockRules.length,
+              offset: 0,
+            }),
+          })
+        } else {
+          await route.continue()
+        }
+      })
+
+      await page.goto('/workspace/routing-rules/tree')
+
+      // Verify the toolbar badge reflects all 105 rules
+      await expect(page.getByTestId('routing-tree-rule-count')).toHaveText('105 rules')
+
+      // Verify that the 105th rule appears in the graph
+      await expect(page.getByTestId('routing-tree-rule-node-rule-105')).toBeVisible()
     })
   })
 })

@@ -59,6 +59,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 				model_retrieve: provider.custom_provider_config?.allowed_requests?.model_retrieve ?? false,
 				ocr: provider.custom_provider_config?.allowed_requests?.ocr ?? true,
 				ocr_stream: provider.custom_provider_config?.allowed_requests?.ocr_stream ?? true,
+				decisions: provider.custom_provider_config?.allowed_requests?.decisions ?? true,
 			},
 			request_path_overrides: provider.custom_provider_config?.request_path_overrides ?? undefined,
 		},

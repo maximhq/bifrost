@@ -50,6 +50,41 @@ type ModelCatalogResolution struct {
 
 // EmitModelCatalogRoutingLog appends a RoutingEngineModelCatalog log entry and
 // engines-used marker to bifrostCtx for an inline catalog resolution. Used by
+// DirectKeyFromHeaders builds the caller's own provider key from the request headers, under the
+// same gate on every route: the server setting and the x-bf-direct-key: true header. The key is
+// the bearer token, else x-api-key, else x-goog-api-key; a virtual key is never a direct key.
+func DirectKeyFromHeaders(store HandlerStore, directKey, authorization, xAPIKey, xGoogAPIKey string) (schemas.Key, bool) {
+	if store == nil || !store.ShouldAllowDirectKeys() || directKey != "true" {
+		return schemas.Key{}, false
+	}
+	isProviderKey := func(v string) bool {
+		return v != "" && !strings.HasPrefix(strings.ToLower(v), governance.VirtualKeyPrefix)
+	}
+	var apiKey string
+	if strings.HasPrefix(strings.ToLower(authorization), "bearer ") {
+		if v := strings.TrimSpace(authorization[7:]); isProviderKey(v) {
+			apiKey = v
+		}
+	}
+	if apiKey == "" {
+		if v := strings.TrimSpace(xAPIKey); isProviderKey(v) {
+			apiKey = v
+		} else if v := strings.TrimSpace(xGoogAPIKey); isProviderKey(v) {
+			apiKey = v
+		}
+	}
+	if apiKey == "" {
+		return schemas.Key{}, false
+	}
+	return schemas.Key{
+		ID:     "header-provided",
+		Name:   "header-provided",
+		Value:  schemas.SecretVar{Val: apiKey},
+		Models: []string{},
+		Weight: 1.0,
+	}, true
+}
+
 // ConvertToBifrostContext (normal HTTP path) and by realtime handlers that
 // bypass it (WebRTC, realtime client_secrets) so all paths emit observability
 // in the same shape regardless of which routing layer did the lookup.
@@ -717,6 +752,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatShouldDropParams)
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatShouldConvertParams)
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatAzureDeepseek)
+			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses)
 			valueStr := strings.TrimSpace(string(value))
 			if valueStr == "true" {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertTextToChat, true)
@@ -724,6 +760,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses, true)
 			} else if strings.HasPrefix(valueStr, "[") {
 				var features []string
 				if err := json.Unmarshal([]byte(valueStr), &features); err == nil {
@@ -733,6 +770,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses, true)
 					} else {
 						for _, f := range features {
 							switch f {
@@ -746,6 +784,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
 							case "azure_deepseek":
 								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
+							case "force_reasoning_only_models_to_responses":
+								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses, true)
 							}
 						}
 					}
@@ -835,38 +875,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	// Enterprise SCIM inference auth runs before this context conversion, so it mirrors
 	// this config/header gate separately to avoid validating provider bearer tokens as
 	// SCIM user JWTs before direct-key extraction can happen here.
-	if store != nil && store.ShouldAllowDirectKeys() && string(ctx.Request.Header.Peek("x-bf-direct-key")) == "true" {
-		var apiKey string
-		authHeader := string(ctx.Request.Header.Peek("Authorization"))
-		if authHeader != "" {
-			if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-				authHeaderValue := strings.TrimSpace(authHeader[7:])
-				if authHeaderValue != "" && !strings.HasPrefix(strings.ToLower(authHeaderValue), governance.VirtualKeyPrefix) {
-					apiKey = authHeaderValue
-				}
-			}
-		}
-		if apiKey == "" {
-			xAPIKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-api-key")))
-			if xAPIKey != "" && !strings.HasPrefix(strings.ToLower(xAPIKey), governance.VirtualKeyPrefix) {
-				apiKey = xAPIKey
-			} else {
-				xGoogleAPIKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-goog-api-key")))
-				if xGoogleAPIKey != "" && !strings.HasPrefix(strings.ToLower(xGoogleAPIKey), governance.VirtualKeyPrefix) {
-					apiKey = xGoogleAPIKey
-				}
-			}
-		}
-		if apiKey != "" {
-			key := schemas.Key{
-				ID:     "header-provided",
-				Name:   "header-provided",
-				Value:  schemas.SecretVar{Val: apiKey},
-				Models: []string{},
-				Weight: 1.0,
-			}
-			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
-		}
+	if key, ok := DirectKeyFromHeaders(store, string(ctx.Request.Header.Peek("x-bf-direct-key")), string(ctx.Request.Header.Peek("Authorization")), string(ctx.Request.Header.Peek("x-api-key")), string(ctx.Request.Header.Peek("x-goog-api-key"))); ok {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 	}
 
 	// Everything the middlewares and the headers can say about who this request is now sits on the

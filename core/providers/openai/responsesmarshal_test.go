@@ -10,6 +10,7 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 func TestOpenAIResponsesRequest_MarshalJSON_ReasoningMaxTokensAbsent(t *testing.T) {
@@ -771,10 +772,11 @@ func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputPreservesNonT
 }
 
 // TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags ensures the
-// Responses serializer drops the four Anthropic-native tool flags
-// (defer_loading, allowed_callers, input_examples, eager_input_streaming)
-// along with CacheControl before forwarding to OpenAI — mirroring the Chat
-// path's behavior so Anthropic-flavored tools cannot 400 OpenAI via Responses.
+// Responses serializer drops the Anthropic-native tool flags (defer_loading,
+// input_examples, eager_input_streaming) along with CacheControl before
+// forwarding to OpenAI. allowed_callers is the exception: OpenAI accepts it on
+// function, custom, shell and namespace tools, so it survives there and is
+// stripped only on the types that have no such field.
 func TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags(t *testing.T) {
 	req := &OpenAIResponsesRequest{
 		Model: "gpt-4o",
@@ -809,6 +811,11 @@ func TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags(t *testing.
 						Version: schemas.Ptr("code_execution_20260120"),
 					},
 				},
+				{
+					Type:                   schemas.ResponsesToolTypeWebSearch,
+					AllowedCallers:         []string{"direct"},
+					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{},
+				},
 			},
 		},
 	}
@@ -820,7 +827,7 @@ func TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags(t *testing.
 	raw := string(jsonBytes)
 
 	// None of the Anthropic-only tool keys must survive on the wire.
-	for _, key := range []string{`"cache_control"`, `"defer_loading"`, `"allowed_callers"`, `"input_examples"`, `"eager_input_streaming"`, `"code_execution_version"`} {
+	for _, key := range []string{`"cache_control"`, `"defer_loading"`, `"input_examples"`, `"eager_input_streaming"`, `"code_execution_version"`} {
 		if strings.Contains(raw, key) {
 			t.Errorf("OpenAI Responses serializer must strip %s; raw=%s", key, raw)
 		}
@@ -828,6 +835,30 @@ func TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags(t *testing.
 	// Function tool identity should be preserved.
 	if !strings.Contains(raw, `"name":"lookup"`) {
 		t.Errorf("tool identity lost after strip; raw=%s", raw)
+	}
+
+	// allowed_callers is OpenAI's own field on function tools, and is not one on
+	// web_search: it must survive on the former and be stripped on the latter.
+	var wire struct {
+		Tools []struct {
+			Type           string   `json:"type"`
+			AllowedCallers []string `json:"allowed_callers"`
+		} `json:"tools"`
+	}
+	if err := sonic.Unmarshal(jsonBytes, &wire); err != nil {
+		t.Fatalf("failed to unmarshal wire tools: %v\nraw=%s", err, raw)
+	}
+	for _, tool := range wire.Tools {
+		switch tool.Type {
+		case "function":
+			if len(tool.AllowedCallers) == 0 {
+				t.Errorf("allowed_callers must survive on function tools; raw=%s", raw)
+			}
+		case "web_search":
+			if len(tool.AllowedCallers) != 0 {
+				t.Errorf("allowed_callers must be stripped on web_search tools; raw=%s", raw)
+			}
+		}
 	}
 }
 
@@ -2616,5 +2647,38 @@ func TestToOpenAIResponsesRequest_InjectedToolOutputMarkerReachesWire(t *testing
 	}
 	if opts, ok := m["prompt_cache_options"].(map[string]any); !ok || opts["mode"] != "explicit" {
 		t.Errorf("request must be in explicit mode; raw=%s", raw)
+	}
+}
+
+// Assistant history with output_text "annotations": [] but no logprobs must reach the
+// provider without "logprobs": null, which strict Responses backends reject with a 400.
+func TestOpenAIResponsesRequest_MarshalJSON_HistoryOutputTextDoesNotGainNullLogProbs(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-4o",
+		"input": [
+			{"type": "message", "role": "assistant", "content": [
+				{"type": "output_text", "text": "Previous answer.", "annotations": []}
+			]},
+			{"role": "user", "content": "Continue."}
+		],
+		"stream": true
+	}`)
+	var req OpenAIResponsesRequest
+	if err := sonic.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	out, err := providerUtils.MarshalProviderRequest(&req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	block := gjson.GetBytes(out, "input.0.content.0")
+	if !block.Exists() {
+		t.Fatalf("history block missing from provider body: %s", out)
+	}
+	if lp := block.Get("logprobs"); lp.Exists() {
+		t.Fatalf("history output_text gained logprobs=%s; want it omitted. block=%s", lp.Raw, block.Raw)
+	}
+	if ann := block.Get("annotations"); !ann.IsArray() {
+		t.Fatalf("annotations must stay an array, got %q. block=%s", ann.Raw, block.Raw)
 	}
 }
