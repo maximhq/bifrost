@@ -100,14 +100,7 @@ func ToVertexGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 
 		if params.ExtraParams != nil {
 			req.ExtraParams = params.ExtraParams
-			if documentOCR, ok := schemas.SafeExtractBoolPointer(params.ExtraParams["documentOcr"]); ok {
-				delete(req.ExtraParams, "documentOcr")
-				req.DocumentOCR = documentOCR
-			}
-			if audioTrackExtraction, ok := schemas.SafeExtractBoolPointer(params.ExtraParams["audioTrackExtraction"]); ok {
-				delete(req.ExtraParams, "audioTrackExtraction")
-				req.AudioTrackExtraction = audioTrackExtraction
-			}
+			req.EmbedContentConfig = gemini.ReadEmbedContentConfig(req.ExtraParams)
 		}
 	}
 	return req, nil

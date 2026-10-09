@@ -182,3 +182,43 @@ func TestGeminiBatchEmbeddingRequestKeepsDifferingParamsPerItem(t *testing.T) {
 		})
 	}
 }
+
+// documentOcr / audioTrackExtraction are only accepted inside embedContentConfig on each
+// requests[] entry; a nested config must land there, never at the batch top level.
+func TestToGeminiEmbeddingRequestPutsEmbedContentConfigOnEachEntry(t *testing.T) {
+	text := "alpha"
+	req, err := ToGeminiEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+		Model: "gemini-embedding-2",
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
+		Params: &schemas.EmbeddingParameters{ExtraParams: map[string]interface{}{
+			"embedContentConfig": map[string]interface{}{"documentOcr": true, "audioTrackExtraction": true},
+		}},
+	})
+	require.NoError(t, err)
+	body, err := providerUtils.MarshalSorted(req)
+	require.NoError(t, err)
+	merged, err := providerUtils.MergeExtraParamsIntoJSON(body, req.ExtraParams)
+	require.NoError(t, err)
+
+	// Without passthrough only the struct is sent; with it the extras are merged on top.
+	for _, wire := range [][]byte{body, merged} {
+		require.True(t, gjson.GetBytes(wire, "requests.0.embedContentConfig.documentOcr").Bool(), string(wire))
+		require.True(t, gjson.GetBytes(wire, "requests.0.embedContentConfig.audioTrackExtraction").Bool(), string(wire))
+		require.False(t, gjson.GetBytes(wire, "embedContentConfig").Exists(), string(wire))
+	}
+}
+
+// The GenAI integration accepts embedContentConfig on each entry and forwards it in place.
+func TestGeminiBatchEmbeddingRequestReadsEmbedContentConfig(t *testing.T) {
+	var batch GeminiBatchEmbeddingRequest
+	require.NoError(t, schemas.Unmarshal([]byte(`{"requests":[{"content":{"parts":[{"text":"a"}]},"embedContentConfig":{"documentOcr":true}}]}`), &batch))
+	batch.Model = "gemini/gemini-embedding-2"
+	bifrostReq, err := batch.ToBifrostEmbeddingRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline))
+	require.NoError(t, err)
+
+	out, err := ToGeminiEmbeddingRequest(bifrostReq)
+	require.NoError(t, err)
+	body, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	require.True(t, gjson.GetBytes(body, "requests.0.embedContentConfig.documentOcr").Bool(), string(body))
+}
