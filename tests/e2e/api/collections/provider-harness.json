@@ -218163,6 +218163,218 @@
           ]
         }
       ]
+    },
+    {
+      "name": "187. Chat reasoning.summary reaches the Responses upstream (reasoning summary)",
+      "description": "A chat request served through the Responses API (x-bf-compat convert_chat_to_responses) used to drop reasoning.summary, because the chat reasoning object had no summary field: the upstream got reasoning.summary null, or no reasoning at all when summary was the only field set, so only encrypted reasoning came back. 187.1 and 187.2 pin that /v1/chat/completions forwards it (asserted on extra_fields.raw_request). The /openai integration keeps OpenAI's chat shape, which has no reasoning.summary: 187.3 sends an invalid summary there and expects 200 (it would 400 if it leaked), and 187.4 pins the passthrough route (x-bf-passthrough-extra-params + extra_params) by sending the same invalid value and expecting OpenAI to reject it.",
+      "item": [
+        {
+          "name": "187.1 openai/gpt-5-mini /v1 chat reasoning.summary with effort is forwarded to responses (reasoning summary)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"how many primes between 7 and 70\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"low\",\n    \"summary\": \"auto\"\n  },\n  \"max_completion_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('187.1: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('187.1: the request was converted to the responses upstream', function () { pm.expect((j.extra_fields || {}).converted_request_type, pm.response.text().slice(0, 400)).to.equal('responses'); });",
+                  "var rr = (j.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 600);",
+                  "pm.test('187.1: reasoning.summary reached the upstream', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning, 'reasoning dropped from the upstream request: ' + wire).to.be.an('object');",
+                  "  pm.expect(rr.reasoning.summary, 'reasoning.summary not forwarded: ' + wire).to.equal('auto');",
+                  "  pm.expect(rr.reasoning.effort, 'reasoning.effort not forwarded: ' + wire).to.equal('low');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "187.2 openai/gpt-5-mini /v1 chat summary-only reasoning object is forwarded to responses (reasoning summary)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"how many primes between 7 and 70\"\n    }\n  ],\n  \"reasoning\": {\n    \"summary\": \"auto\"\n  },\n  \"max_completion_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('187.2: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('187.2: the request was converted to the responses upstream', function () { pm.expect((j.extra_fields || {}).converted_request_type, pm.response.text().slice(0, 400)).to.equal('responses'); });",
+                  "var rr = (j.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 600);",
+                  "pm.test('187.2: reasoning.summary reached the upstream', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning, 'reasoning dropped from the upstream request: ' + wire).to.be.an('object');",
+                  "  pm.expect(rr.reasoning.summary, 'reasoning.summary not forwarded: ' + wire).to.equal('auto');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "187.3 openai/gpt-5-mini /openai chat ignores reasoning.summary without passthrough (reasoning summary)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"how many primes between 7 and 70\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"low\",\n    \"summary\": \"bogus\"\n  },\n  \"max_completion_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// An invalid summary that leaked upstream would make OpenAI answer 400.",
+                  "pm.test('187.3: reasoning.summary did not reach the upstream (200)', function () { pm.expect(pm.response.code, 'reasoning.summary leaked through the openai integration: ' + pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "187.4 [EXPECT-4XX] openai/gpt-5-mini /openai chat forwards reasoning.summary via passthrough extra_params (reasoning summary)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"how many primes between 7 and 70\"\n    }\n  ],\n  \"reasoning_effort\": \"low\",\n  \"max_completion_tokens\": 512,\n  \"extra_params\": {\n    \"reasoning\": {\n      \"summary\": \"bogus\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The invalid value only reaches OpenAI if passthrough deep-merged it into reasoning.",
+                  "pm.test('187.4: upstream rejected the passed-through reasoning.summary (4xx)', function () {",
+                  "  pm.expect(pm.response.code, 'passthrough reasoning.summary did not reach the upstream: ' + pm.response.text()).to.be.within(400, 499);",
+                  "  pm.expect(pm.response.text(), 'rejection is not about reasoning.summary: ' + pm.response.text()).to.match(/summary|bogus/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
