@@ -304,6 +304,37 @@ func TestExtractSupportedParams_WebSearchAbsent(t *testing.T) {
 // to decide whether to force reasoning.effort to "none" (vs. dropping
 // reasoning entirely) for models that reason by default even when
 // reasoning_effort is omitted.
+// claude-haiku-5-5 carries max_output_tokens 128000 and no model_parameters at
+// all, so the allowlist came only from the supports_* flags -- which contribute
+// no cap spelling -- and compat dropped the caller's max_tokens (#8198). A
+// declared ceiling is the sheet asserting the model takes a cap.
+func TestExtractSupportedParams_DeclaredCeilingImpliesACap(t *testing.T) {
+	ceiling := 128000
+	got := extractSupportedParams(&schemas.ModelCapabilities{
+		MaxOutputTokens:         &ceiling,
+		SupportsFunctionCalling: capabilityBoolPtr(true),
+	})
+
+	if !slices.Contains(got, "max_tokens") {
+		t.Errorf("expected supported params to contain \"max_tokens\", got %v", got)
+	}
+}
+
+// Without a ceiling there is nothing to infer, so no cap is invented: a row the
+// sheet says nothing about must not start claiming a parameter.
+func TestExtractSupportedParams_NoCeilingInventsNoCap(t *testing.T) {
+	zero := 0
+	for name, caps := range map[string]*schemas.ModelCapabilities{
+		"empty row":    {},
+		"flags only":   {SupportsFunctionCalling: capabilityBoolPtr(true)},
+		"zero ceiling": {MaxOutputTokens: &zero},
+	} {
+		if got := extractSupportedParams(caps); slices.Contains(got, "max_tokens") {
+			t.Errorf("%s: expected supported params to omit \"max_tokens\", got %v", name, got)
+		}
+	}
+}
+
 func TestExtractSupportedParams_NoneReasoningEffort(t *testing.T) {
 	if got := extractSupportedParams(&schemas.ModelCapabilities{SupportsNoneReasoningEffort: capabilityBoolPtr(true)}); !slices.Contains(got, "supports_none_reasoning_effort") {
 		t.Errorf("expected supported params to contain \"supports_none_reasoning_effort\", got %v", got)

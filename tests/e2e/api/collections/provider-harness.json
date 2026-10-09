@@ -20690,6 +20690,33 @@
               }
             },
             {
+              "name": "Cross-cut: claude-haiku-5-5 keeps max_tokens (sheet row has no model_parameters)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"anthropic/claude-haiku-5-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count slowly from one to fifty, one number per line.\"}],\n  \"max_tokens\": 16\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
+            },
+            {
               "name": "Cross-cut: sampling-params silently dropped for Opus 4.8",
               "request": {
                 "method": "POST",

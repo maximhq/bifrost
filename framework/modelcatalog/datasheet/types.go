@@ -615,6 +615,22 @@ func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 		}
 	}
 
+	// A row can state the model's output ceiling without listing a cap among its
+	// model_parameters: 529 rows in the synced data do, claude-haiku-5-5 among
+	// them (max_output_tokens 128000, no model_parameters at all). What is left is
+	// an allowlist derived from the supports_* flags, and those contribute no cap
+	// spelling, so compat dropped the caller's max_tokens and the model ran to its
+	// own maximum instead of stopping where it was told (#8198).
+	//
+	// A declared ceiling is the sheet saying this model takes an output cap, so
+	// record it. "max_tokens" is the spelling every cap gate in compat's
+	// dropUnsupportedParams accepts, directly or as the alias for
+	// max_completion_tokens and max_output_tokens. Rows that already list a cap are
+	// unaffected, and of the 14 rows whose list omits every cap spelling, none
+	// declares a ceiling -- so this only ever adds a cap the sheet itself asserts.
+	if parsed.MaxOutputTokens != nil && *parsed.MaxOutputTokens > 0 {
+		addParam("max_tokens")
+	}
 	if parsed.SupportsAssistantPrefill != nil && *parsed.SupportsAssistantPrefill {
 		// Not an actual request parameter; if present, trailing assistant messages are
 		// left in place instead of being trimmed. Read by anthropic and by bedrock's
