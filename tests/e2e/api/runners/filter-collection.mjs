@@ -62,6 +62,11 @@ const EXCLUDE_FEATURE_ANY_PARTS = (args["exclude-feature-any"] || "")
 // the run-provider-harness-test Makefile target) instead of being forked and only then failing
 // with newman's "Unable to find a folder or request" once it tries to apply --folder itself.
 const FOLDER = (args.folder || "").toLowerCase();
+// --only-serial / --exclude-serial split the run into the parallel sweep and a pass of its own for
+// the [SERIAL] folders (see serialFolderKey). A [SERIAL] folder changes gateway-wide state, so the
+// sweep excludes them and the harness runs them afterwards, alone against the gateway.
+const ONLY_SERIAL = args["only-serial"] === "true";
+const EXCLUDE_SERIAL = args["exclude-serial"] === "true";
 // --class assigns every item to exactly ONE modality class (see CLASS_ORDER) and keeps only the
 // requested one. It exists so a provider fork can be sharded further without any item running
 // twice: --feature-any cannot do this job because the classes overlap heavily (a streaming vision
@@ -128,13 +133,17 @@ if (!SOURCE || (!OUT && !PLAN)) {
   console.error("[filter-collection] --source and --out are required");
   process.exit(2);
 }
+if (ONLY_SERIAL && EXCLUDE_SERIAL) {
+  console.error("[filter-collection] --only-serial and --exclude-serial select nothing together");
+  process.exit(2);
+}
 if (PLAN && (!PLAN_PROVIDERS.length || !PLAN_CLASSES.length)) {
   console.error("[filter-collection] --plan needs --providers and --classes");
   process.exit(2);
 }
-if (!PLAN && !PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !EXCLUDE_FEATURE_ANY_PARTS.length && !FOLDER && !CLASS && !SHARD_COUNT && !RERUN_FAILED && !RERUN_RATE_LIMITED && !SMOKE) {
+if (!PLAN && !PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !EXCLUDE_FEATURE_ANY_PARTS.length && !FOLDER && !CLASS && !SHARD_COUNT && !RERUN_FAILED && !RERUN_RATE_LIMITED && !SMOKE && !ONLY_SERIAL && !EXCLUDE_SERIAL) {
   console.error(
-    "[filter-collection] need at least one of: --provider, --feature, --feature-any, --exclude-feature-any, --folder, --class, --shard, --rerun-failed, --rerun-rate-limited, --smoke"
+    "[filter-collection] need at least one of: --provider, --feature, --feature-any, --exclude-feature-any, --folder, --class, --shard, --rerun-failed, --rerun-rate-limited, --smoke, --only-serial, --exclude-serial"
   );
   process.exit(2);
 }
@@ -419,6 +428,14 @@ const itemMatchesRerunFailed = (item) => {
   return failedNames.has(item.name);
 };
 
+// Keeps an item in the pass it belongs to: with --only-serial only [SERIAL] folders, with
+// --exclude-serial everything else, and with neither, everything.
+const itemMatchesSerialPass = (ancestorNames) => {
+  if (!ONLY_SERIAL && !EXCLUDE_SERIAL) return true;
+  const serial = !!serialFolderKey(ancestorNames);
+  return ONLY_SERIAL ? serial : !serial;
+};
+
 const itemIsExcluded = (item, ancestorNames) => {
   if (!EXCLUDE_FEATURE_ANY_PARTS.length) return false;
   const haystack = buildHaystack(item, ancestorNames);
@@ -432,6 +449,7 @@ const itemIsExcluded = (item, ancestorNames) => {
 const passes = (item, ancestorNames, overrides = {}) => {
   if (!item.request) return true; // folders pass; we filter their items below
   if (itemIsExcluded(item, ancestorNames)) return false;
+  if (!itemMatchesSerialPass(ancestorNames)) return false;
   return itemMatchesProvider(item, ancestorNames, overrides.provider ?? PROVIDER) &&
     itemMatchesFeature(item, ancestorNames) &&
     itemMatchesFeatureAny(item, ancestorNames) &&
@@ -607,9 +625,10 @@ const matched = entries.filter(({ item, ancestors }) => passes(item, ancestors))
 // both, which is the same duplication --class sharding already accepts for the same reason.
 const serialKeyOf = new Map(entries.map(({ item, ancestors }) => [item, serialFolderKey(ancestors)]));
 const sliced = SHARD_COUNT ? sliceKeepingSerialFolders(matched, serialKeyOf) : matched;
-const selected = withWholeSerialFolders(sliced, entries, serialKeyOf);
+// The sweep never pulls a [SERIAL] folder back in: those run in their own pass.
+const selected = EXCLUDE_SERIAL ? sliced : withWholeSerialFolders(sliced, entries, serialKeyOf);
 const keep = expandWithProducers(selected, entries);
 const filtered = { ...collection, item: filterTree(collection.item || [], keep) };
 const totalAfter = JSON.stringify(filtered).match(/"request":/g)?.length || 0;
 writeFileSync(OUT, JSON.stringify(filtered, null, 2));
-console.error(`[filter-collection] wrote ${OUT} with ${totalAfter} requests after filter (provider=${PROVIDER || "-"}, feature=${FEATURE_PARTS.join("+") || "-"}, feature-any=${FEATURE_ANY_PARTS.join("|") || "-"}, class=${CLASS || "-"}, shard=${SHARD_COUNT ? `${SHARD_INDEX}/${SHARD_COUNT} of ${matched.length}` : "-"}, smoke=${SMOKE || "-"}, rerun-failed=${RERUN_FAILED})`);
+console.error(`[filter-collection] wrote ${OUT} with ${totalAfter} requests after filter (provider=${PROVIDER || "-"}, feature=${FEATURE_PARTS.join("+") || "-"}, feature-any=${FEATURE_ANY_PARTS.join("|") || "-"}, class=${CLASS || "-"}, shard=${SHARD_COUNT ? `${SHARD_INDEX}/${SHARD_COUNT} of ${matched.length}` : "-"}, smoke=${SMOKE || "-"}, rerun-failed=${RERUN_FAILED}, serial=${ONLY_SERIAL ? "only" : EXCLUDE_SERIAL ? "excluded" : "-"})`);
