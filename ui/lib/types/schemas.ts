@@ -391,6 +391,123 @@ export const githubCopilotKeyConfigSchema = z
 		}
 	});
 
+// oauthKeyConfigComplete reports whether the block carries a usable credential for its grant.
+// It is the check the outer key schema uses to decide whether an empty key value is fine.
+export const oauthKeyConfigComplete = (data: Record<string, unknown> | undefined): boolean => {
+	if (!data) return false;
+	const d = data as {
+		grant_type?: string;
+		token_url?: { value?: string; ref?: string };
+		client_id?: { value?: string; ref?: string };
+		client_secret?: { value?: string; ref?: string };
+		private_key?: { value?: string; ref?: string };
+		issuer?: string;
+		audience?: string;
+	};
+	if (!isSecretVarSet(d.token_url)) return false;
+	if (d.grant_type === "client_credentials") return isSecretVarSet(d.client_id) && isSecretVarSet(d.client_secret);
+	if (d.grant_type === "jwt_bearer") return isSecretVarSet(d.private_key) && !!d.issuer?.trim() && !!d.audience?.trim();
+	return false;
+};
+
+const ASYMMETRIC_PEM_PRIVATE_KEY = /^-----BEGIN (RSA PRIVATE KEY|EC PRIVATE KEY|PRIVATE KEY)-----\s*\n([\s\S]*?)\n\s*-----END \1-----$/;
+const isLiteralAsymmetricPEM = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	if (!isSecretVarSet(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
+	const body = (v?.value ?? "").replace(/\\n/g, "\n").trim();
+	const match = ASYMMETRIC_PEM_PRIVATE_KEY.exec(body);
+	return !!match && match[2].trim().length > 0;
+};
+const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	if (!isSecretVarSet(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
+	const raw = (v?.value ?? "").trim();
+	try {
+		const u = new URL(raw);
+		if (u.protocol === "https:") return true;
+		// Same loopback rule as the server (net.IP.IsLoopback): any 127.x.x.x, ::1, or localhost.
+		const host = u.hostname.toLowerCase();
+		return (
+			u.protocol === "http:" &&
+			(host === "localhost" || host === "[::1]" || host === "::1" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host))
+		);
+	} catch {
+		return false;
+	}
+};
+
+// OAuth key config schema. Honoured by openai-based providers: the key value may be empty
+// when this block is whole for its grant. Literal values are shape-checked so a typo fails in
+// the form rather than at the first inference call; references resolve elsewhere.
+export const oauthKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["api_key", "oauth"]).optional(),
+		grant_type: z.enum(["client_credentials", "jwt_bearer"]).optional(),
+		token_url: secretVarSchema.optional(),
+		client_id: secretVarSchema.optional(),
+		client_secret: secretVarSchema.optional(),
+		private_key: secretVarSchema.optional(),
+		scopes: z.array(z.string()).optional(),
+		audience: z.string().optional(),
+		issuer: z.string().optional(),
+		subject: z.string().optional(),
+		key_id: z.string().optional(),
+		signing_algorithm: z.enum(["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"]).optional(),
+		auth_style: z.enum(["header", "body"]).optional(),
+		extra_params: z.record(z.string(), z.string()).optional(),
+		// Range-checked in superRefine, only while JWT bearer is active: the field is hidden on
+		// the other tabs, and a stale value in it must not block saving. 0 means "default".
+		assertion_lifetime_seconds: z.number().int().optional(),
+	})
+	.superRefine((data, ctx) => {
+		// The API-key tab leaves this block inert; only an OAuth block is checked.
+		if (data._auth_type === "api_key") return;
+		const started =
+			data._auth_type === "oauth" ||
+			isSecretVarSet(data.token_url) ||
+			isSecretVarSet(data.client_id) ||
+			isSecretVarSet(data.client_secret) ||
+			isSecretVarSet(data.private_key);
+		if (!started) return;
+		if (!data.grant_type) {
+			ctx.addIssue({ code: "custom", path: ["grant_type"], message: "Choose a grant type" });
+		}
+		if (!isSecretVarSet(data.token_url)) {
+			ctx.addIssue({ code: "custom", path: ["token_url"], message: "Token URL is required" });
+		} else if (!isLiteralHTTPSOrLoopbackURL(data.token_url)) {
+			ctx.addIssue({ code: "custom", path: ["token_url"], message: "Token URL must be an https URL" });
+		}
+		if (data.grant_type === "client_credentials") {
+			if (!isSecretVarSet(data.client_id)) {
+				ctx.addIssue({ code: "custom", path: ["client_id"], message: "Client ID is required for client credentials" });
+			}
+			if (!isSecretVarSet(data.client_secret)) {
+				ctx.addIssue({ code: "custom", path: ["client_secret"], message: "Client Secret is required for client credentials" });
+			}
+		}
+		if (data.grant_type === "jwt_bearer") {
+			if (!isSecretVarSet(data.private_key)) {
+				ctx.addIssue({ code: "custom", path: ["private_key"], message: "Private key is required for JWT bearer" });
+			} else if (!isLiteralAsymmetricPEM(data.private_key)) {
+				ctx.addIssue({ code: "custom", path: ["private_key"], message: "Private key must be an RSA or EC PEM block" });
+			}
+			if (!data.issuer?.trim()) {
+				ctx.addIssue({ code: "custom", path: ["issuer"], message: "Issuer is required for JWT bearer" });
+			}
+			if (!data.audience?.trim()) {
+				ctx.addIssue({ code: "custom", path: ["audience"], message: "Audience is required for JWT bearer" });
+			}
+			const lifetime = data.assertion_lifetime_seconds;
+			if (lifetime !== undefined && lifetime !== 0 && (lifetime < 1 || lifetime > 3600)) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["assertion_lifetime_seconds"],
+					message: "Assertion lifetime must be between 1 and 3600 seconds (0 for the default)",
+				});
+			}
+		}
+	});
+
 // Ollama key config schema
 export const ollamaKeyConfigSchema = z
 	.object({
@@ -524,6 +641,7 @@ export const modelProviderKeySchema = z
 		sgl_key_config: sglKeyConfigSchema.optional(),
 		databricks_key_config: databricksKeyConfigSchema.optional(),
 		github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
+		oauth_key_config: oauthKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 		use_anthropic_endpoints: z.boolean().optional(),
 		use_openai_endpoints: z.boolean().optional(),
@@ -533,6 +651,16 @@ export const modelProviderKeySchema = z
 		(data) => {
 			if (data.vllm_key_config || data.ollama_key_config || data.sgl_key_config) {
 				return true;
+			}
+			// An OAuth-minted key needs no value. Decided from the credentials when the UI
+			// discriminator is absent, for the same reset reason as Databricks below.
+			if (data.oauth_key_config) {
+				if (data.oauth_key_config._auth_type === "oauth") {
+					return true;
+				}
+				if (data.oauth_key_config._auth_type === undefined && oauthKeyConfigComplete(data.oauth_key_config)) {
+					return true;
+				}
 			}
 			// Databricks authenticates with a personal access token (the key value) or with an
 			// OAuth M2M service principal; only require a key value on the token path.

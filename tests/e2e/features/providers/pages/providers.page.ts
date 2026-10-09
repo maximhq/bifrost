@@ -149,6 +149,31 @@ export class ProvidersPage extends BasePage {
   }
 
   /**
+   * Add an OAuth-minted key (client credentials) to the currently selected openai-based provider.
+   * The token endpoint is never contacted at save time, so any https URL works here.
+   */
+  async addOAuthClientCredentialsKey(config: { name: string; tokenUrl: string; clientId: string; clientSecret: string; scopes?: string[] }): Promise<void> {
+    await this.dismissToasts()
+    await this.addKeyBtn.click()
+    await expect(this.keyForm).toBeVisible()
+
+    await this.page.getByLabel('Name').fill(config.name)
+    await this.page.getByTestId('apikey-openai-oauth-tab').click()
+    await this.page.getByTestId('key-input-oauth-token-url').fill(config.tokenUrl)
+    await this.page.getByTestId('key-input-oauth-client-id').fill(config.clientId)
+    await this.page.getByTestId('key-input-oauth-client-secret').fill(config.clientSecret)
+    for (const scope of config.scopes ?? []) {
+      await this.page.getByTestId('key-input-oauth-scopes').fill(scope)
+      await this.page.getByTestId('key-input-oauth-scopes').press('Enter')
+    }
+
+    await this.keySaveBtn.click()
+    await this.waitForSuccessToast()
+    await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
+    await waitForNetworkIdle(this.page)
+  }
+
+  /**
    * Add a known provider from the "Add provider" dropdown (e.g. Nebius, OpenAI).
    * Opens the dropdown and clicks the option with data-testid add-provider-option-{name}.
    */
