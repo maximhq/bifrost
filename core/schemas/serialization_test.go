@@ -1883,6 +1883,8 @@ func TestDeepCopyChatMessagePreservesGuardContent(t *testing.T) {
 	}
 }
 
+// TestDeepCopyChatMessagePreservesCacheAndCitationFields verifies that DeepCopyChatMessage
+// faithfully copies CacheControl, Citations, PromptCacheBreakpoint, and CachePoint without pointer aliasing.
 func TestDeepCopyChatMessagePreservesCacheAndCitationFields(t *testing.T) {
 	text := "hello world"
 	ttl := "1h"
@@ -1998,6 +2000,7 @@ func TestDeepCopyChatMessagePreservesCacheAndCitationFields(t *testing.T) {
 	}
 }
 
+// TestDeepCopyChatMessageHandlesNilAndEmptyCacheFields tests deep copying with nil, empty, and isolated metadata fields.
 func TestDeepCopyChatMessageHandlesNilAndEmptyCacheFields(t *testing.T) {
 	// 1. All fields nil
 	text := "plain text"

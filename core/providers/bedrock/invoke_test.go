@@ -2656,6 +2656,8 @@ func TestInvokeChatGuardTagging_RendersMarkersAsInlineTags(t *testing.T) {
 	assert.Nil(t, none)
 }
 
+// TestInvokeChatGuardTagging_PreservesCacheControlAndCitations tests that prompt caching and
+// citation settings on document blocks survive request deep-copying during Bedrock guardrail tagging.
 func TestInvokeChatGuardTagging_PreservesCacheControlAndCitations(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 	ttl := "1h"

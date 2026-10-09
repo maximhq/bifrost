@@ -218093,7 +218093,7 @@
       "description": "Pins that prompt cache control markers (cache_control) survive deep copying on the Bedrock Claude InvokeModel path during guardrail tagging, and map to Converse cachePoint blocks on the Converse path (#8215 / PR #8216).",
       "item": [
         {
-          "name": "Bedrock chat completions InvokeModel: cache_control survives guardrail deep copy (Haiku 4.5) - #8215",
+          "name": "Bedrock chat completions InvokeModel: cache_control survives guardrail deep copy (Sonnet 4.6) - #8215",
           "event": [
             {
               "listen": "test",
@@ -218144,7 +218144,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Context prefix to cache.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the capital of France?\",\n          \"guard_content\": {\n            \"qualifiers\": [\n              \"query\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"context_management\": {\n    \"edits\": [\n      {\n        \"type\": \"compact_20260112\",\n        \"trigger\": {\n          \"type\": \"input_tokens\",\n          \"value\": 50000\n        }\n      }\n    ]\n  },\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n    \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n    \"tagSuffix\": \"h7q2\"\n  }\n}"
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Context prefix to cache.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the capital of France?\",\n          \"guard_content\": {\n            \"qualifiers\": [\n              \"query\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"context_management\": {\n    \"edits\": [\n      {\n        \"type\": \"compact_20260112\",\n        \"trigger\": {\n          \"type\": \"input_tokens\",\n          \"value\": 50000\n        }\n      }\n    ]\n  },\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n    \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n    \"tagSuffix\": \"h7q2\"\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
