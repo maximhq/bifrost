@@ -101,7 +101,7 @@ type ClaudeCodeGatewayConfig struct {
 	// ManagedSettings is the Claude Code managed-settings.json document served at
 	// /claude-code/managed/settings to every signed-in client. nil means no
 	// managed policy (the endpoint answers 404); an empty object is an empty policy.
-	ManagedSettings map[string]any `json:"managed_settings,omitempty"`
+	ManagedSettings map[string]any `json:"managed_settings"`
 }
 
 // IsClaudeCodeGatewayEnabled reports whether the Claude Code gateway toggle is
