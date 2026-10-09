@@ -5016,7 +5016,7 @@
               "properties": {
                 "type": {
                   "type": "string",
-                  "enum": ["s3", "gcs"],
+                  "enum": ["s3", "gcs", "r2"],
                   "description": "Object storage backend type"
                 },
                 "bucket": {
@@ -5035,23 +5035,23 @@
                 },
                 "region": {
                   "type": "string",
-                  "description": "AWS region (S3 only)"
+                  "description": "AWS region; R2 defaults to auto"
                 },
                 "endpoint": {
                   "type": "string",
-                  "description": "Custom S3-compatible endpoint for MinIO/R2 (S3 only)"
+                  "description": "S3 API endpoint; required for R2"
                 },
                 "accessKeyId": {
                   "type": "string",
-                  "description": "AWS access key ID; omit to use default credential chain (S3 only)"
+                  "description": "S3 API access key ID; required for R2, optional for the S3 default credential chain"
                 },
                 "secretAccessKey": {
                   "type": "string",
-                  "description": "AWS secret access key (S3 only)"
+                  "description": "S3 API secret access key; required for R2"
                 },
                 "sessionToken": {
                   "type": "string",
-                  "description": "AWS STS session token (S3 only, optional)"
+                  "description": "Optional S3 API session token for temporary S3/R2 credentials"
                 },
                 "roleArn": {
                   "type": "string",
@@ -5059,7 +5059,7 @@
                 },
                 "forcePathStyle": {
                   "type": "boolean",
-                  "description": "Use path-style S3 URLs; required for MinIO (S3 only)",
+                  "description": "Use path-style S3 API URLs; required for MinIO",
                   "default": false
                 },
                 "projectId": {
@@ -5639,7 +5639,7 @@
                 },
                 "type": {
                   "type": "string",
-                  "enum": ["s3", "gcs"]
+                  "enum": ["s3", "gcs", "r2"]
                 },
                 "bucket": {
                   "type": "string"

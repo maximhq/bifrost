@@ -435,7 +435,7 @@ The IAM user or role needs the following permissions on your bucket:
 | `secret_access_key` | AWS secret access key |
 | `session_token` | STS temporary credentials session token |
 | `role_arn` | IAM role ARN for STS AssumeRole |
-| `endpoint` | Custom endpoint for MinIO / Cloudflare R2 |
+| `endpoint` | Custom endpoint for S3-compatible storage such as MinIO |
 | `force_path_style` | Use path-style URLs (required for MinIO, default: `false`) |
 
 
@@ -465,6 +465,34 @@ Default encryption applies KMS without requiring encryption headers from the upl
 
 </Accordion>
 
+
+#### Cloudflare R2
+
+Use `type: "r2"` to select the Cloudflare R2 backend. It automatically omits unsupported [S3 object tags](https://developers.cloudflare.com/r2/api/s3/api/) and uses required-only request checksums, including for gzip uploads. Existing `type: "s3"` configurations keep their S3 tagging and SDK checksum behavior.
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": { "path": "./logs.db" },
+    "object_storage": {
+      "type": "r2",
+      "bucket": "bifrost-logs",
+      "endpoint": "https://<account-id>.r2.cloudflarestorage.com",
+      "access_key_id": "env.R2_ACCESS_KEY_ID",
+      "secret_access_key": "env.R2_SECRET_ACCESS_KEY",
+      "compress": true
+    }
+  }
+}
+```
+
+The bucket, endpoint, access key ID, and secret access key are required. Use the S3 API endpoint shown in the R2 dashboard, including a jurisdiction-specific endpoint if applicable. The region defaults to `auto`; `session_token` supports temporary R2 credentials. AWS `role_arn` is not supported by the R2 backend.
+
+R2 does not store object tags, including tags supplied by Skills uploads. Payload storage, compression, and retrieval still work. Use bucket or prefix-based lifecycle rules instead of tag-based rules.
+
+With optional AWS SDK checksum trailers, R2 can reject gzip uploads with `SignatureDoesNotMatch`. The R2 backend selects `when_required` internally, retaining checksums for operations that require them, such as batch deletion. No tagging or checksum configuration flags are needed.
 
 #### Google Cloud Storage
 
