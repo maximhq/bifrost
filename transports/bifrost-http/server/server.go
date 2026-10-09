@@ -2438,13 +2438,24 @@ func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, name string, p
 	return nil
 }
 
+// PluginInitContext returns the context to hand to a plugin constructor. A plugin outlives
+// the request that loaded it and derives long-lived contexts from this one, so it must be the
+// server-lifetime context, never the pooled *fasthttp.RequestCtx an admin reload arrives on.
+// Carries the bootstrap plugin-name values, which Ctx inherits.
+func (s *BifrostHTTPServer) PluginInitContext() context.Context {
+	if s.Ctx == nil {
+		return context.Background()
+	}
+	return s.Ctx
+}
+
 // ReloadPlugin reloads a plugin with new instance and updates Bifrost core.
 // The plugin is checked for LLM and MCP interfaces independently and registered
 // to the appropriate arrays based on which interfaces it implements.
 func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error {
 	logger.Debug("reloading plugin %s", name)
 	// 1. Instantiate new version
-	plugin, err := InstantiatePlugin(ctx, name, path, pluginConfig, s.Config)
+	plugin, err := InstantiatePlugin(s.PluginInitContext(), name, path, pluginConfig, s.Config)
 	if err != nil {
 		return s.updatePluginErrorStatus(name, "loading", err)
 	}

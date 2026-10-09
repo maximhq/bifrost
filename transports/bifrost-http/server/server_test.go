@@ -18,6 +18,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
@@ -1464,5 +1465,95 @@ func TestReloadProxyConfigAcceptsRemoval(t *testing.T) {
 	}
 	if got := factory.GetProxyConfig(); got != nil {
 		t.Fatalf("factory proxy = %+v, want none after removal", got)
+	}
+}
+
+// ctxSensitivePromptStore fails any read whose context is already cancelled. That is how
+// a test observes the context ReloadPlugin handed the plugin constructor: prompts.Init
+// calls loadCache(ctx) and returns its error.
+type ctxSensitivePromptStore struct {
+	configstore.ConfigStore
+	gotCtx context.Context
+}
+
+// errStopAfterInstantiation ends ReloadPlugin at the constructor, before it needs a live
+// Bifrost client, so the test can inspect the context the constructor was given.
+var errStopAfterInstantiation = errors.New("stop after instantiation")
+
+func (s *ctxSensitivePromptStore) GetPrompts(ctx context.Context, _ *string) ([]configstoreTables.TablePrompt, error) {
+	s.gotCtx = ctx
+	return nil, errStopAfterInstantiation
+}
+
+func (s *ctxSensitivePromptStore) GetAllPromptVersions(ctx context.Context) ([]configstoreTables.TablePromptVersion, error) {
+	return nil, ctx.Err()
+}
+
+// A plugin outlives the request that loaded it, so ReloadPlugin must hand its constructor
+// the server-lifetime context, never the pooled *fasthttp.RequestCtx an admin reload
+// arrives on. Deriving long-lived work from the request context is what produced the
+// "missing cancel error" panic on shutdown.
+func TestReloadPluginGivesTheConstructorTheServerContext(t *testing.T) {
+	SetLogger(bifrost.NewNoOpLogger())
+
+	serverCtx, cancelServer := schemas.NewBifrostContextWithCancel(
+		context.WithValue(context.Background(), schemas.BifrostContextKeyGovernancePluginName, "governance-custom"),
+	)
+	defer cancelServer()
+
+	store := &ctxSensitivePromptStore{}
+	s := &BifrostHTTPServer{Ctx: serverCtx, Config: &lib.Config{ConfigStore: store}}
+
+	// The admin reload request is already over by the time the constructor runs.
+	reloadReqCtx, cancelRequest := context.WithCancel(context.Background())
+	cancelRequest()
+
+	err := s.ReloadPlugin(reloadReqCtx, prompts.PluginName, nil, nil, nil, nil)
+
+	if store.gotCtx == nil {
+		t.Fatal("the plugin constructor never reached the store")
+	}
+	if cerr := store.gotCtx.Err(); cerr != nil {
+		t.Errorf("constructor context was already cancelled (%v); it must be the server context, not the reload request's", cerr)
+	}
+	if !errors.Is(err, errStopAfterInstantiation) {
+		t.Errorf("ReloadPlugin error = %v, want the constructor's own error", err)
+	}
+	if got := governancePluginNameFromContext(store.gotCtx); got != "governance-custom" {
+		t.Errorf("constructor context governance plugin name = %q, want it inherited from the server context", got)
+	}
+}
+
+// The accessor's own contract: it tracks the server, not the request that called it.
+func TestPluginInitContextOutlivesTheReloadRequest(t *testing.T) {
+	serverCtx, cancelServer := schemas.NewBifrostContextWithCancel(
+		context.WithValue(context.Background(), schemas.BifrostContextKeyGovernancePluginName, "governance-custom"),
+	)
+	defer cancelServer()
+	initCtx := (&BifrostHTTPServer{Ctx: serverCtx}).PluginInitContext()
+
+	if got := governancePluginNameFromContext(initCtx); got != "governance-custom" {
+		t.Errorf("governance plugin name = %q, want it inherited from the server context", got)
+	}
+	// Shutdown must still reach the plugin, or nothing releases its long-lived work.
+	cancelServer()
+	select {
+	case <-initCtx.Done():
+	case <-time.After(time.Second):
+		t.Error("plugin init context outlived server shutdown; it must be the server context")
+	}
+}
+
+// A server with no context yet must still yield a usable, never-cancelled context rather
+// than a nil one a constructor would panic on.
+func TestPluginInitContextFallsBackToBackground(t *testing.T) {
+	initCtx := (&BifrostHTTPServer{}).PluginInitContext()
+	if initCtx == nil {
+		t.Fatal("PluginInitContext returned nil")
+	}
+	select {
+	case <-initCtx.Done():
+		t.Error("fallback context is already cancelled")
+	default:
 	}
 }
