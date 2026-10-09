@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -778,4 +779,300 @@ func TestKeyPoolFilterSuppressingEveryKeyIs503(t *testing.T) {
 	if n := calls.Load(); n != 0 {
 		t.Fatalf("the upstream was called %d time(s) with every key held back", n)
 	}
+}
+
+// cancelledError is the context.Canceled a provider call returns when the caller leaves mid-request:
+// not built by Bifrost, no status, but typed request_cancelled like Bifrost's own 499.
+func cancelledError() *schemas.BifrostError {
+	return &schemas.BifrostError{
+		IsBifrostError: false,
+		Error:          &schemas.ErrorField{Type: Ptr(schemas.RequestCancelled), Message: "request cancelled", Error: context.Canceled},
+	}
+}
+
+// expiredContextError is the 504 newBifrostCtxDoneError builds for a request whose deadline passed.
+func expiredContextError(t *testing.T) *schemas.BifrostError {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(-time.Second))
+	<-ctx.Done()
+	return newBifrostCtxDoneError(ctx, "during the request")
+}
+
+// requireEndedAttempt fails the test unless the one record on the trail carries class, status and
+// failReason ("" wants none).
+func requireEndedAttempt(t *testing.T, ctx *schemas.BifrostContext, class schemas.FailureClass, status int, failReason string) {
+	t.Helper()
+	got := attemptTrail(t, ctx, 1)[0]
+	if got.FailureClass != class || got.StatusCode == nil || *got.StatusCode != status {
+		t.Fatalf("attempt class=%q status=%v, want %q %d (%+v)", got.FailureClass, got.StatusCode, class, status, got)
+	}
+	switch {
+	case failReason == "" && got.FailReason != nil:
+		t.Fatalf("attempt fail_reason=%q, want none", *got.FailReason)
+	case failReason != "" && (got.FailReason == nil || *got.FailReason != failReason):
+		t.Fatalf("attempt fail_reason=%v, want %q", got.FailReason, failReason)
+	}
+}
+
+// An attempt Bifrost ended is labelled on the trail though the retry loop stops on it before it
+// classifies: a timeout (the provider's or the request's deadline) is timeout 504 with
+// request_timed_out, and a cancellation, Bifrost's 499 or a provider call's context.Canceled, is
+// cancelled 499 with no fail_reason, since a fail_reason says the key failed.
+func TestExecuteRequestWithRetries_StampsTheAttemptBifrostEnded(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        func(t *testing.T) *schemas.BifrostError
+		class      schemas.FailureClass
+		status     int
+		failReason string
+	}{
+		{name: "provider timeout", err: func(*testing.T) *schemas.BifrostError {
+			return providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, context.DeadlineExceeded)
+		}, class: schemas.FailureClassTimeout, status: 504, failReason: schemas.RequestTimedOut},
+		{name: "request deadline", err: expiredContextError, class: schemas.FailureClassTimeout, status: 504, failReason: schemas.RequestTimedOut},
+		{name: "caller cancel", err: func(*testing.T) *schemas.BifrostError {
+			return createBifrostError("request cancelled by caller", Ptr(499), Ptr(schemas.RequestCancelled), true)
+		}, class: schemas.FailureClassCancelled, status: 499},
+		{name: "context.Canceled from the provider call", err: func(*testing.T) *schemas.BifrostError { return cancelledError() }, class: schemas.FailureClassCancelled, status: 499},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := rotationTestContext()
+			calls := 0
+			handler := func(schemas.Key) (string, *schemas.BifrostError) {
+				calls++
+				return "", tc.err(t)
+			}
+			_, err := executeRequestWithRetries(ctx, createTestConfig(2, time.Millisecond, time.Millisecond), handler,
+				poolKeyProvider([]schemas.Key{rotationKeyA, rotationKeyB}),
+				schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, NewDefaultLogger(schemas.LogLevelError))
+			if err == nil {
+				t.Fatal("the attempt Bifrost ended was served")
+			}
+			if calls != 1 {
+				t.Fatalf("the attempt was tried %d times, want once: Bifrost's endings are not retried", calls)
+			}
+			requireEndedAttempt(t, ctx, tc.class, tc.status, tc.failReason)
+		})
+	}
+}
+
+// A cancellation during the backoff after a refusal ends the request before another attempt is
+// dispatched: the refused attempt keeps its own class and reason, and no record is added for the
+// attempt that never ran.
+func TestExecuteRequestWithRetries_CancelDuringBackoffKeepsTheRefusal(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	handler := func(schemas.Key) (string, *schemas.BifrostError) {
+		// The caller leaves while the retry waits out its backoff.
+		cancel()
+		return "", providerError(429, "requests", "rate_limit_exceeded", "Rate limit reached for requests")
+	}
+	_, err := executeRequestWithRetries(ctx, createTestConfig(2, time.Second, time.Second), handler,
+		poolKeyProvider([]schemas.Key{rotationKeyA, rotationKeyB}),
+		schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, NewDefaultLogger(schemas.LogLevelError))
+	if err == nil || err.Error == nil || err.Error.Type == nil || *err.Error.Type != schemas.RequestCancelled {
+		t.Fatalf("want the request to end as cancelled, got %+v", err)
+	}
+	got := attemptTrail(t, ctx, 1)[0]
+	if got.FailureClass != schemas.FailureClassRateLimit || got.FailReason == nil || *got.FailReason != "rate_limit_error" {
+		t.Fatalf("the refused attempt should keep rate_limit / rate_limit_error, got %+v", got)
+	}
+}
+
+// A TTFT miss keeps the ttft_timeout settleAttemptAbort wrote and gains the timeout class and its
+// status. A record already classified is left alone, and an error Bifrost did not end is not stamped.
+func TestStampEndedAttempt(t *testing.T) {
+	trailWith := func(record schemas.KeyAttemptRecord) *schemas.BifrostContext {
+		ctx := rotationTestContext()
+		ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{record})
+		return ctx
+	}
+	t.Run("a TTFT miss keeps its reason", func(t *testing.T) {
+		ctx := trailWith(schemas.KeyAttemptRecord{KeyID: rotationKeyA.ID, FailReason: Ptr(schemas.FirstTokenTimeoutErrorCode)})
+		stampEndedAttempt(ctx, providerUtils.NewFirstTokenTimeoutError(time.Second))
+		requireEndedAttempt(t, ctx, schemas.FailureClassTimeout, 504, schemas.FirstTokenTimeoutErrorCode)
+	})
+	t.Run("a classified record is left alone", func(t *testing.T) {
+		ctx := trailWith(schemas.KeyAttemptRecord{KeyID: rotationKeyA.ID, FailureClass: schemas.FailureClassRateLimit, StatusCode: Ptr(429), FailReason: Ptr("rate_limit_error")})
+		stampEndedAttempt(ctx, cancelledError())
+		requireEndedAttempt(t, ctx, schemas.FailureClassRateLimit, 429, "rate_limit_error")
+	})
+	t.Run("another Bifrost error is not stamped", func(t *testing.T) {
+		ctx := trailWith(schemas.KeyAttemptRecord{KeyID: rotationKeyA.ID})
+		stampEndedAttempt(ctx, createBifrostError("tracer not found in context", nil, nil, true))
+		if got := attemptTrail(t, ctx, 1)[0]; got.FailureClass != "" || got.StatusCode != nil || got.FailReason != nil {
+			t.Fatalf("an internal error was stamped: %+v", got)
+		}
+	})
+}
+
+// endedAttemptRecorder is an LLM plugin that keeps the last trail record each error post-hook sees,
+// which is what logging and telemetry read about the attempt.
+type endedAttemptRecorder struct {
+	mu      sync.Mutex
+	records []schemas.KeyAttemptRecord
+}
+
+// GetName names the recorder plugin.
+func (r *endedAttemptRecorder) GetName() string { return "ended-attempt-recorder" }
+
+// Cleanup has nothing to release.
+func (r *endedAttemptRecorder) Cleanup() error { return nil }
+
+// PreRequestHook leaves the request alone.
+func (r *endedAttemptRecorder) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+
+// PreLLMHook leaves the request alone.
+func (r *endedAttemptRecorder) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+
+// PostLLMHook keeps the trail's last record when the hook carries an error.
+func (r *endedAttemptRecorder) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if trail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); bifrostErr != nil && len(trail) > 0 {
+		r.mu.Lock()
+		r.records = append(r.records, trail[len(trail)-1])
+		r.mu.Unlock()
+	}
+	return resp, bifrostErr, nil
+}
+
+// errorHookRecords returns the records kept so far.
+func (r *endedAttemptRecorder) errorHookRecords() []schemas.KeyAttemptRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]schemas.KeyAttemptRecord(nil), r.records...)
+}
+
+// stallingStreamUpstream is an OpenAI-compatible upstream that streams one content chunk of a chat
+// completion and then holds the connection until the client leaves. The hold is bounded, so the
+// server can close if the client never leaves.
+func stallingStreamUpstream(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"o"}}]}`+"\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// A stream Bifrost ends after it has produced output is labelled by the time its post-hooks see
+// the error, which is when logging and telemetry read the trail: a caller who leaves is cancelled
+// with 499 and no fail_reason, and a request deadline is a timeout with 504 and request_timed_out.
+// The retry loop has returned by then, so only the stream's post-hook runner can label it. The
+// caller leaves once the first chunk has reached it, and the deadline leaves two seconds for that
+// chunk, so a slow start cannot end the request before it has produced output.
+func TestStreamEndedAfterFirstOutputIsLabelled(t *testing.T) {
+	const provider schemas.ModelProvider = "ended-stream"
+	cases := []struct {
+		name       string
+		cancel     bool
+		class      schemas.FailureClass
+		status     int
+		failReason string
+	}{
+		{name: "the caller leaves after the first chunk", cancel: true, class: schemas.FailureClassCancelled, status: 499},
+		{name: "the request deadline passes after the first chunk", class: schemas.FailureClassTimeout, status: 504, failReason: schemas.RequestTimedOut},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(provider, 1, 16, stallingStreamUpstream(t).URL)
+			account.configs[provider].NetworkConfig.MaxRetries = 0
+			account.SetCustomProviderConfig(provider, &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI})
+			account.SetKeysForProvider(provider, []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("sk-k1"), Models: schemas.WhiteList{"*"}, Weight: 100}})
+			recorder := &endedAttemptRecorder{}
+			client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), LLMPlugins: []schemas.LLMPlugin{recorder}})
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
+
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			deadline := time.Now().Add(2 * time.Second)
+			if tc.cancel {
+				deadline = schemas.NoDeadline
+			}
+			ctx := schemas.NewBifrostContext(parent, deadline)
+			stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+				Provider: provider,
+				Model:    "m",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: Ptr("hi")}}},
+			})
+			if bifrostErr != nil {
+				t.Fatalf("the stream should start, got %s", bifrostErr.GetErrorString())
+			}
+			chunks := 0
+			for chunk := range stream {
+				if chunk.BifrostError == nil {
+					chunks++
+					if tc.cancel && chunks == 1 {
+						cancel()
+					}
+				}
+			}
+			if chunks == 0 {
+				t.Fatal("the stream ended before its first chunk reached the caller")
+			}
+
+			var records []schemas.KeyAttemptRecord
+			for end := time.Now().Add(3 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+				if records = recorder.errorHookRecords(); len(records) > 0 {
+					break
+				}
+			}
+			if len(records) == 0 {
+				t.Fatal("no post-hook saw the stream's error")
+			}
+			record := records[len(records)-1]
+			failReason, status := "", "nil"
+			if record.FailReason != nil {
+				failReason = *record.FailReason
+			}
+			if record.StatusCode != nil {
+				status = fmt.Sprint(*record.StatusCode)
+			}
+			if record.FailureClass != tc.class || status != fmt.Sprint(tc.status) || failReason != tc.failReason {
+				t.Fatalf("the error post-hook saw class %q, status %s, fail_reason %q; want %q, %d, %q", record.FailureClass, status, failReason, tc.class, tc.status, tc.failReason)
+			}
+		})
+	}
+}
+
+// A stream's post-hook labels an attempt that ended after its first output, and leaves alone one
+// whose TTFT abort is still armed: until the first-chunk check settles, the retry loop labels the
+// attempt, and a TTFT cut that surfaces in a post-hook as a closed socket's cancellation would
+// otherwise be frozen as cancelled before the loop could call it the ttft_timeout it is.
+func TestStampEndedStreamAttempt(t *testing.T) {
+	trailWith := func(record schemas.KeyAttemptRecord) *schemas.BifrostContext {
+		ctx := rotationTestContext()
+		ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{record})
+		return ctx
+	}
+	t.Run("an attempt that ended after its first output is labelled", func(t *testing.T) {
+		ctx := trailWith(schemas.KeyAttemptRecord{KeyID: rotationKeyA.ID})
+		stampEndedStreamAttempt(ctx, cancelledError())
+		requireEndedAttempt(t, ctx, schemas.FailureClassCancelled, 499, "")
+	})
+	t.Run("an attempt whose TTFT abort is still armed is left to the retry loop", func(t *testing.T) {
+		ctx := trailWith(schemas.KeyAttemptRecord{KeyID: rotationKeyA.ID})
+		ctx.SetValue(schemas.BifrostContextKeyStreamAttemptAbort, providerUtils.NewAttemptAbort(time.Second))
+		stampEndedStreamAttempt(ctx, cancelledError())
+		if record := attemptTrail(t, ctx, 1)[0]; record.FailureClass != "" || record.StatusCode != nil || record.FailReason != nil {
+			t.Fatalf("the post-hook labelled an attempt the retry loop still owns: %+v", record)
+		}
+	})
 }

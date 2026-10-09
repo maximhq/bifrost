@@ -6811,6 +6811,58 @@ func isFirstTokenTimeoutError(err *schemas.BifrostError) bool {
 	return err != nil && err.Error != nil && err.Error.Code != nil && *err.Error.Code == schemas.FirstTokenTimeoutErrorCode
 }
 
+// stampEndedAttempt labels the trail record of an attempt Bifrost itself ended: a timeout (the
+// provider's, the request's deadline or a TTFT miss) or the caller cancelling. The retry loop
+// stops on these before it classifies, so without this their record says nothing about why the
+// attempt ended. A timeout carries FailReason request_timed_out (a TTFT miss keeps the
+// ttft_timeout settleAttemptAbort wrote). A cancellation carries none: FailReason is what
+// consumers read as "this key failed" (the enterprise load balancer charges it as a refusal,
+// telemetry marks the key down), and a caller leaving says nothing about the key. Any other
+// error, and a record already classified, is left alone.
+func stampEndedAttempt(ctx *schemas.BifrostContext, bifrostError *schemas.BifrostError) {
+	class := ClassifyFailure(bifrostError)
+	status := 0
+	switch class {
+	case schemas.FailureClassTimeout:
+		status = 504
+	case schemas.FailureClassCancelled:
+		status = 499
+	default:
+		return
+	}
+	trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
+	if !ok || len(trail) == 0 {
+		return
+	}
+	last := &trail[len(trail)-1]
+	if last.FailureClass != "" {
+		return
+	}
+	last.FailureClass = class
+	if bifrostError.StatusCode != nil {
+		status = *bifrostError.StatusCode
+	}
+	last.StatusCode = &status
+	if class == schemas.FailureClassTimeout && last.FailReason == nil {
+		reason := schemas.RequestTimedOut
+		last.FailReason = &reason
+	}
+	ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, trail)
+}
+
+// stampEndedStreamAttempt labels the record of a stream attempt that ends after the retry loop has
+// returned it: a caller leaving or the request deadline passing once output has flowed reaches only
+// the stream's post-hooks, which logging and telemetry read the trail in. While the attempt's TTFT
+// abort is still armed the retry loop owns the record: a TTFT cut can surface here first as the
+// closed socket's cancellation, and labelling it would freeze it as cancelled before
+// settleAttemptAbort calls it the ttft_timeout it is.
+func stampEndedStreamAttempt(ctx *schemas.BifrostContext, bifrostError *schemas.BifrostError) {
+	if ctx.Value(schemas.BifrostContextKeyStreamAttemptAbort) != nil {
+		return
+	}
+	stampEndedAttempt(ctx, bifrostError)
+}
+
 func executeRequestWithRetries[T any](
 	ctx *schemas.BifrostContext,
 	config *schemas.ProviderConfig,
@@ -7350,6 +7402,12 @@ func executeRequestWithRetries[T any](
 		if bifrostError == nil ||
 			bifrostError.IsBifrostError ||
 			(bifrostError.Error != nil && bifrostError.Error.Type != nil && *bifrostError.Error.Type == schemas.RequestCancelled) {
+			// A timeout or a cancellation ends the attempt here, before the classification
+			// below would stamp its record, so it is labelled now. Keyless providers keep no
+			// trail of their own, and the last record may be another provider's.
+			if keyProvider != nil {
+				stampEndedAttempt(ctx, bifrostError)
+			}
 			break
 		}
 		// An attempt that ran a provider-injected tool is not retried: the retry would
@@ -8026,6 +8084,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					if err != nil {
 						err.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						err.PopulateRoutingInfo(perAttemptRoutingInfo)
+						// Keyless providers keep no trail of their own, as in the retry loop.
+						if keyProvider != nil {
+							stampEndedStreamAttempt(ctx, err)
+						}
 					}
 					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
 					if IsFinalChunk(ctx) {
