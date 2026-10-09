@@ -43,6 +43,12 @@ func runSQLMigrations(ctx context.Context, db *gorm.DB, logger schemas.Logger) e
 			ID: m.id,
 			Migrate: func(tx *gorm.DB) error {
 				tx = tx.WithContext(ctx)
+				if tx.Dialector.Name() == "postgres" {
+					// Fail fast rather than queue behind a long-held table lock.
+					if err := tx.Exec("SET LOCAL lock_timeout = '5s'").Error; err != nil {
+						return err
+					}
+				}
 				mg := tx.Migrator()
 				if !mg.HasTable(m.model) {
 					if logger != nil {
