@@ -1315,6 +1315,14 @@ func isOpenAISupportedToolType(t schemas.ResponsesToolType, provider schemas.Mod
 		return provider != schemas.BedrockMantle && provider != schemas.Bedrock
 	case schemas.ResponsesToolTypeXSearch:
 		return provider == schemas.XAI
+	case schemas.ResponsesToolTypeSandbox,
+		schemas.ResponsesToolTypeFetchURL,
+		schemas.ResponsesToolTypeFinanceSearch,
+		schemas.ResponsesToolTypePeopleSearch:
+		// Perplexity Agent API server-side tools (docs.perplexity.ai/docs/agent-api/tools).
+		// Callers pass the resolved base provider, not resp.Provider: a custom provider
+		// backed by Perplexity reports its own key (see the toolProvider comment above).
+		return provider == schemas.Perplexity
 	}
 	return false
 }
@@ -1346,6 +1354,28 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 					// EnableZoom is intentionally omitted (nil) - OpenAI doesn't support it
 				}
 				newTool.ResponsesToolComputerUsePreview = newComputerUse
+				filteredTools = append(filteredTools, newTool)
+			} else if tool.Type == schemas.ResponsesToolTypeWebSearch && tool.ResponsesToolWebSearch != nil && baseProvider == schemas.Perplexity {
+				// Perplexity's Agent API web_search tool accepts its own superset of
+				// fields (search_domain_filter, search_recency_filter, date filters,
+				// max_results, max_tokens, max_tokens_per_page — see
+				// docs.perplexity.ai/docs/agent-api/tools/web-search), so none of the
+				// OpenAI-specific stripping below applies. The one bridge still needed:
+				// AllowedDomains is Bifrost's cross-provider allow-list field, but
+				// Perplexity's wire format only understands search_domain_filter, so map
+				// it across (without clobbering an explicitly-set native value) and drop
+				// the field Perplexity doesn't recognize.
+				newTool := *tool
+				if filters := tool.ResponsesToolWebSearch.Filters; filters != nil && len(filters.AllowedDomains) > 0 {
+					newFilters := *filters
+					if len(newFilters.SearchDomainFilter) == 0 {
+						newFilters.SearchDomainFilter = append([]string(nil), filters.AllowedDomains...)
+					}
+					newFilters.AllowedDomains = nil
+					newWebSearch := *tool.ResponsesToolWebSearch
+					newWebSearch.Filters = &newFilters
+					newTool.ResponsesToolWebSearch = &newWebSearch
+				}
 				filteredTools = append(filteredTools, newTool)
 			} else if tool.Type == schemas.ResponsesToolTypeWebSearch && tool.ResponsesToolWebSearch != nil {
 				// Create a proper deep copy with new nested pointers to avoid mutating the original
