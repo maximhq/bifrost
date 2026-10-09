@@ -387,6 +387,7 @@ type WarpStoredMessage struct {
 	// came from nowhere.
 	ToolCalls []WarpStoredToolCall `json:"tool_calls,omitempty"`
 	Error     string               `json:"error,omitempty"`
+	ErrorCode string               `json:"error_code,omitempty"` // the error frame's code, e.g. budget_exceeded
 	// FinishReason is "partial" when the answer was given on the last research
 	// step without settling, so a reopened thread still shows it as partial.
 	FinishReason string `json:"finish_reason,omitempty"`

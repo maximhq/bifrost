@@ -125835,6 +125835,10 @@
           "error": {
             "type": "string"
           },
+          "error_code": {
+            "type": "string",
+            "description": "The failed turn's error code, as on the chat error frame (budget_exceeded, access_denied, ...). Absent on turns filed before codes were kept."
+          },
           "finish_reason": {
             "type": "string",
             "description": "`partial` when the answer was given on the last research step without settling."

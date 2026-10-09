@@ -444,6 +444,27 @@ describe("isInternalWarpLink", () => {
 });
 
 describe("turnsFromStoredMessages", () => {
+	it("reopens a failed turn with the same headline it had live", () => {
+		const message =
+			"This deployment's governance rules refused Warp's model call for your account: user budget exceeded: 0.0600 >= 0.0500 dollars";
+		const [turn] = turnsFromStoredMessages([
+			{ role: "assistant", content: "", error: message, error_code: "budget_exceeded", created_at: "2026-10-09T00:00:00Z" },
+		]);
+		const { code, message: decoded } = decodeTurnError(turn.error ?? "");
+		expect(code).toBe("budget_exceeded");
+		expect(decoded).toBe(message);
+		expect(warpErrorDetail(code, decoded).summary).toBe("You've used up your budget.");
+	});
+
+	it("keeps a stored error with no code whole, colons included", () => {
+		const [turn] = turnsFromStoredMessages([
+			{ role: "assistant", content: "", error: "TypeError: Failed to fetch", created_at: "2026-10-09T00:00:00Z" },
+		]);
+		const { code, message } = decodeTurnError(turn.error ?? "");
+		expect(code).toBe("");
+		expect(message).toBe("TypeError: Failed to fetch");
+	});
+
 	it("maps stored messages onto transcript turns", () => {
 		const turns = turnsFromStoredMessages([
 			{ role: "user", content: "what did we spend?", created_at: "2026-09-05T00:00:00Z" },
@@ -459,7 +480,7 @@ describe("turnsFromStoredMessages", () => {
 				cost: 0.0123,
 				created_at: "2026-09-05T00:00:01Z",
 			},
-			{ role: "assistant", content: "", error: "upstream_error:boom", created_at: "2026-09-05T00:00:02Z" },
+			{ role: "assistant", content: "", error: "boom", error_code: "upstream_error", created_at: "2026-09-05T00:00:02Z" },
 		]);
 		expect(turns).toHaveLength(3);
 		expect(turns[0]).toMatchObject({ role: "user", content: "what did we spend?" });
