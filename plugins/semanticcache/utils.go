@@ -352,6 +352,8 @@ func isResponsesToolCallItem(t schemas.ResponsesMessageType) bool {
 		schemas.ResponsesMessageTypeCustomToolCall,
 		schemas.ResponsesMessageTypeComputerCall,
 		schemas.ResponsesMessageTypeLocalShellCall,
+		schemas.ResponsesMessageTypeShellCall,
+		schemas.ResponsesMessageTypeApplyPatchCall,
 		schemas.ResponsesMessageTypeMCPCall,
 		schemas.ResponsesMessageTypeMCPApprovalRequest:
 		return true
@@ -1049,6 +1051,9 @@ func (plugin *Plugin) extractSpeechParametersToMetadata(params *schemas.SpeechPa
 func (plugin *Plugin) extractEmbeddingParametersToMetadata(params *schemas.EmbeddingParameters, metadata map[string]interface{}) {
 	putIfSet(metadata, "encoding_format", params.EncodingFormat)
 	putIfSet(metadata, "dimensions", params.Dimensions)
+	putIfSet(metadata, "task_type", params.TaskType)
+	putIfSet(metadata, "title", params.Title)
+	putIfSet(metadata, "auto_truncate", params.AutoTruncate)
 	if len(params.ExtraParams) > 0 {
 		maps.Copy(metadata, params.ExtraParams)
 	}

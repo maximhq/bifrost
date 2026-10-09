@@ -575,11 +575,18 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	// > 0, so a zero stamped here would survive the merge and turn "not
 	// recorded" into a false zero on the span.
 	billed := err != nil && err.ExtraFields.BilledUsage != nil
+	// The billed usage carries the provider-reported usage.cost. When the
+	// provider is configured with ignore_provider_cost, keep it off the span so
+	// only Bifrost's own pricing below can set the cost attributes.
+	dropProviderCost := billed && t.pricingManager.IsProviderCostIgnored(err.ExtraFields.Provider)
 	for k, v := range respAttrs {
 		if billed && (k == schemas.AttrInputTokens || k == schemas.AttrOutputTokens || k == schemas.AttrTotalTokens) {
 			if n, ok := v.(int); ok && n == 0 {
 				continue
 			}
+		}
+		if dropProviderCost && (k == schemas.AttrUsageCost || strings.HasPrefix(k, "bifrost.cost.")) {
+			continue
 		}
 		if k == schemas.AttrFinishReasons {
 			// Spec: gen_ai.response.finish_reasons (string[]) belongs on the GenAI (llm.call) span.
@@ -665,8 +672,9 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 		)
 		// When the catalog cannot price the model, fall back to the cost the
 		// provider itself reported (deep-copied into BilledUsage by
-		// attachBilledUsageFromContext) rather than discarding it.
-		if cost == 0 && ef.BilledUsage.Cost != nil {
+		// attachBilledUsageFromContext) rather than discarding it, unless the
+		// provider is configured with ignore_provider_cost.
+		if cost == 0 && ef.BilledUsage.Cost != nil && !t.pricingManager.IsProviderCostIgnored(ef.Provider) {
 			cost = ef.BilledUsage.Cost.TotalCost
 		}
 		// Guarded write: a resp == nil failure emitted no cost attribute before
@@ -1021,10 +1029,17 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 	accumCtx.SetValue(schemas.BifrostContextKeyAccumulatorID, traceID)
 	accumCtx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, isFinalChunk)
 
-	// Forward relevant context values to the new context
+	// Forward everything PricingLookupScopesFromContext reads, so the streamed
+	// total is priced with the same scopes as the request's cost breakdown. The
+	// grant carries the user; the deprecated key covers contexts built without one.
 	if ctx != nil {
+		if g := ctx.Grant(); g != nil {
+			accumCtx.SetGrant(g)
+		}
 		accumCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, ctx.Value(schemas.BifrostContextKeySelectedKeyID))
 		accumCtx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID))
+		accumCtx.SetValue(schemas.BifrostContextKeyUserID, ctx.Value(schemas.BifrostContextKeyUserID))
+		accumCtx.SetValue(schemas.BifrostContextKeyRequestStartTime, ctx.Value(schemas.BifrostContextKeyRequestStartTime))
 	}
 
 	processedResp, processErr := t.accumulator.ProcessStreamingResponse(accumCtx, result, err)
@@ -1078,7 +1093,17 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 		accResult.FinishReason = processedResp.Data.FinishReason
 		accResult.RawResponse = processedResp.Data.RawResponse
 
-		if (accResult.Cost == nil || *accResult.Cost == 0.0) && accResult.TokenUsage != nil && accResult.TokenUsage.Cost != nil {
+		// Fall back to the provider-reported cost when the catalog could not price
+		// the stream, unless the provider is configured with ignore_provider_cost.
+		// Key the check on the routed provider, as pricing does.
+		provider := processedResp.Provider
+		if result != nil {
+			if ef := result.GetExtraFields(); ef != nil && ef.RoutingInfo.Provider != "" {
+				provider = ef.RoutingInfo.Provider
+			}
+		}
+		if (accResult.Cost == nil || *accResult.Cost == 0.0) && accResult.TokenUsage != nil && accResult.TokenUsage.Cost != nil &&
+			!t.pricingManager.IsProviderCostIgnored(provider) {
 			accResult.Cost = &accResult.TokenUsage.Cost.TotalCost
 		}
 	}

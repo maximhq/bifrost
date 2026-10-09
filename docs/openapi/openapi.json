@@ -102372,6 +102372,15 @@
                   "standard",
                   "pro"
                 ]
+              },
+              "summary": {
+                "type": "string",
+                "description": "OpenAI reasoning summary, sent as reasoning.summary when the chat request is served through the Responses API; other providers drop it. Not accepted on the /openai integration routes, where it must go under extra_params with x-bf-passthrough-extra-params.",
+                "enum": [
+                  "auto",
+                  "concise",
+                  "detailed"
+                ]
               }
             }
           },
@@ -121035,6 +121044,14 @@
             "type": "number",
             "minimum": 0
           },
+          "input_cost_per_token_above_100k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_token_above_100k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
           "input_cost_per_token_above_200k_tokens": {
             "type": "number",
             "minimum": 0
@@ -121108,6 +121125,18 @@
             "minimum": 0
           },
           "cache_creation_input_token_cost_above_1hr_above_200k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_above_100k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_read_input_token_cost_above_100k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_above_1hr_above_100k_tokens": {
             "type": "number",
             "minimum": 0
           },
@@ -125262,7 +125291,8 @@
             "type": "number",
             "exclusiveMinimum": 0,
             "maximum": 1,
-            "default": 0.8
+            "default": 0.5,
+            "description": "Minimum similarity for semantic log search, in 0..1 as (1 + cosine) / 2:\n0.5 is cosine 0 and 1 is cosine 1. The mapping holds for cosine-scored\nindexes only. A Pinecone score is read as cosine without checking the\nindex metric, so a Pinecone index must use the cosine metric.\n"
           },
           "semantic_search_limit": {
             "type": "integer",
@@ -125406,8 +125436,8 @@
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "default": 0.8,
-            "description": "Zero means \"use the default\". ValidateConfigInput resolves an explicit\nzero before validating, so the write is accepted; the resolved value on\nWarpConfig keeps the positive bound.\n"
+            "default": 0.5,
+            "description": "Minimum similarity for semantic log search, in 0..1 as (1 + cosine) / 2:\n0.5 is cosine 0 and 1 is cosine 1. The mapping holds for cosine-scored\nindexes only. A Pinecone score is read as cosine without checking the\nindex metric, so a Pinecone index must use the cosine metric.\nZero means \"use the default\". ValidateConfigInput resolves an explicit\nzero before validating, so the write is accepted; the resolved value on\nWarpConfig keeps the positive bound.\n"
           },
           "semantic_search_limit": {
             "type": "integer",
@@ -125651,6 +125681,9 @@
                 "enum": [
                   "upstream_error",
                   "access_denied",
+                  "budget_exceeded",
+                  "rate_limited",
+                  "model_blocked",
                   "max_iterations",
                   "timeout",
                   "cancelled"
@@ -125810,6 +125843,10 @@
           },
           "error": {
             "type": "string"
+          },
+          "error_code": {
+            "type": "string",
+            "description": "The failed turn's error code, as on the chat error frame (budget_exceeded, access_denied, ...). Absent on turns filed before codes were kept."
           },
           "finish_reason": {
             "type": "string",

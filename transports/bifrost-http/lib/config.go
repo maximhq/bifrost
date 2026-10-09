@@ -91,6 +91,8 @@ type HandlerStore interface {
 	ShouldAllowPerRequestRawOverride() bool
 	// ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header
 	ShouldAllowDirectKeys() bool
+	// IsProviderConfigured reports whether provider has a configuration on this gateway
+	IsProviderConfigured(provider schemas.ModelProvider) bool
 	// GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
 	// redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
 	// if not configured (falls back to dynamic Host-header-based URL).
@@ -174,8 +176,9 @@ type ServerConfig struct {
 	// variable overrides the local bind port without changing what cards
 	// advertise. Deploy-time only: all values are read at startup and gRPC stays
 	// disabled while the domain or advertised port is unset.
-	A2AGRPCBaseDomain string `json:"a2a_grpc_base_domain,omitempty"`
-	A2AGRPCPort       int    `json:"a2a_grpc_port,omitempty"`
+	A2AGRPCBaseDomain            string `json:"a2a_grpc_base_domain,omitempty"`
+	A2AGRPCPort                  int    `json:"a2a_grpc_port,omitempty"`
+	A2AAllowPrivatePushCallbacks bool   `json:"a2a_allow_private_push_callbacks,omitempty"` // test environments only; default false
 }
 
 // ConfigData represents the configuration data for the Bifrost HTTP transport.
@@ -3931,7 +3934,8 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			modelConfigsToAdd, modelConfigsToUpdate,
 			providersToAdd, providersToUpdate,
 			complexityAnalyzerConfigToUpdate,
-			forceFileSync)
+			forceFileSync,
+			declaredBudgetIDs(configData.Governance.Budgets))
 		if err != nil {
 			logger.Fatal("failed to sync governance config: %v", err)
 		}
@@ -4160,6 +4164,8 @@ func fileManagedModelConfigScope(scope string) bool {
 //
 //   - a model config of a scope the file does not manage (fileManagedModelConfigScope), which is kept
 //     itself, so the budgets and rate limit it owns stay with it
+//   - a row declared inline on a team, customer, virtual key or provider config in the file
+//     (markInlineGovernanceLimits)
 //   - whatever the registered GovernanceLimitPruneGuard claims, such as an access profile's rows
 //
 // Resolved before the prune transaction opens, since the guard reads through the store's own
@@ -4180,6 +4186,7 @@ func governanceLimitsToKeep(ctx context.Context, store configstore.ConfigStore, 
 			rateLimits[*mc.RateLimitID] = true
 		}
 	}
+	markInlineGovernanceLimits(configData.Governance, budgets, rateLimits)
 
 	var budgetCandidates, rateLimitCandidates []string
 	if configData.governanceSectionPresent("budgets") {
@@ -4228,6 +4235,44 @@ func governanceLimitsToKeep(ctx context.Context, store configstore.ConfigStore, 
 	maps.Copy(budgets, guardedBudgets)
 	maps.Copy(rateLimits, guardedRateLimits)
 	return budgets, rateLimits
+}
+
+// markInlineGovernanceLimits adds to budgets and rateLimits the ids config.json declares inline on its
+// teams, customers, virtual keys and their provider configs. Their owner's save writes those rows, and
+// they are never listed under governance.budgets or governance.rate_limits, so a prune keyed on those
+// sections alone deletes them, leaving the owner unfunded on every other boot.
+func markInlineGovernanceLimits(governance *configstore.GovernanceConfig, budgets, rateLimits map[string]bool) {
+	if governance == nil {
+		return
+	}
+	markBudgets := func(rows []configstoreTables.TableBudget) {
+		for _, budget := range rows {
+			if budget.ID != "" {
+				budgets[budget.ID] = true
+			}
+		}
+	}
+	markRateLimit := func(rateLimit *configstoreTables.TableRateLimit) {
+		if rateLimit != nil && rateLimit.ID != "" {
+			rateLimits[rateLimit.ID] = true
+		}
+	}
+	for _, team := range governance.Teams {
+		markBudgets(team.Budgets)
+		markRateLimit(team.RateLimit)
+	}
+	for _, customer := range governance.Customers {
+		markBudgets(customer.Budgets)
+		markRateLimit(customer.RateLimit)
+	}
+	for _, vk := range governance.VirtualKeys {
+		markBudgets(vk.Budgets)
+		markRateLimit(vk.RateLimit)
+		for _, pc := range vk.ProviderConfigs {
+			markBudgets(pc.Budgets)
+			markRateLimit(pc.RateLimit)
+		}
+	}
 }
 
 // routingRulePruneCandidates returns the IDs of stored routing rules a present config.json
@@ -4289,6 +4334,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 	protected := resolveProtectedVirtualKeys(ctx, config.ConfigStore,
 		virtualKeyPruneCandidates(config.GovernanceConfig.VirtualKeys, configData))
 	keepBudgets, keepRateLimits := governanceLimitsToKeep(ctx, config.ConfigStore, config.GovernanceConfig, configData)
+	fileBudgetIDs := declaredBudgetIDs(configData.Governance.Budgets)
 	err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		if configData.governanceSectionPresent("virtual_keys") {
 			keep := make(map[string]bool, len(configData.Governance.VirtualKeys))
@@ -4300,7 +4346,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 				// mcp_client_name with MCPClientID==0. Resolve before reconciling
 				// to avoid creating/deleting client-id 0 associations.
 				vk.MCPConfigs = resolveMCPConfigClientIDs(ctx, config.ConfigStore, vk.MCPConfigs, vk.ID)
-				if err := reconcileVirtualKeyAssociations(ctx, config.ConfigStore, tx, vk.ID, vk.ProviderConfigs, vk.MCPConfigs); err != nil {
+				if err := reconcileVirtualKeyAssociations(ctx, config.ConfigStore, tx, vk.ID, vk.Budgets, vk.ProviderConfigs, vk.MCPConfigs, fileBudgetIDs); err != nil {
 					return fmt.Errorf("failed to reconcile associations for virtual key %s: %w", vk.ID, err)
 				}
 			}
@@ -4483,6 +4529,7 @@ func updateGovernanceConfigInStore(
 	providersToUpdate []configstoreTables.TableProvider,
 	complexityAnalyzerConfigToUpdate *configstore.ComplexityAnalyzerConfig,
 	fileDecides bool,
+	fileBudgetIDs map[string]bool,
 ) error {
 	logger.Debug("updating governance config in store with merged items")
 	err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
@@ -4693,6 +4740,9 @@ func updateGovernanceConfigInStore(
 				if governed.limitsUnknown["team:"+team.ID] {
 					team.ConfigHash = ""
 				}
+				// The save writes the inline budgets as associations, which would hand a governed team
+				// budgets of its own beside the profile's.
+				team.Budgets = nil
 			}
 			if err := config.ConfigStore.CreateTeam(ctx, &team, tx); err != nil {
 				return fmt.Errorf("failed to create team %s: %w", team.ID, err)
@@ -4707,6 +4757,8 @@ func updateGovernanceConfigInStore(
 				if governed.limitsUnknown["team:"+team.ID] {
 					team.ConfigHash = ""
 				}
+				// Same as the create above: Save upserts the inline budgets as the team's own.
+				team.Budgets = nil
 			}
 			if err := config.ConfigStore.UpdateTeam(ctx, &team, tx); err != nil {
 				return fmt.Errorf("failed to update team %s: %w", team.ID, err)
@@ -4783,7 +4835,7 @@ func updateGovernanceConfigInStore(
 
 		// Update virtual keys (config.json changed)
 		for _, virtualKey := range virtualKeysToUpdate {
-			if err := reconcileVirtualKeyAssociations(ctx, config.ConfigStore, tx, virtualKey.ID, virtualKey.ProviderConfigs, virtualKey.MCPConfigs); err != nil {
+			if err := reconcileVirtualKeyAssociations(ctx, config.ConfigStore, tx, virtualKey.ID, virtualKey.Budgets, virtualKey.ProviderConfigs, virtualKey.MCPConfigs, fileBudgetIDs); err != nil {
 				return fmt.Errorf("failed to reconcile associations for virtual key %s: %w", virtualKey.ID, err)
 			}
 			if err := config.ConfigStore.UpdateVirtualKey(ctx, &virtualKey, tx); err != nil {
@@ -6230,13 +6282,20 @@ func resolveMCPConfigClientIDs(
 // - Configs in both file and DB → update from file
 // - Configs only in file → create new
 // - Configs only in DB → DELETE (file is source of truth, extra configs are removed)
+//
+// The budgets the file declares inline on the key and on each provider config it already has are
+// reconciled too (deleteUndeclaredBudgets, upsertInlineBudgets): the saves below write neither, so
+// without it an edited, added or dropped inline budget never reached the store. fileBudgetIDs are the
+// ids governance.budgets declares, which an owner may also hold and which are not stale.
 func reconcileVirtualKeyAssociations(
 	ctx context.Context,
 	store configstore.ConfigStore,
 	tx *gorm.DB,
 	vkID string,
+	newBudgets []configstoreTables.TableBudget,
 	newProviderConfigs []configstoreTables.TableVirtualKeyProviderConfig,
 	newMCPConfigs []configstoreTables.TableVirtualKeyMCPConfig,
+	fileBudgetIDs map[string]bool,
 ) error {
 	// Reconcile ProviderConfigs
 	existingProviderConfigs, err := store.GetVirtualKeyProviderConfigs(ctx, vkID)
@@ -6248,6 +6307,38 @@ func reconcileVirtualKeyAssociations(
 	existingByProvider := make(map[string]configstoreTables.TableVirtualKeyProviderConfig)
 	for _, pc := range existingProviderConfigs {
 		existingByProvider[pc.Provider] = pc
+	}
+
+	// Inline budgets go in two passes: every owner's undeclared budgets are deleted before any declared
+	// one is written. A budget the file moved between the key and one of its provider configs is then
+	// deleted by the owner that dropped it and created fresh under the one that declares it, whichever
+	// of the two is visited first.
+	heldBudgets, err := store.GetVirtualKeyBudgets(ctx, vkID, tx)
+	if err != nil {
+		return fmt.Errorf("failed to get budgets of virtual key %s: %w", vkID, err)
+	}
+	if err := deleteUndeclaredBudgets(ctx, store, tx, heldBudgets, newBudgets, fileBudgetIDs); err != nil {
+		return fmt.Errorf("failed to delete budgets of virtual key %s: %w", vkID, err)
+	}
+	declaredByProvider := make(map[string][]configstoreTables.TableBudget, len(newProviderConfigs))
+	for _, newPC := range newProviderConfigs {
+		declaredByProvider[newPC.Provider] = newPC.Budgets
+	}
+	// A provider config the file drops is covered too: deleting it later would take the budgets it
+	// holds with it, after the key had written one of them.
+	for _, existing := range existingProviderConfigs {
+		heldBudgets, err := store.GetVirtualKeyProviderConfigBudgets(ctx, existing.ID, tx)
+		if err != nil {
+			return fmt.Errorf("failed to get budgets of provider config for %s: %w", existing.Provider, err)
+		}
+		if err := deleteUndeclaredBudgets(ctx, store, tx, heldBudgets, declaredByProvider[existing.Provider], fileBudgetIDs); err != nil {
+			return fmt.Errorf("failed to delete budgets of provider config for %s: %w", existing.Provider, err)
+		}
+	}
+	if err := upsertInlineBudgets(ctx, store, tx, newBudgets, func(budget *configstoreTables.TableBudget) {
+		budget.VirtualKeyID = &vkID
+	}); err != nil {
+		return fmt.Errorf("failed to write budgets of virtual key %s: %w", vkID, err)
 	}
 
 	// Process provider configs from config.json
@@ -6265,6 +6356,12 @@ func reconcileVirtualKeyAssociations(
 			existing.Keys = newPC.Keys
 			if err := store.UpdateVirtualKeyProviderConfig(ctx, &existing, tx); err != nil {
 				return fmt.Errorf("failed to update provider config for %s: %w", newPC.Provider, err)
+			}
+			providerConfigID := existing.ID
+			if err := upsertInlineBudgets(ctx, store, tx, newPC.Budgets, func(budget *configstoreTables.TableBudget) {
+				budget.ProviderConfigID = &providerConfigID
+			}); err != nil {
+				return fmt.Errorf("failed to write budgets of provider config for %s: %w", newPC.Provider, err)
 			}
 		} else {
 			// Create new provider config from file
@@ -6324,6 +6421,86 @@ func reconcileVirtualKeyAssociations(
 	}
 
 	return nil
+}
+
+// deleteUndeclaredBudgets deletes each budget in held - what one owner, a virtual key or one of its
+// provider configs, holds directly today (GetVirtualKeyBudgets, GetVirtualKeyProviderConfigBudgets) -
+// that config.json no longer declares on it, inline or in governance.budgets (fileBudgetIDs). A row a
+// model config has taken over is not in held, so it is never deleted here.
+func deleteUndeclaredBudgets(
+	ctx context.Context,
+	store configstore.ConfigStore,
+	tx *gorm.DB,
+	held []configstoreTables.TableBudget,
+	declared []configstoreTables.TableBudget,
+	fileBudgetIDs map[string]bool,
+) error {
+	declaredIDs := declaredBudgetIDs(declared)
+	for _, budget := range held {
+		if declaredIDs[budget.ID] || fileBudgetIDs[budget.ID] {
+			continue
+		}
+		if err := store.DeleteBudget(ctx, budget.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			return fmt.Errorf("failed to delete budget %s: %w", budget.ID, err)
+		}
+	}
+	return nil
+}
+
+// upsertInlineBudgets writes the budgets config.json declares inline on one owner, a virtual key or
+// one of its provider configs: a declared id that exists is updated, and a new one is created under
+// the owner through setOwner.
+//
+// Only the configuration is the file's. UpdateBudget carries usage, the last reset, an active override
+// and a model config's ownership forward, so a source_of_truth config.json restart, which comes through
+// here for every key on every boot, applies an edited max_limit without resetting spend.
+func upsertInlineBudgets(
+	ctx context.Context,
+	store configstore.ConfigStore,
+	tx *gorm.DB,
+	declared []configstoreTables.TableBudget,
+	setOwner func(*configstoreTables.TableBudget),
+) error {
+	for i := range declared {
+		budget := declared[i]
+		if budget.ID == "" {
+			continue
+		}
+		existing, err := store.GetBudget(ctx, budget.ID, tx)
+		if errors.Is(err, configstore.ErrNotFound) {
+			setOwner(&budget)
+			if err := store.CreateBudget(ctx, &budget, tx); err != nil {
+				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
+			}
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("failed to get budget %s: %w", budget.ID, err)
+		}
+		// UpdateBudget saves the whole row it is given, so the ownership and creation time the stored
+		// row has are carried onto the file's.
+		budget.TeamID = existing.TeamID
+		budget.CustomerID = existing.CustomerID
+		budget.VirtualKeyID = existing.VirtualKeyID
+		budget.ProviderConfigID = existing.ProviderConfigID
+		budget.ModelConfigID = existing.ModelConfigID
+		budget.CreatedAt = existing.CreatedAt
+		if err := store.UpdateBudget(ctx, &budget, tx); err != nil {
+			return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
+		}
+	}
+	return nil
+}
+
+// declaredBudgetIDs is the set of non-empty ids in budgets.
+func declaredBudgetIDs(budgets []configstoreTables.TableBudget) map[string]bool {
+	ids := make(map[string]bool, len(budgets))
+	for _, budget := range budgets {
+		if budget.ID != "" {
+			ids[budget.ID] = true
+		}
+	}
+	return ids
 }
 
 // GetRawConfigString returns the raw configuration string.
@@ -6424,6 +6601,14 @@ func (c *Config) ShouldAllowPerRequestRawOverride() bool {
 // ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header.
 func (c *Config) ShouldAllowDirectKeys() bool {
 	return c.ClientConfig.AllowDirectKeys
+}
+
+// IsProviderConfigured reports whether provider has a configuration on this gateway.
+func (c *Config) IsProviderConfigured(provider schemas.ModelProvider) bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	_, exists := c.Providers[provider]
+	return exists
 }
 
 // GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the

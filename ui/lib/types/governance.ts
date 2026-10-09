@@ -183,6 +183,7 @@ export interface VirtualKeyMCPConfig {
 		connection_type: string;
 		connection_string?: string;
 		tools_to_execute: string[];
+		disabled?: boolean;
 		created_at: string;
 		updated_at: string;
 	};
@@ -552,6 +553,9 @@ export interface PricingOverridePatch {
 	input_cost_per_image_above_128k_tokens?: number;
 	input_cost_per_video_per_second_above_128k_tokens?: number;
 	input_cost_per_audio_per_second_above_128k_tokens?: number;
+	// 100k tier
+	input_cost_per_token_above_100k_tokens?: number;
+	output_cost_per_token_above_100k_tokens?: number;
 	// 200k tier
 	input_cost_per_token_above_200k_tokens?: number;
 	input_cost_per_token_above_200k_tokens_priority?: number;
@@ -574,6 +578,9 @@ export interface PricingOverridePatch {
 	cache_read_input_token_cost_above_200k_tokens_priority?: number;
 	cache_creation_input_token_cost_above_1hr?: number;
 	cache_creation_input_token_cost_above_1hr_above_200k_tokens?: number;
+	cache_creation_input_token_cost_above_100k_tokens?: number;
+	cache_read_input_token_cost_above_100k_tokens?: number;
+	cache_creation_input_token_cost_above_1hr_above_100k_tokens?: number;
 	cache_creation_input_audio_token_cost?: number;
 	cache_read_input_token_cost_priority?: number;
 	cache_read_input_token_cost_ultrafast?: number;

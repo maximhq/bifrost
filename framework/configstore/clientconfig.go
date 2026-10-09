@@ -570,6 +570,7 @@ type ProviderConfig struct {
 	SendBackRawRequest       bool                              `json:"send_back_raw_request"`                 // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
+	IgnoreProviderCost       bool                              `json:"ignore_provider_cost"`                  // Ignore provider-reported usage.cost and price from Bifrost's catalog
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`                // Prompt-cache breakpoint injection
@@ -591,6 +592,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		SendBackRawRequest:       p.SendBackRawRequest,
 		SendBackRawResponse:      p.SendBackRawResponse,
 		StoreRawRequestResponse:  p.StoreRawRequestResponse,
+		IgnoreProviderCost:       p.IgnoreProviderCost,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
 		PromptCache:              p.PromptCache,
@@ -896,6 +898,11 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash StoreRawRequestResponse
 	if p.StoreRawRequestResponse {
 		hash.Write([]byte("storeRawRequestResponse"))
+	}
+
+	// Hash IgnoreProviderCost
+	if p.IgnoreProviderCost {
+		hash.Write([]byte("ignoreProviderCost"))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil

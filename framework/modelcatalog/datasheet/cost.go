@@ -204,7 +204,7 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 	}
 
 	// If the provider already computed cost, trust it (matches calculateBaseCost).
-	if usage.Cost != nil && usage.Cost.TotalCost > 0 {
+	if s.providerCostUsable(usage.Cost, provider) {
 		return usage.Cost
 	}
 
@@ -327,7 +327,7 @@ func (s *Store) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage
 	// non-nil but zero cost (e.g. a partial cost object on the wire) must fall
 	// through to the catalog rates rather than price the row at zero — matching
 	// CalculateCostForUsage and calculateBaseCost.
-	if usage.Cost != nil && usage.Cost.TotalCost > 0 {
+	if s.providerCostUsable(usage.Cost, provider) {
 		return BatchCostDetails{
 			Cost:             usage.Cost.TotalCost,
 			Priced:           true,
@@ -535,12 +535,12 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		return nil
 	}
 
-	// If provider already computed cost, use it
-	if input.usage != nil && input.usage.Cost != nil && input.usage.Cost.TotalCost > 0 {
+	// If provider already computed cost, use it unless the provider is configured to ignore it
+	if input.usage != nil && s.providerCostUsable(input.usage.Cost, routingInfo.Provider) {
 		return input.usage.Cost
 	}
 	// Image responses carry usage on imageUsage, never on input.usage.
-	if input.imageUsage != nil && input.imageUsage.Cost != nil && input.imageUsage.Cost.TotalCost > 0 {
+	if input.imageUsage != nil && s.providerCostUsable(input.imageUsage.Cost, routingInfo.Provider) {
 		return input.imageUsage.Cost
 	}
 
@@ -789,18 +789,19 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 			// the provider-cost short-circuit in computeCost uses it verbatim; covers task types (3D,
 			// etc.) that have no datasheet rate.
 			input.usage = &schemas.BifrostLLMUsage{Cost: video.Usage.Cost}
-		} else {
-			if video.Seconds != nil {
-				if seconds, err := strconv.Atoi(*video.Seconds); err == nil {
-					input.videoSeconds = &seconds
-				}
-			}
-			// Size and clip count drive the output rate and its multiplier. Neither can
-			// bypass the no-usage guard below on its own: without seconds there is still
-			// nothing to price.
-			input.videoSize = video.Size
-			input.videoCount = len(video.Videos)
 		}
+		// Dimensions are kept even when a provider cost is present, so catalog pricing still
+		// works when that provider's reported cost is ignored.
+		if video.Seconds != nil {
+			if seconds, err := strconv.Atoi(*video.Seconds); err == nil {
+				input.videoSeconds = &seconds
+			}
+		}
+		// Size and clip count drive the output rate and its multiplier. Neither can
+		// bypass the no-usage guard below on its own: without seconds there is still
+		// nothing to price.
+		input.videoSize = video.Size
+		input.videoCount = len(video.Videos)
 
 	case result.OCRResponse != nil:
 		pages := len(result.OCRResponse.Pages)
@@ -1103,6 +1104,8 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 				inputRate = *pricing.InputCostPerTokenAbove200kTokens * batchRatio
 			case promptTokens > TokenTierAbove128K && pricing.InputCostPerTokenAbove128kTokens != nil:
 				inputRate = *pricing.InputCostPerTokenAbove128kTokens * batchRatio
+			case promptTokens > TokenTierAbove100K && pricing.InputCostPerTokenAbove100kTokens != nil:
+				inputRate = *pricing.InputCostPerTokenAbove100kTokens * batchRatio
 			}
 
 			if pricing.CacheReadInputTokenCost != nil {
@@ -1112,6 +1115,8 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 				cacheReadRate = *pricing.CacheReadInputTokenCostAbove272kTokens * batchRatio
 			} else if promptTokens > TokenTierAbove200K && pricing.CacheReadInputTokenCostAbove200kTokens != nil {
 				cacheReadRate = *pricing.CacheReadInputTokenCostAbove200kTokens * batchRatio
+			} else if promptTokens > TokenTierAbove100K && pricing.CacheReadInputTokenCostAbove100kTokens != nil {
+				cacheReadRate = *pricing.CacheReadInputTokenCostAbove100kTokens * batchRatio
 			}
 
 			if pricing.CacheCreationInputTokenCost != nil {
@@ -1121,10 +1126,14 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 				cacheWriteRate = *pricing.CacheCreationInputTokenCostAbove272kTokens * batchRatio
 			} else if promptTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove200kTokens != nil {
 				cacheWriteRate = *pricing.CacheCreationInputTokenCostAbove200kTokens * batchRatio
+			} else if promptTokens > TokenTierAbove100K && pricing.CacheCreationInputTokenCostAbove100kTokens != nil {
+				cacheWriteRate = *pricing.CacheCreationInputTokenCostAbove100kTokens * batchRatio
 			}
 
 			if promptTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens != nil {
 				cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens * batchRatio
+			} else if promptTokens > TokenTierAbove100K && pricing.CacheCreationInputTokenCostAbove1hrAbove100kTokens != nil {
+				cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hrAbove100kTokens * batchRatio
 			} else if pricing.CacheCreationInputTokenCostAbove1hr != nil {
 				cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hr * batchRatio
 			} else {
@@ -1155,6 +1164,8 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 				outputRate = *pricing.OutputCostPerTokenAbove200kTokens * outputBatchRatio
 			case promptTokens > TokenTierAbove128K && pricing.OutputCostPerTokenAbove128kTokens != nil:
 				outputRate = *pricing.OutputCostPerTokenAbove128kTokens * outputBatchRatio
+			case promptTokens > TokenTierAbove100K && pricing.OutputCostPerTokenAbove100kTokens != nil:
+				outputRate = *pricing.OutputCostPerTokenAbove100kTokens * outputBatchRatio
 			}
 		}
 		outputCost = float64(usage.CompletionTokens) * outputRate
@@ -1829,6 +1840,9 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 	if totalTokens > TokenTierAbove128K && pricing.InputCostPerTokenAbove128kTokens != nil {
 		return *pricing.InputCostPerTokenAbove128kTokens
 	}
+	if totalTokens > TokenTierAbove100K && pricing.InputCostPerTokenAbove100kTokens != nil {
+		return *pricing.InputCostPerTokenAbove100kTokens
+	}
 	if tier.isPriority && pricing.InputCostPerTokenPriority != nil {
 		return *pricing.InputCostPerTokenPriority
 	}
@@ -1880,6 +1894,9 @@ func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens 
 	}
 	if totalTokens > TokenTierAbove128K && pricing.OutputCostPerTokenAbove128kTokens != nil {
 		return *pricing.OutputCostPerTokenAbove128kTokens
+	}
+	if totalTokens > TokenTierAbove100K && pricing.OutputCostPerTokenAbove100kTokens != nil {
+		return *pricing.OutputCostPerTokenAbove100kTokens
 	}
 
 	if tier.isPriority && pricing.OutputCostPerTokenPriority != nil {
@@ -1995,6 +2012,9 @@ func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing,
 			return *pricing.CacheReadInputTokenCostAbove200kTokens
 		}
 	}
+	if totalTokens > TokenTierAbove100K && pricing.CacheReadInputTokenCostAbove100kTokens != nil {
+		return *pricing.CacheReadInputTokenCostAbove100kTokens
+	}
 	if tier.isPriority && pricing.CacheReadInputTokenCostPriority != nil {
 		return *pricing.CacheReadInputTokenCostPriority
 	}
@@ -2045,6 +2065,9 @@ func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPric
 	if totalTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove200kTokens != nil {
 		return *pricing.CacheCreationInputTokenCostAbove200kTokens
 	}
+	if totalTokens > TokenTierAbove100K && pricing.CacheCreationInputTokenCostAbove100kTokens != nil {
+		return *pricing.CacheCreationInputTokenCostAbove100kTokens
+	}
 	if pricing.CacheCreationInputTokenCost != nil {
 		return *pricing.CacheCreationInputTokenCost
 	}
@@ -2059,6 +2082,9 @@ func tieredCacheCreationInputAbove1hrTokenRate(pricing *configstoreTables.TableM
 	}
 	if totalTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens != nil {
 		return *pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens
+	}
+	if totalTokens > TokenTierAbove100K && pricing.CacheCreationInputTokenCostAbove1hrAbove100kTokens != nil {
+		return *pricing.CacheCreationInputTokenCostAbove1hrAbove100kTokens
 	}
 	if pricing.CacheCreationInputTokenCostAbove1hr != nil {
 		return *pricing.CacheCreationInputTokenCostAbove1hr

@@ -928,7 +928,7 @@ func TestReloadProvider_FailedRefetchKeepsPreviousCatalog(t *testing.T) {
 
 	server := newReloadProviderServer(catalog, "custom-provider", []schemas.Key{{ID: "key-1"}}, false)
 
-	if _, err := server.ReloadProvider(context.Background(), "custom-provider"); err != nil {
+	if _, err := server.ReloadProvider(context.Background(), "custom-provider", false); err != nil {
 		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
 	}
 
@@ -963,7 +963,7 @@ func TestReloadProvider_PrunesRemovedAndDisabledKeys(t *testing.T) {
 	}
 	server := newReloadProviderServer(catalog, "custom-provider", keys, false)
 
-	if _, err := server.ReloadProvider(context.Background(), "custom-provider"); err != nil {
+	if _, err := server.ReloadProvider(context.Background(), "custom-provider", false); err != nil {
 		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
 	}
 
@@ -990,7 +990,7 @@ func TestReloadProvider_KeylessProviderRetainsSentinelEntry(t *testing.T) {
 
 	server := newReloadProviderServer(catalog, "keyless-provider", nil, true)
 
-	if _, err := server.ReloadProvider(context.Background(), "keyless-provider"); err != nil {
+	if _, err := server.ReloadProvider(context.Background(), "keyless-provider", false); err != nil {
 		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
 	}
 
@@ -1012,7 +1012,7 @@ func TestReloadProvider_NoKeysDropsEverything(t *testing.T) {
 
 	server := newReloadProviderServer(catalog, "custom-provider", nil, false)
 
-	if _, err := server.ReloadProvider(context.Background(), "custom-provider"); err != nil {
+	if _, err := server.ReloadProvider(context.Background(), "custom-provider", false); err != nil {
 		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
 	}
 
@@ -1052,7 +1052,7 @@ func TestReloadProvider_ConcurrentReloadsAndReadsAreRaceFree(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range iterations {
-				if _, err := server.ReloadProvider(context.Background(), "custom-provider"); err != nil {
+				if _, err := server.ReloadProvider(context.Background(), "custom-provider", false); err != nil {
 					t.Errorf("concurrent ReloadProvider returned error: %v", err)
 					return
 				}

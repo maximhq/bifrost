@@ -134,7 +134,12 @@ WarpConfig:
       type: number
       exclusiveMinimum: 0
       maximum: 1
-      default: 0.8
+      default: 0.5
+      description: |
+        Minimum similarity for semantic log search, in 0..1 as (1 + cosine) / 2:
+        0.5 is cosine 0 and 1 is cosine 1. The mapping holds for cosine-scored
+        indexes only. A Pinecone score is read as cosine without checking the
+        index metric, so a Pinecone index must use the cosine metric.
     semantic_search_limit:
       type: integer
       minimum: 1
@@ -282,8 +287,12 @@ WarpConfigInput:
       type: number
       minimum: 0
       maximum: 1
-      default: 0.8
+      default: 0.5
       description: |
+        Minimum similarity for semantic log search, in 0..1 as (1 + cosine) / 2:
+        0.5 is cosine 0 and 1 is cosine 1. The mapping holds for cosine-scored
+        indexes only. A Pinecone score is read as cosine without checking the
+        index metric, so a Pinecone index must use the cosine metric.
         Zero means "use the default". ValidateConfigInput resolves an explicit
         zero before validating, so the write is accepted; the resolved value on
         WarpConfig keeps the positive bound.
@@ -473,6 +482,9 @@ WarpSessionResponse:
           enum:
             - upstream_error
             - access_denied
+            - budget_exceeded
+            - rate_limited
+            - model_blocked
             - max_iterations
             - timeout
             - cancelled
@@ -568,6 +580,9 @@ WarpStoredMessage:
       items:
         $ref: '#/WarpStoredToolCall'
     error: { type: string }
+    error_code:
+      type: string
+      description: The failed turn's error code, as on the chat error frame (budget_exceeded, access_denied, ...). Absent on turns filed before codes were kept.
     finish_reason:
       type: string
       description: '`partial` when the answer was given on the last research step without settling.'

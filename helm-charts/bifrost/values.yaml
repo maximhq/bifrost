@@ -343,6 +343,8 @@ bifrost:
     # Served agent cards advertise <agent-name>.<a2aGrpcBaseDomain>:<a2aGrpcPort>.
     # a2aGrpcBaseDomain: "a2a.example.com"
     # a2aGrpcPort: 9095
+    # Lets A2A push delivery reach loopback/private callback targets. Only for controlled dev/test environments; keep unset in production.
+    # a2aAllowPrivatePushCallbacks: true
 
   # Framework configuration
   framework:
@@ -1784,6 +1786,7 @@ storage:
     #   protocol: "native"    # Options: native, http (default: native)
     #   secure: false         # Enable TLS
     #   dialTimeout: 10000    # Connection dial timeout in milliseconds
+    #   maxQuerySize: 16777216  # ClickHouse max_query_size in bytes; raise it if team-scoped reads fail with "Max query size exceeded"
     #   cluster: ""           # Optional cluster name; runs DDL ON CLUSTER with replicated engines
     # Async writer queue and batch tuning. Omitted fields use Bifrost defaults.
     # writer:
@@ -1795,6 +1798,10 @@ storage:
     # Keep selected payload fields in DB instead of offloading to object storage.
     # Uses log payload DB column names (e.g., input_history, output_message, raw_request, raw_response).
     objectStorageExcludeFields: []
+    # Request types whose logs are never offloaded to object storage (e.g., list_models).
+    # These logs are kept in full in the logs database instead. Hidden logs (content
+    # logging disabled with retainContentInObjectStorage on) are still offloaded.
+    objectStorageExcludeRequestTypes: []
 
     # Object storage for offloading large log payloads (optional)
     # When enabled, request/response payloads are stored in S3/GCS

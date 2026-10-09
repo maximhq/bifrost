@@ -42,7 +42,7 @@ func newTestHybrid(t *testing.T) (*HybridLogStore, LogStore, *objectstore.InMemo
 	require.NoError(t, err)
 
 	objStore := objectstore.NewInMemoryObjectStore()
-	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, nil)
+	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, nil, nil)
 	return hybrid, inner, objStore
 }
 
@@ -146,6 +146,115 @@ func TestHybrid_CreateAndFindByID(t *testing.T) {
 
 	// Content summary should contain input text but the output should be in the payload.
 	assert.Contains(t, found.ContentSummary, "Hello, how are you?")
+}
+
+// error_type, error_code and status_code rankings and filters read the
+// error_details column. Offloaded with the rest of the payload, it was blank
+// on every row, so on a deployment with object storage on every error
+// breakdown came back empty - 697 failed requests and no error types at all.
+// It is small and is not request content, so it stays in the database.
+func TestHybrid_ErrorDetailsStayQueryable(t *testing.T) {
+	hybrid, inner, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	input := "hello"
+	now := time.Now().UTC()
+	entry := &Log{
+		ID: "log-error", Timestamp: now, Provider: "openai", Model: "gpt-4o", Status: "error", Object: "chat.completion",
+		InputHistoryParsed:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
+		OutputMessageParsed: &schemas.ChatMessage{Content: &schemas.ChatMessageContent{ContentStr: strPtr("partial reply")}},
+		ErrorDetailsParsed: &schemas.BifrostError{
+			StatusCode: new(429),
+			Error:      &schemas.ErrorField{Type: new("rate_limit_error"), Code: new("rate_limit_exceeded"), Message: "slow down"},
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForOffload(t, inner, "log-error")
+
+	row, err := inner.FindByID(ctx, "log-error")
+	require.NoError(t, err)
+	assert.Contains(t, row.ErrorDetails, "rate_limit_error", "error_details must stay in the database row")
+	assert.Empty(t, row.OutputMessage, "content is still offloaded")
+
+	start, end := now.Add(-time.Hour), now.Add(time.Hour)
+	rankings, err := hybrid.GetDimensionRankings(ctx, SearchFilters{StartTime: &start, EndTime: &end}, RankingDimensionErrorType)
+	require.NoError(t, err)
+	require.Len(t, rankings.Rankings, 1)
+	assert.Equal(t, "rate_limit_error", rankings.Rankings[0].ID)
+
+	found, err := hybrid.SearchLogs(ctx, SearchFilters{StartTime: &start, EndTime: &end, ErrorTypes: []string{"rate_limit_error"}}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	assert.Len(t, found.Logs, 1)
+}
+
+// With content logging and raw storage on, error_details carries the provider's
+// raw request and response bodies. Keeping error_details in the database for
+// the error breakdowns must not keep those bodies there too: the row keeps the
+// queryable error fields, object storage keeps the bodies, and a read returns
+// both. Listing error_details in object_storage_exclude_fields still keeps it
+// whole in the database, as that setting promises.
+func TestHybrid_ErrorDetailsRawBodiesGoToObjectStorage(t *testing.T) {
+	newEntry := func(id string) *Log {
+		input := "hello"
+		entry := &Log{
+			ID: id, Timestamp: time.Now().UTC(), Provider: "openai", Model: "gpt-4o", Status: "error", Object: "chat.completion",
+			InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
+			ErrorDetailsParsed: &schemas.BifrostError{
+				StatusCode: new(429),
+				Error:      &schemas.ErrorField{Type: new("rate_limit_error"), Message: "slow down"},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RawRequest:  "RAW-REQUEST-BODY",
+					RawResponse: "RAW-RESPONSE-BODY",
+				},
+			},
+		}
+		require.NoError(t, entry.SerializeFields())
+		return entry
+	}
+
+	t.Run("default keeps the bodies out of the row", func(t *testing.T) {
+		hybrid, inner, objStore := newTestHybrid(t)
+		defer hybrid.Close(context.Background())
+		ctx := context.Background()
+
+		entry := newEntry("log-error-raw")
+		require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+		waitForOffload(t, inner, "log-error-raw")
+
+		row, err := inner.FindByID(ctx, "log-error-raw")
+		require.NoError(t, err)
+		assert.Contains(t, row.ErrorDetails, "rate_limit_error", "the queryable error fields stay in the row")
+		assert.NotContains(t, row.ErrorDetails, "RAW-REQUEST-BODY", "the raw request body must leave the row")
+		assert.NotContains(t, row.ErrorDetails, "RAW-RESPONSE-BODY", "the raw response body must leave the row")
+
+		object, err := objStore.Get(ctx, ObjectKey("test", entry.Timestamp, "log-error-raw"))
+		require.NoError(t, err)
+		assert.Contains(t, string(object), "RAW-REQUEST-BODY", "object storage keeps the raw request body")
+		assert.Contains(t, string(object), "RAW-RESPONSE-BODY", "object storage keeps the raw response body")
+
+		found, err := hybrid.FindByID(ctx, "log-error-raw")
+		require.NoError(t, err)
+		require.NotNil(t, found.ErrorDetailsParsed)
+		assert.Equal(t, "RAW-REQUEST-BODY", found.ErrorDetailsParsed.ExtraFields.RawRequest)
+		assert.Equal(t, "RAW-RESPONSE-BODY", found.ErrorDetailsParsed.ExtraFields.RawResponse)
+		assert.Equal(t, "rate_limit_error", *found.ErrorDetailsParsed.Error.Type)
+	})
+
+	t.Run("excluding error_details keeps it whole in the row", func(t *testing.T) {
+		hybrid, inner, _ := newTestHybridWithExclude(t, []string{"error_details"})
+		defer hybrid.Close(context.Background())
+		ctx := context.Background()
+
+		require.NoError(t, hybrid.CreateIfNotExists(ctx, newEntry("log-error-raw-kept")))
+		waitForOffload(t, inner, "log-error-raw-kept")
+
+		row, err := inner.FindByID(ctx, "log-error-raw-kept")
+		require.NoError(t, err)
+		assert.Contains(t, row.ErrorDetails, "RAW-REQUEST-BODY")
+		assert.Contains(t, row.ErrorDetails, "RAW-RESPONSE-BODY")
+	})
 }
 
 // TestHybrid_EmbeddingInputOffloaded pins that embedding_input leaves the DB row and is hydrated from the object.
@@ -1399,7 +1508,7 @@ func newTestHybridWithExclude(t *testing.T, excludeFields []string) (*HybridLogS
 	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "hybrid.db")}, hybridTestLogger{})
 	require.NoError(t, err)
 	objStore := objectstore.NewInMemoryObjectStore()
-	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, excludeFields)
+	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, excludeFields, nil)
 	return hybrid, inner, objStore
 }
 

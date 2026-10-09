@@ -590,6 +590,22 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 		ctx = bifrost.ctx
 	}
 
+	// A direct key is the caller's own credential for one provider. Every provider's poll below
+	// would select it in place of that provider's keys and send it upstream, so a request carrying
+	// one has to name the provider it belongs to.
+	if _, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     schemas.Ptr(400),
+			Error: &schemas.ErrorField{
+				Message: "a request with a direct key must name its provider: listing models from every provider would send the key to each of them",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ListModelsRequest,
+			},
+		}
+	}
+
 	providerKeys, err := bifrost.GetConfiguredProviders()
 	if err != nil {
 		return nil, &schemas.BifrostError{
@@ -5094,14 +5110,16 @@ func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostCont
 		ctx = bifrost.ctx
 	}
 	baseProvider := bifrost.baseProviderType(providerKey)
-	supportedKeys, _, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, requestType, providerKey, model, baseProvider, additionalModels...)
+	supportedKeys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, requestType, providerKey, model, baseProvider, additionalModels...)
 	if err != nil {
 		return schemas.Key{}, err
 	}
 	if len(supportedKeys) == 0 {
 		return schemas.Key{}, nil
 	}
-	if len(supportedKeys) == 1 {
+	// A fixed pool, a pin or a session's key with the rest of the pool behind it, is served by
+	// its first key: the rest only matters to a request that can retry on another key.
+	if len(supportedKeys) == 1 || !canRotate {
 		return supportedKeys[0], nil
 	}
 	return bifrost.keySelector(ctx, supportedKeys, providerKey, model)
@@ -5698,9 +5716,13 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	// What the caller asked for, before any hook rewrites it: the name under which a session
 	// remembers where these requests were served. Reported back with how the request ended.
 	requested := schemas.Route{Provider: provider, Model: model}
+	// Read now: the first fallback clears a direct key from the context.
+	_, directKey := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
 	var served *schemas.Route
 	servedFallback := false
-	defer func() { bifrost.observeSessionOutcome(ctx, requested, served, servedFallback, bifrostErr) }()
+	defer func() {
+		bifrost.observeSessionOutcome(ctx, requested, served, servedFallback, directKey, bifrostErr)
+	}()
 	stampRequestedRoute(ctx, requested)
 
 	// Reset first: bifrost.ctx is shared across every nil-ctx caller.
@@ -5736,6 +5758,8 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	preReqPipeline := bifrost.getPluginPipeline()
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
+	// A key the caller pinned brings the provider that has it to the front of the chain.
+	bifrost.resolveCallerKeyPin(ctx, requested, req)
 	// The session has the last word on the chain the hooks produced.
 	bifrost.resolveSessionRoute(ctx, requested, req)
 	bifrost.endCoreSpan(setupSpan)
@@ -5759,6 +5783,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	bifrost.logger.Debug("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks))
 
 	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
+	primaryHeaders, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
 	if primaryErr != nil {
 		// GetErrorString, not %v on the error itself: BifrostError.String marshals the
 		// whole struct, and ExtraFields.RawRequest/RawResponse carry the outbound provider
@@ -5853,7 +5878,8 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("All %d fallback(s) exhausted; returning primary error (%s)", len(fallbacks), routingErrorSummary(primaryErr)))
-	// All providers failed, return the original error
+	// All providers failed, return the original error, with the provider headers it came with
+	restoreProviderResponseHeaders(ctx, primaryHeaders)
 	return nil, primaryErr
 }
 
@@ -5873,9 +5899,13 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	// What the caller asked for, before any hook rewrites it: the name under which a session
 	// remembers where these requests were served. Reported back with how the request ended.
 	requested := schemas.Route{Provider: provider, Model: model}
+	// Read now: the first fallback clears a direct key from the context.
+	_, directKey := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
 	var served *schemas.Route
 	servedFallback := false
-	defer func() { bifrost.observeSessionOutcome(ctx, requested, served, servedFallback, bifrostErr) }()
+	defer func() {
+		bifrost.observeSessionOutcome(ctx, requested, served, servedFallback, directKey, bifrostErr)
+	}()
 	stampRequestedRoute(ctx, requested)
 
 	ctx.ResetUpstreamLatency()
@@ -5899,6 +5929,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	preReqPipeline := bifrost.getPluginPipeline()
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
+	// A key the caller pinned brings the provider that has it to the front of the chain.
+	bifrost.resolveCallerKeyPin(ctx, requested, req)
 	// The session has the last word on the chain the hooks produced.
 	bifrost.resolveSessionRoute(ctx, requested, req)
 	// "miscellaneous" phase: pre-dispatch glue (field re-read + validation) on no other
@@ -5931,6 +5963,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	}
 
 	primaryResult, primaryErr := bifrost.tryStreamRequest(ctx, req, attemptFirstTokenTimeout(len(fallbacks) > 0))
+	primaryHeaders, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
 	if primaryErr != nil {
 		// GetErrorString, not %v on the error itself: BifrostError.String marshals the
 		// whole struct, and ExtraFields.RawRequest/RawResponse carry the outbound provider
@@ -6036,7 +6069,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	}
 
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("All %d fallback(s) exhausted; returning primary error (%s)", len(fallbacks), routingErrorSummary(primaryErr)))
-	// All providers failed, return the original error
+	// All providers failed, return the original error, with the provider headers it came with
+	restoreProviderResponseHeaders(ctx, primaryHeaders)
 	return nil, primaryErr
 }
 
@@ -6390,6 +6424,24 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
 	bifrost.endCoreSpan(prePipeSpan)
 	if shortCircuit != nil {
+		// A stream's headers are written from the routing info a provider worker records for each
+		// attempt, and a plugin's answer runs on no worker. On a fallback the previous attempt's
+		// record would still stand and the headers would name the provider that failed, so the
+		// answered attempt is recorded here. A primary the plugin answered keeps no record, as before.
+		// Not BuildRoutingInfo: it reads the resolved key alias, which on a fallback still holds the
+		// failed attempt's, and no provider key served this answer. The target is read from preReq,
+		// since a hook that ran before the answering plugin may have moved it.
+		if shortCircuit.Response != nil || shortCircuit.Stream != nil {
+			if fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); fallbackIndex > 0 {
+				answered := schemas.RoutingInfo{Provider: provider, Model: model}
+				if preReq != nil {
+					answered.Provider, answered.Model, _ = preReq.GetRequestFields()
+				}
+				answered.ApplyRequestRouting(ctx)
+				layerFallbackIdentity(ctx, &answered)
+				ctx.SetRoutingInfoSnapshot(answered)
+			}
+		}
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
 			shortCircuit.Response.PopulateExtraFields(req.RequestType, provider, model, model)
@@ -6639,14 +6691,68 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 // is itself dead). executeRequestWithRetries detects this via errors.Is and, when the pool
 // died of account-level failures within the configured retry budget, surfaces it as a
 // synthetic 502 upstream_credentials_exhausted rather than bubbling the raw 401/403 which
-// would falsely suggest the *caller's* Bifrost API key is bad. Any other error from the
-// keyProvider (custom selector failure, etc.) is propagated unchanged.
+// would falsely suggest the *caller's* Bifrost API key is bad. A key the caller brought itself
+// (x-bf-direct-key) keeps the provider's own error, since that key is the caller's. Any other
+// error from the keyProvider (custom selector failure, etc.) is propagated unchanged.
 var errAllKeysDead = errors.New("all configured keys returned permanent per-key errors")
 
 // errAllKeysFiltered is returned by a keyProvider closure when healthy (non-dead) keys exist but
 // the KeyPoolFilter hook suppressed all of them. Unlike errAllKeysDead this is a transient
 // condition (the filter/circuit breaker self-heals), so it surfaces as a 503 rather than a 502.
 var errAllKeysFiltered = errors.New("all eligible keys are temporarily suppressed by the key pool filter")
+
+// pickFromRotatingPool picks a key for one attempt of a request whose key can rotate: a weighted
+// choice among the pool's keys that are neither dead nor already tried this round, through the key
+// pool filter. When that leaves nothing, a new round starts over every live key the filter admits,
+// since a key rate-limited earlier may have quota again, and usedKeyIDs is cleared for it. It
+// returns errAllKeysFiltered when live keys remain but the filter suppressed all of them, and
+// errAllKeysDead when none is live.
+func (bifrost *Bifrost) pickFromRotatingPool(ctx *schemas.BifrostContext, pool []schemas.Key, provider schemas.ModelProvider, model string, usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
+	available := make([]schemas.Key, 0, len(pool))
+	for _, k := range pool {
+		if deadKeyIDs[k.ID] || usedKeyIDs[k.ID] {
+			continue
+		}
+		available = append(available, k)
+	}
+	if bifrost.keyPoolFilter != nil {
+		if filtered, err := bifrost.keyPoolFilter(ctx, provider, model, available); err != nil {
+			bifrost.logger.Warn("key pool filter failed for provider %s, using unfiltered keys: %v", provider, err)
+		} else {
+			available = filtered
+		}
+	}
+	if len(available) == 0 {
+		// No non-dead keys remain in this cycle. If every key has been
+		// marked permanently dead, give up — retrying won't help.
+		// Otherwise reset usedKeyIDs and start a fresh weighted round
+		// across the still-live (non-dead) keys; a previously
+		// rate-limited key may have free quota by now.
+		for _, k := range pool {
+			if !deadKeyIDs[k.ID] {
+				available = append(available, k)
+			}
+		}
+		liveCount := len(available) // non-dead keys before the filter runs
+		if bifrost.keyPoolFilter != nil {
+			if filtered, err := bifrost.keyPoolFilter(ctx, provider, model, available); err != nil {
+				bifrost.logger.Warn("key pool filter failed for provider %s, using unfiltered keys: %v", provider, err)
+			} else {
+				available = filtered
+			}
+		}
+		if len(available) == 0 {
+			if liveCount > 0 {
+				return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysFiltered, provider)
+			}
+			return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysDead, provider)
+		}
+		for id := range usedKeyIDs {
+			delete(usedKeyIDs, id)
+		}
+	}
+	return bifrost.keySelector(ctx, available, provider, model)
+}
 
 // executeRequestWithRetries is a generic function that handles common request processing logic.
 // It consolidates retry logic, backoff calculation, error handling, and key rotation.
@@ -6882,11 +6988,14 @@ func executeRequestWithRetries[T any](
 					// 404, and a region block must come back as the provider sent it.
 					// Otherwise every key died of an account-level failure, and within the
 					// configured budget that collapses into the synthetic 502, since the
-					// raw 401 would falsely blame the caller's own key.
+					// raw 401 would falsely blame the caller's own key. A key the caller
+					// brought (x-bf-direct-key) is the exception: there the provider's
+					// refusal is about the caller's own key, and it stands whatever the budget.
 					if lastModelOrRegionError != nil {
 						return zero, lastModelOrRegionError
 					}
-					if grantedAttempt && bifrostError != nil {
+					_, callerKey := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
+					if (grantedAttempt || callerKey) && bifrostError != nil {
 						return zero, bifrostError
 					}
 					statusCode := 502
@@ -7735,15 +7844,23 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					} else if !canRotate {
 						// Fixed key (explicit ID/name, session stickiness): always
 						// return the same key — *unless* it has been marked permanently
-						// dead this request, in which case surface errAllKeysDead so the
-						// caller emits 502 upstream_credentials_exhausted instead of
-						// burning the remaining retries on the same bad credential.
+						// dead this request. A pin has nothing behind it, so surface
+						// errAllKeysDead and the caller emits 502
+						// upstream_credentials_exhausted instead of burning the remaining
+						// retries on the same bad credential. A session's pool carries the
+						// rest of the eligible keys behind its key, so the request moves to
+						// the same pick a rotating pool makes among them (pickFromRotatingPool),
+						// as one without a session would. The session then binds to the key
+						// that served.
 						fixedKey := supportedKeys[0]
-						keyProvider = func(_, deadKeyIDs map[string]bool) (schemas.Key, error) {
-							if deadKeyIDs[fixedKey.ID] {
-								return schemas.Key{}, errAllKeysDead
+						rest := supportedKeys[1:]
+						provKey := provider.GetProviderKey()
+						mdl := model
+						keyProvider = func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
+							if !deadKeyIDs[fixedKey.ID] {
+								return fixedKey, nil
 							}
-							return fixedKey, nil
+							return bifrost.pickFromRotatingPool(req.Context, rest, provKey, mdl, usedKeyIDs, deadKeyIDs)
 						}
 					} else {
 						// Rotating pool: weighted selection with per-cycle exclusion.
@@ -7752,50 +7869,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						provKey := provider.GetProviderKey()
 						mdl := model
 						keyProvider = func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
-							available := make([]schemas.Key, 0, len(pool))
-							for _, k := range pool {
-								if deadKeyIDs[k.ID] || usedKeyIDs[k.ID] {
-									continue
-								}
-								available = append(available, k)
-							}
-							if bifrost.keyPoolFilter != nil {
-								if filtered, err := bifrost.keyPoolFilter(req.Context, provKey, mdl, available); err != nil {
-									bifrost.logger.Warn("key pool filter failed for provider %s, using unfiltered keys: %v", provKey, err)
-								} else {
-									available = filtered
-								}
-							}
-							if len(available) == 0 {
-								// No non-dead keys remain in this cycle. If every key has been
-								// marked permanently dead, give up — retrying won't help.
-								// Otherwise reset usedKeyIDs and start a fresh weighted round
-								// across the still-live (non-dead) keys; a previously
-								// rate-limited key may have free quota by now.
-								for _, k := range pool {
-									if !deadKeyIDs[k.ID] {
-										available = append(available, k)
-									}
-								}
-								liveCount := len(available) // non-dead keys before the filter runs
-								if bifrost.keyPoolFilter != nil {
-									if filtered, err := bifrost.keyPoolFilter(req.Context, provKey, mdl, available); err != nil {
-										bifrost.logger.Warn("key pool filter failed for provider %s, using unfiltered keys: %v", provKey, err)
-									} else {
-										available = filtered
-									}
-								}
-								if len(available) == 0 {
-									if liveCount > 0 {
-										return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysFiltered, provKey)
-									}
-									return schemas.Key{}, fmt.Errorf("%w: provider %s", errAllKeysDead, provKey)
-								}
-								for id := range usedKeyIDs {
-									delete(usedKeyIDs, id)
-								}
-							}
-							return bifrost.keySelector(req.Context, available, provKey, mdl)
+							return bifrost.pickFromRotatingPool(req.Context, pool, provKey, mdl, usedKeyIDs, deadKeyIDs)
 						}
 					}
 				}
@@ -7879,20 +7953,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// fallback index > 0 ⟺ this attempt is a fallback; Primary comes from the
 				// previous attempt's snapshot (the primary, or the carried-through primary on a
 				// later fallback — clearCtxForFallback keeps BifrostContextKeyRoutingInfo).
-				if fi, _ := req.Context.Value(schemas.BifrostContextKeyFallbackIndex).(int); fi > 0 {
-					attemptRoutingInfo.IsFallback = true
-					if prev, ok := req.Context.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo); ok {
-						if prev.IsFallback && prev.PrimaryProvider != nil {
-							attemptRoutingInfo.PrimaryProvider = prev.PrimaryProvider
-							attemptRoutingInfo.PrimaryModel = prev.PrimaryModel
-						} else if prev.Provider != "" {
-							pp := prev.Provider
-							pm := prev.Model
-							attemptRoutingInfo.PrimaryProvider = &pp
-							attemptRoutingInfo.PrimaryModel = &pm
-						}
-					}
-				}
+				layerFallbackIdentity(req.Context, &attemptRoutingInfo)
 				// Stash for the transport: streams carry RoutingInfo only on chunks, but
 				// response headers must be written before the first chunk arrives. Each
 				// retry overwrites, so the winning attempt's snapshot survives.
@@ -10182,7 +10243,9 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 // canRotate=false is returned for cases where the caller must always use the same key:
 //   - SkipKeySelection (Claude Code OAuth passthrough to Anthropic; empty slice returned)
 //   - Explicit BifrostContextKeyAPIKeyID / APIKeyName (user pinned a specific key)
-//   - Session affinity (the registered policy named a key for the request's session)
+//   - Session affinity (the registered policy named a key for the request's session). The
+//     pool is that key followed by the rest of the eligible keys, which the request moves to
+//     only once the session's key is dead.
 //   - Single-key pool (only one eligible key — rotation is a no-op, KV write skipped)
 //
 // canRotate=true is returned when there are two or more eligible keys and no pinning
@@ -10225,8 +10288,8 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 		keys = batchEnabledKeys
 	}
 
-	// Filter out keys that don't support the model: blacklisted_models wins over models allow list;
-	// if the key has no models list, it supports all models except those blacklisted.
+	// Filter out keys that don't support the model: blacklisted_models wins over the models allow
+	// list, which allows only what it names (["*"] every model, an empty list none).
 	var supportedKeys []schemas.Key
 
 	// Skip model check conditions
@@ -10314,14 +10377,23 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 	}
 
 	// Session affinity: a request that takes part and already has a key here stays on it. The
-	// policy decides what that means; core honors the key it names, for every attempt, as long
-	// as that key is one of the eligible ones. A policy naming anything else is ignored, so a
-	// disabled or model-incompatible key can never reach a request through it.
+	// policy decides what that means; core honors the key it names, for every attempt until the
+	// provider rejects it outright, as long as that key is one of the eligible ones. A policy
+	// naming anything else is ignored, so a disabled or model-incompatible key can never reach a
+	// request through it.
 	if schemas.IsSessionAffinityActive(ctx) {
 		if key, ok := bifrost.sessionAffinity.ResolveKey(ctx, providerKey, model, supportedKeys); ok {
 			for _, eligible := range supportedKeys {
 				if eligible.ID == key.ID {
-					return []schemas.Key{eligible}, false, nil
+					// The rest of the pool rides behind the session's key, for a request whose
+					// key turns out to be dead.
+					pool := []schemas.Key{eligible}
+					for _, other := range supportedKeys {
+						if other.ID != eligible.ID {
+							pool = append(pool, other)
+						}
+					}
+					return pool, false, nil
 				}
 			}
 			bifrost.logger.Warn("session affinity named key %s for provider %s, which is not in the eligible pool; selecting a key normally", key.ID, providerKey)

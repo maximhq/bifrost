@@ -104,8 +104,9 @@ func RecoveryMiddleware(cors *CorsMiddleware) schemas.BifrostHTTPMiddleware {
 	}
 }
 
-// restoreCorrelationHeaders re-sets the x-request-id and x-bifrost-trace-id response
-// headers TracingMiddleware set, after RecoveryMiddleware resets a panicked response.
+// restoreCorrelationHeaders re-sets the x-bifrost-request-id, x-request-id and
+// x-bifrost-trace-id response headers TracingMiddleware set, after RecoveryMiddleware
+// resets a panicked response.
 // It reads them back from the request header and user value Tracing wrote, so nothing
 // is saved up front on the normal path. It is a no-op when Tracing did not run.
 func restoreCorrelationHeaders(ctx *fasthttp.RequestCtx) {
@@ -113,8 +114,10 @@ func restoreCorrelationHeaders(ctx *fasthttp.RequestCtx) {
 	if !ok || exportTraceID == "" {
 		return
 	}
-	ctx.Response.Header.SetBytesV("x-request-id", ctx.Request.Header.Peek("x-request-id"))
-	ctx.Response.Header.Set("x-bifrost-trace-id", exportTraceID)
+	requestID := ctx.Request.Header.Peek("x-request-id")
+	ctx.Response.Header.SetBytesV(lib.HeaderBifrostRequestID, requestID)
+	ctx.Response.Header.SetBytesV(lib.HeaderRequestID, requestID)
+	ctx.Response.Header.Set(lib.HeaderBifrostTraceID, exportTraceID)
 }
 
 // panicSummary describes a recovered panic value without echoing arbitrary content.
@@ -2010,8 +2013,11 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			if headerTraceID == "" {
 				headerTraceID = traceID
 			}
-			ctx.Response.Header.Set("x-request-id", requestID)
-			ctx.Response.Header.Set("x-bifrost-trace-id", headerTraceID)
+			// x-bifrost-request-id is the one to read: a provider that answers with its own
+			// x-request-id replaces the deprecated header, which is kept for compatibility.
+			ctx.Response.Header.Set(lib.HeaderBifrostRequestID, requestID)
+			ctx.Response.Header.Set(lib.HeaderRequestID, requestID)
+			ctx.Response.Header.Set(lib.HeaderBifrostTraceID, headerTraceID)
 			// Store dimensions and session ID at the trace level (not as span
 			// attributes) so connectors like BigQuery can export them without
 			// changing the OTEL/Datadog span payloads.

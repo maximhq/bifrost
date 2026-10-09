@@ -199,6 +199,7 @@ type LogStore interface {
 	FindAgentLogOperation(ctx context.Context, id string) (*AgentLogOperation, error)
 	GetAgentLogStats(ctx context.Context, filter AgentLogHistoryFilter) (*AgentLogStats, error)
 	GetAgentHistogram(ctx context.Context, filter AgentLogHistoryFilter, bucketSizeSeconds int64) (*AgentHistogramResult, error)
+	GetAgentTopAgents(ctx context.Context, filter AgentLogHistoryFilter, limit int) (*AgentTopAgentsResult, error)
 	GetAgentFilterData(ctx context.Context, dimensions []string, limit int, query string) (*AgentFilterData, error)
 	UpdateAgentLog(ctx context.Context, id string, entry any) error
 	// DeleteAgentLogs deletes the identified rows together with every row sharing
@@ -270,7 +271,7 @@ func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (Lo
 			_ = inner.Close(ctx)
 			return nil, fmt.Errorf("failed to ping object store: %w", err)
 		}
-		return newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger, config.ObjectStorageExcludeFields), nil
+		return newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger, config.ObjectStorageExcludeFields, config.ObjectStorageExcludeRequestTypes), nil
 	}
 	return inner, nil
 }

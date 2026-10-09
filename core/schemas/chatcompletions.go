@@ -344,6 +344,7 @@ type ChatReasoning struct {
 	Display   *string `json:"display,omitempty"`    // Anthropic thinking.display: "summarized" | "omitted" (requires model support for adaptive thinking)
 	Type      *string `json:"type,omitempty"`       // Anthropic thinking.type: "between_tools" (no up-front thinking); independent of effort
 	Mode      *string `json:"mode,omitempty"`       // OpenAI reasoning.mode: "standard" | "pro" (Responses API only; routes OpenAI/Azure chat through Responses)
+	Summary   *string `json:"summary,omitempty"`    // OpenAI reasoning.summary: "auto" | "concise" | "detailed" (sent when chat is served by the Responses API)
 }
 
 // ChatPrediction represents predicted output content for the model to reference (OpenAI only).
@@ -439,7 +440,7 @@ type ChatTool struct {
 	// ignored by providers that don't support them. Gating per ProviderFeatures
 	// in core/providers/anthropic/types.go.
 	DeferLoading        *bool                  `json:"defer_loading,omitempty"`         // Anthropic advanced-tool-use: defer loading of tool definition
-	AllowedCallers      []string               `json:"allowed_callers,omitempty"`       // Anthropic advanced-tool-use: which callers can invoke this tool ("direct", "code_execution_20250825", "code_execution_20260120")
+	AllowedCallers      []string               `json:"allowed_callers,omitempty"`       // Which callers can invoke this tool; see ResponsesToolCaller* for the two vendor vocabularies
 	InputExamples       []ChatToolInputExample `json:"input_examples,omitempty"`        // Anthropic tool-examples-2025-10-29: example inputs for the tool
 	EagerInputStreaming *bool                  `json:"eager_input_streaming,omitempty"` // Anthropic fine-grained-tool-streaming-2025-05-14: stream input_json_delta before full args are determined (custom tools only)
 

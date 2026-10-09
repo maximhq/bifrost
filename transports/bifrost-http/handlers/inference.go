@@ -29,18 +29,11 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// forwardProviderHeaders forwards provider response headers to the HTTP response.
-func forwardProviderHeaders(ctx *fasthttp.RequestCtx, headers map[string]string) {
-	for key, value := range headers {
-		ctx.Response.Header.Set(key, value)
-	}
-}
-
 // forwardProviderHeadersFromContext extracts provider response headers from the bifrost context
 // and forwards them to the HTTP response. This ensures error responses also include provider headers.
 func forwardProviderHeadersFromContext(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) {
 	if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-		forwardProviderHeaders(ctx, headers)
+		lib.ForwardProviderResponseHeaders(ctx, headers)
 	}
 }
 
@@ -2199,7 +2192,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 
 	// Forward provider response headers stored in context by streaming handlers
 	if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-		forwardProviderHeaders(ctx, headers)
+		lib.ForwardProviderResponseHeaders(ctx, headers)
 	}
 
 	// Routed-identity headers from the context snapshot — routing is final once

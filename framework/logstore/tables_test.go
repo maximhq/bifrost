@@ -205,6 +205,39 @@ func TestDeserializeFieldsCostBreakdownOpaqueTotal(t *testing.T) {
 	assert.Nil(t, log.CostBreakdown.InputCostDetails)
 }
 
+// TestDeserializeFieldsCostBreakdownOpaqueProviderPayload covers a provider that
+// reported only a total in token_usage.cost: the columns still attribute it to
+// input, but cost_breakdown leaves the split empty so the UI shows only the total.
+func TestDeserializeFieldsCostBreakdownOpaqueProviderPayload(t *testing.T) {
+	total := 1067.0
+	log := &Log{
+		Cost:       &total,
+		InputCost:  total,
+		TokenUsage: `{"prompt_tokens":2000,"completion_tokens":400,"total_tokens":2400,"cost":{"total_cost":1067}}`,
+	}
+	require.NoError(t, log.DeserializeFields())
+	require.NotNil(t, log.CostBreakdown)
+	assert.Zero(t, log.CostBreakdown.InputCost)
+	assert.Zero(t, log.CostBreakdown.OutputCost)
+	assert.InDelta(t, total, log.CostBreakdown.TotalCost, 1e-12)
+	assert.InDelta(t, total, log.InputCost, 1e-12, "column keeps reconciling for SQL aggregates")
+}
+
+// TestDeserializeFieldsCostBreakdownStaleOpaquePayloadAfterReprice covers a row
+// repriced to an input-only cost while token_usage still holds the old opaque
+// provider total: the totals no longer reconcile, so input is shown.
+func TestDeserializeFieldsCostBreakdownStaleOpaquePayloadAfterReprice(t *testing.T) {
+	total := 0.002
+	log := &Log{
+		Cost:       &total,
+		InputCost:  total,
+		TokenUsage: `{"prompt_tokens":2000,"total_tokens":2000,"cost":{"total_cost":1067}}`,
+	}
+	require.NoError(t, log.DeserializeFields())
+	require.NotNil(t, log.CostBreakdown)
+	assert.InDelta(t, total, log.CostBreakdown.InputCost, 1e-12)
+}
+
 // TestDeserializeFieldsCostBreakdownLegacyTotalOnly covers rows written before the
 // split columns existed: only the cost column is set, so the total is attributed
 // to input and the breakdown still reconciles.

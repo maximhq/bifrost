@@ -164,6 +164,10 @@ type AgentPushConfig struct {
 	AgentName string `json:"agent_name"`
 	TaskID    string `json:"task_id"`
 	ConfigID  string `json:"config_id"`
+	// Tenant is the downstream client's logical Agent-interface tenant. It is
+	// preserved for local reads; the selected upstream SDK transport supplies its
+	// own interface tenant independently.
+	Tenant string `json:"tenant,omitempty"`
 	// URL is the downstream client's callback endpoint.
 	URL string `json:"url"`
 	// Token is the downstream client's own notification token, replayed verbatim
@@ -184,6 +188,7 @@ type AgentPushConfigView struct {
 	AgentName string    `json:"agent_name"`
 	TaskID    string    `json:"task_id"`
 	ConfigID  string    `json:"config_id"`
+	Tenant    string    `json:"tenant,omitempty"`
 	URL       string    `json:"url"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -203,6 +208,7 @@ func (c AgentPushConfig) Redacted() AgentPushConfigView {
 		AgentName: c.AgentName,
 		TaskID:    c.TaskID,
 		ConfigID:  c.ConfigID,
+		Tenant:    c.Tenant,
 		URL:       c.URL,
 		CreatedAt: c.CreatedAt,
 		UpdatedAt: c.UpdatedAt,

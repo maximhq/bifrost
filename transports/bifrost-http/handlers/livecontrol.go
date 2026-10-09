@@ -75,17 +75,34 @@ func serveLiveContent(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostConte
 }
 
 // liveContentBody is a recording being sent: closing it releases the upstream response, then the
-// request context.
+// request context. A client that hangs up midway ends the request first, so the upstream stream
+// is abandoned the way a cancelled SSE stream is, instead of being drained to its end for nobody.
 type liveContentBody struct {
 	io.ReadCloser
 	release func()
+	sent    bool // the whole recording was read
+}
+
+func (b *liveContentBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err == io.EOF {
+		b.sent = true
+	}
+	return n, err
 }
 
 func (b *liveContentBody) Close() error {
+	if !b.sent {
+		b.endRequest()
+	}
 	err := b.ReadCloser.Close()
+	b.endRequest()
+	return err
+}
+
+func (b *liveContentBody) endRequest() {
 	if b.release != nil {
 		b.release()
 		b.release = nil
 	}
-	return err
 }

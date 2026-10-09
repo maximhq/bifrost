@@ -1278,6 +1278,96 @@ func TestComputeTextCost_272kTierWithCacheRead(t *testing.T) {
 	assert.InDelta(t, 3.465, cost, 1e-9)
 }
 
+// Claude Haiku 5.5 bills every token category at the higher rate once the
+// prompt exceeds 100k tokens. The row is the datasheet entry as published.
+func TestComputeTextCost_Haiku55Tiered100k(t *testing.T) {
+	var entry Entry
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"provider": "anthropic",
+		"mode": "chat",
+		"input_cost_per_token": 1e-07,
+		"output_cost_per_token": 5e-07,
+		"cache_creation_input_token_cost": 1.25e-07,
+		"cache_creation_input_token_cost_above_1hr": 2e-07,
+		"cache_read_input_token_cost": 1e-08,
+		"input_cost_per_token_batches": 5e-08,
+		"output_cost_per_token_batches": 2.5e-07,
+		"input_cost_per_token_above_100k_tokens": 5e-07,
+		"output_cost_per_token_above_100k_tokens": 2.5e-06,
+		"cache_creation_input_token_cost_above_100k_tokens": 6.25e-07,
+		"cache_creation_input_token_cost_above_1hr_above_100k_tokens": 1e-06,
+		"cache_read_input_token_cost_above_100k_tokens": 5e-08,
+		"input_cost_per_token_batches_above_100k_tokens": 2.5e-07,
+		"output_cost_per_token_batches_above_100k_tokens": 1.25e-06,
+		"inference_geo_us_multiplier": 1.1
+	}`), &entry))
+	pricing := convertEntryToTablePricing("claude-haiku-5-5", entry)
+
+	// 40k cache read, 20k 5m write, 10k 1h write, 2k output; the rest is uncached input.
+	usageFor := func(promptTokens int) *schemas.BifrostLLMUsage {
+		return &schemas.BifrostLLMUsage{
+			PromptTokens:     promptTokens,
+			CompletionTokens: 2_000,
+			TotalTokens:      promptTokens + 2_000,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+				CachedReadTokens:  40_000,
+				CachedWriteTokens: 30_000,
+				CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+					CachedWriteTokens5m: 20_000,
+					CachedWriteTokens1h: 10_000,
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name         string
+		promptTokens int
+		want         float64
+	}{
+		// 30_000*1e-7 + 40_000*1e-8 + 20_000*1.25e-7 + 10_000*2e-7 + 2_000*5e-7
+		{name: "exactly 100k uses base rates", promptTokens: 100_000, want: 0.0089},
+		// 30_001*5e-7 + 40_000*5e-8 + 20_000*6.25e-7 + 10_000*1e-6 + 2_000*2.5e-6
+		{name: "one token over 100k uses above-100k rates", promptTokens: 100_001, want: 0.0445005},
+		// 80_000*5e-7 + 40_000*5e-8 + 20_000*6.25e-7 + 10_000*1e-6 + 2_000*2.5e-6
+		{name: "150k uses above-100k rates", promptTokens: 150_000, want: 0.0695},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.InDelta(t, tt.want, computeTextCostTotal(&pricing, usageFor(tt.promptTokens), serviceTier{}), 1e-12)
+		})
+	}
+
+	t.Run("breakdown above 100k", func(t *testing.T) {
+		cost := computeTextCost(&pricing, usageFor(150_000), serviceTier{})
+		require.NotNil(t, cost)
+		require.NotNil(t, cost.InputCostDetails)
+		assert.InDelta(t, 0.04, cost.InputCostDetails.TextCost, 1e-12)
+		assert.InDelta(t, 0.002, cost.InputCostDetails.CachedReadCost, 1e-12)
+		assert.InDelta(t, 0.0225, cost.InputCostDetails.CachedWriteCost, 1e-12)
+		assert.InDelta(t, 0.005, cost.OutputCost, 1e-12)
+	})
+
+	t.Run("inference_geo us stacks on above-100k rates", func(t *testing.T) {
+		got := computeTextCostTotal(&pricing, usageFor(150_000), serviceTier{inferenceGeoUS: true})
+		assert.InDelta(t, 0.0695*1.1, got, 1e-12)
+	})
+
+	t.Run("batch stacks with above-100k rates", func(t *testing.T) {
+		s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+			makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+		})
+		below := s.CalculateBatchCostDetailsForUsage(usageFor(100_000), schemas.Anthropic, "claude-haiku-5-5", schemas.ChatCompletionRequest, nil)
+		require.True(t, below.Priced)
+		assert.InDelta(t, 0.0089*0.5, below.Cost, 1e-12)
+
+		// Batch ratio 0.5: 80_000*2.5e-7 + 40_000*2.5e-8 + 20_000*3.125e-7 + 10_000*5e-7 + 2_000*1.25e-6
+		above := s.CalculateBatchCostDetailsForUsage(usageFor(150_000), schemas.Anthropic, "claude-haiku-5-5", schemas.ChatCompletionRequest, nil)
+		require.True(t, above.Priced)
+		assert.InDelta(t, 0.03475, above.Cost, 1e-12)
+	})
+}
+
 func TestComputeTextCost_SearchQueryCost(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
 	p.WebSearchCostPerRequest = bifrost.Ptr(0.01) // $0.01 per web search request

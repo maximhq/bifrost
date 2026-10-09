@@ -4,7 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -324,6 +329,48 @@ func TestExecuteRequestWithRetries_PermanentFailureBeyondBudgetKeepsUpstreamErro
 	})
 }
 
+// A key the caller brought (x-bf-direct-key) is the caller's own, so the provider refusing it is
+// the answer whatever max_retries is. Collapsing it into 502 upstream_credentials_exhausted would
+// tell the caller the gateway's keys ran out, and invite a retry with the same bad key. A single
+// configured key, pinned, still collapses within the budget, since that credential is not the
+// caller's.
+func TestExecuteRequestWithRetries_DirectKeyRefusalIsTheCallersError(t *testing.T) {
+	run := func(t *testing.T, retries int, direct bool) (*schemas.BifrostError, int) {
+		t.Helper()
+		ctx := rotationTestContext()
+		if direct {
+			ctx.SetValue(schemas.BifrostContextKeyDirectKey, rotationKeyA)
+		}
+		calls := 0
+		handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+			calls++
+			return "", providerError(401, "invalid_request_error", "invalid_api_key", "Incorrect API key provided")
+		}
+		fixed := func(_, deadKeyIDs map[string]bool) (schemas.Key, error) {
+			if deadKeyIDs[rotationKeyA.ID] {
+				return schemas.Key{}, errAllKeysDead
+			}
+			return rotationKeyA, nil
+		}
+		_, err := executeRequestWithRetries(ctx, createTestConfig(retries, 0, 0), handler, fixed,
+			schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, NewDefaultLogger(schemas.LogLevelError))
+		return err, calls
+	}
+
+	for _, retries := range []int{0, 1, 3} {
+		err, calls := run(t, retries, true)
+		if err == nil || err.StatusCode == nil || *err.StatusCode != 401 || err.ExtraFields.ErrorType == schemas.ErrorTypeProviderCredentialsExhausted {
+			t.Errorf("max_retries %d: want the provider's 401 for the caller's own key, got %v", retries, err)
+		}
+		if calls != 1 {
+			t.Errorf("max_retries %d: %d upstream calls, want 1: there is no other key to reach", retries, calls)
+		}
+	}
+	if err, _ := run(t, 1, false); err == nil || err.StatusCode == nil || *err.StatusCode != 502 || err.ExtraFields.ErrorType != schemas.ErrorTypeProviderCredentialsExhausted {
+		t.Errorf("a pinned configured key within the budget: want 502 upstream_credentials_exhausted, got %v", err)
+	}
+}
+
 // OpenAI reports an exhausted balance as a 429 with code insufficient_quota. That is a
 // billing fact about the account, not a rate limit: the key is dead for the request, the
 // next key is tried without backoff, and the trail says billing, not rate limit.
@@ -618,5 +665,117 @@ func TestExecuteRequestWithRetries_SelectorFailureIsInternal(t *testing.T) {
 	}
 	if got := schemas.ClassifyErrorType(err, schemas.ChatCompletionRequest); got != schemas.ErrorTypeBifrostInternal {
 		t.Errorf("ClassifyErrorType() = %q, want %q", got, schemas.ErrorTypeBifrostInternal)
+	}
+}
+
+// TestExecuteRequestWithRetries_BackoffSkippedOnlyForACredentialSwap pins when a retry waits out
+// its backoff. A key the provider refused outright is swapped for another with no wait: the new
+// credential has nothing to wait for. A rate limit waits even when the key changes, because an
+// account-level limit is shared by every key of the account, and a retry on the same key waits
+// too. The routing trail says which of the two happened.
+//
+// The backoff is an hour, so a retry that waits never runs: the request's deadline ends it during the
+// wait. A retry that skips the wait runs at once and serves. The test reads which of the two
+// happened, not how long anything took, so a slow test worker cannot fail it.
+func TestExecuteRequestWithRetries_BackoffSkippedOnlyForACredentialSwap(t *testing.T) {
+	const backoff = time.Hour
+	rateLimited := func() *schemas.BifrostError {
+		return providerError(429, "rate_limit_error", "rate_limit_exceeded", "Rate limit reached")
+	}
+	refused := func() *schemas.BifrostError {
+		return providerError(401, "invalid_request_error", "invalid_api_key", "Incorrect API key provided")
+	}
+	for _, tc := range []struct {
+		name       string
+		fail       func() *schemas.BifrostError
+		maxRetries int
+		keys       []schemas.Key
+		wantWait   bool
+		wantNote   string
+	}{
+		{"a refused key swapped for another", refused, 0, []schemas.Key{rotationKeyA, rotationKeyB}, false, "rotated key=Key B"},
+		{"a rate-limited key swapped for another", rateLimited, 1, []schemas.Key{rotationKeyA, rotationKeyB}, true, "rotated key=Key B"},
+		{"a rate-limited key retried on itself", rateLimited, 1, []schemas.Key{rotationKeyA}, true, "same key=Key A"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Long enough for an attempt however slow the worker, far too short for the backoff.
+			deadline := 30 * time.Second
+			if tc.wantWait {
+				deadline = time.Second
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(deadline))
+			ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+			calls := 0
+			handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+				calls++
+				if calls == 1 {
+					return "", tc.fail()
+				}
+				return "ok", nil
+			}
+			result, err := executeRequestWithRetries(ctx, createTestConfig(tc.maxRetries, backoff, backoff), handler,
+				poolKeyProvider(tc.keys), schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, NewDefaultLogger(schemas.LogLevelError))
+			message := ""
+			if err != nil && err.Error != nil {
+				message = err.Error.Message
+			}
+			if tc.wantWait && (calls != 1 || !strings.Contains(message, "during retry backoff")) {
+				t.Fatalf("want the retry to wait out its backoff until the deadline ended it, got %d attempt(s), result %q, error %q", calls, result, message)
+			}
+			if !tc.wantWait && (calls != 2 || result != "ok") {
+				t.Fatalf("want the retry to skip the backoff and serve, got %d attempt(s), result %q, error %q", calls, result, message)
+			}
+			found := false
+			for _, entry := range ctx.GetRoutingEngineLogs() {
+				if entry.Engine == schemas.RoutingEngineCore && strings.Contains(entry.Message, tc.wantNote) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("the trail does not record %q: %v", tc.wantNote, ctx.GetRoutingEngineLogs())
+			}
+		})
+	}
+}
+
+// TestKeyPoolFilterSuppressingEveryKeyIs503 pins the answer when the key pool filter admits none of
+// a provider's live keys: 503 no_eligible_keys, which says the keys are held back for now, rather
+// than a credentials error that would blame keys nobody refused. The upstream is never called.
+func TestKeyPoolFilterSuppressingEveryKeyIs503(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, upstream.URL)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	})
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+		KeyPoolFilter: func(_ *schemas.BifrostContext, _ schemas.ModelProvider, _ string, _ []schemas.Key) ([]schemas.Key, error) {
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	_, bifrostErr := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	})
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 503 || bifrostErr.Type == nil || *bifrostErr.Type != "no_eligible_keys" {
+		t.Fatalf("want 503 no_eligible_keys, got %+v", bifrostErr)
+	}
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("the upstream was called %d time(s) with every key held back", n)
 	}
 }

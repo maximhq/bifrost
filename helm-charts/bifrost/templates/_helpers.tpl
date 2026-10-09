@@ -460,6 +460,9 @@ false
 {{- if .Values.bifrost.server.a2aGrpcPort }}
 {{- $_ := set $server "a2a_grpc_port" (.Values.bifrost.server.a2aGrpcPort | int) }}
 {{- end }}
+{{- if .Values.bifrost.server.a2aAllowPrivatePushCallbacks }}
+{{- $_ := set $server "a2a_allow_private_push_callbacks" true }}
+{{- end }}
 {{- if $server }}
 {{- $_ := set $config "server" $server }}
 {{- end }}
@@ -1093,6 +1096,7 @@ false
 {{- with $ch.protocol }}{{- $_ := set $chConfig "protocol" . }}{{- end }}
 {{- if hasKey $ch "secure" }}{{- $_ := set $chConfig "secure" $ch.secure }}{{- end }}
 {{- with $ch.dialTimeout }}{{- $_ := set $chConfig "dial_timeout" (. | int) }}{{- end }}
+{{- with $ch.maxQuerySize }}{{- $_ := set $chConfig "max_query_size" (. | int) }}{{- end }}
 {{- with $ch.cluster }}{{- $_ := set $chConfig "cluster" . }}{{- end }}
 {{- $clickhouseLogsStore := dict "enabled" true "type" "clickhouse" "config" $chConfig }}
 {{- if .Values.storage.logsStore.writer }}
@@ -1178,6 +1182,9 @@ false
 {{- end }}
 {{- if .Values.storage.logsStore.objectStorageExcludeFields }}
 {{- $_ := set (index $config "logs_store") "object_storage_exclude_fields" .Values.storage.logsStore.objectStorageExcludeFields }}
+{{- end }}
+{{- if .Values.storage.logsStore.objectStorageExcludeRequestTypes }}
+{{- $_ := set (index $config "logs_store") "object_storage_exclude_request_types" .Values.storage.logsStore.objectStorageExcludeRequestTypes }}
 {{- end }}
 {{- end }}
 {{- /* Vector Store */ -}}

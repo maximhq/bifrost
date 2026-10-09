@@ -131,7 +131,7 @@ type ServerCallbacks interface {
 	ReloadModelConfig(ctx context.Context, id string) (*tables.TableModelConfig, error)
 	ModelConfigIndexKey(model string, provider *string) string
 	RemoveModelConfig(ctx context.Context, id string) error
-	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
+	ReloadProvider(ctx context.Context, provider schemas.ModelProvider, isNew bool) (*tables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
@@ -1080,8 +1080,11 @@ func (s *BifrostHTTPServer) RemoveModelConfig(ctx context.Context, id string) er
 	return nil
 }
 
-// ReloadProvider reloads persisted provider settings into the live client.
-func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error) {
+// ReloadProvider reloads persisted provider settings into the live client. isNew says whether the
+// write that called it added the provider rather than edited one; the reload is the same either
+// way, and a server that wraps this one can tell an operator's edit apart by it.
+func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas.ModelProvider, isNew bool) (*tables.TableProvider, error) {
+	s.syncIgnoreProviderCost(provider)
 	if s.Config == nil || s.Config.ConfigStore == nil {
 		return nil, fmt.Errorf("config store not found")
 	}
@@ -1185,6 +1188,15 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	return updatedProvider, nil
 }
 
+// syncIgnoreProviderCost pushes the provider's ignore_provider_cost setting into the model catalog.
+func (s *BifrostHTTPServer) syncIgnoreProviderCost(provider schemas.ModelProvider) {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return
+	}
+	pc, err := s.Config.GetProviderConfigRaw(provider)
+	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, err == nil && pc != nil && pc.IgnoreProviderCost)
+}
+
 // RemoveProvider removes a provider from the in-memory store
 func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
 	err := s.Client.RemoveProvider(provider)
@@ -1207,6 +1219,7 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 	}
 	s.Config.ModelCatalog.InvalidateLiveProvider(provider)
 	s.Config.ModelCatalog.RemoveKeyConfigForProvider(provider)
+	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, false)
 
 	return nil
 }
@@ -2600,6 +2613,7 @@ func (s *BifrostHTTPServer) InitializeAgentGateway(ctx context.Context, registra
 	if s.Config.ServerConfig != nil {
 		managerConfig.GRPCBaseDomain = s.Config.ServerConfig.A2AGRPCBaseDomain
 		managerConfig.GRPCPort = s.Config.ServerConfig.A2AGRPCPort
+		managerConfig.AllowPrivatePushCallbacks = s.Config.ServerConfig.A2AAllowPrivatePushCallbacks
 	}
 	if s.Client != nil {
 		managerConfig.PluginPipelineAcquire = func() agent.PluginPipeline {
@@ -3277,10 +3291,15 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	logger.Info("listing all models and adding to model catalog")
 	if s.Config.ModelCatalog != nil {
 		snapshot := make(map[schemas.ModelProvider][]schemas.Key, len(s.Config.Providers))
+		var ignoreProviderCost []schemas.ModelProvider
 		for provider, providerConfig := range s.Config.Providers {
 			snapshot[provider] = providerConfig.Keys
+			if providerConfig.IgnoreProviderCost {
+				ignoreProviderCost = append(ignoreProviderCost, provider)
+			}
 		}
 		s.Config.ModelCatalog.ReplaceKeyConfig(snapshot)
+		s.Config.ModelCatalog.ReplaceIgnoreProviderCost(ignoreProviderCost)
 
 		s.RefreshAllLiveModels(ctx)
 	}

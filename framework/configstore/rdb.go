@@ -751,6 +751,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			SendBackRawRequest:       providerConfig.SendBackRawRequest,
 			SendBackRawResponse:      providerConfig.SendBackRawResponse,
 			StoreRawRequestResponse:  providerConfig.StoreRawRequestResponse,
+			IgnoreProviderCost:       providerConfig.IgnoreProviderCost,
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			OpenAIConfig:             providerConfig.OpenAIConfig,
 			PromptCache:              providerConfig.PromptCache,
@@ -1034,6 +1035,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.SendBackRawRequest = configCopy.SendBackRawRequest
 	dbProvider.SendBackRawResponse = configCopy.SendBackRawResponse
 	dbProvider.StoreRawRequestResponse = configCopy.StoreRawRequestResponse
+	dbProvider.IgnoreProviderCost = configCopy.IgnoreProviderCost
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
 	dbProvider.OpenAIConfig = configCopy.OpenAIConfig
 	dbProvider.PromptCache = configCopy.PromptCache
@@ -1229,6 +1231,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		SendBackRawRequest:       configCopy.SendBackRawRequest,
 		SendBackRawResponse:      configCopy.SendBackRawResponse,
 		StoreRawRequestResponse:  configCopy.StoreRawRequestResponse,
+		IgnoreProviderCost:       configCopy.IgnoreProviderCost,
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
 		OpenAIConfig:             configCopy.OpenAIConfig,
 		PromptCache:              configCopy.PromptCache,
@@ -1409,6 +1412,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			SendBackRawRequest:       dbProvider.SendBackRawRequest,
 			SendBackRawResponse:      dbProvider.SendBackRawResponse,
 			StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
+			IgnoreProviderCost:       dbProvider.IgnoreProviderCost,
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
 			OpenAIConfig:             dbProvider.OpenAIConfig,
 			PromptCache:              dbProvider.PromptCache,
@@ -1443,6 +1447,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		SendBackRawRequest:       dbProvider.SendBackRawRequest,
 		SendBackRawResponse:      dbProvider.SendBackRawResponse,
 		StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
+		IgnoreProviderCost:       dbProvider.IgnoreProviderCost,
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
 		OpenAIConfig:             dbProvider.OpenAIConfig,
 		PromptCache:              dbProvider.PromptCache,
@@ -2925,6 +2930,9 @@ var pricingSyncUpdateColumns = []string{
 	"input_cost_per_video_per_second_above_128k_tokens",
 	"input_cost_per_audio_per_second_above_128k_tokens",
 	"output_cost_per_token_above_128k_tokens",
+	// Costs - 100k Tier
+	"input_cost_per_token_above_100k_tokens",
+	"output_cost_per_token_above_100k_tokens",
 	// Costs - 200k Tier
 	"input_cost_per_token_above_200k_tokens",
 	"input_cost_per_token_above_200k_tokens_priority",
@@ -2947,6 +2955,9 @@ var pricingSyncUpdateColumns = []string{
 	"cache_read_input_token_cost_above_200k_tokens_priority",
 	"cache_creation_input_token_cost_above_1hr",
 	"cache_creation_input_token_cost_above_1hr_above_200k_tokens",
+	"cache_creation_input_token_cost_above_100k_tokens",
+	"cache_read_input_token_cost_above_100k_tokens",
+	"cache_creation_input_token_cost_above_1hr_above_100k_tokens",
 	"cache_creation_input_audio_token_cost",
 	"cache_read_input_token_cost_priority",
 	"cache_read_input_token_cost_ultrafast",
@@ -5668,6 +5679,38 @@ func (s *RDBConfigStore) GetBudget(ctx context.Context, id string, tx ...*gorm.D
 	return &budget, nil
 }
 
+// GetVirtualKeyBudgets returns the budgets a virtual key holds through virtual_key_id, leaving out
+// any a model config has taken over.
+func (s *RDBConfigStore) GetVirtualKeyBudgets(ctx context.Context, virtualKeyID string, tx ...*gorm.DB) ([]tables.TableBudget, error) {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	var budgets []tables.TableBudget
+	if err := txDB.WithContext(ctx).Where("virtual_key_id = ? AND model_config_id IS NULL", virtualKeyID).Find(&budgets).Error; err != nil {
+		return nil, err
+	}
+	return budgets, nil
+}
+
+// GetVirtualKeyProviderConfigBudgets returns the budgets a virtual key provider config holds through
+// provider_config_id, leaving out any a model config has taken over.
+func (s *RDBConfigStore) GetVirtualKeyProviderConfigBudgets(ctx context.Context, providerConfigID uint, tx ...*gorm.DB) ([]tables.TableBudget, error) {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	var budgets []tables.TableBudget
+	if err := txDB.WithContext(ctx).Where("provider_config_id = ? AND model_config_id IS NULL", providerConfigID).Find(&budgets).Error; err != nil {
+		return nil, err
+	}
+	return budgets, nil
+}
+
 // CreateBudget creates a new budget in the database.
 func (s *RDBConfigStore) CreateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
@@ -6054,9 +6097,9 @@ func (s *RDBConfigStore) CreateRoutingRule(ctx context.Context, rule *tables.Tab
 	}
 	if count > 0 {
 		if rule.ScopeID != nil {
-			return fmt.Errorf("routing rule with priority %d already exists for scope '%s' with scopeID '%v'", rule.Priority, rule.Scope, rule.ScopeID)
+			return fmt.Errorf("routing rule with priority %d %w for scope '%s' with scope ID '%s'", rule.Priority, ErrRoutingRulePriorityTaken, rule.Scope, *rule.ScopeID)
 		}
-		return fmt.Errorf("routing rule with priority %d already exists for scope '%s'", rule.Priority, rule.Scope)
+		return fmt.Errorf("routing rule with priority %d %w for scope '%s'", rule.Priority, ErrRoutingRulePriorityTaken, rule.Scope)
 	}
 
 	return s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -6112,9 +6155,9 @@ func (s *RDBConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.Tab
 		}
 		if count > 0 {
 			if rule.ScopeID != nil {
-				return fmt.Errorf("routing rule with priority %d already exists for scope '%s' with scopeID '%v'", rule.Priority, rule.Scope, rule.ScopeID)
+				return fmt.Errorf("routing rule with priority %d %w for scope '%s' with scope ID '%s'", rule.Priority, ErrRoutingRulePriorityTaken, rule.Scope, *rule.ScopeID)
 			}
-			return fmt.Errorf("routing rule with priority %d already exists for scope '%s'", rule.Priority, rule.Scope)
+			return fmt.Errorf("routing rule with priority %d %w for scope '%s'", rule.Priority, ErrRoutingRulePriorityTaken, rule.Scope)
 		}
 
 		targets := rule.Targets
@@ -6473,7 +6516,7 @@ func (s *RDBConfigStore) GetProviderGovernanceModelConfigs(ctx context.Context) 
 
 // GetModelConfigsPaginated retrieves model configs with pagination, filtering, and search support.
 func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error) {
-	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableModelConfig{})
+	baseQuery := s.ScopedDB(ctx).Model(&tables.TableModelConfig{})
 
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"

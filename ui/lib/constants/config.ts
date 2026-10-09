@@ -204,6 +204,7 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"video_delete",
 		"video_list",
 		"video_remix",
+		"live",
 	],
 	anthropic: [
 		"list_models",
