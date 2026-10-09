@@ -3670,7 +3670,7 @@
         },
         "object_storage_exclude_fields": {
           "type": "array",
-          "description": "LLM log payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored. MCP logs always offload the full log and keep dashboard/table fields plus a 200-character input preview in the database.",
+          "description": "LLM log payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored. error_details always remains in the database (except on content-hidden logs), since the error type, error code and status code breakdowns query it; any raw provider bodies inside it are offloaded unless error_details is listed here. MCP logs always offload the full log and keep dashboard/table fields plus a 200-character input preview in the database.",
           "items": {
             "type": "string"
           }
