@@ -147562,6 +147562,116 @@
               ]
             }
           }
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna /v1/chat/completions text and tool calls stay in one choice - responses-chat-one-choice - responses-chat-reasoning-index - #8090",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Chat->Responses conversion actually fired - #8090', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect((j.extra_fields || {}).converted_request_type, 'requires a Responses-only model so the conversion is exercised').to.eql('responses');",
+                  "  var raw = (j.extra_fields || {}).raw_response;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw && raw.output, 'raw upstream output is required to prove the mixed text/tool-call trigger').to.be.an('array');",
+                  "  var hasText = false, hasCall = false;",
+                  "  for (var i = 0; i < raw.output.length; i++) {",
+                  "    var item = raw.output[i];",
+                  "    if (item.type === 'function_call') { hasCall = true; }",
+                  "    if (item.type === 'message') {",
+                  "      for (var k = 0; k < (item.content || []).length; k++) {",
+                  "        if (item.content[k].type === 'output_text' && item.content[k].text) { hasText = true; }",
+                  "      }",
+                  "    }",
+                  "  }",
+                  "  pm.expect(hasText && hasCall, 'upstream must emit both text and a function call; this row cannot prove the conversion if the model ignores the requested preamble').to.eql(true);",
+                  "});",
+                  "pm.test('one assistant turn carries both text and indexed tool calls - #8090', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices, 'text and function_call output items must not become separate Chat choices').to.be.an('array').with.lengthOf(1);",
+                  "  var choice = j.choices[0];",
+                  "  pm.expect(choice.message.content, 'the pre-tool assistant text was lost').to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(choice.message.tool_calls, 'the tool call was lost from choices[0]').to.be.an('array').that.is.not.empty;",
+                  "  for (var i = 0; i < choice.message.tool_calls.length; i++) {",
+                  "    pm.expect(choice.message.tool_calls[i].index, 'tool calls must have sequential indexes').to.eql(i);",
+                  "  }",
+                  "  pm.expect(choice.finish_reason).to.eql('tool_calls');",
+                  "});",
+                  "pm.test('returned reasoning details have sequential indexes - #8090', function () {",
+                  "  var j = pm.response.json();",
+                  "  var raw = (j.extra_fields || {}).raw_response;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw && Array.isArray(raw.output), 'raw upstream output is required to prove separated reasoning groups').to.eql(true);",
+                  "  var pending = 0, groups = 0, expectedDetails = 0, pendingCalls = false;",
+                  "  function attachGroup() {",
+                  "    if (pending > 0) { groups++; expectedDetails += pending; pending = 0; }",
+                  "  }",
+                  "  for (var k = 0; k < raw.output.length; k++) {",
+                  "    var item = raw.output[k];",
+                  "    pm.expect(['reasoning', 'message', 'function_call'].indexOf(item.type) >= 0, 'requires assistant text/tool output with reasoning').to.eql(true);",
+                  "    if (item.type === 'reasoning') {",
+                  "      pending += (item.summary || []).length;",
+                  "      if (item.encrypted_content !== null && item.encrypted_content !== undefined) { pending++; }",
+                  "      for (var n = 0; n < (item.content || []).length; n++) {",
+                  "        var block = item.content[n];",
+                  "        if (block.type === 'reasoning_text' && block.text !== null && block.text !== undefined) { pending++; }",
+                  "      }",
+                  "    } else if (item.type === 'function_call') {",
+                  "      pendingCalls = true;",
+                  "    } else {",
+                  "      if (pendingCalls) { attachGroup(); pendingCalls = false; }",
+                  "      pm.expect(item.role, 'requires assistant message boundaries between reasoning groups').to.eql('assistant');",
+                  "      attachGroup();",
+                  "    }",
+                  "  }",
+                  "  if (pendingCalls) { attachGroup(); }",
+                  "  pm.expect(groups >= 2, 'upstream must emit at least two detail-bearing reasoning groups attached to separate assistant segments; absent trigger is not a passing index regression').to.eql(true);",
+                  "  var details = j.choices[0].message.reasoning_details || [];",
+                  "  pm.expect(details.length, 'all reasoning details from the separated groups must survive aggregation').to.eql(expectedDetails);",
+                  "  for (var i = 0; i < details.length; i++) {",
+                  "    pm.expect(details[i].index, 'reasoning detail indexes must be sequential within the merged assistant message').to.eql(i);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"messages\":[{\"role\":\"user\",\"content\":\"First say: Checking the weather. Then call get_weather for Moscow. Do not answer the weather yourself.\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Fetch the weather after briefly saying what you are doing.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false}}}],\"tool_choice\":\"required\",\"max_completion_tokens\":1024,\"stream\":false}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
         }
       ]
     },

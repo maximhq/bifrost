@@ -1646,6 +1646,83 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 	return responsesResp
 }
 
+// mergeResponseChatMessages folds the output of a Responses assistant turn into
+// one Chat message. ToChatMessages also handles conversation history, so it
+// deliberately keeps text and function calls in separate messages; Chat response
+// choices represent alternatives and must not expose those pieces separately.
+func mergeResponseChatMessages(messages []ChatMessage) []ChatMessage {
+	var merged []ChatMessage
+	for _, message := range messages {
+		if len(merged) == 0 || merged[len(merged)-1].Role != ChatMessageRoleAssistant || message.Role != ChatMessageRoleAssistant {
+			merged = append(merged, message)
+			continue
+		}
+
+		previous := &merged[len(merged)-1]
+		if message.Content != nil {
+			if previous.Content == nil {
+				previous.Content = message.Content
+			} else if previous.Content.ContentStr != nil && message.Content.ContentStr != nil {
+				text := *previous.Content.ContentStr + *message.Content.ContentStr
+				previous.Content = &ChatMessageContent{ContentStr: &text}
+			} else {
+				var blocks []ChatContentBlock
+				if previous.Content.ContentStr != nil {
+					blocks = append(blocks, ChatContentBlock{Type: ChatContentBlockTypeText, Text: previous.Content.ContentStr})
+				} else {
+					blocks = append(blocks, previous.Content.ContentBlocks...)
+				}
+				if message.Content.ContentStr != nil {
+					blocks = append(blocks, ChatContentBlock{Type: ChatContentBlockTypeText, Text: message.Content.ContentStr})
+				} else {
+					blocks = append(blocks, message.Content.ContentBlocks...)
+				}
+				previous.Content = &ChatMessageContent{ContentBlocks: blocks}
+			}
+		}
+		if message.ChatAssistantMessage != nil {
+			if previous.ChatAssistantMessage == nil {
+				previous.ChatAssistantMessage = &ChatAssistantMessage{}
+			}
+			assistant := previous.ChatAssistantMessage
+			next := message.ChatAssistantMessage
+			if next.Refusal != nil {
+				if assistant.Refusal == nil {
+					assistant.Refusal = next.Refusal
+				} else {
+					refusal := *assistant.Refusal + *next.Refusal
+					assistant.Refusal = &refusal
+				}
+			}
+			if assistant.Audio == nil {
+				assistant.Audio = next.Audio
+			}
+			if next.Reasoning != nil {
+				if assistant.Reasoning == nil {
+					assistant.Reasoning = next.Reasoning
+				} else {
+					reasoning := *assistant.Reasoning + "\n" + *next.Reasoning
+					assistant.Reasoning = &reasoning
+				}
+			}
+			assistant.ReasoningDetails = append(assistant.ReasoningDetails, next.ReasoningDetails...)
+			assistant.Annotations = append(assistant.Annotations, next.Annotations...)
+			assistant.ToolCalls = append(assistant.ToolCalls, next.ToolCalls...)
+		}
+	}
+	for i := range merged {
+		if merged[i].ChatAssistantMessage != nil {
+			for j := range merged[i].ChatAssistantMessage.ReasoningDetails {
+				merged[i].ChatAssistantMessage.ReasoningDetails[j].Index = j
+			}
+			for j := range merged[i].ChatAssistantMessage.ToolCalls {
+				merged[i].ChatAssistantMessage.ToolCalls[j].Index = uint16(j)
+			}
+		}
+	}
+	return merged
+}
+
 // ToBifrostChatResponse converts a BifrostResponsesResponse to BifrostChatResponse format
 // This converts Responses API format to Chat-style fields (Choices)
 func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostChatResponse {
@@ -1670,7 +1747,7 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 	// Create Choices from ResponsesResponse
 	if len(responsesResp.Output) > 0 {
 		// Convert ResponsesMessages back to ChatMessages
-		chatMessages := ToChatMessages(responsesResp.Output)
+		chatMessages := mergeResponseChatMessages(ToChatMessages(responsesResp.Output))
 
 		finishReason := chatFinishReasonFromResponses(responsesResp.Status, responsesResp.IncompleteDetails, responsesResp.StopReason, responsesResp.Output)
 

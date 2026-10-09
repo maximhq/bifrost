@@ -193,9 +193,8 @@ func TestHasToolCallsForChatResponse(t *testing.T) {
 		t.Error("Should return false for response with stop finish reason and no tool calls")
 	}
 
-	// Test response where tool calls are in a non-first choice (Responses API conversion scenario).
-	// ToBifrostChatResponse() splits text and tool calls across separate choices when a model
-	// returns both text content and tool calls (e.g. Claude via the /v1/responses endpoint).
+	// Test defensive handling of tool calls in a non-first alternative choice.
+	// Responses conversion historically also emitted this shape for text plus tool calls.
 	responseWithToolCallsInSecondChoice := &schemas.BifrostChatResponse{
 		Choices: []schemas.BifrostResponseChoice{
 			{

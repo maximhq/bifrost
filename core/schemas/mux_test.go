@@ -1531,6 +1531,188 @@ func TestToBifrostChatResponse_MapsFunctionCallToToolCalls(t *testing.T) {
 	}
 }
 
+func TestToBifrostChatResponse_MergesAssistantTextAndToolCalls(t *testing.T) {
+	text := "Checking the weather."
+	chatResp := (&BifrostResponsesResponse{
+		Status: Ptr(ResponsesResponseStatusCompleted),
+		Output: append(responsesTextOutput(text),
+			ResponsesMessage{
+				Type: Ptr(ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &ResponsesToolMessage{
+					CallID:    Ptr("call_1"),
+					Name:      Ptr("weather"),
+					Arguments: Ptr(`{"city":"Moscow"}`),
+				},
+			},
+			ResponsesMessage{
+				Type: Ptr(ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &ResponsesToolMessage{
+					CallID:    Ptr("call_2"),
+					Name:      Ptr("calendar"),
+					Arguments: Ptr(`{"date":"2026-10-07"}`),
+				},
+			},
+		),
+	}).ToBifrostChatResponse()
+
+	if chatResp == nil || len(chatResp.Choices) != 1 {
+		t.Fatalf("expected one choice for one assistant turn, got %#v", chatResp)
+	}
+	if chatResp.Choices[0].Index != 0 || chatResp.Choices[0].FinishReason == nil || *chatResp.Choices[0].FinishReason != string(BifrostFinishReasonToolCalls) {
+		t.Fatalf("expected choice 0 with tool_calls finish reason, got %#v", chatResp.Choices[0])
+	}
+	message := chatResp.Choices[0].ChatNonStreamResponseChoice.Message
+	if message == nil || message.Content == nil || message.Content.ContentStr == nil || *message.Content.ContentStr != text {
+		t.Fatalf("expected text content on the merged assistant message, got %#v", message)
+	}
+	if message.ChatAssistantMessage == nil || len(message.ChatAssistantMessage.ToolCalls) != 2 {
+		t.Fatalf("expected two tool calls on the merged assistant message, got %#v", message.ChatAssistantMessage)
+	}
+	for i, toolCall := range message.ChatAssistantMessage.ToolCalls {
+		if toolCall.Index != uint16(i) {
+			t.Errorf("tool call %d has index %d, want %d", i, toolCall.Index, i)
+		}
+	}
+}
+
+func TestToBifrostChatResponse_MergesWholeAssistantTurn(t *testing.T) {
+	call := func(id string) ResponsesMessage {
+		return ResponsesMessage{Type: Ptr(ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &ResponsesToolMessage{
+			CallID: Ptr(id), Name: Ptr("weather"), Arguments: Ptr(`{}`),
+		}}
+	}
+	text := func(value string) ResponsesMessage { return responsesTextOutput(value)[0] }
+	for _, tc := range []struct {
+		name   string
+		output []ResponsesMessage
+		text   string
+		calls  int
+	}{
+		{"text call text", []ResponsesMessage{text("before"), call("call_1"), text("after")}, "beforeafter", 1},
+		{"call text call", []ResponsesMessage{call("call_1"), text("between"), call("call_2")}, "between", 2},
+		{"multiple text messages", []ResponsesMessage{text("first"), text("second")}, "firstsecond", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := (&BifrostResponsesResponse{Output: tc.output}).ToBifrostChatResponse()
+			if len(response.Choices) != 1 {
+				t.Fatalf("expected one choice, got %d", len(response.Choices))
+			}
+			message := response.Choices[0].Message
+			if message.Content == nil || message.Content.ContentStr == nil || *message.Content.ContentStr != tc.text {
+				t.Fatalf("expected all text %q, got %#v", tc.text, message.Content)
+			}
+			if tc.calls > 0 {
+				if message.ChatAssistantMessage == nil || len(message.ToolCalls) != tc.calls {
+					t.Fatalf("expected %d calls, got %#v", tc.calls, message.ChatAssistantMessage)
+				}
+				for i, call := range message.ToolCalls {
+					if call.Index != uint16(i) {
+						t.Fatalf("expected call index %d, got %d", i, call.Index)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestToBifrostChatResponse_ReindexesMergedReasoningDetails(t *testing.T) {
+	reasoning := func(id, text, summary, encrypted string) ResponsesMessage {
+		return ResponsesMessage{
+			ID: Ptr(id), Type: Ptr(ResponsesMessageTypeReasoning),
+			Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{
+				Type: ResponsesOutputMessageContentTypeReasoning, Text: Ptr(text), Signature: Ptr("sig_" + id),
+			}}},
+			ResponsesReasoning: &ResponsesReasoning{
+				Summary: []ResponsesReasoningSummary{{Type: "summary_text", Text: summary}}, EncryptedContent: Ptr(encrypted),
+			},
+		}
+	}
+	response := &BifrostResponsesResponse{
+		Status: Ptr(ResponsesResponseStatusCompleted),
+		Output: []ResponsesMessage{
+			reasoning("rs_first", "think first", "first summary", "first encrypted"),
+			responsesTextOutput("Checking the weather.")[0],
+			reasoning("rs_second", "think second", "second summary", "second encrypted"),
+			{Type: Ptr(ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &ResponsesToolMessage{
+				CallID: Ptr("call_1"), Name: Ptr("weather"), Arguments: Ptr(`{"city":"Moscow"}`),
+			}},
+		},
+	}
+	before, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// History retains two messages, with reasoning indexes local to each one.
+	history := ToChatMessages(response.Output)
+	if len(history) != 2 {
+		t.Fatalf("expected two history messages, got %d", len(history))
+	}
+	var expected []ChatReasoningDetails
+	for _, message := range history {
+		if message.ChatAssistantMessage == nil || len(message.ReasoningDetails) != 3 {
+			t.Fatalf("expected three reasoning details per history message, got %#v", message)
+		}
+		for i, detail := range message.ReasoningDetails {
+			if detail.Index != i {
+				t.Fatalf("history index = %d, want %d", detail.Index, i)
+			}
+			detail.Index = len(expected)
+			expected = append(expected, detail)
+		}
+	}
+
+	chat := response.ToBifrostChatResponse()
+	if len(chat.Choices) != 1 || chat.Choices[0].Message == nil || chat.Choices[0].Message.ChatAssistantMessage == nil {
+		t.Fatalf("expected one assistant response choice, got %#v", chat)
+	}
+	message := chat.Choices[0].Message
+	if !reflect.DeepEqual(message.ReasoningDetails, expected) {
+		t.Errorf("merged reasoning details = %#v, want ordered payloads with indexes 0 through 5: %#v", message.ReasoningDetails, expected)
+	}
+	if message.Reasoning == nil || *message.Reasoning != "think first\nthink second" {
+		t.Errorf("reasoning text changed: %#v", message.Reasoning)
+	}
+	if message.Content == nil || message.Content.ContentStr == nil || *message.Content.ContentStr != "Checking the weather." || len(message.ToolCalls) != 1 || message.ToolCalls[0].Index != 0 {
+		t.Errorf("text or tool call changed: %#v", message)
+	}
+	after, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Error("response conversion mutated the original Responses output")
+	}
+}
+
+func TestMergeResponseChatMessages_PreservesContentAndAssistantFields(t *testing.T) {
+	first := ChatMessage{Role: ChatMessageRoleAssistant, Content: &ChatMessageContent{ContentStr: Ptr("first")}, ChatAssistantMessage: &ChatAssistantMessage{
+		Reasoning: Ptr("think first"), ReasoningDetails: []ChatReasoningDetails{{Type: BifrostReasoningDetailsTypeText, Text: Ptr("detail first")}},
+		Annotations: []ChatAssistantMessageAnnotation{{Type: "url_citation"}},
+	}}
+	second := ChatMessage{Role: ChatMessageRoleAssistant, Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{Type: ChatContentBlockTypeImage, ImageURLStruct: &ChatInputImage{URL: "https://example.com/image.png"}}}}, ChatAssistantMessage: &ChatAssistantMessage{
+		Reasoning: Ptr("think second"), ReasoningDetails: []ChatReasoningDetails{{Type: BifrostReasoningDetailsTypeSummary, Summary: Ptr("detail second")}},
+		Annotations: []ChatAssistantMessageAnnotation{{Type: "url_citation"}}, Audio: &ChatAudioMessageAudio{ID: "audio_1"}, Refusal: Ptr("refusal"),
+	}}
+	merged := mergeResponseChatMessages([]ChatMessage{first, second})
+	if len(merged) != 1 {
+		t.Fatalf("expected one message, got %d", len(merged))
+	}
+	message := merged[0]
+	if message.Content == nil || len(message.Content.ContentBlocks) != 2 || message.Content.ContentStr != nil {
+		t.Fatalf("mixed content was lost: %#v", message.Content)
+	}
+	if message.Content.ContentBlocks[0].Text == nil || *message.Content.ContentBlocks[0].Text != "first" || message.Content.ContentBlocks[1].ImageURLStruct == nil {
+		t.Fatalf("content order changed: %#v", message.Content.ContentBlocks)
+	}
+	if message.Reasoning == nil || *message.Reasoning != "think first\nthink second" || len(message.ReasoningDetails) != 2 || len(message.Annotations) != 2 {
+		t.Fatalf("assistant metadata was lost: %#v", message.ChatAssistantMessage)
+	}
+	if message.Audio == nil || message.Audio.ID != "audio_1" || message.Refusal == nil || *message.Refusal != "refusal" {
+		t.Fatalf("assistant fields were lost: %#v", message.ChatAssistantMessage)
+	}
+}
+
 func TestToBifrostChatResponse_MapsIncompleteDetails(t *testing.T) {
 	cases := map[string]string{
 		ResponsesResponseIncompleteReasonMaxOutputTokens: string(BifrostFinishReasonLength),
