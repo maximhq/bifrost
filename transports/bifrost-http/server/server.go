@@ -1558,6 +1558,9 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	s.Config.Mu.Lock()
 	*s.Config.ClientConfig = *config
 	s.Config.Mu.Unlock()
+	if s.LogsCleaner != nil {
+		s.LogsCleaner.UpdateRetentionDays(config.LogRetentionDays)
+	}
 	// Reloading whitelisted routes from the client config
 	if s.AuthMiddleware != nil {
 		s.AuthMiddleware.UpdateWhitelistedRoutes(config.WhitelistedRoutes)

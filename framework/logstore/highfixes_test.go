@@ -3,7 +3,9 @@ package logstore
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -190,6 +192,96 @@ func TestHighFixesCleanerRetentionEndToEnd(t *testing.T) {
 
 	assert.Equal(t, []string{"log-new"}, hfLogIDs(t, store.db, "logs"))
 	assert.Equal(t, []string{"mcp-new"}, hfLogIDs(t, store.db, "mcp_tool_logs"))
+}
+
+func TestLogsCleanerUpdateRetentionDays(t *testing.T) {
+	for _, tc := range []struct {
+		name                     string
+		initialDays, updatedDays int
+		keepBoundary             bool
+	}{
+		{"increase", 365, 1000, true},
+		{"decrease", 1000, 365, false},
+		{"zero_uses_default", 1000, 0, false},
+		{"negative_uses_default", 1000, -1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestSQLiteStore(t)
+			cleaner := NewLogsCleaner(store, CleanerConfig{RetentionDays: tc.initialDays}, testLogger{})
+			cleaner.cleanupOldLogs(context.Background())
+			now := time.Now().UTC()
+			for _, age := range []int{200, 500, 1200} {
+				id := fmt.Sprintf("age-%d", age)
+				ts := now.AddDate(0, 0, -age)
+				hfInsertLogAt(t, store, id, ts)
+				hfInsertMCPAt(t, store, id, ts)
+			}
+			cleaner.UpdateRetentionDays(tc.updatedDays)
+			cleaner.cleanupOldLogs(context.Background())
+			want := []string{"age-200"}
+			if tc.keepBoundary {
+				want = append(want, "age-500")
+			}
+			assert.Equal(t, want, hfLogIDs(t, store.db, "logs"))
+			assert.Equal(t, want, hfLogIDs(t, store.db, "mcp_tool_logs"))
+		})
+	}
+}
+
+type retentionCutoffManager struct {
+	logCutoff, mcpCutoff time.Time
+	onLogsDelete         func()
+}
+
+func (m *retentionCutoffManager) DeleteLogsBatch(_ context.Context, cutoff time.Time, _ int) (int64, error) {
+	m.logCutoff = cutoff
+	if m.onLogsDelete != nil {
+		m.onLogsDelete()
+	}
+	return 0, nil
+}
+
+func (m *retentionCutoffManager) DeleteMCPToolLogsBatch(_ context.Context, cutoff time.Time, _ int) (int64, error) {
+	m.mcpCutoff = cutoff
+	return 0, nil
+}
+
+func TestLogsCleanerRetentionUpdateDuringPass(t *testing.T) {
+	m := &retentionCutoffManager{}
+	cleaner := NewLogsCleaner(m, CleanerConfig{RetentionDays: 365}, testLogger{})
+	m.onLogsDelete = func() { cleaner.UpdateRetentionDays(1000) }
+	for _, days := range []int{365, 1000} {
+		now := time.Now().UTC()
+		cleaner.cleanupOldLogs(context.Background())
+		assert.WithinDuration(t, now.AddDate(0, 0, -days), m.logCutoff, time.Second)
+		assert.Equal(t, m.logCutoff, m.mcpCutoff, "both tables must use the same cutoff when retention changes during a pass")
+	}
+}
+
+func TestLogsCleanerRetentionUpdateConcurrent(t *testing.T) {
+	m := &retentionCutoffManager{}
+	cleaner := NewLogsCleaner(m, CleanerConfig{RetentionDays: 7}, testLogger{})
+	var updates sync.WaitGroup
+	updates.Add(1)
+	go func() {
+		defer updates.Done()
+		for i := range 1000 {
+			days := 7
+			if i%2 == 0 {
+				days = 30
+			}
+			cleaner.UpdateRetentionDays(days)
+			runtime.Gosched()
+		}
+	}()
+	defer updates.Wait()
+	for range 1000 {
+		cleaner.cleanupOldLogs(context.Background())
+		days := int(math.Round(time.Since(m.logCutoff).Hours() / 24))
+		assert.True(t, days == 7 || days == 30, "unexpected retention: %d", days)
+		assert.Equal(t, m.logCutoff, m.mcpCutoff)
+		runtime.Gosched()
+	}
 }
 
 // hfOwnerTimestampIndexes are the H4 composite indexes, per table.

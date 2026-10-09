@@ -1577,6 +1577,14 @@ type issue8212RetentionObserver struct {
 	events  chan issue8212CleanupEvent
 }
 
+type failingRetentionConfigStore struct {
+	configstore.ConfigStore
+}
+
+func (failingRetentionConfigStore) UpdateClientConfig(context.Context, *configstore.ClientConfig) error {
+	return fmt.Errorf("client config persistence failed")
+}
+
 func (m *issue8212RetentionObserver) DeleteLogsBatch(ctx context.Context, cutoff time.Time, size int) (int64, error) {
 	deleted, err := m.manager.DeleteLogsBatch(ctx, cutoff, size)
 	m.events <- issue8212CleanupEvent{cutoff: cutoff, deleted: deleted, err: err}
@@ -1598,15 +1606,18 @@ func issue8212AwaitCleanup(t *testing.T, m *issue8212RetentionObserver) issue821
 }
 
 func TestIssue8212RetentionChange(t *testing.T) {
-	if os.Getenv("BIFROST_ISSUE_8212_REPRO") != "1" {
-		t.Skip("run tests/scripts/reproduce-log-retention.sh to accelerate cleanup scheduling")
-	}
+	continuous := os.Getenv("BIFROST_ISSUE_8212_REPRO") == "1"
 	for _, tc := range []struct {
-		name             string
-		oldDays, newDays int
+		name                 string
+		oldDays, newDays     int
+		wantStatus, wantDays int
+		failPersistence      bool
 	}{
-		{"increase_365_to_1000", 365, 1000},
-		{"decrease_1000_to_365", 1000, 365},
+		{"increase_365_to_1000", 365, 1000, 200, 1000, false},
+		{"decrease_1000_to_365", 1000, 365, 200, 365, false},
+		{"reject_zero", 365, 0, 400, 365, false},
+		{"reject_negative", 365, -1, 400, 365, false},
+		{"persistence_failure", 365, 1000, 500, 365, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -1650,6 +1661,14 @@ func TestIssue8212RetentionChange(t *testing.T) {
 			if startup.deleted != 0 {
 				t.Fatalf("expected empty startup pass, got %d deletions", startup.deleted)
 			}
+			// Default tests resume the same cleaner to trigger its next pass.
+			// The opt-in runner keeps it running with an accelerated timer.
+			if !continuous {
+				s.LogsCleaner.StopCleanupRoutine()
+			}
+			if tc.failPersistence {
+				cfg.ConfigStore = failingRetentionConfigStore{ConfigStore: cs}
+			}
 			beforeSave := time.Now()
 
 			seed := func(id string, ageDays int) {
@@ -1688,20 +1707,23 @@ func TestIssue8212RetentionChange(t *testing.T) {
 			var requestCtx fasthttp.RequestCtx
 			requestCtx.Init(&req, nil, nil)
 			r.Handler(&requestCtx)
-			if requestCtx.Response.StatusCode() != 200 {
-				t.Fatalf("PUT /api/config returned %d: %s", requestCtx.Response.StatusCode(), requestCtx.Response.Body())
+			if requestCtx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("PUT /api/config returned %d, want %d: %s", requestCtx.Response.StatusCode(), tc.wantStatus, requestCtx.Response.Body())
 			}
-			if time.Since(beforeSave) >= 800*time.Millisecond {
+			if continuous && time.Since(beforeSave) >= 800*time.Millisecond {
 				t.Fatal("test setup was too slow to finish before the next scheduled pass")
 			}
 			persisted, err := cs.GetClientConfig(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if persisted.LogRetentionDays != tc.newDays || cfg.ClientConfig.LogRetentionDays != tc.newDays {
-				t.Fatalf("save did not take effect: DB=%d live=%d expected=%d", persisted.LogRetentionDays, cfg.ClientConfig.LogRetentionDays, tc.newDays)
+			if persisted.LogRetentionDays != tc.wantDays || cfg.ClientConfig.LogRetentionDays != tc.wantDays {
+				t.Fatalf("unexpected retention: DB=%d live=%d expected=%d", persisted.LogRetentionDays, cfg.ClientConfig.LogRetentionDays, tc.wantDays)
 			}
-			t.Logf("PUT /api/config status=200; DB retention=%d; live retention=%d", persisted.LogRetentionDays, cfg.ClientConfig.LogRetentionDays)
+			t.Logf("PUT /api/config status=%d; DB retention=%d; live retention=%d", requestCtx.Response.StatusCode(), persisted.LogRetentionDays, cfg.ClientConfig.LogRetentionDays)
+			if !continuous {
+				s.LogsCleaner.StartCleanupRoutine()
+			}
 
 			next := issue8212AwaitCleanup(t, observer)
 			usedDays := int(math.Round(time.Since(next.cutoff).Hours() / 24))
@@ -1711,14 +1733,14 @@ func TestIssue8212RetentionChange(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				want := age < tc.newDays
+				want := age < tc.wantDays
 				t.Logf("log age=%d days: present=%t; expected=%t", age, present, want)
 				if present != want {
-					t.Errorf("log age %d days present=%t, want %t after saving retention=%d", age, present, want, tc.newDays)
+					t.Errorf("log age %d days present=%t, want %t for retention=%d", age, present, want, tc.wantDays)
 				}
 			}
-			if usedDays != tc.newDays {
-				t.Errorf("scheduled cleaner retained stale startup value: got %d days, want %d", usedDays, tc.newDays)
+			if usedDays != tc.wantDays {
+				t.Errorf("scheduled cleaner used the wrong retention: got %d days, want %d", usedDays, tc.wantDays)
 			}
 
 			// A fresh cleaner from persisted settings is the process-restart control.
@@ -1736,7 +1758,7 @@ func TestIssue8212RetentionChange(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Logf("fresh cleaner retention=%d; 500-day log present=%t", freshDays, present)
-				if freshDays != tc.newDays || present != (500 < tc.newDays) {
+				if freshDays != tc.wantDays || present != (500 < tc.wantDays) {
 					t.Fatal("fresh cleaner did not honor saved retention")
 				}
 			})

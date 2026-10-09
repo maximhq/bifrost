@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run the opt-in #8212 reproduction without changing production scheduling.
-# Exit code 1 is expected while retention changes do not reach the cleaner.
+# Run the #8212 regression with a continuously running cleaner and an
+# accelerated timer, without changing production scheduling.
 task_repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 task_go_cmd="${GO_BIN:-go}"
 task_overlay_dir=$(mktemp -d "${TMPDIR:-/tmp}/bifrost-8212.XXXXXX")
@@ -43,4 +43,4 @@ cd "$task_repo_root/transports"
 env BIFROST_ISSUE_8212_REPRO=1 "$task_go_cmd" test \
   -overlay="$task_overlay_dir/overlay.json" \
   ./bifrost-http/server -run '^TestIssue8212RetentionChange$' \
-  -count=1 -v -timeout=120s
+  -count=1 -v -timeout=120s "$@"
