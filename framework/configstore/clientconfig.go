@@ -1,6 +1,7 @@
 package configstore
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
@@ -864,6 +866,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 				GithubDomain:   *key.GithubCopilotKeyConfig.GithubDomain.Redacted(),
 			}
 		}
+
+		if key.OAuthKeyConfig != nil {
+			redactedConfig.Keys[i].OAuthKeyConfig = key.OAuthKeyConfig.Redacted()
+		}
 	}
 	return &redactedConfig
 }
@@ -967,6 +973,140 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 // This is used to detect changes to keys between config.json and database.
 // Skips: ID (dynamic UUID), timestamps
 func GenerateKeyHash(key schemas.Key) (string, error) {
+	var aliases []byte
+	if key.Aliases != nil {
+		// A map, so the encoding must sort keys or the same key hashes differently between
+		// restarts and is reconciled as edited.
+		data, err := providerUtils.MarshalSorted(key.Aliases)
+		if err != nil {
+			return "", err
+		}
+		aliases = data
+	}
+	return generateKeyHash(key, aliases)
+}
+
+// LegacyAliasOrderKeyHash returns the config_hash a key had on builds that hashed aliases
+// with the unsorted encoder, with its aliases encoded in the given order. Reconciliation uses
+// it to recognise a hash stored by such a build; tests use it to craft one.
+func LegacyAliasOrderKeyHash(key schemas.Key, order []string) (string, error) {
+	var aliases []byte
+	if key.Aliases != nil {
+		data, err := legacyAliasBytes(key.Aliases, order)
+		if err != nil {
+			return "", err
+		}
+		aliases = data
+	}
+	return generateKeyHash(key, aliases)
+}
+
+// maxLegacyAliasPermutations bounds the upgrade search in KeyHashMatchesLegacyAliasOrder:
+// seven aliases is 5040 hashes, a few milliseconds once per mismatching key at startup. A key
+// with more aliases falls back to treating the mismatch as a file edit, which is what every
+// build before the sorted hash did at random.
+const maxLegacyAliasPermutations = 7
+
+// KeyHashMatchesLegacyAliasOrder reports whether storedHash is this key's hash under the
+// unsorted alias encoding of older builds, in any alias order. GenerateKeyHash sorts alias
+// names, so the first restart on a sorted build sees a mismatch for every key with two or
+// more aliases even when config.json is untouched; reconciliation calls this before treating
+// that mismatch as a file edit, so API and dashboard edits survive the upgrade. It runs only
+// after a direct compare failed, never on the request path.
+func KeyHashMatchesLegacyAliasOrder(key schemas.Key, storedHash string) (bool, error) {
+	n := len(key.Aliases)
+	if storedHash == "" || n < 2 || n > maxLegacyAliasPermutations {
+		return false, nil
+	}
+	names := make([]string, 0, n)
+	for name := range key.Aliases {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	// Heap's algorithm visits every ordering once, swapping one pair per step.
+	counters := make([]int, n)
+	for i := 0; ; {
+		candidate, err := LegacyAliasOrderKeyHash(key, names)
+		if err != nil {
+			return false, err
+		}
+		if candidate == storedHash {
+			return true, nil
+		}
+		for i = 0; i < n && counters[i] >= i; i++ {
+			counters[i] = 0
+		}
+		if i >= n {
+			return false, nil
+		}
+		if i%2 == 0 {
+			names[0], names[i] = names[i], names[0]
+		} else {
+			names[counters[i]], names[i] = names[i], names[counters[i]]
+		}
+		counters[i]++
+	}
+}
+
+// legacyAliasBytes rebuilds the bytes the unsorted encoder fed the hasher for aliases in the
+// given order: sonic's default map encoding, which is each quoted name, a colon and the
+// alias's own MarshalJSON output, comma-joined in map iteration order inside braces.
+func legacyAliasBytes(aliases schemas.KeyAliases, order []string) ([]byte, error) {
+	if len(order) != len(aliases) {
+		return nil, fmt.Errorf("alias order names %d aliases, key has %d", len(order), len(aliases))
+	}
+	var b bytes.Buffer
+	b.WriteByte('{')
+	for i, name := range order {
+		alias, ok := aliases[name]
+		if !ok {
+			return nil, fmt.Errorf("alias %q is not on the key", name)
+		}
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		k, err := sonic.Marshal(name)
+		if err != nil {
+			return nil, err
+		}
+		b.Write(k)
+		b.WriteByte(':')
+		v, err := sonic.Marshal(alias)
+		if err != nil {
+			return nil, err
+		}
+		b.Write(v)
+	}
+	b.WriteByte('}')
+	return b.Bytes(), nil
+}
+
+// generateKeyHash composes the key hash; aliases is the already-encoded alias map (sorted for
+// current hashes, in a given order for legacy ones) or nil when the key has none.
+// oauthKeyConfigHashView returns the copy of an OAuth block that the key hash is computed
+// over. Its secret-bearing fields carry their source, as the top-level Value does: a reference
+// as "ref:<reference>" and a literal as "val:<value>". Hashing the resolved value instead would
+// make an unchanged config.json look edited whenever the environment or vault rotates the
+// secret behind it, and reconciliation would then replace the stored key and its edits.
+func oauthKeyConfigHashView(cfg *schemas.OAuthKeyConfig) *schemas.OAuthKeyConfig {
+	view := *cfg
+	source := func(v *schemas.SecretVar) *schemas.SecretVar {
+		if v == nil {
+			return nil
+		}
+		if v.IsFromSecret() {
+			return &schemas.SecretVar{Val: "ref:" + v.GetRawRef()}
+		}
+		return &schemas.SecretVar{Val: "val:" + v.Val}
+	}
+	view.TokenURL = *source(&cfg.TokenURL)
+	view.ClientID = source(cfg.ClientID)
+	view.ClientSecret = source(cfg.ClientSecret)
+	view.PrivateKey = source(cfg.PrivateKey)
+	return &view
+}
+
+func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	hash := sha256.New()
 	// Hash Name
 	hash.Write([]byte(key.Name))
@@ -1037,13 +1177,9 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
-	// Hash Aliases
-	if key.Aliases != nil {
-		data, err := sonic.Marshal(key.Aliases)
-		if err != nil {
-			return "", err
-		}
-		hash.Write(data)
+	// Hash Aliases (encoded by the caller, see GenerateKeyHash).
+	if aliases != nil {
+		hash.Write(aliases)
 	}
 	// Hash VLLMKeyConfig
 	if key.VLLMKeyConfig != nil {
@@ -1096,6 +1232,15 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash GithubCopilotKeyConfig
 	if key.GithubCopilotKeyConfig != nil {
 		data, err := sonic.Marshal(key.GithubCopilotKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash OAuthKeyConfig. extra_params is a map, so the encoding must sort keys or the same
+	// key hashes differently between restarts and reconciliation replaces dashboard edits.
+	if key.OAuthKeyConfig != nil {
+		data, err := providerUtils.MarshalSorted(oauthKeyConfigHashView(key.OAuthKeyConfig))
 		if err != nil {
 			return "", err
 		}
