@@ -5187,3 +5187,43 @@ func TestUpsertModelPricesBatch_PriorityAbove272kCacheCreation_SurvivesResync(t 
 	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove272kTokensPriority)
 	assert.InDelta(t, 0.00006, *got[0].CacheCreationInputTokenCostAbove272kTokensPriority, 1e-12)
 }
+
+// TestUpsertModelPricesBatch_Above100kColumns_SurviveResync guards the
+// pricingSyncUpdateColumns entries for the >100k tier columns.
+func TestUpsertModelPricesBatch_Above100kColumns_SurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	pricing := []tables.TableModelPricing{{
+		Model: "claude-haiku-5-5", Provider: "anthropic", Mode: "chat",
+		InputCostPerToken:                                  new(1e-07),
+		InputCostPerTokenAbove100kTokens:                   new(4e-07),
+		OutputCostPerTokenAbove100kTokens:                  new(2e-06),
+		CacheCreationInputTokenCostAbove100kTokens:         new(5e-07),
+		CacheReadInputTokenCostAbove100kTokens:             new(4e-08),
+		CacheCreationInputTokenCostAbove1hrAbove100kTokens: new(8e-07),
+	}}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	pricing[0].InputCostPerTokenAbove100kTokens = new(5e-07)
+	pricing[0].OutputCostPerTokenAbove100kTokens = new(2.5e-06)
+	pricing[0].CacheCreationInputTokenCostAbove100kTokens = new(6.25e-07)
+	pricing[0].CacheReadInputTokenCostAbove100kTokens = new(5e-08)
+	pricing[0].CacheCreationInputTokenCostAbove1hrAbove100kTokens = new(1e-06)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].InputCostPerTokenAbove100kTokens)
+	assert.InDelta(t, 5e-07, *got[0].InputCostPerTokenAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].OutputCostPerTokenAbove100kTokens)
+	assert.InDelta(t, 2.5e-06, *got[0].OutputCostPerTokenAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove100kTokens)
+	assert.InDelta(t, 6.25e-07, *got[0].CacheCreationInputTokenCostAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].CacheReadInputTokenCostAbove100kTokens)
+	assert.InDelta(t, 5e-08, *got[0].CacheReadInputTokenCostAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove1hrAbove100kTokens)
+	assert.InDelta(t, 1e-06, *got[0].CacheCreationInputTokenCostAbove1hrAbove100kTokens, 1e-15)
+}
