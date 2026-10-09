@@ -336,15 +336,40 @@ func (s *Store) IsRequestTypeSupported(model string, requestType schemas.Request
 // GetSupportedParameters returns the list of OpenAI-compatible parameter
 // names a model accepts (e.g. temperature, top_p, tools). nil for unknown.
 func (s *Store) GetSupportedParameters(model string) []string {
+	// Resolve through the same candidate chain ResolveModelParameters uses,
+	// rather than the exact key alone. The datasheet carries a row for some
+	// spellings of a model and not others: it has a bare
+	// "us.anthropic.claude-opus-5-5" but no bare
+	// "us.anthropic.claude-sonnet-5-5", so an exact lookup returned nil for the
+	// Bedrock sonnet id and the compat plugin dropped nothing. Every sonnet-5-5
+	// row in the sheet omits "temperature", so resolving to one is what lets it
+	// be dropped before Bedrock rejects the request.
+	//
+	// Exact key first, and only build candidates on a miss. The compat plugin
+	// calls this on every request when parameter dropping is on, and
+	// modelParameterCandidates walks every supportedParams key to collect
+	// suffix matches -- turning a map lookup into a map-wide scan for models
+	// that already resolve would be a poor trade for a fallback.
 	s.mu.RLock()
 	params, ok := s.supportedParams[model]
 	s.mu.RUnlock()
-	if !ok {
-		return nil
+	if ok {
+		return append([]string(nil), params...)
 	}
-	out := make([]string, len(params))
-	copy(out, params)
-	return out
+
+	for _, candidate := range s.modelParameterCandidates(model) {
+		if candidate == model {
+			continue
+		}
+		s.mu.RLock()
+		params, ok := s.supportedParams[candidate]
+		s.mu.RUnlock()
+		if !ok {
+			continue
+		}
+		return append([]string(nil), params...)
+	}
+	return nil
 }
 
 // IsTextCompletionSupported checks whether a model has a text_completion
