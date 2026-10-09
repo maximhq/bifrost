@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -75,6 +76,8 @@ type WebSocketHandler struct {
 	mu             sync.RWMutex
 	stopChan       chan struct{} // Channel to signal heartbeat goroutine to stop
 	done           chan struct{} // Channel to signal when heartbeat goroutine has stopped
+	heartbeat      atomic.Bool   // Set once StartHeartbeat has launched the goroutine that closes done
+	stopped        bool          // Set by Stop, under mu; no client registers after it
 }
 
 // NewWebSocketHandler creates a new WebSocket handler instance
@@ -152,8 +155,14 @@ func (h *WebSocketHandler) connectStream(ctx *fasthttp.RequestCtx) {
 		client.roleID, client.hasRole = notificationRoleID(ctx)
 		client.localAdmin, _ = ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
 
-		// Register new client
+		// Register new client. An upgrade that completes after Stop has emptied the
+		// map must not register: nothing would ever close the client again.
 		h.mu.Lock()
+		if h.stopped {
+			h.mu.Unlock()
+			client.close()
+			return
+		}
 		h.clients[ws] = client
 		h.mu.Unlock()
 
@@ -368,6 +377,7 @@ func (h *WebSocketHandler) BroadcastMarshaledMessage(data []byte) {
 
 // StartHeartbeat starts sending periodic heartbeat messages to keep connections alive
 func (h *WebSocketHandler) StartHeartbeat() {
+	h.heartbeat.Store(true)
 	ticker := time.NewTicker(30 * time.Second)
 	go func() {
 		defer func() {
@@ -402,10 +412,22 @@ func (h *WebSocketHandler) StartHeartbeat() {
 	}()
 }
 
-// Stop gracefully shuts down the WebSocket handler
+// Stop gracefully shuts down the WebSocket handler. It is safe to call more
+// than once, and on a handler whose heartbeat was never started (the state a
+// failed Bootstrap leaves behind), where there is no goroutine to wait for.
 func (h *WebSocketHandler) Stop() {
+	h.mu.Lock()
+	if h.stopped {
+		h.mu.Unlock()
+		return
+	}
+	h.stopped = true
+	h.mu.Unlock()
+
 	close(h.stopChan) // Signal heartbeat goroutine to stop
-	<-h.done          // Wait for heartbeat goroutine to finish
+	if h.heartbeat.Load() {
+		<-h.done // Wait for heartbeat goroutine to finish
+	}
 
 	// Close all client connections.
 	//
