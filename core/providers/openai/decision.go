@@ -337,7 +337,9 @@ func HandleOpenAIDecisionRequest(
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		logger.Debug(fmt.Sprintf("error from %s provider: status %d", providerName, resp.StatusCode()))
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}

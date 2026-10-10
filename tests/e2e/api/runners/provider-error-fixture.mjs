@@ -1,4 +1,5 @@
 import http from "node:http";
+import { gzipSync } from "node:zlib";
 
 const port = Number(process.env.PROVIDER_ERROR_FIXTURE_PORT || "8791");
 
@@ -13,7 +14,22 @@ const errorBody = (message, type, code) => JSON.stringify({ error: { message, ty
 // deadline always fires first and short enough to stay inside any request timeout.
 const SLOW_MS = 2000;
 
+// An in-band error after content exits the SSE parser while deferred response
+// cleanup still has network I/O to do, without the terminating HTTP chunk.
+const lifecycleSSE = 'data: ' + JSON.stringify({
+	id: "chatcmpl-body-lifecycle", object: "chat.completion.chunk", created: 1,
+	model: "body-lifecycle-drain", choices: [{ index: 0, delta: { content: "hello" }, finish_reason: null }],
+	usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+}) + "\n\ndata: " + JSON.stringify({ error: { message: "fixture cleanup error", type: "server_error", code: "fixture_error" } }) + "\n\n";
+
 const behaviours = {
+	"body-lifecycle-reject-401": () => ({ status: 401, headers: {}, body: '{"error":', shortBody: true }),
+	"body-lifecycle-reject-403-gzip": () => ({ status: 403, headers: { "Content-Encoding": "gzip" }, body: "invalid gzip header" }),
+	"body-lifecycle-reject-429": () => ({ status: 429, headers: { "Retry-After": "7" }, body: '{"error":', shortBody: true }),
+	"body-lifecycle-reject-503-gzip": () => ({ status: 503, headers: { "Content-Encoding": "gzip", "retry-after-ms": "2500" }, body: gzipSync(errorBody("unavailable", "server_error", "unavailable")).subarray(0, -4), shortBody: true }),
+	"body-lifecycle-error": () => ({ status: 400, headers: {}, body: errorBody("late error body", "invalid_request_error", "late_body"), stall: true }),
+	"body-lifecycle-gzip": () => ({ status: 200, headers: { "Content-Type": "text/event-stream", "Content-Encoding": "gzip" }, body: gzipSync(lifecycleSSE), stall: true }),
+	"body-lifecycle-drain": () => ({ status: 200, headers: { "Content-Type": "text/event-stream" }, prefix: lifecycleSSE, body: "", stall: true }),
 	"upstream-500": () => ({ status: 500, headers: {}, body: errorBody("internal server error", "server_error", "internal_error") }),
 	"upstream-503": () => ({ status: 503, headers: {}, body: errorBody("service unavailable", "server_error", "service_unavailable") }),
 	"upstream-429": () => ({ status: 429, headers: { "Retry-After": "7" }, body: errorBody("rate limit exceeded", "rate_limit_error", "rate_limit_exceeded") }),
@@ -224,6 +240,22 @@ const server = http.createServer((req, res) => {
 			return send(404, {}, errorBody(`unknown fixture model ${model}`, "invalid_request_error", "model_not_found"));
 		}
 		const r = behaviour();
+		if (r.stall) {
+			res.writeHead(r.status, { "Content-Type": "application/json", ...r.headers });
+			res.flushHeaders();
+			if (r.prefix) res.write(r.prefix);
+			// Pre-fix readers unblock only when this timer finishes. Post-fix the
+			// one-second body idle timeout closes the socket first. Also release
+			// the fixture timer immediately when the gateway cancels/disconnects.
+			const timer = setTimeout(() => res.end(r.body), 5000);
+			res.on("close", () => clearTimeout(timer));
+			return;
+		}
+		if (r.shortBody) {
+			const socket = res.socket;
+			res.writeHead(r.status, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(r.body) + 16, ...r.headers });
+			return res.end(r.body, () => socket.end());
+		}
 		const answer = () => {
 			if (r.cut) {
 				if (parsed.stream !== true) {

@@ -8,10 +8,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 // TestToOpenAIDecisionRequestSendsOnlyText pins how the Typesafe-only parts of
@@ -427,4 +430,35 @@ func TestOpenAIDecisionUsageKeepsTokenDetails(t *testing.T) {
 	plain, err := json.Marshal(toOpenAIDecisionUsage(&schemas.BifrostLLMUsage{PromptTokens: 3, TotalTokens: 3}))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"input_tokens":3,"output_tokens":0,"total_tokens":3}`, string(plain), "absent details are left out")
+}
+
+// The request helper also accepts clients that return streamed response bodies.
+// A failed error-body read must retain its cause instead of parsing an empty body.
+func TestOpenAIDecisionErrorBodyReadFailure(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1024")
+		w.WriteHeader(http.StatusBadRequest)
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 100*time.Millisecond)
+	client := providerUtils.BuildStreamingClient(&fasthttp.Client{ReadTimeout: time.Second})
+	defer client.CloseIdleConnections()
+	request := &schemas.BifrostDecisionRequest{
+		Provider:  schemas.OpenAI,
+		Model:     "gpt-6-luna",
+		Input:     schemas.DecisionInput{Text: schemas.Ptr("state")},
+		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Instructions: schemas.NewDecisionText("Q?")}},
+	}
+	response, bifrostErr := HandleOpenAIDecisionRequest(ctx, client, server.URL, request, schemas.Key{}, nil, schemas.OpenAI, false, false, testNoopLogger{})
+	require.Nil(t, response)
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.Error)
+	assert.Equal(t, http.StatusGatewayTimeout, bifrostErr.EffectiveHTTPStatus(), bifrostErr.Error.Message)
+	assert.ErrorIs(t, bifrostErr.Error.Error, providerUtils.ErrStreamIdleTimeout)
 }
