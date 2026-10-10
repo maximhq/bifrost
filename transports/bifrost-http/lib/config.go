@@ -3998,7 +3998,13 @@ func planComplexityAnalyzerConfigUpdate(config *Config, configData *ConfigData) 
 		return nil
 	}
 
-	merged, err := mergeComplexityAnalyzerConfigFromFile(current, fileConfig)
+	// Runtime normalization supplies defaults, but omitted file fields must
+	// remain absent when deciding which sections may override UI/API settings.
+	splitFileConfig := *fileConfig
+	rawFileConfig := configData.Governance.ComplexityAnalyzerConfig
+	splitFileConfig.Classifier = rawFileConfig.Classifier
+	splitFileConfig.Decision = rawFileConfig.Decision
+	merged, err := mergeComplexityAnalyzerConfigFromFile(current, &splitFileConfig)
 	if err != nil {
 		logger.Warn("failed to merge complexity analyzer config from config file: %v", err)
 		return nil
@@ -4017,7 +4023,7 @@ func complexityAnalyzerConfigFromFile(configData *ConfigData) (*configstore.Comp
 		logger.Error("invalid complexity analyzer config in config file: %v", err)
 		return nil, configstore.ComplexityAnalyzerConfigHashes{}, false
 	}
-	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(configData.Governance.ComplexityAnalyzerConfig)
 	if err != nil {
 		logger.Warn("failed to generate complexity analyzer config hashes: %v", err)
 		return nil, configstore.ComplexityAnalyzerConfigHashes{}, false
