@@ -6,7 +6,7 @@ import {
 	DecisionGuidanceDefaults,
 	DecisionTier,
 	OPENAI_DECISION_MODEL,
-	OPENROUTER_DECISION_MODELS,
+	OPENROUTER_DECISION_MODEL,
 	SELF_HOSTED_DECISION_MODELS,
 	MAX_DECISION_CRITERIA_ITEM_CHARACTERS,
 	MAX_DECISION_CRITERIA_ITEMS,
@@ -118,25 +118,19 @@ const decisionGuidanceSchema = z.object({
 	}),
 });
 
-const decisionSchema = z
-	.object({
-		provider: z.string().trim().min(1, "Select the provider serving the decision model"),
-		model: z.string().trim().min(1, "Select the decision model"),
-		previous_message_count: z
-			.number()
-			.int("Must be a whole number")
-			.min(0, "Must be at least 0")
-			.max(MAX_DECISION_PREVIOUS_MESSAGE_COUNT, `Must be at most ${MAX_DECISION_PREVIOUS_MESSAGE_COUNT}`),
-		timeout: z
-			.string()
-			.min(1, "Enter a decision-model timeout")
-			.refine((value) => isPositiveDurationString(value), "Enter a timeout greater than 0"),
-	})
-	// OpenRouter's decisions endpoint serves only its Jev models; any other model it lists is a chat model.
-	.refine((decision) => decision.provider !== "openrouter" || (OPENROUTER_DECISION_MODELS as readonly string[]).includes(decision.model), {
-		message: "Select one of OpenRouter's Jev models",
-		path: ["model"],
-	});
+const decisionSchema = z.object({
+	provider: z.string().trim().min(1, "Select the provider serving the decision model"),
+	model: z.string().trim().min(1, "Select the decision model"),
+	previous_message_count: z
+		.number()
+		.int("Must be a whole number")
+		.min(0, "Must be at least 0")
+		.max(MAX_DECISION_PREVIOUS_MESSAGE_COUNT, `Must be at most ${MAX_DECISION_PREVIOUS_MESSAGE_COUNT}`),
+	timeout: z
+		.string()
+		.min(1, "Enter a decision-model timeout")
+		.refine((value) => isPositiveDurationString(value), "Enter a timeout greater than 0"),
+});
 
 const llmSchema = z.object({
 	provider: z.string(),
@@ -571,7 +565,7 @@ export function selfHostedModelGroups(providerName: string): SelfHostedModelGrou
 // the operator knows which model it runs.
 export function defaultDecisionModel(provider: ModelProvider | undefined): string {
 	if (provider?.name === "typesafe") return DEFAULT_DECISION_MODEL;
-	if (provider?.name === "openrouter") return OPENROUTER_DECISION_MODELS[0];
+	if (provider?.name === "openrouter") return OPENROUTER_DECISION_MODEL;
 	if (provider?.name === "openai") return OPENAI_DECISION_MODEL;
 	if (isOpenAIDecisionProvider(provider)) return "";
 	return clefModelFromProvider(provider) ?? namedSelfHostedGroup(provider?.name ?? "")?.models[0] ?? "";
