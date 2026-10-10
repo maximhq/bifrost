@@ -405,6 +405,80 @@ func TestToBifrostResponsesStream_MultipleVisibleThinkingBlocks(t *testing.T) {
 	}
 }
 
+// TestToBifrostResponsesStream_VisibleThinkingPrecedingMessageContentIndexZero pins
+// that when a reasoning item precedes an assistant message (Anthropic thinking index 0,
+// text index 1), the message item events rebase their content_index to 0 (#8323).
+func TestToBifrostResponsesStream_VisibleThinkingPrecedingMessageContentIndexZero(t *testing.T) {
+	t.Parallel()
+
+	events := []*AnthropicStreamEvent{
+		{
+			Type: AnthropicStreamEventTypeMessageStart,
+			Message: &AnthropicMessageResponse{
+				ID:    "msg_thinking_text_stream",
+				Model: "claude-sonnet-5-5",
+			},
+		},
+		{
+			Type:  AnthropicStreamEventTypeContentBlockStart,
+			Index: schemas.Ptr(0),
+			ContentBlock: &AnthropicContentBlock{
+				Type: AnthropicContentBlockTypeThinking,
+			},
+		},
+		{
+			Type:  AnthropicStreamEventTypeContentBlockDelta,
+			Index: schemas.Ptr(0),
+			Delta: &AnthropicStreamDelta{
+				Type:     AnthropicStreamDeltaTypeThinking,
+				Thinking: schemas.Ptr("thinking text"),
+			},
+		},
+		{Type: AnthropicStreamEventTypeContentBlockStop, Index: schemas.Ptr(0)},
+		{
+			Type:  AnthropicStreamEventTypeContentBlockStart,
+			Index: schemas.Ptr(1),
+			ContentBlock: &AnthropicContentBlock{
+				Type: AnthropicContentBlockTypeText,
+				Text: schemas.Ptr(""),
+			},
+		},
+		{
+			Type:  AnthropicStreamEventTypeContentBlockDelta,
+			Index: schemas.Ptr(1),
+			Delta: &AnthropicStreamDelta{
+				Type: AnthropicStreamDeltaTypeText,
+				Text: schemas.Ptr("answer text"),
+			},
+		},
+		{Type: AnthropicStreamEventTypeContentBlockStop, Index: schemas.Ptr(1)},
+		{
+			Type:  AnthropicStreamEventTypeMessageDelta,
+			Delta: &AnthropicStreamDelta{StopReason: schemas.Ptr(AnthropicStopReasonEndTurn)},
+		},
+		{Type: AnthropicStreamEventTypeMessageStop},
+	}
+
+	responses := driveResponsesStream(t, events)
+
+	for _, r := range responses {
+		if r.OutputIndex != nil && *r.OutputIndex == 1 {
+			switch r.Type {
+			case schemas.ResponsesStreamResponseTypeContentPartAdded,
+				schemas.ResponsesStreamResponseTypeOutputTextDelta,
+				schemas.ResponsesStreamResponseTypeOutputTextDone,
+				schemas.ResponsesStreamResponseTypeContentPartDone:
+				if r.ContentIndex == nil {
+					t.Fatalf("%s output_index=1 has nil ContentIndex", r.Type)
+				}
+				if *r.ContentIndex != 0 {
+					t.Errorf("%s output_index=1 has ContentIndex = %d, want 0", r.Type, *r.ContentIndex)
+				}
+			}
+		}
+	}
+}
+
 // TestToBifrostResponsesStream_VisibleThinkingWithoutSignature covers thinking
 // blocks that never receive a signature delta: the completed reasoning item
 // still carries the accumulated text, with no signature attached.
