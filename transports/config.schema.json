@@ -4194,6 +4194,10 @@
                     "cache_tool_call_responses": {
                       "type": "boolean",
                       "description": "Persist responses that carry tool calls (chat tool_calls or Responses API function_call/custom_tool_call/computer_call/local_shell_call/mcp_call/mcp_approval_request items). Off by default: a replayed tool call runs in a later caller's agent loop with arguments chosen for someone else's prompt."
+                    },
+                    "disable_identity_scoping": {
+                      "type": "boolean",
+                      "description": "Share cache entries across identities. Off by default: an entry is only served to the identity that wrote it, meaning the same virtual key and the same user, even when requests share a cache key or default_cache_key. Set to true to let every identity share entries by cache key."
                     }
                   },
                   "required": [

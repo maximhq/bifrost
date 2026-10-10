@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"time"
 
@@ -46,6 +45,7 @@ type Config struct {
 	CacheByProvider              *bool  `json:"cache_by_provider,omitempty"`              // Include provider in cache key (default: true)
 	ExcludeSystemPrompt          *bool  `json:"exclude_system_prompt,omitempty"`          // Exclude system prompt in cache key (default: false)
 	CacheToolCallResponses       bool   `json:"cache_tool_call_responses,omitempty"`      // Persist responses that carry tool calls (default: false)
+	DisableIdentityScoping       bool   `json:"disable_identity_scoping,omitempty"`       // Share entries across virtual keys and users (default: false, entries stay with the identity that wrote them)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for Config so TTL accepts
@@ -432,6 +432,9 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	}
 
 	// Compute metadata + paramsHash once and reuse across both search paths.
+	// The identity scope rides inside the metadata, so it reaches the params
+	// hash, the request hash and the direct cache ID together.
+	state.IdentityScope = plugin.resolveIdentityScope(ctx)
 	metadata, err := plugin.buildRequestMetadataForCaching(state, req)
 	if err != nil {
 		plugin.clearCacheState(requestID)
@@ -491,19 +494,11 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 // resolveCacheKey returns the per-request cache key (or the configured default)
 // and a bool indicating whether the caller should proceed with caching.
 //
-// The returned key is always scoped to the authenticated virtual key when one is
-// present on the request, so a shared cache_key/default_cache_key - a common,
-// intentional config to make caching work across a whole deployment - can never
-// let one tenant's cached response (including any PII or tool-call payload it
-// contains) be served to a different tenant's request. This is the single choke
-// point both the write path (PostLLMHook) and read path (PreLLMHook, both direct
-// and semantic search modes) resolve the cache bucket through, so scoping it here
-// closes the leak everywhere at once.
-//
-// Requests with no virtual key (governance/VK enforcement not in use) keep
-// today's un-scoped behavior: there's no tenant boundary to protect in that
-// deployment shape, and scoping by an empty identity would just be a no-op with
-// extra steps.
+// The key is returned exactly as the caller sent it. Who the request is made by
+// is not part of the key: it is folded into the params hash (see
+// resolveIdentityScope), so the stored cache_key stays the caller's own value
+// and DELETE /api/cache/clear-by-key/{key} reaches every identity's entries
+// under it.
 func (plugin *Plugin) resolveCacheKey(ctx *schemas.BifrostContext) (string, bool) {
 	rawKey, ok := ctx.Value(CacheKey).(string)
 	if !ok || rawKey == "" {
@@ -512,17 +507,48 @@ func (plugin *Plugin) resolveCacheKey(ctx *schemas.BifrostContext) (string, bool
 	if !ok {
 		return "", false
 	}
-	if vkID, isSet := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); isSet && vkID != "" {
-		return "vk:" + vkID + ":" + rawKey, true
-	}
-	// The "vk:" namespace is reserved for VK-derived keys. A request with no
-	// virtual key that supplies a cache key shaped like one is moved out of
-	// that namespace so it can never land in another tenant's bucket. Ordinary
-	// unscoped keys keep their existing format.
-	if strings.HasPrefix(rawKey, "vk:") {
-		return "raw:" + rawKey, true
-	}
 	return rawKey, true
+}
+
+// resolveIdentityScope returns who the request is made by, for folding into the
+// params hash so a cached response is only ever served to the identity that
+// wrote it. A shared cache_key or default_cache_key is a common, intentional
+// config to make caching work across a deployment; without this, one virtual
+// key's or user's cached response (including any PII or tool-call payload it
+// carries) could be served to another's request. Because the scope is part of
+// the params hash, it reaches the direct cache ID and the semantic search filter
+// alike, and it is never written to the store as a field of its own.
+//
+// The identity is read from the request's grant alone, the one source of truth
+// for who a request is made by; the deprecated per-field context keys are not
+// consulted. A request with no identity on its grant (no grant, or one that
+// names no virtual key or user) gets an empty scope rather than none, so it
+// never shares entries with those written while scoping was disabled. Returns
+// nil when Config.DisableIdentityScoping is set: every identity then shares
+// entries by cache key, as before scoping existed.
+func (plugin *Plugin) resolveIdentityScope(ctx *schemas.BifrostContext) map[string]interface{} {
+	if plugin.config.DisableIdentityScoping {
+		return nil
+	}
+	var virtualKeyID, userID string
+	if g := ctx.Grant(); g != nil {
+		if identity := g.Identity(); identity != nil {
+			if vk := identity.VirtualKey(); vk != nil {
+				virtualKeyID = vk.ID
+			}
+			if user := identity.User(); user != nil {
+				userID = user.ID
+			}
+		}
+	}
+	scope := make(map[string]interface{}, 2)
+	if virtualKeyID != "" {
+		scope["vk"] = virtualKeyID
+	}
+	if userID != "" {
+		scope["user"] = userID
+	}
+	return scope
 }
 
 // resolveCacheThreshold returns the similarity threshold to use for a semantic search: the

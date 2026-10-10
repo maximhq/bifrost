@@ -1018,6 +1018,7 @@ const baseCacheConfigSchema = z.object({
 	exclude_system_prompt: z.boolean().optional(),
 	cache_by_model: z.boolean().default(false),
 	cache_by_provider: z.boolean().default(false),
+	disable_identity_scoping: z.boolean().optional(),
 	vector_store_namespace: z.string().min(1).optional(),
 	default_cache_key: z.string().min(1).optional(),
 	created_at: z.string().optional(),

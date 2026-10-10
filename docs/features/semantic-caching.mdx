@@ -165,7 +165,8 @@ curl -X POST http://localhost:8080/api/plugins \
       "cache_by_provider": true,
       "vector_store_namespace": "BifrostSemanticCachePlugin",
       "default_cache_key": "",
-      "cache_tool_call_responses": false
+      "cache_tool_call_responses": false,
+      "disable_identity_scoping": false
     }
   }'
 ```
@@ -225,7 +226,8 @@ A vector store must be enabled in `config.json` first — the plugin has nowhere
 
         "vector_store_namespace": "BifrostSemanticCachePlugin",
         "default_cache_key": "",
-        "cache_tool_call_responses": false
+        "cache_tool_call_responses": false,
+        "disable_identity_scoping": false
       }
     }
   ]
@@ -272,6 +274,7 @@ bifrost:
 
         vector_store_namespace: "BifrostSemanticCachePlugin"
         cache_tool_call_responses: false
+        disable_identity_scoping: false
 ```
 
 <Note>
@@ -343,8 +346,9 @@ bifrostConfig := schemas.BifrostConfig{
 | `cache_by_model` | boolean | `true` | Include the model name in the cache key (different models won't share entries). |
 | `cache_by_provider` | boolean | `true` | Include the provider name in the cache key (different providers won't share entries). |
 | `vector_store_namespace` | string | `BifrostSemanticCachePlugin` | Bucket/index where entries live. Changing it points the plugin at a different (possibly empty) bucket; old entries aren't deleted, just no longer queried. |
-| `default_cache_key` | string | `""` (empty) | Fallback cache key used when a request doesn't send `x-bf-cache-key`. **Left empty, caching is disabled for any request without the header.** Entries are always partitioned by virtual key on top of this (see [Triggering the cache](#triggering-the-cache)). |
+| `default_cache_key` | string | `""` (empty) | Fallback cache key used when a request doesn't send `x-bf-cache-key`. **Left empty, caching is disabled for any request without the header.** Entries are also partitioned by identity on top of this, unless `disable_identity_scoping` is set (see [Triggering the cache](#triggering-the-cache)). |
 | `cache_tool_call_responses` | boolean | `false` | Persist responses that carry tool calls. Off by default, since a replayed tool call runs in a later caller's agent loop with arguments chosen for someone else's prompt. |
+| `disable_identity_scoping` | boolean | `false` | Share entries across identities. Off by default: an entry is only served to the identity that wrote it, meaning the same virtual key and the same user, even when requests share a cache key. Set to `true` to let every identity share entries by cache key. |
 
 ---
 
@@ -447,18 +451,23 @@ In direct-only mode, all requests use hash matching regardless of the `x-bf-cach
 
 The cache key is the **partition** every lookup and write is scoped to — it's part of the cache entry's identity alongside the model and provider. It exists for two reasons:
 
-- **Isolation (no cross-talk).** Entries are only ever matched within the same key — and, on top of that, within the same virtual key (see the note below). A request under `tenant-A` can never be served a response cached under `tenant-B`, even if the prompts are identical. The key is how you draw sharing boundaries below the virtual key (per user, per session, per feature, etc.).
+- **Isolation (no cross-talk).** Entries are only ever matched within the same key — and, on top of that, within the same identity (see the note below). A request under `tenant-A` can never be served a response cached under `tenant-B`, even if the prompts are identical. The key is how you draw sharing boundaries within an identity (per session, per feature, etc.).
 - **Explicit opt-in.** Caching changes behavior — a response can be replayed instead of freshly generated. Requiring a key makes that a deliberate choice per request (or per deployment via `default_cache_key`), so you never accidentally serve a cached answer where you wanted a live one.
 
 Pick a key granularity that matches how much you want to share: a coarse key (e.g. a feature name) maximizes hit rate across users; a fine key (e.g. a per-user or per-session ID) keeps caches private at the cost of fewer hits.
 
 <Note>
-When a request carries a resolved virtual key, the effective cache partition is automatically
-scoped to that virtual key on top of whatever `x-bf-cache-key`/`default_cache_key` you set - two
-different virtual keys can never share a cache entry, even if they're configured with the exact
-same cache key. This applies with zero configuration; there's nothing to opt into. Requests
-without a virtual key (no governance/VK enforcement in use) are partitioned by cache key alone,
-same as before.
+By default every cache entry is scoped to the identity that wrote it, on top of whatever
+`x-bf-cache-key`/`default_cache_key` you set. The identity is the request's resolved virtual key
+and, where the request is attributed to a user, that user. Two different identities never share
+a cache entry, even with the exact same cache key and prompt. Requests that carry no identity
+share entries only with each other. Set `disable_identity_scoping: true` (or turn off **Scope
+Cache by Identity** in the UI) to let every identity share entries by cache key; entries written
+in one mode are not served in the other.
+
+The identity is folded into the entry's hash and is never stored on the entry, so the stored
+cache key stays the value you sent. Clearing a key with
+`DELETE /api/cache/clear-by-key/{cacheKey}` removes every identity's entries under that key.
 </Note>
 
 <Note>
@@ -639,7 +648,7 @@ Cache outcomes also surface in **Logs** without inspecting the raw response:
 
 ### Invalidation
 
-Use the `cache_id` from `cache_debug` to invalidate entries.
+Use the `cache_id` from `cache_debug` to invalidate a single entry, or clear a whole cache key. Clearing a key removes the entries of every identity that wrote under it; to remove one identity's entry, clear it by its `cache_id`.
 
 <Tabs group="cache-clear">
 
@@ -694,6 +703,10 @@ Either way, before saving such a change:
 
 <Accordion title="Nothing is being cached">
 **Most common cause:** no cache key. Caching only engages when a request sends `x-bf-cache-key` (or you've set a `default_cache_key`). Confirm the header is present, then check `cache_debug` on the response.
+</Accordion>
+
+<Accordion title="Two virtual keys or users never share entries">
+Expected. Entries are scoped to the identity that wrote them, so the same cache key and prompt sent with a different virtual key, or by a different user, is a miss. To share entries across identities, set `disable_identity_scoping: true` or turn off **Scope Cache by Identity** in the UI.
 </Accordion>
 
 <Accordion title="The first request is always a miss">
