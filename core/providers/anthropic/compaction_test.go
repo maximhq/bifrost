@@ -805,7 +805,10 @@ func TestReplayedCompactionBlockSurvivesConversion(t *testing.T) {
 	messages := []AnthropicMessage{
 		anthMsg(AnthropicMessageRoleUser, "Refactor the parser"),
 		{Role: AnthropicMessageRoleAssistant, Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{
-			{Type: AnthropicContentBlockTypeCompaction, Content: &AnthropicContent{ContentStr: &summary}},
+			{Type: AnthropicContentBlockTypeCompaction, Content: &AnthropicContent{ContentStr: &summary}, ToolChanges: []AnthropicContentBlock{{
+				Type: AnthropicContentBlockTypeToolRemoval,
+				Tool: &AnthropicToolChangeTarget{Type: AnthropicToolChangeTargetTypeToolReference, Name: schemas.Ptr("get_weather")},
+			}}},
 			{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr("Continuing from the summary.")},
 		}}},
 		anthMsg(AnthropicMessageRoleUser, "Go on"),
@@ -819,8 +822,12 @@ func TestReplayedCompactionBlockSurvivesConversion(t *testing.T) {
 			if isCompactionItem(&out[i]) {
 				compactionIndex = i
 				block := out[i].Content.ContentBlocks[0]
-				if block.ResponsesOutputMessageContentCompaction == nil || block.ResponsesOutputMessageContentCompaction.Summary != summary {
-					t.Errorf("keepToolsGrouped=%v: compaction summary = %+v, want %q", keepToolsGrouped, block.ResponsesOutputMessageContentCompaction, summary)
+				cmp := block.ResponsesOutputMessageContentCompaction
+				if cmp == nil || cmp.Summary != summary {
+					t.Errorf("keepToolsGrouped=%v: compaction summary = %+v, want %q", keepToolsGrouped, cmp, summary)
+				} else if len(cmp.ToolChanges) != 1 || cmp.ToolChanges[0].ToolChange == nil ||
+					cmp.ToolChanges[0].ToolChange.Name == nil || *cmp.ToolChanges[0].ToolChange.Name != "get_weather" {
+					t.Errorf("keepToolsGrouped=%v: compaction tool_changes = %+v, want a tool_removal of get_weather", keepToolsGrouped, cmp.ToolChanges)
 				}
 				if out[i].Status == nil || *out[i].Status != "completed" {
 					t.Errorf("keepToolsGrouped=%v: replayed compaction item has status %v, want completed", keepToolsGrouped, out[i].Status)
@@ -855,6 +862,10 @@ func TestReplayedCompactionBlockSurvivesConversion(t *testing.T) {
 		}
 		if restored.Content == nil || restored.Content.ContentStr == nil || *restored.Content.ContentStr != summary {
 			t.Errorf("keepToolsGrouped=%v: restored compaction content = %+v, want %q", keepToolsGrouped, restored.Content, summary)
+		}
+		if len(restored.ToolChanges) != 1 || restored.ToolChanges[0].Tool == nil ||
+			restored.ToolChanges[0].Tool.Name == nil || *restored.ToolChanges[0].Tool.Name != "get_weather" {
+			t.Errorf("keepToolsGrouped=%v: restored compaction tool_changes = %+v, want a tool_removal of get_weather", keepToolsGrouped, restored.ToolChanges)
 		}
 	}
 }

@@ -6456,7 +6456,8 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 								Type:         schemas.ResponsesOutputMessageContentTypeCompaction,
 								CacheControl: block.CacheControl,
 								ResponsesOutputMessageContentCompaction: &schemas.ResponsesOutputMessageContentCompaction{
-									Summary: summaryText,
+									Summary:     summaryText,
+									ToolChanges: convertAnthropicToolChangesToBifrost(block.ToolChanges),
 								},
 							},
 						},
