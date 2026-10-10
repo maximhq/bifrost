@@ -236,6 +236,11 @@
               "type": "boolean",
               "description": "Convert chat completion requests to responses for models whose datasheet sets supports_reasoning_with_tool_calls to false, so reasoning is kept instead of being forced off.",
               "default": true
+            },
+            "convert_decision_to_responses": {
+              "type": "boolean",
+              "description": "Emulate decision requests through the model's Responses API (a forced function tool) when the provider does not serve the model on a native decisions endpoint. Off by default: without it, such requests fail with unsupported_operation.",
+              "default": false
             }
           },
           "additionalProperties": false

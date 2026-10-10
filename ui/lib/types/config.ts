@@ -725,6 +725,7 @@ export interface CompatConfig {
 	should_convert_params: boolean;
 	azure_deepseek: boolean;
 	force_reasoning_only_models_to_responses: boolean;
+	convert_decision_to_responses: boolean;
 }
 
 // Per-execution code mode limits; an omitted or 0 field uses the server default.
@@ -822,6 +823,7 @@ export const DefaultCoreConfig: CoreConfig = {
 		should_convert_params: false,
 		azure_deepseek: false,
 		force_reasoning_only_models_to_responses: true,
+		convert_decision_to_responses: false,
 	},
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,
