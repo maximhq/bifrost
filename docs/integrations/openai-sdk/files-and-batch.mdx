@@ -361,6 +361,8 @@ print(f"Status: {batch.status}")
 
 <Note>
 Batches belong to the virtual key that created them. With a virtual key, listing returns that key's batches (and batches with no recorded creating key), and requests to retrieve, cancel, fetch results for, or delete a batch created by another key return `404`. Requests without a virtual key see every batch, as before. If Bifrost cannot look up batch ownership, a list request fails with `500` instead of returning a partial page. When Bifrost runs without a config store, ownership is never recorded, so batch list, retrieve, cancel, results, and delete requests made with a virtual key are refused with `403`; configure a config store to use batches with virtual keys.
+
+The same rule covers the other objects a virtual key creates through the gateway: uploaded files, video jobs, containers (and the files inside them), and cached contents. Retrieving, downloading, deleting, or remixing one created by another key returns `404`, a batch cannot be created on another key's input file, and list pages show only the key's own objects. A batch's input, output, and error files belong to the key that created the batch. Objects created before this binding existed, or outside the gateway, carry no creating key and stay reachable to every key allowed on the provider.
 </Note>
 
 ```python

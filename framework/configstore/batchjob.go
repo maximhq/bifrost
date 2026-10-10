@@ -91,6 +91,21 @@ func (s *RDBConfigStore) GetProviderJobsByIDs(ctx context.Context, jobIDs []stri
 	return jobs, nil
 }
 
+// GetProviderJobsByFileIDs returns the provider jobs on provider that name one of
+// fileIDs as their input, output or error file, in no particular order.
+func (s *RDBConfigStore) GetProviderJobsByFileIDs(ctx context.Context, provider string, fileIDs []string) ([]*tables.TableProviderJob, error) {
+	if provider == "" || len(fileIDs) == 0 {
+		return nil, nil
+	}
+	var jobs []*tables.TableProviderJob
+	if err := s.DB().WithContext(ctx).
+		Where("provider = ? AND (input_file_id IN ? OR output_file_id IN ? OR error_file_id IN ?)", provider, fileIDs, fileIDs, fileIDs).
+		Find(&jobs).Error; err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
 // GetProviderJob returns a provider job by its stable id, or ErrNotFound.
 func (s *RDBConfigStore) GetProviderJob(ctx context.Context, jobID string) (*tables.TableProviderJob, error) {
 	if jobID == "" {

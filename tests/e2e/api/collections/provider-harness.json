@@ -220937,6 +220937,656 @@
           }
         }
       ]
+    },
+    {
+      "name": "197. Provider objects belong to the virtual key that created them (object-ownership) [SERIAL]",
+      "description": "Two virtual keys share the operator's OpenAI key. A file uploaded under the first is a 404 to the second on retrieve, content and delete, and is missing from the second key's list, while the first key still retrieves, downloads, lists and deletes it. Files are the probe because they are free; the same binding covers videos, containers and cached contents.",
+      "item": [
+        {
+          "name": "openai object-ownership setup: create virtual key A (owner)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('objOwnVkId');",
+                  "  pm.collectionVariables.unset('objOwnVkValue');",
+                  "  pm.collectionVariables.set('objOwnVkName', 'harness-object-ownership-A (owner)-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleVkId = pm.collectionVariables.get('objOwnVkId');",
+                  "if (!staleVkId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleVkId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('object-ownership: the retained virtual key A (owner) from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleVkId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleVkId + ' not deleted: ' + response.text()).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.collectionVariables.unset('objOwnVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('object-ownership: virtual key A (owner) created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('object-ownership: virtual key A (owner) has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('objOwnVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('objOwnVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{objOwnVkName}}\",\"provider_configs\":[{\"provider\":\"openai\",\"allowed_models\":[\"*\"],\"weight\":1}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership setup: create virtual key B (other)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('objOtherVkId');",
+                  "  pm.collectionVariables.unset('objOtherVkValue');",
+                  "  pm.collectionVariables.set('objOtherVkName', 'harness-object-ownership-B (other)-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleVkId = pm.collectionVariables.get('objOtherVkId');",
+                  "if (!staleVkId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleVkId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('object-ownership: the retained virtual key B (other) from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleVkId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleVkId + ' not deleted: ' + response.text()).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.collectionVariables.unset('objOtherVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('object-ownership: virtual key B (other) created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('object-ownership: virtual key B (other) has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('objOtherVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('objOtherVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{objOtherVkName}}\",\"provider_configs\":[{\"provider\":\"openai\",\"allowed_models\":[\"*\"],\"weight\":1}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership: the owning key uploads a file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('objFileId');",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('object-ownership: upload under the owning key is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('object-ownership: the upload has a file id', function () {",
+                  "  pm.expect(j.id, 'no id: ' + txt.slice(0, 400)).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (j.id) { pm.collectionVariables.set('objFileId', j.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOwnVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.jsonl",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "openai",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/v1/files"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-404] openai object-ownership: another key cannot retrieve the file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The file exists on the shared provider key; the other virtual key must get a 404, never the object",
+                  "// and never a 401/403/500 that would mean the request was refused for a different reason.",
+                  "pm.test('object-ownership: retrieve under another key is 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "});",
+                  "pm.test('object-ownership: the 404 names the file as not found', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOtherVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/files/{{objFileId}}?provider=openai"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-404] openai object-ownership: another key cannot download the file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The file exists on the shared provider key; the other virtual key must get a 404, never the object",
+                  "// and never a 401/403/500 that would mean the request was refused for a different reason.",
+                  "pm.test('object-ownership: download under another key is 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "});",
+                  "pm.test('object-ownership: the 404 names the file as not found', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOtherVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/files/{{objFileId}}/content?provider=openai"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-404] openai object-ownership: another key cannot delete the file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The file exists on the shared provider key; the other virtual key must get a 404, never the object",
+                  "// and never a 401/403/500 that would mean the request was refused for a different reason.",
+                  "pm.test('object-ownership: delete under another key is 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "});",
+                  "pm.test('object-ownership: the 404 names the file as not found', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOtherVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/files/{{objFileId}}?provider=openai"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership: the file list under the other key omits the file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('object-ownership: file list under the other key is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "var ids = (j.data || []).map(function (f) { return f.id; });",
+                  "pm.test('object-ownership: the list under the other key omits the uploaded file', function () {",
+                  "  pm.expect(ids, 'list: ' + txt.slice(0, 400)).to.not.include(pm.collectionVariables.get('objFileId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOtherVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/files?provider=openai&limit=10000&order=desc"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership: the file list under the owning key includes the file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('object-ownership: file list under the owning key is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "var ids = (j.data || []).map(function (f) { return f.id; });",
+                  "pm.test('object-ownership: the list under the owning key includes the uploaded file', function () {",
+                  "  pm.expect(ids, 'list: ' + txt.slice(0, 400)).to.include(pm.collectionVariables.get('objFileId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOwnVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/files?provider=openai&limit=10000&order=desc"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership: the owning key can retrieve the file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('object-ownership: retrieve under the owning key is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('object-ownership: the owning key gets its own file back', function () {",
+                  "  pm.expect(j.id, 'wrong file: ' + txt.slice(0, 400)).to.eql(pm.collectionVariables.get('objFileId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOwnVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/files/{{objFileId}}?provider=openai"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership: the owning key can download the file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('object-ownership: download under the owning key is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('object-ownership: the content is the uploaded fixture', function () {",
+                  "  pm.expect(txt, 'unexpected content: ' + txt.slice(0, 200)).to.include('custom_id');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOwnVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/files/{{objFileId}}/content?provider=openai"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership: the owning key can delete the file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('object-ownership: delete under the owning key is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('object-ownership: the owning key deleted its file', function () {",
+                  "  pm.expect(j.deleted, 'not deleted: ' + txt.slice(0, 400)).to.eql(true);",
+                  "});",
+                  "pm.collectionVariables.unset('objFileId');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOwnVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/files/{{objFileId}}?provider=openai"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership cleanup: delete virtual key A (owner)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('objOwnVkId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('object-ownership: virtual key A (owner) deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('objOwnVkId');",
+                  "  pm.collectionVariables.unset('objOwnVkValue');",
+                  "  pm.collectionVariables.unset('objOwnVkName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{objOwnVkId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership cleanup: delete virtual key B (other)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('objOtherVkId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('object-ownership: virtual key B (other) deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('objOtherVkId');",
+                  "  pm.collectionVariables.unset('objOtherVkValue');",
+                  "  pm.collectionVariables.unset('objOtherVkName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{objOtherVkId}}"
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

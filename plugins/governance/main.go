@@ -1163,8 +1163,8 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		}, nil
 	}
 
-	// A batch addressed by id belongs to the virtual key that created it; see providerjobs.go.
-	if shortCircuit := p.enforceProviderJobOwnership(ctx, req); shortCircuit != nil {
+	// A provider object addressed by id belongs to the virtual key that created it; see providerjobs.go.
+	if shortCircuit := p.enforceProviderObjectOwnership(ctx, req); shortCircuit != nil {
 		return req, shortCircuit, nil
 	}
 
@@ -1240,19 +1240,21 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Extract request type, provider, and model
 	requestType, provider, requestedModel, _ := bifrost.GetResponseFields(result, err)
 
-	// A batch list is the provider's answer for the shared operator key; narrow it to what this
-	// virtual key may see before anything downstream reads it. See providerjobs.go.
-	if result != nil && result.BatchListResponse != nil {
-		if filterErr := p.filterProviderJobList(ctx, string(provider), result.BatchListResponse); filterErr != nil {
+	// A list of provider objects is the provider's answer for the shared operator key; narrow it to
+	// what this virtual key may see before anything downstream reads it, and remember which key a
+	// freshly created object belongs to. See providerjobs.go.
+	if err == nil && result != nil {
+		if filterErr := p.filterProviderObjectList(ctx, string(provider), result); filterErr != nil {
 			return nil, &schemas.BifrostError{
 				StatusCode: bifrost.Ptr(500),
-				Error:      &schemas.ErrorField{Message: "failed to verify access to the batch list"},
+				Error:      &schemas.ErrorField{Message: filterErr.Error()},
 				ExtraFields: schemas.BifrostErrorExtraFields{
 					RequestType: requestType,
 					Provider:    provider,
 				},
 			}, nil
 		}
+		p.recordProviderObjectLifecycle(ctx, requestType, string(provider), result)
 	}
 
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
