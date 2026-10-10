@@ -2,7 +2,10 @@ package configstore
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
+	gormsqlite "gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -863,6 +867,158 @@ func TestRefreshOauthTokenFieldsIfActive_StatusGuardStillApplies(t *testing.T) {
 	updated, err := s.RefreshOauthTokenFieldsIfActive(ctx, "tok-2", "rt-original", "at-new", "rt-new", &future, time.Now())
 	require.NoError(t, err)
 	assert.False(t, updated, "a non-'active' row must reject the write even with a matching expectedPriorRefreshToken")
+}
+
+func openSQLiteOAuthRefreshTestStore(t *testing.T, path string) *RDBConfigStore {
+	t.Helper()
+	dsn := path + "?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=60000&_wal_autocheckpoint=1000&_foreign_keys=1"
+	db, err := gorm.Open(gormsqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(4)
+	require.NoError(t, db.AutoMigrate(&tables.TableMCPOauthToken{}))
+	store := &RDBConfigStore{}
+	store.db.Store(db)
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	return store
+}
+
+func seedOAuthRefreshTestToken(t *testing.T, s *RDBConfigStore, id, accessToken, refreshToken string) {
+	t.Helper()
+	future := time.Now().Add(time.Hour)
+	require.NoError(t, s.DB().Create(&tables.TableMCPOauthToken{
+		ID: id, AuthMode: "shared", OauthConfigID: "cfg-" + id, Status: "active",
+		AccessToken: accessToken, RefreshToken: refreshToken, TokenType: "Bearer",
+		ExpiresAt: &future, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}).Error)
+}
+
+func TestRefreshOauthTokenFieldsIfActive_RetriesSQLiteWALConflict(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "oauth-wal-retry.db")
+	s := openSQLiteOAuthRefreshTestStore(t, path)
+	seedOAuthRefreshTestToken(t, s, "target", "at-old", "rt-old")
+	seedOAuthRefreshTestToken(t, s, "competitor", "at-other", "rt-other")
+
+	var queries atomic.Int64
+	var commits atomic.Int64
+	callback := s.DB().Callback().Query()
+	const callbackName = "test:oauth-wal-competitor"
+	require.NoError(t, callback.After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		queries.Add(1)
+		if commits.Load() != 0 {
+			return
+		}
+		sqlDB, err := s.DB().DB()
+		if err != nil {
+			t.Errorf("open competing SQLite pool: %v", err)
+			return
+		}
+		result, err := sqlDB.Exec("UPDATE mcp_oauth_tokens SET updated_at = ? WHERE id = ?", time.Now(), "competitor")
+		if err != nil {
+			t.Errorf("commit unrelated SQLite write: %v", err)
+			return
+		}
+		rows, err := result.RowsAffected()
+		if err != nil || rows != 1 {
+			t.Errorf("competing SQLite write affected %d rows (error: %v)", rows, err)
+			return
+		}
+		commits.Add(1)
+	}))
+	defer callback.Remove(callbackName)
+
+	future := time.Now().Add(time.Hour)
+	updated, err := s.RefreshOauthTokenFieldsIfActive(ctx, "target", "rt-old", "at-new", "rt-new", &future, time.Now())
+	require.NoError(t, err, "the SQLite retry must absorb the transient WAL snapshot conflict")
+	require.True(t, updated, "the retry must report a committed write")
+	assert.GreaterOrEqual(t, queries.Load(), int64(2), "a fresh transaction must retry after the competing commit")
+	assert.Equal(t, int64(1), commits.Load(), "the unrelated competing write must commit exactly once")
+
+	var raw struct {
+		AccessToken      string
+		RefreshToken     string
+		EncryptionStatus string
+	}
+	require.NoError(t, s.DB().Raw("SELECT access_token, refresh_token, encryption_status FROM mcp_oauth_tokens WHERE id = ?", "target").Scan(&raw).Error)
+	assert.Equal(t, tables.EncryptionStatusEncrypted, raw.EncryptionStatus)
+	assert.NotEqual(t, "at-new", raw.AccessToken, "the refreshed access token must pass through BeforeSave encryption")
+	assert.NotEqual(t, "rt-new", raw.RefreshToken, "the refreshed refresh token must pass through BeforeSave encryption")
+
+	stored, err := s.GetOauthTokenByID(ctx, "target")
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	assert.Equal(t, "at-new", stored.AccessToken)
+	assert.Equal(t, "rt-new", stored.RefreshToken)
+
+	require.NoError(t, s.Close(ctx))
+	reopened := openSQLiteOAuthRefreshTestStore(t, path)
+	reopenedToken, err := reopened.GetOauthTokenByID(ctx, "target")
+	require.NoError(t, err)
+	require.NotNil(t, reopenedToken)
+	assert.Equal(t, "at-new", reopenedToken.AccessToken, "the encrypted access token must decrypt after reopening SQLite")
+	assert.Equal(t, "rt-new", reopenedToken.RefreshToken, "the encrypted refresh token must decrypt after reopening SQLite")
+}
+
+func TestRefreshOauthTokenFieldsIfActive_CancellationStopsSQLiteRetry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oauth-wal-cancel.db")
+	s := openSQLiteOAuthRefreshTestStore(t, path)
+	seedOAuthRefreshTestToken(t, s, "target", "at-old", "rt-old")
+	seedOAuthRefreshTestToken(t, s, "competitor", "at-other", "rt-other")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var queries atomic.Int64
+	var commits atomic.Int64
+	callback := s.DB().Callback().Query()
+	const callbackName = "test:oauth-wal-cancel-competitor"
+	require.NoError(t, callback.After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		count := queries.Add(1)
+		sqlDB, err := s.DB().DB()
+		if err != nil {
+			t.Errorf("open competing SQLite pool: %v", err)
+			return
+		}
+		if _, err := sqlDB.Exec("UPDATE mcp_oauth_tokens SET updated_at = ? WHERE id = ?", time.Now(), "competitor"); err != nil {
+			t.Errorf("commit unrelated SQLite write: %v", err)
+			return
+		}
+		commits.Add(1)
+		if count == 2 {
+			cancel()
+		}
+	}))
+	defer callback.Remove(callbackName)
+
+	future := time.Now().Add(time.Hour)
+	updated, err := s.RefreshOauthTokenFieldsIfActive(ctx, "target", "rt-old", "at-new", "rt-new", &future, time.Now())
+	assert.ErrorIs(t, err, context.Canceled, "cancellation on the retried transaction must stop further attempts")
+	assert.False(t, updated)
+	assert.Equal(t, int64(2), queries.Load(), "the first lock failure must retry once before cancellation stops the loop")
+	assert.Equal(t, int64(2), commits.Load(), "each observed transaction must have a competing WAL commit")
+}
+
+func TestRefreshOauthTokenFieldsIfActive_NonLockErrorIsNotRetried(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oauth-nonlock.db")
+	s := openSQLiteOAuthRefreshTestStore(t, path)
+	seedOAuthRefreshTestToken(t, s, "target", "at-old", "rt-old")
+
+	injected := errors.New("synthetic non-lock failure")
+	var queries atomic.Int64
+	callback := s.DB().Callback().Query()
+	const callbackName = "test:oauth-nonlock-error"
+	require.NoError(t, callback.After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if queries.Add(1) == 1 {
+			tx.AddError(injected)
+		}
+	}))
+	defer callback.Remove(callbackName)
+
+	updated, err := s.RefreshOauthTokenFieldsIfActive(context.Background(), "target", "rt-old", "at-new", "rt-new", nil, time.Now())
+	assert.ErrorIs(t, err, injected)
+	assert.False(t, updated)
+	assert.Equal(t, int64(1), queries.Load(), "a non-lock error must return after one transaction")
 }
 
 // oauth2StoreBackend pairs a backend name with a fresh OAuth2-capable store.

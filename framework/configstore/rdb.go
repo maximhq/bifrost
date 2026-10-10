@@ -20,6 +20,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
+	"github.com/mattn/go-sqlite3"
 	bifrost "github.com/maximhq/bifrost/core"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -8175,7 +8176,80 @@ func (s *RDBConfigStore) UpdateOauthToken(ctx context.Context, token *tables.Tab
 //
 // Loads through the model (not a raw column UPDATE) so BeforeSave's
 // encryption hook still runs exactly as it does for every other token write.
+//
+// On SQLite a transient WAL lock conflict is retried rather than reported, so
+// credentials that were already rotated upstream are not thrown away — see
+// refreshOauthTokenFieldsIfActiveWithSQLiteRetry below. On any other dialect the
+// call is a single attempt. Either way it returns false whenever nothing was
+// committed.
 func (s *RDBConfigStore) RefreshOauthTokenFieldsIfActive(ctx context.Context, id string, expectedPriorRefreshToken, accessToken, refreshToken string, expiresAt *time.Time, lastRefreshedAt time.Time) (bool, error) {
+	if !isSQLiteDialect(s.DB()) {
+		return s.refreshOauthTokenFieldsIfActiveOnce(ctx, id, expectedPriorRefreshToken, accessToken, refreshToken, expiresAt, lastRefreshedAt)
+	}
+	return s.refreshOauthTokenFieldsIfActiveWithSQLiteRetry(ctx, id, expectedPriorRefreshToken, accessToken, refreshToken, expiresAt, lastRefreshedAt)
+}
+
+// --- SQLite transient-lock retry -------------------------------------------
+//
+// SQLite in WAL mode admits a single writer at a time. A DEFERRED transaction
+// that reads first and only then writes — exactly the compare-and-swap shape of
+// refreshOauthTokenFieldsIfActiveOnce below — only takes the write lock at its
+// first write statement, so it must upgrade the read snapshot taken by its
+// first SELECT. If any other connection committed in between, that snapshot is
+// stale and SQLite refuses the upgrade with SQLITE_BUSY_SNAPSHOT rather than
+// waiting for the current writer to finish: the DSN's _busy_timeout is not
+// consulted for this failure mode, so the caller sees a hard "database is
+// locked" error even though nothing is actually wedged.
+//
+// That matters for the OAuth refresh path. The credentials were already rotated
+// at the identity provider before this write, so a busy snapshot says only that
+// some unrelated writer committed between our SELECT and our UPDATE — the row
+// itself may still hold the refresh token this call redeemed. Discarding the
+// write therefore forces a second upstream exchange for a token pair that is
+// already valid, and providers commonly reject the replayed refresh token. A
+// fresh transaction rebuilds the snapshot and commits normally, so the write is
+// retried a bounded number of times while the failure stays a transient lock
+// error.
+const (
+	// sqliteBusyMaxAttempts bounds the retry loop. Together with the backoff
+	// below the loop's own sleeping budget (~11.5s) stays well inside
+	// sqliteBusyRetryTimeout.
+	sqliteBusyMaxAttempts = 16
+	// sqliteBusyInitialDelay is the delay before the second attempt.
+	sqliteBusyInitialDelay = 50 * time.Millisecond
+	// sqliteBusyMaxDelay caps the exponential backoff.
+	sqliteBusyMaxDelay = 1 * time.Second
+	// sqliteBusyRetryTimeout supplies a context budget independently of the
+	// caller's deadline; driver-level busy waits may outlive that context.
+	sqliteBusyRetryTimeout = 30 * time.Second
+)
+
+// isSQLiteDialect reports whether db uses the SQLite driver. Only SQLite needs
+// the lock-conflict retry: PostgreSQL and ClickHouse surface contention as
+// different, typed errors that their own paths handle.
+func isSQLiteDialect(db *gorm.DB) bool {
+	return db != nil && db.Dialector != nil && db.Dialector.Name() == "sqlite"
+}
+
+// isSQLiteTransientLockError reports whether err is a retryable SQLite
+// lock-contention error. Only the primary result code is inspected: extended
+// codes such as SQLITE_BUSY_SNAPSHOT (517), SQLITE_BUSY_TIMEOUT (773) or
+// SQLITE_LOCKED_SHAREDCACHE (262) all keep their primary code in Code
+// (ErrBusy / ErrLocked) and carry the variant in ExtendedCode, so matching on
+// Code covers every extended form without enumerating them.
+func isSQLiteTransientLockError(err error) bool {
+	var sqliteErr sqlite3.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	return sqliteErr.Code == sqlite3.ErrBusy || sqliteErr.Code == sqlite3.ErrLocked
+}
+
+// refreshOauthTokenFieldsIfActiveOnce is the single-attempt implementation: one
+// transaction, one read of the row, one write, no retrying. A caller that
+// retries it gets a fresh transaction and a fresh model every time, and updated
+// is local to the call, so a retry never inherits an earlier attempt's outcome.
+func (s *RDBConfigStore) refreshOauthTokenFieldsIfActiveOnce(ctx context.Context, id string, expectedPriorRefreshToken, accessToken, refreshToken string, expiresAt *time.Time, lastRefreshedAt time.Time) (bool, error) {
 	updated := false
 	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var current tables.TableMCPOauthToken
@@ -8207,6 +8281,51 @@ func (s *RDBConfigStore) RefreshOauthTokenFieldsIfActive(ctx context.Context, id
 		return false, fmt.Errorf("failed to refresh oauth token fields: %w", err)
 	}
 	return updated, nil
+}
+
+// refreshOauthTokenFieldsIfActiveWithSQLiteRetry re-runs the single-attempt
+// helper while, and only while, it fails with a typed SQLite busy/locked error.
+// A transient WAL snapshot conflict must not throw away credentials that were
+// already rotated upstream.
+//
+// Every attempt calls the helper afresh, which opens a new transaction and
+// loads a new model, so the retry sees whatever the competing writer committed.
+// That re-read is also what lets the compare-and-swap and status guards reject a
+// refresh that genuinely lost the race: those report (false, nil) and are never
+// retried. Any non-lock failure, and any failure to commit, returns
+// (false, err) immediately.
+func (s *RDBConfigStore) refreshOauthTokenFieldsIfActiveWithSQLiteRetry(ctx context.Context, id string, expectedPriorRefreshToken, accessToken, refreshToken string, expiresAt *time.Time, lastRefreshedAt time.Time) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, sqliteBusyRetryTimeout)
+	defer cancel()
+
+	var lastErr error
+	delay := sqliteBusyInitialDelay
+	for attempt := 0; attempt < sqliteBusyMaxAttempts; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return false, fmt.Errorf("failed to refresh oauth token fields: sqlite lock retry aborted after %d attempts: %w", attempt, ctx.Err())
+			case <-timer.C:
+			}
+			if delay < sqliteBusyMaxDelay {
+				delay *= 2
+				if delay > sqliteBusyMaxDelay {
+					delay = sqliteBusyMaxDelay
+				}
+			}
+		}
+		updated, err := s.refreshOauthTokenFieldsIfActiveOnce(ctx, id, expectedPriorRefreshToken, accessToken, refreshToken, expiresAt, lastRefreshedAt)
+		if err == nil {
+			return updated, nil
+		}
+		if !isSQLiteTransientLockError(err) {
+			return false, err
+		}
+		lastErr = err
+	}
+	return false, fmt.Errorf("failed to refresh oauth token fields: sqlite lock conflict persisted after %d attempts: %w", sqliteBusyMaxAttempts, lastErr)
 }
 
 // DeleteOauthToken deletes an OAuth token by its ID
