@@ -659,6 +659,8 @@ func TestAccounting_RequestsThatSpendNothingAreNotCharged(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			plugin, store := governedPassthroughFixture(t)
+			// A virtual-key file list is checked against recorded object owners, which needs a config store.
+			plugin.configStore = newProviderObjectConfigStore(t)
 
 			// Through the request hook first, so the key's limits are settled onto the grant exactly
 			// as a real call's are. Without that the assertion below is worth nothing: a post hook
