@@ -1,6 +1,7 @@
 package bifrost
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -156,6 +157,12 @@ func TestClassifyFailure(t *testing.T) {
 		{"520 unlisted 5xx", providerError(520, "", "", "provider API error"), schemas.FailureClassUnknown},
 		{"internal bifrost error", &schemas.BifrostError{IsBifrostError: true, Error: &schemas.ErrorField{Message: "tracer not found"}}, schemas.FailureClassUnknown},
 		{"bedrock in-stream validation", &schemas.BifrostError{IsBifrostError: true, Type: Ptr("ValidationException"), Error: &schemas.ErrorField{Type: Ptr("ValidationException"), Message: "This model version has reached the end of its life"}}, schemas.FailureClassUnknown},
+
+		// endings Bifrost itself caused, classed by their type whoever built the error
+		{"provider timeout", &schemas.BifrostError{IsBifrostError: true, StatusCode: Ptr(504), Error: &schemas.ErrorField{Type: Ptr(schemas.RequestTimedOut), Message: schemas.ErrProviderRequestTimedOut}}, schemas.FailureClassTimeout},
+		{"ttft miss", &schemas.BifrostError{IsBifrostError: true, StatusCode: Ptr(504), Error: &schemas.ErrorField{Type: Ptr(schemas.RequestTimedOut), Code: Ptr(schemas.FirstTokenTimeoutErrorCode)}}, schemas.FailureClassTimeout},
+		{"caller cancel 499", &schemas.BifrostError{IsBifrostError: true, StatusCode: Ptr(499), Error: &schemas.ErrorField{Type: Ptr(schemas.RequestCancelled), Message: schemas.ErrRequestCancelled}}, schemas.FailureClassCancelled},
+		{"context.Canceled from a provider call", &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Type: Ptr(schemas.RequestCancelled), Error: context.Canceled}}, schemas.FailureClassCancelled},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -243,7 +250,7 @@ func TestFailureClass_Policy(t *testing.T) {
 	if !schemas.FailureClassRegionBlocked.IsPerKey() || !schemas.FailureClassRegionBlocked.IsPermanentPerKey() || schemas.FailureClassRegionBlocked.FailReason() != "region_blocked_error" {
 		t.Errorf("region_blocked should be a permanent per-key failure carrying its label")
 	}
-	for _, c := range []schemas.FailureClass{schemas.FailureClassTransient, schemas.FailureClassCallerFault, schemas.FailureClassUnknown} {
+	for _, c := range []schemas.FailureClass{schemas.FailureClassTransient, schemas.FailureClassCallerFault, schemas.FailureClassUnknown, schemas.FailureClassTimeout, schemas.FailureClassCancelled} {
 		if c.IsPerKey() || c.IsPermanentPerKey() || c.FailReason() != "" {
 			t.Errorf("%s should carry no per-key policy and no label", c)
 		}
