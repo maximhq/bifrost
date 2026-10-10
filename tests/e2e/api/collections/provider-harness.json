@@ -221538,6 +221538,146 @@
           }
         }
       ]
+    },
+    {
+      "name": "202. Replayed Anthropic compaction blocks reach Bedrock (#8082 / PR #8260)",
+      "description": "Regression for #8082: on the Anthropic ingress (/anthropic/v1/messages) a bedrock/<claude> model is converted with the grouped content-block converter, which had no case for compaction blocks and silently dropped a replayed one. The upstream then received the full history instead of the compacted summary and compacted again on every step. The fixed converter keeps the block: InvokeModel (chosen when the request carries a compact_20260112 edit, see folder 85) gets the compaction block itself, and Converse, which has no compaction block, gets the summary as assistant text. The summary carries a codename that appears nowhere else in the request, so a reply that repeats it proves the summary reached the provider. When the gateway has client_config.allow_per_request_raw_override enabled, x-bf-send-back-raw-request additionally exposes the outbound body and the cases assert the summary on the wire. Case 1 is the reporter's shape (compaction edit, InvokeModel); case 2 replays the block without the edit, so the request goes through Converse.",
+      "item": [
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /anthropic/v1/messages replayed compaction block reaches InvokeModel - #8082",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "compact-2026-01-12"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"Start the refactor.\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"compaction\",\"content\":\"Summary of the earlier turns: the project codename is VELVET-ORCHID-4471.\"},{\"type\":\"text\",\"text\":\"Continuing from the summary.\"}]},{\"role\":\"user\",\"content\":\"What is the project codename recorded in the summary? Reply with the codename only.\"}],\"context_management\":{\"edits\":[{\"type\":\"compact_20260112\",\"trigger\":{\"type\":\"input_tokens\",\"value\":50000}}]}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('bedrock replayed compaction /anthropic InvokeModel: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var reply = (body.content || []).filter(function (b) { return b && b.type === 'text'; }).map(function (b) { return b.text || ''; }).join(' ');",
+                  "pm.test('bedrock replayed compaction /anthropic InvokeModel: reply repeats the codename that only the replayed compaction summary carries', function () {",
+                  "  pm.expect(reply, 'the replayed compaction summary did not reach Bedrock, so the model cannot know the codename (#8082). reply=' + JSON.stringify(reply)).to.include('VELVET-ORCHID-4471');",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('bedrock replayed compaction /anthropic InvokeModel: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored (needs client_config.allow_per_request_raw_override)').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var dump = JSON.stringify(rr);",
+                  "pm.test('bedrock replayed compaction /anthropic InvokeModel: compaction block with its summary reached the wire', function () {",
+                  "  var found = null;",
+                  "  (rr.messages || []).forEach(function (m) {",
+                  "    (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'compaction') { found = b; } });",
+                  "  });",
+                  "  pm.expect(found, 'no compaction block in the InvokeModel body: the grouped converter dropped it (#8082). body=' + dump).to.be.an('object');",
+                  "  pm.expect(JSON.stringify(found.content), 'compaction summary missing: ' + dump).to.include('VELVET-ORCHID-4471');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /anthropic/v1/messages replayed compaction summary reaches Converse as assistant text - #8082",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"Start the refactor.\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"compaction\",\"content\":\"Summary of the earlier turns: the project codename is VELVET-ORCHID-4471.\"},{\"type\":\"text\",\"text\":\"Continuing from the summary.\"}]},{\"role\":\"user\",\"content\":\"What is the project codename recorded in the summary? Reply with the codename only.\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('bedrock replayed compaction /anthropic Converse: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var reply = (body.content || []).filter(function (b) { return b && b.type === 'text'; }).map(function (b) { return b.text || ''; }).join(' ');",
+                  "pm.test('bedrock replayed compaction /anthropic Converse: reply repeats the codename that only the replayed compaction summary carries', function () {",
+                  "  pm.expect(reply, 'the replayed compaction summary did not reach Bedrock, so the model cannot know the codename (#8082). reply=' + JSON.stringify(reply)).to.include('VELVET-ORCHID-4471');",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('bedrock replayed compaction /anthropic Converse: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored (needs client_config.allow_per_request_raw_override)').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var dump = JSON.stringify(rr);",
+                  "pm.test('bedrock replayed compaction /anthropic Converse: summary reached the assistant turn as text', function () {",
+                  "  var texts = [];",
+                  "  (rr.messages || []).forEach(function (m) {",
+                  "    if (m.role !== 'assistant') { return; }",
+                  "    (m.content || []).forEach(function (b) { if (b && typeof b.text === 'string') { texts.push(b.text); } });",
+                  "  });",
+                  "  pm.expect(texts.join(' '), 'compaction summary missing from the Converse assistant turn: the grouped converter dropped it (#8082). body=' + dump).to.include('VELVET-ORCHID-4471');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

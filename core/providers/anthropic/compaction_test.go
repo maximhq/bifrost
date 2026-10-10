@@ -793,6 +793,83 @@ func TestMixedTextThenToolCallsStreamMapsStopReasonToToolUse(t *testing.T) {
 	}
 }
 
+// TestReplayedCompactionBlockSurvivesConversion pins issue #8082: a compaction
+// block replayed in an assistant turn must reach the provider. Bedrock requests
+// use the grouped converter, which used to drop the block, so every later step
+// resent the full history and compacted again.
+func TestReplayedCompactionBlockSurvivesConversion(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	summary := "Summary of the earlier turns"
+	messages := []AnthropicMessage{
+		anthMsg(AnthropicMessageRoleUser, "Refactor the parser"),
+		{Role: AnthropicMessageRoleAssistant, Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{
+			{Type: AnthropicContentBlockTypeCompaction, Content: &AnthropicContent{ContentStr: &summary}, ToolChanges: []AnthropicContentBlock{{
+				Type: AnthropicContentBlockTypeToolRemoval,
+				Tool: &AnthropicToolChangeTarget{Type: AnthropicToolChangeTargetTypeToolReference, Name: schemas.Ptr("get_weather")},
+			}}},
+			{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr("Continuing from the summary.")},
+		}}},
+		anthMsg(AnthropicMessageRoleUser, "Go on"),
+	}
+
+	for _, keepToolsGrouped := range []bool{false, true} {
+		out := ConvertAnthropicMessagesToBifrostMessages(ctx, messages, nil, false, keepToolsGrouped)
+
+		compactionIndex, textIndex := -1, -1
+		for i := range out {
+			if isCompactionItem(&out[i]) {
+				compactionIndex = i
+				block := out[i].Content.ContentBlocks[0]
+				cmp := block.ResponsesOutputMessageContentCompaction
+				if cmp == nil || cmp.Summary != summary {
+					t.Errorf("keepToolsGrouped=%v: compaction summary = %+v, want %q", keepToolsGrouped, cmp, summary)
+				} else if len(cmp.ToolChanges) != 1 || cmp.ToolChanges[0].ToolChange == nil ||
+					cmp.ToolChanges[0].ToolChange.Name == nil || *cmp.ToolChanges[0].ToolChange.Name != "get_weather" {
+					t.Errorf("keepToolsGrouped=%v: compaction tool_changes = %+v, want a tool_removal of get_weather", keepToolsGrouped, cmp.ToolChanges)
+				}
+				if out[i].Status == nil || *out[i].Status != "completed" {
+					t.Errorf("keepToolsGrouped=%v: replayed compaction item has status %v, want completed", keepToolsGrouped, out[i].Status)
+				}
+			} else if out[i].Content != nil && len(out[i].Content.ContentBlocks) > 0 && out[i].Content.ContentBlocks[0].Text != nil &&
+				*out[i].Content.ContentBlocks[0].Text == "Continuing from the summary." {
+				textIndex = i
+			}
+		}
+		if compactionIndex == -1 {
+			t.Fatalf("keepToolsGrouped=%v: compaction block was dropped", keepToolsGrouped)
+		}
+		if textIndex == -1 || compactionIndex > textIndex {
+			t.Errorf("keepToolsGrouped=%v: compaction item at %d, text at %d; want the compaction first", keepToolsGrouped, compactionIndex, textIndex)
+		}
+
+		// Converting back must restore the compaction block in the assistant turn.
+		anthropicMessages, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, out, true, schemas.ResolveModelCaps(schemas.Bedrock, "claude-opus-5-5"))
+		var restored *AnthropicContentBlock
+		for i := range anthropicMessages {
+			if anthropicMessages[i].Role != AnthropicMessageRoleAssistant {
+				continue
+			}
+			for j := range anthropicMessages[i].Content.ContentBlocks {
+				if anthropicMessages[i].Content.ContentBlocks[j].Type == AnthropicContentBlockTypeCompaction {
+					restored = &anthropicMessages[i].Content.ContentBlocks[j]
+				}
+			}
+		}
+		if restored == nil {
+			t.Fatalf("keepToolsGrouped=%v: compaction block missing after converting back", keepToolsGrouped)
+		}
+		if restored.Content == nil || restored.Content.ContentStr == nil || *restored.Content.ContentStr != summary {
+			t.Errorf("keepToolsGrouped=%v: restored compaction content = %+v, want %q", keepToolsGrouped, restored.Content, summary)
+		}
+		if len(restored.ToolChanges) != 1 || restored.ToolChanges[0].Tool == nil ||
+			restored.ToolChanges[0].Tool.Name == nil || *restored.ToolChanges[0].Tool.Name != "get_weather" {
+			t.Errorf("keepToolsGrouped=%v: restored compaction tool_changes = %+v, want a tool_removal of get_weather", keepToolsGrouped, restored.ToolChanges)
+		}
+	}
+}
+
 // TestToBifrostResponsesStream_CompactionToolChanges (#8207): a streamed compaction block
 // may carry tool_changes on its content_block_start (the server-recorded net tool set of the
 // compacted range). It must ride along to the item emitted on the compaction delta, and the
