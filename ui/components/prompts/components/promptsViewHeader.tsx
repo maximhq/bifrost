@@ -314,7 +314,7 @@ function SessionItem({
 
 	if (isEditing) {
 		return (
-			<div className="flex items-center gap-2 rounded-sm px-2 py-1.5" onKeyDown={(e) => e.stopPropagation()}>
+			<div className="flex items-center gap-2 rounded-sm px-2 py-1.5" role="presentation" onKeyDown={(e) => e.stopPropagation()}>
 				<Input
 					ref={inputRef}
 					defaultValue={session.name}

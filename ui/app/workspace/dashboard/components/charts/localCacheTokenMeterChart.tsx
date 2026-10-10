@@ -12,7 +12,8 @@ interface LocalCacheTokenMeterChartProps {
 	data: LogStats | null;
 }
 
-const METER_COLORS = { direct: "#06b6d4", semantic: "#8b5cf6", remaining: "#3b82f6" };
+// Teal ramp: the two hit kinds are ordered shares of one total.
+const METER_COLORS = { direct: "var(--chart-seq-1)", semantic: "var(--chart-seq-3)", remaining: "var(--chart-seq-5)" };
 
 function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps) {
 	const { ref, width, height } = useGaugeSize();
@@ -47,7 +48,7 @@ function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps)
 					)}
 					{showGauge && gaugeGeometry && (
 						<>
-							<ResponsiveContainer width="100%" height="100%">
+							<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 								<PieChart>
 									<Pie
 										data={valueData}

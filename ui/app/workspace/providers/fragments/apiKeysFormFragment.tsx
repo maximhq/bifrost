@@ -1,20 +1,27 @@
+import { ModelAccessSelector } from "@/components/modelAccess";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { DefaultVertexAWSWorkloadIdentityConfig } from "@/lib/types/config";
 import { Input } from "@/components/ui/input";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { Label } from "@/components/ui/label";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TagInput } from "@/components/ui/tagInput";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { isRedacted } from "@/lib/utils/validation";
+import { hasCopilotApiToken, isRedacted } from "@/lib/utils/validation";
 import { Info } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Control, UseFormReturn } from "react-hook-form";
 import { DeploymentsTable } from "./deploymentsTable";
 
 // Providers that support batch APIs
+// Vertex authentication methods offered by the key form. The backend picks the mode from which
+// fields are set; this discriminator only drives the tabs and validation.
+type VertexAuthType = "service_account" | "service_account_json" | "api_key" | "aws_workload_identity";
+
 const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure", "vertex", "wafer"];
 
 interface Props {
@@ -149,6 +156,12 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	const isSGL = effectiveProvider === "sgl";
 	const isDeepseek = effectiveProvider === "deepseek";
 	const isFireworks = effectiveProvider === "fireworks";
+	const isDatabricks = effectiveProvider === "databricks";
+	const isGithubCopilot = effectiveProvider === "github-copilot";
+	// Reactive, so the App-credential labels stay truthful. Once a Copilot token is present
+	// those fields genuinely are optional, and a static "(Required)" would contradict the
+	// section note telling the operator they can leave them blank.
+	const copilotAppSuffix = hasCopilotApiToken(form.watch("key.value")) ? "(Optional)" : "(Required)";
 	const isKeylessProvider = isOllama || isSGL;
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(effectiveProvider);
 
@@ -161,8 +174,12 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	// Auth type state for Bedrock Mantle: 'iam_role', 'explicit', or 'api_key'
 	const [bedrockMantleAuthType, setBedrockMantleAuthType] = useState<"iam_role" | "explicit" | "api_key">("iam_role");
 
-	// Auth type state for Vertex: 'service_account', 'service_account_json', or 'api_key'
-	const [vertexAuthType, setVertexAuthType] = useState<"service_account" | "service_account_json" | "api_key">("service_account");
+	// Auth type state for Databricks: 'pat' (personal access token) or 'oauth_m2m' (service principal)
+	const [databricksAuthType, setDatabricksAuthType] = useState<"pat" | "oauth_m2m">("pat");
+
+	// Auth type state for Vertex: 'service_account' (ADC), 'service_account_json', 'api_key', or
+	// 'aws_workload_identity' (GCP Workload Identity Federation from the workload's AWS identity)
+	const [vertexAuthType, setVertexAuthType] = useState<VertexAuthType>("service_account");
 
 	// Detect auth type from existing form values when editing
 	useEffect(() => {
@@ -189,12 +206,15 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	useEffect(() => {
 		if (form.formState.isDirty) return;
 		if (isVertex) {
+			const wifAudience = form.getValues("key.vertex_key_config.aws_workload_identity.audience");
 			const authCredentials = form.getValues("key.vertex_key_config.auth_credentials")?.value;
 			const authCredentialsEnv = form.getValues("key.vertex_key_config.auth_credentials")?.ref;
 			const apiKey = form.getValues("key.value")?.value;
 			const apiKeyEnv = form.getValues("key.value")?.ref;
-			let detected: "service_account" | "service_account_json" | "api_key" = "service_account";
-			if (authCredentials || authCredentialsEnv) {
+			let detected: VertexAuthType = "service_account";
+			if (wifAudience?.value || wifAudience?.ref) {
+				detected = "aws_workload_identity";
+			} else if (authCredentials || authCredentialsEnv) {
 				detected = "service_account_json";
 			} else if (apiKey || apiKeyEnv) {
 				detected = "api_key";
@@ -203,6 +223,22 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 			form.setValue("key.vertex_key_config._auth_type", detected);
 		}
 	}, [isVertex, form]);
+
+	const databricksDefaults = form.formState.defaultValues?.key?.databricks_key_config;
+	useEffect(() => {
+		if (form.formState.isDirty) return;
+		if (isDatabricks) {
+			const clientId = form.getValues("key.databricks_key_config.client_id");
+			const clientSecret = form.getValues("key.databricks_key_config.client_secret");
+			const hasServicePrincipal = clientId?.value || clientId?.ref || clientSecret?.value || clientSecret?.ref;
+			const detected: "pat" | "oauth_m2m" = hasServicePrincipal ? "oauth_m2m" : "pat";
+			setDatabricksAuthType(detected);
+			form.setValue("key.databricks_key_config._auth_type", detected);
+		}
+		// databricksDefaults re-runs detection after the key form resets itself, which
+		// happens once the key resolves - after this effect has already run once against
+		// an empty form and settled on the personal access token tab.
+	}, [isDatabricks, form, databricksDefaults]);
 
 	useEffect(() => {
 		if (form.formState.isDirty) return;
@@ -246,7 +282,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 
 	return (
 		<div data-tab="api-keys" className="space-y-4 overflow-hidden">
-			<div className="flex items-start gap-4">
+			<div className="flex items-start gap-4 px-0.5">
 				<div className="flex-1">
 					<FormField
 						control={control}
@@ -315,171 +351,152 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 				/>
 			</div>
 			{/* Hide API Key field for providers with dedicated auth tabs */}
-			{!isAzure && !isBedrock && !isBedrockMantle && !isVertex && (
+			{!isAzure && !isBedrock && !isBedrockMantle && !isVertex && !isDatabricks && (
 				<FormField
 					control={control}
 					name={`key.value`}
 					render={({ field }) => (
-						<FormItem>
-							<FormLabel>API Key {isVLLM ? "(Optional)" : ""}</FormLabel>
+						<FormItem className="px-0.5">
+							<FormLabel>
+								{isGithubCopilot ? "Copilot API Token" : "API Key"} {isVLLM || isGithubCopilot ? "(Optional)" : ""}
+							</FormLabel>
+							{isGithubCopilot && (
+								<FormDescription>
+									Requires Network Config &gt; Base URL set to the host the token was issued for, because a Copilot token does not carry
+									one. Also expires after about 30 minutes, and Bifrost cannot refresh a token it did not mint, so prefer the GitHub App
+									below for anything long-running.
+								</FormDescription>
+							)}
 							<FormControl>
-								<SecretVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
+								<SecretVarInput
+									placeholder={isGithubCopilot ? "Copilot API token, or leave blank to use a GitHub App" : "API Key or env.MY_KEY"}
+									type="text"
+									{...field}
+								/>
 							</FormControl>
 							<FormMessage />
 						</FormItem>
 					)}
 				/>
 			)}
-			{!isVLLM && (
-				<>
-					<FormField
-						control={control}
-						name={`key.models`}
-						render={({ field }) => (
-							<FormItem>
-								<div className="flex items-center gap-2">
-									<FormLabel>Allowed Models</FormLabel>
-									<TooltipProvider>
-										<Tooltip>
-											<TooltipTrigger asChild>
-												<span>
-													<Info className="text-muted-foreground h-3 w-3" />
-												</span>
-											</TooltipTrigger>
-											<TooltipContent className="max-w-sm">
-												<p>
-													Select specific models this key applies to, or choose "Allow All Models" to allow all. Leave empty to deny all.
-													Aliases must be added by their alias name - listing only the underlying model does not allow the alias (an alias
-													best-model → gpt-4o requires "best-model" here, not just "gpt-4o").
-												</p>
-											</TooltipContent>
-										</Tooltip>
-									</TooltipProvider>
-								</div>
-								<FormControl>
-									<ModelMultiselect
-										data-testid="api-keys-models-multiselect"
-										provider={providerName}
-										allowAllOption={true}
-										value={field.value || []}
-										onChange={(models: string[]) => {
-											const hadStar = (field.value || []).includes("*");
-											const hasStar = models.includes("*");
-											if (!hadStar && hasStar) {
-												field.onChange(["*"]);
-											} else if (hadStar && hasStar && models.length > 1) {
-												field.onChange(models.filter((m: string) => m !== "*"));
-											} else {
-												field.onChange(models);
-											}
-										}}
-										placeholder={
-											(field.value || []).includes("*")
-												? "All models allowed"
-												: (field.value || []).length === 0
-													? "No models (deny all)"
-													: "Search models..."
-										}
-										unfiltered={true}
-									/>
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
-					<FormField
-						control={control}
-						name={`key.blacklisted_models`}
-						render={({ field }) => (
-							<FormItem data-testid="apikey-blacklisted-models-field">
-								<div className="flex items-center gap-2">
-									<FormLabel>Blocked Models</FormLabel>
-									<TooltipProvider>
-										<Tooltip>
-											<TooltipTrigger asChild>
-												<span>
-													<Info className="text-muted-foreground h-3 w-3" />
-												</span>
-											</TooltipTrigger>
-											<TooltipContent className="max-w-sm">
-												<p>
-													Models this key must never serve. The denylist always wins - if a model appears in both Allowed Models and here,
-													it is blocked. Select "All Models" to block every model on this key. Aliases are matched by their alias name -
-													blocking only the underlying model does not block aliases that point to it.
-												</p>
-											</TooltipContent>
-										</Tooltip>
-									</TooltipProvider>
-								</div>
-								<FormControl>
-									<ModelMultiselect
-										data-testid="api-keys-blocked-models-multiselect"
-										provider={providerName}
-										allowAllOption={true}
-										value={field.value || []}
-										onChange={(models: string[]) => {
-											const hadStar = (field.value || []).includes("*");
-											const hasStar = models.includes("*");
-											if (!hadStar && hasStar) {
-												field.onChange(["*"]);
-											} else if (hadStar && hasStar && models.length > 1) {
-												field.onChange(models.filter((m: string) => m !== "*"));
-											} else {
-												field.onChange(models);
-											}
-										}}
-										placeholder={
-											(field.value || []).includes("*")
-												? "All models blocked"
-												: (field.value || []).length === 0
-													? "No models blocked"
-													: "Search models..."
-										}
-										unfiltered={true}
-									/>
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
-					<FormField
-						control={control}
-						name={`key.aliases`}
-						render={({ field }) => (
-							<FormItem data-testid="apikey-deployments-field">
-								<FormLabel>Deployments (Optional)</FormLabel>
-								<FormDescription>
-									Map a request model name to the provider&apos;s identifier (deployment name, inference profile ID, etc.). Expand a row for
-									canonical name, model family, and provider overrides - these drive cost logs and family-based routing.
-									{isReplicate && (
+			<>
+				<FormField
+					control={control}
+					name={`key.models`}
+					render={({ field }) => (
+						<FormItem className="px-0.5">
+							<FormControl>
+								<ModelAccessSelector
+									mode="allow"
+									data-testid="api-keys-models-multiselect"
+									provider={providerName}
+									unfiltered
+									value={field.value || []}
+									onChange={field.onChange}
+									label={
 										<>
-											{" "}
-											Replicate deployments are listed only while &quot;Use Deployments Endpoint&quot; is on - otherwise type the owner/name
-											and press Enter.
+											<FormLabel>Allowed Models</FormLabel>
+											<TooltipProvider>
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<span>
+															<Info className="text-muted-foreground h-3 w-3" />
+														</span>
+													</TooltipTrigger>
+													<TooltipContent className="max-w-sm">
+														<p>
+															Select specific models this key applies to, or choose "Allow All Models" to allow all. Leave empty to deny
+															all. Aliases must be added by their alias name - listing only the underlying model does not allow the alias
+															(an alias best-model → gpt-4o requires "best-model" here, not just "gpt-4o").
+														</p>
+													</TooltipContent>
+												</Tooltip>
+											</TooltipProvider>
 										</>
-									)}
-								</FormDescription>
-								<FormControl>
-									<div data-testid="apikey-deployments-table">
-										<DeploymentsTable
-											providerName={providerName}
-											value={field.value}
-											onChange={(next) => {
-												form.clearErrors("key.aliases");
-												field.onChange(Object.keys(next).length > 0 ? next : {});
-											}}
-										/>
-									</div>
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
-				</>
-			)}
+									}
+								/>
+							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+				<FormField
+					control={control}
+					name={`key.blacklisted_models`}
+					render={({ field }) => (
+						<FormItem data-testid="apikey-blacklisted-models-field" className="px-0.5">
+							<FormControl>
+								<ModelAccessSelector
+									mode="block"
+									data-testid="api-keys-blocked-models-multiselect"
+									provider={providerName}
+									unfiltered
+									value={field.value || []}
+									onChange={field.onChange}
+									label={
+										<>
+											<FormLabel>Blocked Models</FormLabel>
+											<TooltipProvider>
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<span>
+															<Info className="text-muted-foreground h-3 w-3" />
+														</span>
+													</TooltipTrigger>
+													<TooltipContent className="max-w-sm">
+														<p>
+															Models this key must never serve. The denylist always wins - if a model appears in both Allowed Models and
+															here, it is blocked. Select "All Models" to block every model on this key. Aliases are matched by their alias
+															name - blocking only the underlying model does not block aliases that point to it.
+														</p>
+													</TooltipContent>
+												</Tooltip>
+											</TooltipProvider>
+										</>
+									}
+								/>
+							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+				<FormField
+					control={control}
+					name={`key.aliases`}
+					render={({ field }) => (
+						<FormItem data-testid="apikey-deployments-field" className="px-0.5">
+							<FormLabel>Deployments (Optional)</FormLabel>
+							<FormDescription>
+								Map a request model name to the provider&apos;s identifier (deployment name, inference profile ID, etc.). Expand a row for
+								canonical name, model family, and provider overrides - these drive cost logs and family-based routing.
+								{isReplicate && (
+									<>
+										{" "}
+										Replicate deployments are listed only while &quot;Use Deployments Endpoint&quot; is on - otherwise type the owner/name
+										and press Enter.
+									</>
+								)}
+							</FormDescription>
+							<FormControl>
+								<div data-testid="apikey-deployments-table">
+									<DeploymentsTable
+										providerName={providerName}
+										value={field.value}
+										onChange={(next) => {
+											form.clearErrors("key.aliases");
+											field.onChange(Object.keys(next).length > 0 ? next : {});
+										}}
+									/>
+								</div>
+							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+			</>
 			{supportsBatchAPI && !isBedrock && !isAzure && !isVertex && <BatchAPIFormField control={control} form={form} />}
 			{isAzure && (
-				<div className="space-y-4">
+				<div className="space-y-4 px-0.5">
 					<Separator className="my-6" />
 					<div className="space-y-2">
 						<FormLabel>Authentication Method</FormLabel>
@@ -640,15 +657,31 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						<Tabs
 							value={vertexAuthType}
 							onValueChange={(v) => {
-								setVertexAuthType(v as "service_account" | "service_account_json" | "api_key");
-								form.setValue("key.vertex_key_config._auth_type", v, { shouldDirty: true, shouldValidate: true });
-								if (v === "service_account" || v === "api_key") {
+								const next = v as VertexAuthType;
+								setVertexAuthType(next);
+								form.setValue("key.vertex_key_config._auth_type", next, { shouldDirty: true, shouldValidate: true });
+								if (next !== "service_account_json") {
 									// Clear auth credentials when switching away from service account JSON
 									form.setValue("key.vertex_key_config.auth_credentials", undefined, { shouldDirty: true });
 								}
-								if (v === "service_account" || v === "service_account_json") {
-									// Clear API key when switching away from API Key
-									form.setValue("key.value", undefined, { shouldDirty: true });
+								if (next !== "api_key") {
+									// Clear the API key when switching away from API Key. The update endpoint has patch
+									// semantics (an omitted field keeps its stored value), and the backend prefers a stored
+									// API key over federation or ADC, so this must be an explicit empty value, not undefined.
+									form.setValue("key.value", { value: "", ref: "" }, { shouldDirty: true });
+								}
+								if (next === "aws_workload_identity") {
+									// Seed the block so its inputs are controlled from the first keystroke
+									if (!form.getValues("key.vertex_key_config.aws_workload_identity")) {
+										form.setValue(
+											"key.vertex_key_config.aws_workload_identity",
+											{ ...DefaultVertexAWSWorkloadIdentityConfig },
+											{ shouldDirty: true },
+										);
+									}
+								} else {
+									// Drop the block entirely: an audience left behind would take precedence on the server
+									form.setValue("key.vertex_key_config.aws_workload_identity", undefined, { shouldDirty: true });
 								}
 							}}
 						>
@@ -659,6 +692,9 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								<TabsTrigger data-testid="apikey-vertex-service-account-json-tab" value="service_account_json">
 									Service Account (JSON)
 								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-vertex-aws-workload-identity-tab" value="aws_workload_identity">
+									Workload Identity (AWS)
+								</TabsTrigger>
 								<TabsTrigger data-testid="apikey-vertex-api-key-tab" value="api_key">
 									API Key
 								</TabsTrigger>
@@ -667,6 +703,12 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						{vertexAuthType === "service_account" && (
 							<p className="text-muted-foreground text-sm">
 								Uses the service account attached to your environment (GCE, GKE, Cloud Run). No credentials required.
+							</p>
+						)}
+						{vertexAuthType === "aws_workload_identity" && (
+							<p className="text-muted-foreground text-sm">
+								Exchanges the AWS identity attached to this workload (EKS IRSA or Pod Identity, ECS task role, EC2 instance profile) for a
+								GCP token through a Workload Identity Pool AWS provider. No GCP service account key and no AWS access key required.
 							</p>
 						)}
 					</div>
@@ -743,6 +785,141 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								</FormItem>
 							)}
 						/>
+					)}
+
+					{vertexAuthType === "aws_workload_identity" && (
+						<>
+							<FormField
+								control={control}
+								name={`key.vertex_key_config.aws_workload_identity.audience`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Workload Identity Provider Audience (Required)</FormLabel>
+										<FormDescription>
+											The full resource name of the AWS provider in your Workload Identity Pool, shown as the audience in the GCP console.
+										</FormDescription>
+										<FormControl>
+											<SecretVarInput
+												data-testid="apikey-vertex-aws-wif-audience-input"
+												placeholder="//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/eks-pool/providers/aws or env.VERTEX_WIF_AUDIENCE"
+												inputClassName="font-mono text-sm"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name={`key.vertex_key_config.aws_workload_identity.service_account_email`}
+								render={({ field }) => (
+									<FormItem>
+										<div className="flex items-center gap-2">
+											<FormLabel>Service Account to Impersonate (Optional)</FormLabel>
+											<TooltipProvider>
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<span>
+															<Info className="text-muted-foreground h-3 w-3" />
+														</span>
+													</TooltipTrigger>
+													<TooltipContent>
+														<p>
+															Leave empty to call Vertex AI as the federated principal directly (grant it roles/aiplatform.user). Set it to
+															impersonate a service account that has the Vertex AI role; the federated principal then needs
+															roles/iam.workloadIdentityUser on that service account.
+														</p>
+													</TooltipContent>
+												</Tooltip>
+											</TooltipProvider>
+										</div>
+										<FormControl>
+											<SecretVarInput
+												data-testid="apikey-vertex-aws-wif-service-account-email-input"
+												placeholder="vertex-caller@my-project.iam.gserviceaccount.com or env.VERTEX_WIF_SA"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name={`key.vertex_key_config.aws_workload_identity.token_lifetime_seconds`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Impersonated Token Lifetime in Seconds (Optional)</FormLabel>
+										<FormDescription>Only used with a service account. 600 to 43200; the default is 3600.</FormDescription>
+										<FormControl>
+											<Input
+												data-testid="apikey-vertex-aws-wif-token-lifetime-input"
+												type="number"
+												min={600}
+												max={43200}
+												step={60}
+												placeholder="3600"
+												value={field.value ?? ""}
+												onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+												onBlur={field.onBlur}
+												name={field.name}
+												ref={field.ref}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name={`key.vertex_key_config.aws_workload_identity.aws_region`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>AWS Region (Optional)</FormLabel>
+										<FormDescription>
+											Region used to sign the STS request. Defaults to AWS_REGION, then instance metadata. Set it when neither is available
+											in the pod.
+										</FormDescription>
+										<FormControl>
+											<SecretVarInput
+												data-testid="apikey-vertex-aws-wif-aws-region-input"
+												placeholder="us-east-1 or env.AWS_REGION"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name={`key.vertex_key_config.aws_workload_identity.aws_role_arn`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>AWS Role ARN to Assume (Optional)</FormLabel>
+										<FormDescription>
+											Assume this IAM role with the workload&apos;s credentials before the GCP exchange. Usually unnecessary: map the
+											workload&apos;s own role in the pool provider instead.
+										</FormDescription>
+										<FormControl>
+											<SecretVarInput
+												data-testid="apikey-vertex-aws-wif-aws-role-arn-input"
+												placeholder="arn:aws:iam::123456789012:role/VertexCaller or env.VERTEX_AWS_ROLE_ARN"
+												{...field}
+											/>
+										</FormControl>
+										{isRedacted(field.value?.value ?? "") && (
+											<div className="text-muted-foreground mt-1 flex items-center gap-1 text-xs">
+												<Info className="h-3 w-3" />
+												<span>Stored securely. Edit to update.</span>
+											</div>
+										)}
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+						</>
 					)}
 
 					{vertexAuthType === "api_key" && (
@@ -839,6 +1016,166 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 					/>
 				</div>
 			)}
+			{isDatabricks && (
+				<div className="space-y-4">
+					<FormField
+						control={control}
+						name="key.databricks_key_config.workspace_url"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Workspace URL (Required)</FormLabel>
+								<FormDescription>
+									Your Databricks workspace URL (e.g. https://dbc-1234abcd-5678.cloud.databricks.com or env.DATABRICKS_WORKSPACE_URL)
+								</FormDescription>
+								<FormControl>
+									<SecretVarInput
+										data-testid="key-input-databricks-workspace-url"
+										placeholder="https://dbc-1234abcd-5678.cloud.databricks.com"
+										{...field}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="key.databricks_key_config.api_format"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Inference Surface</FormLabel>
+								<FormDescription>
+									Auto picks by model name: a dotted name such as system.ai.claude-sonnet-4-5 goes to the Unity AI Gateway, anything else to
+									Model Serving. Choose explicitly to pin one surface.
+								</FormDescription>
+								<Select value={field.value ?? "auto"} onValueChange={field.onChange}>
+									<FormControl>
+										<SelectTrigger data-testid="key-select-databricks-api-format">
+											<SelectValue placeholder="Auto" />
+										</SelectTrigger>
+									</FormControl>
+									<SelectContent>
+										<SelectItem value="auto">Auto (by model name)</SelectItem>
+										<SelectItem value="model_serving">Model Serving (/serving-endpoints)</SelectItem>
+										<SelectItem value="ai_gateway">Unity AI Gateway (/ai-gateway/mlflow/v1)</SelectItem>
+									</SelectContent>
+								</Select>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<Separator className="my-6" />
+					<div className="space-y-2">
+						<FormLabel>Authentication Method</FormLabel>
+						<Tabs
+							value={databricksAuthType}
+							onValueChange={(v) => {
+								setDatabricksAuthType(v as "pat" | "oauth_m2m");
+								form.setValue("key.databricks_key_config._auth_type", v, { shouldDirty: true, shouldValidate: true });
+								if (v === "oauth_m2m") {
+									// The token and the service principal are alternatives, never both.
+									form.setValue("key.value", undefined, { shouldDirty: true });
+								} else {
+									form.setValue("key.databricks_key_config.client_id", undefined, { shouldDirty: true });
+									form.setValue("key.databricks_key_config.client_secret", undefined, { shouldDirty: true });
+								}
+							}}
+						>
+							<TabsList className="grid w-full grid-cols-2">
+								<TabsTrigger data-testid="apikey-databricks-pat-tab" value="pat">
+									Personal Access Token
+								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-databricks-oauth-tab" value="oauth_m2m">
+									OAuth M2M (Service Principal)
+								</TabsTrigger>
+							</TabsList>
+						</Tabs>
+					</div>
+					{databricksAuthType === "pat" && (
+						<FormField
+							control={control}
+							name="key.value"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Personal Access Token</FormLabel>
+									<FormDescription>Generate one from Settings &gt; Developer &gt; Access tokens in your workspace.</FormDescription>
+									<FormControl>
+										<SecretVarInput
+											data-testid="key-input-databricks-pat"
+											placeholder="dapi... or env.DATABRICKS_TOKEN"
+											type="text"
+											{...field}
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					)}
+					{databricksAuthType === "oauth_m2m" && (
+						<>
+							<p className="text-muted-foreground text-sm">
+								Databricks recommends OAuth machine-to-machine for production. Tokens are minted from the workspace OIDC endpoint and
+								refreshed automatically.
+							</p>
+							<FormField
+								control={control}
+								name="key.databricks_key_config.client_id"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Client ID</FormLabel>
+										<FormControl>
+											<SecretVarInput
+												data-testid="key-input-databricks-client-id"
+												placeholder="Service principal client ID or env.DATABRICKS_CLIENT_ID"
+												type="text"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name="key.databricks_key_config.client_secret"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Client Secret</FormLabel>
+										<FormControl>
+											<SecretVarInput
+												data-testid="key-input-databricks-client-secret"
+												placeholder="Service principal secret or env.DATABRICKS_CLIENT_SECRET"
+												type="text"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+						</>
+					)}
+					<FormField
+						control={control}
+						name="key.databricks_key_config.forward_gateway_tags"
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
+								<div className="space-y-1.5">
+									<FormLabel htmlFor="databricks-forward-gateway-tags-switch">Forward Governance Tags</FormLabel>
+									<FormDescription>
+										Sends the virtual key, team and customer names as Databricks-Ai-Gateway-Request-Tags, so Databricks usage tracking
+										attributes spend the same way Bifrost does. Names only, never user identifiers.
+									</FormDescription>
+								</div>
+								<FormControl>
+									<Switch id="databricks-forward-gateway-tags-switch" checked={field.value ?? false} onCheckedChange={field.onChange} />
+								</FormControl>
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
 			{isKeylessProvider && (
 				<div className="space-y-4">
 					<FormField
@@ -857,6 +1194,161 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 										placeholder={isOllama ? "http://localhost:11434" : "http://localhost:30000"}
 										{...field}
 									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
+			{isGithubCopilot && (
+				<div className="space-y-4">
+					<Separator />
+					<div className="bg-muted/50 flex items-start gap-2 rounded-md border p-3">
+						<Info className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" />
+						<p className="text-muted-foreground text-sm">
+							Copilot accepts either credential. Fill in <strong>one</strong> of the two. <strong>GitHub App</strong> is the option for a
+							shared gateway: usage bills to the organization that owns the installation and no individual Copilot seat is used. A{" "}
+							<strong>Copilot API token</strong> in the field above is simpler but expires after about 30 minutes, so it suits testing
+							rather than a running gateway.{" "}
+							<a
+								href="https://docs.github.com/en/copilot/how-tos/copilot-sdk/auth/server-to-server-tokens"
+								target="_blank"
+								rel="noopener noreferrer"
+								className="text-primary hover:underline"
+								data-testid="copilot-docs-link-server-to-server"
+							>
+								Set up a GitHub App for Copilot
+							</a>
+							{" or "}
+							<a
+								href="https://docs.github.com/en/copilot/how-tos/copilot-sdk/authenticate-copilot-sdk/authenticate-copilot-sdk"
+								target="_blank"
+								rel="noopener noreferrer"
+								className="text-primary hover:underline"
+								data-testid="copilot-docs-link-api-token"
+							>
+								get a Copilot API token
+							</a>
+							.
+						</p>
+					</div>
+					<div className="space-y-1.5">
+						{/* Label, not FormLabel: this heads a section rather than labelling one
+						    control, so there is no FormItem id for htmlFor to point at. */}
+						<Label>GitHub App Credentials</Label>
+						<p className="text-muted-foreground text-sm">
+							Leave these blank if you supplied a Copilot API token above. Otherwise all four are needed together. The App needs the Copilot
+							Requests permission at Read &amp; write, installed on the organization that should be billed with All repositories access, and
+							that organization must allow Copilot requests from GitHub App installations.
+						</p>
+					</div>
+					<FormField
+						control={control}
+						name="key.github_copilot_key_config.app_id"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>App ID {copilotAppSuffix}</FormLabel>
+								<FormDescription>
+									The GitHub App&apos;s App ID or Client ID, from its settings page.{" "}
+									<a
+										href="https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app"
+										target="_blank"
+										rel="noopener noreferrer"
+										className="text-primary hover:underline"
+										data-testid="copilot-docs-link-create-app"
+									>
+										Create a GitHub App
+									</a>
+								</FormDescription>
+								<FormControl>
+									<SecretVarInput data-testid="key-input-copilot-app-id" placeholder="123456 or env.COPILOT_APP_ID" {...field} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="key.github_copilot_key_config.installation_id"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Installation ID {copilotAppSuffix}</FormLabel>
+								<FormDescription>
+									The installation on the organization that should be billed.{" "}
+									<a
+										href="https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app"
+										target="_blank"
+										rel="noopener noreferrer"
+										className="text-primary hover:underline"
+										data-testid="copilot-docs-link-installation-id"
+									>
+										Find your installation ID
+									</a>
+								</FormDescription>
+								<FormControl>
+									<SecretVarInput
+										data-testid="key-input-copilot-installation-id"
+										placeholder="87654321 or env.COPILOT_INSTALLATION_ID"
+										{...field}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="key.github_copilot_key_config.repository_id"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Repository ID {copilotAppSuffix}</FormLabel>
+								<FormDescription>
+									Any repository the installation can access. Copilot&apos;s permission check requires one in the token request even though
+									the installation itself needs All repositories access, so this is not really a scoping choice.
+								</FormDescription>
+								<FormControl>
+									<SecretVarInput
+										data-testid="key-input-copilot-repository-id"
+										placeholder="999000111 or env.COPILOT_REPOSITORY_ID"
+										{...field}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="key.github_copilot_key_config.private_key"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Private Key {copilotAppSuffix}</FormLabel>
+								<FormDescription>
+									The App&apos;s private key in PEM form, as downloaded from GitHub. PKCS#1 and PKCS#8 both work.
+								</FormDescription>
+								<FormControl>
+									<SecretVarInput
+										data-testid="key-input-copilot-private-key"
+										variant="textarea"
+										rows={4}
+										placeholder="-----BEGIN RSA PRIVATE KEY----- or env.COPILOT_PRIVATE_KEY"
+										{...field}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="key.github_copilot_key_config.github_domain"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>GitHub Enterprise Domain (Optional)</FormLabel>
+								<FormDescription>Leave blank for github.com</FormDescription>
+								<FormControl>
+									<SecretVarInput data-testid="key-input-copilot-github-domain" placeholder="acme.ghe.com" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -889,6 +1381,26 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 			)}
 			{isBedrock && (
 				<div className="space-y-4">
+					<FormField
+						control={control}
+						name="key.use_openai_endpoints"
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
+								<div className="space-y-1.5">
+									<FormLabel htmlFor="use-openai-endpoints-switch">Use OpenAI Endpoints</FormLabel>
+									<FormDescription>Routes requests through Bedrock&apos;s OpenAI-compatible endpoints instead of Converse.</FormDescription>
+								</div>
+								<FormControl>
+									<Switch
+										id="use-openai-endpoints-switch"
+										data-testid="key-switch-bedrock-use-openai-endpoints"
+										checked={field.value ?? false}
+										onCheckedChange={field.onChange}
+									/>
+								</FormControl>
+							</FormItem>
+						)}
+					/>
 					<Separator className="my-6" />
 					<div className="space-y-2">
 						<FormLabel>Authentication Method</FormLabel>

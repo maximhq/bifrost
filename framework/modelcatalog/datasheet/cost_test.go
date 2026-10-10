@@ -11,9 +11,272 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
+func TestCalculateCost_RealtimeTranscriptionPricingOverride(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{
+		Model:                  "gpt-4o-transcribe",
+		Provider:               "openai",
+		Mode:                   "audio_transcription",
+		InputCostPerToken:      bifrost.Ptr(0.0000025),
+		OutputCostPerToken:     bifrost.Ptr(0.00001),
+		InputCostPerAudioToken: bifrost.Ptr(0.0000025),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{
+				InputTokens:  29,
+				OutputTokens: 14,
+				TotalTokens:  43,
+				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+					AudioTokens: 28,
+					TextTokens:  1,
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:        schemas.RealtimeRequest,
+				PricingRequestType: schemas.TranscriptionRequest,
+				RoutingInfo:        routingInfoFor(schemas.OpenAI, "gpt-4o-transcribe"),
+			},
+		},
+	}
+
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, 0.0002125, breakdown.TotalCost, 1e-12)
+	assert.InDelta(t, 0.00007, breakdown.InputCostDetails.AudioCost, 1e-12)
+	assert.InDelta(t, 0.0000025, breakdown.InputCostDetails.TextCost, 1e-12)
+	assert.InDelta(t, 0.00014, breakdown.OutputCostDetails.TextCost, 1e-12)
+}
+
+func TestCalculateCost_RealtimeTranscriptionDurationPricing(t *testing.T) {
+	seconds := 3.4
+	pricing := configstoreTables.TableModelPricing{
+		Model:                      "whisper-1",
+		Provider:                   "openai",
+		Mode:                       "audio_transcription",
+		InputCostPerAudioPerSecond: bifrost.Ptr(0.0001),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{AudioSeconds: &seconds},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:        schemas.RealtimeRequest,
+				PricingRequestType: schemas.TranscriptionRequest,
+				RoutingInfo:        routingInfoFor(schemas.OpenAI, "whisper-1"),
+			},
+		},
+	}
+
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, 0.00034, breakdown.TotalCost, 1e-12)
+	assert.InDelta(t, 0.00034, breakdown.InputCost, 1e-12)
+}
+
+func TestCalculateCost_RealtimeTranscriptionStreamDurationPricing(t *testing.T) {
+	seconds := 3.4
+	pricing := configstoreTables.TableModelPricing{
+		Model:                      "whisper-1",
+		Provider:                   "openai",
+		Mode:                       "audio_transcription",
+		InputCostPerAudioPerSecond: bifrost.Ptr(0.0001),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+	resp := &schemas.BifrostResponse{
+		ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Response: &schemas.BifrostResponsesResponse{
+				Usage: &schemas.ResponsesResponseUsage{AudioSeconds: &seconds},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:        schemas.RealtimeRequest,
+				PricingRequestType: schemas.TranscriptionRequest,
+				RoutingInfo:        routingInfoFor(schemas.OpenAI, "whisper-1"),
+			},
+		},
+	}
+
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, 0.00034, breakdown.TotalCost, 1e-12)
+	assert.InDelta(t, 0.00034, breakdown.InputCost, 1e-12)
+}
+
+func TestCalculateCost_RealtimeTranscriptionStreamSplitTokenPricing(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{
+		Model:                  "gpt-4o-transcribe",
+		Provider:               "openai",
+		Mode:                   "audio_transcription",
+		InputCostPerToken:      bifrost.Ptr(0.0000025),
+		OutputCostPerToken:     bifrost.Ptr(0.00001),
+		InputCostPerAudioToken: bifrost.Ptr(0.0000025),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+	resp := &schemas.BifrostResponse{
+		ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Response: &schemas.BifrostResponsesResponse{
+				Usage: &schemas.ResponsesResponseUsage{
+					InputTokens:  29,
+					OutputTokens: 14,
+					TotalTokens:  43,
+					InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+						AudioTokens: 28,
+						TextTokens:  1,
+					},
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:        schemas.RealtimeRequest,
+				PricingRequestType: schemas.TranscriptionRequest,
+				RoutingInfo:        routingInfoFor(schemas.OpenAI, "gpt-4o-transcribe"),
+			},
+		},
+	}
+
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, 0.0002125, breakdown.TotalCost, 1e-12)
+	assert.InDelta(t, 0.00007, breakdown.InputCostDetails.AudioCost, 1e-12)
+	assert.InDelta(t, 0.0000025, breakdown.InputCostDetails.TextCost, 1e-12)
+	assert.InDelta(t, 0.00014, breakdown.OutputCostDetails.TextCost, 1e-12)
+}
+
+func TestCalculateCost_NormalRealtimeDoesNotUseTranscriptionPricing(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{
+		Model:              "gpt-realtime",
+		Provider:           "openai",
+		Mode:               "responses",
+		InputCostPerToken:  bifrost.Ptr(0.000005),
+		OutputCostPerToken: bifrost.Ptr(0.00002),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 29, OutputTokens: 14, TotalTokens: 43},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.RealtimeRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-realtime"),
+			},
+		},
+	}
+
+	assert.InDelta(t, 0.000425, s.CalculateCost(resp, nil), 1e-12)
+}
+
+func TestCalculateCost_RealtimeTranscriptionMissingPricingIsNonFatal(t *testing.T) {
+	s := testStoreWithPricing(nil)
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 29, OutputTokens: 14, TotalTokens: 43},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:        schemas.RealtimeRequest,
+				PricingRequestType: schemas.TranscriptionRequest,
+				RoutingInfo:        routingInfoFor(schemas.OpenAI, "unknown-transcription-model"),
+			},
+		},
+	}
+
+	assert.Nil(t, s.CalculateCostBreakdown(resp, nil))
+}
+
+// liveVoiceWindow is the synthetic response the Live handler bills per voice window.
+func liveVoiceWindow(model string, seconds float64) *schemas.BifrostResponse {
+	return &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{AudioSeconds: &seconds},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.LiveRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, model),
+			},
+		},
+	}
+}
+
+func TestCalculateCost_LiveVoiceDuration(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{
+		Model:              "gpt-live-1",
+		Provider:           "openai",
+		Mode:               "live",
+		InputCostPerSecond: new(0.05 / 60),
+		CostPerRequest:     new(0.01),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+
+	// 37s is the final usage of a recorded live session: 37 × $0.05/min.
+	breakdown := s.CalculateCostBreakdown(liveVoiceWindow("gpt-live-1", 37), nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, 0.0308333333, breakdown.TotalCost, 1e-9)
+	require.NotNil(t, breakdown.InputCostDetails)
+	assert.InDelta(t, breakdown.TotalCost, breakdown.InputCostDetails.AudioCost, 1e-12)
+	// A billing window is not a request, so the flat per-request fee is not added.
+	assert.Zero(t, breakdown.InputCostDetails.RequestCost)
+	assert.Zero(t, breakdown.OutputCost)
+}
+
+func TestCalculateCost_LiveFallsBackToRealtimeModeRow(t *testing.T) {
+	// The datasheet feed files GPT Live models under mode "realtime", the same mode as the
+	// Realtime API models, so a live window must find its per-second rate there.
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-live-1", "openai", "realtime"): {
+			Model: "gpt-live-1", Provider: "openai", Mode: "realtime",
+			InputCostPerSecond: new(0.05 / 60),
+		},
+	})
+
+	breakdown := s.CalculateCostBreakdown(liveVoiceWindow("gpt-live-1", 116), nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, 0.0966666667, breakdown.TotalCost, 1e-9)
+}
+
+func TestCalculateCost_LiveDoesNotFallBackToTokenPricing(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-live-1", "openai", "responses"): {
+			Model: "gpt-live-1", Provider: "openai", Mode: "responses",
+			InputCostPerToken:  new(0.000005),
+			InputCostPerSecond: new(1.0),
+		},
+	})
+
+	assert.Nil(t, s.CalculateCostBreakdown(liveVoiceWindow("gpt-live-1", 30), nil))
+}
+
+func TestCalculateCost_LiveMissingPricingIsZero(t *testing.T) {
+	s := testStoreWithPricing(nil)
+	assert.Nil(t, s.CalculateCostBreakdown(liveVoiceWindow("gpt-live-1", 30), nil))
+
+	noRate := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-live-1", "openai", "live"): {Model: "gpt-live-1", Provider: "openai", Mode: "live"},
+	})
+	assert.Nil(t, noRate.CalculateCostBreakdown(liveVoiceWindow("gpt-live-1", 30), nil))
+}
+
+func TestCalculateCost_LiveOverrideOnlyPricing(t *testing.T) {
+	s := testStoreWithPricing(nil)
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "live-override",
+			ScopeKind:        string(ScopeKindGlobal),
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-live-1",
+			RequestTypes:     []schemas.RequestType{schemas.LiveRequest},
+			PricingPatchJSON: `{"input_cost_per_second":0.001}`,
+		},
+	}))
+
+	assert.InDelta(t, 0.03, s.CalculateCost(liveVoiceWindow("gpt-live-1", 30), nil), 1e-12)
+}
 
 // chatPricing returns a TableModelPricing with the given per-token rates.
 func chatPricing(input, output float64) configstoreTables.TableModelPricing {
@@ -81,6 +344,19 @@ func makeRerankResponse(provider schemas.ModelProvider, model string, usage *sch
 	}
 }
 
+// makeDecisionResponse builds a minimal BifrostResponse for a decision request.
+func makeDecisionResponse(provider schemas.ModelProvider, model string, usage *schemas.BifrostLLMUsage) *schemas.BifrostResponse {
+	return &schemas.BifrostResponse{
+		DecisionResponse: &schemas.BifrostDecisionResponse{
+			Usage: usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.DecisionRequest,
+				RoutingInfo: routingInfoFor(provider, model),
+			},
+		},
+	}
+}
+
 // makeImageResponse builds a minimal BifrostResponse for an image generation request.
 func makeImageResponse(provider schemas.ModelProvider, model string, usage *schemas.ImageUsage) *schemas.BifrostResponse {
 	return &schemas.BifrostResponse{
@@ -124,11 +400,15 @@ func computeRerankCostTotal(pricing *configstoreTables.TableModelPricing, usage 
 	return bcTotal(computeRerankCost(pricing, usage, tier))
 }
 
-func computeSpeechCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTextInputChars int, tier serviceTier) float64 {
+func computeDecisionCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) float64 {
+	return bcTotal(computeDecisionCost(pricing, usage, tier))
+}
+
+func computeSpeechCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, audioTextInputChars int, tier serviceTier) float64 {
 	return bcTotal(computeSpeechCost(pricing, usage, audioSeconds, audioTextInputChars, tier))
 }
 
-func computeTranscriptionCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, tier serviceTier) float64 {
+func computeTranscriptionCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, tier serviceTier) float64 {
 	return bcTotal(computeTranscriptionCost(pricing, usage, audioSeconds, audioTokenDetails, tier))
 }
 
@@ -137,7 +417,11 @@ func computeImageCostTotal(pricing *configstoreTables.TableModelPricing, imageUs
 }
 
 func computeVideoCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, tier serviceTier) float64 {
-	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, tier))
+	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, "", 0, tier))
+}
+
+func computeVideoCostTotalSized(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, videoSize string, videoCount int, tier serviceTier) float64 {
+	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, videoSize, videoCount, tier))
 }
 
 func computeContainerCreationCostTotal(pricing *configstoreTables.TableModelPricing) float64 {
@@ -584,7 +868,7 @@ func TestComputeTextCost_InferenceGeoUS_AppliesMultiplier(t *testing.T) {
 	p := chatPricing(0.00001, 0.00005)
 	p.CacheReadInputTokenCost = bifrost.Ptr(0.000001)
 	p.CacheCreationInputTokenCost = bifrost.Ptr(0.0000125)
-	p.SearchContextCostPerQuery = bifrost.Ptr(0.01)
+	p.WebSearchCostPerRequest = bifrost.Ptr(0.01)
 	p.InferenceGeoUSMultiplier = bifrost.Ptr(1.1)
 
 	usage := &schemas.BifrostLLMUsage{
@@ -594,9 +878,7 @@ func TestComputeTextCost_InferenceGeoUS_AppliesMultiplier(t *testing.T) {
 			CachedReadTokens:  200,
 			CachedWriteTokens: 300,
 		},
-		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
-			NumSearchQueries: bifrost.Ptr(2),
-		},
+		ToolUsage: &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: 2}},
 	}
 
 	tokenCost := 500*0.00001 + 200*0.000001 + 300*0.0000125 + 100*0.00005
@@ -996,9 +1278,148 @@ func TestComputeTextCost_272kTierWithCacheRead(t *testing.T) {
 	assert.InDelta(t, 3.465, cost, 1e-9)
 }
 
+// Claude Haiku 5.5 bills every token category at the higher rate once the
+// prompt exceeds 100k tokens. The row is the datasheet entry as published.
+func TestComputeTextCost_Haiku55Tiered100k(t *testing.T) {
+	var entry Entry
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"provider": "anthropic",
+		"mode": "chat",
+		"input_cost_per_token": 1e-07,
+		"output_cost_per_token": 5e-07,
+		"cache_creation_input_token_cost": 1.25e-07,
+		"cache_creation_input_token_cost_above_1hr": 2e-07,
+		"cache_read_input_token_cost": 1e-08,
+		"input_cost_per_token_batches": 5e-08,
+		"output_cost_per_token_batches": 2.5e-07,
+		"input_cost_per_token_above_100k_tokens": 5e-07,
+		"output_cost_per_token_above_100k_tokens": 2.5e-06,
+		"cache_creation_input_token_cost_above_100k_tokens": 6.25e-07,
+		"cache_creation_input_token_cost_above_1hr_above_100k_tokens": 1e-06,
+		"cache_read_input_token_cost_above_100k_tokens": 5e-08,
+		"input_cost_per_token_batches_above_100k_tokens": 2.5e-07,
+		"output_cost_per_token_batches_above_100k_tokens": 1.25e-06,
+		"inference_geo_us_multiplier": 1.1
+	}`), &entry))
+	pricing := convertEntryToTablePricing("claude-haiku-5-5", entry)
+
+	// 40k cache read, 20k 5m write, 10k 1h write, 2k output; the rest is uncached input.
+	usageFor := func(promptTokens int) *schemas.BifrostLLMUsage {
+		return &schemas.BifrostLLMUsage{
+			PromptTokens:     promptTokens,
+			CompletionTokens: 2_000,
+			TotalTokens:      promptTokens + 2_000,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+				CachedReadTokens:  40_000,
+				CachedWriteTokens: 30_000,
+				CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+					CachedWriteTokens5m: 20_000,
+					CachedWriteTokens1h: 10_000,
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name         string
+		promptTokens int
+		want         float64
+	}{
+		// 30_000*1e-7 + 40_000*1e-8 + 20_000*1.25e-7 + 10_000*2e-7 + 2_000*5e-7
+		{name: "exactly 100k uses base rates", promptTokens: 100_000, want: 0.0089},
+		// 30_001*5e-7 + 40_000*5e-8 + 20_000*6.25e-7 + 10_000*1e-6 + 2_000*2.5e-6
+		{name: "one token over 100k uses above-100k rates", promptTokens: 100_001, want: 0.0445005},
+		// 80_000*5e-7 + 40_000*5e-8 + 20_000*6.25e-7 + 10_000*1e-6 + 2_000*2.5e-6
+		{name: "150k uses above-100k rates", promptTokens: 150_000, want: 0.0695},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.InDelta(t, tt.want, computeTextCostTotal(&pricing, usageFor(tt.promptTokens), serviceTier{}), 1e-12)
+		})
+	}
+
+	t.Run("breakdown above 100k", func(t *testing.T) {
+		cost := computeTextCost(&pricing, usageFor(150_000), serviceTier{})
+		require.NotNil(t, cost)
+		require.NotNil(t, cost.InputCostDetails)
+		assert.InDelta(t, 0.04, cost.InputCostDetails.TextCost, 1e-12)
+		assert.InDelta(t, 0.002, cost.InputCostDetails.CachedReadCost, 1e-12)
+		assert.InDelta(t, 0.0225, cost.InputCostDetails.CachedWriteCost, 1e-12)
+		assert.InDelta(t, 0.005, cost.OutputCost, 1e-12)
+	})
+
+	t.Run("inference_geo us stacks on above-100k rates", func(t *testing.T) {
+		got := computeTextCostTotal(&pricing, usageFor(150_000), serviceTier{inferenceGeoUS: true})
+		assert.InDelta(t, 0.0695*1.1, got, 1e-12)
+	})
+
+	t.Run("batch stacks with above-100k rates", func(t *testing.T) {
+		s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+			makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+		})
+		below := s.CalculateBatchCostDetailsForUsage(usageFor(100_000), schemas.Anthropic, "claude-haiku-5-5", schemas.ChatCompletionRequest, nil)
+		require.True(t, below.Priced)
+		assert.InDelta(t, 0.0089*0.5, below.Cost, 1e-12)
+
+		// Batch ratio 0.5: 80_000*2.5e-7 + 40_000*2.5e-8 + 20_000*3.125e-7 + 10_000*5e-7 + 2_000*1.25e-6
+		above := s.CalculateBatchCostDetailsForUsage(usageFor(150_000), schemas.Anthropic, "claude-haiku-5-5", schemas.ChatCompletionRequest, nil)
+		require.True(t, above.Priced)
+		assert.InDelta(t, 0.03475, above.Cost, 1e-12)
+	})
+}
+
 func TestComputeTextCost_SearchQueryCost(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.SearchContextCostPerQuery = bifrost.Ptr(0.01) // $0.01 per search query
+	p.WebSearchCostPerRequest = bifrost.Ptr(0.01) // $0.01 per web search request
+
+	numQueries := 3
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     1000,
+		CompletionTokens: 500,
+		TotalTokens:      1500,
+		ToolUsage:        &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: numQueries}},
+	}
+
+	cost := computeTextCostTotal(&p, usage, serviceTier{})
+
+	// 1000*0.000003 + 500*0.000015 + 3*0.01 = 0.003 + 0.0075 + 0.03 = 0.0405
+	assert.InDelta(t, 0.0405, cost, 1e-12)
+}
+
+func TestComputeTextCost_LegacySearchContextRateNotPriced(t *testing.T) {
+	p := chatPricing(0.000003, 0.000015)
+	p.SearchContextCostPerQuery = bifrost.Ptr(0.01)
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     1000,
+		CompletionTokens: 500,
+		TotalTokens:      1500,
+		ToolUsage:        &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: 3}},
+	}
+
+	// Only web_search_cost_per_request prices web search; the legacy rate is folded in at unmarshal.
+	assert.InDelta(t, 0.0105, computeTextCostTotal(&p, usage, serviceTier{}), 1e-12)
+}
+
+func TestEntryUnmarshal_WebSearchCostPerRequestFallsBackToSearchContext(t *testing.T) {
+	var legacy Entry
+	require.NoError(t, json.Unmarshal([]byte(`{"search_context_cost_per_query":{"search_context_size_low":0.01,"search_context_size_medium":0.01,"search_context_size_high":0.01}}`), &legacy))
+	require.NotNil(t, legacy.WebSearchCostPerRequest)
+	assert.InDelta(t, 0.01, *legacy.WebSearchCostPerRequest, 1e-12)
+
+	var explicit Entry
+	require.NoError(t, json.Unmarshal([]byte(`{"web_search_cost_per_request":0.02,"search_context_cost_per_query":{"search_context_size_medium":0.01}}`), &explicit))
+	require.NotNil(t, explicit.WebSearchCostPerRequest)
+	assert.InDelta(t, 0.02, *explicit.WebSearchCostPerRequest, 1e-12)
+
+	var none Entry
+	require.NoError(t, json.Unmarshal([]byte(`{"input_cost_per_token":0.001}`), &none))
+	assert.Nil(t, none.WebSearchCostPerRequest)
+}
+
+func TestComputeTextCost_DeprecatedNumSearchQueriesNotPriced(t *testing.T) {
+	p := chatPricing(0.000003, 0.000015)
+	p.WebSearchCostPerRequest = bifrost.Ptr(0.01)
 
 	numQueries := 3
 	usage := &schemas.BifrostLLMUsage{
@@ -1012,8 +1433,8 @@ func TestComputeTextCost_SearchQueryCost(t *testing.T) {
 
 	cost := computeTextCostTotal(&p, usage, serviceTier{})
 
-	// 1000*0.000003 + 500*0.000015 + 3*0.01 = 0.003 + 0.0075 + 0.03 = 0.0405
-	assert.InDelta(t, 0.0405, cost, 1e-12)
+	// Only tokens: 0.003 + 0.0075; search is billed from ToolUsage alone.
+	assert.InDelta(t, 0.0105, cost, 1e-12)
 }
 
 func TestComputeTextCost_NoCacheRateFallsBackToBaseInputRate(t *testing.T) {
@@ -1113,15 +1534,13 @@ func TestComputeRerankCost_TotalAbove200kButInputBelow200kUsesBaseRate(t *testin
 
 func TestComputeRerankCost_WithSearchCost(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:         bifrost.Ptr(0.0),
-		OutputCostPerToken:        bifrost.Ptr(0.0),
-		SearchContextCostPerQuery: bifrost.Ptr(0.001),
+		InputCostPerToken:       bifrost.Ptr(0.0),
+		OutputCostPerToken:      bifrost.Ptr(0.0),
+		WebSearchCostPerRequest: bifrost.Ptr(0.001),
 	}
 	numQueries := 5
 	usage := &schemas.BifrostLLMUsage{
-		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
-			NumSearchQueries: &numQueries,
-		},
+		ToolUsage: &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: numQueries}},
 	}
 	cost := computeRerankCostTotal(&p, usage, serviceTier{})
 	assert.InDelta(t, 0.005, cost, 1e-12)
@@ -1132,17 +1551,15 @@ func TestComputeRerankCost_WithSearchCost(t *testing.T) {
 // folding it into a bare OutputCost total.
 func TestComputeRerankCost_BreakdownDetails(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
-		InputCostPerToken:         bifrost.Ptr(0.001),
-		OutputCostPerToken:        bifrost.Ptr(0.002),
-		SearchContextCostPerQuery: bifrost.Ptr(0.001),
+		InputCostPerToken:       bifrost.Ptr(0.001),
+		OutputCostPerToken:      bifrost.Ptr(0.002),
+		WebSearchCostPerRequest: bifrost.Ptr(0.001),
 	}
 	numQueries := 3
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     10,
 		CompletionTokens: 5,
-		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
-			NumSearchQueries: &numQueries,
-		},
+		ToolUsage:        &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: numQueries}},
 	}
 	cost := computeRerankCost(&p, usage, serviceTier{})
 	require.NotNil(t, cost)
@@ -1255,7 +1672,7 @@ func TestComputeSpeechCost_TokensPreferredOverDuration(t *testing.T) {
 		OutputCostPerToken:  bifrost.Ptr(0.00001),
 		OutputCostPerSecond: bifrost.Ptr(0.00025),
 	}
-	seconds := 60
+	seconds := 60.0
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     100,
 		CompletionTokens: 200,
@@ -1276,7 +1693,7 @@ func TestComputeSpeechCost_OutputFallsBackToPerSecond(t *testing.T) {
 		OutputCostPerToken:  bifrost.Ptr(0.000002),
 		OutputCostPerSecond: bifrost.Ptr(0.0001),
 	}
-	seconds := 120
+	seconds := 120.0
 	usage := &schemas.BifrostLLMUsage{PromptTokens: 500}
 	cost := computeSpeechCostTotal(&p, usage, &seconds, 0, serviceTier{})
 	// Input: 500 * $0.000001 = $0.0005
@@ -1347,7 +1764,7 @@ func TestComputeTranscriptionCost_DurationBased(t *testing.T) {
 		OutputCostPerToken: bifrost.Ptr(0.0),
 		InputCostPerSecond: bifrost.Ptr(0.00010278),
 	}
-	seconds := 300 // 5 minutes
+	seconds := 300.0 // 5 minutes
 	cost := computeTranscriptionCostTotal(&p, nil, &seconds, nil, serviceTier{})
 	// 300 * 0.00010278 = 0.030834
 	assert.InDelta(t, 0.030834, cost, 1e-9)
@@ -1411,7 +1828,7 @@ func TestComputeTranscriptionCost_TokenDetailsPreferredOverDuration(t *testing.T
 		InputCostPerAudioPerSecond: bifrost.Ptr(0.0001),
 		InputCostPerAudioToken:     bifrost.Ptr(0.00001),
 	}
-	seconds := 60
+	seconds := 60.0
 	audioDetails := &schemas.TranscriptionUsageInputTokenDetails{
 		AudioTokens: 5000,
 		TextTokens:  1000,
@@ -1432,7 +1849,7 @@ func TestComputeTranscriptionCost_DurationFallbackWhenNoTokens(t *testing.T) {
 		OutputCostPerToken:         bifrost.Ptr(0.000015),
 		InputCostPerAudioPerSecond: bifrost.Ptr(0.0001),
 	}
-	seconds := 60
+	seconds := 60.0
 	usage := &schemas.BifrostLLMUsage{
 		CompletionTokens: 200,
 		TotalTokens:      200,
@@ -1785,6 +2202,111 @@ func TestComputeVideoCost_NilSeconds(t *testing.T) {
 	assert.InDelta(t, 0.001, cost, 1e-12)
 }
 
+// sizedVideoPricing mirrors sora-2-pro's published rates: $0.30/s at 720p,
+// $0.50/s at 1024p, $0.70/s at 1080p, with the unbanded rate as the fallback.
+func sizedVideoPricing() configstoreTables.TableModelPricing {
+	return configstoreTables.TableModelPricing{
+		OutputCostPerVideoPerSecond:      bifrost.Ptr(0.30),
+		OutputCostPerVideoPerSecond480p:  bifrost.Ptr(0.10),
+		OutputCostPerVideoPerSecond720p:  bifrost.Ptr(0.30),
+		OutputCostPerVideoPerSecond1024p: bifrost.Ptr(0.50),
+		OutputCostPerVideoPerSecond1080p: bifrost.Ptr(0.70),
+		OutputCostPerVideoPerSecond4k:    bifrost.Ptr(0.60),
+	}
+}
+
+func TestComputeVideoCost_ResolutionBands(t *testing.T) {
+	p := sizedVideoPricing()
+	seconds := 8
+
+	for _, tc := range []struct {
+		name string
+		size string
+		want float64
+	}{
+		{"720p landscape", "1280x720", 8 * 0.30},
+		{"720p portrait", "720x1280", 8 * 0.30},
+		{"1024p landscape", "1792x1024", 8 * 0.50},
+		{"1024p portrait", "1024x1792", 8 * 0.50},
+		{"1080p landscape", "1920x1080", 8 * 0.70},
+		{"1080p portrait", "1080x1920", 8 * 0.70},
+		{"4k", "3840x2160", 8 * 0.60},
+		// No band matches 480, so this must not round up into the 720p rate.
+		{"480p landscape", "854x480", 8 * 0.10},
+		{"480p portrait", "480x854", 8 * 0.10},
+		// 360 has no band, so it must not round up into the 480p rate.
+		{"unlisted resolution falls back", "640x360", 8 * 0.30},
+		{"malformed size falls back", "not-a-size", 8 * 0.30},
+		{"absent size falls back", "", 8 * 0.30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cost := computeVideoCostTotalSized(&p, nil, &seconds, tc.size, 1, serviceTier{})
+			assert.InDelta(t, tc.want, cost, 1e-12)
+		})
+	}
+}
+
+// A pricing row carrying no banded rates must price exactly as it did before the
+// bands existed.
+func TestComputeVideoCost_NoBandedRatesMatchesUnbanded(t *testing.T) {
+	p := configstoreTables.TableModelPricing{OutputCostPerVideoPerSecond: bifrost.Ptr(0.001)}
+	seconds := 30
+	assert.InDelta(t,
+		computeVideoCostTotal(&p, nil, &seconds, serviceTier{}),
+		computeVideoCostTotalSized(&p, nil, &seconds, "1920x1080", 1, serviceTier{}),
+		1e-12)
+}
+
+// Seconds is one clip's duration, so a job returning several clips bills for each.
+func TestComputeVideoCost_MultipleOutputsBillPerClip(t *testing.T) {
+	p := sizedVideoPricing()
+	seconds := 8
+
+	assert.InDelta(t, 3*8*0.70, computeVideoCostTotalSized(&p, nil, &seconds, "1920x1080", 3, serviceTier{}), 1e-12)
+	// A job that has not yet produced its clips still owes one clip's worth.
+	assert.InDelta(t, 8*0.70, computeVideoCostTotalSized(&p, nil, &seconds, "1920x1080", 0, serviceTier{}), 1e-12)
+}
+
+// Completion tokens win over the per-second path, and the clip multiplier belongs
+// only to the per-second branch — token usage already covers every output.
+func TestComputeVideoCost_CompletionTokensIgnoreClipCount(t *testing.T) {
+	p := sizedVideoPricing()
+	p.OutputCostPerToken = bifrost.Ptr(0.00002)
+	seconds := 8
+	usage := &schemas.BifrostLLMUsage{CompletionTokens: 1000, TotalTokens: 1000}
+
+	cost := computeVideoCostTotalSized(&p, usage, &seconds, "1920x1080", 4, serviceTier{})
+
+	assert.InDelta(t, 1000*0.00002, cost, 1e-12)
+}
+
+// End-to-end through the catalog: a 1080p sora-2-pro job must bill at the 1080p
+// rate rather than the base rate its model row carries.
+func TestCalculateCost_VideoResolutionBandEndToEnd(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("sora-2-pro", "openai", "video_generation"): {
+			Model: "sora-2-pro", Provider: "openai", Mode: "video_generation",
+			OutputCostPerVideoPerSecond:      bifrost.Ptr(0.30),
+			OutputCostPerVideoPerSecond1080p: bifrost.Ptr(0.70),
+		},
+	})
+
+	resp := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Status:  schemas.VideoStatusCompleted,
+			Seconds: bifrost.Ptr("8"),
+			Size:    "1920x1080",
+			Videos:  []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://example.test/v.mp4")}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "sora-2-pro"),
+			},
+		},
+	}
+
+	assert.InDelta(t, 5.60, s.CalculateCost(resp, nil), 1e-9)
+}
+
 // =========================================================================
 // 8. tieredInputRate / tieredOutputRate
 // =========================================================================
@@ -1872,7 +2394,7 @@ func TestExtractCostInput_TranscriptionWithSeconds(t *testing.T) {
 	input := extractCostInput(resp)
 	require.NotNil(t, input.usage)
 	require.NotNil(t, input.audioSeconds)
-	assert.Equal(t, 60, *input.audioSeconds)
+	assert.Equal(t, 60.0, *input.audioSeconds)
 	assert.Equal(t, 1000, input.usage.PromptTokens)
 }
 
@@ -1935,7 +2457,7 @@ func TestCalculateCost_SemanticCacheDirectHit(t *testing.T) {
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit: true,
 					HitType:  &hitType,
 				},
@@ -1970,7 +2492,7 @@ func TestCalculateCost_SemanticCacheSemanticHit(t *testing.T) {
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit:     true,
 					HitType:      &hitType,
 					ProviderUsed: &embProvider,
@@ -2008,7 +2530,7 @@ func TestCalculateCost_SemanticCacheMiss(t *testing.T) {
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit:     false,
 					ProviderUsed: &embProvider,
 					ModelUsed:    &embModel,
@@ -2031,7 +2553,7 @@ func TestCalculateCost_SemanticCacheHitNoEmbeddingInfo(t *testing.T) {
 	resp := &schemas.BifrostResponse{
 		ChatResponse: &schemas.BifrostChatResponse{
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit: true,
 					// No ProviderUsed, ModelUsed, InputTokens
 				},
@@ -2069,7 +2591,7 @@ func TestCalculateCostBreakdown_SemanticCacheHitIsAdditional(t *testing.T) {
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit: true, HitType: &hitType,
 					ProviderUsed: &embProvider, ModelUsed: &embModel, InputTokens: &embTokens,
 				},
@@ -2112,7 +2634,7 @@ func TestCalculateCostBreakdown_SemanticCacheMissAddsAdditional(t *testing.T) {
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit:     false,
 					ProviderUsed: &embProvider, ModelUsed: &embModel, InputTokens: &embTokens,
 				},
@@ -2130,6 +2652,66 @@ func TestCalculateCostBreakdown_SemanticCacheMissAddsAdditional(t *testing.T) {
 	assert.InDelta(t, 0.00001, bd.AdditionalCostDetails.SemanticCacheCost, 1e-12)
 	assert.InDelta(t, 0.01251, bd.TotalCost, 1e-12)
 	assert.InDelta(t, bd.TotalCost, bd.InputCost+bd.OutputCost+bd.AdditionalCost, 1e-12)
+}
+
+// TestCalculateCostBreakdown_RoutingEmbeddingIsItsOwnDetail verifies the routing
+// classification embed lands on the additional side under its own detail line,
+// so a breakdown that also carries a guardrail or cache sidecar stays
+// attributable to the call that incurred each part. The scalar CalculateCost is
+// pinned alongside the breakdown: callers that only read the total must see the
+// same billing decision the categories describe.
+func TestCalculateCostBreakdown_RoutingEmbeddingIsItsOwnDetail(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000005), OutputCostPerToken: bifrost.Ptr(0.000015),
+		},
+		makeKey("text-embedding-3-small", "openai", "embedding"): {
+			Model: "text-embedding-3-small", Provider: "openai", Mode: "embedding",
+			InputCostPerToken: bifrost.Ptr(0.00000002),
+		},
+	})
+
+	newResponse := func(countTowardBudgets bool) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{
+			ChatResponse: &schemas.BifrostChatResponse{
+				Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType: schemas.ChatCompletionRequest,
+					RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
+					RoutingMetadata: &schemas.BifrostRoutingMetadata{
+						Calls: []schemas.BifrostRoutingCall{embedRoutingCall(500, countTowardBudgets)},
+					},
+				},
+			},
+		}
+	}
+
+	// Base: 1000*5e-6 + 500*1.5e-5 = 0.0125. Routing embed: 500*2e-8 = 0.00001.
+	assert.InDelta(t, 0.01251, s.CalculateCost(newResponse(true), nil), 1e-12)
+
+	bd := s.CalculateCostBreakdown(newResponse(true), nil)
+	require.NotNil(t, bd)
+	require.NotNil(t, bd.AdditionalCostDetails)
+	assert.InDelta(t, 0.005, bd.InputCost, 1e-12)
+	assert.InDelta(t, 0.0075, bd.OutputCost, 1e-12)
+	assert.InDelta(t, 0.00001, bd.AdditionalCost, 1e-12)
+	assert.InDelta(t, 0.00001, bd.AdditionalCostDetails.RoutingCost, 1e-12)
+	assert.Zero(t, bd.AdditionalCostDetails.GuardrailCost, "a routing embed must not be reported as a guardrail call")
+	assert.InDelta(t, 0.01251, bd.TotalCost, 1e-12)
+	assert.InDelta(t, bd.TotalCost, bd.InputCost+bd.OutputCost+bd.AdditionalCost, 1e-12)
+
+	// The detail line tracks the cost actually charged: a request that never
+	// opted routing into budget attribution carries neither, and the embed drops
+	// out of the total rather than being billed silently.
+	assert.InDelta(t, 0.0125, s.CalculateCost(newResponse(false), nil), 1e-12)
+
+	optedOut := s.CalculateCostBreakdown(newResponse(false), nil)
+	require.NotNil(t, optedOut)
+	assert.Zero(t, optedOut.AdditionalCost)
+	if optedOut.AdditionalCostDetails != nil {
+		assert.Zero(t, optedOut.AdditionalCostDetails.RoutingCost)
+	}
 }
 
 // TestCalculateCostBreakdown_SemanticCacheHitAddsRequestSurcharge verifies the
@@ -2158,7 +2740,7 @@ func TestCalculateCostBreakdown_SemanticCacheHitAddsRequestSurcharge(t *testing.
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit: true, HitType: &hitType,
 					ProviderUsed: &embProvider, ModelUsed: &embModel, InputTokens: &embTokens,
 				},
@@ -2201,7 +2783,7 @@ func TestCalculateCostBreakdown_SemanticCacheMissAddsRequestSurcharge(t *testing
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
-				CacheDebug: &schemas.BifrostCacheDebug{
+				CacheDebug: &schemas.BifrostCacheMetadata{
 					CacheHit:     false,
 					ProviderUsed: &embProvider, ModelUsed: &embModel, InputTokens: &embTokens,
 				},
@@ -2238,7 +2820,7 @@ func TestCalculateCostAddsGuardrailJudgeCost(t *testing.T) {
 		CompletionTokens: 50,
 		TotalTokens:      150,
 	})
-	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailDebug{
+	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailMetadata{
 		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
 			JudgeProvider:    schemas.Anthropic,
 			JudgeModel:       "claude-judge",
@@ -2275,7 +2857,7 @@ func TestCalculateGuardrailCostPreservesUsageDetails(t *testing.T) {
 		makeKey("gpt-judge", "openai", "chat"): pricing,
 	})
 
-	cost := s.CalculateGuardrailCost(&schemas.BifrostGuardrailDebug{
+	cost := s.CalculateGuardrailCost(&schemas.BifrostGuardrailMetadata{
 		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
 			JudgeProvider: schemas.OpenAI,
 			JudgeModel:    "gpt-judge",
@@ -2301,8 +2883,8 @@ func TestCalculateCostDirectCacheHitStillBillsGuardrail(t *testing.T) {
 	})
 	hitType := "direct"
 	resp := makeChatResponse(schemas.OpenAI, "cached-model", nil)
-	resp.GetExtraFields().CacheDebug = &schemas.BifrostCacheDebug{CacheHit: true, HitType: &hitType}
-	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailDebug{
+	resp.GetExtraFields().CacheDebug = &schemas.BifrostCacheMetadata{CacheHit: true, HitType: &hitType}
+	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailMetadata{
 		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
 			JudgeProvider:    schemas.OpenAI,
 			JudgeModel:       "gpt-4o-mini",
@@ -2356,7 +2938,7 @@ func TestCalculateGuardrailCostUsesJudgeProviderWithoutCallerSelectedKey(t *test
 		},
 	}))
 
-	cost := s.CalculateGuardrailCost(&schemas.BifrostGuardrailDebug{
+	cost := s.CalculateGuardrailCost(&schemas.BifrostGuardrailMetadata{
 		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
 			JudgeProvider: schemas.Anthropic,
 			JudgeModel:    "claude-judge",
@@ -2419,6 +3001,40 @@ func TestCalculateCost_ImageProviderComputedCostPassthrough(t *testing.T) {
 	resp.ImageGenerationResponse.Data = []schemas.ImageData{{URL: "https://imgen.x.ai/x.jpeg"}}
 
 	assert.Equal(t, 0.02, s.CalculateCost(resp, nil))
+}
+
+// Transcription usage is rebuilt into a new BifrostLLMUsage before pricing, so the
+// provider-reported cost has to be carried over for the short circuit to see it.
+// The usage is OpenRouter's voxtral response: billed per second, with a fixed
+// prompt token count that says nothing about the audio length.
+func TestCalculateCost_TranscriptionProviderComputedCostPassthrough(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{
+		Model:                      "mistralai/voxtral-mini-transcribe-2602",
+		Provider:                   "openrouter",
+		Mode:                       "audio_transcription",
+		InputCostPerAudioPerSecond: bifrost.Ptr(0.0001), // deliberately unlike the reported cost
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+
+	var usage schemas.TranscriptionUsage
+	require.NoError(t, json.Unmarshal([]byte(`{"seconds":31,"total_tokens":202,"input_tokens":6,"output_tokens":196,"cost":0.001705}`), &usage))
+	extra := schemas.BifrostResponseExtraFields{
+		RequestType: schemas.TranscriptionRequest,
+		RoutingInfo: routingInfoFor(schemas.OpenRouter, pricing.Model),
+	}
+
+	resp := &schemas.BifrostResponse{
+		TranscriptionResponse: &schemas.BifrostTranscriptionResponse{Usage: &usage, ExtraFields: extra},
+	}
+	assert.InDelta(t, 0.001705, s.CalculateCost(resp, nil), 1e-12)
+
+	extra.RequestType = schemas.TranscriptionStreamRequest
+	streamResp := &schemas.BifrostResponse{
+		TranscriptionStreamResponse: &schemas.BifrostTranscriptionStreamResponse{Usage: &usage, ExtraFields: extra},
+	}
+	assert.InDelta(t, 0.001705, s.CalculateCost(streamResp, nil), 1e-12)
 }
 
 // Video/3D provider-reported cost hangs off VideoGenerationResponse.Usage.Cost. Runware reports an
@@ -3045,6 +3661,7 @@ func TestResponsesUsageToBifrostUsage_WithTokenDetails(t *testing.T) {
 			ReasoningTokens:  100,
 			NumSearchQueries: &numQueries,
 		},
+		ToolUsage: &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: numQueries}},
 	}
 	result := responsesUsageToBifrostUsage(u)
 
@@ -3059,6 +3676,7 @@ func TestResponsesUsageToBifrostUsage_WithTokenDetails(t *testing.T) {
 	assert.Equal(t, 100, result.CompletionTokensDetails.ReasoningTokens)
 	require.NotNil(t, result.CompletionTokensDetails.NumSearchQueries)
 	assert.Equal(t, 2, *result.CompletionTokensDetails.NumSearchQueries)
+	assert.Equal(t, 2, result.ToolUsage.WebSearch.NumRequests)
 }
 
 // =========================================================================
@@ -3431,6 +4049,18 @@ func TestTierFromResponse_Ultrafast(t *testing.T) {
 	assert.True(t, tier.isUltrafast)
 }
 
+// OpenAI renamed Priority processing to Fast mode on 2026-07-30 and accepts
+// service_tier "priority" and "fast" interchangeably, so "fast" bills on the
+// priority columns. It must not flip isFast, which is the Anthropic speed flag.
+func TestTierFromResponse_Fast(t *testing.T) {
+	s := schemas.BifrostServiceTierFast
+	tier := tierFromResponse(&s, nil, nil)
+	assert.True(t, tier.isPriority)
+	assert.False(t, tier.isFlex)
+	assert.False(t, tier.isUltrafast)
+	assert.False(t, tier.isFast)
+}
+
 func TestUltrafastRates(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
 		InputCostPerToken:                    new(1.0),
@@ -3461,6 +4091,105 @@ func TestUltrafastRatesFallBackToStandardWhenUnconfigured(t *testing.T) {
 	assert.Equal(t, 2.0, tieredOutputRate(&p, 1000, tier))
 	assert.Equal(t, 0.5, tieredCacheReadInputTokenRate(&p, 1000, tier))
 	assert.Equal(t, 0.75, tieredCacheCreationInputTokenRate(&p, 1000, tier))
+}
+
+func TestUltrafastAbove272kRates(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:                                   new(1.0),
+		OutputCostPerToken:                                  new(2.0),
+		CacheReadInputTokenCost:                             new(0.5),
+		CacheCreationInputTokenCost:                         new(0.75),
+		InputCostPerTokenAbove272kTokens:                    new(10.0),
+		OutputCostPerTokenAbove272kTokens:                   new(20.0),
+		CacheReadInputTokenCostAbove272kTokens:              new(5.0),
+		CacheCreationInputTokenCostAbove272kTokens:          new(7.5),
+		InputCostPerTokenUltrafast:                          new(3.0),
+		OutputCostPerTokenUltrafast:                         new(6.0),
+		CacheReadInputTokenCostUltrafast:                    new(1.5),
+		CacheCreationInputTokenCostUltrafast:                new(2.25),
+		InputCostPerTokenAbove272kTokensUltrafast:           new(30.0),
+		OutputCostPerTokenAbove272kTokensUltrafast:          new(60.0),
+		CacheReadInputTokenCostAbove272kTokensUltrafast:     new(15.0),
+		CacheCreationInputTokenCostAbove272kTokensUltrafast: new(22.5),
+	}
+	tier := serviceTier{isUltrafast: true}
+	above := TokenTierAbove272K + 1
+
+	assert.Equal(t, 30.0, tieredInputRate(&p, above, tier))
+	assert.Equal(t, 60.0, tieredOutputRate(&p, above, tier))
+	assert.Equal(t, 15.0, tieredCacheReadInputTokenRate(&p, above, tier))
+	assert.Equal(t, 22.5, tieredCacheCreationInputTokenRate(&p, above, tier))
+
+	// At or below the boundary the flat ultrafast rate still applies.
+	assert.Equal(t, 3.0, tieredInputRate(&p, TokenTierAbove272K, tier))
+	assert.Equal(t, 6.0, tieredOutputRate(&p, TokenTierAbove272K, tier))
+	assert.Equal(t, 1.5, tieredCacheReadInputTokenRate(&p, TokenTierAbove272K, tier))
+	assert.Equal(t, 2.25, tieredCacheCreationInputTokenRate(&p, TokenTierAbove272K, tier))
+
+	// Standard tier above 272k is unaffected by the ultrafast long-context rates.
+	assert.Equal(t, 10.0, tieredInputRate(&p, above, serviceTier{}))
+	assert.Equal(t, 20.0, tieredOutputRate(&p, above, serviceTier{}))
+	assert.Equal(t, 5.0, tieredCacheReadInputTokenRate(&p, above, serviceTier{}))
+	assert.Equal(t, 7.5, tieredCacheCreationInputTokenRate(&p, above, serviceTier{}))
+}
+
+func TestUltrafastAbove272kFallsBackToFlatUltrafast(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:                          new(1.0),
+		OutputCostPerToken:                         new(2.0),
+		CacheReadInputTokenCost:                    new(0.5),
+		CacheCreationInputTokenCost:                new(0.75),
+		InputCostPerTokenAbove272kTokens:           new(10.0),
+		OutputCostPerTokenAbove272kTokens:          new(20.0),
+		CacheReadInputTokenCostAbove272kTokens:     new(5.0),
+		CacheCreationInputTokenCostAbove272kTokens: new(7.5),
+		InputCostPerTokenUltrafast:                 new(3.0),
+		OutputCostPerTokenUltrafast:                new(6.0),
+		CacheReadInputTokenCostUltrafast:           new(1.5),
+		CacheCreationInputTokenCostUltrafast:       new(2.25),
+	}
+	tier := serviceTier{isUltrafast: true}
+	above := TokenTierAbove272K + 1
+	assert.Equal(t, 3.0, tieredInputRate(&p, above, tier))
+	assert.Equal(t, 6.0, tieredOutputRate(&p, above, tier))
+	assert.Equal(t, 1.5, tieredCacheReadInputTokenRate(&p, above, tier))
+	assert.Equal(t, 2.25, tieredCacheCreationInputTokenRate(&p, above, tier))
+}
+
+// TestUltrafastAbove272kFromDatasheetJSON feeds the gpt-6-astra datasheet entry
+// through the production JSON -> row conversion, so a missing json tag or
+// conversion-map line for the long-context ultrafast rates fails here.
+func TestUltrafastAbove272kFromDatasheetJSON(t *testing.T) {
+	p := pricingRowFromDatasheetJSON(t, "gpt-6-astra", `{
+		"provider": "openai", "mode": "responses", "base_model": "gpt-6-astra",
+		"input_cost_per_token": 0.00001,
+		"input_cost_per_token_above_272k_tokens": 0.00002,
+		"input_cost_per_token_ultrafast": 0.00006,
+		"input_cost_per_token_above_272k_tokens_ultrafast": 0.00012,
+		"output_cost_per_token_ultrafast": 0.0003,
+		"output_cost_per_token_above_272k_tokens_ultrafast": 0.00045,
+		"cache_read_input_token_cost_ultrafast": 0.000006,
+		"cache_read_input_token_cost_above_272k_tokens_ultrafast": 0.000012,
+		"cache_creation_input_token_cost_ultrafast": 0.000075,
+		"cache_creation_input_token_cost_above_272k_tokens_ultrafast": 0.00015
+	}`)
+	tier := serviceTier{isUltrafast: true}
+	short, long := 100_000, 300_000
+
+	assert.InDelta(t, 0.00006, tieredInputRate(&p, short, tier), 1e-15)
+	assert.InDelta(t, 0.00012, tieredInputRate(&p, long, tier), 1e-15)
+	assert.InDelta(t, 0.0003, tieredOutputRate(&p, short, tier), 1e-15)
+	assert.InDelta(t, 0.00045, tieredOutputRate(&p, long, tier), 1e-15)
+	assert.InDelta(t, 0.000006, tieredCacheReadInputTokenRate(&p, short, tier), 1e-15)
+	assert.InDelta(t, 0.000012, tieredCacheReadInputTokenRate(&p, long, tier), 1e-15)
+	assert.InDelta(t, 0.000075, tieredCacheCreationInputTokenRate(&p, short, tier), 1e-15)
+	assert.InDelta(t, 0.00015, tieredCacheCreationInputTokenRate(&p, long, tier), 1e-15)
+
+	roundTrip := convertTablePricingToEntry(&p)
+	require.NotNil(t, roundTrip.InputCostPerTokenAbove272kTokensUltrafast)
+	require.NotNil(t, roundTrip.OutputCostPerTokenAbove272kTokensUltrafast)
+	require.NotNil(t, roundTrip.CacheReadInputTokenCostAbove272kTokensUltrafast)
+	require.NotNil(t, roundTrip.CacheCreationInputTokenCostAbove272kTokensUltrafast)
 }
 
 func TestTierFromResponse_Default(t *testing.T) {
@@ -4449,6 +5178,110 @@ func TestGoldenOpenAIPricing_GPT56Family(t *testing.T) {
 	}
 }
 
+// gpt6AstraDatasheet is the live openai/gpt-6-astra entry (pricing fields only).
+// OpenAI publishes the Fast tier (ex-Priority, renamed 2026-07-30) and the
+// datasheet stores it under the _priority keys: $20/$2/$25/$100 per 1M short
+// context, $40/$4/$50/$150 above 272k.
+const gpt6AstraDatasheet = `{
+		"provider": "openai", "mode": "responses", "base_model": "gpt-6-astra",
+		"input_cost_per_token": 0.00001,
+		"input_cost_per_token_above_272k_tokens": 0.00002,
+		"input_cost_per_token_priority": 0.00002,
+		"input_cost_per_token_above_272k_tokens_priority": 0.00004,
+		"output_cost_per_token": 0.00005,
+		"output_cost_per_token_above_272k_tokens": 0.000075,
+		"output_cost_per_token_priority": 0.0001,
+		"output_cost_per_token_above_272k_tokens_priority": 0.00015,
+		"cache_read_input_token_cost": 0.000001,
+		"cache_read_input_token_cost_above_272k_tokens": 0.000002,
+		"cache_read_input_token_cost_priority": 0.000002,
+		"cache_read_input_token_cost_above_272k_tokens_priority": 0.000004,
+		"cache_creation_input_token_cost": 0.0000125,
+		"cache_creation_input_token_cost_above_272k_tokens": 0.000025,
+		"cache_creation_input_token_cost_priority": 0.000025,
+		"cache_creation_input_token_cost_above_272k_tokens_priority": 0.00005
+	}`
+
+// TestGoldenOpenAIPricing_GPT6AstraFast drives the served service_tier string
+// through tierFromResponse (not a pre-built serviceTier) so the wire value
+// "fast" is what selects the rates. The short-context row is the exact usage
+// from a customer report that Bifrost billed at standard ($0.00886) instead of
+// Fast ($0.01772). The "default" rows pin the downgrade path: OpenAI echoes
+// service_tier "default" when it serves a Fast request at standard speed and
+// charges standard rates.
+func TestGoldenOpenAIPricing_GPT6AstraFast(t *testing.T) {
+	astra := pricingRowFromDatasheetJSON(t, "gpt-6-astra", gpt6AstraDatasheet)
+
+	type rates struct{ in, cacheRead, out float64 }
+	cases := []struct {
+		name              string
+		served            schemas.BifrostServiceTier
+		prompt, read, out int
+		r                 rates
+	}{
+		// Reported request: 7283 input (7280 cached), 31 output, no cache writes.
+		{"fast/short", schemas.BifrostServiceTierFast, 7283, 7280, 31, rates{0.00002, 0.000002, 0.0001}},
+		{"priority/short", schemas.BifrostServiceTierPriority, 7283, 7280, 31, rates{0.00002, 0.000002, 0.0001}},
+		{"default/short", schemas.BifrostServiceTierDefault, 7283, 7280, 31, rates{0.00001, 0.000001, 0.00005}},
+		// Above 272k the long-context priority columns apply.
+		{"fast/long", schemas.BifrostServiceTierFast, 300000, 100000, 1000, rates{0.00004, 0.000004, 0.00015}},
+		{"default/long", schemas.BifrostServiceTierDefault, 300000, 100000, 1000, rates{0.00002, 0.000002, 0.000075}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			usage := &schemas.BifrostLLMUsage{
+				PromptTokens:     tc.prompt,
+				CompletionTokens: tc.out,
+				TotalTokens:      tc.prompt + tc.out,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					CachedReadTokens: tc.read,
+				},
+			}
+			served := tc.served
+			p := astra
+			cost := computeTextCostTotal(&p, usage, tierFromResponse(&served, nil, nil))
+			nonCached := tc.prompt - tc.read
+			want := float64(nonCached)*tc.r.in + float64(tc.read)*tc.r.cacheRead + float64(tc.out)*tc.r.out
+			assert.InDelta(t, want, cost, 1e-9)
+		})
+	}
+
+	// The reported invoice, in dollars: 3 x $20/M + 7280 x $2/M + 31 x $100/M.
+	fast := schemas.BifrostServiceTierFast
+	reported := &schemas.BifrostLLMUsage{
+		PromptTokens: 7283, CompletionTokens: 31, TotalTokens: 7314,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 7280},
+	}
+	assert.InDelta(t, 0.017720, computeTextCostTotal(&astra, reported, tierFromResponse(&fast, nil, nil)), 1e-9)
+}
+
+// TestGoldenOpenAIPricing_GPT6AstraFastLongContextCacheWrite pins the Fast
+// (priority-column) cache-write rate above 272k through the production JSON -> row
+// conversion: OpenAI publishes $50/M for Fast cache writes on long context, twice
+// the $25/M short-context Fast rate, and the datasheet carries it as
+// cache_creation_input_token_cost_above_272k_tokens_priority.
+func TestGoldenOpenAIPricing_GPT6AstraFastLongContextCacheWrite(t *testing.T) {
+	astra := pricingRowFromDatasheetJSON(t, "gpt-6-astra", gpt6AstraDatasheet)
+	fast := schemas.BifrostServiceTierFast
+	tier := tierFromResponse(&fast, nil, nil)
+
+	// 272k is the boundary: at or below it the flat $25/M Fast rate applies.
+	assert.InDelta(t, 0.000025, tieredCacheCreationInputTokenRate(&astra, TokenTierAbove272K, tier), 1e-15)
+	assert.InDelta(t, 0.00005, tieredCacheCreationInputTokenRate(&astra, 300000, tier), 1e-15)
+	// Standard above 272k is unaffected.
+	assert.InDelta(t, 0.000025, tieredCacheCreationInputTokenRate(&astra, 300000, serviceTier{}), 1e-15)
+
+	// Long-context Fast invoice with cache writes: 200k uncached x $40/M + 50k read x $4/M
+	// + 50k write x $50/M + 1k out x $150/M.
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 300000, CompletionTokens: 1000, TotalTokens: 301000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 50000, CachedWriteTokens: 50000},
+	}
+	want := 200000*0.00004 + 50000*0.000004 + 50000*0.00005 + 1000*0.00015
+	assert.InDelta(t, want, computeTextCostTotal(&astra, usage, tier), 1e-9)
+}
+
 // TestGoldenOpenAIPricing_NoCacheWriteModels covers models that OpenAI prices
 // without a cache-write rate (gpt-5.5) and without a long-context tier
 // (gpt-5.4-mini): cache-write tokens fall back to the input rate, and a >272k
@@ -4540,8 +5373,8 @@ func TestCalculateCost_GPT56_Responses_FlexLongContext_EndToEnd(t *testing.T) {
 
 // TestTieredCacheCreationRate_PriorityWinsOver200kBand verifies a priority cache-write
 // request in the 200k–272k band uses the flat priority rate, not the standard >200k
-// rate. Priority has no long context (OpenAI does not offer priority >272k), so its
-// flat rate must take precedence over the standard context tiers.
+// rate. The priority cache-write rate is flat, so it must take precedence over the
+// standard context tiers.
 func TestTieredCacheCreationRate_PriorityWinsOver200kBand(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
 		CacheCreationInputTokenCost:                bifrost.Ptr(0.000001),
@@ -4552,6 +5385,25 @@ func TestTieredCacheCreationRate_PriorityWinsOver200kBand(t *testing.T) {
 	assert.Equal(t, 0.000005, tieredCacheCreationInputTokenRate(&p, 250000, serviceTier{isPriority: true}))
 	// Non-priority at the same size still uses the standard >200k rate.
 	assert.Equal(t, 0.000002, tieredCacheCreationInputTokenRate(&p, 250000, serviceTier{}))
+}
+
+// TestTieredCacheCreationRate_PriorityAbove272k verifies the long-context priority
+// cache-write column wins above 272k and that, when a catalog lacks it, the flat
+// priority rate still covers the whole context window (never the standard >272k rate).
+func TestTieredCacheCreationRate_PriorityAbove272k(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		CacheCreationInputTokenCost:                        bifrost.Ptr(0.000001),
+		CacheCreationInputTokenCostAbove272kTokens:         bifrost.Ptr(0.000002),
+		CacheCreationInputTokenCostPriority:                bifrost.Ptr(0.000005),
+		CacheCreationInputTokenCostAbove272kTokensPriority: bifrost.Ptr(0.00001),
+	}
+	priority := serviceTier{isPriority: true}
+	assert.Equal(t, 0.00001, tieredCacheCreationInputTokenRate(&p, 300000, priority))
+	assert.Equal(t, 0.000005, tieredCacheCreationInputTokenRate(&p, TokenTierAbove272K, priority))
+	assert.Equal(t, 0.000002, tieredCacheCreationInputTokenRate(&p, 300000, serviceTier{}))
+
+	p.CacheCreationInputTokenCostAbove272kTokensPriority = nil
+	assert.Equal(t, 0.000005, tieredCacheCreationInputTokenRate(&p, 300000, priority), "flat priority covers >272k when the long-context column is absent")
 }
 
 // ---------------------------------------------------------------------------
@@ -4948,7 +5800,7 @@ func TestCalculateCostForUsage_BatchResults_InferenceGeoUSMultiplier(t *testing.
 }
 
 // TestCalculateBatchCostDetailsForUsage_CostPerRequestSurcharge covers the
-// real batch-settlement entry point (used by batchaccounting.summarizeResults
+// real batch-settlement entry point (used by jobaccounting.summarizeResults
 // and the recalculate-costs path, unlike CalculateCostForUsage's batch branch
 // which only handles bare billed-usage on a failed retrieve). It must apply
 // the same flat per-request surcharge CalculateCostForUsage does, so the two
@@ -5023,6 +5875,63 @@ func TestCalculateCost_RerankPerQuery(t *testing.T) {
 		resp := makeRerankResponse(schemas.Cohere, "rerank-v3.5", nil)
 		assert.InDelta(t, 0.002, s.CalculateCost(resp, nil), 1e-12)
 	})
+}
+
+// =========================================================================
+// computeDecisionCost — unit tests
+// =========================================================================
+
+func TestComputeDecisionCost_InputOnlyBilling(t *testing.T) {
+	// Typesafe's jev pricing shape: input tokens billed, output tokens free.
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.000000042),
+		OutputCostPerToken: bifrost.Ptr(0.0),
+	}
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     50000,
+		CompletionTokens: 40,
+		TotalTokens:      50040,
+	}
+	cost := computeDecisionCostTotal(&p, usage, serviceTier{})
+	assert.InDelta(t, 50000*0.000000042, cost, 1e-12)
+}
+
+func TestComputeDecisionCost_OutputRateHonored(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.000001),
+		OutputCostPerToken: bifrost.Ptr(0.000002),
+	}
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     1000,
+		CompletionTokens: 500,
+		TotalTokens:      1500,
+	}
+	cost := computeDecisionCostTotal(&p, usage, serviceTier{})
+	assert.InDelta(t, 1000*0.000001+500*0.000002, cost, 1e-12)
+}
+
+func TestComputeDecisionCost_NilUsage(t *testing.T) {
+	p := configstoreTables.TableModelPricing{InputCostPerToken: new(0.000000042)}
+	assert.Equal(t, 0.0, computeDecisionCostTotal(&p, nil, serviceTier{}))
+}
+
+func TestCalculateCost_DecisionTokenBilling(t *testing.T) {
+	// Pins the dispatch arm: an unhandled request type silently falls into
+	// CalculateCost's default nil branch and every decision would cost zero.
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("jev-1.13.0", "typesafe", "decisions"): {
+			Model: "jev-1.13.0", Provider: "typesafe", Mode: "decisions",
+			InputCostPerToken:  bifrost.Ptr(0.000000042),
+			OutputCostPerToken: bifrost.Ptr(0.0),
+		},
+	})
+
+	resp := makeDecisionResponse(schemas.Typesafe, "jev-1.13.0", &schemas.BifrostLLMUsage{
+		PromptTokens: 50000,
+		TotalTokens:  50000,
+	})
+
+	assert.InDelta(t, 50000*0.000000042, s.CalculateCost(resp, nil), 1e-12)
 }
 
 func TestCalculateCost_RerankPerTokenStillWorks(t *testing.T) {
@@ -5212,4 +6121,392 @@ func TestParseImageDimensions(t *testing.T) {
 		assert.Equal(t, 0, w, bad)
 		assert.Equal(t, 0, h, bad)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// RoutingCallCost / CalculateCost's routing branch
+//
+// A request that classifies via semantic and then falls back to the llm
+// classifier makes two billable calls. These tests pin that both are priced —
+// individually and summed — regardless of whether one, the other, or both are
+// present, and that CalculateCost attributes each call's cost independently
+// of the other call's CountTowardBudgets flag.
+// ---------------------------------------------------------------------------
+
+func routingCostTestStore() *Store {
+	return testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("text-embedding-3-small", "openai", "embedding"): {
+			Model: "text-embedding-3-small", Provider: "openai", Mode: "embedding",
+			InputCostPerToken: bifrost.Ptr(0.00000002),
+		},
+		makeKey("claude-haiku-4-5", "anthropic", "chat"): {
+			Model: "claude-haiku-4-5", Provider: "anthropic", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000001), OutputCostPerToken: bifrost.Ptr(0.000005),
+		},
+	})
+}
+
+func embedRoutingCall(inputTokens int, countTowardBudgets bool) schemas.BifrostRoutingCall {
+	provider, model, tokens := "openai", "text-embedding-3-small", inputTokens
+	return schemas.BifrostRoutingCall{
+		ProviderUsed: &provider, ModelUsed: &model, InputTokens: &tokens,
+		CountTowardBudgets: countTowardBudgets,
+	}
+}
+
+func llmRoutingCall(inputTokens, outputTokens int, countTowardBudgets bool) schemas.BifrostRoutingCall {
+	provider, model, in, out := "anthropic", "claude-haiku-4-5", inputTokens, outputTokens
+	return schemas.BifrostRoutingCall{
+		ProviderUsed: &provider, ModelUsed: &model, InputTokens: &in, OutputTokens: &out,
+		CountTowardBudgets: countTowardBudgets,
+	}
+}
+
+func TestRoutingCallCost_EmbedOnly(t *testing.T) {
+	s := routingCostTestStore()
+	// 200 tokens * 0.00000002/token
+	assert.InDelta(t, 0.000004, s.RoutingCallCost(embedRoutingCall(200, true), nil), 1e-12)
+}
+
+func TestRoutingCallCost_LLMOnly(t *testing.T) {
+	s := routingCostTestStore()
+	// 30 input * 0.000001 + 8 output * 0.000005
+	want := 30*0.000001 + 8*0.000005
+	assert.InDelta(t, want, s.RoutingCallCost(llmRoutingCall(30, 8, true), nil), 1e-12)
+}
+
+func TestRoutingCallCost_CostPerRequest(t *testing.T) {
+	s := routingCostTestStore()
+	embeddingPricingKey := makeKey("text-embedding-3-small", "openai", "embedding")
+	embeddingPricing := s.pricingData[embeddingPricingKey]
+	embeddingPricing.CostPerRequest = bifrost.Ptr(0.01)
+	s.pricingData[embeddingPricingKey] = embeddingPricing
+	llmPricingKey := makeKey("claude-haiku-4-5", "anthropic", "chat")
+	llmPricing := s.pricingData[llmPricingKey]
+	llmPricing.CostPerRequest = bifrost.Ptr(0.02)
+	s.pricingData[llmPricingKey] = llmPricing
+
+	// The flat fee is added once to each internal provider call, independently
+	// of whether the call is the semantic embedding or LLM classifier.
+	assert.InDelta(t, 0.01+200*0.00000002, s.RoutingCallCost(embedRoutingCall(200, true), nil), 1e-12)
+	assert.InDelta(t, 0.02+30*0.000001+8*0.000005, s.RoutingCallCost(llmRoutingCall(30, 8, true), nil), 1e-12)
+}
+
+func TestRoutingCallCost_IgnoresParentSelectedKey(t *testing.T) {
+	s := routingCostTestStore()
+	providerID := "openai"
+	selectedKeyID := "parent-key"
+	model := "text-embedding-3-small"
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "routing-provider",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          model,
+			RequestTypes:     []schemas.RequestType{schemas.EmbeddingRequest},
+			PricingPatchJSON: `{"input_cost_per_token":3}`,
+		},
+		{
+			ID:               "routing-parent-provider-key",
+			ScopeKind:        string(ScopeKindProviderKey),
+			ProviderKeyID:    &selectedKeyID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          model,
+			RequestTypes:     []schemas.RequestType{schemas.EmbeddingRequest},
+			PricingPatchJSON: `{"input_cost_per_token":99}`,
+		},
+	}))
+
+	// The provider-scoped override applies, but the parent request's
+	// provider-key override must not leak into the routing call.
+	assert.InDelta(t, 10*3, s.RoutingCallCost(embedRoutingCall(10, true), &LookupScopes{
+		Provider:      "openai",
+		SelectedKeyID: selectedKeyID,
+	}), 1e-12)
+}
+
+// TestCalculateCost_RoutingBranchAttributesEachCallByItsOwnBudgetFlag pins the
+// regression this whole redesign fixes: CalculateCost's routing branch must
+// price and sum every routing metadata call, and each call's own
+// CountTowardBudgets flag — not one flag for the whole stamp — decides
+// whether that call's cost folds into the request's total.
+func TestCalculateCost_RoutingBranchAttributesEachCallByItsOwnBudgetFlag(t *testing.T) {
+	s := routingCostTestStore()
+	embedCost := 200 * 0.00000002
+	llmCost := 30*0.000001 + 8*0.000005
+
+	baseResp := func(routingMetadata *schemas.BifrostRoutingMetadata) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{
+			ChatResponse: &schemas.BifrostChatResponse{
+				Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType:     schemas.ChatCompletionRequest,
+					RoutingInfo:     routingInfoFor(schemas.OpenAI, "gpt-4o-mini"),
+					RoutingMetadata: routingMetadata,
+				},
+			},
+		}
+	}
+	s.pricingData[makeKey("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
+		Model: "gpt-4o-mini", Provider: "openai", Mode: "chat",
+		InputCostPerToken: bifrost.Ptr(0.0), OutputCostPerToken: bifrost.Ptr(0.0),
+	}
+
+	t.Run("both calls opted in", func(t *testing.T) {
+		resp := baseResp(&schemas.BifrostRoutingMetadata{Calls: []schemas.BifrostRoutingCall{
+			embedRoutingCall(200, true),
+			llmRoutingCall(30, 8, true),
+		}})
+		assert.InDelta(t, embedCost+llmCost, s.CalculateCost(resp, nil), 1e-12)
+	})
+
+	t.Run("only the embed call opted in — the fix for the overwrite bug", func(t *testing.T) {
+		// Before the fix, a single-slot routing metadata record meant the llm call (written
+		// second) silently replaced the embed call's usage; the embed's cost was
+		// unrecoverable even though it explicitly opted into budget attribution.
+		resp := baseResp(&schemas.BifrostRoutingMetadata{Calls: []schemas.BifrostRoutingCall{
+			embedRoutingCall(200, true),
+			llmRoutingCall(30, 8, false),
+		}})
+		assert.InDelta(t, embedCost, s.CalculateCost(resp, nil), 1e-12)
+	})
+
+	t.Run("only the llm call opted in", func(t *testing.T) {
+		resp := baseResp(&schemas.BifrostRoutingMetadata{Calls: []schemas.BifrostRoutingCall{
+			embedRoutingCall(200, false),
+			llmRoutingCall(30, 8, true),
+		}})
+		assert.InDelta(t, llmCost, s.CalculateCost(resp, nil), 1e-12)
+	})
+
+	t.Run("neither opted in", func(t *testing.T) {
+		resp := baseResp(&schemas.BifrostRoutingMetadata{Calls: []schemas.BifrostRoutingCall{
+			embedRoutingCall(200, false),
+			llmRoutingCall(30, 8, false),
+		}})
+		assert.Equal(t, 0.0, s.CalculateCost(resp, nil))
+	})
+
+	t.Run("nil routing debug", func(t *testing.T) {
+		resp := baseResp(nil)
+		assert.Equal(t, 0.0, s.CalculateCost(resp, nil))
+	})
+}
+
+// --- Video pricing dimensions (the settlement-time pricing basis) ---
+
+// newVideoDimensionTestStore is a catalog carrying the resolution-banded video
+// rates, so dimension-driven pricing is exercised against real lookup rather than
+// a hand-held pricing row.
+func newVideoDimensionTestStore(t *testing.T) *Store {
+	t.Helper()
+	banded := sizedVideoPricing()
+	banded.Model = "sora-2-pro"
+	banded.Provider = "openai"
+	banded.Mode = "video_generation"
+	return testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("sora-2-pro", "openai", "video_generation"): banded,
+	})
+}
+
+func TestVideoPricingDimensions_MergedWithPrefersObserved(t *testing.T) {
+	eight, twelve := 8, 12
+	audio := true
+	captured := VideoPricingDimensions{
+		Model:       "veo-3.1",
+		RequestType: schemas.VideoGenerationRequest,
+		Seconds:     &eight,
+		Size:        "1920x1080",
+		Audio:       &audio,
+		Extra:       map[string]any{"sample_count": 2},
+	}
+	// The provider clamped the duration and downscaled: what actually happened
+	// wins, because that is what the bill is for.
+	observed := VideoPricingDimensions{Seconds: &twelve, Size: "1280x720", OutputCount: 3}
+
+	merged := captured.MergedWith(observed)
+	require.NotNil(t, merged.Seconds)
+	assert.Equal(t, 12, *merged.Seconds)
+	assert.Equal(t, "1280x720", merged.Size)
+	assert.Equal(t, 3, merged.OutputCount)
+	// Everything the response stayed silent about survives from the request —
+	// which for most providers is nearly all of it.
+	assert.Equal(t, "veo-3.1", merged.Model)
+	assert.Equal(t, schemas.VideoGenerationRequest, merged.RequestType)
+	require.NotNil(t, merged.Audio)
+	assert.True(t, *merged.Audio)
+	assert.Equal(t, 2, merged.Extra["sample_count"])
+}
+
+func TestVideoPricingDimensions_MergedWithKeepsCapturedWhenResponseIsSilent(t *testing.T) {
+	eight := 8
+	captured := VideoPricingDimensions{Model: "veo-3.1", Seconds: &eight, Size: "1920x1080"}
+
+	// The common case: a retrieve that reports nothing but "done".
+	merged := captured.MergedWith(VideoPricingDimensions{})
+	require.NotNil(t, merged.Seconds)
+	assert.Equal(t, 8, *merged.Seconds)
+	assert.Equal(t, "1920x1080", merged.Size)
+	assert.Equal(t, "veo-3.1", merged.Model)
+	assert.Zero(t, merged.OutputCount, "a silent response must not claim the job produced clips")
+}
+
+func TestVideoDimensionsFromResponse(t *testing.T) {
+	seconds := "8"
+	resp := &schemas.BifrostVideoGenerationResponse{
+		Model:   "sora-2-pro",
+		Seconds: &seconds,
+		Size:    "1920x1080",
+		Videos:  []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}, {Type: schemas.VideoOutputTypeURL}},
+	}
+	dims := VideoDimensionsFromResponse(resp)
+	assert.Equal(t, "sora-2-pro", dims.Model)
+	require.NotNil(t, dims.Seconds)
+	assert.Equal(t, 8, *dims.Seconds)
+	assert.Equal(t, "1920x1080", dims.Size)
+	assert.Equal(t, 2, dims.OutputCount)
+	assert.Nil(t, dims.ProviderCost)
+}
+
+func TestVideoDimensionsFromResponse_CarriesProviderCost(t *testing.T) {
+	resp := &schemas.BifrostVideoGenerationResponse{
+		Model: "runware-video",
+		Usage: &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 1.23}},
+	}
+	dims := VideoDimensionsFromResponse(resp)
+	require.NotNil(t, dims.ProviderCost)
+	assert.InDelta(t, 1.23, *dims.ProviderCost, 1e-12)
+}
+
+func TestCalculateVideoCostDetails_ProviderCostWinsOverCatalogRate(t *testing.T) {
+	store := newVideoDimensionTestStore(t)
+	seconds := 8
+	providerCost := 0.42
+	dims := VideoPricingDimensions{
+		Model:        "sora-2-pro",
+		RequestType:  schemas.VideoGenerationRequest,
+		Seconds:      &seconds,
+		Size:         "1920x1080",
+		OutputCount:  1,
+		ProviderCost: &providerCost,
+	}
+	details := store.CalculateVideoCostDetails(dims, schemas.OpenAI, nil)
+	assert.True(t, details.Priced)
+	assert.True(t, details.ProviderCostUsed)
+	assert.InDelta(t, 0.42, details.Cost, 1e-12,
+		"a provider that reports its own figure is never overridden by an estimate")
+}
+
+func TestCalculateVideoCostDetails_UsesResolutionBandedRate(t *testing.T) {
+	store := newVideoDimensionTestStore(t)
+	seconds := 8
+	dims := VideoPricingDimensions{
+		Model:       "sora-2-pro",
+		RequestType: schemas.VideoGenerationRequest,
+		Seconds:     &seconds,
+		Size:        "1920x1080",
+		OutputCount: 1,
+	}
+	details := store.CalculateVideoCostDetails(dims, schemas.OpenAI, nil)
+	require.True(t, details.Priced)
+	assert.False(t, details.ProviderCostUsed)
+	assert.InDelta(t, 8*0.70, details.Cost, 1e-12)
+}
+
+func TestCalculateVideoCostDetails_BillsEveryClip(t *testing.T) {
+	store := newVideoDimensionTestStore(t)
+	seconds := 8
+	dims := VideoPricingDimensions{
+		Model:       "sora-2-pro",
+		RequestType: schemas.VideoGenerationRequest,
+		Seconds:     &seconds,
+		Size:        "1280x720",
+		OutputCount: 3,
+	}
+	details := store.CalculateVideoCostDetails(dims, schemas.OpenAI, nil)
+	require.True(t, details.Priced)
+	assert.InDelta(t, 3*8*0.30, details.Cost, 1e-12)
+}
+
+func TestCalculateVideoCostDetails_UnknownModelIsUnpriced(t *testing.T) {
+	store := newVideoDimensionTestStore(t)
+	seconds := 8
+	dims := VideoPricingDimensions{Model: "no-such-model", Seconds: &seconds, Size: "1920x1080"}
+
+	details := store.CalculateVideoCostDetails(dims, schemas.OpenAI, nil)
+	assert.False(t, details.Priced, "no rate must read as unpriced, never as free")
+	assert.Zero(t, details.Cost)
+}
+
+func TestCalculateVideoCostDetails_NoDurationIsUnpriced(t *testing.T) {
+	store := newVideoDimensionTestStore(t)
+	// An upscale job: no duration basis, and no upscale rate published yet. It must
+	// park as unpriced rather than be billed as a zero-length generation.
+	upscale := "upscale"
+	factor := 4
+	dims := VideoPricingDimensions{
+		Model:         "sora-2-pro",
+		RequestType:   schemas.VideoEditRequest,
+		Type:          &upscale,
+		UpscaleFactor: &factor,
+	}
+	details := store.CalculateVideoCostDetails(dims, schemas.OpenAI, nil)
+	assert.False(t, details.Priced)
+	assert.Zero(t, details.Cost)
+}
+
+// A queued video has produced nothing and may never produce anything. Billing it
+// at submission is the bug the job settler exists to fix: the charge belongs at
+// settlement, where the outcome is known.
+func TestCalculateCost_QueuedVideoIsNotBilledAtSubmission(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("sora-2-pro", "openai", "video_generation"): {
+			Model: "sora-2-pro", Provider: "openai", Mode: "video_generation",
+			OutputCostPerVideoPerSecond:      bifrost.Ptr(0.30),
+			OutputCostPerVideoPerSecond1080p: bifrost.Ptr(0.70),
+		},
+	})
+
+	newResp := func(status schemas.VideoStatus) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{
+			VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+				Status:  status,
+				Seconds: bifrost.Ptr("8"),
+				Size:    "1920x1080",
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType: schemas.VideoGenerationRequest,
+					RoutingInfo: routingInfoFor(schemas.OpenAI, "sora-2-pro"),
+				},
+			},
+		}
+	}
+
+	// Failed is included deliberately: it used to fall through to computeVideoCost,
+	// which bills max(1, clips) — so a failed 8s job was charged for a full clip,
+	// while VideoSettler.Settle recorded the same job at zero.
+	for _, status := range []schemas.VideoStatus{schemas.VideoStatusQueued, schemas.VideoStatusInProgress, schemas.VideoStatusFailed} {
+		assert.Zero(t, s.CalculateCost(newResp(status), nil), string(status))
+	}
+
+	// A provider-reported cost on an unfinished job is a quote, not a bill. This is
+	// the path that bypassed the gate entirely: extractCostInput routes VideoUsage
+	// into input.usage.Cost, which the provider-cost short-circuit returns before
+	// any status is consulted.
+	for _, status := range []schemas.VideoStatus{schemas.VideoStatusQueued, schemas.VideoStatusInProgress, schemas.VideoStatusFailed} {
+		quoted := newResp(status)
+		quoted.VideoGenerationResponse.Usage = &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 3.21}}
+		assert.Zero(t, s.CalculateCost(quoted, nil), "provider cost on %s must not bill at submission", status)
+	}
+
+	// A completed job still honours the provider's own figure verbatim.
+	priced := newResp(schemas.VideoStatusCompleted)
+	priced.VideoGenerationResponse.Videos = []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}}
+	priced.VideoGenerationResponse.Usage = &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 3.21}}
+	assert.InDelta(t, 3.21, s.CalculateCost(priced, nil), 1e-9)
+
+	// A terminal response still prices inline — that is what settlement drives.
+	terminal := newResp(schemas.VideoStatusCompleted)
+	terminal.VideoGenerationResponse.Videos = []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}}
+	assert.InDelta(t, 5.60, s.CalculateCost(terminal, nil), 1e-9)
 }

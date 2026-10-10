@@ -4,18 +4,36 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+func TestRealtimeSessionRoutesOnlyExposeGAClientSecrets(t *testing.T) {
+	handler := &RealtimeClientSecretsHandler{}
+	routes := handler.realtimeSessionRoutes()
+	want := map[string]bool{
+		"/v1/realtime/client_secrets":        true,
+		"/openai/v1/realtime/client_secrets": true,
+	}
+	if len(routes) != len(want) {
+		t.Fatalf("routes = %v, want exactly %d GA routes", routes, len(want))
+	}
+	for _, route := range routes {
+		if !want[route.Path] {
+			t.Fatalf("unexpected realtime client secret route %q", route.Path)
+		}
+	}
+}
 
 func TestResolveRealtimeClientSecretTarget(t *testing.T) {
 	t.Parallel()
@@ -30,40 +48,33 @@ func TestResolveRealtimeClientSecretTarget(t *testing.T) {
 	}{
 		{
 			name:         "base route with session model",
-			route:        schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets},
+			route:        schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets"},
 			body:         []byte(`{"session":{"model":"openai/gpt-4o-realtime-preview"}}`),
 			wantProvider: schemas.OpenAI,
 			wantModel:    "gpt-4o-realtime-preview",
 		},
 		{
-			name:         "base route with top level model",
-			route:        schemas.RealtimeSessionRoute{Path: "/v1/realtime/sessions", EndpointType: schemas.RealtimeSessionEndpointSessions},
-			body:         []byte(`{"model":"openai/gpt-4o-realtime-preview"}`),
-			wantProvider: schemas.OpenAI,
-			wantModel:    "gpt-4o-realtime-preview",
-		},
-		{
 			name:         "openai alias uses bare model",
-			route:        schemas.RealtimeSessionRoute{Path: "/openai/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets, DefaultProvider: schemas.OpenAI},
+			route:        schemas.RealtimeSessionRoute{Path: "/openai/v1/realtime/client_secrets", DefaultProvider: schemas.OpenAI},
 			body:         []byte(`{"session":{"model":"gpt-4o-realtime-preview"}}`),
 			wantProvider: schemas.OpenAI,
 			wantModel:    "gpt-4o-realtime-preview",
 		},
 		{
 			name:    "base route rejects bare model",
-			route:   schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets},
+			route:   schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets"},
 			body:    []byte(`{"session":{"model":"gpt-4o-realtime-preview"}}`),
 			wantErr: true,
 		},
 		{
 			name:    "missing model",
-			route:   schemas.RealtimeSessionRoute{Path: "/openai/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets, DefaultProvider: schemas.OpenAI},
+			route:   schemas.RealtimeSessionRoute{Path: "/openai/v1/realtime/client_secrets", DefaultProvider: schemas.OpenAI},
 			body:    []byte(`{"session":{}}`),
 			wantErr: true,
 		},
 		{
 			name:         "GA transcription session resolves model from nested audio path",
-			route:        schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets},
+			route:        schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets"},
 			body:         []byte(`{"session":{"type":"transcription","audio":{"input":{"transcription":{"model":"openai/gpt-4o-transcribe"}}}}}`),
 			wantProvider: schemas.OpenAI,
 			wantModel:    "gpt-4o-transcribe",
@@ -106,19 +117,13 @@ func TestResolveRealtimeClientSecretTarget_NormalizesModel(t *testing.T) {
 	}{
 		{
 			name:      "session.model provider prefix stripped",
-			route:     schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets},
+			route:     schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets"},
 			body:      `{"session":{"model":"openai/gpt-4o-realtime-preview","voice":"alloy"}}`,
 			wantModel: "gpt-4o-realtime-preview",
 		},
 		{
-			name:      "top-level model provider prefix stripped",
-			route:     schemas.RealtimeSessionRoute{Path: "/v1/realtime/sessions", EndpointType: schemas.RealtimeSessionEndpointSessions},
-			body:      `{"model":"openai/gpt-4o-realtime-preview"}`,
-			wantModel: "gpt-4o-realtime-preview",
-		},
-		{
 			name:      "bare model unchanged on alias route",
-			route:     schemas.RealtimeSessionRoute{Path: "/openai/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets, DefaultProvider: schemas.OpenAI},
+			route:     schemas.RealtimeSessionRoute{Path: "/openai/v1/realtime/client_secrets", DefaultProvider: schemas.OpenAI},
 			body:      `{"session":{"model":"gpt-4o-realtime-preview"}}`,
 			wantModel: "gpt-4o-realtime-preview",
 		},
@@ -182,7 +187,7 @@ func TestGATranscriptionSessionEndToEndThroughFullNormalizationPath(t *testing.T
 	t.Parallel()
 
 	var ctx fasthttp.RequestCtx
-	route := schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets}
+	route := schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets"}
 	body := []byte(`{"session":{"type":"transcription","audio":{"input":{"format":{"type":"audio/pcm","rate":24000},"transcription":{"model":"openai/whisper-1","language":"en"}}}}}`)
 
 	providerKey, model, handlerBody, err := resolveRealtimeClientSecretTarget(&ctx, &lib.Config{}, route, body)
@@ -193,7 +198,7 @@ func TestGATranscriptionSessionEndToEndThroughFullNormalizationPath(t *testing.T
 		t.Fatalf("provider/model = %q/%q, want %q/%q", providerKey, model, schemas.OpenAI, "whisper-1")
 	}
 
-	finalBody, finalModel, bifrostErr := openaiProvider.NormalizeRealtimeClientSecretRequest(handlerBody, schemas.OpenAI, schemas.RealtimeSessionEndpointClientSecrets)
+	finalBody, finalModel, bifrostErr := openaiProvider.NormalizeRealtimeClientSecretRequest(handlerBody, schemas.OpenAI)
 	if bifrostErr != nil {
 		t.Fatalf("NormalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
 	}
@@ -246,7 +251,7 @@ func TestFullRealtimeSessionWithTranscriptionSiblingEndToEnd(t *testing.T) {
 	t.Parallel()
 
 	var ctx fasthttp.RequestCtx
-	route := schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets}
+	route := schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets"}
 	body := []byte(`{"model":"openai/gpt-4o-realtime-preview","session":{"audio":{"input":{"transcription":{"model":"openai/whisper-1"}}}}}`)
 
 	providerKey, model, handlerBody, err := resolveRealtimeClientSecretTarget(&ctx, &lib.Config{}, route, body)
@@ -257,7 +262,7 @@ func TestFullRealtimeSessionWithTranscriptionSiblingEndToEnd(t *testing.T) {
 		t.Fatalf("provider/model = %q/%q, want %q/%q", providerKey, model, schemas.OpenAI, "gpt-4o-realtime-preview")
 	}
 
-	finalBody, finalModel, bifrostErr := openaiProvider.NormalizeRealtimeClientSecretRequest(handlerBody, schemas.OpenAI, schemas.RealtimeSessionEndpointClientSecrets)
+	finalBody, finalModel, bifrostErr := openaiProvider.NormalizeRealtimeClientSecretRequest(handlerBody, schemas.OpenAI)
 	if bifrostErr != nil {
 		t.Fatalf("NormalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
 	}
@@ -354,12 +359,15 @@ func TestRewriteGASessionTranscriptionModelNoOpForFullRealtimeSession(t *testing
 func TestParseRealtimeEphemeralKeyMapping(t *testing.T) {
 	t.Parallel()
 
-	token, ttl, ok := parseRealtimeEphemeralKeyMapping([]byte(`{
+	token, ttl, nested, ok := parseRealtimeEphemeralKeyMapping([]byte(`{
 		"value": "ek_test_123",
 		"expires_at": 4102444800
 	}`))
 	if !ok {
 		t.Fatal("expected ephemeral mapping to be parsed")
+	}
+	if nested {
+		t.Fatal("expected top-level secret shape")
 	}
 	if token != "ek_test_123" {
 		t.Fatalf("token = %q, want %q", token, "ek_test_123")
@@ -372,7 +380,7 @@ func TestParseRealtimeEphemeralKeyMapping(t *testing.T) {
 func TestParseRealtimeEphemeralKeyMapping_NestedFallback(t *testing.T) {
 	t.Parallel()
 
-	token, ttl, ok := parseRealtimeEphemeralKeyMapping([]byte(`{
+	token, ttl, nested, ok := parseRealtimeEphemeralKeyMapping([]byte(`{
 		"client_secret": {
 			"value": "ek_test_nested",
 			"expires_at": 4102444800
@@ -380,6 +388,9 @@ func TestParseRealtimeEphemeralKeyMapping_NestedFallback(t *testing.T) {
 	}`))
 	if !ok {
 		t.Fatal("expected nested ephemeral mapping to be parsed")
+	}
+	if !nested {
+		t.Fatal("expected nested secret shape")
 	}
 	if token != "ek_test_nested" {
 		t.Fatalf("token = %q, want %q", token, "ek_test_nested")
@@ -389,7 +400,68 @@ func TestParseRealtimeEphemeralKeyMapping_NestedFallback(t *testing.T) {
 	}
 }
 
-func TestCacheRealtimeEphemeralKeyMappingStoresKeyID(t *testing.T) {
+// TestParseRealtimeEphemeralKeyMapping_RejectsCompositeShapes is a regression
+// test for a coderabbit-caught bug: json.Unmarshal preserves fields absent from
+// the new JSON, so a top-level field left over from the failed first parse could
+// combine with a nested field into a token/expiry pair no single shape carried.
+func TestParseRealtimeEphemeralKeyMapping_RejectsCompositeShapes(t *testing.T) {
+	t.Parallel()
+
+	// Top-level value + nested expiry: neither shape is complete on its own.
+	if _, _, _, ok := parseRealtimeEphemeralKeyMapping([]byte(`{
+		"value": "ek_top_only",
+		"client_secret": {
+			"expires_at": 4102444800
+		}
+	}`)); ok {
+		t.Fatal("top-level value must not combine with nested expires_at")
+	}
+
+	// Top-level expiry + nested value: the mirror composite.
+	if _, _, _, ok := parseRealtimeEphemeralKeyMapping([]byte(`{
+		"expires_at": 4102444800,
+		"client_secret": {
+			"value": "ek_nested_only"
+		}
+	}`)); ok {
+		t.Fatal("nested value must not combine with top-level expires_at")
+	}
+}
+
+func TestRealtimeMappingVirtualKeyUsesRequestHeader(t *testing.T) {
+	t.Parallel()
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.Set("Authorization", "Bearer sk-bf-header")
+
+	if got := governance.ParseVirtualKeyFromFastHTTPRequest(&ctx); got == nil || *got != "sk-bf-header" {
+		t.Fatalf("ParseVirtualKeyFromFastHTTPRequest() = %v, want request virtual key", got)
+	}
+}
+
+func TestRealtimeMappingVirtualKeyUsesSettledBearerCredential(t *testing.T) {
+	t.Parallel()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	lib.RecordCredential(ctx, grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-bearer"))
+
+	if got := realtimeMappingVirtualKey(ctx); got != "sk-bf-bearer" {
+		t.Fatalf("realtimeMappingVirtualKey() = %q, want settled bearer virtual key", got)
+	}
+}
+
+func TestRealtimeMappingVirtualKeyFallsBackToContextValue(t *testing.T) {
+	t.Parallel()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-context")
+
+	if got := realtimeMappingVirtualKey(ctx); got != "sk-bf-context" {
+		t.Fatalf("realtimeMappingVirtualKey() = %q, want context virtual key", got)
+	}
+}
+
+func TestReplaceAndCacheRealtimeEphemeralToken(t *testing.T) {
 	t.Parallel()
 
 	store, err := kvstore.New(kvstore.Config{})
@@ -398,33 +470,41 @@ func TestCacheRealtimeEphemeralKeyMappingStoresKeyID(t *testing.T) {
 	}
 	defer store.Close()
 
-	body := []byte(`{
-		"value": "ek_test_456",
-		"expires_at": ` + "4102444800" + `
-	}`)
-	cacheRealtimeEphemeralKeyMapping(store, body, "key_123", "sk-bf-test")
+	resp := &schemas.BifrostPassthroughResponse{Body: []byte(`{
+		"value": "ek_provider_456",
+		"expires_at": 4102444800
+	}`)}
+	if bifrostErr := replaceAndCacheRealtimeEphemeralToken(store, resp, "key_123", "sk-bf-test"); bifrostErr != nil {
+		t.Fatalf("replaceAndCacheRealtimeEphemeralToken() error = %v", bifrostErr)
+	}
 
-	raw, err := store.Get(buildRealtimeEphemeralKeyMappingKey("ek_test_456"))
+	var rewritten struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(resp.Body, &rewritten); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if !strings.HasPrefix(rewritten.Value, "ek_bf_") {
+		t.Fatalf("returned token = %q, want Bifrost token", rewritten.Value)
+	}
+	if rewritten.Value == "ek_provider_456" {
+		t.Fatal("returned provider token unchanged")
+	}
+
+	raw, err := store.Get(buildRealtimeEphemeralKeyMappingKey(rewritten.Value))
 	if err != nil {
 		t.Fatalf("store.Get() error = %v", err)
 	}
-	value, ok := raw.([]byte)
+	mapping, ok := raw.(realtimeEphemeralKeyMapping)
 	if !ok {
-		t.Fatalf("cached value type = %T, want []byte", raw)
+		t.Fatalf("cached value type = %T, want realtimeEphemeralKeyMapping", raw)
 	}
-	var mapping realtimeEphemeralKeyMapping
-	if err := json.Unmarshal(value, &mapping); err != nil {
-		t.Fatalf("json.Unmarshal() error = %v", err)
-	}
-	if mapping.KeyID != "key_123" {
-		t.Fatalf("mapping.KeyID = %q, want %q", mapping.KeyID, "key_123")
-	}
-	if mapping.VirtualKey != "sk-bf-test" {
-		t.Fatalf("mapping.VirtualKey = %q, want %q", mapping.VirtualKey, "sk-bf-test")
+	if mapping.KeyID != "key_123" || mapping.VirtualKey != "sk-bf-test" || mapping.ProviderToken != "ek_provider_456" {
+		t.Fatalf("mapping = %#v, want key, virtual key, and provider token", mapping)
 	}
 }
 
-func TestCacheRealtimeEphemeralKeyMappingSkipsExpiredSecrets(t *testing.T) {
+func TestReplaceAndCacheRealtimeEphemeralTokenRejectsExpiredSecret(t *testing.T) {
 	t.Parallel()
 
 	store, err := kvstore.New(kvstore.Config{})
@@ -434,14 +514,12 @@ func TestCacheRealtimeEphemeralKeyMappingSkipsExpiredSecrets(t *testing.T) {
 	defer store.Close()
 
 	expired := time.Now().Add(-time.Minute).Unix()
-	body := fmt.Appendf(nil, `{
+	resp := &schemas.BifrostPassthroughResponse{Body: fmt.Appendf(nil, `{
 		"value": "ek_expired",
 		"expires_at": %d
-	}`, expired)
-	cacheRealtimeEphemeralKeyMapping(store, body, "key_123", "")
-
-	if _, err := store.Get(buildRealtimeEphemeralKeyMappingKey("ek_expired")); err == nil {
-		t.Fatal("expected no cached mapping for expired token")
+	}`, expired)}
+	if bifrostErr := replaceAndCacheRealtimeEphemeralToken(store, resp, "key_123", ""); bifrostErr == nil {
+		t.Fatal("expected expired provider secret to be rejected")
 	}
 }
 
@@ -459,6 +537,14 @@ func TestIsJSONContentType(t *testing.T) {
 	}
 }
 
+// The handler finds the governance plugin by type-asserting each base plugin
+// against governance.BaseGovernancePlugin, so a mock that falls behind the
+// interface stops being found — silently, and without a build failure. Minting
+// then skips governance entirely and every assertion below still reads as a
+// passing "no governance configured" path. This line turns that drift into a
+// compile error at the point the interface grows.
+var _ governance.BaseGovernancePlugin = (*mockRealtimeMintingGovernancePlugin)(nil)
+
 type mockRealtimeMintingGovernancePlugin struct {
 	err            *schemas.BifrostError
 	seenUserID     string
@@ -472,20 +558,21 @@ func (m *mockRealtimeMintingGovernancePlugin) GetName() string {
 	return governance.PluginName
 }
 
-func (m *mockRealtimeMintingGovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext, evaluationRequest *governance.EvaluationRequest, _ schemas.RequestType) (*governance.EvaluationResult, *schemas.BifrostError) {
+func (m *mockRealtimeMintingGovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationRequest *governance.EvaluationRequest) (*governance.EvaluationResult, *schemas.BifrostError) {
 	m.evaluateCalls++
 	m.seenUserID = ""
 	m.seenVirtualKey = ""
 	m.seenProvider = ""
 	m.seenModel = ""
 	if evaluationRequest != nil {
-		m.seenUserID = evaluationRequest.UserID
-		m.seenVirtualKey = evaluationRequest.VirtualKey
 		m.seenProvider = evaluationRequest.Provider
 		m.seenModel = evaluationRequest.Model
 	}
-	if ctx != nil && m.seenVirtualKey == "" {
+	// The credential and the user are the request's, carried on its context: the handler no longer
+	// restates them, so this is where they are observed.
+	if ctx != nil {
 		m.seenVirtualKey = bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+		m.seenUserID = bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 	}
 	if m.err != nil {
 		return nil, m.err
@@ -533,18 +620,18 @@ func (m *mockRealtimeMintingGovernancePlugin) GetGovernanceStore() governance.Go
 	return nil
 }
 
-func (m *mockRealtimeMintingGovernancePlugin) GetVirtualKey(_ context.Context, _ string) (*configstoreTables.TableVirtualKey, bool) {
-	return nil, false
-}
-
-func (m *mockRealtimeMintingGovernancePlugin) GetBudgetAndRateLimitStatus(_ context.Context, _ string, _ schemas.ModelProvider, _ *configstoreTables.TableVirtualKey, _ map[string]float64, _ map[string]int64, _ map[string]int64) *governance.BudgetAndRateLimitStatus {
+func (m *mockRealtimeMintingGovernancePlugin) GetBudgetAndRateLimitStatus(_ *schemas.BifrostContext, _ schemas.ModelProvider, _ string, _ map[string]float64, _ map[string]int64, _ map[string]int64) *governance.BudgetAndRateLimitStatus {
 	return nil
 }
 
-func (m *mockRealtimeMintingGovernancePlugin) PublishRoutingAllowlist(_ *schemas.BifrostContext, _ *configstoreTables.TableVirtualKey, _ string) {
+func (m *mockRealtimeMintingGovernancePlugin) PublishRoutingAllowlist(_ *schemas.BifrostContext, _ string) {
 }
 
-func (m *mockRealtimeMintingGovernancePlugin) LoadBalanceProvider(_ *schemas.BifrostContext, _ *schemas.BifrostRequest, _ *configstoreTables.TableVirtualKey) error {
+func (m *mockRealtimeMintingGovernancePlugin) ResolveAccess(_ *schemas.BifrostContext) (schemas.Access, error) {
+	return nil, nil
+}
+
+func (m *mockRealtimeMintingGovernancePlugin) LoadBalanceProvider(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
 	return nil
 }
 

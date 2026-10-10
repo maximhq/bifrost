@@ -270,8 +270,17 @@ func TestCache_InflightDedup(t *testing.T) {
 			results[i] = v
 		}()
 	}
-	// Let both goroutines reach the fill before releasing the leader.
+	// Release the leader only after the follower has provably joined the
+	// inflight call. Waiting for calls==1 alone only proves the leader
+	// started: if the follower is scheduled late, the leader finishes,
+	// clears the inflight slot, and the follower runs a second legitimate
+	// load, failing the exactly-once assertion.
 	assert.Eventually(t, func() bool { return calls.Load() == 1 }, time.Second, time.Millisecond)
+	c.inflightMu.Lock()
+	call := c.inflight["k1"]
+	c.inflightMu.Unlock()
+	require.NotNil(t, call)
+	require.Eventually(t, func() bool { return call.waiters.Load() == 1 }, time.Second, time.Millisecond)
 	close(release)
 	wg.Wait()
 

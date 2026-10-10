@@ -38,13 +38,14 @@ A larger pool reduces latency spikes under burst load at the cost of higher base
 | `allow_per_request_content_storage_override` | boolean | `false` | Allow individual requests to override content storage via the `x-bf-disable-content-logging` header or its context key, and to opt in to raw-byte persistence via `x-bf-store-raw-request-response`. When `false`, the global `disable_content_logging` setting is authoritative and per-request overrides are ignored. See [Request Options](/providers/request-options#disable-content-logging-per-request) |
 | `log_retention_days` | integer | `365` | Days to retain log entries in the store |
 | `logging_headers` | array of strings | `[]` | HTTP request headers to capture in log metadata |
+| `hidden_request_types` | array of strings | `[]` | Request types hidden from Logs and Dashboard reads. Logs are still stored. Also editable in the UI under **Logs Settings**. See [Hiding request types from the dashboard](/architecture/framework/log-store#hiding-request-types-from-the-dashboard) |
 
-Set `disable_content_logging: true` for HIPAA / PCI compliance workloads where message content must not be persisted.
+Set `disable_content_logging: true` for HIPAA / PCI compliance workloads where message content must not be persisted, and keep `retain_content_in_object_storage: false`: with it on, the full payload of every content-disabled request is still persisted in the object storage bucket. A virtual key with its own `disable_content_logging: false` overrides this for its traffic, so audit your keys as well.
 
 <Warning>
 **This setting does not apply to observability connectors.** Each connector (BigQuery, Kafka, Pub/Sub, OpenTelemetry, Datadog) has its **own** `disable_content_logging` flag that defaults to `false` and is read independently of this one. Setting the client flag alone still exports full message content to every configured connector.
 
-For a compliance workload where content must not leave the deployment, set `disable_content_logging: true` **on every configured connector as well**. See [Content Logging](/features/observability/content-logging) for how the layers compose, and for `retain_content_in_object_storage`, which keeps content in your storage bucket while hiding it from the UI and API.
+For a compliance workload where content must not leave the deployment, set `disable_content_logging: true` **on every configured connector as well**. These flags do not cover every exported value: BigQuery writes `params` and `tools` regardless of its flag, and captured request headers are exported regardless of content flags. If those fields or headers can contain sensitive data, do not export them or apply separate controls. Keep `allow_per_request_content_storage_override` off, and make sure no virtual key sets `disable_content_logging: false`. If `retain_content_in_object_storage` is on, its bucket holds the full payload of every content-disabled request: turn it off when content must not be persisted, or keep the bucket inside the approved deployment boundary when retention is allowed but content must not leave the deployment. See [Content Logging](/features/observability/content-logging) for how the layers compose, and for `retain_content_in_object_storage`, which keeps content in your storage bucket while hiding it from the UI and API.
 </Warning>
 
 ```json
@@ -104,12 +105,13 @@ This setting is also configurable via the UI (**MCP Gateway → MCP Settings**) 
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `allowed_origins` | array | `["*"]` | CORS allowed origins (use URIs or `"*"`) |
-| `enforce_auth_on_inference` | boolean | `false` | Require auth (virtual key, API key, or user token) on `/v1/*` inference routes |
+| `allowed_origins` | array | `["*"]` | CORS allowed origins: exact URIs, wildcard-host patterns such as `https://*.example.com`, or `"*"`. While dashboard auth is disabled, browser requests to the management API are accepted only from localhost origins, the gateway's own origin, and origins listed here explicitly; see the note below |
+| `enforce_auth_on_inference` | boolean | `false` | Require auth (virtual key, API key, or user token) on `/v1/*` inference routes. Realtime connections (`/v1/realtime`, `/v1/realtime/calls`) are refused with `401` at connect time unless they present one of those, or an ephemeral client secret from `POST /v1/realtime/client_secrets` |
 | `max_request_body_size_mb` | integer | `100` | Maximum allowed request body size in MB |
 | `whitelisted_routes` | array of strings | `[]` | Routes that bypass auth middleware |
 | `allowed_headers` | array of strings | `[]` | Additional headers permitted for CORS and WebSocket |
 | `allow_direct_keys` | boolean | `false` | Allow callers to bypass the registered key pool by sending `x-bf-direct-key: true` and a raw provider key in `Authorization` / `x-api-key` / `x-goog-api-key`. See [Direct API Key](../../providers/request-options#direct-api-key) |
+| `delete_expired_virtual_keys` | boolean | `false` | Delete expired virtual keys with a daily cleanup job. A key can override this with its own `delete_after_expire`. See [Virtual key expiry](../../features/governance/virtual-keys#key-expiry) |
 
 ```json
 {
@@ -124,6 +126,10 @@ This setting is also configurable via the UI (**MCP Gateway → MCP Settings**) 
   }
 }
 ```
+
+<Note>
+While dashboard auth is disabled or unconfigured, a request to the management API (`/api/*`, `/ws`, `/metrics`) that carries an `Origin` header is accepted only from a localhost origin, from the gateway's own origin (the `Origin` host and port match the request's `Host`, as for the bundled dashboard's own requests such as `PUT /api/config`), or from an origin listed in `allowed_origins` by name or pattern (for example `https://*.example.com`); the `"*"` entry does not count, and other origins receive `403`. Requests without an `Origin` header (CLI and SDKs), whitelisted routes such as `/health`, and inference routes are unaffected. If the dashboard sits behind a proxy that rewrites the `Host` header, list its public origin in `allowed_origins`. To call the management API from a web app on another origin, list that origin explicitly or enable dashboard authentication, which lifts this check.
+</Note>
 
 ---
 
@@ -166,6 +172,8 @@ Compatibility flags that let Bifrost silently adapt request/response shapes for 
 | `compat.convert_chat_to_responses` | boolean | `false` | Translate chat completions to Responses API format |
 | `compat.should_drop_params` | boolean | `false` | Silently drop unsupported parameters instead of erroring |
 | `compat.should_convert_params` | boolean | `false` | Auto-convert parameter values across provider schemas |
+| `compat.azure_deepseek` | boolean | `false` | Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses |
+| `compat.force_reasoning_only_models_to_responses` | boolean | `true` | Convert chat completion requests to Responses for models whose datasheet sets `supports_reasoning_with_tool_calls: false`, so reasoning is kept instead of forced off |
 
 ```json
 {
@@ -269,6 +277,43 @@ A top-level `auth_config` is also accepted for backwards compatibility, but `gov
 | Can also be set via the `BIFROST_ENCRYPTION_KEY` environment variable |
 | Once set and the database is populated, the key cannot be changed without clearing the database |
 | Omitting the key stores data in plain text - not recommended for production |
+
+---
+
+## Global Proxy
+
+The global outbound proxy is the one on the dashboard's **Config → Proxy** page, including which components send their outbound requests through it. Declare it as a top-level `proxy_config` (not to be confused with a provider's own [`proxy_config`](/deployment-guides/config-json/providers)):
+
+```json
+{
+  "proxy_config": {
+    "enabled": true,
+    "type": "http",
+    "url": "http://proxy.example.com:8080",
+    "username": "env.PROXY_USERNAME",
+    "password": "env.PROXY_PASSWORD",
+    "no_proxy": "localhost,.internal.example.com",
+    "timeout": 30,
+    "enable_for_scim": true,
+    "enable_for_inference": false,
+    "enable_for_api": false
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Turn the proxy on |
+| `type` | `"http"` | Proxy type. Only `http` is supported |
+| `url` | - | Proxy URL. Required when `enabled` is `true`. Supports `env.VAR_NAME` |
+| `username` / `password` | - | Optional proxy credentials. Support `env.VAR_NAME` |
+| `no_proxy` | - | Comma-separated hosts that bypass the proxy: exact hosts, `.example.com` (domain and subdomains), `*.example.com` (subdomains only), or `*` |
+| `timeout` | `0` | Connection timeout in seconds |
+| `skip_tls_verify` | `false` | Skip TLS verification for the proxy |
+| `enable_for_scim` | `false` | *(enterprise)* Route SCIM directory sync and identity-provider requests through the proxy |
+| `enable_for_inference` | `false` | Route inference requests through the proxy |
+| `enable_for_api` | `false` | Route API requests through the proxy |
+
 
 ---
 

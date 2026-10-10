@@ -42,7 +42,7 @@ func strPtr(s string) *string {
 }
 
 func newTestGenericRouter() *GenericRouter {
-	return NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, &testLogger{})
+	return NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, &testLogger{})
 }
 
 func newTestBifrostContext() *schemas.BifrostContext {
@@ -75,10 +75,48 @@ func TestExtractAndParseFallbacks_GeminiGenerationRequest(t *testing.T) {
 // sets the HTTP status code from the provider's BifrostError.StatusCode field.
 // All three providers (OpenAI, Anthropic, Bedrock) return actual HTTP error codes
 // for pre-stream errors, so Bifrost must propagate them faithfully.
+func TestJSONErrorsPreserveBodyForBodylessStatus(t *testing.T) {
+	router := newTestGenericRouter()
+	converter := func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+		return err
+	}
+	for _, streaming := range []bool{false, true} {
+		for _, code := range []int{
+			fasthttp.StatusContinue,
+			fasthttp.StatusSwitchingProtocols,
+			fasthttp.StatusEarlyHints,
+			fasthttp.StatusNoContent,
+			fasthttp.StatusResetContent,
+			fasthttp.StatusNotModified,
+		} {
+			ctx := &fasthttp.RequestCtx{}
+			bifrostCtx := newTestBifrostContext()
+			bifrostErr := &schemas.BifrostError{
+				StatusCode: ptr(code),
+				Error:      &schemas.ErrorField{Message: "provider API error"},
+			}
+			if streaming {
+				router.sendStreamError(ctx, bifrostCtx, RouteConfig{
+					ErrorConverter: converter,
+				}, bifrostErr)
+			} else {
+				router.sendError(ctx, bifrostCtx, converter, bifrostErr)
+			}
+			assert.Equal(t, fasthttp.StatusBadGateway, ctx.Response.StatusCode(),
+				"streaming=%v upstream=%d", streaming, code)
+			assert.Equal(t, "application/json", string(ctx.Response.Header.ContentType()))
+			assert.True(t, sonic.Valid(ctx.Response.Body()))
+			assert.Contains(t, ctx.Response.String(), "provider API error",
+				"serialized error body missing: streaming=%v upstream=%d", streaming, code)
+		}
+	}
+}
+
 func TestSendStreamError_PropagatesProviderStatusCode(t *testing.T) {
 	tests := []struct {
 		name               string
 		statusCode         *int
+		isBifrostError     bool
 		expectedStatusCode int
 	}{
 		{
@@ -102,8 +140,15 @@ func TestSendStreamError_PropagatesProviderStatusCode(t *testing.T) {
 			expectedStatusCode: 529,
 		},
 		{
-			name:               "nil StatusCode defaults to 500",
+			// Same ladder as sendError: provider-attributed is 400, internal is 500.
+			name:               "nil StatusCode, provider-attributed, defaults to 400",
 			statusCode:         nil,
+			expectedStatusCode: 400,
+		},
+		{
+			name:               "nil StatusCode, bifrost-internal, defaults to 500",
+			statusCode:         nil,
+			isBifrostError:     true,
 			expectedStatusCode: 500,
 		},
 	}
@@ -115,7 +160,8 @@ func TestSendStreamError_PropagatesProviderStatusCode(t *testing.T) {
 			bifrostCtx := newTestBifrostContext()
 
 			bifrostErr := &schemas.BifrostError{
-				StatusCode: tt.statusCode,
+				StatusCode:     tt.statusCode,
+				IsBifrostError: tt.isBifrostError,
 				Error: &schemas.ErrorField{
 					Message: "test error",
 				},
@@ -275,10 +321,13 @@ func TestSendStreamError_ForwardsProviderHeaders(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	bifrostCtx := newTestBifrostContext()
 
-	// Set provider response headers on the context
+	// Set provider response headers on the context. The tracing middleware wrote this gateway's
+	// request id before the handler ran; a chained upstream Bifrost's own must not replace it.
+	ctx.Response.Header.Set("x-bifrost-request-id", "gateway-req")
 	bifrostCtx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{
-		"x-amzn-requestid": "req-123",
-		"x-amzn-errortype": "ValidationException",
+		"x-amzn-requestid":     "req-123",
+		"x-amzn-errortype":     "ValidationException",
+		"X-Bifrost-Request-Id": "upstream-req",
 	})
 
 	bifrostErr := &schemas.BifrostError{
@@ -299,6 +348,7 @@ func TestSendStreamError_ForwardsProviderHeaders(t *testing.T) {
 	assert.Equal(t, 400, ctx.Response.StatusCode())
 	assert.Equal(t, "req-123", string(ctx.Response.Header.Peek("x-amzn-requestid")))
 	assert.Equal(t, "ValidationException", string(ctx.Response.Header.Peek("x-amzn-errortype")))
+	assert.Equal(t, "gateway-req", string(ctx.Response.Header.Peek("x-bifrost-request-id")))
 }
 
 // TestTryStreamLargeResponse_AppliesRoutedIdentityHeaders verifies that
@@ -311,6 +361,13 @@ func TestTryStreamLargeResponse_AppliesRoutedIdentityHeaders(t *testing.T) {
 	bifrostCtx := newTestBifrostContext()
 	bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseReader, io.NopCloser(strings.NewReader("audio-bytes")))
+	// This branch forwards provider headers after writing the routed identity, so a chained
+	// upstream Bifrost's x-bifrost-* headers must not replace it.
+	bifrostCtx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{
+		"X-Bifrost-Provider":         "upstream-provider",
+		"X-Bifrost-Routing-Info-Key": "upstream-key",
+		"X-Request-Id":               "req_upstream",
+	})
 
 	extra := schemas.BifrostResponseExtraFields{
 		Provider:          schemas.OpenAI,
@@ -332,4 +389,5 @@ func TestTryStreamLargeResponse_AppliesRoutedIdentityHeaders(t *testing.T) {
 	assert.Equal(t, "openai", string(ctx.Response.Header.Peek(lib.HeaderBifrostRoutingInfoProvider)))
 	assert.Equal(t, "tts-1", string(ctx.Response.Header.Peek(lib.HeaderBifrostRoutingInfoModel)))
 	assert.Equal(t, "openai-key", string(ctx.Response.Header.Peek(lib.HeaderBifrostRoutingInfoKey)))
+	assert.Equal(t, "req_upstream", string(ctx.Response.Header.Peek("x-request-id")))
 }

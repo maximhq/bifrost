@@ -12,16 +12,15 @@ import { z } from "zod";
 import { toIntervalHours } from "./mcpLibrarySettingsSheet.utils";
 
 const mcpLibrarySettingsSchema = z.object({
-	// file:// is accepted so air-gapped deployments can point the catalog at a
-	// local file that ships with the image or volume, matching how the pricing
-	// datasheet URLs are handled in modelSettingsView.
+	// file:// is a config.json-only value for air-gapped deployments; the API
+	// rejects it, so the form does too, matching the pricing datasheet URLs in
+	// modelSettingsView.
 	mcp_library_url: z
 		.string()
 		.trim()
 		.refine(
-			(value) =>
-				value === "" || value.startsWith("http://") || value.startsWith("https://") || value.startsWith("file://"),
-			"URL must start with http://, https://, or file://",
+			(value) => value === "" || value.startsWith("http://") || value.startsWith("https://"),
+			"URL must start with http:// or https:// (file:// URLs can only be set in config.json)",
 		),
 	// 0 disables background syncing entirely. Force Sync Now still works.
 	// Anything else has to be at least an hour: transports/config.schema.json
@@ -111,7 +110,7 @@ export function MCPLibrarySettingsSheet({ open, onClose }: MCPLibrarySettingsShe
 	return (
 		<Sheet open={open} onOpenChange={(sheetOpen) => !sheetOpen && onClose()}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden px-0">
-				<SheetHeader className="flex flex-col items-start px-4 pt-8 md:px-7">
+				<SheetHeader className="flex flex-col items-start pt-8" headerClassName="px-4 md:px-6">
 					<SheetTitle>MCP Library Settings</SheetTitle>
 					<SheetDescription>Configure the sync source and interval for the MCP server catalog.</SheetDescription>
 				</SheetHeader>
@@ -122,8 +121,8 @@ export function MCPLibrarySettingsSheet({ open, onClose }: MCPLibrarySettingsShe
 							<div className="space-y-0.5">
 								<Label htmlFor="mcp-library-url">Library Sync URL</Label>
 								<p className="text-muted-foreground text-sm">
-									URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog. Use a{" "}
-									<code>file://</code> URL to load the catalog from local disk in air-gapped deployments.
+									URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog. For air-gapped deployments, set a{" "}
+									<code>file://</code> URL in <code>config.json</code>.
 								</p>
 							</div>
 							<Input
@@ -141,8 +140,8 @@ export function MCPLibrarySettingsSheet({ open, onClose }: MCPLibrarySettingsShe
 							<div className="space-y-0.5">
 								<Label htmlFor="mcp-library-sync-interval">Sync Interval (hours)</Label>
 								<p className="text-muted-foreground text-sm">
-									How often to sync the MCP server catalog from the source URL. Set to 0 to disable background syncing;
-									Force Sync Now still works.
+									How often to sync the MCP server catalog from the source URL. Set to 0 to disable background syncing; Force Sync Now still
+									works.
 								</p>
 							</div>
 							<Input

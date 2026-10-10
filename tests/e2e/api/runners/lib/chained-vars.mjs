@@ -7,6 +7,10 @@
 // or in its URL (the Responses lifecycle rows, whose create captures a resp_ id that the
 // retrieve/stream-retrieve/delete rows carry in the path; those are GET/DELETE with no body
 // at all, so a body-only scan sees no dependency and leaves the chain unguarded and splittable).
+// A header is a third place (the session-affinity rows: a bind request computes an x-bf-session-id
+// value that its follow-up sends in that header, and a virtual key value rides in x-bf-vk), and it
+// matters most under sharding, where a consumer cut off from its producer runs with the template
+// unsubstituted and answers a question nobody asked.
 //
 // Postman has no notion of that link, and an unset variable is not an error. In a body the
 // literal "{{var}}" stays put and the provider answers 400 "Invalid JSON" in ~1ms; in a URL it
@@ -24,6 +28,7 @@
 //     defect being rerun.
 
 const SETTER_RE = /collectionVariables\.set\(\s*['"]([^'"]+)['"]/g;
+const GETTER_RE = /collectionVariables\.get\(\s*['"]([^'"]+)['"]/g;
 const TEMPLATE_RE = /\{\{([A-Za-z0-9_-]+)\}\}/g;
 
 // Depth-first walk preserving collection order, so callers can rely on "producers appear before
@@ -57,9 +62,23 @@ export function rawBodyOf(item) {
 // caller keys a Map) is cheaper than deciding which one to trust.
 export function templateSourcesOf(item) {
   const url = item.request?.url;
-  if (typeof url === "string") return [rawBodyOf(item), url];
+  // Postman resolves templates in header names and values too. A session id or a credential a
+  // producer computed travels there (x-bf-session-id, x-bf-vk), and a consumer that names it only
+  // in a header used to be invisible here: no producer pulled into its shard, no guard. A disabled
+  // header is never sent, so a template in one is not a dependency: counting it would pull a
+  // producer the request does not need and let the guard skip an independent request. The
+  // collection format also allows the whole header block as one raw string, like the URL: that
+  // string is a single source, scanned as it is.
+  const header = item.request?.header;
+  const headers =
+    typeof header === "string"
+      ? [header]
+      : (Array.isArray(header) ? header : [])
+          .filter((h) => h && h.disabled !== true)
+          .flatMap((h) => [h.key, h.value]);
+  if (typeof url === "string") return [rawBodyOf(item), url, ...headers].filter((s) => typeof s === "string");
   const query = (url?.query || []).flatMap((q) => [q?.key, q?.value]);
-  return [rawBodyOf(item), url?.raw, ...(url?.host || []), ...(url?.path || []), ...query].filter(
+  return [rawBodyOf(item), url?.raw, ...(url?.host || []), ...(url?.path || []), ...query, ...headers].filter(
     (s) => typeof s === "string"
   );
 }
@@ -107,6 +126,40 @@ export function chainedDependencies(item, producerIndex) {
     for (const m of source.matchAll(TEMPLATE_RE)) {
       const name = m[1];
       if (own.has(name)) continue;
+      const producer = producerIndex.get(name);
+      if (producer && producer !== item) deps.set(name, producer);
+    }
+  }
+  return [...deps.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([variable, producer]) => ({ variable, producer: producer.name, producerItem: producer }));
+}
+
+// Variables this item's SCRIPTS read that another request's script sets. Same shape as
+// chainedDependencies, but the consumer side is a pm.collectionVariables.get() in a test or
+// pre-request script rather than a {{var}} in the body or URL.
+//
+// This is how the generated cache-parity rounds talk to each other, and ONLY how: round 2 reads
+// ca_<cell>_write to compare against round 1's counters, the matrix rounds append to one series
+// variable, the growing-turn read consults grow_<cell>_r1. Nothing in those bodies names the
+// earlier round, so the body scan sees five independent requests. That matters because the
+// rounds are per-process state twice over - the collection variables above, and the {{pcNonce}}
+// salt the collection-level pre-request script mints once per newman process - so a read round
+// that lands in a slice or a rerun without its write round is guaranteed to start cold, write
+// again, and fail on read=0 for a reason that has nothing to do with the cache under test.
+//
+// Deliberately NOT gated on `own.has(name)` the way chainedDependencies is: a matrix round both
+// reads and re-sets the series variable, and the producer index already resolves it to the FIRST
+// setter, which is round 1. A variable set by no request (pcNonce itself comes from the
+// collection-level script) is not a dependency. Callers that pull producers into a filtered set
+// should union this with chainedDependencies; the body guard must NOT be injected for these -
+// a script read has no unresolved-template failure mode, and the round's own assertions already
+// name the missing state.
+export function scriptDependencies(item, producerIndex) {
+  const deps = new Map();
+  for (const src of scriptsOf(item)) {
+    for (const m of src.matchAll(GETTER_RE)) {
+      const name = m[1];
       const producer = producerIndex.get(name);
       if (producer && producer !== item) deps.set(name, producer);
     }

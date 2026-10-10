@@ -16,7 +16,7 @@ var knownAnthropicMaxOutputTokens = map[string]int{
 	"claude-opus-4-7":   128000,
 	"claude-opus-4-6":   128000,
 	"claude-sonnet-5":   128000,
-	"claude-sonnet-4-6": 64000,
+	"claude-sonnet-4-6": 128000,
 	"claude-haiku-4-5":  64000,
 	"claude-sonnet-4-5": 64000,
 	"claude-opus-4-5":   64000,
@@ -54,12 +54,18 @@ func GetMaxOutputTokensOrDefault(provider schemas.ModelProvider, model string, d
 	if caps := CapabilitiesFor(provider, model); caps != nil && caps.MaxOutputTokens != nil {
 		return *caps.MaxOutputTokens
 	}
-	if strings.Contains(model, "claude") {
-		if m, ok := knownAnthropicMaxOutputTokens[normalizeClaudeModelName(model)]; ok {
-			return m
-		}
+	if m := KnownClaudeMaxOutputTokens(model); m > 0 {
+		return m
 	}
 	return defaultValue
+}
+
+// KnownClaudeMaxOutputTokens returns the static max_output_tokens for a Claude model, or 0 when the table has none.
+func KnownClaudeMaxOutputTokens(model string) int {
+	if !strings.Contains(model, "claude") {
+		return 0
+	}
+	return knownAnthropicMaxOutputTokens[normalizeClaudeModelName(model)]
 }
 
 // IsVertexMultiRegionOnlyModel reports whether the given model is flagged in the

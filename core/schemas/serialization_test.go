@@ -1211,6 +1211,8 @@ func TestNormalizeResponsesToolType(t *testing.T) {
 		{"web_fetch_20260209", ResponsesToolTypeWebFetch},
 		{"web_fetch_20260309", ResponsesToolTypeWebFetch},
 
+		// bare "computer" is OpenAI's own tool (GPT-6 Astra / GPT-5.6) and must not fold into the preview type
+		{ResponsesToolTypeComputer, ResponsesToolTypeComputer},
 		// computer versioned aliases
 		{"computer_20250124", ResponsesToolTypeComputerUsePreview},
 		{"computer_20251124", ResponsesToolTypeComputerUsePreview},
@@ -1853,6 +1855,323 @@ func TestEmbeddingData_EncodingFormatSurvivesRoundTrip(t *testing.T) {
 			assert.Equal(t, test.data.EncodingFormat, got.EncodingFormat)
 			assert.Equal(t, "embedding", got.Object)
 			test.assert(t, got)
+		})
+	}
+}
+
+func TestDeepCopyChatMessagePreservesGuardContent(t *testing.T) {
+	text := "What is the capital of France?"
+	original := ChatMessage{
+		Role: ChatMessageRoleUser,
+		Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
+			Type:         ChatContentBlockTypeText,
+			Text:         &text,
+			GuardContent: &GuardContent{Qualifiers: []string{"query"}},
+		}}},
+	}
+	copied := DeepCopyChatMessage(original)
+	got := copied.Content.ContentBlocks[0].GuardContent
+	if got == nil {
+		t.Fatal("deep copy dropped the guard marker")
+	}
+	if got == original.Content.ContentBlocks[0].GuardContent {
+		t.Error("copy aliases the original guard marker struct")
+	}
+	got.Qualifiers[0] = "grounding_source"
+	if original.Content.ContentBlocks[0].GuardContent.Qualifiers[0] != "query" {
+		t.Error("copy shares the qualifiers backing array with the original")
+	}
+}
+
+// TestDeepCopyChatMessagePreservesCacheAndCitationFields verifies that DeepCopyChatMessage
+// faithfully copies CacheControl, Citations, PromptCacheBreakpoint, and CachePoint without pointer aliasing.
+func TestDeepCopyChatMessagePreservesCacheAndCitationFields(t *testing.T) {
+	text := "hello world"
+	ttl := "1h"
+	scope := "user"
+	enabled := true
+	mode := "explicit"
+	cachePointType := "default"
+	cachePointTTL := "1h"
+
+	original := ChatMessage{
+		Role: ChatMessageRoleUser,
+		Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
+			Type:                  ChatContentBlockTypeText,
+			Text:                  &text,
+			CacheControl:          &CacheControl{Type: CacheControlTypeEphemeral, TTL: &ttl, Scope: &scope},
+			Citations:             &Citations{Enabled: &enabled},
+			PromptCacheBreakpoint: &PromptCacheBreakpoint{Mode: &mode},
+			CachePoint:            &CachePoint{Type: cachePointType, TTL: &cachePointTTL},
+		}}},
+	}
+
+	copied := DeepCopyChatMessage(original)
+	origBlock := original.Content.ContentBlocks[0]
+	copiedBlock := copied.Content.ContentBlocks[0]
+
+	// 1. Verify CacheControl preserved and isolated
+	if copiedBlock.CacheControl == nil {
+		t.Fatal("deep copy dropped CacheControl")
+	}
+	if copiedBlock.CacheControl == origBlock.CacheControl {
+		t.Error("copy aliases original CacheControl struct")
+	}
+	if copiedBlock.CacheControl.Type != origBlock.CacheControl.Type {
+		t.Errorf("CacheControl.Type = %v, want %v", copiedBlock.CacheControl.Type, origBlock.CacheControl.Type)
+	}
+	if copiedBlock.CacheControl.TTL == nil || *copiedBlock.CacheControl.TTL != "1h" {
+		t.Errorf("CacheControl.TTL = %v, want '1h'", copiedBlock.CacheControl.TTL)
+	}
+	if copiedBlock.CacheControl.TTL == origBlock.CacheControl.TTL {
+		t.Error("copy aliases original CacheControl.TTL pointer")
+	}
+	if copiedBlock.CacheControl.Scope == nil || *copiedBlock.CacheControl.Scope != "user" {
+		t.Errorf("CacheControl.Scope = %v, want 'user'", copiedBlock.CacheControl.Scope)
+	}
+	if copiedBlock.CacheControl.Scope == origBlock.CacheControl.Scope {
+		t.Error("copy aliases original CacheControl.Scope pointer")
+	}
+
+	// 2. Verify Citations preserved and isolated
+	if copiedBlock.Citations == nil {
+		t.Fatal("deep copy dropped Citations")
+	}
+	if copiedBlock.Citations == origBlock.Citations {
+		t.Error("copy aliases original Citations struct")
+	}
+	if copiedBlock.Citations.Enabled == nil || *copiedBlock.Citations.Enabled != true {
+		t.Errorf("Citations.Enabled = %v, want true", copiedBlock.Citations.Enabled)
+	}
+	if copiedBlock.Citations.Enabled == origBlock.Citations.Enabled {
+		t.Error("copy aliases original Citations.Enabled pointer")
+	}
+
+	// 3. Verify PromptCacheBreakpoint preserved and isolated
+	if copiedBlock.PromptCacheBreakpoint == nil {
+		t.Fatal("deep copy dropped PromptCacheBreakpoint")
+	}
+	if copiedBlock.PromptCacheBreakpoint == origBlock.PromptCacheBreakpoint {
+		t.Error("copy aliases original PromptCacheBreakpoint struct")
+	}
+	if copiedBlock.PromptCacheBreakpoint.Mode == nil || *copiedBlock.PromptCacheBreakpoint.Mode != "explicit" {
+		t.Errorf("PromptCacheBreakpoint.Mode = %v, want 'explicit'", copiedBlock.PromptCacheBreakpoint.Mode)
+	}
+	if copiedBlock.PromptCacheBreakpoint.Mode == origBlock.PromptCacheBreakpoint.Mode {
+		t.Error("copy aliases original PromptCacheBreakpoint.Mode pointer")
+	}
+
+	// 4. Verify CachePoint preserved and isolated
+	if copiedBlock.CachePoint == nil {
+		t.Fatal("deep copy dropped CachePoint")
+	}
+	if copiedBlock.CachePoint == origBlock.CachePoint {
+		t.Error("copy aliases original CachePoint struct")
+	}
+	if copiedBlock.CachePoint.Type != "default" {
+		t.Errorf("CachePoint.Type = %v, want 'default'", copiedBlock.CachePoint.Type)
+	}
+	if copiedBlock.CachePoint.TTL == nil || *copiedBlock.CachePoint.TTL != "1h" {
+		t.Errorf("CachePoint.TTL = %v, want '1h'", copiedBlock.CachePoint.TTL)
+	}
+	if copiedBlock.CachePoint.TTL == origBlock.CachePoint.TTL {
+		t.Error("copy aliases original CachePoint.TTL pointer")
+	}
+
+	// 5. Test mutation isolation
+	*copiedBlock.CacheControl.TTL = "5m"
+	*copiedBlock.CacheControl.Scope = "global"
+	*copiedBlock.Citations.Enabled = false
+	*copiedBlock.PromptCacheBreakpoint.Mode = "auto"
+	copiedBlock.CachePoint.Type = "custom"
+	*copiedBlock.CachePoint.TTL = "5m"
+
+	if *origBlock.CacheControl.TTL != "1h" || *origBlock.CacheControl.Scope != "user" {
+		t.Error("mutating copied CacheControl affected original")
+	}
+	if *origBlock.Citations.Enabled != true {
+		t.Error("mutating copied Citations affected original")
+	}
+	if *origBlock.PromptCacheBreakpoint.Mode != "explicit" {
+		t.Error("mutating copied PromptCacheBreakpoint affected original")
+	}
+	if origBlock.CachePoint.Type != "default" || *origBlock.CachePoint.TTL != "1h" {
+		t.Error("mutating copied CachePoint affected original")
+	}
+}
+
+// TestDeepCopyChatMessageHandlesNilAndEmptyCacheFields tests deep copying with nil, empty, and isolated metadata fields.
+func TestDeepCopyChatMessageHandlesNilAndEmptyCacheFields(t *testing.T) {
+	// 1. All fields nil
+	text := "plain text"
+	msgNil := ChatMessage{
+		Role: ChatMessageRoleUser,
+		Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
+			Type: ChatContentBlockTypeText,
+			Text: &text,
+		}}},
+	}
+	copiedNil := DeepCopyChatMessage(msgNil)
+	bNil := copiedNil.Content.ContentBlocks[0]
+	if bNil.CacheControl != nil || bNil.Citations != nil || bNil.PromptCacheBreakpoint != nil || bNil.CachePoint != nil {
+		t.Errorf("nil fields became non-nil on copy: cc=%v cit=%v pcb=%v cp=%v",
+			bNil.CacheControl, bNil.Citations, bNil.PromptCacheBreakpoint, bNil.CachePoint)
+	}
+
+	// 2. Empty non-nil structs
+	msgEmpty := ChatMessage{
+		Role: ChatMessageRoleUser,
+		Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
+			Type:                  ChatContentBlockTypeText,
+			Text:                  &text,
+			CacheControl:          &CacheControl{},
+			Citations:             &Citations{},
+			PromptCacheBreakpoint: &PromptCacheBreakpoint{},
+			CachePoint:            &CachePoint{},
+		}}},
+	}
+	copiedEmpty := DeepCopyChatMessage(msgEmpty)
+	bEmpty := copiedEmpty.Content.ContentBlocks[0]
+	if bEmpty.CacheControl == nil || bEmpty.Citations == nil || bEmpty.PromptCacheBreakpoint == nil || bEmpty.CachePoint == nil {
+		t.Errorf("empty struct fields became nil on copy: cc=%v cit=%v pcb=%v cp=%v",
+			bEmpty.CacheControl, bEmpty.Citations, bEmpty.PromptCacheBreakpoint, bEmpty.CachePoint)
+	}
+
+	// 3. Individual isolated fields (table-driven)
+	enabledTrue := true
+	enabledFalse := false
+	ttl := "1h"
+	scope := "global"
+	mode := "explicit"
+
+	tests := []struct {
+		name     string
+		input    ChatContentBlock
+		validate func(t *testing.T, orig, copy ChatContentBlock)
+	}{
+		{
+			name: "CacheControl only",
+			input: ChatContentBlock{
+				Type:         ChatContentBlockTypeText,
+				Text:         &text,
+				CacheControl: &CacheControl{Type: CacheControlTypeEphemeral, TTL: &ttl, Scope: &scope},
+			},
+			validate: func(t *testing.T, orig, copy ChatContentBlock) {
+				if copy.CacheControl == nil {
+					t.Fatal("CacheControl is nil")
+				}
+				if copy.CacheControl == orig.CacheControl {
+					t.Error("CacheControl struct aliased")
+				}
+				if copy.CacheControl.Type != orig.CacheControl.Type || *copy.CacheControl.TTL != *orig.CacheControl.TTL || *copy.CacheControl.Scope != *orig.CacheControl.Scope {
+					t.Errorf("CacheControl value mismatch: got %+v, want %+v", copy.CacheControl, orig.CacheControl)
+				}
+				if copy.Citations != nil || copy.PromptCacheBreakpoint != nil || copy.CachePoint != nil {
+					t.Errorf("other fields non-nil: cit=%v pcb=%v cp=%v", copy.Citations, copy.PromptCacheBreakpoint, copy.CachePoint)
+				}
+			},
+		},
+		{
+			name: "Citations enabled true only",
+			input: ChatContentBlock{
+				Type:      ChatContentBlockTypeText,
+				Text:      &text,
+				Citations: &Citations{Enabled: &enabledTrue},
+			},
+			validate: func(t *testing.T, orig, copy ChatContentBlock) {
+				if copy.Citations == nil {
+					t.Fatal("Citations is nil")
+				}
+				if copy.Citations == orig.Citations {
+					t.Error("Citations struct aliased")
+				}
+				if copy.Citations.Enabled == nil || *copy.Citations.Enabled != true {
+					t.Errorf("Citations.Enabled = %v, want true", copy.Citations.Enabled)
+				}
+				if copy.CacheControl != nil || copy.PromptCacheBreakpoint != nil || copy.CachePoint != nil {
+					t.Errorf("other fields non-nil: cc=%v pcb=%v cp=%v", copy.CacheControl, copy.PromptCacheBreakpoint, copy.CachePoint)
+				}
+			},
+		},
+		{
+			name: "Citations enabled false only",
+			input: ChatContentBlock{
+				Type:      ChatContentBlockTypeText,
+				Text:      &text,
+				Citations: &Citations{Enabled: &enabledFalse},
+			},
+			validate: func(t *testing.T, orig, copy ChatContentBlock) {
+				if copy.Citations == nil {
+					t.Fatal("Citations is nil")
+				}
+				if copy.Citations == orig.Citations {
+					t.Error("Citations struct aliased")
+				}
+				if copy.Citations.Enabled == nil || *copy.Citations.Enabled != false {
+					t.Errorf("Citations.Enabled = %v, want false", copy.Citations.Enabled)
+				}
+				if copy.CacheControl != nil || copy.PromptCacheBreakpoint != nil || copy.CachePoint != nil {
+					t.Errorf("other fields non-nil: cc=%v pcb=%v cp=%v", copy.CacheControl, copy.PromptCacheBreakpoint, copy.CachePoint)
+				}
+			},
+		},
+		{
+			name: "PromptCacheBreakpoint only",
+			input: ChatContentBlock{
+				Type:                  ChatContentBlockTypeText,
+				Text:                  &text,
+				PromptCacheBreakpoint: &PromptCacheBreakpoint{Mode: &mode},
+			},
+			validate: func(t *testing.T, orig, copy ChatContentBlock) {
+				if copy.PromptCacheBreakpoint == nil {
+					t.Fatal("PromptCacheBreakpoint is nil")
+				}
+				if copy.PromptCacheBreakpoint == orig.PromptCacheBreakpoint {
+					t.Error("PromptCacheBreakpoint struct aliased")
+				}
+				if copy.PromptCacheBreakpoint.Mode == nil || *copy.PromptCacheBreakpoint.Mode != "explicit" {
+					t.Errorf("PromptCacheBreakpoint.Mode = %v, want 'explicit'", copy.PromptCacheBreakpoint.Mode)
+				}
+				if copy.CacheControl != nil || copy.Citations != nil || copy.CachePoint != nil {
+					t.Errorf("other fields non-nil: cc=%v cit=%v cp=%v", copy.CacheControl, copy.Citations, copy.CachePoint)
+				}
+			},
+		},
+		{
+			name: "CachePoint only",
+			input: ChatContentBlock{
+				Type:       ChatContentBlockTypeText,
+				Text:       &text,
+				CachePoint: &CachePoint{Type: "default", TTL: &ttl},
+			},
+			validate: func(t *testing.T, orig, copy ChatContentBlock) {
+				if copy.CachePoint == nil {
+					t.Fatal("CachePoint is nil")
+				}
+				if copy.CachePoint == orig.CachePoint {
+					t.Error("CachePoint struct aliased")
+				}
+				if copy.CachePoint.Type != "default" || copy.CachePoint.TTL == nil || *copy.CachePoint.TTL != "1h" {
+					t.Errorf("CachePoint = %+v, want Type='default', TTL='1h'", copy.CachePoint)
+				}
+				if copy.CacheControl != nil || copy.Citations != nil || copy.PromptCacheBreakpoint != nil {
+					t.Errorf("other fields non-nil: cc=%v cit=%v pcb=%v", copy.CacheControl, copy.Citations, copy.PromptCacheBreakpoint)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := ChatMessage{
+				Role:    ChatMessageRoleUser,
+				Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{tc.input}},
+			}
+			copied := DeepCopyChatMessage(msg)
+			if len(copied.Content.ContentBlocks) != 1 {
+				t.Fatalf("expected 1 content block, got %d", len(copied.Content.ContentBlocks))
+			}
+			tc.validate(t, tc.input, copied.Content.ContentBlocks[0])
 		})
 	}
 }

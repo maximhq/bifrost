@@ -15,25 +15,25 @@ import (
 // setupBatchJobTestStore extends the base test store with the batch_jobs table.
 func setupBatchJobTestStore(t *testing.T) *RDBConfigStore {
 	store := setupRDBTestStore(t)
-	require.NoError(t, store.DB().AutoMigrate(&tables.TableBatchJob{}), "migrate batch_jobs table")
+	require.NoError(t, store.DB().AutoMigrate(&tables.TableProviderJob{}), "migrate batch_jobs table")
 	return store
 }
 
-func seedBatchJob(t *testing.T, store *RDBConfigStore, provider, batchID string) *tables.TableBatchJob {
+func seedBatchJob(t *testing.T, store *RDBConfigStore, provider, batchID string) *tables.TableProviderJob {
 	t.Helper()
-	job := &tables.TableBatchJob{
-		ID:               tables.BatchJobID(provider, batchID),
+	job := &tables.TableProviderJob{
+		ID:               tables.ProviderJobID(tables.ProviderJobKindBatch, provider, batchID),
 		Provider:         provider,
-		BatchID:          batchID,
-		AccountingStatus: tables.BatchJobAccountingStatusPending,
+		JobID:            batchID,
+		AccountingStatus: tables.ProviderJobAccountingStatusPending,
 	}
-	require.NoError(t, store.UpsertBatchJob(context.Background(), job))
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 	return job
 }
 
-func getBatchJob(t *testing.T, store *RDBConfigStore, id string) *tables.TableBatchJob {
+func getBatchJob(t *testing.T, store *RDBConfigStore, id string) *tables.TableProviderJob {
 	t.Helper()
-	job, err := store.GetBatchJob(context.Background(), id)
+	job, err := store.GetProviderJob(context.Background(), id)
 	require.NoError(t, err)
 	require.NotNil(t, job)
 	return job
@@ -44,46 +44,46 @@ func getBatchJob(t *testing.T, store *RDBConfigStore, id string) *tables.TableBa
 // only on the claim timestamp, precisely so unfenced writers cannot renew it.
 func ageBatchClaim(t *testing.T, store *RDBConfigStore, id string, ts time.Time) {
 	t.Helper()
-	require.NoError(t, store.DB().Model(&tables.TableBatchJob{}).
+	require.NoError(t, store.DB().Model(&tables.TableProviderJob{}).
 		Where("id = ?", id).Update("claimed_at", ts).Error)
 }
 
-func TestClaimBatchJobRunnerFencesCompletion(t *testing.T) {
+func TestClaimProviderJobRunnerFencesCompletion(t *testing.T) {
 	store := setupBatchJobTestStore(t)
 	ctx := context.Background()
 	job := seedBatchJob(t, store, "openai", "batch_1")
 
-	claimed, err := store.ClaimBatchJob(ctx, job.ID, "runner-A", time.Now().UTC().Add(-time.Minute), false)
+	claimed, err := store.ClaimProviderJob(ctx, job.ID, "runner-A", time.Now().UTC().Add(-time.Minute), false)
 	require.NoError(t, err)
 	require.True(t, claimed)
 
 	// A different runner cannot advance or complete the claimed job.
-	assert.ErrorIs(t, store.MarkBatchJobAggregateLogWritten(ctx, job.ID, "runner-B"), ErrNotFound)
-	assert.ErrorIs(t, store.CompleteBatchJob(ctx, job.ID, "runner-B"), ErrNotFound)
+	assert.ErrorIs(t, store.MarkProviderJobAggregateLogWritten(ctx, job.ID, "runner-B"), ErrNotFound)
+	assert.ErrorIs(t, store.CompleteProviderJob(ctx, job.ID, "runner-B"), ErrNotFound)
 
 	// The owning runner can.
-	require.NoError(t, store.MarkBatchJobAggregateLogWritten(ctx, job.ID, "runner-A"))
-	require.NoError(t, store.CompleteBatchJob(ctx, job.ID, "runner-A"))
-	assert.Equal(t, tables.BatchJobAccountingStatusAccounted, getBatchJob(t, store, job.ID).AccountingStatus)
+	require.NoError(t, store.MarkProviderJobAggregateLogWritten(ctx, job.ID, "runner-A"))
+	require.NoError(t, store.CompleteProviderJob(ctx, job.ID, "runner-A"))
+	assert.Equal(t, tables.ProviderJobAccountingStatusAccounted, getBatchJob(t, store, job.ID).AccountingStatus)
 }
 
-func TestClaimBatchJobRejectsFreshProcessingButAllowsStale(t *testing.T) {
+func TestClaimProviderJobRejectsFreshProcessingButAllowsStale(t *testing.T) {
 	store := setupBatchJobTestStore(t)
 	ctx := context.Background()
 	job := seedBatchJob(t, store, "openai", "batch_2")
 
-	claimed, err := store.ClaimBatchJob(ctx, job.ID, "runner-A", time.Now().UTC().Add(-time.Minute), false)
+	claimed, err := store.ClaimProviderJob(ctx, job.ID, "runner-A", time.Now().UTC().Add(-time.Minute), false)
 	require.NoError(t, err)
 	require.True(t, claimed)
 
 	// A fresh in-flight claim blocks a second claimant.
-	claimed, err = store.ClaimBatchJob(ctx, job.ID, "runner-B", time.Now().UTC().Add(-time.Minute), false)
+	claimed, err = store.ClaimProviderJob(ctx, job.ID, "runner-B", time.Now().UTC().Add(-time.Minute), false)
 	require.NoError(t, err)
 	assert.False(t, claimed)
 
 	// Once the claim goes stale, another runner reclaims it.
 	ageBatchClaim(t, store, job.ID, time.Now().UTC().Add(-15*time.Minute))
-	claimed, err = store.ClaimBatchJob(ctx, job.ID, "runner-B", time.Now().UTC().Add(-time.Minute), false)
+	claimed, err = store.ClaimProviderJob(ctx, job.ID, "runner-B", time.Now().UTC().Add(-time.Minute), false)
 	require.NoError(t, err)
 	assert.True(t, claimed)
 	owner := getBatchJob(t, store, job.ID).RunnerID
@@ -94,12 +94,12 @@ func TestClaimBatchJobRejectsFreshProcessingButAllowsStale(t *testing.T) {
 // A dead runner's job must stay reclaimable. Unfenced writers — the sweeper's poll
 // upsert, a user-triggered /results call, and AccountBatchResults' own upsert — must
 // not be able to refresh the staleness clock and pin a job to a runner that is gone.
-func TestClaimBatchJobStalenessSurvivesUnfencedUpsert(t *testing.T) {
+func TestClaimProviderJobStalenessSurvivesUnfencedUpsert(t *testing.T) {
 	store := setupBatchJobTestStore(t)
 	ctx := context.Background()
 	job := seedBatchJob(t, store, "openai", "batch_stuck")
 
-	claimed, err := store.ClaimBatchJob(ctx, job.ID, "runner-A", time.Now().UTC().Add(-time.Minute), false)
+	claimed, err := store.ClaimProviderJob(ctx, job.ID, "runner-A", time.Now().UTC().Add(-time.Minute), false)
 	require.NoError(t, err)
 	require.True(t, claimed)
 
@@ -108,32 +108,32 @@ func TestClaimBatchJobStalenessSurvivesUnfencedUpsert(t *testing.T) {
 
 	// An unfenced upsert touches the row (this is what every sweep does before it
 	// tries to claim).
-	require.NoError(t, store.UpsertBatchJob(ctx, &tables.TableBatchJob{
+	require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
 		ID:             job.ID,
 		Provider:       "openai",
-		BatchID:        "batch_stuck",
+		JobID:          "batch_stuck",
 		ProviderStatus: string(schemas.BatchStatusCompleted),
 	}))
 
-	claimed, err = store.ClaimBatchJob(ctx, job.ID, "runner-B", time.Now().UTC().Add(-time.Minute), false)
+	claimed, err = store.ClaimProviderJob(ctx, job.ID, "runner-B", time.Now().UTC().Add(-time.Minute), false)
 	require.NoError(t, err)
 	assert.True(t, claimed,
 		"a dead runner's job must remain reclaimable after an unfenced upsert; "+
 			"otherwise the job is pinned to the dead runner forever")
 }
 
-func TestClaimBatchJobRejectsTerminalStates(t *testing.T) {
+func TestClaimProviderJobRejectsTerminalStates(t *testing.T) {
 	store := setupBatchJobTestStore(t)
 	ctx := context.Background()
 	job := seedBatchJob(t, store, "openai", "batch_3")
 
-	claimed, err := store.ClaimBatchJob(ctx, job.ID, "runner-A", time.Now().UTC().Add(-time.Minute), false)
+	claimed, err := store.ClaimProviderJob(ctx, job.ID, "runner-A", time.Now().UTC().Add(-time.Minute), false)
 	require.NoError(t, err)
 	require.True(t, claimed)
-	require.NoError(t, store.CompleteBatchJob(ctx, job.ID, "runner-A"))
+	require.NoError(t, store.CompleteProviderJob(ctx, job.ID, "runner-A"))
 
 	// Accounted is terminal; no runner can reclaim it.
-	claimed, err = store.ClaimBatchJob(ctx, job.ID, "runner-A", time.Now().UTC().Add(-time.Hour), false)
+	claimed, err = store.ClaimProviderJob(ctx, job.ID, "runner-A", time.Now().UTC().Add(-time.Hour), false)
 	require.NoError(t, err)
 	assert.False(t, claimed)
 }
@@ -142,71 +142,71 @@ func TestClaimBatchJobRejectsTerminalStates(t *testing.T) {
 // caller holding real results answers every reason a job reaches that state, so it
 // must be able to reclaim one — while a plain claim still refuses, and "accounted"
 // refuses either way.
-func TestClaimBatchJobAllowUnpriceableReopensStoppedJobs(t *testing.T) {
+func TestClaimProviderJobAllowUnpriceableReopensStoppedJobs(t *testing.T) {
 	store := setupBatchJobTestStore(t)
 	ctx := context.Background()
 	job := seedBatchJob(t, store, "openai", "batch_reclaim")
 
-	_, err := store.ClaimBatchJob(ctx, job.ID, "runner-A", time.Now().UTC().Add(-time.Minute), false)
+	_, err := store.ClaimProviderJob(ctx, job.ID, "runner-A", time.Now().UTC().Add(-time.Minute), false)
 	require.NoError(t, err)
-	require.NoError(t, store.MarkBatchJobUnpriceable(ctx, job.ID, "runner-A", "max_poll_attempts", nil))
+	require.NoError(t, store.MarkProviderJobUnpriceable(ctx, job.ID, "runner-A", "max_poll_attempts", nil))
 
-	claimed, err := store.ClaimBatchJob(ctx, job.ID, "runner-B", time.Now().UTC().Add(-time.Minute), false)
+	claimed, err := store.ClaimProviderJob(ctx, job.ID, "runner-B", time.Now().UTC().Add(-time.Minute), false)
 	require.NoError(t, err)
 	assert.False(t, claimed, "the poll loop must keep leaving unpriceable jobs alone")
 
-	claimed, err = store.ClaimBatchJob(ctx, job.ID, "runner-B", time.Now().UTC().Add(-time.Minute), true)
+	claimed, err = store.ClaimProviderJob(ctx, job.ID, "runner-B", time.Now().UTC().Add(-time.Minute), true)
 	require.NoError(t, err)
 	assert.True(t, claimed, "a settlement holding results must be able to re-drive it")
 
-	require.NoError(t, store.CompleteBatchJob(ctx, job.ID, "runner-B"))
+	require.NoError(t, store.CompleteProviderJob(ctx, job.ID, "runner-B"))
 	persisted := getBatchJob(t, store, job.ID)
-	assert.Equal(t, tables.BatchJobAccountingStatusAccounted, persisted.AccountingStatus)
+	assert.Equal(t, tables.ProviderJobAccountingStatusAccounted, persisted.AccountingStatus)
 	assert.Nil(t, persisted.UnpriceableReason, "settling clears the reason it could not be priced")
 
 	// Accounted stays terminal even for a caller holding results.
-	claimed, err = store.ClaimBatchJob(ctx, job.ID, "runner-C", time.Now().UTC().Add(-time.Hour), true)
+	claimed, err = store.ClaimProviderJob(ctx, job.ID, "runner-C", time.Now().UTC().Add(-time.Hour), true)
 	require.NoError(t, err)
 	assert.False(t, claimed)
 }
 
-func TestMarkBatchJobUnpriceableSetsReasonAndReleasesRunner(t *testing.T) {
+func TestMarkProviderJobUnpriceableSetsReasonAndReleasesRunner(t *testing.T) {
 	store := setupBatchJobTestStore(t)
 	ctx := context.Background()
 	job := seedBatchJob(t, store, "openai", "batch_4")
-	_, err := store.ClaimBatchJob(ctx, job.ID, "runner-A", time.Now().UTC().Add(-time.Minute), false)
+	_, err := store.ClaimProviderJob(ctx, job.ID, "runner-A", time.Now().UTC().Add(-time.Minute), false)
 	require.NoError(t, err)
 
-	require.NoError(t, store.MarkBatchJobUnpriceable(ctx, job.ID, "runner-A", "no_usage", nil))
+	require.NoError(t, store.MarkProviderJobUnpriceable(ctx, job.ID, "runner-A", "no_usage", nil))
 
 	persisted := getBatchJob(t, store, job.ID)
-	assert.Equal(t, tables.BatchJobAccountingStatusUnpriceable, persisted.AccountingStatus)
+	assert.Equal(t, tables.ProviderJobAccountingStatusUnpriceable, persisted.AccountingStatus)
 	require.NotNil(t, persisted.UnpriceableReason)
 	assert.Equal(t, "no_usage", *persisted.UnpriceableReason)
 	assert.Nil(t, persisted.RunnerID)
 	assert.Nil(t, persisted.LastError, "no error reported should leave last_error nil")
 }
 
-func TestFailBatchJobRecordsErrorAndAllowsRetry(t *testing.T) {
+func TestFailProviderJobRecordsErrorAndAllowsRetry(t *testing.T) {
 	store := setupBatchJobTestStore(t)
 	ctx := context.Background()
 	job := seedBatchJob(t, store, "openai", "batch_5")
-	_, err := store.ClaimBatchJob(ctx, job.ID, "runner-A", time.Now().UTC().Add(-time.Minute), false)
+	_, err := store.ClaimProviderJob(ctx, job.ID, "runner-A", time.Now().UTC().Add(-time.Minute), false)
 	require.NoError(t, err)
 
-	require.NoError(t, store.FailBatchJob(ctx, job.ID, "runner-A", errors.New("boom")))
+	require.NoError(t, store.FailProviderJob(ctx, job.ID, "runner-A", errors.New("boom")))
 	persisted := getBatchJob(t, store, job.ID)
 	require.NotNil(t, persisted.LastError)
 	assert.Equal(t, "boom", *persisted.LastError)
 	assert.Nil(t, persisted.RunnerID)
 
 	// Error is non-terminal: the job can be reclaimed and retried.
-	claimed, err := store.ClaimBatchJob(ctx, job.ID, "runner-B", time.Now().UTC().Add(-time.Minute), false)
+	claimed, err := store.ClaimProviderJob(ctx, job.ID, "runner-B", time.Now().UTC().Add(-time.Minute), false)
 	require.NoError(t, err)
 	assert.True(t, claimed)
 }
 
-func TestUpsertBatchJobNextCheckAtTerminalHandling(t *testing.T) {
+func TestUpsertProviderJobNextCheckAtTerminalHandling(t *testing.T) {
 	store := setupBatchJobTestStore(t)
 	ctx := context.Background()
 	next := time.Now().UTC().Add(time.Hour).UTC()
@@ -224,15 +224,15 @@ func TestUpsertBatchJobNextCheckAtTerminalHandling(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.NoError(t, store.UpsertBatchJob(ctx, &tables.TableBatchJob{
-				ID:               tables.BatchJobID("openai", tc.batchID),
+			require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+				ID:               tables.ProviderJobID(tables.ProviderJobKindBatch, "openai", tc.batchID),
 				Provider:         "openai",
-				BatchID:          tc.batchID,
-				AccountingStatus: tables.BatchJobAccountingStatusPending,
+				JobID:            tc.batchID,
+				AccountingStatus: tables.ProviderJobAccountingStatusPending,
 				NextCheckAt:      &next,
 				ProviderStatus:   string(tc.status),
 			}))
-			persisted := getBatchJob(t, store, tables.BatchJobID("openai", tc.batchID))
+			persisted := getBatchJob(t, store, tables.ProviderJobID(tables.ProviderJobKindBatch, "openai", tc.batchID))
 			if tc.expectCleared {
 				assert.Nil(t, persisted.NextCheckAt, "terminal-but-not-completed clears next_check_at")
 			} else {
@@ -242,7 +242,7 @@ func TestUpsertBatchJobNextCheckAtTerminalHandling(t *testing.T) {
 	}
 }
 
-func TestListDueBatchJobsFiltersByDueAndStatus(t *testing.T) {
+func TestListDueProviderJobsFiltersByDueAndStatus(t *testing.T) {
 	store := setupBatchJobTestStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -250,29 +250,29 @@ func TestListDueBatchJobsFiltersByDueAndStatus(t *testing.T) {
 	future := now.Add(time.Hour)
 
 	mkJob := func(batchID string, status string, next *time.Time) {
-		require.NoError(t, store.UpsertBatchJob(ctx, &tables.TableBatchJob{
-			ID:               tables.BatchJobID("openai", batchID),
+		require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+			ID:               tables.ProviderJobID(tables.ProviderJobKindBatch, "openai", batchID),
 			Provider:         "openai",
-			BatchID:          batchID,
+			JobID:            batchID,
 			AccountingStatus: status,
 			NextCheckAt:      next,
 		}))
 	}
-	mkJob("due", tables.BatchJobAccountingStatusPending, &past)
-	mkJob("not_due", tables.BatchJobAccountingStatusPending, &future)
-	mkJob("accounted", tables.BatchJobAccountingStatusAccounted, &past)
-	mkJob("no_next", tables.BatchJobAccountingStatusPending, nil)
+	mkJob("due", tables.ProviderJobAccountingStatusPending, &past)
+	mkJob("not_due", tables.ProviderJobAccountingStatusPending, &future)
+	mkJob("accounted", tables.ProviderJobAccountingStatusAccounted, &past)
+	mkJob("no_next", tables.ProviderJobAccountingStatusPending, nil)
 
-	due, err := store.ListDueBatchJobs(ctx, "openai", now, 10)
+	due, err := store.ListDueProviderJobs(ctx, tables.ProviderJobKindBatch, "openai", now, 10)
 	require.NoError(t, err)
 	require.Len(t, due, 1)
-	assert.Equal(t, "due", due[0].BatchID)
+	assert.Equal(t, "due", due[0].JobID)
 }
 
 // Attribution is create-time state. A later upsert — the /results path builds a job
 // from the fetching request's own log entry — must not be able to move the bill onto
 // whoever happened to settle the batch.
-func TestUpsertBatchJobDoesNotOverwriteAttribution(t *testing.T) {
+func TestUpsertProviderJobDoesNotOverwriteAttribution(t *testing.T) {
 	store := setupBatchJobTestStore(t)
 	ctx := context.Background()
 
@@ -280,13 +280,13 @@ func TestUpsertBatchJobDoesNotOverwriteAttribution(t *testing.T) {
 	creatorUser := "user-alice"
 	creatorBudgets := `["budget-creator"]`
 	sourceLog := "req-create"
-	id := tables.BatchJobID("openai", "batch-attr")
+	id := tables.ProviderJobID(tables.ProviderJobKindBatch, "openai", "batch-attr")
 
-	require.NoError(t, store.UpsertBatchJob(ctx, &tables.TableBatchJob{
+	require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
 		ID:               id,
 		Provider:         "openai",
-		BatchID:          "batch-attr",
-		AccountingStatus: tables.BatchJobAccountingStatusPending,
+		JobID:            "batch-attr",
+		AccountingStatus: tables.ProviderJobAccountingStatusPending,
 		SelectedKeyID:    "key-creator",
 		VirtualKeyID:     &creatorVK,
 		UserID:           &creatorUser,
@@ -298,11 +298,11 @@ func TestUpsertBatchJobDoesNotOverwriteAttribution(t *testing.T) {
 	fetcherUser := "user-bob"
 	fetcherBudgets := `["budget-fetcher"]`
 	fetcherLog := "req-results"
-	require.NoError(t, store.UpsertBatchJob(ctx, &tables.TableBatchJob{
+	require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
 		ID:               id,
 		Provider:         "openai",
-		BatchID:          "batch-attr",
-		AccountingStatus: tables.BatchJobAccountingStatusPending,
+		JobID:            "batch-attr",
+		AccountingStatus: tables.ProviderJobAccountingStatusPending,
 		ProviderStatus:   string(schemas.BatchStatusCompleted),
 		SelectedKeyID:    "key-fetcher",
 		VirtualKeyID:     &fetcherVK,
@@ -323,4 +323,63 @@ func TestUpsertBatchJobDoesNotOverwriteAttribution(t *testing.T) {
 	assert.Equal(t, sourceLog, *job.SourceLogID)
 	// Lifecycle state, unlike identity, is expected to advance.
 	assert.Equal(t, string(schemas.BatchStatusCompleted), job.ProviderStatus)
+}
+
+// TestListDueProviderJobsFiltersByKind is the guard on the whole point of the kind
+// column: each kind has its own settler and its own provider client, so a sweeper
+// handed another kind's rows would poll them with the wrong one and burn their
+// attempt budget against a provider that has never heard of them.
+func TestListDueProviderJobsFiltersByKind(t *testing.T) {
+	store := setupBatchJobTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	past := now.Add(-time.Minute)
+
+	mkJob := func(kind, jobID string) {
+		require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+			ID:               tables.ProviderJobID(kind, "openai", jobID),
+			Kind:             kind,
+			Provider:         "openai",
+			JobID:            jobID,
+			AccountingStatus: tables.ProviderJobAccountingStatusPending,
+			NextCheckAt:      &past,
+		}))
+	}
+	mkJob(tables.ProviderJobKindBatch, "batch-due")
+	mkJob(tables.ProviderJobKindVideo, "video-due")
+
+	batches, err := store.ListDueProviderJobs(ctx, tables.ProviderJobKindBatch, "", now, 10)
+	require.NoError(t, err)
+	require.Len(t, batches, 1)
+	assert.Equal(t, "batch-due", batches[0].JobID)
+
+	videos, err := store.ListDueProviderJobs(ctx, tables.ProviderJobKindVideo, "", now, 10)
+	require.NoError(t, err)
+	require.Len(t, videos, 1)
+	assert.Equal(t, "video-due", videos[0].JobID)
+
+	// An empty kind means batch, so a caller that predates the column keeps seeing
+	// exactly the rows it always saw.
+	legacy, err := store.ListDueProviderJobs(ctx, "", "", now, 10)
+	require.NoError(t, err)
+	require.Len(t, legacy, 1)
+	assert.Equal(t, "batch-due", legacy[0].JobID)
+}
+
+// TestUpsertProviderJobDefaultsKindToBatch pins the NOT NULL column's default on
+// the write path: a caller written before kinds existed still produces a valid row.
+func TestUpsertProviderJobDefaultsKindToBatch(t *testing.T) {
+	store := setupBatchJobTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+		ID:               tables.ProviderJobID(tables.ProviderJobKindBatch, "openai", "batch-nokind"),
+		Provider:         "openai",
+		JobID:            "batch-nokind",
+		AccountingStatus: tables.ProviderJobAccountingStatusPending,
+	}))
+
+	job, err := store.GetProviderJob(ctx, tables.ProviderJobID(tables.ProviderJobKindBatch, "openai", "batch-nokind"))
+	require.NoError(t, err)
+	assert.Equal(t, tables.ProviderJobKindBatch, job.Kind)
 }

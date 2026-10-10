@@ -375,13 +375,8 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		}
 		llmSpanEnded = true
 		tracer.PopulateLLMResponseAttributes(ctx, llmSpanHandle, resp, bifrostErr)
+		// Error attributes are stamped by PopulateLLMResponseAttributes above.
 		if bifrostErr != nil {
-			if bifrostErr.Error != nil {
-				tracer.SetAttribute(llmSpanHandle, "error", bifrostErr.Error.Message)
-			}
-			if bifrostErr.StatusCode != nil {
-				tracer.SetAttribute(llmSpanHandle, "status_code", *bifrostErr.StatusCode)
-			}
 			tracer.EndSpan(llmSpanHandle, schemas.SpanStatusError, "request failed")
 			return
 		}
@@ -580,7 +575,12 @@ func writeWSShortCircuitResponse(session *bfws.Session, resp *schemas.BifrostRes
 func parseUpstreamWSEvent(data []byte, provider schemas.ModelProvider, model string) *schemas.BifrostResponsesStreamResponse {
 	var streamResp schemas.BifrostResponsesStreamResponse
 	if err := sonic.Unmarshal(data, &streamResp); err != nil {
-		return nil
+		// shell_call_output_content.delta sends `delta` as an object, which the string
+		// field rejects; the event is relayed either way, this keeps it in the logs.
+		streamResp = schemas.BifrostResponsesStreamResponse{}
+		if err := schemas.UnmarshalResponsesStreamObjectDelta(data, &streamResp); err != nil {
+			return nil
+		}
 	}
 	if streamResp.Type == "" {
 		return nil
@@ -807,6 +807,19 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.googAPIKey)
 		}
 	}
+	// The caller's own provider key, under the same gate as on HTTP, set before the identity
+	// settles so governance sees a resolved credential.
+	var directKey string
+	if v := auth.headers["x-bf-direct-key"]; len(v) > 0 {
+		directKey = v[0]
+	}
+	if key, ok := lib.DirectKeyFromHeaders(handlerStore, directKey, auth.authorization, auth.apiKey, auth.googAPIKey); ok {
+		ctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
+	}
+	// The headers captured at upgrade are all this connection will ever present, so the identity is
+	// settled here the way the HTTP path settles it, a connection that presented nothing included:
+	// governance refuses a request nobody settled, and a keyless connection is not that.
+	lib.SettleIdentity(ctx)
 
 	// Forward x-bf-* headers
 	matcher := (*lib.HeaderMatcher)(nil)

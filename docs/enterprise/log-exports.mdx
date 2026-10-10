@@ -4,7 +4,7 @@ description: "Offload Bifrost request and response payloads to S3 or GCS object 
 icon: "download"
 ---
 
-Bifrost's log store can be paired with an **object storage** backend (S3 or GCS) so that large request/response payloads are streamed to durable object storage while the logs database (SQLite or Postgres) keeps only searchable metadata, indexes, and pointers. This keeps the database small and fast, makes payloads cheap to retain for long periods, and lets you query archived traffic from your own data lake.
+Bifrost's log store can be paired with an **object storage** backend (S3 or GCS) so that large request/response payloads are streamed to durable object storage while the logs database (SQLite, Postgres, or ClickHouse) keeps only searchable metadata, indexes, and pointers. This keeps the database small and fast, makes payloads cheap to retain for long periods, and lets you query archived traffic from your own data lake.
 
 ## How it works
 
@@ -13,20 +13,30 @@ Bifrost's log store can be paired with an **object storage** backend (S3 or GCS)
 ```
 logs_store
 ├── enabled
-├── type            (sqlite | postgres)
-├── config          (SQLite path or Postgres connection)
+├── type            (sqlite | postgres | clickhouse)
+├── config          (SQLite path, or Postgres / ClickHouse connection)
 ├── object_storage              ← S3 or GCS payload offload (optional)
-└── object_storage_exclude_fields
+├── object_storage_exclude_fields
+└── object_storage_exclude_request_types
 ```
 
 Retention is configured separately, at `client_config.log_retention_days` - see [Retention policy](#retention-policy) below.
 
 When `logs_store.object_storage` is set:
 
-1. Bifrost writes per-request metadata (timestamps, provider, model, latency, token counts, cost, status, IDs) to the logs database.
+1. Bifrost writes per-request metadata (timestamps, provider, model, latency, token counts, cost, status, IDs) to the logs database, along with each failed request's error details (except on content-hidden logs, see below), so error type, error code and status code breakdowns keep working.
 2. Large payload fields (request body, response body, streamed chunks, tool call arguments, etc.) are uploaded to the configured bucket under `prefix/`.
 3. The database row stores the object key, so the UI and API can fetch the payload on demand.
 4. `object_storage_exclude_fields` lets you skip specific fields from offload (for example, when you do not want to retain raw user prompts at all).
+5. `object_storage_exclude_request_types` lets you skip whole request types from offload (for example, `list_models`).
+
+<Note>
+Error details stay in the database with three limits:
+
+- **Content-hidden logs** (content logging disabled with `retain_content_in_object_storage` on) keep no error details in the database. Their error details are offloaded with the rest of the payload, so these logs are left out of the error type, error code and status code breakdowns.
+- **Raw provider bodies** that error details carry when raw request/response storage is on are offloaded with the rest of the payload. Only the queryable error fields stay in the database row. Listing `error_details` in `object_storage_exclude_fields` keeps the whole value, bodies included, in the database.
+- **Logs written by earlier versions** with object storage on hold their error details only in object storage. They are not backfilled, so they stay out of the error breakdowns. Opening one of those logs still shows its error details.
+</Note>
 
 Only **S3** and **GCS** are supported today. Azure Blob, local filesystem, and data warehouse destinations are not implemented.
 
@@ -172,6 +182,27 @@ Typical use cases:
 
 - **Data residency**: keep raw prompts and responses inside the DB (which may itself sit inside a controlled VPC) while still benefiting from offload for less sensitive fields.
 - **Operational queries**: keep `input_history` in the DB so SQL queries and the UI's search can run against the full conversation without paying an object-fetch round trip.
+
+### Excluding request types
+
+`object_storage_exclude_request_types` keeps every log of the listed request types out of the bucket. Use it for traffic you do not need in your data lake, such as model listing calls. Those logs are still written to the logs DB in full, so they keep showing up in the UI and API.
+
+Values are request type names as they appear in the log `object` field, for example `list_models`, `embedding`, `chat_completion` or `chat_completion_stream`. Streaming and non-streaming variants are separate types, so list both if you want to exclude both.
+
+```json
+{
+  "logs_store": {
+    "object_storage": { "...": "..." },
+    "object_storage_exclude_request_types": ["list_models"]
+  }
+}
+```
+
+Hidden logs are the exception. If content logging is disabled and `retain_content_in_object_storage` is on, logs of an excluded request type are still offloaded as hidden content, so that content stays out of the DB.
+
+<Note>
+This is not the same as `client.hidden_request_types`. That setting hides request types from the logs view, dashboard, and log read APIs. It does not change what is written to the DB or uploaded to object storage.
+</Note>
 
 ### Guardrail redaction
 

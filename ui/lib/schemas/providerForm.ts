@@ -1,5 +1,5 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
-import { aliasConfigSchema, secretVarSchema } from "@/lib/types/schemas";
+import { aliasConfigSchema, githubCopilotKeyConfigComplete, githubCopilotKeyConfigSchema, secretVarSchema } from "@/lib/types/schemas";
 import { isValidAliases, isValidVertexAuthCredentials } from "@/lib/utils/validation";
 import { z } from "zod";
 
@@ -81,6 +81,15 @@ const AzureKeyConfigSchema = z.object({
 	tenant_id: z.string().optional(),
 });
 
+// AWS → GCP Workload Identity Federation block; see VertexAWSWorkloadIdentityConfig.
+const VertexAWSWorkloadIdentitySchema = z.object({
+	audience: z.string().min(1, "Workload Identity Pool provider audience is required"),
+	service_account_email: z.string().optional(),
+	token_lifetime_seconds: z.number().int().min(600).max(43200).optional(),
+	aws_region: z.string().optional(),
+	aws_role_arn: z.string().optional(),
+});
+
 const VertexKeyConfigSchema = z.object({
 	project_id: z.string().min(1, "Project ID is required for Vertex AI keys"),
 	project_number: z.string().optional(),
@@ -92,6 +101,7 @@ const VertexKeyConfigSchema = z.object({
 			message: "Auth Credentials must be a valid JSON object or env.VAR format when provided",
 		}),
 	force_single_region: z.boolean().optional(),
+	aws_workload_identity: VertexAWSWorkloadIdentitySchema.optional(),
 });
 
 // S3 bucket configuration for Bedrock batch operations
@@ -215,6 +225,7 @@ const KeySchema = z.object({
 	bedrock_key_config: BedrockKeyConfigSchema.optional(),
 	bedrock_mantle_key_config: BedrockMantleKeyConfigSchema.optional(),
 	replicate_key_config: ReplicateKeyConfigSchema.optional(),
+	github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
 	use_for_batch_api: z.boolean().optional(),
 });
 
@@ -308,7 +319,18 @@ export const ProviderFormSchema = z
 			// Validate individual key values based on provider type
 			const effectiveProviderType = data.baseProviderType || data.selectedProvider;
 			data.keys.forEach((key, index) => {
-				if (effectiveProviderType !== "vertex" && effectiveProviderType !== "bedrock" && !key.value.trim()) {
+				// GitHub Copilot is checked separately below: the credential can live entirely
+				// in github_copilot_key_config, so an empty top-level value is only a fault
+				// when the App credentials are absent too.
+				if (effectiveProviderType === "github-copilot") {
+					if (!key.value.trim() && !githubCopilotKeyConfigComplete(key.github_copilot_key_config)) {
+						ctx.addIssue({
+							code: z.ZodIssueCode.custom,
+							message: "Set a Copilot API token, or fill in all four GitHub App credentials",
+							path: ["keys", index, "value"],
+						});
+					}
+				} else if (effectiveProviderType !== "vertex" && effectiveProviderType !== "bedrock" && !key.value.trim()) {
 					ctx.addIssue({
 						code: z.ZodIssueCode.custom,
 						message: "API key value cannot be empty",

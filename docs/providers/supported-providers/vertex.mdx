@@ -45,7 +45,7 @@ Vertex AI is Google's unified ML platform providing access to Google's Gemini mo
 
 ## Setup & Configuration
 
-Vertex AI requires Google Cloud project configuration and authentication credentials. Three authentication methods are supported.
+Vertex AI requires Google Cloud project configuration and authentication credentials. Four authentication methods are supported.
 
 <Note>
   The `aliases` field (mapping model names to fine-tuned model IDs or endpoint
@@ -58,6 +58,16 @@ Vertex AI requires Google Cloud project configuration and authentication credent
 ### 1. Service Account JSON (Recommended for Production)
 
 Provide a credential JSON string in `auth_credentials`. The JSON must contain a `type` field. Supported types: `service_account` (most common), `impersonated_service_account`, `authorized_user`, `external_account`, `external_account_authorized_user`.
+
+<Note>
+  An `external_account` JSON (a Workload Identity Federation credential config) is accepted here
+  too. File, URL and executable `credential_source` shapes, for example a projected Kubernetes
+  ServiceAccount token, are handled by Google's library as-is. The AWS shape
+  (`"environment_id": "aws1"`, produced by `gcloud ... create-cred-config --aws`) is resolved by
+  Bifrost through the AWS SDK default chain, so it works on EKS with IRSA or Pod Identity exactly
+  like [AWS Workload Identity Federation](#4-aws-workload-identity-federation-eks); the structured
+  block is the recommended form because it needs no credential file.
+</Note>
 
 <Tabs>
 
@@ -154,7 +164,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
     case schemas.Vertex:
         return []schemas.Key{
             {
-                Value:  schemas.EnvVar{}, // Leave empty when using service account credentials
+                Value:  schemas.SecretVar{}, // Leave empty when using service account credentials
                 Models: []string{"*"},
                 Weight: 1.0,
                 VertexKeyConfig: &schemas.VertexKeyConfig{
@@ -270,7 +280,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
     case schemas.Vertex:
         return []schemas.Key{
             {
-                Value:  schemas.EnvVar{},
+                Value:  schemas.SecretVar{},
                 Models: []string{"*"},
                 Weight: 1.0,
                 VertexKeyConfig: &schemas.VertexKeyConfig{
@@ -449,6 +459,131 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 
 ---
 
+### 4. AWS Workload Identity Federation (EKS)
+
+Set `aws_workload_identity` to federate the AWS identity attached to the Bifrost workload (EKS IRSA or Pod Identity, ECS task role, EC2 instance profile, or `AWS_*` env vars) into a GCP token through a Workload Identity Pool **AWS provider**. No GCP service account key and no static AWS key are required. Bifrost resolves AWS credentials with the AWS SDK default chain, signs an STS `GetCallerIdentity` request with them, and exchanges that signature at the GCP Security Token Service. The default chain consults static credentials first: if `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are present in the workload environment, Bifrost federates as that key rather than as the attached role, so remove them when the attached role is the intended identity. When `service_account_email` is set the federated token is swapped for a service-account token; otherwise the federated principal calls Vertex AI directly.
+
+This block takes precedence over `auth_credentials` and the two must not be combined. The AWS side and the GCP side are set up in [AWS Workload Identity Federation](#aws-workload-identity-federation) below.
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `audience` | Yes | Provider resource name: `//iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/providers/PROVIDER_ID` |
+| `service_account_email` | No | Service account to impersonate. Omit to grant Vertex access to the federated principal directly |
+| `token_lifetime_seconds` | No | Lifetime of the impersonated token (600 to 43200, default 3600). Only used with `service_account_email`. Values above 3600 require the target service account to be allowed by the organization policy constraint `constraints/iam.allowServiceAccountCredentialLifetimeExtension`; otherwise token generation fails |
+| `aws_region` | No | Region for the STS signature. Defaults to `AWS_REGION` / `AWS_DEFAULT_REGION`, then instance metadata |
+| `aws_role_arn` | No | Assume this IAM role with the workload's credentials before the exchange. Usually unnecessary: map the workload's own role in the pool provider |
+
+`PROJECT_NUMBER` in the audience is the numeric project number, not the project ID you enter elsewhere in the key. Look it up with:
+
+```bash
+gcloud projects describe PROJECT_ID --format="value(projectNumber)"
+```
+
+All string fields accept `env.VAR_NAME` references. GovCloud and China partitions are supported: the STS host is derived from the region.
+
+<Tabs>
+
+<Tab title="Web UI">
+
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"Google Vertex"**
+2. Click **"Add Key"** (or edit an existing key)
+3. Under **Authentication Method**, select **"Workload Identity (AWS)"**
+4. Set **Project ID**: Your Google Cloud project ID
+5. Set **Region**: e.g., `us-central1`
+6. Set **Workload Identity Provider Audience**: the `//iam.googleapis.com/...` resource name of the AWS provider in your pool
+7. _(Optional)_ Set **Service Account to Impersonate**, **AWS Region** and **AWS Role ARN to Assume**
+8. Save
+
+</Tab>
+
+<Tab title="API">
+
+```bash
+# Step 1: Create the provider
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "vertex"}'
+
+# Step 2: Create a key (AWS Workload Identity Federation)
+curl -X POST http://localhost:8080/api/providers/vertex/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "vertex-eks-key",
+    "value": "",
+    "models": ["*"],
+    "weight": 1.0,
+    "vertex_key_config": {
+      "project_id": "env.VERTEX_PROJECT_ID",
+      "region": "us-central1",
+      "aws_workload_identity": {
+        "audience": "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/eks-pool/providers/aws",
+        "service_account_email": "bifrost-vertex@my-gcp-project.iam.gserviceaccount.com"
+      }
+    }
+  }'
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "vertex": {
+      "keys": [
+        {
+          "name": "vertex-eks-key",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "vertex_key_config": {
+            "project_id": "env.VERTEX_PROJECT_ID",
+            "region": "us-central1",
+            "aws_workload_identity": {
+              "audience": "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/eks-pool/providers/aws",
+              "service_account_email": "bifrost-vertex@my-gcp-project.iam.gserviceaccount.com"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.Vertex:
+        return []schemas.Key{
+            {
+                Value:  schemas.SecretVar{},
+                Models: []string{"*"},
+                Weight: 1.0,
+                VertexKeyConfig: &schemas.VertexKeyConfig{
+                    ProjectID: *schemas.NewSecretVar("env.VERTEX_PROJECT_ID"),
+                    Region:    *schemas.NewSecretVar("us-central1"),
+                    AWSWorkloadIdentity: &schemas.VertexAWSWorkloadIdentityConfig{
+                        Audience:            *schemas.NewSecretVar("//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/eks-pool/providers/aws"),
+                        ServiceAccountEmail: schemas.NewSecretVar("bifrost-vertex@my-gcp-project.iam.gserviceaccount.com"),
+                    },
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+</Tab>
+
+</Tabs>
+
 ## GKE Workload Identity Federation
 
 When running Bifrost on GKE, [Workload Identity Federation](https://cloud.google.com/kubernetes-engine/docs/concepts/workload-identity) (WIF) lets pods authenticate to Vertex AI without managing service account keys. The pod inherits an IAM identity through the Kubernetes ServiceAccount, and Bifrost picks it up automatically via [Application Default Credentials](#2-application-default-credentials).
@@ -583,6 +718,166 @@ A JSON response with an `access_token` field confirms WIF is working. Then send 
 
 ---
 
+## AWS Workload Identity Federation
+
+When running Bifrost on AWS (EKS, ECS, EC2), [Workload Identity Federation](https://cloud.google.com/iam/docs/workload-identity-federation-with-other-clouds) lets the workload's IAM role authenticate to Vertex AI without a GCP service account key. GCP trusts your AWS account through a Workload Identity Pool **AWS provider**; Bifrost proves the workload's identity with a signed STS `GetCallerIdentity` request and receives a GCP token in return.
+
+**What you need:**
+
+1. The GCP-side prerequisites below (APIs enabled, pool and AWS provider, IAM grant)
+2. An IAM role attached to the Bifrost workload: an [IRSA](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html) or [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html) role on EKS, an ECS task role, or an EC2 instance profile. It needs **no** AWS permissions for this flow; `sts:GetCallerIdentity` is always allowed. Do not also set `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in the pod: the SDK default chain prefers static credentials over the attached role, and the exchange would then run as that key.
+3. A Bifrost Vertex key using **"Workload Identity (AWS)"** auth - see [AWS Workload Identity Federation (EKS)](#4-aws-workload-identity-federation-eks) for Web UI, API, config.json, and Go SDK setup. For Helm, see [Helm - Google Vertex AI](/deployment-guides/helm/providers#google-vertex-ai).
+
+### GCP Prerequisites (AWS)
+
+<Accordion title="Step 1: Enable the required APIs">
+
+```bash
+gcloud services enable aiplatform.googleapis.com sts.googleapis.com iamcredentials.googleapis.com \
+  --project=PROJECT_ID
+```
+
+`sts.googleapis.com` performs the token exchange. `iamcredentials.googleapis.com` is only used when you impersonate a service account (`service_account_email`).
+
+</Accordion>
+
+<Accordion title="Step 2: Create a Workload Identity Pool and an AWS provider">
+
+```bash
+# Create the pool
+gcloud iam workload-identity-pools create POOL_ID \
+  --project=PROJECT_ID \
+  --location=global \
+  --display-name="Bifrost on AWS"
+
+# Trust your AWS account. The attribute mapping exposes the assumed role name as attribute.aws_role,
+# and the condition restricts the pool to the Bifrost role only.
+gcloud iam workload-identity-pools providers create-aws PROVIDER_ID \
+  --project=PROJECT_ID \
+  --location=global \
+  --workload-identity-pool=POOL_ID \
+  --account-id=AWS_ACCOUNT_ID \
+  --attribute-mapping="google.subject=assertion.arn,attribute.aws_role=assertion.arn.extract('assumed-role/{role}/')" \
+  --attribute-condition="attribute.aws_role == 'BIFROST_ROLE_NAME'"
+```
+
+The `audience` for the Bifrost key is the provider's full resource name:
+
+```bash
+gcloud iam workload-identity-pools providers describe PROVIDER_ID \
+  --project=PROJECT_ID --location=global --workload-identity-pool=POOL_ID \
+  --format="value(name)"
+# //iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/providers/PROVIDER_ID
+```
+
+Prefix the printed `projects/...` value with `//iam.googleapis.com/` if the command omits it.
+
+</Accordion>
+
+<Accordion title="Step 3: Grant Vertex AI access">
+
+Pick one of the two models. The principal in both is the pool-scoped identity of your AWS role:
+
+```
+principalSet://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/attribute.aws_role/BIFROST_ROLE_NAME
+```
+
+**Option A - direct access (no service account).** Leave `service_account_email` empty in the Bifrost key and grant the role directly:
+
+```bash
+gcloud projects add-iam-policy-binding PROJECT_ID \
+  --member="principalSet://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/attribute.aws_role/BIFROST_ROLE_NAME" \
+  --role="roles/aiplatform.user"
+```
+
+**Option B - impersonate a service account.** Set `service_account_email` in the Bifrost key, give the service account Vertex access, and let the federated principal impersonate it:
+
+```bash
+gcloud iam service-accounts create IAM_SA_NAME \
+  --display-name="Bifrost Vertex AI" --project=PROJECT_ID
+
+gcloud projects add-iam-policy-binding PROJECT_ID \
+  --member="serviceAccount:IAM_SA_NAME@PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+
+gcloud iam service-accounts add-iam-policy-binding \
+  IAM_SA_NAME@PROJECT_ID.iam.gserviceaccount.com \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="principalSet://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/attribute.aws_role/BIFROST_ROLE_NAME"
+```
+
+</Accordion>
+
+<Accordion title="Step 4: Attach the IAM role to the Bifrost workload (EKS)">
+
+With IRSA, annotate the Kubernetes ServiceAccount and let the EKS webhook inject the web identity token:
+
+```bash
+kubectl annotate serviceaccount KSA_NAME \
+  --namespace NAMESPACE \
+  eks.amazonaws.com/role-arn=arn:aws:iam::AWS_ACCOUNT_ID:role/BIFROST_ROLE_NAME
+```
+
+With EKS Pod Identity, two prerequisites come first. The cluster needs the Pod Identity Agent add-on, which is what actually hands credentials to the pod:
+
+```bash
+aws eks create-addon --cluster-name CLUSTER_NAME --addon-name eks-pod-identity-agent
+```
+
+And the IAM role's trust policy must let the EKS Pod Identity service assume it and tag the session (an IRSA-style OIDC trust policy does not work here):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Service": "pods.eks.amazonaws.com" },
+      "Action": ["sts:AssumeRole", "sts:TagSession"]
+    }
+  ]
+}
+```
+
+Then create the association:
+
+```bash
+aws eks create-pod-identity-association \
+  --cluster-name CLUSTER_NAME \
+  --namespace NAMESPACE \
+  --service-account KSA_NAME \
+  --role-arn arn:aws:iam::AWS_ACCOUNT_ID:role/BIFROST_ROLE_NAME
+```
+
+Either way the pod receives a credentials source the AWS SDK default chain understands. A region is not guaranteed: IRSA on EKS usually injects `AWS_REGION`, but a self-managed webhook may not, and Pod Identity does not set one. If neither the environment nor instance metadata provides a region, set `aws_region` in the key or `AWS_REGION` in the pod. If deploying with the Bifrost Helm chart, set the annotation via `serviceAccount.annotations` - see [Helm - Google Vertex AI](/deployment-guides/helm/providers#google-vertex-ai).
+
+</Accordion>
+
+### Verify (AWS)
+
+From inside the Bifrost pod, confirm the AWS identity is the expected role:
+
+```bash
+kubectl exec -n NAMESPACE POD_NAME -- aws sts get-caller-identity
+# "Arn": "arn:aws:sts::AWS_ACCOUNT_ID:assumed-role/BIFROST_ROLE_NAME/..."
+```
+
+Then send a request through Bifrost to a Vertex model (e.g., `vertex/gemini-2.5-flash`). In GCP, the Cloud Audit Log entry for the Vertex call identifies the caller under `protoPayload.authenticationInfo`. With direct access and the `google.subject=assertion.arn` mapping above, `principalSubject` is `principal://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/subject/arn:aws:sts::AWS_ACCOUNT_ID:assumed-role/BIFROST_ROLE_NAME/SESSION`. With impersonation, `principalEmail` is the service account email and the federated AWS identity appears as `principalSubject` inside `serviceAccountDelegationInfo[]`. The `principalSet://.../attribute.aws_role/...` form from Step 3 is the IAM binding target and does not appear as the logged identity.
+
+### Troubleshooting (AWS)
+
+| Symptom | Likely Cause | Fix |
+| --- | --- | --- |
+| `aws credentials: ... no EC2 IMDS role found` or `failed to refresh cached credentials` | No IAM role reaches the pod | Check the IRSA annotation or the Pod Identity association ([Step 4](#gcp-prerequisites-aws)); `aws sts get-caller-identity` inside the pod must succeed |
+| `aws region could not be determined` | Neither `AWS_REGION` nor instance metadata is available | Set `aws_region` in the key, or `AWS_REGION` in the pod environment |
+| `invalid_grant` / `The audience in the token does not match` during the exchange | Wrong `audience` | Copy the provider resource name exactly ([Step 2](#gcp-prerequisites-aws)); it starts with `//iam.googleapis.com/` |
+| `The given credential is rejected by the attribute condition` | The AWS role name does not match the provider condition | Align `--attribute-condition` with the role attached to the pod |
+| `403 Permission 'iam.serviceAccounts.getAccessToken' denied` | Missing impersonation grant | Run the `add-iam-policy-binding ... roles/iam.workloadIdentityUser` command from [Step 3](#gcp-prerequisites-aws), Option B |
+| `403 Forbidden` from Vertex API | The principal or service account lacks Vertex permissions | Grant `roles/aiplatform.user` per [Step 3](#gcp-prerequisites-aws) |
+| Requests succeed but as the **node** role (Bifrost older than this feature) | An `external_account` JSON with `"environment_id": "aws1"` was resolved by Google's library, which reads instance metadata | Upgrade; current Bifrost resolves that JSON through the AWS SDK chain, or switch the key to `aws_workload_identity` |
+
+---
+
 ## Beta Headers
 
 For Anthropic models on Vertex AI, Bifrost validates `anthropic-beta` headers and drops unsupported headers from the request.
@@ -633,6 +928,7 @@ The key configuration for Vertex requires Google Cloud credentials:
 - `region` - GCP region for API endpoints (required)
   - Examples: `us-central1`, `us-west1`, `eu-west1`, `global`
 - `auth_credentials` - Service account JSON credentials (optional if using default credentials)
+- `aws_workload_identity` - AWS → GCP Workload Identity Federation block; takes precedence over `auth_credentials` (see [section 4](#4-aws-workload-identity-federation-eks))
 
 ### Authentication Methods
 
@@ -645,6 +941,12 @@ The key configuration for Vertex requires Google Cloud credentials:
 2. **Application Default Credentials** (for local development)
    - Requires `GOOGLE_APPLICATION_CREDENTIALS` environment variable
    - Leave `auth_credentials` empty
+
+3. **AWS Workload Identity Federation** (Bifrost running on AWS)
+
+   ```json
+   { "aws_workload_identity": { "audience": "//iam.googleapis.com/projects/.../providers/aws" } }
+   ```
 
 ## Gemini Models
 
@@ -681,6 +983,10 @@ Refer to [Anthropic documentation](/providers/supported-providers/anthropic) for
 - `anthropic_version` automatically set to `vertex-2023-10-16`
 - Minimum reasoning budget: 1024 tokens
 - Model field removed from request (Vertex uses different identification)
+- `prompt_cache.auto_inject` applies to **Claude models only**. Vertex serves Claude and
+  Gemini side by side, and only Claude takes a per-block cache marker; Gemini caches
+  through a `cachedContent` resource instead, so injection is a no-op there. See
+  [Prompt caching](/features/prompt-caching).
 
 ## Region Selection
 
@@ -822,8 +1128,8 @@ curl -X POST http://localhost:8080/v1/embeddings \
 resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
     Provider: schemas.Vertex,
     Model:    "text-embedding-004",
-    Input: &schemas.EmbeddingInput{
-        Texts: []string{"text to embed"},
+    Input: []schemas.EmbeddingInputItem{
+        {Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("text to embed")}}},
     },
     Params: &schemas.EmbeddingParameters{
         Dimensions: schemas.Ptr(256),

@@ -3,8 +3,6 @@ package bifrost
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,68 +19,11 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// Aliases; canonical definitions live in schemas so EffectiveHTTPStatus can match them.
 const (
-	ProviderAutoResolveErrorMessage = "could not auto resolve a provider for the request, please specify a provider explicitly"
-	ModelAutoResolveErrorMessage    = "could not auto resolve a model for the request, please specify a model explicitly"
+	ProviderAutoResolveErrorMessage = schemas.ProviderAutoResolveErrorMessage
+	ModelAutoResolveErrorMessage    = schemas.ModelAutoResolveErrorMessage
 )
-
-// transientServerStatusCodes are upstream-side failures unrelated to the credential —
-// retried with the *same* key (a different credential gains nothing against a flaky
-// server). Distinct from perKeyFailureStatusCodes which trigger key rotation.
-var transientServerStatusCodes = map[int]bool{
-	500: true, // Internal Server Error
-	502: true, // Bad Gateway
-	503: true, // Service Unavailable
-	504: true, // Gateway Timeout
-	// 529 — Anthropic's overloaded_error ("The API is temporarily overloaded",
-	// docs.claude.com/en/api/errors), also surfaced by Bedrock Mantle's Claude
-	// endpoint. It reflects capacity across all callers rather than anything about
-	// this credential, so it retries on the same key instead of rotating: rotating
-	// would burn every key on a condition none of them can avoid.
-	529: true,
-}
-
-// perKeyFailureStatusCodes are failures bound to the specific key/account rather than
-// the request. On these, executeRequestWithRetries rotates to the next available key
-// (if any) instead of retrying the same key. Request-bound 4xx (400/404/422/...) are
-// intentionally excluded — rotating would just burn every key on the same bad request.
-//
-// Split further inside the retry loop:
-//   - 429 → transient per-key (rate limit) → tracked in usedKeyIDs, may be retried later
-//   - 401/402/403 → permanent per-key (auth/billing/permission) → tracked in deadKeyIDs,
-//     never retried within the same request.
-var perKeyFailureStatusCodes = map[int]bool{
-	401: true, // Unauthorized — bad / revoked API key
-	402: true, // Payment Required — billing issue on this key's account
-	403: true, // Forbidden — key lacks permission or is org-level blocked
-	429: true, // Too Many Requests — this key is rate-limited, another may have capacity
-}
-
-// Define rate limit error message patterns (case-insensitive)
-var rateLimitPatterns = []string{
-	"rate limit",
-	"rate_limit",
-	"ratelimit",
-	"too many requests",
-	"quota exceeded",
-	"quota_exceeded",
-	"request limit",
-	"throttled",
-	"throttling",
-	"rate exceeded",
-	"limit exceeded",
-	"requests per",
-	"rpm exceeded",
-	"tpm exceeded",
-	"tokens per minute",
-	"requests per minute",
-	"requests per second",
-	"api rate limit",
-	"usage limit",
-	"concurrent requests limit",
-	"burst_rate",
-	"rate increased",
-}
 
 // dynamicallyConfigurableProviders is the list of providers that can be dynamically configured.
 // Excluding providers that require extra configuration (e.g. Ollama, SGL, vLLM).
@@ -93,6 +34,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.BedrockMantle,
 	schemas.Cerebras,
 	schemas.Cohere,
+	schemas.Databricks,
 	schemas.DeepSeek,
 	schemas.Elevenlabs,
 	schemas.Gemini,
@@ -132,8 +74,10 @@ func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 // CanProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
 // Some providers like Vertex and Bedrock have their credentials in additional key configs.
 // Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
+// GitHub Copilot may authenticate with a GitHub App bundle in github_copilot_key_config
+// instead of a Copilot API token in value; validateKey checks that one of the two is present.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks || providerKey == schemas.GithubCopilot
 }
 
 // isKeySkippingAllowed gates SkipKeySelection on the provider this attempt resolved to. The flag
@@ -152,6 +96,21 @@ func calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration
 	result := time.Duration(jitter)
 	// Ensure we never exceed the configured maximum
 	return min(result, config.NetworkConfig.RetryBackoffMax)
+}
+
+// waitRetryBackoff sleeps for backoff unless ctx ends first. It reports true when
+// the request was cancelled, in which case the caller must not run another attempt.
+// select picks uniformly among ready cases, so a cancel that lands together with
+// the timer expiry could otherwise be reported as a completed wait; ctx.Err() is
+// the authority after the select.
+func waitRetryBackoff(ctx context.Context, backoff time.Duration) (cancelled bool) {
+	backoffTimer := time.NewTimer(backoff)
+	select {
+	case <-backoffTimer.C:
+	case <-ctx.Done():
+		backoffTimer.Stop()
+	}
+	return ctx.Err() != nil
 }
 
 // validateRequestAfterPreRequestHooks validates the provider and model fields of the given request.
@@ -215,27 +174,50 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		if key.SGLKeyConfig.URL.GetValue() == "" {
 			return fmt.Errorf("sgl_key_config.url is required")
 		}
-	}
-	return nil
-}
-
-// IsRateLimitErrorMessage checks if an error message indicates a rate limit issue
-func IsRateLimitErrorMessage(errorMessage string) bool {
-	if errorMessage == "" {
-		return false
-	}
-
-	// Convert to lowercase for case-insensitive matching
-	lowerMessage := strings.ToLower(errorMessage)
-
-	// Check if any rate limit pattern is found in the error message
-	for _, pattern := range rateLimitPatterns {
-		if strings.Contains(lowerMessage, pattern) {
-			return true
+	case schemas.GithubCopilot:
+		// Two auth modes, either is sufficient.
+		//
+		//   1. Key.Value holds a Copilot API token, GitHub's documented "direct API token"
+		//      method. Those live about 30 minutes, so this suits testing.
+		//   2. GithubCopilotKeyConfig holds GitHub App credentials and Bifrost mints its own
+		//      tokens server-to-server. This is the mode for real deployments.
+		// Trim before every check. resolveCredentials and validateKeyConfig trim too, so an
+		// untrimmed check here would accept a key that fails at the first inference call
+		// instead of at setup, where the operator can still act on it.
+		if strings.TrimSpace(key.Value.GetValue()) != "" {
+			break
+		}
+		if key.GithubCopilotKeyConfig == nil {
+			return fmt.Errorf("github_copilot_key_config is required when value is not set")
+		}
+		// Ordered, so the reported field is deterministic when several are missing.
+		for _, field := range []struct {
+			name  string
+			value string
+		}{
+			{"app_id", key.GithubCopilotKeyConfig.AppID.GetValue()},
+			{"installation_id", key.GithubCopilotKeyConfig.InstallationID.GetValue()},
+			{"repository_id", key.GithubCopilotKeyConfig.RepositoryID.GetValue()},
+			{"private_key", key.GithubCopilotKeyConfig.PrivateKey.GetValue()},
+		} {
+			if strings.TrimSpace(field.value) == "" {
+				return fmt.Errorf("github_copilot_key_config.%s is required", field.name)
+			}
+		}
+	case schemas.Databricks:
+		// The workspace URL is not required here: an SDK caller may set it once as the
+		// provider base_url instead of per key. The provider raises a configuration error at
+		// request time when neither is set. What is checked here is that the OAuth M2M
+		// service principal is whole, since a half-configured pair can never authenticate.
+		if key.DatabricksKeyConfig != nil {
+			hasClientID := key.DatabricksKeyConfig.ClientID != nil && key.DatabricksKeyConfig.ClientID.GetValue() != ""
+			hasClientSecret := key.DatabricksKeyConfig.ClientSecret != nil && key.DatabricksKeyConfig.ClientSecret.GetValue() != ""
+			if hasClientID != hasClientSecret {
+				return fmt.Errorf("databricks_key_config.client_id and databricks_key_config.client_secret must be set together")
+			}
 		}
 	}
-
-	return false
+	return nil
 }
 
 // routingErrorSummary produces a sanitized, audit-safe one-line summary of a
@@ -350,6 +332,45 @@ func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.Bifro
 	return ch
 }
 
+// stampRequestedRoute records the provider/model the caller sent, before any
+// PreRequestHook (routing rules, load balancing, session routing) rewrites them,
+// so plugins can read the original and RoutingInfo can report it. Always written,
+// even when empty, so a reused context never reports a previous request's route.
+// A large-payload request carries its model in LargePayloadMetadata rather than
+// on req, and routing rewrites that in place, so it is copied here first.
+func stampRequestedRoute(ctx *schemas.BifrostContext, requested schemas.Route) {
+	model := requested.Model
+	if model == "" {
+		if metadata, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata); metadata != nil {
+			model = metadata.Model
+		}
+	}
+	ctx.SetValue(schemas.BifrostContextKeyRequestedProvider, requested.Provider)
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, model)
+}
+
+// layerFallbackIdentity marks an attempt's routing info as a fallback's when the request is on one,
+// naming the primary from the previous attempt's record: the primary's own, or the primary it
+// carried on a later fallback (clearCtxForFallback keeps the record).
+func layerFallbackIdentity(ctx *schemas.BifrostContext, info *schemas.RoutingInfo) {
+	if fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); fallbackIndex <= 0 {
+		return
+	}
+	info.IsFallback = true
+	prev, ok := ctx.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo)
+	if !ok {
+		return
+	}
+	if prev.IsFallback && prev.PrimaryProvider != nil {
+		info.PrimaryProvider = prev.PrimaryProvider
+		info.PrimaryModel = prev.PrimaryModel
+	} else if prev.Provider != "" {
+		primaryProvider, primaryModel := prev.Provider, prev.Model
+		info.PrimaryProvider = &primaryProvider
+		info.PrimaryModel = &primaryModel
+	}
+}
+
 // clearCtxForFallback clears the ctx values which are not applicable for fallback requests.
 func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
@@ -359,9 +380,35 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
 	ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
 	ctx.ClearValue(schemas.BifrostContextKeyAttemptTrail)
+	ctx.ClearValue(schemas.BifrostContextKeyLoadBalancerAttempt)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
 	ctx.ClearValue(schemas.BifrostContextKeyConnectionClosed)
+	ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
+	ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
+	ctx.ClearValue(schemas.BifrostContextKeyStreamAttemptAbort)
 	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
+	// Provider response headers belong to the provider that produced them.
+	// If a fallback attempt fails pre-flight (no HTTP request issued), the
+	// previous provider's headers would otherwise survive on the context and
+	// be forwarded with the fallback's error response (#6973).
+	ctx.ClearValue(schemas.BifrostContextKeyProviderResponseHeaders)
+	// The Bedrock InvokeModel stream path installs an AWS event-stream reader
+	// here; a fallback to a plain-SSE provider on the same context must not
+	// inherit it. Cleared here, not when the invoke method returns, because the
+	// in-flight stream still reads it asynchronously (#6825).
+	ctx.ClearValue(schemas.BifrostContextKeySSEReaderFactory)
+}
+
+// restoreProviderResponseHeaders puts headers, the primary attempt's provider response headers,
+// back on ctx before the primary's error is returned once every fallback failed. Each fallback
+// attempt replaces them with its own provider's, so without this the transport forwards the last
+// fallback's headers (its request-id, rate-limit headers) with the primary's error body.
+func restoreProviderResponseHeaders(ctx *schemas.BifrostContext, headers map[string]string) {
+	if headers == nil {
+		ctx.ClearValue(schemas.BifrostContextKeyProviderResponseHeaders)
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 }
 
 // ClearContextForInternalRequest clears context state that is specific to the
@@ -420,8 +467,11 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
 	ctx.ClearValue(schemas.BifrostContextKeyDirectKey)
 	ctx.ClearValue(schemas.BifrostContextKeySkipKeySelection)
+	ctx.ClearValue(schemas.BifrostContextKeyLoadBalancerAttempt)
 	// Body transport.
 	ctx.ClearValue(schemas.BifrostContextKeyUseRawRequestBody)
+	ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
+	ctx.ClearValue(schemas.BifrostContextKeyRawStreamTextCodec)
 	ctx.ClearValue(schemas.BifrostContextKeySendBackRawRequest)
 	ctx.ClearValue(schemas.BifrostContextKeySendBackRawResponse)
 	ctx.ClearValue(schemas.BifrostContextKeyPassthroughOverridesPresent)
@@ -430,6 +480,27 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyExtraHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyPassthroughHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
+}
+
+// PrepareContextForInternalRequest marks ctx as an internal sub-request issued
+// by a plugin on its own behalf. It skips the plugin pipeline — the request
+// cannot recurse back into the plugin that issued it — and sheds the
+// caller-specific key-routing and body-transport state documented on
+// ClearContextForInternalRequest. Plugins should call this instead of setting
+// BifrostContextKeySkipPluginPipeline (a reserved core key) themselves.
+func PrepareContextForInternalRequest(ctx *schemas.BifrostContext) {
+	ctx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+	ClearContextForInternalRequest(ctx)
+}
+
+// PrepareContextForInternalEmbeddingRequest prepares a plugin-owned embedding request without capturing its raw payloads.
+func PrepareContextForInternalEmbeddingRequest(ctx *schemas.BifrostContext) {
+	PrepareContextForInternalRequest(ctx)
+	ctx.SetValue(schemas.BifrostContextKeyAllowPerRequestRawOverride, true)
+	ctx.SetValue(schemas.BifrostContextKeySendBackRawRequest, false)
+	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
+	ctx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, true)
+	ctx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, false)
 }
 
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
@@ -747,22 +818,6 @@ func IsCodemodeTool(toolName string) bool {
 	return mcp.IsCodeModeTool(toolName)
 }
 
-// hashSHA256 returns a deterministic hex-encoded SHA-256 hash of the input.
-func hashSHA256(value string) string {
-	h := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(h[:])
-}
-
-func buildSessionKey(providerKey schemas.ModelProvider, sessionID string, model string) string {
-	// Hash session ID to prevent PII leakage and ensure bounded key size
-	hashedSessionID := hashSHA256(sessionID)
-	discriminator := model
-	if discriminator == "" {
-		discriminator = "__modelless__"
-	}
-	return "session:" + string(providerKey) + ":" + hashedSessionID + ":" + hashSHA256(discriminator)
-}
-
 // isPromptOptionalImageEditType returns true for edit task types that do not require a text prompt.
 // It normalises hyphenated variants (e.g. "erase-object") to underscore form before matching.
 func isPromptOptionalImageEditType(t *string) bool {
@@ -795,6 +850,7 @@ func isPromptOptionalVideoEditType(t *string) bool {
 // responses produced by a type-converted request are converted back to the
 // caller's original type before the post-hook runs.
 func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, targetType schemas.RequestType) schemas.PostHookRunner {
+	roleSent := false
 	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		if result != nil {
 			switch targetType {
@@ -809,6 +865,7 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 				// chat→responses: convert responses stream chunk back to chat
 				if result.ResponsesStreamResponse != nil {
 					if converted := result.ResponsesStreamResponse.ToBifrostChatResponse(); converted != nil {
+						roleSent = setAssistantRoleOnce(converted, roleSent)
 						result = &schemas.BifrostResponse{ChatResponse: converted}
 					}
 				}
@@ -816,4 +873,21 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 		}
 		return postHookRunner(ctx, result, bifrostErr)
 	}
+}
+
+// setAssistantRoleOnce puts the assistant role on the first delta of a
+// converted chat stream and clears it from later deltas. OpenAI-compatible
+// clients read the role from the first chunk only, and some concatenate a
+// repeated one. The stream converter emits a single choice per event. It
+// reports whether the role has been sent.
+func setAssistantRoleOnce(resp *schemas.BifrostChatResponse, roleSent bool) bool {
+	if len(resp.Choices) == 0 || resp.Choices[0].ChatStreamResponseChoice == nil || resp.Choices[0].Delta == nil {
+		return roleSent
+	}
+	if roleSent {
+		resp.Choices[0].Delta.Role = nil
+	} else {
+		resp.Choices[0].Delta.Role = schemas.Ptr(string(schemas.ChatMessageRoleAssistant))
+	}
+	return true
 }

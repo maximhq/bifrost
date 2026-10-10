@@ -3,10 +3,12 @@ package otel
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/maximhq/bifrost/core/network"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -15,6 +17,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -56,6 +59,7 @@ type MetricsExporter struct {
 	// Bifrost metrics - histograms
 	upstreamLatencySeconds         *syncFloat64Histogram
 	overheadLatencyMicros          *syncFloat64Histogram
+	overheadComponentMicros        *syncFloat64Histogram
 	streamFirstTokenLatencySeconds *syncFloat64Histogram
 	streamInterTokenLatencySeconds *syncFloat64Histogram
 	requestRetries                 *syncFloat64Histogram
@@ -63,6 +67,9 @@ type MetricsExporter struct {
 	// OTel MCP semconv duration histogram. _count gives call volume and error.type gives
 	// the error rate, so no separate MCP counters are needed.
 	mcpClientOperationDuration *syncFloat64Histogram
+
+	// A2A (Agent Gateway) metrics
+	a2aClientOperationDuration *syncFloat64Histogram
 
 	// HTTP metrics
 	httpRequestsTotal     *syncInt64Counter
@@ -208,16 +215,24 @@ func (h *syncFloat64Histogram) Record(ctx context.Context, value float64, opts .
 	}
 }
 
-// NewMetricsExporter creates a new OTEL metrics exporter
-func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExporter, error) {
-	// Resource attrs; serviceInstanceID is also emitted as a datapoint label.
-	res, err := resource.Merge(
+// newMetricsResource builds the metrics resource. service.instance.id stays here because
+// OTLP-native backends read instance identity off the resource with no conversion; the
+// per-replica datapoint label is named bifrost_instance_id so that a collector with
+// resource_to_telemetry_conversion, which turns this attribute into a service_instance_id
+// label, cannot collide with it and drop the metric.
+func newMetricsResource(serviceName string) (*resource.Resource, error) {
+	return resource.Merge(
 		resource.Default(),
 		resource.NewSchemaless(
-			semconv.ServiceName(config.ServiceName),
+			semconv.ServiceName(serviceName),
 			semconv.ServiceInstanceID(serviceInstanceID),
 		),
 	)
+}
+
+// NewMetricsExporter creates a new OTEL metrics exporter
+func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExporter, error) {
+	res, err := newMetricsResource(config.ServiceName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resource: %w", err)
 	}
@@ -267,18 +282,18 @@ func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExp
 func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.Exporter, error) {
 	opts := []otlpmetrichttp.Option{
 		otlpmetrichttp.WithEndpointURL(config.Endpoint),
+		// The global proxy when it is enabled for API traffic, else the environment.
+		otlpmetrichttp.WithProxy(network.DefaultProxyFunc(network.ClientPurposeAPI)),
 	}
 
 	if len(config.Headers) > 0 {
 		opts = append(opts, otlpmetrichttp.WithHeaders(config.Headers))
 	}
 
-	// HTTP metrics insecure mode disables TLS entirely (unlike the trace HTTP client
-	// which uses InsecureSkipVerify). buildTLSConfig is bypassed for that case.
-	if config.TLSCACert == "" && config.Insecure {
-		opts = append(opts, otlpmetrichttp.WithInsecure())
-	} else {
-		tlsConfig, err := buildTLSConfig(config.TLSCACert, false)
+	// The endpoint scheme decides the transport, so Insecure only relaxes certificate
+	// verification. The SDK rejects a TLS config on a plaintext endpoint.
+	if u, err := url.Parse(config.Endpoint); err == nil && u.Scheme == "https" {
+		tlsConfig, err := buildTLSConfig(config.TLSCACert, config.Insecure)
 		if err != nil {
 			return nil, err
 		}
@@ -290,7 +305,11 @@ func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.E
 
 func createGRPCExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.Exporter, error) {
 	opts := []otlpmetricgrpc.Option{
-		otlpmetricgrpc.WithEndpoint(config.Endpoint),
+		// passthrough hands the host name to the proxy dialer unresolved (see
+		// network.GRPCPassthroughTarget); the dialer uses the global proxy when it is
+		// enabled for API traffic, else the environment's HTTPS proxy as gRPC reads it.
+		otlpmetricgrpc.WithEndpoint(network.GRPCPassthroughTarget(config.Endpoint)),
+		otlpmetricgrpc.WithDialOption(grpc.WithContextDialer(network.DefaultGRPCDialer(network.ClientPurposeAPI))),
 	}
 
 	if len(config.Headers) > 0 {
@@ -406,6 +425,14 @@ func (m *MetricsExporter) initMetrics() {
 		boundaries: overheadLatencyBuckets,
 	}
 
+	m.overheadComponentMicros = &syncFloat64Histogram{
+		name:       "bifrost_overhead_component_microseconds",
+		desc:       "Bifrost overhead latency broken down by internal component (overhead_component attribute), in microseconds. Off by default; enable with overhead_breakdown_enabled. Requires tracing to be active",
+		unit:       "us",
+		meter:      m.meter,
+		boundaries: overheadLatencyBuckets,
+	}
+
 	m.streamFirstTokenLatencySeconds = &syncFloat64Histogram{
 		name:       "bifrost_stream_first_token_latency_seconds",
 		desc:       "Latency of the first token of a stream response",
@@ -434,6 +461,15 @@ func (m *MetricsExporter) initMetrics() {
 	m.mcpClientOperationDuration = &syncFloat64Histogram{
 		name:       "mcp.client.operation.duration",
 		desc:       "Duration of an MCP request as observed by the client (Bifrost) from send until the response is received",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: mcpOperationDurationBuckets,
+	}
+
+	// Mirrors mcp.client.operation.duration; there is no A2A semconv metric yet.
+	m.a2aClientOperationDuration = &syncFloat64Histogram{
+		name:       "a2a.client.operation.duration",
+		desc:       "Duration of an A2A operation as observed by the gateway (Bifrost) from send until the response is received",
 		unit:       "s",
 		meter:      m.meter,
 		boundaries: mcpOperationDurationBuckets,
@@ -547,6 +583,12 @@ func (m *MetricsExporter) RecordOverheadLatency(ctx context.Context, overheadMic
 	m.overheadLatencyMicros.Record(ctx, overheadMicros, metric.WithAttributes(attrs...))
 }
 
+// RecordOverheadComponent records one component's share of overhead (µs). Caller passes
+// overhead_component plus the same base attrs as RecordOverheadLatency.
+func (m *MetricsExporter) RecordOverheadComponent(ctx context.Context, overheadMicros float64, attrs ...attribute.KeyValue) {
+	m.overheadComponentMicros.Record(ctx, overheadMicros, metric.WithAttributes(attrs...))
+}
+
 // RecordStreamFirstTokenLatency records first token latency metric
 func (m *MetricsExporter) RecordStreamFirstTokenLatency(ctx context.Context, latencySeconds float64, attrs ...attribute.KeyValue) {
 	m.streamFirstTokenLatencySeconds.Record(ctx, latencySeconds, metric.WithAttributes(attrs...))
@@ -566,6 +608,11 @@ func (m *MetricsExporter) RecordRequestRetries(ctx context.Context, retries floa
 // RecordMCPOperationDuration records the mcp.client.operation.duration metric for one op.
 func (m *MetricsExporter) RecordMCPOperationDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
 	m.mcpClientOperationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordA2AOperationDuration records the duration of one A2A (Agent Gateway) operation
+func (m *MetricsExporter) RecordA2AOperationDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
+	m.a2aClientOperationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
 }
 
 // RecordHTTPRequest records an HTTP request metric
@@ -592,9 +639,13 @@ func (m *MetricsExporter) RecordHTTPResponseSize(ctx context.Context, sizeBytes 
 // Retry depth is intentionally NOT included here; it is reported via the dedicated
 // bifrost_request_retries histogram (recorded once per request) rather than as a label
 // on every per-attempt counter.
-// serviceInstanceID is this replica's id (hostname, timestamped fallback). Emitted
-// as both a resource attribute and a datapoint label so per-replica breakdown works
-// even when the collector drops resource attributes.
+// serviceInstanceID is this replica's id (hostname, timestamped fallback). Emitted as the
+// service.instance.id resource attribute and, under the distinct name
+// bifrost_instance_id, as a datapoint label, so per-replica breakdown works whether or
+// not the collector forwards resource attributes. The names differ deliberately: a
+// collector with resource_to_telemetry_conversion renders the resource attribute as
+// service_instance_id, and a datapoint label of that name would duplicate it and make
+// the Prometheus exporter drop the metric.
 var serviceInstanceID = resolveServiceInstanceID()
 
 func resolveServiceInstanceID() string {
@@ -605,8 +656,9 @@ func resolveServiceInstanceID() string {
 }
 
 // team/customer/businessUnit args are canonical comma-joined sets; label names stay
-// singular (team_id, ...) for dashboard compatibility.
-func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyName, selectedKeyID, selectedKeyName string, fallbackIndex int, teamIDs, teamNames, customerIDs, customerNames, businessUnitIDs, businessUnitNames string) []attribute.KeyValue {
+// singular (team_id, ...) for dashboard compatibility. A request is scoped to at most
+// one project, so projectID/projectName are plain scalars.
+func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyName, selectedKeyID, selectedKeyName string, fallbackIndex int, teamIDs, teamNames, customerIDs, customerNames, businessUnitIDs, businessUnitNames, projectID, projectName string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String("provider", provider),
 		attribute.String("model", model),
@@ -622,7 +674,9 @@ func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyNam
 		attribute.String("customer_name", customerNames),
 		attribute.String("business_unit_id", businessUnitIDs),
 		attribute.String("business_unit_name", businessUnitNames),
-		attribute.String("service_instance_id", serviceInstanceID),
+		attribute.String("project_id", projectID),
+		attribute.String("project_name", projectName),
+		attribute.String("bifrost_instance_id", serviceInstanceID),
 	}
 }
 

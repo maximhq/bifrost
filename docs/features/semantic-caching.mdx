@@ -4,6 +4,15 @@ description: "Cache AI responses with exact-match hashing and semantic similarit
 icon: "database"
 ---
 
+<Note>
+Not to be confused with [prompt caching](/features/prompt-caching). Semantic caching is
+Bifrost replaying a **response** it has already seen, so the provider is never called.
+Prompt caching is the **provider** reusing the prefix of your request, so the call still
+happens and is still billed: cache reads are cheaper than fresh input, but the turn that
+writes the cache can cost more than fresh input (on Anthropic, 1.25x for a 5m TTL and 2x
+for 1h). They are independent and can both be on.
+</Note>
+
 ## Overview
 
 Bifrost can cache LLM responses and replay them for repeated requests, avoiding a round-trip to the provider. It offers two complementary lookup paths:
@@ -155,7 +164,8 @@ curl -X POST http://localhost:8080/api/plugins \
       "cache_by_model": true,
       "cache_by_provider": true,
       "vector_store_namespace": "BifrostSemanticCachePlugin",
-      "default_cache_key": ""
+      "default_cache_key": "",
+      "cache_tool_call_responses": false
     }
   }'
 ```
@@ -214,7 +224,8 @@ A vector store must be enabled in `config.json` first — the plugin has nowhere
         "cache_by_provider": true,
 
         "vector_store_namespace": "BifrostSemanticCachePlugin",
-        "default_cache_key": ""
+        "default_cache_key": "",
+        "cache_tool_call_responses": false
       }
     }
   ]
@@ -260,6 +271,7 @@ bifrost:
         cache_by_provider: true
 
         vector_store_namespace: "BifrostSemanticCachePlugin"
+        cache_tool_call_responses: false
 ```
 
 <Note>
@@ -331,7 +343,8 @@ bifrostConfig := schemas.BifrostConfig{
 | `cache_by_model` | boolean | `true` | Include the model name in the cache key (different models won't share entries). |
 | `cache_by_provider` | boolean | `true` | Include the provider name in the cache key (different providers won't share entries). |
 | `vector_store_namespace` | string | `BifrostSemanticCachePlugin` | Bucket/index where entries live. Changing it points the plugin at a different (possibly empty) bucket; old entries aren't deleted, just no longer queried. |
-| `default_cache_key` | string | `""` (empty) | Fallback cache key used when a request doesn't send `x-bf-cache-key`. **Left empty, caching is disabled for any request without the header.** |
+| `default_cache_key` | string | `""` (empty) | Fallback cache key used when a request doesn't send `x-bf-cache-key`. **Left empty, caching is disabled for any request without the header.** Entries are always partitioned by virtual key on top of this (see [Triggering the cache](#triggering-the-cache)). |
+| `cache_tool_call_responses` | boolean | `false` | Persist responses that carry tool calls. Off by default, since a replayed tool call runs in a later caller's agent loop with arguments chosen for someone else's prompt. |
 
 ---
 
@@ -434,10 +447,26 @@ In direct-only mode, all requests use hash matching regardless of the `x-bf-cach
 
 The cache key is the **partition** every lookup and write is scoped to — it's part of the cache entry's identity alongside the model and provider. It exists for two reasons:
 
-- **Isolation (no cross-talk).** Entries are only ever matched within the same key. A request under `tenant-A` can never be served a response cached under `tenant-B`, even if the prompts are identical. This prevents one user, tenant, or feature from leaking cached answers to another — the key is how you draw that boundary (per user, per session, per feature, per tenant, etc.).
+- **Isolation (no cross-talk).** Entries are only ever matched within the same key — and, on top of that, within the same virtual key (see the note below). A request under `tenant-A` can never be served a response cached under `tenant-B`, even if the prompts are identical. The key is how you draw sharing boundaries below the virtual key (per user, per session, per feature, etc.).
 - **Explicit opt-in.** Caching changes behavior — a response can be replayed instead of freshly generated. Requiring a key makes that a deliberate choice per request (or per deployment via `default_cache_key`), so you never accidentally serve a cached answer where you wanted a live one.
 
 Pick a key granularity that matches how much you want to share: a coarse key (e.g. a feature name) maximizes hit rate across users; a fine key (e.g. a per-user or per-session ID) keeps caches private at the cost of fewer hits.
+
+<Note>
+When a request carries a resolved virtual key, the effective cache partition is automatically
+scoped to that virtual key on top of whatever `x-bf-cache-key`/`default_cache_key` you set - two
+different virtual keys can never share a cache entry, even if they're configured with the exact
+same cache key. This applies with zero configuration; there's nothing to opt into. Requests
+without a virtual key (no governance/VK enforcement in use) are partitioned by cache key alone,
+same as before.
+</Note>
+
+<Note>
+Responses that carry tool calls (chat `tool_calls`, or Responses API `function_call`,
+`custom_tool_call`, `computer_call`, `local_shell_call`, `mcp_call`, `mcp_approval_request` items)
+are **not cached by default**: a replayed tool call would run in a later caller's agent loop with arguments the model
+chose for someone else's prompt. Set `cache_tool_call_responses: true` to opt in.
+</Note>
 
 <Tabs group="cache-triggering">
 
@@ -482,7 +511,7 @@ Every plugin default can be overridden per request via headers (HTTP) or context
 |--------|------------------|-------|--------|
 | `x-bf-cache-key` | `CacheKey` | string | Scope this request to a cache partition. Required (or `default_cache_key`) for caching to engage. |
 | `x-bf-cache-ttl` | `CacheTTLKey` | duration string or seconds | Override TTL for this request. Invalid values are ignored. |
-| `x-bf-cache-threshold` | `CacheThresholdKey` | float (0–1) | Override the semantic similarity threshold. Clamped to `[0,1]`. |
+| `x-bf-cache-threshold` | `CacheThresholdKey` | float (0–1) | Raise the semantic similarity threshold for this request (stricter matching, fewer hits). Clamped to `[0,1]`; a value below the plugin's configured threshold is floored at the configured value rather than loosening it - callers can only make matching stricter, never looser. |
 | `x-bf-cache-type` | `CacheTypeKey` | `direct` or `semantic` | Limit lookup to a single path. |
 | `x-bf-cache-no-store` | `CacheNoStoreKey` | `true` | Skip writing the response (still serves cached hits). |
 
@@ -647,7 +676,11 @@ err := plugin.ClearCacheForKey("support-session-456")
 - **Namespace isolation** — each `vector_store_namespace` is an independent cache pool. Use distinct namespaces to keep separate caches from colliding.
 
 <Warning>
-**Changing `dimension`, `provider`, or `embedding_model`:** a vector store namespace can hold vectors of **one** dimension only. The namespace is **not** recreated automatically — `CreateNamespace` is a no-op when the class/collection already exists. If the new embedding model produces a different vector size, subsequent writes fail (size mismatch) and reads silently miss. Before saving such a change, either:
+**Changing `dimension`, `provider`, or `embedding_model`:** a vector store namespace can hold vectors of **one** dimension only, and it is **not** recreated automatically when the dimension changes.
+
+On **Redis** and **Qdrant**, a dimension mismatch is caught at startup: namespace creation fails with `namespace ... already exists with dimension N but config requires M`, and Bifrost does not come up until you resolve it. Qdrant skips the check in two cases — the collection uses named vectors (Bifrost only ever creates unnamed ones, so the collection was not created by Bifrost), or the collection-info lookup fails — and logs that it did. On the other backends, namespace creation is a no-op when the class/collection already exists, so a mismatch surfaces later — subsequent writes fail (size mismatch) and reads silently miss.
+
+Either way, before saving such a change:
 
 - point `vector_store_namespace` at a fresh name, **or**
 - drop the existing class/index in your vector store.

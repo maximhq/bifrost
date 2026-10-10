@@ -106,6 +106,7 @@ export interface GetModelsRequest {
 	keys?: string[];
 	vks?: string[];
 	limit?: number;
+	offset?: number;
 	unfiltered?: boolean;
 }
 
@@ -304,10 +305,15 @@ export const providersApi = baseApi.injectEndpoints({
 						providersApi.util.updateQueryData("getAllKeys", undefined, (draft) => {
 							const index = draft.findIndex((k) => k.key_id === keyId);
 							if (index !== -1) {
+								// `enabled` has to ride along: callers filter providers on it
+								// (the complexity router only offers providers with a serving
+								// key), so dropping it leaves a toggled key looking unchanged
+								// here until the next full refetch.
 								draft[index] = {
 									...draft[index],
 									name: updatedKey.name,
 									models: updatedKey.models ?? [],
+									enabled: updatedKey.enabled,
 								};
 							}
 						}),
@@ -436,13 +442,14 @@ export const providersApi = baseApi.injectEndpoints({
 
 		// Get models with optional filtering
 		getModels: builder.query<ListModelsResponse, GetModelsRequest>({
-			query: ({ query, provider, keys, vks, limit, unfiltered }) => {
+			query: ({ query, provider, keys, vks, limit, offset, unfiltered }) => {
 				const params = new URLSearchParams();
 				if (query) params.append("query", query);
 				if (provider) params.append("provider", provider);
 				if (keys && keys.length > 0) params.append("keys", keys.join(","));
 				if (vks && vks.length > 0) params.append("vks", vks.join(","));
 				if (limit !== undefined) params.append("limit", limit.toString());
+				if (offset !== undefined) params.append("offset", offset.toString());
 				if (unfiltered !== undefined) params.append("unfiltered", unfiltered.toString());
 				return `/models?${params.toString()}`;
 			},
@@ -541,7 +548,6 @@ export const {
 	useLazyGetProviderKeyQuery,
 	useLazyGetAllKeysQuery,
 	useLazyGetModelsQuery,
-	useLazyGetBaseModelsQuery,
 	useGetModelParametersQuery,
 	useLazyGetModelParametersQuery,
 	useGetModelDetailsQuery,

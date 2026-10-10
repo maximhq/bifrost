@@ -224,10 +224,21 @@ export function isValidJSON(value: string): boolean {
 	}
 }
 
+// The Google credential JSON types the backend accepts in auth_credentials. Mirrors the
+// allowlist in core/providers/vertex/vertex.go; external_account is what Workload Identity
+// Federation credential configs use.
+const VERTEX_CREDENTIAL_JSON_TYPES = new Set([
+	"service_account",
+	"impersonated_service_account",
+	"authorized_user",
+	"external_account",
+	"external_account_authorized_user",
+]);
+
 /**
  * Validates Vertex auth credentials
  * @param value - The auth credentials value
- * @returns true if valid (redacted, env var, or valid service account JSON)
+ * @returns true if valid (redacted, env var, or a Google credential JSON of an accepted type)
  */
 export function isValidVertexAuthCredentials(value: string): boolean {
 	if (!value || !value.trim()) {
@@ -244,10 +255,12 @@ export function isValidVertexAuthCredentials(value: string): boolean {
 		return value.length > 4;
 	}
 
-	// Try to parse as service account JSON
+	// Try to parse as Google credential JSON; the backend dispatches on the type field.
 	try {
 		const parsed = JSON.parse(value);
-		return typeof parsed === "object" && parsed !== null && parsed.type === "service_account" && parsed.project_id && parsed.private_key;
+		return (
+			typeof parsed === "object" && parsed !== null && typeof parsed.type === "string" && VERTEX_CREDENTIAL_JSON_TYPES.has(parsed.type)
+		);
 	} catch {
 		return false;
 	}
@@ -602,4 +615,15 @@ export function cleanPathOverrides(overrides?: Record<string, string | undefined
 		.filter(([, v]) => v && v !== "");
 
 	return entries.length ? (Object.fromEntries(entries) as Record<string, string>) : undefined;
+}
+
+// hasCopilotApiToken reports whether a Copilot API token is present on a provider key.
+//
+// key.value is a bare string in the provider-level form and a SecretVar object in the
+// per-key form, so both shapes have to be understood. Getting this wrong makes the GitHub
+// App fields claim to be required while the section note says they can be left blank.
+export function hasCopilotApiToken(value: string | { value?: string; ref?: string; type?: string } | null | undefined): boolean {
+	if (!value) return false;
+	if (typeof value === "string") return value.trim() !== "";
+	return !!value.value?.trim() || !!value.ref?.trim();
 }

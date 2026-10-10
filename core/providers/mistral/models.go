@@ -53,3 +53,21 @@ func (response *MistralListModelsResponse) ToBifrostListModelsResponse(allowedMo
 
 	return bifrostResponse
 }
+
+// ToBifrostModelRetrieveResponse converts a Mistral model card to a Bifrost model retrieve response
+func (model *MistralModel) ToBifrostModelRetrieveResponse() *schemas.BifrostModelRetrieveResponse {
+	if model == nil {
+		return nil
+	}
+
+	return &schemas.BifrostModelRetrieveResponse{
+		Model: schemas.Model{
+			ID:            string(schemas.Mistral) + "/" + model.ID,
+			Name:          schemas.Ptr(model.Name),
+			Description:   schemas.Ptr(model.Description),
+			Created:       schemas.Ptr(model.Created),
+			ContextLength: schemas.Ptr(model.MaxContextLength),
+			OwnedBy:       schemas.Ptr(model.OwnedBy),
+		},
+	}
+}

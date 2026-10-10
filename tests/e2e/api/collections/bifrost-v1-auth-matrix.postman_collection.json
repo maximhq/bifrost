@@ -34,7 +34,7 @@
                   "});",
                   "pm.test('VK inference response carries no virtual_key rejection', function () {",
                   "  pm.expect(pm.response.text()).to.not.include('virtual_key_required');",
-                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_not_found');",
+                  "  pm.expect(pm.response.text()).to.not.include('access_not_found');",
                   "});"
                 ]
               }

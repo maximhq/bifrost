@@ -50,6 +50,41 @@ type ModelCatalogResolution struct {
 
 // EmitModelCatalogRoutingLog appends a RoutingEngineModelCatalog log entry and
 // engines-used marker to bifrostCtx for an inline catalog resolution. Used by
+// DirectKeyFromHeaders builds the caller's own provider key from the request headers, under the
+// same gate on every route: the server setting and the x-bf-direct-key: true header. The key is
+// the bearer token, else x-api-key, else x-goog-api-key; a virtual key is never a direct key.
+func DirectKeyFromHeaders(store HandlerStore, directKey, authorization, xAPIKey, xGoogAPIKey string) (schemas.Key, bool) {
+	if store == nil || !store.ShouldAllowDirectKeys() || directKey != "true" {
+		return schemas.Key{}, false
+	}
+	isProviderKey := func(v string) bool {
+		return v != "" && !strings.HasPrefix(strings.ToLower(v), governance.VirtualKeyPrefix)
+	}
+	var apiKey string
+	if strings.HasPrefix(strings.ToLower(authorization), "bearer ") {
+		if v := strings.TrimSpace(authorization[7:]); isProviderKey(v) {
+			apiKey = v
+		}
+	}
+	if apiKey == "" {
+		if v := strings.TrimSpace(xAPIKey); isProviderKey(v) {
+			apiKey = v
+		} else if v := strings.TrimSpace(xGoogAPIKey); isProviderKey(v) {
+			apiKey = v
+		}
+	}
+	if apiKey == "" {
+		return schemas.Key{}, false
+	}
+	return schemas.Key{
+		ID:     "header-provided",
+		Name:   "header-provided",
+		Value:  schemas.SecretVar{Val: apiKey},
+		Models: []string{},
+		Weight: 1.0,
+	}, true
+}
+
 // ConvertToBifrostContext (normal HTTP path) and by realtime handlers that
 // bypass it (WebRTC, realtime client_secrets) so all paths emit observability
 // in the same shape regardless of which routing layer did the lookup.
@@ -213,7 +248,9 @@ func ResolveSessionIDFromRequest(h *fasthttp.RequestHeader) string {
 //
 // 6. Cancellable Context:
 //   - Creates a cancellable context that can be used to cancel upstream requests when clients disconnect
-//   - This is critical for streaming requests where write errors indicate client disconnects
+//   - A watcher peeks at the client socket and cancels the context when the client closes it
+//     before anything was written back (silent upstream, retry backoff), see clientdisconnect.go
+//   - Streaming handlers additionally cancel when an SSE write fails
 //   - Also useful for non-streaming requests to allow provider-level cancellation
 //
 // 7. Extra Headers (x-bf-eh-*):
@@ -229,6 +266,7 @@ func ResolveSessionIDFromRequest(h *fasthttp.RequestHeader) string {
 //
 // 9. Raw Capture Headers (per-request override of provider config; accepts "true" or "false"):
 //   - x-bf-send-back-raw-request: include raw provider request in the BifrostResponse returned to the caller
+//   - x-bf-prompt-cache-auto-inject: override prompt_cache.auto_inject for this request
 //   - x-bf-send-back-raw-response: include raw provider response in the BifrostResponse returned to the caller
 //   - x-bf-store-raw-request-response: capture raw request/response for logging only (stripped from client response)
 
@@ -281,7 +319,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			cancel = existingCancel
 		} else {
 			// Create one cancellable child context and promote it as the shared context.
+			// A context seeded by a transport hook (large-payload detection) takes this
+			// path, so the client socket is watched here too; the branch above, where a
+			// cancel func already exists, means a watcher is already running.
 			bifrostCtx, cancel = schemas.NewBifrostContextWithCancel(existing)
+			startClientDisconnectWatcher(ctx.Conn(), bifrostCtx, cancel)
 			ctx.SetUserValue(FastHTTPUserValueBifrostContext, bifrostCtx)
 			ctx.SetUserValue(FastHTTPUserValueBifrostCancel, cancel)
 		}
@@ -299,6 +341,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			_ = ctx.Done()
 		}()
 		bifrostCtx, cancel = schemas.NewBifrostContextWithCancel(parent)
+		// Cancel the request when the client closes its socket while the handler
+		// is still waiting on core; fasthttp offers no per-request Done (#7035).
+		startClientDisconnectWatcher(ctx.Conn(), bifrostCtx, cancel)
 		ctx.SetUserValue(FastHTTPUserValueBifrostContext, bifrostCtx)
 		ctx.SetUserValue(FastHTTPUserValueBifrostCancel, cancel)
 	}
@@ -311,6 +356,16 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			requestID = uuid.New().String()
 		}
 		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	}
+	// The request-id above may be caller-supplied (x-request-id), so it cannot be
+	// trusted as a billing-idempotency identity: two unrelated requests sharing a
+	// chosen ID would collide on the billing key and the second would settle for
+	// free. The nonce is minted here, never read from any header, and mixed into
+	// the governance billing key so that key is unforgeable. Preserved when
+	// already present so both terminal paths of one physical call (success vs
+	// cancellation) read the same value and still dedupe against each other.
+	if existingNonce, ok := bifrostCtx.Value(schemas.BifrostContextKeyBillingNonce).(string); !ok || existingNonce == "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyBillingNonce, uuid.New().String())
 	}
 	// Populating all user values from the request context
 	ctx.VisitUserValuesAll(func(key, value any) {
@@ -562,6 +617,20 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			return true
 		}
+		// Session affinity: whether this request lets its session decide where it goes.
+		if keyStr == "x-bf-session-affinity" {
+			switch strings.ToLower(strings.TrimSpace(string(value))) {
+			case "on", "true", "1":
+				bifrostCtx.SetValue(schemas.BifrostContextKeySessionAffinity, true)
+			case "off", "false", "0":
+				bifrostCtx.SetValue(schemas.BifrostContextKeySessionAffinity, false)
+			default:
+				if logger != nil {
+					logger.Warn("x-bf-session-affinity is not on or off, ignoring")
+				}
+			}
+			return true
+		}
 		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-eh-"); ok {
 			// Skip empty header names after prefix removal
 			if labelName == "" {
@@ -632,6 +701,16 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			return true
 		}
+		// Per-request override of prompt_cache.auto_inject. Fully overrides the
+		// provider config for this request in both directions, so a caller can opt a
+		// single request in without changing config, or opt one out when the provider
+		// has it on. The model capability gate still applies.
+		if keyStr == "x-bf-prompt-cache-auto-inject" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyPromptCacheAutoInject, b)
+			}
+			return true
+		}
 		if keyStr == "x-bf-send-back-raw-response" {
 			if b, err := strconv.ParseBool(string(value)); err == nil {
 				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, b)
@@ -672,12 +751,16 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatConvertChatToResponses)
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatShouldDropParams)
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatShouldConvertParams)
+			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatAzureDeepseek)
+			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses)
 			valueStr := strings.TrimSpace(string(value))
 			if valueStr == "true" {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertTextToChat, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertChatToResponses, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses, true)
 			} else if strings.HasPrefix(valueStr, "[") {
 				var features []string
 				if err := json.Unmarshal([]byte(valueStr), &features); err == nil {
@@ -686,6 +769,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertChatToResponses, true)
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses, true)
 					} else {
 						for _, f := range features {
 							switch f {
@@ -697,6 +782,10 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
 							case "should_convert_params":
 								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
+							case "azure_deepseek":
+								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
+							case "force_reasoning_only_models_to_responses":
+								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses, true)
 							}
 						}
 					}
@@ -786,39 +875,13 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	// Enterprise SCIM inference auth runs before this context conversion, so it mirrors
 	// this config/header gate separately to avoid validating provider bearer tokens as
 	// SCIM user JWTs before direct-key extraction can happen here.
-	if store != nil && store.ShouldAllowDirectKeys() && string(ctx.Request.Header.Peek("x-bf-direct-key")) == "true" {
-		var apiKey string
-		authHeader := string(ctx.Request.Header.Peek("Authorization"))
-		if authHeader != "" {
-			if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-				authHeaderValue := strings.TrimSpace(authHeader[7:])
-				if authHeaderValue != "" && !strings.HasPrefix(strings.ToLower(authHeaderValue), governance.VirtualKeyPrefix) {
-					apiKey = authHeaderValue
-				}
-			}
-		}
-		if apiKey == "" {
-			xAPIKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-api-key")))
-			if xAPIKey != "" && !strings.HasPrefix(strings.ToLower(xAPIKey), governance.VirtualKeyPrefix) {
-				apiKey = xAPIKey
-			} else {
-				xGoogleAPIKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-goog-api-key")))
-				if xGoogleAPIKey != "" && !strings.HasPrefix(strings.ToLower(xGoogleAPIKey), governance.VirtualKeyPrefix) {
-					apiKey = xGoogleAPIKey
-				}
-			}
-		}
-		if apiKey != "" {
-			key := schemas.Key{
-				ID:     "header-provided",
-				Name:   "header-provided",
-				Value:  schemas.SecretVar{Val: apiKey},
-				Models: []string{},
-				Weight: 1.0,
-			}
-			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
-		}
+	if key, ok := DirectKeyFromHeaders(store, string(ctx.Request.Header.Peek("x-bf-direct-key")), string(ctx.Request.Header.Peek("Authorization")), string(ctx.Request.Header.Peek("x-api-key")), string(ctx.Request.Header.Peek("x-goog-api-key"))); ok {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 	}
+
+	// Everything the middlewares and the headers can say about who this request is now sits on the
+	// context, so this is where it is settled onto the request's grant.
+	SettleIdentity(bifrostCtx)
 
 	return bifrostCtx, cancel
 }

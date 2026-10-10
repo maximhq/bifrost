@@ -5,11 +5,30 @@
 
 import { RuleGroupType } from "react-querybuilder";
 
+/** A fallback that may pin a provider key. The API accepts and returns the legacy "provider/model" string for unpinned entries. */
+/** Wire object form of a fallback, used only when it pins a provider key. */
+export interface RoutingFallbackObject {
+	provider?: string;
+	model?: string;
+	key_id?: string;
+}
+
+export type RoutingFallbackWire = string | RoutingFallbackObject;
+
+/** Form state, split so the sheet can drive separate provider and model selects. */
+export interface RoutingFallbackFormData {
+	provider: string;
+	model: string;
+	key_id: string;
+}
+
 export interface RoutingTarget {
 	provider?: string;
 	model?: string;
 	key_id?: string;
 	weight: number;
+	/** Time-to-first-token deadline (ms) for streaming requests; unset when off. 0 clears it on update. */
+	ttft_timeout_ms?: number | null;
 }
 
 export interface RoutingRule {
@@ -18,7 +37,7 @@ export interface RoutingRule {
 	description: string;
 	cel_expression: string;
 	targets: RoutingTarget[];
-	fallbacks?: string[];
+	fallbacks?: RoutingFallbackWire[];
 	scope: "global" | "team" | "customer" | "virtual_key" | "user";
 	scope_id?: string;
 	priority: number;
@@ -34,7 +53,7 @@ export interface CreateRoutingRuleRequest {
 	description?: string;
 	cel_expression?: string;
 	targets: RoutingTarget[];
-	fallbacks?: string[];
+	fallbacks?: RoutingFallbackWire[];
 	scope: string;
 	scope_id?: string;
 	priority: number;
@@ -69,6 +88,8 @@ export interface RoutingTargetFormData {
 	model: string;
 	key_id: string;
 	weight: number;
+	/** Deadline loaded from the stored rule; kept so mixed values survive a save. */
+	ttft_timeout_ms?: number;
 }
 
 export interface RoutingRuleFormData {
@@ -77,7 +98,9 @@ export interface RoutingRuleFormData {
 	description: string;
 	cel_expression: string;
 	targets: RoutingTargetFormData[];
-	fallbacks: string[];
+	fallbacks: RoutingFallbackFormData[];
+	/** Raw input; empty means no TTFT deadline. */
+	ttft_timeout_ms: string;
 	scope: string;
 	scope_id: string;
 	priority: number;
@@ -104,6 +127,12 @@ export const ROUTING_RULE_SCOPES = [
 	{ value: RoutingRuleScope.VirtualKey, label: "Virtual Key" },
 ];
 
+export const DEFAULT_ROUTING_FALLBACK: RoutingFallbackFormData = {
+	provider: "",
+	model: "",
+	key_id: "",
+};
+
 export const DEFAULT_ROUTING_TARGET: RoutingTargetFormData = {
 	provider: "",
 	model: "",
@@ -117,6 +146,7 @@ export const DEFAULT_ROUTING_RULE_FORM_DATA: RoutingRuleFormData = {
 	cel_expression: "",
 	targets: [DEFAULT_ROUTING_TARGET],
 	fallbacks: [],
+	ttft_timeout_ms: "",
 	scope: RoutingRuleScope.Global,
 	scope_id: "",
 	priority: 0,

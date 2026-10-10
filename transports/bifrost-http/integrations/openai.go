@@ -283,6 +283,32 @@ func openAIResponsesWireConverter(ctx *schemas.BifrostContext, resp *schemas.Bif
 	return openAIWireCostResponse(resp.WithDefaults()), nil
 }
 
+// openAIChatStreamWireConverter frames raw upstream payloads at the HTTP boundary.
+// The provider buffers non-forwarding frames (such as finish and usage) in one
+// RawResponse separated by blank lines. SendEvent adds only one data prefix, so
+// a bundle must be emitted as preformatted SSE with a prefix on every frame.
+// Keep the raw capture itself unchanged for logging and plugins.
+func openAIChatStreamWireConverter(_ *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
+	if resp.ExtraFields.Provider == schemas.OpenAI && resp.ExtraFields.RawResponse != nil {
+		raw := resp.ExtraFields.RawResponse
+		if frames, ok := raw.(string); ok && strings.Contains(frames, "\n\n") {
+			var framed strings.Builder
+			framed.Grow(len(frames) + 8*(strings.Count(frames, "\n\n")+1))
+			for frame := range strings.SplitSeq(frames, "\n\n") {
+				if frame == "" {
+					continue
+				}
+				framed.WriteString("data: ")
+				framed.WriteString(frame)
+				framed.WriteString("\n\n")
+			}
+			return "", framed.String(), nil
+		}
+		return "", raw, nil
+	}
+	return "", openAIWireCostResponse(resp), nil
+}
+
 // CreateOpenAIRouteConfigs creates route configurations for OpenAI endpoints.
 func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	var routes []RouteConfig
@@ -478,14 +504,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		},
 		ResponsesResponseConverter: openAIResponsesWireConverter,
 		StreamConfig: &StreamConfig{
-			ChatStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
-					if resp.ExtraFields.RawResponse != nil {
-						return "", resp.ExtraFields.RawResponse, nil
-					}
-				}
-				return "", openAIWireCostResponse(resp), nil
-			},
+			ChatStreamResponseConverter: openAIChatStreamWireConverter,
 			TextStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error) {
 				if resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
@@ -621,14 +640,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return err
 			},
 			StreamConfig: &StreamConfig{
-				ChatStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
-					if resp.ExtraFields.Provider == schemas.OpenAI {
-						if resp.ExtraFields.RawResponse != nil {
-							return "", resp.ExtraFields.RawResponse, nil
-						}
-					}
-					return "", openAIWireCostResponse(resp), nil
-				},
+				ChatStreamResponseConverter: openAIChatStreamWireConverter,
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
 				},
@@ -1586,6 +1598,26 @@ type openAIResponsesResponse struct {
 	Usage *openAIResponsesUsage `json:"usage,omitempty"`
 }
 
+// MarshalJSON is required because the embedded response's own MarshalJSON would otherwise be
+// promoted and drop the flattened usage override. Like it, tool_usage goes top-level only.
+func (r openAIResponsesResponse) MarshalJSON() ([]byte, error) {
+	type responsesAlias schemas.BifrostResponsesResponse
+	resp := *r.BifrostResponsesResponse
+	usage := r.Usage
+	if usage != nil && usage.ResponsesResponseUsage != nil && usage.ResponsesResponseUsage.ToolUsage != nil {
+		if resp.ToolUsage == nil {
+			resp.ToolUsage = usage.ResponsesResponseUsage.ToolUsage
+		}
+		inner := *usage.ResponsesResponseUsage
+		inner.ToolUsage = nil
+		usage = &openAIResponsesUsage{ResponsesResponseUsage: &inner, Cost: usage.Cost}
+	}
+	return schemas.Marshal(struct {
+		*responsesAlias
+		Usage *openAIResponsesUsage `json:"usage,omitempty"`
+	}{(*responsesAlias)(&resp), usage})
+}
+
 type openAIResponsesStreamResponse struct {
 	*schemas.BifrostResponsesStreamResponse
 	Response *openAIResponsesResponse `json:"response,omitempty"`
@@ -1693,6 +1725,79 @@ func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.Hand
 	}
 
 	return routes
+}
+
+// CreateOpenAIModelRetrieveRouteConfigs creates route configurations for the OpenAI retrieve model endpoint.
+func CreateOpenAIModelRetrieveRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
+	var routes []RouteConfig
+
+	// Retrieve model endpoint. The catch-all lets a model be addressed as "provider/model" too.
+	for _, path := range []string{
+		"/v1/models/{model:*}",
+		"/models/{model:*}",
+		"/openai/models/{model:*}",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ModelRetrieveRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostModelRetrieveRequest{}
+			},
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if modelRetrieveReq, ok := req.(*schemas.BifrostModelRetrieveRequest); ok {
+					return &schemas.BifrostRequest{
+						ModelRetrieveRequest: modelRetrieveReq,
+					}, nil
+				}
+				return nil, errors.New("invalid request type")
+			},
+			ModelRetrieveResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostModelRetrieveResponse) (interface{}, error) {
+				return openai.ToOpenAIModelRetrieveResponse(resp), nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: extractOpenAIModelRetrieveParams,
+		})
+	}
+
+	return routes
+}
+
+// extractOpenAIModelRetrieveParams maps GET /v1/models/{model} onto a model retrieve request.
+func extractOpenAIModelRetrieveParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	modelRetrieveReq, ok := req.(*schemas.BifrostModelRetrieveRequest)
+	if !ok {
+		return errors.New("invalid request type for OpenAI model retrieve")
+	}
+
+	rawModel, _ := ctx.UserValue("model").(string)
+	// The router hands the catch-all over still percent-encoded, and OpenAI SDKs send "provider%2Fmodel".
+	decodedModel, err := url.PathUnescape(rawModel)
+	if err != nil {
+		return errors.New("invalid model encoding")
+	}
+	rawModel = strings.Trim(strings.TrimSpace(decodedModel), "/")
+	if rawModel == "" {
+		return errors.New("model parameter is required")
+	}
+
+	// An explicit header wins, since ParseModelString cannot recognise a custom provider.
+	provider := getProviderFromHeader(ctx, "")
+	model := rawModel
+	if provider != "" {
+		model = strings.TrimPrefix(rawModel, string(provider)+"/")
+	} else {
+		provider, model = schemas.ParseModelString(rawModel, schemas.OpenAI)
+	}
+
+	modelRetrieveReq.Provider = provider
+	modelRetrieveReq.Model = model
+	return nil
 }
 
 // CreateOpenAIBatchRouteConfigs creates route configurations for OpenAI Batch API endpoints.
@@ -3401,6 +3506,23 @@ func OpenAIRealtimePaths(pathPrefix string) []string {
 	return paths
 }
 
+// OpenAILivePaths returns WebSocket paths for GPT Live primary sessions under an integration prefix.
+func OpenAILivePaths(pathPrefix string) []string {
+	return []string{
+		pathPrefix + "/v1/live/sessions",
+		pathPrefix + "/live/sessions",
+	}
+}
+
+// OpenAILiveSessionPaths returns paths for an action on an existing GPT Live session (attach,
+// content, ...) under an integration prefix.
+func OpenAILiveSessionPaths(pathPrefix, action string) []string {
+	return []string{
+		pathPrefix + "/v1/live/sessions/{session_id}/" + action,
+		pathPrefix + "/live/sessions/{session_id}/" + action,
+	}
+}
+
 // OpenAIRealtimeWebRTCCallsPaths returns HTTP POST paths for the GA /realtime/calls
 // WebRTC SDP exchange endpoint (multipart sdp + session format).
 func OpenAIRealtimeWebRTCCallsPaths(pathPrefix string) []string {
@@ -3421,7 +3543,6 @@ func OpenAIRealtimeWebRTCCallsPaths(pathPrefix string) []string {
 func OpenAIRealtimeClientSecretPaths(pathPrefix string) []string {
 	basePaths := []string{
 		"/v1/realtime/client_secrets",
-		"/v1/realtime/sessions",
 	}
 	paths := make([]string, 0, len(basePaths))
 	for _, p := range basePaths {
@@ -3431,16 +3552,17 @@ func OpenAIRealtimeClientSecretPaths(pathPrefix string) []string {
 }
 
 // NewOpenAIRouter creates a new OpenAIRouter with the given bifrost client.
-func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *OpenAIRouter {
+func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *OpenAIRouter {
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)
 	routes = append(routes, CreateOpenAIListModelsRouteConfigs("/openai", handlerStore)...)
+	routes = append(routes, CreateOpenAIModelRetrieveRouteConfigs("/openai", handlerStore)...)
 	routes = append(routes, CreateOpenAIBatchRouteConfigs("/openai", handlerStore)...)
 	routes = append(routes, CreateOpenAIFileRouteConfigs("/openai", handlerStore)...)
 	routes = append(routes, CreateOpenAIContainerRouteConfigs("/openai", handlerStore)...)
 	routes = append(routes, CreateOpenAIContainerFileRouteConfigs("/openai", handlerStore)...)
 
 	return &OpenAIRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
 	}
 }
 

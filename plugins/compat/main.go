@@ -5,7 +5,9 @@
 package compat
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -16,19 +18,23 @@ const PluginName = "compat"
 
 // Config defines the configuration for the compat plugin.
 type Config struct {
-	ConvertTextToChat      bool `json:"convert_text_to_chat"`
-	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
-	ShouldDropParams       bool `json:"should_drop_params"`
-	ShouldConvertParams    bool `json:"should_convert_params"`
+	ConvertTextToChat                   bool `json:"convert_text_to_chat"`
+	ConvertChatToResponses              bool `json:"convert_chat_to_responses"`
+	ShouldDropParams                    bool `json:"should_drop_params"`
+	ShouldConvertParams                 bool `json:"should_convert_params"`
+	AzureDeepseek                       bool `json:"azure_deepseek"`
+	ForceReasoningOnlyModelsToResponses bool `json:"force_reasoning_only_models_to_responses"`
 }
 
 // UnmarshalJSON defaults all bool fields to true when absent from JSON.
 func (c *Config) UnmarshalJSON(data []byte) error {
 	type config struct {
-		ConvertTextToChat      *bool `json:"convert_text_to_chat"`
-		ConvertChatToResponses *bool `json:"convert_chat_to_responses"`
-		ShouldDropParams       *bool `json:"should_drop_params"`
-		ShouldConvertParams    *bool `json:"should_convert_params"`
+		ConvertTextToChat                   *bool `json:"convert_text_to_chat"`
+		ConvertChatToResponses              *bool `json:"convert_chat_to_responses"`
+		ShouldDropParams                    *bool `json:"should_drop_params"`
+		ShouldConvertParams                 *bool `json:"should_convert_params"`
+		AzureDeepseek                       *bool `json:"azure_deepseek"`
+		ForceReasoningOnlyModelsToResponses *bool `json:"force_reasoning_only_models_to_responses"`
 	}
 	var s config
 	if err := sonic.Unmarshal(data, &s); err != nil {
@@ -38,12 +44,14 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.ConvertChatToResponses = s.ConvertChatToResponses == nil || *s.ConvertChatToResponses
 	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
 	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
+	c.AzureDeepseek = s.AzureDeepseek == nil || *s.AzureDeepseek
+	c.ForceReasoningOnlyModelsToResponses = s.ForceReasoningOnlyModelsToResponses == nil || *s.ForceReasoningOnlyModelsToResponses
 	return nil
 }
 
 // IsEnabled returns true if any compat feature is enabled
 func (c Config) IsEnabled() bool {
-	return c.ConvertTextToChat || c.ConvertChatToResponses || c.ShouldDropParams || c.ShouldConvertParams
+	return c.ConvertTextToChat || c.ConvertChatToResponses || c.ShouldDropParams || c.ShouldConvertParams || c.AzureDeepseek || c.ForceReasoningOnlyModelsToResponses
 }
 
 // CompatPlugin provides LiteLLM-compatible request/response transformations.
@@ -94,6 +102,11 @@ func (p *CompatPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *s
 	return nil
 }
 
+// HTTPTransportResponseHeadersHook leaves response headers unchanged.
+func (p *CompatPlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+	return nil
+}
+
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged.
 func (p *CompatPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	return chunk, nil
@@ -120,6 +133,8 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	convertChatToResponsesOverride, convertChatToResponsesOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatConvertChatToResponses).(bool)
 	shouldDropParamsOverride, shouldDropParamsOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatShouldDropParams).(bool)
 	shouldConvertParamsOverride, shouldConvertParamsOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatShouldConvertParams).(bool)
+	azureDeepseekOverride, azureDeepseekOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatAzureDeepseek).(bool)
+	reasoningOnlyOverride, reasoningOnlyOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses).(bool)
 
 	modifiedReq := req
 	if (shouldDropParamsOverrideEnabled && shouldDropParamsOverride) || (shouldConvertParamsOverrideEnabled && shouldConvertParamsOverride) || p.config.ShouldConvertParams || p.config.ShouldDropParams {
@@ -140,29 +155,63 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		}
 	}
 
+	// Azure DeepSeek: coding harnesses need reasoning, which only chat completions
+	// supports on Azure, so their Responses requests are converted by core (see azure.go).
+	// This must run before the param drop below, which reads the conversion decision.
+	// With AzureDeepseek off the request stays on /v1/responses and the drop below strips reasoning.
+	if ((azureDeepseekOverrideEnabled && azureDeepseekOverride) || p.config.AzureDeepseek) && shouldConvertAzureDeepSeekResponsesToChat(ctx, modifiedReq) {
+		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ChatCompletionRequest)
+	}
+
+	// Chat requests on models that reject reasoning alongside tools go to Responses,
+	// which keeps reasoning. Must run before the param drop below, which would otherwise force reasoning off.
+	if (reasoningOnlyOverrideEnabled && reasoningOnlyOverride) || p.config.ForceReasoningOnlyModelsToResponses {
+		p.markReasoningWithToolsForResponses(ctx, modifiedReq)
+	}
+
 	// Compute unsupported parameters to drop based on model catalog allowlist
 	if ((shouldDropParamsOverrideEnabled && shouldDropParamsOverride) || p.config.ShouldDropParams) && p.modelCatalog != nil {
 		_, model, _ := modifiedReq.GetRequestFields()
 		if model != "" {
-			if supportedParams := p.modelCatalog.GetSupportedParameters(model); supportedParams != nil {
+			supportedParams := p.modelCatalog.GetSupportedParameters(model)
+			if supportedParams == nil {
+				ctx.Log(schemas.LogLevelDebug, fmt.Sprintf("model catalog has no supported-parameter list for model %s, no params dropped", model))
+			} else {
 				droppedParams := dropUnsupportedParams(ctx, modifiedReq, supportedParams)
-				if len(droppedParams) > 0 {
+				if len(droppedParams) == 0 {
+					ctx.Log(schemas.LogLevelDebug, fmt.Sprintf("no unsupported params to drop for model %s", model))
+				} else {
 					ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParams, droppedParams)
 					p.logger.Debug("compat: dropped unsupported params for model %s: %v", model, droppedParams)
+					ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("dropped %d unsupported param(s) for model %s: %s", len(droppedParams), model, strings.Join(droppedParams, ", ")))
 					// service_tier decides what the caller is billed. Dropping it
 					// downgrades the request to the provider's default tier with no
 					// upstream error and no difference in the response body, so it
 					// is worth surfacing above Debug.
 					if slices.Contains(droppedParams, "service_tier") {
-						p.logger.Warn("compat: dropped service_tier for model %s - the model catalog does not list service_tier support for this model, so the request will be served and billed at the provider's default tier", model)
+						msg := fmt.Sprintf("dropped service_tier for model %s - the model catalog does not list service_tier support for this model, so the request will be served and billed at the provider's default tier", model)
+						p.logger.Warn("compat: " + msg)
+						ctx.Log(schemas.LogLevelWarn, msg)
 					}
 				}
 			}
 		}
 	}
 
-	if (shouldConvertParamsOverride && shouldConvertParamsOverrideEnabled) || p.config.ShouldConvertParams {
-		applyParameterConversion(modifiedReq)
+	// Convert param values the model cannot accept. Runs after the drop above so a
+	// dropped param is never converted. Namespace-tool flattening used to live under
+	// this flag too; it moved to core dispatch (prepareResponsesRequest).
+	if ((shouldConvertParamsOverrideEnabled && shouldConvertParamsOverride) || p.config.ShouldConvertParams) && p.modelCatalog != nil {
+		provider, model, _ := modifiedReq.GetRequestFields()
+		if model != "" {
+			maxOutputTokens := p.modelCatalog.GetMaxOutputTokens(model, provider)
+			if maxOutputTokens <= 0 {
+				ctx.Log(schemas.LogLevelDebug, fmt.Sprintf("model catalog has no max_output_tokens for model %s (%s), no param values converted", model, provider))
+			} else if changes := convertUnsupportedParamValues(modifiedReq, maxOutputTokens); len(changes) > 0 {
+				p.logger.Debug("compat: converted param values for model %s: %v", model, changes)
+				ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("converted %d param value(s) for model %s - the model catalog lists max_output_tokens %d: %s", len(changes), model, maxOutputTokens, strings.Join(changes, ", ")))
+			}
+		}
 	}
 
 	return modifiedReq, nil, nil
@@ -211,9 +260,30 @@ func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider s
 		}
 	} else {
 		p.logger.Debug("compat: model calalog is nil")
+		ctx.Log(schemas.LogLevelDebug, fmt.Sprintf("model catalog unavailable, skipping %s -> %s conversion check for model %s", currentType, targetType, model))
 	}
 
 	if shouldConvert {
 		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, targetType)
+		ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("model %s (%s) does not support %s, converting request to %s", model, provider, currentType, targetType))
 	}
+}
+
+// markReasoningWithToolsForResponses routes a chat request to Responses when the
+// datasheet sets supports_reasoning_with_tool_calls false for the model.
+func (p *CompatPlugin) markReasoningWithToolsForResponses(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
+	if p.modelCatalog == nil || req.ChatRequest == nil {
+		return
+	}
+	if req.RequestType != schemas.ChatCompletionRequest && req.RequestType != schemas.ChatCompletionStreamRequest {
+		return
+	}
+	provider, model := req.ChatRequest.Provider, req.ChatRequest.Model
+	supported := p.modelCatalog.GetSupportedParameters(model)
+	// reasoning_with_tool_calls is listed unless the datasheet sets it explicitly false.
+	if supported == nil || !slices.Contains(supported, "reasoning") || slices.Contains(supported, "reasoning_with_tool_calls") {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+	ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("model %s (%s) does not support reasoning with tool calls on %s, converting request to %s", model, provider, schemas.ChatCompletionRequest, schemas.ResponsesRequest))
 }

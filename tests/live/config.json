@@ -1,0 +1,50 @@
+{
+  "$schema": "../../transports/config.schema.json",
+  "setup_token": "bifrost-live-setup-token",
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "fake-openai",
+          "value": "sk-fake-live-upstream",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:9411",
+        "default_request_timeout_in_seconds": 60
+      }
+    }
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "tests/live/data/live-test-config.db"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "tests/live/data/live-test-logs.db"
+    },
+    "writer": {
+      "max_batch_size": 100,
+      "batch_interval": "500ms",
+      "max_batch_bytes": 10485760,
+      "write_queue_capacity": 1000,
+      "deferred_usage_concurrency": 4
+    }
+  },
+  "client": {
+    "drop_excess_requests": false,
+    "initial_pool_size": 100,
+    "allowed_origins": ["*"],
+    "enable_logging": true,
+    "enforce_auth_on_inference": true,
+    "allow_direct_keys": true,
+    "max_request_body_size_mb": 10
+  }
+}

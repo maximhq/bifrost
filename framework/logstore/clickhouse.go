@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +35,8 @@ type ClickHouseConfig struct {
 	// DialTimeout is the connection dial timeout in milliseconds (JSON config
 	// duration fields are integer milliseconds). 0 means the 10s default.
 	DialTimeout int `json:"dial_timeout,omitempty"`
+	// MaxQuerySize is the ClickHouse max_query_size setting in bytes. 0 means the 16 MiB default.
+	MaxQuerySize int `json:"max_query_size,omitempty"`
 	// Cluster, when set, makes DDL run as `ON CLUSTER <name>` against
 	// ReplicatedReplacingMergeTree engines. Empty means single-node.
 	Cluster string `json:"cluster,omitempty"`
@@ -46,6 +49,7 @@ const (
 	defaultClickHouseHTTPSPort     = "8443"
 	defaultClickHouseDatabase      = "default"
 	defaultClickHouseDialTimeout   = 10 * time.Second
+	defaultClickHouseMaxQuerySize  = 16 << 20
 	clickHouseProtocolNative       = "native"
 	clickHouseProtocolHTTP         = "http"
 )
@@ -133,6 +137,12 @@ func buildClickHouseDSN(config *ClickHouseConfig) (string, error) {
 	// (error 184: aggregate function found in WHERE); this setting restores
 	// the standard-SQL column-first resolution Postgres/SQLite use.
 	q.Set("prefer_column_name_to_alias", "1")
+	// Team-scoped reads inline every member and VK id into the SQL, which outgrows the 256 KiB server default.
+	maxQuerySize := defaultClickHouseMaxQuerySize
+	if config.MaxQuerySize > 0 {
+		maxQuerySize = config.MaxQuerySize
+	}
+	q.Set("max_query_size", strconv.Itoa(maxQuerySize))
 	q.Set("dial_timeout", dialTimeout.String())
 	// clickhouse-go: native TLS is requested via secure=true; the https scheme
 	// also requires secure=true; plain http must NOT set it.
@@ -144,9 +154,33 @@ func buildClickHouseDSN(config *ClickHouseConfig) (string, error) {
 	return u.String(), nil
 }
 
+// chMinServerVersion is the oldest ClickHouse release the store supports.
+// chLightweightDelete relies on the lightweight_deletes_sync setting, which
+// ClickHouse introduced in 24.4; older servers reject every delete with
+// UNKNOWN_SETTING, so they are refused at startup instead of on the first
+// sweep.
+const chMinServerVersion = "24.4"
+
+// chServerVersionSupported parses a ClickHouse version() string such as
+// "26.6.1.1193" and reports whether it is at least chMinServerVersion.
+func chServerVersionSupported(version string) (bool, error) {
+	parts := strings.Split(strings.TrimSpace(version), ".")
+	if len(parts) < 2 {
+		return false, fmt.Errorf("clickhouse: unrecognised server version %q", version)
+	}
+	major, err1 := strconv.Atoi(parts[0])
+	minor, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return false, fmt.Errorf("clickhouse: unrecognised server version %q", version)
+	}
+	return major > 24 || (major == 24 && minor >= 4), nil
+}
+
 // newClickHouseLogStore creates a new ClickHouse log store. retentionDays drives
-// the table TTL; values < 1 leave TTL unset (the LogsCleaner still prunes via
-// DeleteLogsBatch).
+// the table TTL, which is reconciled on every start so a changed value reaches
+// existing tables; values < 1 leave any TTL untouched. Independently, the
+// LogsCleaner (client_config.log_retention_days) prunes with a single
+// lightweight delete per run.
 func newClickHouseLogStore(ctx context.Context, config *ClickHouseConfig, retentionDays int, logger schemas.Logger) (LogStore, error) {
 	dsn, err := buildClickHouseDSN(config)
 	if err != nil {
@@ -180,6 +214,18 @@ func newClickHouseLogStore(ctx context.Context, config *ClickHouseConfig, retent
 		logger.Error("logstore: clickhouse ping failed: %v", err)
 		return nil, fmt.Errorf("clickhouse ping failed: %w", err)
 	}
+
+	var serverVersion string
+	if err := db.WithContext(ctx).Raw("SELECT version()").Scan(&serverVersion).Error; err != nil {
+		logger.Error("logstore: failed to read clickhouse server version: %v", err)
+		return nil, fmt.Errorf("clickhouse: read server version: %w", err)
+	}
+	if ok, err := chServerVersionSupported(serverVersion); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, fmt.Errorf("clickhouse: server version %s is not supported; Bifrost requires ClickHouse %s or newer (lightweight DELETE with lightweight_deletes_sync)", serverVersion, chMinServerVersion)
+	}
+	logger.Info("logstore: clickhouse server version %s", serverVersion)
 
 	logger.Info("logstore: running clickhouse schema migrations")
 	if err := triggerClickHouseMigrations(ctx, db, config.Cluster, retentionDays, logger); err != nil {

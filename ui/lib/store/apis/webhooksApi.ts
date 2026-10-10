@@ -4,6 +4,7 @@ import {
 	GetWebhookEndpointsParams,
 	GetWebhookEndpointsResponse,
 	RedeliverWebhookResponse,
+	SearchWebhookDeliveriesParams,
 	TestWebhookEndpointResponse,
 	WebhookEndpoint,
 	WebhookEndpointRequest,
@@ -21,6 +22,34 @@ const buildWebhookEndpointsListParams = (params?: GetWebhookEndpointsParams): Re
 	if (params.search) out.search = params.search;
 	if (params.events?.length) out.event = [...params.events].sort().join(",");
 	if (params.disabled !== undefined) out.disabled = params.disabled;
+	if (params.limit !== undefined) out.limit = params.limit;
+	if (params.offset !== undefined) out.offset = params.offset;
+	return out;
+};
+
+// Shapes delivery-search params for the wire. Mirrors the endpoints-list
+// serializer above: empty values are dropped and array filters are CSV-joined
+// after sorting, so RTK cache keys stay canonical regardless of the order the
+// user ticked the boxes in.
+const buildWebhookDeliveryParams = (params: SearchWebhookDeliveriesParams): Record<string, string | number> => {
+	const out: Record<string, string | number> = {};
+	const csv = (key: string, values?: string[]) => {
+		if (values?.length) out[key] = [...values].sort().join(",");
+	};
+	csv("endpoint_ids", params.endpoint_ids);
+	csv("events", params.events);
+	csv("outcomes", params.outcomes);
+	csv("status_class", params.status_class);
+	if (params.request_id) out.request_id = params.request_id;
+	if (params.delivery_id) out.delivery_id = params.delivery_id;
+	// period and an absolute range are mutually exclusive; period wins, matching
+	// the handler, so the two never disagree about which range was requested.
+	if (params.period) {
+		out.period = params.period;
+	} else {
+		if (params.start_time) out.start_time = params.start_time;
+		if (params.end_time) out.end_time = params.end_time;
+	}
 	if (params.limit !== undefined) out.limit = params.limit;
 	if (params.offset !== undefined) out.offset = params.offset;
 	return out;
@@ -86,6 +115,13 @@ export const webhooksApi = baseApi.injectEndpoints({
 			providesTags: ["WebhookDeliveries"],
 		}),
 
+		// Cross-endpoint, filterable history behind the dedicated deliveries page.
+		// getWebhookDeliveries above stays for the endpoint sheet's preview.
+		searchWebhookDeliveries: builder.query<GetWebhookDeliveriesResponse, SearchWebhookDeliveriesParams>({
+			query: (params) => ({ url: "/webhooks/deliveries", params: buildWebhookDeliveryParams(params) }),
+			providesTags: ["WebhookDeliveries"],
+		}),
+
 		redeliverWebhookDelivery: builder.mutation<RedeliverWebhookResponse, string>({
 			query: (deliveryId) => ({
 				url: `/webhooks/deliveries/${deliveryId}/redeliver`,
@@ -104,5 +140,6 @@ export const {
 	useRotateWebhookEndpointSecretMutation,
 	useTestWebhookEndpointMutation,
 	useGetWebhookDeliveriesQuery,
+	useSearchWebhookDeliveriesQuery,
 	useRedeliverWebhookDeliveryMutation,
 } = webhooksApi;

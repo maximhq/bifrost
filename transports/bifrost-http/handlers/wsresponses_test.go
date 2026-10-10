@@ -9,15 +9,19 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
 type testWSHandlerStore struct {
-	matcher *lib.HeaderMatcher
+	matcher         *lib.HeaderMatcher
+	allowDirectKeys bool
 }
 
 func (s testWSHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
@@ -44,11 +48,12 @@ func (s testWSHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 	return nil
 }
 
-func (s testWSHandlerStore) ShouldAllowPerRequestStorageOverride() bool { return false }
-func (s testWSHandlerStore) ShouldAllowPerRequestRawOverride() bool     { return false }
-func (s testWSHandlerStore) ShouldAllowDirectKeys() bool                { return false }
-func (s testWSHandlerStore) GetMCPExternalServerURL() string            { return "" }
-func (s testWSHandlerStore) GetMCPExternalClientURL() string            { return "" }
+func (s testWSHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { return false }
+func (s testWSHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
+func (s testWSHandlerStore) ShouldAllowDirectKeys() bool                     { return s.allowDirectKeys }
+func (s testWSHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
+func (s testWSHandlerStore) GetMCPExternalServerURL() string                 { return "" }
+func (s testWSHandlerStore) GetMCPExternalClientURL() string                 { return "" }
 
 type timeoutNetError struct{}
 
@@ -108,6 +113,73 @@ func TestCreateBifrostContextFromAuth_BaggageSessionIDSetsGrouping(t *testing.T)
 
 	if got, _ := ctx.Value(schemas.BifrostContextKeyParentRequestID).(string); got != "rt-ws-123" {
 		t.Fatalf("parent request id = %q, want %q", got, "rt-ws-123")
+	}
+}
+
+// A connection settles its identity at upgrade the way an HTTP request does at conversion, so
+// governance sees a settled request whether or not a key was presented.
+func TestCreateBifrostContextFromAuth_SettlesIdentity(t *testing.T) {
+	cases := map[string]struct {
+		auth     *authHeaders
+		wantKind string
+		wantKey  string
+	}{
+		"no credential":       {auth: &authHeaders{}},
+		"virtual key header":  {auth: &authHeaders{virtualKey: "sk-bf-ws"}, wantKind: string(grant.CredentialVirtualKey), wantKey: "sk-bf-ws"},
+		"bearer virtual key":  {auth: &authHeaders{authorization: "Bearer sk-bf-bearer"}, wantKind: string(grant.CredentialVirtualKey), wantKey: "sk-bf-bearer"},
+		"provider key bearer": {auth: &authHeaders{authorization: "Bearer sk-openai"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := createBifrostContextFromAuth(testWSHandlerStore{}, tc.auth)
+			defer cancel()
+
+			g := ctx.Grant()
+			if g == nil {
+				t.Fatal("expected a grant on the connection context")
+			}
+			identity := g.Identity()
+			if identity == nil {
+				t.Fatal("expected a settled identity on the grant")
+			}
+			if got := identity.Credential(); got.Kind != tc.wantKind || got.Value != tc.wantKey {
+				t.Fatalf("credential = %+v, want kind %q value %q", got, tc.wantKind, tc.wantKey)
+			}
+		})
+	}
+}
+
+// A caller's own provider key is honoured at upgrade under the same gate as on HTTP: the server
+// setting and the per-request header, with a virtual key never mistaken for one.
+func TestCreateBifrostContextFromAuth_DirectKey(t *testing.T) {
+	direct := map[string][]string{"x-bf-direct-key": {"true"}}
+	cases := map[string]struct {
+		store   testWSHandlerStore
+		auth    *authHeaders
+		wantKey string
+	}{
+		"bearer provider key":       {store: testWSHandlerStore{allowDirectKeys: true}, auth: &authHeaders{authorization: "Bearer sk-openai", headers: direct}, wantKey: "sk-openai"},
+		"x-api-key provider key":    {store: testWSHandlerStore{allowDirectKeys: true}, auth: &authHeaders{apiKey: "sk-openai", headers: direct}, wantKey: "sk-openai"},
+		"x-goog-api-key":            {store: testWSHandlerStore{allowDirectKeys: true}, auth: &authHeaders{googAPIKey: "AIza", headers: direct}, wantKey: "AIza"},
+		"virtual key is not direct": {store: testWSHandlerStore{allowDirectKeys: true}, auth: &authHeaders{authorization: "Bearer sk-bf-vk", headers: direct}},
+		"server setting off":        {store: testWSHandlerStore{}, auth: &authHeaders{authorization: "Bearer sk-openai", headers: direct}},
+		"header absent":             {store: testWSHandlerStore{allowDirectKeys: true}, auth: &authHeaders{authorization: "Bearer sk-openai"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := createBifrostContextFromAuth(tc.store, tc.auth)
+			defer cancel()
+
+			key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
+			if tc.wantKey == "" {
+				assert.False(t, ok, "no direct key expected, got %+v", key)
+				return
+			}
+			require.True(t, ok, "expected a direct key on the connection context")
+			assert.Equal(t, "header-provided", key.ID)
+			assert.Equal(t, tc.wantKey, key.Value.GetValue())
+			assert.True(t, governance.PresentedCredentialResolved(ctx), "a direct key is a resolved credential")
+		})
 	}
 }
 

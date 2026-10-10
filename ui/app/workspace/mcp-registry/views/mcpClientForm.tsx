@@ -36,6 +36,7 @@ const emptySecretVar: SecretVar = { value: "", ref: "" };
 
 const emptyForm: CreateMCPClientRequest = {
 	name: "",
+	endpoint_slug: "",
 	is_code_mode_client: false,
 	is_ping_available: true,
 	connection_type: "http",
@@ -70,11 +71,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	const satellites = useMCPClientFormSatellites();
 
 	const connectionType = watch("connection_type");
-	const authType = watch("auth_type");
 	const headers = watch("headers");
 
 	const headersValidationError =
-		connectionType === "http" || connectionType === "sse" ? getHeadersValidationError(authType, headers) : null;
+		connectionType === "http" || connectionType === "sse" ? getHeadersValidationError(headers) : null;
 
 	// Reset form state when the sheet opens
 	const { reset: resetSatellites } = satellites;
@@ -166,6 +166,28 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 										<FormControl>
 											<Input id="client-name" data-testid="client-name-input" placeholder="Server name" maxLength={50} {...field} />
 										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+
+							{/* Endpoint slug: optional on create, immutable after. Served at /mcp/<slug>. */}
+							<FormField
+								control={control}
+								name="endpoint_slug"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Endpoint slug</FormLabel>
+										<FormControl>
+											<Input
+												id="client-endpoint-slug"
+												data-testid="client-endpoint-slug-input"
+												placeholder="Leave blank to derive from the name"
+												{...field}
+												value={field.value ?? ""}
+											/>
+										</FormControl>
+										<p className="text-muted-foreground text-xs">{"Served at /mcp/<slug>. Immutable after creation."}</p>
 										<FormMessage />
 									</FormItem>
 								)}

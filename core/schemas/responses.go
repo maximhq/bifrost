@@ -46,6 +46,16 @@ type BifrostResponsesRequest struct {
 	Params         *ResponsesParameters `json:"params,omitempty"`
 	Fallbacks      []Fallback           `json:"fallbacks,omitempty"`
 	RawRequestBody []byte               `json:"-"` // set bifrost-use-raw-request-body to true in ctx to use the raw request body. Bifrost will directly send this to the downstream provider.
+
+	// NamespaceToolAliases maps each flattened tool name back to the namespace and
+	// function the caller sent. Core dispatch sets it on the prepared copy when the
+	// target wire does not support namespace tools, and the response path reads it to
+	// restore function_call items. Never serialized; the shared request never has it.
+	NamespaceToolAliases map[string]NamespaceToolAlias `json:"-"`
+
+	// Removed at Messages ingress, before Input is shared. Shallow fallback copies
+	// retain this private metadata; only Anthropic attempts restore it.
+	anthropicBillingHeader *anthropicBillingHeader
 }
 
 func (r *BifrostResponsesRequest) GetRawRequestBody() []byte {
@@ -229,7 +239,7 @@ type BifrostResponsesResponse struct {
 	Instructions         *ResponsesResponseInstructions      `json:"instructions"`
 	MaxOutputTokens      *int                                `json:"max_output_tokens"`
 	MaxToolCalls         *int                                `json:"max_tool_calls"`
-	Metadata             *map[string]any                     `json:"metadata,omitempty"`
+	Metadata             *map[string]any                     `json:"metadata"`
 	Model                string                              `json:"model"`
 	Output               []ResponsesMessage                  `json:"output"`
 	ParallelToolCalls    *bool                               `json:"parallel_tool_calls,omitempty"`
@@ -243,14 +253,16 @@ type BifrostResponsesResponse struct {
 	Reasoning            *ResponsesParametersReasoning       `json:"reasoning"`         // Configuration options for reasoning models
 	SafetyIdentifier     *string                             `json:"safety_identifier"` // Safety identifier
 	ServiceTier          *BifrostServiceTier                 `json:"service_tier"`
-	Speed                *string                             `json:"speed,omitempty"`         // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
-	InferenceGeo         *string                             `json:"inference_geo,omitempty"` // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
-	Diagnostics          *CacheDiagnostics                   `json:"diagnostics,omitempty"`   // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
-	Container            *ResponsesResponseContainer         `json:"container,omitempty"`     // Code-execution sandbox container (Anthropic surfaces it on the response / final streaming message_delta). The neutral per-call id also lives on ResponsesCodeInterpreterToolCall.ContainerID.
-	Status               *string                             `json:"status,omitempty"`        // completed, failed, in_progress, cancelled, queued, or incomplete
+	Speed                *string                             `json:"speed,omitempty"`             // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
+	InferenceGeo         *string                             `json:"inference_geo,omitempty"`     // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
+	Diagnostics          *CacheDiagnostics                   `json:"diagnostics,omitempty"`       // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
+	SafeguardResults     json.RawMessage                     `json:"safeguard_results,omitempty"` // Claude Code auto-mode classifier verdicts (opaque; forwarded unchanged per the gateway compatibility guide). Not copied by WithDefaults, so OpenAI-shaped surfaces never see it.
+	Container            *ResponsesResponseContainer         `json:"container,omitempty"`         // Code-execution sandbox container (Anthropic surfaces it on the response / final streaming message_delta). The neutral per-call id also lives on ResponsesCodeInterpreterToolCall.ContainerID.
+	Status               *string                             `json:"status,omitempty"`            // completed, failed, in_progress, cancelled, queued, or incomplete
 	StreamOptions        *ResponsesStreamOptions             `json:"stream_options,omitempty"`
-	StopReason           *string                             `json:"stop_reason,omitempty"`  // Not in OpenAI's spec, but sent by other providers
-	StopDetails          *ResponsesStopDetails               `json:"stop_details,omitempty"` // Anthropic refusal detail; null unless stop_reason is "refusal"
+	StopReason           *string                             `json:"stop_reason,omitempty"`   // Not in OpenAI's spec, but sent by other providers
+	StopDetails          *ResponsesStopDetails               `json:"stop_details,omitempty"`  // Anthropic refusal detail; null unless stop_reason is "refusal"
+	StopSequence         *string                             `json:"stop_sequence,omitempty"` // Anthropic: the custom stop sequence that ended generation (StopReason is "stop")
 	Store                *bool                               `json:"store,omitempty"`
 	Temperature          *float64                            `json:"temperature,omitempty"`
 	Text                 *ResponsesTextConfig                `json:"text,omitempty"`
@@ -260,6 +272,7 @@ type BifrostResponsesResponse struct {
 	Tools                []ResponsesTool                     `json:"tools"`                 // Tools to use
 	Truncation           *string                             `json:"truncation,omitempty"`
 	Usage                *ResponsesResponseUsage             `json:"usage"`
+	ToolUsage            *ToolUsage                          `json:"tool_usage,omitempty"` // Top-level like OpenAI; Usage.ToolUsage mirrors it for pricing and logging
 	ExtraFields          BifrostResponseExtraFields          `json:"extra_fields"`
 	ProviderExtraFields  map[string]interface{}              `json:"provider_extra_fields,omitempty"`
 
@@ -285,7 +298,8 @@ type CacheMissReason struct {
 	CacheMissedInputTokens *int   `json:"cache_missed_input_tokens,omitempty"`
 }
 
-// UnmarshalJSON handles providers that return created_at/completed_at as floats (e.g. Bedrock mantle).
+// UnmarshalJSON handles providers that return created_at/completed_at as floats (e.g. Bedrock mantle),
+// and mirrors the top-level tool_usage onto usage, where pricing and logging read it.
 func (r *BifrostResponsesResponse) UnmarshalJSON(data []byte) error {
 	type Alias BifrostResponsesResponse
 	aux := &struct {
@@ -303,7 +317,25 @@ func (r *BifrostResponsesResponse) UnmarshalJSON(data []byte) error {
 		v := int(*aux.CompletedAt)
 		r.CompletedAt = &v
 	}
+	if r.ToolUsage != nil && r.Usage != nil && r.Usage.ToolUsage == nil {
+		r.Usage.ToolUsage = r.ToolUsage
+	}
 	return nil
+}
+
+// MarshalJSON sends tool_usage top-level only, as OpenAI's Responses API does. r is a copy, so
+// clearing usage's copy leaves the caller's response intact.
+func (r BifrostResponsesResponse) MarshalJSON() ([]byte, error) {
+	type alias BifrostResponsesResponse
+	if r.Usage != nil && r.Usage.ToolUsage != nil {
+		if r.ToolUsage == nil {
+			r.ToolUsage = r.Usage.ToolUsage
+		}
+		usage := *r.Usage
+		usage.ToolUsage = nil
+		r.Usage = &usage
+	}
+	return Marshal(alias(r))
 }
 
 // BackfillParams populates response fields from the request that are needed
@@ -409,7 +441,7 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 
 	if resp.ServiceTier != nil {
 		switch *resp.ServiceTier {
-		case BifrostServiceTierAuto, BifrostServiceTierDefault, BifrostServiceTierFlex, BifrostServiceTierPriority, BifrostServiceTierUltrafast:
+		case BifrostServiceTierAuto, BifrostServiceTierDefault, BifrostServiceTierFlex, BifrostServiceTierPriority, BifrostServiceTierFast, BifrostServiceTierUltrafast:
 			result.ServiceTier = resp.ServiceTier
 		default:
 			result.ServiceTier = new(BifrostServiceTierAuto)
@@ -499,31 +531,31 @@ type PromptCacheBreakpoint struct {
 }
 
 type ResponsesParameters struct {
-	Background           *bool                         `json:"background,omitempty"`
-	Conversation         *string                       `json:"conversation,omitempty"`
-	Include              []string                      `json:"include,omitempty"` // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
-	Instructions         *string                       `json:"instructions,omitempty"`
-	MaxOutputTokens      *int                          `json:"max_output_tokens,omitempty"`
-	MaxToolCalls         *int                          `json:"max_tool_calls,omitempty"`
-	Metadata             *map[string]any               `json:"metadata,omitempty"`
-	ParallelToolCalls    *bool                         `json:"parallel_tool_calls,omitempty"`
-	PreviousResponseID   *string                       `json:"previous_response_id,omitempty"`
-	PromptCacheKey       *string                       `json:"prompt_cache_key,omitempty"` // Prompt cache key
-	PromptCacheRetention *string                       `json:"prompt_cache_retention,omitempty"`
-	PromptCacheOptions   *PromptCacheOptions           `json:"prompt_cache_options,omitempty"` // Request-wide prompt cache options (OpenAI gpt-5.6+)
-	Reasoning            *ResponsesParametersReasoning `json:"reasoning,omitempty"`            // Configuration options for reasoning models
-	SafetyIdentifier     *string                       `json:"safety_identifier,omitempty"`    // Safety identifier
-	ServiceTier          *BifrostServiceTier           `json:"service_tier,omitempty"`
-	StreamOptions        *ResponsesStreamOptions       `json:"stream_options,omitempty"`
-	Store                *bool                         `json:"store,omitempty"`
-	Temperature          *float64                      `json:"temperature,omitempty"`
-	Text                 *ResponsesTextConfig          `json:"text,omitempty"`
-	TopLogProbs          *int                          `json:"top_logprobs,omitempty"`
-	TopP                 *float64                      `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
-	ToolChoice           *ResponsesToolChoice          `json:"tool_choice,omitempty"` // Whether to call a tool
-	Tools                []ResponsesTool               `json:"tools,omitempty"`       // Tools to use
-	Truncation           *string                       `json:"truncation,omitempty"`
-	User                 *string                       `json:"user,omitempty"`
+	Background           *bool                          `json:"background,omitempty"`
+	Conversation         *ResponsesResponseConversation `json:"conversation,omitempty"`
+	Include              []string                       `json:"include,omitempty"` // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
+	Instructions         *string                        `json:"instructions,omitempty"`
+	MaxOutputTokens      *int                           `json:"max_output_tokens,omitempty"`
+	MaxToolCalls         *int                           `json:"max_tool_calls,omitempty"`
+	Metadata             *map[string]any                `json:"metadata,omitempty"`
+	ParallelToolCalls    *bool                          `json:"parallel_tool_calls,omitempty"`
+	PreviousResponseID   *string                        `json:"previous_response_id,omitempty"`
+	PromptCacheKey       *string                        `json:"prompt_cache_key,omitempty"` // Prompt cache key
+	PromptCacheRetention *string                        `json:"prompt_cache_retention,omitempty"`
+	PromptCacheOptions   *PromptCacheOptions            `json:"prompt_cache_options,omitempty"` // Request-wide prompt cache options (OpenAI gpt-5.6+)
+	Reasoning            *ResponsesParametersReasoning  `json:"reasoning,omitempty"`            // Configuration options for reasoning models
+	SafetyIdentifier     *string                        `json:"safety_identifier,omitempty"`    // Safety identifier
+	ServiceTier          *BifrostServiceTier            `json:"service_tier,omitempty"`
+	StreamOptions        *ResponsesStreamOptions        `json:"stream_options,omitempty"`
+	Store                *bool                          `json:"store,omitempty"`
+	Temperature          *float64                       `json:"temperature,omitempty"`
+	Text                 *ResponsesTextConfig           `json:"text,omitempty"`
+	TopLogProbs          *int                           `json:"top_logprobs,omitempty"`
+	TopP                 *float64                       `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
+	ToolChoice           *ResponsesToolChoice           `json:"tool_choice,omitempty"` // Whether to call a tool
+	Tools                []ResponsesTool                `json:"tools,omitempty"`       // Tools to use
+	Truncation           *string                        `json:"truncation,omitempty"`
+	User                 *string                        `json:"user,omitempty"`
 
 	// Opts into running built-in server-side tools (e.g. Google Search) in the same
 	// turn as function declarations. Required by Gemini 3+, which otherwise rejects
@@ -1173,14 +1205,14 @@ func (rc *ResponsesResponseConversation) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct string
 	var stringContent string
 	if err := Unmarshal(data, &stringContent); err == nil {
-		rc.ResponsesResponseConversationStr = &stringContent
+		*rc = ResponsesResponseConversation{ResponsesResponseConversationStr: &stringContent}
 		return nil
 	}
 
 	// Try to unmarshal as a direct array of ContentBlock
 	var structContent ResponsesResponseConversationStruct
 	if err := Unmarshal(data, &structContent); err == nil {
-		rc.ResponsesResponseConversationStruct = &structContent
+		*rc = ResponsesResponseConversation{ResponsesResponseConversationStruct: &structContent}
 		return nil
 	}
 
@@ -1244,6 +1276,7 @@ type ResponsesParametersReasoning struct {
 	Mode            *string `json:"mode,omitempty"`             // "standard" | "pro" (reasoning execution mode)
 	Summary         *string `json:"summary"`                    // "auto" | "concise" | "detailed"
 	MaxTokens       *int    `json:"max_tokens,omitempty"`       // Maximum number of tokens to generate for the reasoning output (required for anthropic)
+	Type            *string `json:"type,omitempty"`             // Anthropic thinking.type: "between_tools" (no up-front thinking); independent of effort
 }
 
 type ResponsesResponseConversationStruct struct {
@@ -1297,15 +1330,17 @@ type ResponsesStopDetails struct {
 }
 
 type ResponsesResponseUsage struct {
-	Type                *string                        `json:"type,omitempty"`        // type field is sent by anthropic
-	Model               *string                        `json:"model,omitempty"`       // model that produced this (iteration) attempt; sent on iterations[] for Anthropic server-side fallback
-	InputTokens         int                            `json:"input_tokens"`          // Number of input tokens (prompt tokens + cached tokens)
-	InputTokensDetails  *ResponsesResponseInputTokens  `json:"input_tokens_details"`  // Detailed breakdown of input tokens
-	OutputTokens        int                            `json:"output_tokens"`         // Number of output tokens (completion tokens + reasoning tokens)
-	OutputTokensDetails *ResponsesResponseOutputTokens `json:"output_tokens_details"` // Detailed breakdown of output tokens	TotalTokens int `json:"total_tokens"` // Total number of tokens used
-	TotalTokens         int                            `json:"total_tokens"`          // Total number of tokens used
-	Cost                *BifrostCost                   `json:"cost,omitempty"`        // Only for the providers which support cost calculation
-	Iterations          []ResponsesResponseUsage       `json:"iterations,omitempty"`  // iterations field is sent by anthropic
+	Type                *string                        `json:"type,omitempty"`          // type field is sent by anthropic
+	Model               *string                        `json:"model,omitempty"`         // model that produced this (iteration) attempt; sent on iterations[] for Anthropic server-side fallback
+	InputTokens         int                            `json:"input_tokens"`            // Number of input tokens (prompt tokens + cached tokens)
+	InputTokensDetails  *ResponsesResponseInputTokens  `json:"input_tokens_details"`    // Detailed breakdown of input tokens
+	OutputTokens        int                            `json:"output_tokens"`           // Number of output tokens (completion tokens + reasoning tokens)
+	OutputTokensDetails *ResponsesResponseOutputTokens `json:"output_tokens_details"`   // Detailed breakdown of output tokens	TotalTokens int `json:"total_tokens"` // Total number of tokens used
+	TotalTokens         int                            `json:"total_tokens"`            // Total number of tokens used
+	AudioSeconds        *float64                       `json:"audio_seconds,omitempty"` // Duration-based audio usage when tokens are unavailable
+	Cost                *BifrostCost                   `json:"cost,omitempty"`          // Only for the providers which support cost calculation
+	Iterations          []ResponsesResponseUsage       `json:"iterations,omitempty"`    // iterations field is sent by anthropic
+	ToolUsage           *ToolUsage                     `json:"tool_usage,omitempty"`    // Server-side tool call counts; moved to the response's top-level tool_usage on the wire
 
 	// xAI-specific usage fields
 	NumSourcesUsed             *int                                 `json:"num_sources_used,omitempty"`
@@ -1418,7 +1453,8 @@ type ResponsesResponseOutputTokens struct {
 	ReasoningTokens          int  `json:"reasoning_tokens"` // Required for few OpenAI models
 	RejectedPredictionTokens int  `json:"rejected_prediction_tokens,omitempty"`
 	CitationTokens           *int `json:"citation_tokens,omitempty"`
-	NumSearchQueries         *int `json:"num_search_queries,omitempty"`
+	// Deprecated: use ResponsesResponseUsage.ToolUsage.WebSearch. Populated, will be removed in 3.0.0.
+	NumSearchQueries *int `json:"num_search_queries,omitempty"`
 }
 
 // =============================================================================
@@ -1441,13 +1477,17 @@ const (
 	ResponsesMessageTypeCodeInterpreterCall  ResponsesMessageType = "code_interpreter_call"
 	ResponsesMessageTypeLocalShellCall       ResponsesMessageType = "local_shell_call"
 	ResponsesMessageTypeLocalShellCallOutput ResponsesMessageType = "local_shell_call_output"
+	ResponsesMessageTypeShellCall            ResponsesMessageType = "shell_call"
+	ResponsesMessageTypeShellCallOutput      ResponsesMessageType = "shell_call_output"
+	ResponsesMessageTypeApplyPatchCall       ResponsesMessageType = "apply_patch_call"
+	ResponsesMessageTypeApplyPatchCallOutput ResponsesMessageType = "apply_patch_call_output"
 	ResponsesMessageTypeMCPCall              ResponsesMessageType = "mcp_call"
 	ResponsesMessageTypeCustomToolCall       ResponsesMessageType = "custom_tool_call"
 	ResponsesMessageTypeCustomToolCallOutput ResponsesMessageType = "custom_tool_call_output"
 	ResponsesMessageTypeImageGenerationCall  ResponsesMessageType = "image_generation_call"
 	ResponsesMessageTypeMCPListTools         ResponsesMessageType = "mcp_list_tools"
 	ResponsesMessageTypeMCPApprovalRequest   ResponsesMessageType = "mcp_approval_request"
-	ResponsesMessageTypeMCPApprovalResponses ResponsesMessageType = "mcp_approval_responses"
+	ResponsesMessageTypeMCPApprovalResponses ResponsesMessageType = "mcp_approval_response"
 	ResponsesMessageTypeReasoning            ResponsesMessageType = "reasoning"
 	ResponsesMessageTypeItemReference        ResponsesMessageType = "item_reference"
 	ResponsesMessageTypeRefusal              ResponsesMessageType = "refusal"
@@ -1469,6 +1509,10 @@ type ResponsesMessage struct {
 
 	Role    *ResponsesMessageRoleType `json:"role,omitempty"`
 	Content *ResponsesMessageContent  `json:"content,omitempty"`
+
+	// OutputConfig carries a per-message effort override on a system item (Anthropic's
+	// mid-conversation output_config); providers without the concept drop it.
+	OutputConfig *ResponsesMessageOutputConfig `json:"output_config,omitempty"`
 
 	// Author and Recipient are required on multi-agent collab_tool_call items.
 	// Preserved as raw JSON to survive bifrost round-trip without schema coupling.
@@ -1590,6 +1634,14 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 
 	m.setToolArguments(aux.Arguments)
 
+	// Gemini-shaped histories can carry a reasoning item's summary under a
+	// "reasoning" wrapper instead of OpenAI's top-level field. Lift it so the text
+	// survives to the provider; a top-level summary always wins.
+	if m.Type != nil && *m.Type == ResponsesMessageTypeReasoning &&
+		(m.ResponsesReasoning == nil || m.ResponsesReasoning.Summary == nil) {
+		m.liftReasoningWrapper(data)
+	}
+
 	// The embedded ResponsesMCPListTools decode of `tools` drops the type
 	// discriminator, so capture the raw array and skip that lossy parse.
 	if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput {
@@ -1605,6 +1657,53 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// liftReasoningWrapper reads a reasoning item's {"reasoning":{"summary":[...],
+// "encrypted_content":"..."}} wrapper into the embedded ResponsesReasoning. Plain
+// string summary entries become summary_text blocks; object entries decode as-is
+// and default their type to summary_text. Fields already set from the top-level
+// shape are left alone. No-op when the wrapper is absent or carries neither field.
+func (m *ResponsesMessage) liftReasoningWrapper(data []byte) {
+	wrapper := gjson.GetBytes(data, "reasoning")
+	if !wrapper.IsObject() {
+		return
+	}
+	summary := wrapper.Get("summary")
+	encrypted := wrapper.Get("encrypted_content")
+	if !summary.IsArray() && encrypted.Type != gjson.String {
+		return
+	}
+	reasoning := m.ResponsesReasoning
+	if reasoning == nil {
+		reasoning = &ResponsesReasoning{}
+	}
+	if summary.IsArray() && reasoning.Summary == nil {
+		entries := summary.Array()
+		reasoning.Summary = make([]ResponsesReasoningSummary, 0, len(entries))
+		for _, entry := range entries {
+			switch {
+			case entry.Type == gjson.String:
+				reasoning.Summary = append(reasoning.Summary, ResponsesReasoningSummary{
+					Type: ResponsesReasoningContentBlockTypeSummaryText,
+					Text: entry.String(),
+				})
+			case entry.IsObject():
+				var block ResponsesReasoningSummary
+				if err := Unmarshal([]byte(entry.Raw), &block); err != nil {
+					continue
+				}
+				if block.Type == "" {
+					block.Type = ResponsesReasoningContentBlockTypeSummaryText
+				}
+				reasoning.Summary = append(reasoning.Summary, block)
+			}
+		}
+	}
+	if encrypted.Type == gjson.String && reasoning.EncryptedContent == nil {
+		reasoning.EncryptedContent = Ptr(encrypted.String())
+	}
+	m.ResponsesReasoning = reasoning
 }
 
 // setToolArguments normalizes a raw tool-call `arguments` value and records it on
@@ -1688,6 +1787,35 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	return MarshalSorted(aux)
 }
 
+// ResponsesMessageOutputConfig is the per-message generation override a system item can
+// carry. It mirrors Anthropic's mid-conversation output_config (beta
+// mid-conversation-output-config-2026-07-01): a role:"system" item with empty content and
+// an effort changes the effort level from that point on without invalidating the cached
+// prefix. Effort uses the same vocabulary as ResponsesParametersReasoning.Effort. Only
+// providers with a native equivalent forward it; the rest drop the item fail-soft.
+type ResponsesMessageOutputConfig struct {
+	Effort *string `json:"effort,omitempty"` // "low" | "medium" | "high" | "xhigh" | "max"
+}
+
+// IsEffortOnlySystemItem reports whether m is a system or developer item that exists solely
+// to carry a per-message effort override: it has an OutputConfig and no content. Providers
+// without a native equivalent drop such an item rather than forwarding an empty system turn.
+func (m *ResponsesMessage) IsEffortOnlySystemItem() bool {
+	if m == nil || m.OutputConfig == nil || m.Role == nil {
+		return false
+	}
+	if *m.Role != ResponsesInputMessageRoleSystem && *m.Role != ResponsesInputMessageRoleDeveloper {
+		return false
+	}
+	if m.Content == nil {
+		return true
+	}
+	if m.Content.ContentStr != nil && *m.Content.ContentStr != "" {
+		return false
+	}
+	return len(m.Content.ContentBlocks) == 0
+}
+
 type ResponsesMessageRoleType string
 
 const (
@@ -1728,20 +1856,40 @@ func (rc ResponsesMessageContent) MarshalJSON() ([]byte, error) {
 // It determines whether "content" is a string or array and assigns to the appropriate field.
 // It also handles direct string/array content without a wrapper object.
 func (rc *ResponsesMessageContent) UnmarshalJSON(data []byte) error {
-	// First, try to unmarshal as a direct string
-	var stringContent string
-	if err := Unmarshal(data, &stringContent); err == nil {
-		rc.ContentStr = &stringContent
-		return nil
+	// Peek the first non-whitespace byte to pick the decode path directly: a
+	// failed whole-value unmarshal attempt still builds and discards a full DOM,
+	// and content is the largest field in a multimodal request.
+	for _, b := range data {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '"':
+			var stringContent string
+			if err := Unmarshal(data, &stringContent); err != nil {
+				return fmt.Errorf("content field is neither a string nor an array of Content blocks")
+			}
+			rc.ContentStr = &stringContent
+			return nil
+		case '[':
+			var arrayContent []ResponsesMessageContentBlock
+			if err := Unmarshal(data, &arrayContent); err != nil {
+				return fmt.Errorf("content field is neither a string nor an array of Content blocks")
+			}
+			rc.ContentBlocks = arrayContent
+			return nil
+		case 'n':
+			// A null content is valid per the OpenAI spec. Decoding null into a
+			// string yields "", matching what the previous try-string-first
+			// implementation produced.
+			var nullContent string
+			if err := Unmarshal(data, &nullContent); err != nil {
+				return fmt.Errorf("content field is neither a string nor an array of Content blocks")
+			}
+			rc.ContentStr = &nullContent
+			return nil
+		}
+		break
 	}
-
-	// Try to unmarshal as a direct array of ContentBlock
-	var arrayContent []ResponsesMessageContentBlock
-	if err := Unmarshal(data, &arrayContent); err == nil {
-		rc.ContentBlocks = arrayContent
-		return nil
-	}
-
 	return fmt.Errorf("content field is neither a string nor an array of Content blocks")
 }
 
@@ -1757,6 +1905,10 @@ const (
 	ResponsesOutputMessageContentTypeText      ResponsesMessageContentBlockType = "output_text"
 	ResponsesOutputMessageContentTypeRefusal   ResponsesMessageContentBlockType = "refusal"
 	ResponsesOutputMessageContentTypeReasoning ResponsesMessageContentBlockType = "reasoning_text"
+
+	// Part type on response.reasoning_summary_part.{added,done}, where the event's
+	// part field is required.
+	ResponsesOutputMessageContentTypeSummaryText ResponsesMessageContentBlockType = "summary_text"
 
 	// gemini sends rendered content in google search results
 	ResponsesOutputMessageContentTypeRenderedContent ResponsesMessageContentBlockType = "rendered_content"
@@ -1793,8 +1945,28 @@ type ResponsesMessageContentBlock struct {
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
 	Citations    *Citations    `json:"citations,omitempty"`
 
+	// MediaResolution carries Gemini's per-part Part.mediaResolution, which overrides the
+	// request-level generationConfig.mediaResolution for this block alone. It lives on the
+	// block rather than on the image sub-struct because per-part resolution applies to PDFs
+	// and file URIs too, which arrive as file blocks. Providers that have no equivalent
+	// simply never read it, so it drops itself on a cross-provider fallback.
+	MediaResolution *MediaResolution `json:"media_resolution,omitempty"`
+
 	// PromptCacheBreakpoint marks an explicit prompt-cache breakpoint on this block (OpenAI gpt-5.6+).
 	PromptCacheBreakpoint *PromptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
+
+	// GuardContent marks this text block for selective guardrail evaluation (Bedrock).
+	GuardContent *GuardContent `json:"guard_content,omitempty"`
+}
+
+// GuardContent scopes a guardrail to the text block it annotates. Bedrock Converse renders
+// the block as a guardContent entry and InvokeModel as an inline
+// <amazon-bedrock-guardrails-guardContent_{suffix}> span; once any block in a request is
+// marked, AWS evaluates only the marked blocks. Qualifiers are the AWS content qualifiers
+// ("grounding_source", "query") and are forwarded verbatim. Providers with no equivalent
+// never read the marker, so the block degrades to plain text on a cross-provider fallback.
+type GuardContent struct {
+	Qualifiers []string `json:"qualifiers,omitempty"`
 }
 
 type ResponsesOutputMessageContentCompaction struct {
@@ -1818,6 +1990,14 @@ type ResponsesOutputMessageContentRenderedContent struct {
 type Citations struct {
 	Enabled *bool `json:"enabled,omitempty"`
 }
+
+// MediaResolution is the per-part media resolution for an input media block (Gemini 3+).
+// Level is a provider enum string (e.g. MEDIA_RESOLUTION_HIGH) forwarded verbatim; NumTokens
+// is accepted by the Gemini API surface only.
+type MediaResolution struct {
+	Level     string `json:"level,omitempty"`
+	NumTokens *int32 `json:"num_tokens,omitempty"`
+}
 type ResponsesInputMessageContentBlockImage struct {
 	ImageURL *string `json:"image_url,omitempty"`
 	Detail   *string `json:"detail,omitempty"` // "low" | "high" | "auto"
@@ -1840,8 +2020,8 @@ type ResponsesInputMessageContentBlockAudio struct {
 // =============================================================================
 
 type ResponsesOutputMessageContentText struct {
-	Annotations []ResponsesOutputMessageContentTextAnnotation `json:"annotations"` // Citations and references
-	LogProbs    []ResponsesOutputMessageContentTextLogProb    `json:"logprobs"`    // Token log probabilities
+	Annotations []ResponsesOutputMessageContentTextAnnotation `json:"annotations"`       // Citations and references
+	LogProbs    []ResponsesOutputMessageContentTextLogProb    `json:"logprobs,omitzero"` // Token log probabilities; nil is omitted, [] is kept
 }
 
 type ResponsesOutputMessageContentTextAnnotation struct {
@@ -1884,11 +2064,20 @@ type ResponsesToolMessage struct {
 	Namespace *string                           `json:"namespace,omitempty"` // Namespace for function_call items (set by OpenAI when namespace tools are used)
 	Arguments *string                           `json:"arguments,omitempty"`
 	Execution *string                           `json:"execution,omitempty"` // "client" on deferred calls (e.g. tool_search_call); Codex needs it to dispatch the call
+	Async     *bool                             `json:"async,omitempty"`     // true on function/custom calls to async tools; must survive replay or OpenAI 400s
 	Output    *ResponsesToolMessageOutputStruct `json:"output,omitempty"`
 	Action    *ResponsesToolMessageActionStruct `json:"action,omitempty"`
-	Error     *string                           `json:"error,omitempty"`
+	Error     *ResponsesToolMessageError        `json:"error,omitempty"`
 	// Caller is the neutral form of Anthropic's "caller" union on server-tool blocks
 	Caller *ResponsesToolCaller `json:"tool_caller,omitempty"`
+	// ToolsetName is the client toolset a member call belongs to ("computer" for
+	// computer_toolset_20260801). Anthropic requires it on both halves of a
+	// call/result pair or neither, so it rides the call and the output alike.
+	ToolsetName *string `json:"toolset_name,omitempty"`
+	// ItemCaller and CreatedBy are shared by the shell and apply_patch items; they sit
+	// here because duplicate json keys across embedded structs are silently dropped.
+	ItemCaller *ResponsesShellCaller `json:"caller,omitempty"`
+	CreatedBy  *string               `json:"created_by,omitempty"`
 
 	// Tool calls and outputs
 	*ResponsesFileSearchToolCall
@@ -1902,6 +2091,12 @@ type ResponsesToolMessage struct {
 	// MCP-specific
 	*ResponsesMCPListTools
 	*ResponsesMCPApprovalResponse
+
+	// Shell-specific (shell_call / shell_call_output): environment and limits
+	*ResponsesShellCall
+
+	// apply_patch-specific (apply_patch_call): the file operation
+	*ResponsesApplyPatchCall
 
 	// Anthropic advisor-specific (advisor_call): carries the advisor_tool_result payload
 	*ResponsesAdvisorCall
@@ -1963,6 +2158,16 @@ type ResponsesWebFetchSource struct {
 	URL       *string `json:"url,omitempty"`
 	FileID    *string `json:"file_id,omitempty"`
 }
+
+// allowed_callers vocabulary. Anthropic names the sandbox caller by code execution
+// tool version (code_execution_20250825 | _20260120 | _20260521, and it must match the
+// version the request declares); OpenAI calls the same context "programmatic". Both
+// accept "direct". The provider serializers translate between the two.
+const (
+	ResponsesToolCallerDirect              = "direct"
+	ResponsesToolCallerProgrammatic        = "programmatic"
+	ResponsesToolCallerCodeExecutionPrefix = "code_execution_"
+)
 
 // ResponsesToolCaller is the neutral form of Anthropic's "caller" union on
 // server_tool_use / *_tool_result blocks. It links a tool call to the agentic
@@ -2033,14 +2238,19 @@ type ResponsesCodeExecutionCall struct {
 }
 
 type ResponsesToolMessageActionStruct struct {
+	ResponsesToolCallActionStr        *string // Bare-string action (e.g. image_generation_call's "generate")
 	ResponsesComputerToolCallAction   *ResponsesComputerToolCallAction
 	ResponsesWebSearchToolCallAction  *ResponsesWebSearchToolCallAction
 	ResponsesWebFetchToolCallAction   *ResponsesWebFetchToolCallAction
 	ResponsesLocalShellToolCallAction *ResponsesLocalShellToolCallAction
+	ResponsesShellToolCallAction      *ResponsesShellToolCallAction
 	ResponsesMCPApprovalRequestAction *ResponsesMCPApprovalRequestAction
 }
 
 func (action ResponsesToolMessageActionStruct) MarshalJSON() ([]byte, error) {
+	if action.ResponsesToolCallActionStr != nil {
+		return MarshalSorted(*action.ResponsesToolCallActionStr)
+	}
 	if action.ResponsesComputerToolCallAction != nil {
 		return MarshalSorted(action.ResponsesComputerToolCallAction)
 	}
@@ -2053,6 +2263,9 @@ func (action ResponsesToolMessageActionStruct) MarshalJSON() ([]byte, error) {
 	if action.ResponsesLocalShellToolCallAction != nil {
 		return MarshalSorted(action.ResponsesLocalShellToolCallAction)
 	}
+	if action.ResponsesShellToolCallAction != nil {
+		return MarshalSorted(action.ResponsesShellToolCallAction)
+	}
 	if action.ResponsesMCPApprovalRequestAction != nil {
 		return MarshalSorted(action.ResponsesMCPApprovalRequestAction)
 	}
@@ -2060,6 +2273,24 @@ func (action ResponsesToolMessageActionStruct) MarshalJSON() ([]byte, error) {
 }
 
 func (action *ResponsesToolMessageActionStruct) UnmarshalJSON(data []byte) error {
+	// Some actions are bare strings, not objects (e.g. image_generation_call's "generate")
+	var str string
+	if err := Unmarshal(data, &str); err == nil {
+		action.ResponsesToolCallActionStr = &str
+		return nil
+	}
+
+	// A shell_call action has no "type", only commands[] — probe for it before the
+	// type switch, whose default lands on the computer action.
+	if !gjson.GetBytes(data, "type").Exists() && gjson.GetBytes(data, "commands").IsArray() {
+		var shellToolCallAction ResponsesShellToolCallAction
+		if err := Unmarshal(data, &shellToolCallAction); err != nil {
+			return fmt.Errorf("failed to unmarshal shell tool call action: %w", err)
+		}
+		action.ResponsesShellToolCallAction = &shellToolCallAction
+		return nil
+	}
+
 	// First, peek at the type field to determine which variant to unmarshal
 	var typeStruct struct {
 		Type string `json:"type"`
@@ -2125,11 +2356,15 @@ type ResponsesToolMessageOutputStruct struct {
 	ResponsesToolCallOutputStr            *string // Common output string for tool calls and outputs (used by function, custom and local shell tool calls)
 	ResponsesFunctionToolCallOutputBlocks []ResponsesMessageContentBlock
 	ResponsesComputerToolCallOutput       *ResponsesComputerToolCallOutputData
+	ResponsesShellCallOutput              []ResponsesShellCallOutputContent
 }
 
 func (output ResponsesToolMessageOutputStruct) MarshalJSON() ([]byte, error) {
 	if output.ResponsesToolCallOutputStr != nil {
 		return MarshalSorted(*output.ResponsesToolCallOutputStr)
+	}
+	if output.ResponsesShellCallOutput != nil {
+		return MarshalSorted(output.ResponsesShellCallOutput)
 	}
 	if output.ResponsesFunctionToolCallOutputBlocks != nil {
 		return MarshalSorted(output.ResponsesFunctionToolCallOutputBlocks)
@@ -2150,17 +2385,125 @@ func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error
 		output.ResponsesToolCallOutputStr = &str
 		return nil
 	}
+	if isShellCallOutputArray(data) {
+		var shellOutput []ResponsesShellCallOutputContent
+		if err := Unmarshal(data, &shellOutput); err == nil {
+			output.ResponsesShellCallOutput = shellOutput
+			return nil
+		}
+	}
 	var array []ResponsesMessageContentBlock
 	if err := Unmarshal(data, &array); err == nil {
 		output.ResponsesFunctionToolCallOutputBlocks = array
 		return nil
 	}
-	var computerToolCallOutput ResponsesComputerToolCallOutputData
-	if err := Unmarshal(data, &computerToolCallOutput); err == nil {
-		output.ResponsesComputerToolCallOutput = &computerToolCallOutput
+	// Only a computer screenshot decodes into the typed variant (OpenAI always sends
+	// type "computer_screenshot"; tolerate a typeless object that carries a file
+	// reference). Any other object - e.g. a Gemini-shaped function_call_output whose
+	// output is the tool's raw JSON result - is kept as its JSON text, which is what a
+	// string output would have carried and what OpenAI accepts. Decoding such an
+	// object as a screenshot used to put {"type":""} on the wire.
+	objectType := gjson.GetBytes(data, "type")
+	isScreenshot := objectType.String() == "computer_screenshot" ||
+		(!objectType.Exists() && (gjson.GetBytes(data, "image_url").Exists() || gjson.GetBytes(data, "file_id").Exists()))
+	if isScreenshot {
+		var computerToolCallOutput ResponsesComputerToolCallOutputData
+		if err := Unmarshal(data, &computerToolCallOutput); err == nil {
+			output.ResponsesComputerToolCallOutput = &computerToolCallOutput
+			return nil
+		}
+	}
+	var object map[string]interface{}
+	if err := Unmarshal(data, &object); err == nil && object != nil {
+		encoded, err := MarshalSorted(object)
+		if err != nil {
+			return fmt.Errorf("responses tool message output object could not be re-encoded: %w", err)
+		}
+		str := string(encoded)
+		output.ResponsesToolCallOutputStr = &str
 		return nil
 	}
 	return fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data nor an image generation call output")
+}
+
+// ResponsesToolMessageError is a tool item's error: a plain string (mcp_list_tools,
+// and mcp_call before OpenAI structured it) or a structured mcp_call error object.
+type ResponsesToolMessageError struct {
+	ResponsesToolMessageErrorStr    *string
+	ResponsesToolMessageErrorStruct *ResponsesToolMessageErrorStruct
+}
+
+// ResponsesToolMessageErrorStruct is the structured mcp_call error: mcp_protocol_error
+// and http_error carry code and message, mcp_tool_execution_error carries content.
+type ResponsesToolMessageErrorStruct struct {
+	Type    string          `json:"type"`
+	Code    *int            `json:"code,omitempty"`
+	Message *string         `json:"message,omitempty"`
+	Content json.RawMessage `json:"content,omitempty"` // untyped in OpenAI's spec, kept verbatim
+}
+
+func (e ResponsesToolMessageError) MarshalJSON() ([]byte, error) {
+	if e.ResponsesToolMessageErrorStr != nil && e.ResponsesToolMessageErrorStruct != nil {
+		return nil, fmt.Errorf("both ResponsesToolMessageErrorStr and ResponsesToolMessageErrorStruct are set; only one should be non-nil")
+	}
+	if e.ResponsesToolMessageErrorStr != nil {
+		return MarshalSorted(*e.ResponsesToolMessageErrorStr)
+	}
+	if e.ResponsesToolMessageErrorStruct != nil {
+		return MarshalSorted(e.ResponsesToolMessageErrorStruct)
+	}
+	return MarshalSorted(nil)
+}
+
+func (e *ResponsesToolMessageError) UnmarshalJSON(data []byte) error {
+	var str string
+	if err := Unmarshal(data, &str); err == nil {
+		*e = ResponsesToolMessageError{ResponsesToolMessageErrorStr: &str}
+		return nil
+	}
+	var errStruct ResponsesToolMessageErrorStruct
+	if err := Unmarshal(data, &errStruct); err == nil {
+		*e = ResponsesToolMessageError{ResponsesToolMessageErrorStruct: &errStruct}
+		return nil
+	}
+	return fmt.Errorf("responses tool message error is neither a string nor an error object")
+}
+
+// IsError reports whether the union represents a failed tool call. A structured
+// error is a failure even when it carries no renderable text. The legacy string
+// form preserves its historical empty-string-is-success behavior.
+func (e *ResponsesToolMessageError) IsError() bool {
+	if e == nil {
+		return false
+	}
+	if e.ResponsesToolMessageErrorStruct != nil {
+		return true
+	}
+	return e.ResponsesToolMessageErrorStr != nil && *e.ResponsesToolMessageErrorStr != ""
+}
+
+// Text returns the error as plain text; nil-safe, "" when there is no error.
+func (e *ResponsesToolMessageError) Text() string {
+	if e == nil {
+		return ""
+	}
+	if e.ResponsesToolMessageErrorStr != nil {
+		return *e.ResponsesToolMessageErrorStr
+	}
+	if s := e.ResponsesToolMessageErrorStruct; s != nil {
+		if s.Message != nil {
+			return *s.Message
+		}
+		if len(s.Content) > 0 && string(s.Content) != "null" {
+			var str string
+			if err := Unmarshal(s.Content, &str); err == nil {
+				return str
+			}
+			return string(s.Content)
+		}
+		return s.Type
+	}
+	return ""
 }
 
 // =============================================================================
@@ -2187,6 +2530,7 @@ type ResponsesFileSearchToolCallResult struct {
 // ResponsesComputerToolCall represents a computer tool call
 type ResponsesComputerToolCall struct {
 	PendingSafetyChecks []ResponsesComputerToolCallPendingSafetyCheck `json:"pending_safety_checks,omitempty"`
+	Actions             []ResponsesComputerToolCallAction             `json:"actions,omitempty"`
 }
 
 // ResponsesComputerToolCallPendingSafetyCheck represents a pending safety check
@@ -2253,8 +2597,9 @@ type ResponsesWebSearchToolCallAction struct {
 
 // ResponsesWebSearchToolCallActionSearchSource represents a web search action search source
 type ResponsesWebSearchToolCallActionSearchSource struct {
-	Type string `json:"type"` // always "url"
-	URL  string `json:"url"`
+	Type string `json:"type"` // "url" for web pages, "api" for specialized API sources
+	URL  string `json:"url,omitempty"`
+	Name string `json:"name,omitempty"` // Identifies specialized API sources (type "api"), which carry no URL
 
 	// Anthropic specific fields
 	Title            *string `json:"title,omitempty"`
@@ -2376,6 +2721,13 @@ type ResponsesReasoningSummary struct {
 // ResponsesImageGenerationCall represents an image generation tool call
 type ResponsesImageGenerationCall struct {
 	Result string `json:"result"`
+
+	// Generation settings echoed back on the completed item.
+	Background    *string `json:"background,omitempty"`
+	OutputFormat  *string `json:"output_format,omitempty"`
+	Quality       *string `json:"quality,omitempty"`
+	RevisedPrompt *string `json:"revised_prompt,omitempty"`
+	Size          *string `json:"size,omitempty"`
 }
 
 // -----------------------------------------------------------------------------
@@ -2481,6 +2833,104 @@ type ResponsesLocalShellToolCallAction struct {
 }
 
 // -----------------------------------------------------------------------------
+// Shell Tool
+// -----------------------------------------------------------------------------
+
+// ResponsesShellToolCallAction is a shell_call's action. Unlike every other action
+// it carries no "type" discriminator, only the commands and their limits.
+type ResponsesShellToolCallAction struct {
+	Commands        []string `json:"commands"`
+	TimeoutMS       *int     `json:"timeout_ms,omitempty"`
+	MaxOutputLength *int     `json:"max_output_length,omitempty"`
+}
+
+// ResponsesShellCallOutputContent is one captured chunk of a shell_call_output.
+type ResponsesShellCallOutputContent struct {
+	Stdout    string                    `json:"stdout"`
+	Stderr    string                    `json:"stderr"`
+	Outcome   ResponsesShellCallOutcome `json:"outcome"`
+	CreatedBy *string                   `json:"created_by,omitempty"`
+}
+
+// ResponsesShellCallOutcome is how a shell command ended.
+type ResponsesShellCallOutcome struct {
+	Type     string `json:"type"`                // "exit" | "timeout"
+	ExitCode *int   `json:"exit_code,omitempty"` // exit only
+}
+
+// ResponsesShellCall carries the shell_call / shell_call_output fields that the
+// neutral tool-message shape has no home for.
+type ResponsesShellCall struct {
+	Environment     *ResponsesShellCallEnvironment `json:"environment,omitempty"`       // shell_call
+	MaxOutputLength *int                           `json:"max_output_length,omitempty"` // shell_call_output
+}
+
+// ResponsesApplyPatchCall carries the apply_patch_call field that the neutral
+// tool-message shape has no home for.
+type ResponsesApplyPatchCall struct {
+	Operation *ResponsesApplyPatchOperation `json:"operation,omitempty"`
+}
+
+// ResponsesApplyPatchOperation is an apply_patch_call's file instruction. OpenAI
+// rejects a replayed item without it, so it has to survive the round trip.
+type ResponsesApplyPatchOperation struct {
+	Type string  `json:"type"` // "create_file" | "delete_file" | "update_file"
+	Path string  `json:"path"`
+	Diff *string `json:"diff,omitempty"` // absent on delete_file
+}
+
+// ResponsesShellCallEnvironment is where a shell_call ran.
+type ResponsesShellCallEnvironment struct {
+	Type        string  `json:"type"` // "local" | "container_reference"
+	ContainerID *string `json:"container_id,omitempty"`
+}
+
+// ResponsesShellCaller is the execution context that produced a shell call.
+type ResponsesShellCaller struct {
+	Type     string  `json:"type"`                // "direct" | "program"
+	CallerID *string `json:"caller_id,omitempty"` // program only
+}
+
+// ShellCallOutputText renders a shell_call_output's chunks as plain text.
+func ShellCallOutputText(output []ResponsesShellCallOutputContent) string {
+	var sb strings.Builder
+	for _, content := range output {
+		for _, stream := range []string{content.Stdout, content.Stderr} {
+			if stream == "" {
+				continue
+			}
+			if sb.Len() > 0 {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(stream)
+		}
+	}
+	return sb.String()
+}
+
+// isShellCallOutputArray reports whether data is a shell_call_output "output" array,
+// which would otherwise decode as content blocks.
+func isShellCallOutputArray(data []byte) bool {
+	parsed := gjson.ParseBytes(data)
+	if !parsed.IsArray() {
+		return false
+	}
+	items := parsed.Array()
+	if len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		if !item.IsObject() || !item.Get("outcome").IsObject() {
+			return false
+		}
+		if !item.Get("stdout").Exists() && !item.Get("stderr").Exists() {
+			return false
+		}
+	}
+	return true
+}
+
+// -----------------------------------------------------------------------------
 // MCP (Model Context Protocol) Tools
 // -----------------------------------------------------------------------------
 
@@ -2509,9 +2959,9 @@ type ResponsesMCPApprovalRequestAction struct {
 
 // ResponsesMCPApprovalResponse represents a MCP approval response
 type ResponsesMCPApprovalResponse struct {
-	ApprovalResponseID string  `json:"approval_response_id"`
-	Approve            bool    `json:"approve"`
-	Reason             *string `json:"reason,omitempty"`
+	ApprovalRequestID string  `json:"approval_request_id"`
+	Approve           bool    `json:"approve"`
+	Reason            *string `json:"reason,omitempty"`
 }
 
 // ResponsesMCPToolCall represents a MCP tool call
@@ -2583,6 +3033,45 @@ type ResponsesToolChoice struct {
 	ResponsesToolChoiceStruct *ResponsesToolChoiceStruct
 }
 
+// IsForced reports whether the choice obliges the model to call a tool, in any
+// of its spellings — "any"/"required", a named function or custom tool, a
+// pinned server tool, or an allowed-tools set in "required" mode. Only "none"
+// and "auto" are unforced. Models that reject forced tool use (Fable 5.1+)
+// need the choice dropped; see ModelCaps.SupportsForcedToolChoice.
+func (tc *ResponsesToolChoice) IsForced() bool {
+	if tc == nil {
+		return false
+	}
+	if tc.ResponsesToolChoiceStr != nil {
+		return forcedResponsesToolChoiceMode(*tc.ResponsesToolChoiceStr)
+	}
+	if s := tc.ResponsesToolChoiceStruct; s != nil {
+		switch s.Type {
+		case ResponsesToolChoiceTypeNone, ResponsesToolChoiceTypeAuto:
+			return false
+		case ResponsesToolChoiceTypeAllowedTools:
+			// The set is a constraint, not a forcing; only its mode forces.
+			return s.Mode != nil && forcedResponsesToolChoiceMode(*s.Mode)
+		case "":
+			// Mode-only choice; it serializes as the bare mode string.
+			return s.Mode != nil && forcedResponsesToolChoiceMode(*s.Mode)
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// forcedResponsesToolChoiceMode reports whether a bare mode string forces a call.
+func forcedResponsesToolChoiceMode(mode string) bool {
+	switch ResponsesToolChoiceType(mode) {
+	case ResponsesToolChoiceTypeNone, ResponsesToolChoiceTypeAuto:
+		return false
+	default:
+		return true
+	}
+}
+
 // MarshalJSON implements custom JSON marshalling for ChatMessageContent.
 // It marshals either ContentStr or ContentBlocks directly without wrapping.
 func (tc ResponsesToolChoice) MarshalJSON() ([]byte, error) {
@@ -2652,22 +3141,26 @@ type ResponsesToolChoiceAllowedToolDef struct {
 type ResponsesToolType string
 
 const (
-	ResponsesToolTypeFunction           ResponsesToolType = "function"
-	ResponsesToolTypeFileSearch         ResponsesToolType = "file_search"
-	ResponsesToolTypeComputerUsePreview ResponsesToolType = "computer_use_preview"
-	ResponsesToolTypeWebSearch          ResponsesToolType = "web_search"
-	ResponsesToolTypeWebFetch           ResponsesToolType = "web_fetch"
-	ResponsesToolTypeMCP                ResponsesToolType = "mcp"
-	ResponsesToolTypeCodeInterpreter    ResponsesToolType = "code_interpreter"
-	ResponsesToolTypeImageGeneration    ResponsesToolType = "image_generation"
-	ResponsesToolTypeLocalShell         ResponsesToolType = "local_shell"
-	ResponsesToolTypeCustom             ResponsesToolType = "custom"
-	ResponsesToolTypeWebSearchPreview   ResponsesToolType = "web_search_preview"
-	ResponsesToolTypeMemory             ResponsesToolType = "memory"
-	ResponsesToolTypeToolSearch         ResponsesToolType = "tool_search"
-	ResponsesToolTypeNamespace          ResponsesToolType = "namespace"
-	ResponsesToolTypeXSearch            ResponsesToolType = "x_search"
-	ResponsesToolTypeAdvisor            ResponsesToolType = "advisor"
+	ResponsesToolTypeFunction                ResponsesToolType = "function"
+	ResponsesToolTypeFileSearch              ResponsesToolType = "file_search"
+	ResponsesToolTypeComputerUsePreview      ResponsesToolType = "computer_use_preview"
+	ResponsesToolTypeComputer                ResponsesToolType = "computer" // OpenAI computer tool for GPT-6 Astra / GPT-5.6 (no display or environment fields)
+	ResponsesToolTypeWebSearch               ResponsesToolType = "web_search"
+	ResponsesToolTypeWebFetch                ResponsesToolType = "web_fetch"
+	ResponsesToolTypeMCP                     ResponsesToolType = "mcp"
+	ResponsesToolTypeCodeInterpreter         ResponsesToolType = "code_interpreter"
+	ResponsesToolTypeImageGeneration         ResponsesToolType = "image_generation"
+	ResponsesToolTypeLocalShell              ResponsesToolType = "local_shell"
+	ResponsesToolTypeShell                   ResponsesToolType = "shell"
+	ResponsesToolTypeProgrammaticToolCalling ResponsesToolType = "programmatic_tool_calling"
+	ResponsesToolTypeApplyPatch              ResponsesToolType = "apply_patch"
+	ResponsesToolTypeCustom                  ResponsesToolType = "custom"
+	ResponsesToolTypeWebSearchPreview        ResponsesToolType = "web_search_preview"
+	ResponsesToolTypeMemory                  ResponsesToolType = "memory"
+	ResponsesToolTypeToolSearch              ResponsesToolType = "tool_search"
+	ResponsesToolTypeNamespace               ResponsesToolType = "namespace"
+	ResponsesToolTypeXSearch                 ResponsesToolType = "x_search"
+	ResponsesToolTypeAdvisor                 ResponsesToolType = "advisor"
 )
 
 // ResponsesToolTypeOpenRouterPrefix is the namespace prefix for OpenRouter server
@@ -2695,6 +3188,8 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 		return t
 	case strings.HasPrefix(s, "web_fetch"):
 		return ResponsesToolTypeWebFetch
+	case t == ResponsesToolTypeComputer:
+		return t
 	case strings.HasPrefix(s, "computer") && t != ResponsesToolTypeComputerUsePreview:
 		// Covers "computer_20250124", "computer_20251124", etc.
 		return ResponsesToolTypeComputerUsePreview
@@ -2705,7 +3200,7 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 	case strings.HasPrefix(s, "advisor") && t != ResponsesToolTypeAdvisor:
 		// Covers "advisor_20260301" and future dated versions.
 		return ResponsesToolTypeAdvisor
-	case toolSearchVariantName(s) != "":
+	case ToolSearchVariantName(s) != "":
 		// Covers Anthropic's server-side tool-search meta-tool in both variants
 		// and both spellings: "tool_search_tool_regex_20251119",
 		// "tool_search_tool_bm25_20251119" and their undated forms. Without this
@@ -2713,7 +3208,7 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 		// ResponsesToolTypeToolSearch, and got downcast to a plain custom tool —
 		// so Anthropic treated tool_search as a client tool and never ran the
 		// server-side search. The regex/bm25 variant is preserved on Name (see
-		// toolSearchVariantName), which is what the Anthropic converter reads.
+		// ToolSearchVariantName), which is what the Anthropic converter reads.
 		//
 		// Matching on the recognized variants rather than a bare "tool_search"
 		// prefix keeps an unrecognized sibling type out of the server-tool
@@ -2725,7 +3220,7 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 	}
 }
 
-// toolSearchVariantName recovers the tool-search variant name from a raw tool
+// ToolSearchVariantName recovers the tool-search variant name from a raw tool
 // type string. normalizeResponsesToolType collapses every tool_search_tool_*
 // spelling to the canonical "tool_search", which erases the regex-vs-bm25
 // distinction from Type — but the two are not interchangeable: regex expects
@@ -2736,7 +3231,11 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 // examples do). Returns "" when the type carries no variant.
 //
 // Cite: https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool
-func toolSearchVariantName(rawType string) string {
+// It is exported so a provider ingress that rebuilds a tool_search tool outside
+// ResponsesTool.UnmarshalJSON resolves the variant the same way. Regex and bm25 are
+// not interchangeable, so a second spelling of this rule elsewhere is a drift bug
+// waiting to happen.
+func ToolSearchVariantName(rawType string) string {
 	const prefix = "tool_search_tool_"
 	if !strings.HasPrefix(rawType, prefix) {
 		return ""
@@ -2761,6 +3260,7 @@ type ResponsesTool struct {
 	Type        ResponsesToolType `json:"type"`                  // "function" | "file_search" | "computer_use_preview" | "web_search" | "web_search_2025_08_26" | "mcp" | "code_interpreter" | "image_generation" | "local_shell" | "custom" | "web_search_preview" | "web_search_preview_2025_03_11" | "x_search"
 	Name        *string           `json:"name,omitempty"`        // Common name field (Function, Custom tools)
 	Description *string           `json:"description,omitempty"` // Common description field (Function, Custom tools)
+	Async       *bool             `json:"async,omitempty"`       // OpenAI async tool calling (Function, Custom tools)
 
 	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
@@ -2769,7 +3269,7 @@ type ResponsesTool struct {
 	// ignored by providers that don't support them. Gated per ProviderFeatures
 	// in core/providers/anthropic/types.go.
 	DeferLoading        *bool                  `json:"defer_loading,omitempty"`         // Anthropic advanced-tool-use: defer loading of tool definition
-	AllowedCallers      []string               `json:"allowed_callers,omitempty"`       // Anthropic advanced-tool-use: which callers can invoke this tool
+	AllowedCallers      []string               `json:"allowed_callers,omitempty"`       // Which callers can invoke this tool; see ResponsesToolCaller* for the two vendor vocabularies
 	InputExamples       []ChatToolInputExample `json:"input_examples,omitempty"`        // Anthropic tool-examples-2025-10-29: example inputs for the tool
 	EagerInputStreaming *bool                  `json:"eager_input_streaming,omitempty"` // Anthropic fine-grained-tool-streaming-2025-05-14
 
@@ -2782,6 +3282,7 @@ type ResponsesTool struct {
 	*ResponsesToolCodeInterpreter
 	*ResponsesToolImageGeneration
 	*ResponsesToolLocalShell
+	*ResponsesToolShell
 	*ResponsesToolCustom
 	*ResponsesToolWebSearchPreview
 	*ResponsesToolToolSearch
@@ -2822,6 +3323,11 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 	}
 	if t.Description != nil {
 		if data, err = sjson.SetBytes(data, "description", *t.Description); err != nil {
+			return nil, err
+		}
+	}
+	if t.Async != nil {
+		if data, err = sjson.SetBytes(data, "async", *t.Async); err != nil {
 			return nil, err
 		}
 	}
@@ -2906,6 +3412,10 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 		if t.ResponsesToolLocalShell != nil {
 			typeBytes, err = MarshalSorted(t.ResponsesToolLocalShell)
 		}
+	case ResponsesToolTypeShell:
+		if t.ResponsesToolShell != nil {
+			typeBytes, err = MarshalSorted(t.ResponsesToolShell)
+		}
 	case ResponsesToolTypeCustom:
 		if t.ResponsesToolCustom != nil {
 			typeBytes, err = MarshalSorted(t.ResponsesToolCustom)
@@ -2970,6 +3480,7 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 		"input_examples",        // 6
 		"eager_input_streaming", // 7
 		"function",              // 8 — Chat Completions wrapper, lifted below
+		"async",                 // 9
 	)
 
 	// Extract type field
@@ -2992,6 +3503,9 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 	}
 	if v := fields[2]; v.Type == gjson.String {
 		t.Description = new(v.String())
+	}
+	if v := fields[9]; v.IsBool() {
+		t.Async = new(v.Bool())
 	}
 	if v := fields[3]; v.Exists() {
 		var cc CacheControl
@@ -3024,7 +3538,7 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 	// canonical "tool_search". Backfill the variant onto Name so it survives —
 	// an explicitly supplied name always wins.
 	if t.Type == ResponsesToolTypeToolSearch && t.Name == nil {
-		if variant := toolSearchVariantName(typeStr); variant != "" {
+		if variant := ToolSearchVariantName(typeStr); variant != "" {
 			t.Name = new(variant)
 		}
 	}
@@ -3127,6 +3641,13 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 		}
 		t.ResponsesToolLocalShell = &localShellTool
 
+	case ResponsesToolTypeShell:
+		var shellTool ResponsesToolShell
+		if err := Unmarshal(data, &shellTool); err != nil {
+			return err
+		}
+		t.ResponsesToolShell = &shellTool
+
 	case ResponsesToolTypeCustom:
 		var customTool ResponsesToolCustom
 		if err := Unmarshal(data, &customTool); err != nil {
@@ -3175,8 +3696,9 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 
 // ResponsesToolFunction represents a tool function
 type ResponsesToolFunction struct {
-	Parameters *ToolFunctionParameters `json:"parameters,omitempty"` // A JSON schema object describing the parameters
-	Strict     *bool                   `json:"strict"`               // Whether to enforce strict parameter validation
+	Parameters   *ToolFunctionParameters `json:"parameters,omitempty"`    // A JSON schema object describing the parameters
+	Strict       *bool                   `json:"strict"`                  // Whether to enforce strict parameter validation
+	OutputSchema *OrderedMap             `json:"output_schema,omitempty"` // JSON schema of the value encoded in string outputs (OpenAI)
 }
 
 // ResponsesToolFileSearch represents a tool file search
@@ -3189,7 +3711,7 @@ type ResponsesToolFileSearch struct {
 
 // ResponsesToolFileSearchFilter represents a file search filter
 type ResponsesToolFileSearchFilter struct {
-	Type string `json:"type"` // "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "and" | "or"
+	Type string `json:"type"` // "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "in" | "nin" | "and" | "or"
 
 	// Filter types - only one should be set
 	*ResponsesToolFileSearchComparisonFilter
@@ -3215,7 +3737,7 @@ func (f *ResponsesToolFileSearchFilter) MarshalJSON() ([]byte, error) {
 	}
 
 	switch f.Type {
-	case "eq", "ne", "gt", "gte", "lt", "lte":
+	case "eq", "ne", "gt", "gte", "lt", "lte", "in", "nin":
 		if f.ResponsesToolFileSearchComparisonFilter == nil {
 			return nil, fmt.Errorf("comparison filter is nil but type is %s", f.Type)
 		}
@@ -3266,7 +3788,7 @@ func (f *ResponsesToolFileSearchFilter) UnmarshalJSON(data []byte) error {
 
 	// Initialize the appropriate embedded struct based on type
 	switch typeStr {
-	case "eq", "ne", "gt", "gte", "lt", "lte":
+	case "eq", "ne", "gt", "gte", "lt", "lte", "in", "nin":
 		// This is a comparison filter
 		f.ResponsesToolFileSearchComparisonFilter = &ResponsesToolFileSearchComparisonFilter{}
 		f.ResponsesToolFileSearchCompoundFilter = nil
@@ -3303,7 +3825,7 @@ func (f *ResponsesToolFileSearchFilter) UnmarshalJSON(data []byte) error {
 		}
 
 	default:
-		return fmt.Errorf("unknown filter type: %s (supported types: eq, ne, gt, gte, lt, lte, and, or)", typeStr)
+		return fmt.Errorf("unknown filter type: %s (supported types: eq, ne, gt, gte, lt, lte, in, nin, and, or)", typeStr)
 	}
 
 	return nil
@@ -3313,7 +3835,7 @@ func (f *ResponsesToolFileSearchFilter) UnmarshalJSON(data []byte) error {
 type ResponsesToolFileSearchComparisonFilter struct {
 	Key   string      `json:"key"`   // The key to compare against the value
 	Type  string      `json:"type"`  //
-	Value interface{} `json:"value"` // The value to compare (string, number, or boolean)
+	Value interface{} `json:"value"` // The value to compare (string, number, boolean, or an array for in/nin)
 }
 
 // ResponsesToolFileSearchCompoundFilter represents a file search compound filter
@@ -3440,13 +3962,41 @@ type ResponsesToolMCP struct {
 	RequireApproval   *ResponsesToolMCPAllowedToolsApprovalSetting `json:"require_approval,omitempty"`   // Tool approval settings
 	ServerDescription *string                                      `json:"server_description,omitempty"` // Optional server description
 	ServerURL         *string                                      `json:"server_url,omitempty"`         // The URL for the MCP server
+	TunnelID          *string                                      `json:"tunnel_id,omitempty"`          // Secure MCP Tunnel ID used instead of server_url
 }
 
 // ResponsesToolMCPAllowedTools - List of allowed tool names or a filter object
 type ResponsesToolMCPAllowedTools struct {
 	// Either a simple array of tool names or a filter object
-	ToolNames []string                            `json:",omitempty"`
-	Filter    *ResponsesToolMCPAllowedToolsFilter `json:",omitempty"`
+	ToolNames []string
+	Filter    *ResponsesToolMCPAllowedToolsFilter
+}
+
+func (a ResponsesToolMCPAllowedTools) MarshalJSON() ([]byte, error) {
+	if a.ToolNames != nil && a.Filter != nil {
+		return nil, fmt.Errorf("both ToolNames and Filter are set; only one should be non-nil")
+	}
+	if a.ToolNames != nil {
+		return MarshalSorted(a.ToolNames)
+	}
+	if a.Filter != nil {
+		return MarshalSorted(a.Filter)
+	}
+	return MarshalSorted(nil)
+}
+
+func (a *ResponsesToolMCPAllowedTools) UnmarshalJSON(data []byte) error {
+	var toolNames []string
+	if err := Unmarshal(data, &toolNames); err == nil {
+		*a = ResponsesToolMCPAllowedTools{ToolNames: toolNames}
+		return nil
+	}
+	var filter ResponsesToolMCPAllowedToolsFilter
+	if err := Unmarshal(data, &filter); err == nil {
+		*a = ResponsesToolMCPAllowedTools{Filter: &filter}
+		return nil
+	}
+	return fmt.Errorf("mcp allowed_tools is neither an array of tool names nor a filter object")
 }
 
 // ResponsesToolMCPAllowedToolsFilter - A filter object to specify which tools are allowed
@@ -3542,6 +4092,7 @@ type ResponsesToolCodeInterpreter struct {
 
 // ResponsesToolImageGeneration represents a tool image generation
 type ResponsesToolImageGeneration struct {
+	Action            *string                                     `json:"action,omitempty"`             // "generate" | "edit" | "auto"
 	Background        *string                                     `json:"background,omitempty"`         // "transparent" | "opaque" | "auto"
 	InputFidelity     *string                                     `json:"input_fidelity,omitempty"`     // "high" | "low"
 	InputImageMask    *ResponsesToolImageGenerationInputImageMask `json:"input_image_mask,omitempty"`   // Optional mask for inpainting
@@ -3563,6 +4114,60 @@ type ResponsesToolImageGenerationInputImageMask struct {
 // ResponsesToolLocalShell represents a tool local shell
 type ResponsesToolLocalShell struct {
 	// No unique fields needed since Type is now in the top-level struct
+}
+
+// ResponsesToolShell represents OpenAI's shell tool, the successor to local_shell.
+type ResponsesToolShell struct {
+	Environment *ResponsesToolShellEnvironment `json:"environment,omitempty"`
+}
+
+// ResponsesToolShellEnvironment says where the commands run.
+type ResponsesToolShellEnvironment struct {
+	Type string `json:"type"` // "local" | "container_auto" | "container_reference"
+
+	// container_auto
+	FileIDs       []string                         `json:"file_ids,omitempty"`
+	MemoryLimit   *string                          `json:"memory_limit,omitempty"` // "1g" | "4g" | "16g" | "64g"
+	NetworkPolicy *ResponsesToolShellNetworkPolicy `json:"network_policy,omitempty"`
+
+	// Skills are carried by both local and container_auto, in different shapes
+	Skills []ResponsesToolShellSkill `json:"skills,omitempty"`
+
+	// container_reference
+	ContainerID *string `json:"container_id,omitempty"`
+}
+
+// ResponsesToolShellNetworkPolicy is the outbound network policy of a container_auto environment.
+type ResponsesToolShellNetworkPolicy struct {
+	Type           string                           `json:"type"` // "disabled" | "allowlist"
+	AllowedDomains []string                         `json:"allowed_domains,omitempty"`
+	DomainSecrets  []ResponsesToolShellDomainSecret `json:"domain_secrets,omitempty"`
+}
+
+// ResponsesToolShellDomainSecret is a secret injected for an allowlisted domain.
+type ResponsesToolShellDomainSecret struct {
+	Domain string `json:"domain"`
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+}
+
+// ResponsesToolShellSkill is a local skill (name/description/path), a skill_reference
+// or an inline skill bundle.
+type ResponsesToolShellSkill struct {
+	Type        *string                        `json:"type,omitempty"` // "skill_reference" | "inline"; absent on local skills
+	Name        *string                        `json:"name,omitempty"`
+	Description *string                        `json:"description,omitempty"`
+	Path        *string                        `json:"path,omitempty"`     // local
+	SkillID     *string                        `json:"skill_id,omitempty"` // skill_reference
+	Version     *string                        `json:"version,omitempty"`  // skill_reference
+	Source      *ResponsesToolShellSkillSource `json:"source,omitempty"`   // inline
+}
+
+// ResponsesToolShellSkillSource is the payload of an inline skill.
+type ResponsesToolShellSkillSource struct {
+	Type      string `json:"type"`       // always "base64"
+	MediaType string `json:"media_type"` // always "application/zip"
+	Data      string `json:"data"`       // base64-encoded zip bundle
 }
 
 // ResponsesToolCustom represents a custom tool
@@ -3620,6 +4225,16 @@ type ResponsesToolNamespace struct {
 	Tools []ResponsesTool `json:"tools,omitempty"`
 }
 
+// NamespaceToolAlias is what a flattened tool name stands for: the namespace and the
+// bare function name the caller sent. Bifrost flattens namespace tools to
+// "<namespace>__<function>" for wires that do not understand the namespace type, keeps
+// one of these per alias on the request context, and uses it to hand the caller back
+// a function_call item with the OpenAI shape (bare name plus a separate namespace).
+type NamespaceToolAlias struct {
+	Namespace string
+	Name      string
+}
+
 // ResponsesToolXSearch represents the xAI-native x_search server-side tool.
 // All fields are optional; when omitted xAI searches without restrictions.
 // See https://docs.x.ai/developers/tools/x-search#x-search-parameters
@@ -3647,6 +4262,12 @@ type ResponsesStreamResponseType string
 const (
 	// Ping events are just keepalive (sent by very few providers, Anthropic is one of them)
 	ResponsesStreamResponseTypePing ResponsesStreamResponseType = "response.ping"
+
+	// Deprecated: retained for source compatibility. Providers no longer synthesize
+	// generic raw events; supported provider events have explicit types.
+	ResponsesStreamResponseTypeProviderRawEvent ResponsesStreamResponseType = "response.provider_raw_event"
+	// SafeguardsUpdate carries an Anthropic classifier event, omitted on OpenAI surfaces.
+	ResponsesStreamResponseTypeSafeguardsUpdate ResponsesStreamResponseType = "response.safeguards_update"
 
 	ResponsesStreamResponseTypeCreated    ResponsesStreamResponseType = "response.created"
 	ResponsesStreamResponseTypeInProgress ResponsesStreamResponseType = "response.in_progress"
@@ -3715,6 +4336,15 @@ const (
 	ResponsesStreamResponseTypeCustomToolCallInputDelta ResponsesStreamResponseType = "response.custom_tool_call_input.delta"
 	ResponsesStreamResponseTypeCustomToolCallInputDone  ResponsesStreamResponseType = "response.custom_tool_call_input.done"
 
+	ResponsesStreamResponseTypeShellCallCommandAdded       ResponsesStreamResponseType = "response.shell_call_command.added"
+	ResponsesStreamResponseTypeShellCallCommandDelta       ResponsesStreamResponseType = "response.shell_call_command.delta"
+	ResponsesStreamResponseTypeShellCallCommandDone        ResponsesStreamResponseType = "response.shell_call_command.done"
+	ResponsesStreamResponseTypeShellCallOutputContentDelta ResponsesStreamResponseType = "response.shell_call_output_content.delta"
+	ResponsesStreamResponseTypeShellCallOutputContentDone  ResponsesStreamResponseType = "response.shell_call_output_content.done"
+
+	ResponsesStreamResponseTypeApplyPatchCallOperationDiffDelta ResponsesStreamResponseType = "response.apply_patch_call_operation_diff.delta"
+	ResponsesStreamResponseTypeApplyPatchCallOperationDiffDone  ResponsesStreamResponseType = "response.apply_patch_call_operation_diff.done"
+
 	ResponsesStreamResponseTypeError ResponsesStreamResponseType = "error"
 )
 
@@ -3724,8 +4354,11 @@ type BifrostResponsesStreamResponse struct {
 
 	Response *BifrostResponsesResponse `json:"response,omitempty"`
 
-	OutputIndex *int              `json:"output_index,omitempty"`
-	Item        *ResponsesMessage `json:"item"`
+	OutputIndex *int `json:"output_index,omitempty"`
+	// Item is only emitted on output_item.added / output_item.done. omitempty is
+	// required: other event types must not serialize "item": null — strict
+	// Responses clients (opencode open-responses protocol) reject null there.
+	Item *ResponsesMessage `json:"item,omitempty"`
 	// SummaryIndex identifies which summary block within an item a delta belongs to.
 	// Emitted on response.reasoning_summary_text.{delta,done} and
 	// response.reasoning_summary_part.{added,done}.
@@ -3749,6 +4382,18 @@ type BifrostResponsesStreamResponse struct {
 	Refusal *string `json:"refusal,omitempty"`
 
 	Arguments *string `json:"arguments,omitempty"`
+	// Input carries the full custom-tool payload on custom_tool_call_input.done.
+	Input *string `json:"input,omitempty"`
+
+	// Shell tool events. ShellOutputDelta holds the object-shaped `delta` of
+	// shell_call_output_content.delta, the only event whose delta is not a string.
+	Command          *string                           `json:"command,omitempty"`
+	CommandIndex     *int                              `json:"command_index,omitempty"`
+	Output           []ResponsesShellCallOutputContent `json:"output,omitempty"`
+	ShellOutputDelta *ResponsesShellCallOutputDelta    `json:"-"`
+
+	// Diff carries the assembled patch on response.apply_patch_call_operation_diff.done.
+	Diff *string `json:"diff,omitempty"`
 
 	PartialImageB64   *string `json:"partial_image_b64,omitempty"`
 	PartialImageIndex *int    `json:"partial_image_index,omitempty"`
@@ -3763,10 +4408,72 @@ type BifrostResponsesStreamResponse struct {
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 
+	// SafeguardResults carries the Claude Code auto-mode classifier verdicts found
+	// top-level on a provider stream event (opaque; forwarded unchanged per the
+	// gateway compatibility guide), so the provider-native egress can restore them
+	// on the re-rendered frame. Deliberately NOT copied by WithDefaults: OpenAI-shaped
+	// surfaces never see it.
+	SafeguardResults json.RawMessage `json:"safeguard_results,omitempty"`
+
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`
 	Videos        []VideoResult  `json:"videos,omitempty"`
 	Citations     []string       `json:"citations,omitempty"`
+}
+
+// ResponsesShellCallOutputDelta is the object-shaped `delta` of
+// response.shell_call_output_content.delta.
+type ResponsesShellCallOutputDelta struct {
+	Stdout *string `json:"stdout,omitempty"`
+	Stderr *string `json:"stderr,omitempty"`
+}
+
+// MarshalJSON omits event-scoped fields that are nil so strict Responses
+// clients do not see explicit nulls on unrelated event types. Some event types
+// still intentionally emit empty arrays after WithDefaults populates them.
+func (resp BifrostResponsesStreamResponse) MarshalJSON() ([]byte, error) {
+	type alias BifrostResponsesStreamResponse
+	encoded, err := Marshal(alias(resp))
+	if err != nil {
+		return nil, err
+	}
+	if resp.LogProbs == nil && gjson.GetBytes(encoded, "logprobs").Exists() {
+		if encoded, err = sjson.DeleteBytes(encoded, "logprobs"); err != nil {
+			return nil, err
+		}
+	}
+	if resp.ShellOutputDelta != nil {
+		deltaBytes, deltaErr := MarshalSorted(resp.ShellOutputDelta)
+		if deltaErr != nil {
+			return nil, deltaErr
+		}
+		return sjson.SetRawBytes(encoded, "delta", deltaBytes)
+	}
+	return encoded, nil
+}
+
+// UnmarshalResponsesStreamObjectDelta decodes an event whose `delta` is an object
+// rather than a string — shell_call_output_content.delta's {stdout, stderr}, which
+// the string Delta field cannot hold. Callers use it as a fallback after a failed
+// decode, so the common path keeps the generated (faster) decoder.
+func UnmarshalResponsesStreamObjectDelta(data []byte, resp *BifrostResponsesStreamResponse) error {
+	delta := gjson.GetBytes(data, "delta")
+	if !delta.IsObject() {
+		return fmt.Errorf("stream event delta is not an object")
+	}
+	stripped, err := sjson.DeleteBytes(append([]byte(nil), data...), "delta")
+	if err != nil {
+		return err
+	}
+	if err := Unmarshal(stripped, resp); err != nil {
+		return err
+	}
+	var shellDelta ResponsesShellCallOutputDelta
+	if err := Unmarshal([]byte(delta.Raw), &shellDelta); err != nil {
+		return err
+	}
+	resp.ShellOutputDelta = &shellDelta
+	return nil
 }
 
 func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStreamResponse {
@@ -3775,7 +4482,7 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 	}
 
 	// Filter out non-OpenAI response types
-	if resp.Type == ResponsesStreamResponseTypePing {
+	if resp.Type == ResponsesStreamResponseTypePing || resp.Type == ResponsesStreamResponseTypeProviderRawEvent || resp.Type == ResponsesStreamResponseTypeSafeguardsUpdate {
 		return nil
 	}
 
@@ -3817,6 +4524,12 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 	result.Text = resp.Text
 	result.Refusal = resp.Refusal
 	result.Arguments = resp.Arguments
+	result.Input = resp.Input
+	result.Command = resp.Command
+	result.CommandIndex = resp.CommandIndex
+	result.Diff = resp.Diff
+	result.Output = resp.Output
+	result.ShellOutputDelta = resp.ShellOutputDelta
 	result.PartialImageB64 = resp.PartialImageB64
 	result.PartialImageIndex = resp.PartialImageIndex
 	result.Annotation = resp.Annotation

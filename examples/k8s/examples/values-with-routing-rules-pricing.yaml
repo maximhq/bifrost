@@ -111,11 +111,13 @@ bifrost:
             rate_limit_id: "rl-model-gpt4o-mini"
             allowed_models:
               - "gpt-4o-mini"
+            key_ids: ["*"]
           - provider: "anthropic"
             weight: 1
             rate_limit_id: "rl-model-claude-sonnet"
             allowed_models:
               - "claude-3-5-sonnet-latest"
+            key_ids: ["*"]
       - id: "vk-multi-provider-demo"
         name: "Multi Provider Demo Key"
         description: "VK with multiple provider_configs to stress Helm/config sync."
@@ -129,10 +131,12 @@ bifrost:
             allowed_models:
               - "gpt-4o-mini"
               - "gpt-4o"
+            key_ids: ["*"]
           - provider: "anthropic"
             weight: 0.4
             allowed_models:
               - "claude-3-5-sonnet-latest"
+            key_ids: ["*"]
 
     # Per-model governance bindings.
     modelConfigs:

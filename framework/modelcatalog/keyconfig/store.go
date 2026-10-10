@@ -288,7 +288,7 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *
 	var (
 		allModelsAllowed bool
 		enabledKeysCount int
-		allowed schemas.WhiteList
+		allowed          schemas.WhiteList
 		// blacklistAgg accumulates the cross-key blacklist intersection. Keyed by
 		// lowercased model for case-insensitive counting; name holds the original
 		// casing of the first key that blacklisted it, so the emitted blacklist
@@ -298,7 +298,7 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *
 			name  string
 		})
 		aliasIndex = make(map[string]AliasOwner)
-		entries          = make([]KeyEntry, 0, len(keys))
+		entries    = make([]KeyEntry, 0, len(keys))
 	)
 
 	// Keyless non-standard providers (custom providers configured without keys)
@@ -339,7 +339,8 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *
 				if key.BlacklistedModels.IsBlocked(m) {
 					continue
 				}
-				if !allowed.Contains(m) {
+				// Literal dedup: a regex entry from another key must not swallow an exact name.
+				if !slices.ContainsFunc(allowed, func(s string) bool { return strings.EqualFold(s, m) }) {
 					allowed = append(allowed, m)
 				}
 			}

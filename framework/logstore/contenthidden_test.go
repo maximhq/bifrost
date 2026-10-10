@@ -28,6 +28,9 @@ func newContentHiddenTestEntry(id string) *Log {
 		OutputMessageParsed: &schemas.ChatMessage{
 			Content: &schemas.ChatMessageContent{ContentStr: strPtr("sensitive answer")},
 		},
+		EmbeddingInputParsed: []schemas.EmbeddingInputItem{
+			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: strPtr("sensitive embedding")}}},
+		},
 	}
 }
 
@@ -57,6 +60,7 @@ func TestHybrid_ContentHiddenStripsDBRowAndSkipsHydration(t *testing.T) {
 	assert.True(t, dbRow.HasObject)
 	assert.Empty(t, dbRow.InputHistory)
 	assert.Empty(t, dbRow.OutputMessage)
+	assert.Empty(t, dbRow.EmbeddingInput)
 	assert.Empty(t, dbRow.ContentSummary)
 	assert.NotEmpty(t, dbRow.TokenUsage)
 	require.NotNil(t, dbRow.TokenUsageParsed)
@@ -75,6 +79,8 @@ func TestHybrid_ContentHiddenStripsDBRowAndSkipsHydration(t *testing.T) {
 	assert.True(t, found.ContentHidden)
 	assert.Empty(t, found.InputHistory, "hidden log must not be hydrated")
 	assert.Empty(t, found.OutputMessage, "hidden log must not be hydrated")
+	assert.Empty(t, found.EmbeddingInput, "hidden log must not be hydrated")
+	assert.Nil(t, found.EmbeddingInputParsed, "hidden log must not be hydrated")
 	assert.Empty(t, found.ContentSummary)
 }
 
@@ -84,7 +90,7 @@ func TestHybrid_ContentHiddenIgnoresExclusionList(t *testing.T) {
 	require.NoError(t, err)
 	objStore := objectstore.NewInMemoryObjectStore()
 	// params is configured to stay DB-resident and out of the object payload.
-	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, []string{"params"})
+	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, []string{"params"}, nil)
 	defer hybrid.Close(ctx)
 
 	normal := newContentHiddenTestEntry("normal-1")
@@ -135,6 +141,9 @@ func TestHybrid_ContentHiddenBatchMixed(t *testing.T) {
 
 	require.NoError(t, hybrid.BatchCreateIfNotExists(ctx, []*Log{visibleEntry, hiddenEntry}))
 	waitForUploads(t, func() bool { return objStore.Len() == 2 })
+	// The hydration assertion below needs the visible row's has_object flag,
+	// which processUpload commits only after the object Put.
+	waitForOffload(t, inner, "batch-visible")
 
 	visibleRow, err := inner.FindByID(ctx, "batch-visible")
 	require.NoError(t, err)
