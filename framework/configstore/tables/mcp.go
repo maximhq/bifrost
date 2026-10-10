@@ -94,6 +94,14 @@ type TableMCPClient struct {
 	// addresses the column as pending_oauth_config_json.
 	PendingOAuthConfigJSON *string `gorm:"column:pending_oauth_config_json;type:text" json:"-"`
 
+	// OpenAPI-backed clients (connection_type='openapi'). The spec document is
+	// large and carries no secrets, so it has its own plaintext column; the
+	// rest of openapi_config (base URL, security credentials, options and the
+	// server-computed metadata) is one JSON column, encrypted at rest because
+	// the credentials live in it. Both NULL/empty for other connection types.
+	OpenAPISpec       string  `gorm:"column:openapi_spec;type:text" json:"-"`
+	OpenAPIConfigJSON *string `gorm:"column:openapi_config_json;type:text" json:"-"` // JSON serialized schemas.MCPOpenAPIConfig minus Spec
+
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
@@ -116,6 +124,24 @@ type TableMCPClient struct {
 	PerUserHeaderKeys         []string                        `gorm:"-" json:"per_user_header_keys"`
 	TokenExchange             *schemas.MCPTokenExchangeConfig `gorm:"-" json:"token_exchange,omitempty"` // Runtime mirror of TokenExchangeJSON
 	PendingOAuthConfig        *schemas.OAuth2Config           `gorm:"-" json:"oauth_config,omitempty"`   // Runtime mirror of PendingOAuthConfigJSON
+	OpenAPIConfig             *schemas.MCPOpenAPIConfig       `gorm:"-" json:"openapi_config,omitempty"` // Runtime mirror of OpenAPISpec + OpenAPIConfigJSON
+}
+
+// SplitOpenAPIConfigForStorage separates an openapi_config into its two
+// columns: the raw spec text and the JSON of everything else. Both BeforeSave
+// and the map-based update path use it so the stored shape is identical.
+func SplitOpenAPIConfigForStorage(cfg *schemas.MCPOpenAPIConfig) (spec string, configJSON *string, err error) {
+	if cfg == nil {
+		return "", nil, nil
+	}
+	rest := *cfg
+	rest.Spec = ""
+	data, err := json.Marshal(rest)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to marshal openapi_config: %w", err)
+	}
+	str := string(data)
+	return cfg.Spec, &str, nil
 }
 
 // TableName sets the table name for each model
@@ -265,6 +291,14 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.PendingOAuthConfigJSON = nil
 	}
 
+	// openapi_config: spec text plaintext, remainder (credentials) as JSON.
+	spec, openAPIJSON, err := SplitOpenAPIConfigForStorage(c.OpenAPIConfig)
+	if err != nil {
+		return err
+	}
+	c.OpenAPISpec = spec
+	c.OpenAPIConfigJSON = openAPIJSON
+
 	// Encrypt sensitive fields after serialization.
 	// Always set EncryptionStatus when encryption is enabled so the startup
 	// batch pass does not re-process this row indefinitely.
@@ -304,6 +338,14 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 			}
 			c.TokenExchangeJSON = &enc
 		}
+		// openapi_config carries the upstream API credentials.
+		if c.OpenAPIConfigJSON != nil && *c.OpenAPIConfigJSON != "" {
+			enc, err := encrypt.Encrypt(*c.OpenAPIConfigJSON)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt mcp openapi config: %w", err)
+			}
+			c.OpenAPIConfigJSON = &enc
+		}
 		c.EncryptionStatus = EncryptionStatusEncrypted
 	}
 
@@ -341,6 +383,13 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 				return fmt.Errorf("failed to decrypt mcp pending oauth config: %w", err)
 			}
 			c.PendingOAuthConfigJSON = &decrypted
+		}
+		if c.OpenAPIConfigJSON != nil && *c.OpenAPIConfigJSON != "" {
+			decrypted, err := encrypt.Decrypt(*c.OpenAPIConfigJSON)
+			if err != nil {
+				return fmt.Errorf("failed to decrypt mcp openapi config: %w", err)
+			}
+			c.OpenAPIConfigJSON = &decrypted
 		}
 	}
 	if c.StdioConfigJSON != nil {
@@ -410,6 +459,16 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 		c.PendingOAuthConfig = &cfg
+	}
+	if c.OpenAPIConfigJSON != nil && *c.OpenAPIConfigJSON != "" {
+		var cfg schemas.MCPOpenAPIConfig
+		if err := json.Unmarshal([]byte(*c.OpenAPIConfigJSON), &cfg); err != nil {
+			return fmt.Errorf("failed to decode mcp openapi config: %w", err)
+		}
+		cfg.Spec = c.OpenAPISpec
+		c.OpenAPIConfig = &cfg
+	} else if c.OpenAPISpec != "" {
+		c.OpenAPIConfig = &schemas.MCPOpenAPIConfig{Spec: c.OpenAPISpec}
 	}
 	return nil
 }

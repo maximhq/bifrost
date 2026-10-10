@@ -1890,6 +1890,56 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		hash.Write(data)
 	}
 
+	// Hash openapi_config so a changed spec, upstream, credential set or option
+	// in config.json drifts the hash and triggers reconciliation. The spec is
+	// hashed by content (or by its file/url reference when the content was not
+	// inlined), credentials by ref or value like Headers above; server-computed
+	// metadata (sizes, counts) is derived from these and contributes nothing.
+	if m.OpenAPIConfig != nil {
+		oc := m.OpenAPIConfig
+		switch {
+		case oc.Spec != "":
+			specSum := sha256.Sum256([]byte(oc.Spec))
+			hash.Write([]byte("openapi_spec_sha256:" + hex.EncodeToString(specSum[:])))
+		case oc.SpecFile != nil && *oc.SpecFile != "":
+			hash.Write([]byte("openapi_spec_file:" + *oc.SpecFile))
+		case oc.SpecURL != nil && *oc.SpecURL != "":
+			hash.Write([]byte("openapi_spec_url:" + *oc.SpecURL))
+		}
+		if oc.BaseURL != nil {
+			hash.Write([]byte("openapi_base_url:" + *oc.BaseURL))
+		}
+		if len(oc.SecurityCredentials) > 0 {
+			names := make([]string, 0, len(oc.SecurityCredentials))
+			for name := range oc.SecurityCredentials {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				cred := oc.SecurityCredentials[name]
+				for _, part := range []struct {
+					label string
+					v     *schemas.SecretVar
+				}{{"value", cred.Value}, {"username", cred.Username}, {"password", cred.Password}} {
+					if part.v == nil {
+						continue
+					}
+					if part.v.IsFromSecret() {
+						hash.Write([]byte("openapi_cred:" + name + ":" + part.label + ":ref:" + part.v.GetRawRef()))
+					} else {
+						hash.Write([]byte("openapi_cred:" + name + ":" + part.label + ":val:" + part.v.Val))
+					}
+				}
+			}
+		}
+		if oc.IncludeDeprecated {
+			hash.Write([]byte("openapi_include_deprecated:true"))
+		}
+		if oc.MaxResponseBytes != 0 {
+			hash.Write([]byte(fmt.Sprintf("openapi_max_response_bytes:%d", oc.MaxResponseBytes)))
+		}
+	}
+
 	// will enable it in the future with a migration
 	// hash.Write([]byte("disabled:" + strconv.FormatBool(m.Disabled)))
 	return hex.EncodeToString(hash.Sum(nil)), nil

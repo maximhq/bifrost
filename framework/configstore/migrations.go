@@ -561,6 +561,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_100k_token_pricing_columns"}, run: migrationAdd100kTokenPricingColumns},
 	{IDs: []string{"add_decisions_pricing_columns"}, run: migrationAddDecisionsPricingColumns},
 	{IDs: []string{"add_injected_tools_json_column"}, run: migrationAddInjectedToolsJSONColumn},
+	{IDs: []string{"add_mcp_client_openapi_spec_column"}, run: migrationAddMCPClientOpenAPISpecColumn},
+	{IDs: []string{"add_mcp_client_openapi_config_json_column"}, run: migrationAddMCPClientOpenAPIConfigJSONColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -14543,6 +14545,54 @@ func migrationAddMCPClientRequirePublicTargetColumn(ctx context.Context, db *gor
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running mcp client require public target migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientOpenAPISpecColumn adds config_mcp_clients.openapi_spec, the raw
+// OpenAPI document of an openapi-type client. Plaintext (no secrets) and large, hence a
+// column of its own. NULL/empty for every other connection type, so no backfill.
+func migrationAddMCPClientOpenAPISpecColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_openapi_spec_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "openapi_spec")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "openapi_spec")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp client openapi spec migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientOpenAPIConfigJSONColumn adds config_mcp_clients.openapi_config_json:
+// the base URL, security credentials, options and server-computed metadata of an
+// openapi-type client, encrypted at rest like the other credential-bearing columns.
+func migrationAddMCPClientOpenAPIConfigJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_openapi_config_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "openapi_config_json")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "openapi_config_json")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp client openapi config json migration: %s", err.Error())
 	}
 	return nil
 }
