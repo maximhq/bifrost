@@ -252,6 +252,43 @@ Effective limit = max_limit + override_amount
 
 An override lasts either for a fixed number of reset cycles (the current cycle counts as the first) or until it is explicitly removed. Manage it from the virtual key's **Budget Information** panel, or through `PUT`/`DELETE` on `/api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override` — see [Budget Overrides](./virtual-keys#budget-overrides) for the UI walkthrough and API examples.
 
+### Budget increase requests (Enterprise)
+
+Users who hit a budget can request an override instead of waiting for an admin. A request has a budget, an amount, a duration (a number of cycles, or until removed) and a reason.
+
+Approvers need `VirtualKeys` Update permission. They see pending requests in the approvals tab on the Home page, limited to keys and profiles in their data scope. Approved and denied requests move to their own tabs.
+
+Before approving, an approver can change the amount, mode and cycles. Denying needs a note. A budget can have only one pending request. A second one returns `409`.
+
+#### When the budget already has an override
+
+Approving adds the amount to the active override. That only works if both have the same lifetime. They differ when the modes differ, or when both run for cycles but have different numbers left. The approval card then describes the existing override and replaces **Approve** with two buttons:
+
+| Button | `override_strategy` | Result |
+| --- | --- | --- |
+| **Replace override** | `replace` | Removes the active override. The approved amount and duration apply on their own. |
+| **Add to it, keep &lt;duration&gt;** | `add_keep_lifetime` | Adds the amount to the active override and keeps its mode and remaining cycles. The request records the duration applied, not the one requested. |
+
+To avoid the conflict, the request form locks the duration to the active override's lifetime and says the request adds to it. An override with no cycles left is spent and never locks the form.
+
+To approve through the API, call `POST /api/governance/budget-requests/{request_id}/approve`. The body is optional. `amount`, `mode` and `cycles` default to the requested values.
+
+```bash
+curl -X POST https://your-bifrost-gateway/api/governance/budget-requests/{request_id}/approve \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "override_strategy": "add_keep_lifetime" }'
+```
+
+| `override_strategy` | Behavior |
+| --- | --- |
+| empty or `add` | Adds to the active override. Returns `409` when the lifetimes differ. |
+| `replace` | Replaces the active override. |
+| `add_keep_lifetime` | Adds to the active override and keeps its lifetime. |
+| anything else | Returns `400`. |
+
+Each request in the API response includes a budget snapshot with `override_cycles_remaining`, which is `0` for an override that lasts until removed. If the override is removed before approval, the approval also returns `409`.
+
 ---
 
 ## Customer-scoped requests
