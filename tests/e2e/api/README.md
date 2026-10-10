@@ -144,12 +144,18 @@ newman run tests/e2e/api/collections/provider-harness.json \
   --env-var providerErrorFixture=1
 ```
 
-The fixture answers by model name: `upstream-503` returns HTTP 503, `upstream-429` returns 429
-with `Retry-After: 7`, `upstream-429-ms` returns 429 with `retry-after-ms: 2500`, and
-`upstream-ok` returns a chat completion. Bifrost does not emit a `Retry-After` HTTP header; it
-carries the provider hint in the error body as `extra_fields.retry_after_ms`, which the cases
-assert. The fixture also counts hits per model (`GET /__hits`, `POST /__reset`), so a failover
-case can prove the primary was tried once and the fallback once.
+The fixture answers by model name: `upstream-500` returns HTTP 500, `upstream-503` returns HTTP 503,
+`upstream-429` returns 429 with `Retry-After: 7`, `upstream-429-ms` returns 429 with
+`retry-after-ms: 2500`, `upstream-ok` returns a chat completion, and `upstream-slow` returns the
+same completion after two seconds. A request with `"stream": true` that a model answers with a
+completion gets it as server-sent chunks ending in `data: [DONE]`. Bifrost does not emit a
+`Retry-After` HTTP header; it carries the provider hint in the error body as
+`extra_fields.retry_after_ms`, which the cases assert. The fixture also counts hits per model
+(`GET /__hits`, `POST /__reset`), so a failover case can prove the primary was tried once and the
+fallback once. A model may carry a `~tag` suffix (`upstream-500~run-1-a1`): the part before `~`
+picks the behaviour and the hit is counted under the full name, so a case counts its own attempts.
+`test-key` is the only credential it accepts: a request whose `Authorization` header carries any
+other bearer is refused with 401, as a provider refuses a caller's direct key.
 The same gateway config also registers an Azure key; the fixture answers model `azure-filtered` on
 `/openai/v1/chat/completions` with Azure `prompt_filter_results` and per-choice `content_filter_results`,
 which is how the dropped-annotation defect was measured.
@@ -158,6 +164,26 @@ The cases are skipped unless `providerErrorFixture=1`.
 The fixture also serves the two datasheets a fresh gateway downloads on first start (the config's `framework.pricing` URLs point at it), including the model-parameters row that makes `gpt-5-pro` Responses-only, which is what makes folder 160's chat request convert. The run therefore needs no network. Starting the gateway with `HTTPS_PROXY=http://127.0.0.1:9` is a cheap proof: loopback is exempt from proxying, so only an accidental external call would fail.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
+
+Folder 185 (`routing-error-fixture`) uses the same fixture for routing cases that need an upstream to
+fail on demand: a 500 retried three times, a first token held past a 500ms deadline, a caller key
+the upstream refuses. Its rows create their own run-scoped providers whose base URL is the fixture,
+and need the management API, governance, the logs and the gateway's OpenAI key, so they run against
+an ordinary gateway rather than the isolated one, for example the python integration profile on
+port 8080, with the fixture running next to it:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "185. Routing retries, first-token cutoffs and refused keys against the provider error fixture (routing-error-fixture)" \
+  --env-var baseUrl=http://127.0.0.1:8080 \
+  --env-var providerErrorFixture=1 \
+  --env-var providerErrorFixtureUrl=http://127.0.0.1:8791 \
+  --env-var openaiKey="$OPENAI_API_KEY"
+```
+
+When the gateway needs a setup token for its management API, run the folder through
+`make run-provider-harness-test FEATURE=routing-error-fixture ENV_FILE=<an environment setting
+providerErrorFixture=1>` instead, which adds the token to every management call.
 
 ## Vertex endpoint selection and header forwarding
 
