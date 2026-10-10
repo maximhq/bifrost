@@ -253,30 +253,6 @@ func responsesUsesPromptCacheBreakpoints(caps schemas.ModelCaps, provider schema
 	}
 }
 
-// responsesHasPromptCacheBreakpoint reports whether any content block carries a
-// breakpoint. Used to decide whether explicit cache mode is warranted: switching a
-// request to explicit mode with no breakpoint anywhere opts it out of caching
-// entirely, which is strictly worse than the implicit default it replaced.
-func responsesHasPromptCacheBreakpoint(messages []schemas.ResponsesMessage) bool {
-	for i := range messages {
-		if messages[i].Content != nil {
-			for j := range messages[i].Content.ContentBlocks {
-				if messages[i].Content.ContentBlocks[j].PromptCacheBreakpoint != nil {
-					return true
-				}
-			}
-		}
-		if blocks := responsesToolOutputBlocks(&messages[i]); blocks != nil {
-			for j := range blocks {
-				if blocks[j].PromptCacheBreakpoint != nil {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
 // responsesToolOutputBlocks returns the block-form output of a function_call_output
 // item, or nil when the item is not one or its output is a bare string.
 func responsesToolOutputBlocks(msg *schemas.ResponsesMessage) []schemas.ResponsesMessageContentBlock {
@@ -310,14 +286,10 @@ func isMarkableResponsesToolOutputBlock(b schemas.ResponsesMessageContentBlock) 
 	return isMarkableResponsesInputBlock(b, true)
 }
 
-// responsesUsesPromptCacheOptions reports whether the target also needs request-level
-// prompt_cache_options to honour an explicit breakpoint.
-//
-// This is the OpenAI half only (gpt-5.6 and later). Those models default to IMPLICIT caching, which puts
-// the breakpoint on the latest message - so an agent loop rewrites the whole growing
-// prompt every turn at the cache-write rate. The block marker alone does not switch
-// that off; mode=explicit does. OpenRouter has no equivalent field and needs none.
-func responsesUsesPromptCacheOptions(caps schemas.ModelCaps, provider schemas.ModelProvider, model string) bool {
+// usesOpenAIPromptCacheBreakpoints identifies the OpenAI family that supports
+// native breakpoints on message and tool-output content. OpenRouter translates
+// text breakpoints to its own provider dialect instead.
+func usesOpenAIPromptCacheBreakpoints(caps schemas.ModelCaps, provider schemas.ModelProvider, model string) bool {
 	switch provider {
 	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle, schemas.Bedrock:
 		return caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(model))
@@ -880,18 +852,15 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// provider reports its own name ("my-openai"), which no case in either predicate
 	// knows, so gating on the unresolved key sends every such request down the default
 	// branch: the caller's cache_control is stripped by the serializer with nothing put
-	// in its place, and the request silently falls back to implicit caching - the exact
-	// billing profile #6180 exists to escape. The injector resolves the same way in
-	// core/bifrost.go, and providers/utils does too; this call site was the odd one out.
+	// in its place, losing the requested cache boundary. The injector resolves the
+	// same way in core/bifrost.go, and providers/utils does too.
 	cachePromptProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
-	needsExplicitPromptCacheMode := false
 	if responsesUsesPromptCacheBreakpoints(caps, cachePromptProvider, capModel) {
 		// Only the OpenAI family documents a breakpoint on image/file blocks and on
 		// function_call_output content; that is the same set of targets that takes
 		// prompt_cache_options.
-		usesPromptCacheOptions := responsesUsesPromptCacheOptions(caps, cachePromptProvider, capModel)
-		applyResponsesCacheBreakpoints(messages, usesPromptCacheOptions)
-		needsExplicitPromptCacheMode = usesPromptCacheOptions && responsesHasPromptCacheBreakpoint(messages)
+		openAIFamily := usesOpenAIPromptCacheBreakpoints(caps, cachePromptProvider, capModel)
+		applyResponsesCacheBreakpoints(messages, openAIFamily)
 	}
 
 	// Updating params
@@ -1056,16 +1025,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 	}
 
-	// gpt-5.6 defaults to IMPLICIT caching, which anchors the breakpoint on the latest
-	// message - so an agent loop rewrites the whole growing prompt every turn at the
-	// cache-write rate and reads almost nothing back (#6180). A block marker alone does
-	// not switch that off; mode=explicit does. Runs after the params assignment above so
-	// a caller that set prompt_cache_options themselves is visible, and wins.
-	if needsExplicitPromptCacheMode && req.ResponsesParameters.PromptCacheOptions == nil {
-		req.ResponsesParameters.PromptCacheOptions = &schemas.PromptCacheOptions{
-			Mode: schemas.Ptr(PromptCacheBreakpointModeExplicit),
-		}
-	}
+	// Preserve caller-supplied prompt_cache_options and the implicit default.
+	// Both modes honor explicit block markers, but explicit-only mode stops
+	// looking up earlier eligible message endings. Inferring it from cache_control
+	// breaks agent clients whose newest tool-result marker moves each turn.
 
 	// Append tools hoisted out of additional_tools items. Runs after the params
 	// assignment above, which would otherwise clobber Tools, and before the

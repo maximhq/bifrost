@@ -2337,9 +2337,8 @@ func TestToOpenAIChatRequest_GPT56CacheBreakpoint(t *testing.T) {
 			_, present = part(t, m, 1, 1, raw)["prompt_cache_breakpoint"]
 			require.Falsef(t, present, "unmarked text part must not receive a breakpoint; raw=%s", raw)
 
-			opts, ok := m["prompt_cache_options"].(map[string]any)
-			require.Truef(t, ok, "a translated breakpoint must switch the request to explicit mode; raw=%s", raw)
-			require.Equalf(t, "explicit", opts["mode"], "raw=%s", raw)
+			_, hasOptions := m["prompt_cache_options"]
+			require.Falsef(t, hasOptions, "translated markers must preserve default implicit lookup; raw=%s", raw)
 
 			// Copy-on-write: the caller's input must still carry its own markers only.
 			require.Nil(t, req.Input[0].Content.ContentBlocks[0].PromptCacheBreakpoint, "caller's input was mutated")
@@ -2347,12 +2346,36 @@ func TestToOpenAIChatRequest_GPT56CacheBreakpoint(t *testing.T) {
 		})
 	}
 
-	t.Run("caller's prompt_cache_options wins", func(t *testing.T) {
-		req := mkReq(schemas.OpenAI, "gpt-5.6-sol")
-		req.Params.PromptCacheOptions = &schemas.PromptCacheOptions{Mode: schemas.Ptr("implicit")}
+	for _, mode := range []string{"implicit", "explicit", ""} {
+		t.Run("caller cache options "+mode, func(t *testing.T) {
+			req := mkReq(schemas.OpenAI, "gpt-5.6-sol")
+			options := &schemas.PromptCacheOptions{TTL: schemas.Ptr("30m")}
+			if mode != "" {
+				options.Mode = schemas.Ptr(mode)
+			}
+			req.Params.PromptCacheOptions = options
+			m, raw := marshal(t, req)
+			opts, ok := m["prompt_cache_options"].(map[string]any)
+			require.True(t, ok, raw)
+			require.Equal(t, "30m", opts["ttl"], raw)
+			if mode == "" {
+				require.NotContains(t, opts, "mode", raw)
+			} else {
+				require.Equal(t, mode, opts["mode"], raw)
+			}
+			require.Same(t, options, req.Params.PromptCacheOptions)
+		})
+	}
+
+	t.Run("native block marker does not select request-wide explicit mode", func(t *testing.T) {
+		req := mkReq(schemas.OpenAI, "gpt-6-sol")
+		req.Params = nil
+		block := &req.Input[0].Content.ContentBlocks[0]
+		block.CacheControl = nil
+		block.PromptCacheBreakpoint = &schemas.PromptCacheBreakpoint{Mode: schemas.Ptr("explicit")}
 		m, raw := marshal(t, req)
-		opts, _ := m["prompt_cache_options"].(map[string]any)
-		require.Equalf(t, "implicit", opts["mode"], "raw=%s", raw)
+		require.Equal(t, "explicit", part(t, m, 0, 0, raw)["prompt_cache_breakpoint"].(map[string]any)["mode"], raw)
+		require.NotContains(t, m, "prompt_cache_options", raw)
 	})
 
 	t.Run("pre-5.6 model strips and stays implicit", func(t *testing.T) {

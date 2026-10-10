@@ -18,8 +18,9 @@ Providers such as Anthropic cache a prompt prefix only when the request marks wh
 cacheable region ends, using a `cache_control` block on a message. Most SDKs let you add
 that marker yourself, but agentic clients such as Codex send none at all. On Anthropic
 models that means nothing is cached and every turn pays full price for a prompt that
-barely changed. On providers that cache implicitly, the cached prefix slides onto the
-newest message, so each turn writes a new cache entry and reads almost nothing back.
+barely changed. On GPT-5.6 and later, implicit caching can reuse earlier eligible
+message endings as the conversation grows. Explicit block markers can coexist with
+that implicit lookup.
 
 Bifrost can add the marker for the client. Turn on `prompt_cache.auto_inject` for a
 provider and Bifrost marks the first cacheable content block of every request that
@@ -75,11 +76,28 @@ the former.
 | Vertex AI | Claude models only. Gemini caches through a server-side `cachedContent` resource, so injection is a no-op there | `cache_control` | `5m` default, `1h` with `ttl` |
 | Bedrock | Claude and Amazon Nova on the Converse API. gpt-5.6 ids that resolve to the Mantle surface, or that a key with `use_openai_endpoints` sends to `/openai/v1`, follow the OpenAI row. A gpt-5.6 id served by Converse (cross-region ids such as `global.openai.gpt-5.6-luna` on a default key) gets Bedrock's implicit, best-effort prefix caching with no marker at all. Mid-conversation `role: "system"` messages are inlined in place for every model family so the cached prefix stays stable across turns | `cachePoint` block | Claude only. Nova accepts only the default and returns 400 for `1h` |
 | Bedrock Mantle | Claude, Amazon Nova, and the gpt-5.6 family | `cachePoint` for Claude and Nova, `prompt_cache_breakpoint` for gpt-5.6 | Same as Bedrock |
-| OpenAI | gpt-5.6 family on the Responses API. Earlier models cache implicitly, and Chat Completions strips the marker for every model | `prompt_cache_breakpoint` on the block plus `prompt_cache_options.mode: "explicit"` on the request | Ignored |
-| Azure OpenAI | gpt-5.6 family on the Responses API | Same as OpenAI | Ignored |
+| OpenAI | GPT-5.6 and later on Responses and Chat Completions. Earlier models cache implicitly and strip the marker | `prompt_cache_breakpoint` on supported content blocks; request-wide implicit mode remains the default | Ignored |
+| Azure OpenAI | GPT-5.6 and later on Responses and Chat Completions | Same as OpenAI | Ignored |
 | OpenRouter | Claude models | `cache_control` (Chat) or `prompt_cache_breakpoint` (Responses), converted upstream | `5m` default, `1h` with `ttl` |
 | Custom providers | Follow the base provider they wrap | Same as the base provider | Same as the base provider |
 | Gemini, DeepSeek, Groq, xAI, Mistral, and other implicit-caching providers | None | Not applicable, injection is a no-op | Not applicable |
+
+For GPT-5.6 and later, Bifrost translates `cache_control: {"type": "ephemeral"}`
+into `prompt_cache_breakpoint: {"mode": "explicit"}` on supported blocks without
+selecting request-wide explicit mode. OpenAI and Bedrock honor these markers in the
+default implicit mode, which also checks earlier eligible message endings. This
+preserves conversation reuse for clients such as Claude Code that move a marker to
+the newest tool result each turn.
+
+Bifrost preserves caller-supplied `prompt_cache_options`. Set
+`prompt_cache_options.mode: "explicit"` only when you want lookup and writes to use
+only your supplied breakpoints; keep reusable boundaries marked in subsequent
+requests. Anthropic's marker lookback does not translate to GPT explicit-only mode.
+An Anthropic marker's TTL is not mapped to OpenAI's request-wide TTL; OpenAI supports
+`"30m"`, which is also its default.
+
+See the [OpenAI prompt-caching guide](https://developers.openai.com/api/docs/guides/prompt-caching)
+and [Bedrock prompt-caching documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html).
 
 <Info>
 The `Prompt Caching` tab appears in the provider sheet for every provider, including
@@ -434,4 +452,4 @@ minute TTL and 2x for the 1 hour TTL.
 - **[Request Options](/providers/request-options)** - Every per-request header and context key, including the prompt-cache override.
 - **[Anthropic](/providers/supported-providers/anthropic#cache-control)** - Cache-control semantics for Claude, which injected markers follow.
 - **[Bedrock](/providers/supported-providers/bedrock#cache-control)** - How markers become `cachePoint` blocks on Bedrock.
-- **[OpenAI](/providers/supported-providers/openai)** - Explicit cache mode on the gpt-5.6 family.
+- **[OpenAI](/providers/supported-providers/openai)** - Block breakpoints on GPT-5.6 and later, with implicit lookup enabled by default.

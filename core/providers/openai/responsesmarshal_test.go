@@ -1772,10 +1772,9 @@ func firstBlock(t *testing.T, m map[string]any, idx int, raw string) map[string]
 
 // TestToOpenAIResponsesRequest_GPT56CacheBreakpoint extends the #6290 OpenRouter
 // translation to the gpt-5.6 family (#6180). These models define
-// prompt_cache_breakpoint natively but default to IMPLICIT caching, which anchors the
-// breakpoint on the latest message - so an agent loop rewrites the whole growing
-// prompt every turn at the cache-write rate. Translating the marker is only half the
-// fix; prompt_cache_options.mode=explicit is what actually pins the prefix.
+// prompt_cache_breakpoint natively. Translating a block marker must preserve the
+// implicit default, which can reuse earlier eligible message endings even when
+// an agent moves the explicit marker forward each turn.
 func TestToOpenAIResponsesRequest_GPT56CacheBreakpoint(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -1785,9 +1784,11 @@ func TestToOpenAIResponsesRequest_GPT56CacheBreakpoint(t *testing.T) {
 		{"openai", schemas.OpenAI, "gpt-5.6-sol"},
 		{"azure", schemas.Azure, "eu/gpt-5.6-sol"},
 		{"bedrock mantle", schemas.BedrockMantle, "openai.gpt-5.6-terra"},
+		{"bedrock runtime", schemas.Bedrock, "global.openai.gpt-5.6-sol"},
 		{"openai gpt-6", schemas.OpenAI, "gpt-6-astra"},
 		{"azure gpt-6", schemas.Azure, "gpt-6-astra"},
 		{"bedrock mantle gpt-6", schemas.BedrockMantle, "openai.gpt-6-astra"},
+		{"bedrock runtime gpt-6", schemas.Bedrock, "global.openai.gpt-6-sol"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, raw := marshalResponses(t, gpt56CacheReq(tc.provider, tc.model))
@@ -1804,12 +1805,8 @@ func TestToOpenAIResponsesRequest_GPT56CacheBreakpoint(t *testing.T) {
 				t.Errorf("cache_control must not be forwarded to an OpenAI-shaped endpoint; raw=%s", raw)
 			}
 
-			opts, ok := m["prompt_cache_options"].(map[string]any)
-			if !ok {
-				t.Fatalf("gpt-5.6 needs prompt_cache_options.mode=explicit; the block marker alone leaves implicit caching on. raw=%s", raw)
-			}
-			if mode, _ := opts["mode"].(string); mode != "explicit" {
-				t.Errorf("prompt_cache_options.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+			if _, present := m["prompt_cache_options"]; present {
+				t.Errorf("translated markers must preserve default implicit lookup; raw=%s", raw)
 			}
 
 			unmarked := firstBlock(t, m, 1, raw)
@@ -1863,8 +1860,8 @@ func TestToOpenAIResponsesRequest_CacheBreakpointGateReadsDatasheet(t *testing.T
 		if _, present := firstBlock(t, m, 0, raw)["prompt_cache_breakpoint"]; !present {
 			t.Errorf("datasheet true must enable the breakpoint; raw=%s", raw)
 		}
-		if _, present := m["prompt_cache_options"]; !present {
-			t.Errorf("datasheet true must enable prompt_cache_options; raw=%s", raw)
+		if _, present := m["prompt_cache_options"]; present {
+			t.Errorf("datasheet true must preserve implicit cache mode; raw=%s", raw)
 		}
 	})
 }
@@ -1872,26 +1869,48 @@ func TestToOpenAIResponsesRequest_CacheBreakpointGateReadsDatasheet(t *testing.T
 // TestToOpenAIResponsesRequest_GPT56RespectsCallerCacheOptions verifies Bifrost does
 // not overwrite a caller that already made a caching decision.
 func TestToOpenAIResponsesRequest_GPT56RespectsCallerCacheOptions(t *testing.T) {
-	req := gpt56CacheReq(schemas.OpenAI, "gpt-5.6-sol")
-	req.Params = &schemas.ResponsesParameters{
-		PromptCacheOptions: &schemas.PromptCacheOptions{
-			Mode: schemas.Ptr("implicit"),
-			TTL:  schemas.Ptr("30m"),
-		},
+	for _, mode := range []string{"implicit", "explicit", ""} {
+		t.Run(mode, func(t *testing.T) {
+			req := gpt56CacheReq(schemas.OpenAI, "gpt-5.6-sol")
+			options := &schemas.PromptCacheOptions{TTL: schemas.Ptr("30m")}
+			if mode != "" {
+				options.Mode = schemas.Ptr(mode)
+			}
+			req.Params = &schemas.ResponsesParameters{PromptCacheOptions: options}
+			m, raw := marshalResponses(t, req)
+			opts, ok := m["prompt_cache_options"].(map[string]any)
+			if !ok {
+				t.Fatalf("caller options disappeared; raw=%s", raw)
+			}
+			if opts["ttl"] != "30m" {
+				t.Errorf("caller TTL lost; raw=%s", raw)
+			}
+			if mode == "" {
+				if _, present := opts["mode"]; present {
+					t.Errorf("TTL-only options must not select a mode; raw=%s", raw)
+				}
+			} else if opts["mode"] != mode {
+				t.Errorf("caller mode overwritten; raw=%s", raw)
+			}
+			if req.Params.PromptCacheOptions != options {
+				t.Error("caller options mutated")
+			}
+		})
 	}
 
-	m, raw := marshalResponses(t, req)
-
-	opts, ok := m["prompt_cache_options"].(map[string]any)
-	if !ok {
-		t.Fatalf("caller's prompt_cache_options disappeared; raw=%s", raw)
-	}
-	if mode, _ := opts["mode"].(string); mode != "implicit" {
-		t.Errorf("caller's mode was overwritten: got %q, want \"implicit\"; raw=%s", mode, raw)
-	}
-	if ttl, _ := opts["ttl"].(string); ttl != "30m" {
-		t.Errorf("caller's ttl was lost: got %q; raw=%s", ttl, raw)
-	}
+	t.Run("native block marker keeps default mode with nil params", func(t *testing.T) {
+		req := gpt56CacheReq(schemas.OpenAI, "gpt-6-sol")
+		block := &req.Input[0].Content.ContentBlocks[0]
+		block.CacheControl = nil
+		block.PromptCacheBreakpoint = &schemas.PromptCacheBreakpoint{Mode: schemas.Ptr("explicit")}
+		m, raw := marshalResponses(t, req)
+		if _, present := m["prompt_cache_options"]; present {
+			t.Errorf("native marker changed cache mode; raw=%s", raw)
+		}
+		if bp, ok := firstBlock(t, m, 0, raw)["prompt_cache_breakpoint"].(map[string]any); !ok || bp["mode"] != "explicit" {
+			t.Errorf("native breakpoint lost; raw=%s", raw)
+		}
+	})
 }
 
 // TestToOpenAIResponsesRequest_GPT56NoBreakpointNoExplicitMode guards a footgun:
@@ -1920,7 +1939,7 @@ func TestToOpenAIResponsesRequest_GPT56NoBreakpointNoExplicitMode(t *testing.T) 
 // never arrives and would be inert if it did, and forwarding the "1h" that does arrive
 // would send a value OpenAI rejects, turning a working request into a 400.
 //
-// The mode must still be set: that is what pins the prefix, and it is unrelated to TTL.
+// The block breakpoint remains explicit; the request keeps the implicit default.
 func TestToOpenAIResponsesRequest_GPT56MarkerTTLIsNotCarried(t *testing.T) {
 	req := gpt56CacheReq(schemas.OpenAI, "gpt-5.6-sol")
 	req.Input[0].Content.ContentBlocks[0].CacheControl = &schemas.CacheControl{
@@ -1930,16 +1949,8 @@ func TestToOpenAIResponsesRequest_GPT56MarkerTTLIsNotCarried(t *testing.T) {
 
 	m, raw := marshalResponses(t, req)
 
-	opts, ok := m["prompt_cache_options"].(map[string]any)
-	if !ok {
-		t.Fatalf("the explicit-mode option must still be set; raw=%s", raw)
-	}
-	if mode, _ := opts["mode"].(string); mode != "explicit" {
-		t.Errorf("prompt_cache_options.mode = %q, want \"explicit\"; raw=%s", mode, raw)
-	}
-	if ttl, present := opts["ttl"]; present {
-		t.Errorf("a marker TTL must not become prompt_cache_options.ttl (got %v); OpenAI accepts "+
-			"only \"30m\" there and rejects \"1h\"; raw=%s", ttl, raw)
+	if _, present := m["prompt_cache_options"]; present {
+		t.Errorf("marker TTL must not create request-wide cache options; raw=%s", raw)
 	}
 	if strings.Contains(raw, "\"ttl\"") {
 		t.Errorf("no ttl may reach an OpenAI-shaped endpoint from a cache_control marker; raw=%s", raw)
@@ -2040,14 +2051,8 @@ func TestToOpenAIResponsesRequest_CustomProviderResolvesBaseForCacheBreakpoints(
 		if mode, _ := bp["mode"].(string); mode != "explicit" {
 			t.Errorf("prompt_cache_breakpoint.mode = %q, want \"explicit\"; raw=%s", mode, raw)
 		}
-		// The block marker alone does not switch gpt-5.6 off implicit caching; without
-		// request-level explicit mode the breakpoint is inert and the win is lost.
-		opts, ok := jsonMap["prompt_cache_options"].(map[string]any)
-		if !ok {
-			t.Fatalf("gpt-5.6 needs request-level prompt_cache_options to honour the breakpoint; raw=%s", raw)
-		}
-		if mode, _ := opts["mode"].(string); mode != "explicit" {
-			t.Errorf("prompt_cache_options.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+		if _, present := jsonMap["prompt_cache_options"]; present {
+			t.Errorf("translated marker must preserve implicit lookup; raw=%s", raw)
 		}
 	}
 
@@ -2433,12 +2438,8 @@ func TestToOpenAIResponsesRequest_FunctionCallOutputCacheBreakpoint(t *testing.T
 				if _, present := last["cache_control"]; present {
 					t.Errorf("cache_control must not reach an OpenAI-shaped endpoint; raw=%s", raw)
 				}
-				opts, ok := m["prompt_cache_options"].(map[string]any)
-				if !ok {
-					t.Fatalf("a breakpoint on a function_call_output must also switch the request to explicit mode; raw=%s", raw)
-				}
-				if mode, _ := opts["mode"].(string); mode != "explicit" {
-					t.Errorf("prompt_cache_options.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+				if _, present := m["prompt_cache_options"]; present {
+					t.Errorf("tool-output marker must preserve implicit lookup; raw=%s", raw)
 				}
 				// The caller's request must not be rewritten: fallbacks replay it.
 				if req.Input[2].ResponsesToolMessage.Output.ResponsesToolCallOutputStr == nil {
@@ -2472,8 +2473,8 @@ func TestToOpenAIResponsesRequest_FunctionCallOutputCacheBreakpoint(t *testing.T
 		if _, present := last["cache_control"]; present {
 			t.Errorf("cache_control must be stripped; raw=%s", raw)
 		}
-		if opts, ok := m["prompt_cache_options"].(map[string]any); !ok || opts["mode"] != "explicit" {
-			t.Errorf("request must be in explicit mode; raw=%s", raw)
+		if _, present := m["prompt_cache_options"]; present {
+			t.Errorf("translated markers must preserve implicit lookup; raw=%s", raw)
 		}
 	})
 
@@ -2554,8 +2555,8 @@ func TestToOpenAIResponsesRequest_ImageAndFileCacheBreakpoints(t *testing.T) {
 		if _, present := firstBlock(t, m, 2, raw)["prompt_cache_breakpoint"]; present {
 			t.Errorf("unmarked text block must not receive a breakpoint; raw=%s", raw)
 		}
-		if opts, ok := m["prompt_cache_options"].(map[string]any); !ok || opts["mode"] != "explicit" {
-			t.Errorf("request must be in explicit mode; raw=%s", raw)
+		if _, present := m["prompt_cache_options"]; present {
+			t.Errorf("translated markers must preserve implicit lookup; raw=%s", raw)
 		}
 	})
 
@@ -2645,8 +2646,8 @@ func TestToOpenAIResponsesRequest_InjectedToolOutputMarkerReachesWire(t *testing
 	if bp, ok := last["prompt_cache_breakpoint"].(map[string]any); !ok || bp["mode"] != "explicit" {
 		t.Errorf("injected marker must reach the wire as prompt_cache_breakpoint; got %v; raw=%s", last, raw)
 	}
-	if opts, ok := m["prompt_cache_options"].(map[string]any); !ok || opts["mode"] != "explicit" {
-		t.Errorf("request must be in explicit mode; raw=%s", raw)
+	if _, present := m["prompt_cache_options"]; present {
+		t.Errorf("injected marker must preserve implicit lookup; raw=%s", raw)
 	}
 }
 
