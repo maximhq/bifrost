@@ -2761,27 +2761,38 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		}
 
 	case AnthropicStreamEventTypeMessageDelta:
-		// The sandbox container is delivered here, after all content blocks; fold
-		// it onto the code_interpreter_call(s) at message_stop.
-		if chunk.Delta.Container != nil {
-			state.Container = chunk.Delta.Container
-		}
-		if chunk.Delta.StopReason != nil {
-			mapped := ConvertAnthropicFinishReasonToBifrost(*chunk.Delta.StopReason)
-			if state.UsedStructuredOutputTool && !state.SeenRealToolCall &&
-				mapped == string(schemas.BifrostFinishReasonToolCalls) {
-				mapped = string(schemas.BifrostFinishReasonStop)
+		// The delta object is REQUIRED on this event, and a well-formed upstream
+		// always sends it -- but reading it unconditionally made a malformed one
+		// fatal rather than merely wrong: this streaming goroutine has no
+		// recover(), so an upstream `message_delta` carrying usage and no delta
+		// object took the whole process down on a nil dereference (reproduced
+		// against a running gateway, and covered by
+		// TestMessageDeltaWithoutAnUpstreamDeltaObjectIsServed). The event
+		// still carries usage worth relaying, and the egress supplies the stop
+		// fields the client requires, so the turn is served instead.
+		if chunk.Delta != nil {
+			// The sandbox container is delivered here, after all content blocks; fold
+			// it onto the code_interpreter_call(s) at message_stop.
+			if chunk.Delta.Container != nil {
+				state.Container = chunk.Delta.Container
 			}
-			state.StopReason = &mapped
-			if *chunk.Delta.StopReason == AnthropicStopReasonStopSequence {
-				state.StopSequence = chunk.Delta.StopSequence
+			if chunk.Delta.StopReason != nil {
+				mapped := ConvertAnthropicFinishReasonToBifrost(*chunk.Delta.StopReason)
+				if state.UsedStructuredOutputTool && !state.SeenRealToolCall &&
+					mapped == string(schemas.BifrostFinishReasonToolCalls) {
+					mapped = string(schemas.BifrostFinishReasonStop)
+				}
+				state.StopReason = &mapped
+				if *chunk.Delta.StopReason == AnthropicStopReasonStopSequence {
+					state.StopSequence = chunk.Delta.StopSequence
+				}
 			}
-		}
-		if chunk.Delta.StopDetails != nil {
-			state.StopDetails = stopDetailsToBifrost(chunk.Delta.StopDetails)
-		}
-		if len(chunk.Delta.SafeguardResults) > 0 {
-			state.SafeguardResults = chunk.Delta.SafeguardResults
+			if chunk.Delta.StopDetails != nil {
+				state.StopDetails = stopDetailsToBifrost(chunk.Delta.StopDetails)
+			}
+			if len(chunk.Delta.SafeguardResults) > 0 {
+				state.SafeguardResults = chunk.Delta.SafeguardResults
+			}
 		}
 		// Check if integration type in ctx is anthropic
 		if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
@@ -2967,6 +2978,16 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 	state := getOrCreateAnthropicToResponsesStreamState(ctx)
 	events = enforceStreamBlockTypes(state, events)
 	state.recordEmittedTextEvents(events)
+	// The terminal frame is the last one that can carry usage worth reshaping, so
+	// the prompt-usage readings are released once it has been rendered -- here,
+	// rather than when the reader goroutine returned, because this frame is
+	// marshalled from the chunk channel after that goroutine has already exited.
+	for _, event := range events {
+		if event != nil && event.Type == AnthropicStreamEventTypeMessageStop {
+			closeAnthropicStreamDeltaPromptUsageLedger(ctx)
+			break
+		}
+	}
 	return events
 }
 
@@ -4027,6 +4048,14 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			// Convert usage from Bifrost format to Anthropic format using common converter
 			if bifrostResp.Response != nil {
 				streamResp.Usage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
+				// Report no prompt-side counter the upstream event behind this chunk
+				// did not report. The neutral usage cannot tell an omitted counter
+				// from a zero one, and `input_tokens: 0` on a terminal frame erases
+				// the message_start figure in every accumulating client, while
+				// Bifrost's own accumulated usage stays correct -- so the client's
+				// final prompt count disagreed with the one Bifrost billed. A real
+				// reported zero is still reported. See streamdeltausage.go.
+				applyAnthropicStreamDeltaPromptUsage(ctx, bifrostResp.SequenceNumber, streamResp.Usage)
 			}
 
 			// Convert stop reason from Bifrost format to Anthropic format
@@ -4068,6 +4097,34 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 					streamResp.Delta = &AnthropicStreamDelta{}
 				}
 				streamResp.Delta.SafeguardResults = bifrostResp.Response.SafeguardResults
+			}
+
+			// A `message_delta` ALWAYS carries a delta object WITH the two
+			// message-level stop fields: the event declares `stop_reason` and
+			// `stop_sequence` as required-and-nullable and the supported clients
+			// read `event.delta.stop_reason` unguarded. An ABSENT object throws
+			// there and aborts the stream; an object that merely omits the key
+			// reads as `undefined` and is ASSIGNED: that read is unconditional on
+			// every message_delta, so the LAST one decides the turn's stop state
+			// and an earlier frame's reported reason does not survive a later
+			// omission. Both are required-field omissions, measured, and only the
+			// first is the exception. An upstream reporting its running usage on several
+			// message_delta frames sets no stop reason on the non-final ones, so
+			// every branch above left Delta nil and `delta,omitempty` dropped the
+			// key: a correctly relayed, correctly billed turn a supported client
+			// could not consume. This reports the stop state the upstream actually
+			// reported -- a null stop_reason, never a fabricated end_turn. See
+			// streamdeltaframe.go.
+			//
+			// The flag is set on an object the branches above ALREADY built, not
+			// only on one supplied here: `stop_details`, `container` and a text
+			// delta each allocate one, so such a frame with no stop reason rendered
+			// without `stop_reason` -- the same omission. The flag only ADDS the
+			// null when there is none, so a terminal frame is byte-unchanged.
+			if streamResp.Delta == nil {
+				streamResp.Delta = newAnthropicMessageDeltaStopFields()
+			} else {
+				streamResp.Delta.requireStopFields = true
 			}
 		}
 

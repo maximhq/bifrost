@@ -2093,6 +2093,8 @@ type AnthropicUsage struct {
 	Speed                    *string                       `json:"speed,omitempty"`                 // "fast" or "standard" — which speed was actually served (fast mode research preview)
 	InferenceGeo             *string                       `json:"inference_geo,omitempty"`         // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
 	Iterations               []AnthropicUsage              `json:"iterations,omitempty"`            // Iterations statistics
+
+	absentPromptCounters uint8 // prompt counters to render as absent, not zero; see MarshalJSON in streamdeltausage.go
 }
 
 // AnthropicOutputTokensDetails breaks down output_tokens for extended-thinking responses.
@@ -2281,6 +2283,8 @@ type AnthropicStreamDelta struct {
 	Container *AnthropicResponseContainer `json:"container,omitempty"`
 	// SafeguardResults carries Claude Code's auto-mode verdicts on the final message_delta.
 	SafeguardResults json.RawMessage `json:"safeguard_results,omitempty"`
+
+	requireStopFields bool // render the required message-level stop fields explicitly; see MarshalJSON in streamdeltaframe.go
 }
 
 // ==================== MODEL TYPES ====================
