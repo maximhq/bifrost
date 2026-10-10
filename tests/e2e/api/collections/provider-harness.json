@@ -221119,6 +221119,310 @@
           }
         }
       ]
+    },
+    {
+      "name": "198. Bedrock native Converse outputConfig wire retention (#8058) (bedrock-output-config-fixture)",
+      "description": "Local serializer regression for the native /bedrock/model/{modelId}/converse and converse-stream routes, not live AWS model enforcement. Start tests/e2e/api/runners/bedrock-outputconfig-fixture.mjs and an isolated gateway using its generated config, then opt in with bedrockOutputConfigFixture=1; skipped otherwise. The fixture captures the actual outbound Converse body, serves local pricing/model datasheets, and overrides every Bedrock service endpoint with a throwaway key so no request reaches AWS. Positive non-streaming and streaming rows assert top-level outputConfig plus exact schema string and nested member order with x-bf-passthrough-extra-params:false. The absent-field control asserts that no outputConfig is synthesized. The invalid textFormat.type row expects the fixture's specific 400 validation message; dropping outputConfig would make this row return 200 and fail. The ordinary prompt says only 'Say hello', and response text is fixture-generated. This pins wire retention without claiming model capability or resolving the wider issue's Invoke/native-enforcement behavior. Run sequentially because each row resets the shared wire recorder; default control URL is http://127.0.0.1:8804 (override bedrockOutputConfigControlUrl if changing --port).",
+      "item": [
+        {
+          "name": "198.1 bedrock/output-config-fixture Converse preserves native outputConfig and schema string - #8058",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "false"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Say hello.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 8\n  },\n  \"outputConfig\": {\n    \"textFormat\": {\n      \"type\": \"json_schema\",\n      \"structure\": {\n        \"jsonSchema\": {\n          \"schema\": \"{ \\\"type\\\": \\\"object\\\", \\\"properties\\\": { \\\"z\\\": { \\\"type\\\": \\\"string\\\" }, \\\"a\\\": { \\\"type\\\": \\\"integer\\\" } }, \\\"required\\\": [\\\"z\\\", \\\"a\\\"], \\\"additionalProperties\\\": false }\",\n          \"description\": \"Keep the schema string and member order\",\n          \"name\": \"wire_answer\"\n        }\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/output-config-fixture/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "output-config-fixture",
+                "converse"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('bedrockOutputConfigFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: (pm.variables.get('bedrockOutputConfigControlUrl') || 'http://127.0.0.1:8804') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "    pm.test('local outputConfig fixture reset succeeded', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res && res.code, res ? res.text() : 'no fixture response').to.equal(200); });",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the fixture answered a successful Converse request', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output.message.content[0].text, pm.response.text()).to.equal('hello');",
+                  "  pm.expect(j.stopReason, pm.response.text()).to.equal('end_turn');",
+                  "});",
+                  "pm.sendRequest({ url: (pm.variables.get('bedrockOutputConfigControlUrl') || 'http://127.0.0.1:8804') + '/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('local outputConfig wire witness is reachable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res && res.code, res ? res.text() : 'no fixture response').to.equal(200); });",
+                  "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST' && q.path === '/model/output-config-fixture/converse'; });",
+                  "  pm.test('exactly one Converse request reached the fixture', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(1); });",
+                  "  var call = calls[0] || { body: '{}', headers: {} };",
+                  "  var wire = JSON.parse(call.body);",
+                  "  pm.test('the gateway sent the normal Converse body', function () { pm.expect(wire.messages, call.body).to.be.an('array').that.is.not.empty; pm.expect(wire.messages[0].role, call.body).to.equal('user'); });",
+                  "  pm.test('native outputConfig never moves under additionalModelRequestFields', function () { pm.expect((wire.additionalModelRequestFields || {}).outputConfig, call.body).to.equal(undefined); pm.expect((wire.additionalModelRequestFields || {}).output_config, call.body).to.equal(undefined); });",
+                  "  var expected = {\"textFormat\":{\"type\":\"json_schema\",\"structure\":{\"jsonSchema\":{\"schema\":\"{ \\\"type\\\": \\\"object\\\", \\\"properties\\\": { \\\"z\\\": { \\\"type\\\": \\\"string\\\" }, \\\"a\\\": { \\\"type\\\": \\\"integer\\\" } }, \\\"required\\\": [\\\"z\\\", \\\"a\\\"], \\\"additionalProperties\\\": false }\",\"description\":\"Keep the schema string and member order\",\"name\":\"wire_answer\"}}}};",
+                  "  pm.test('native outputConfig survives at the top level with passthrough disabled', function () { pm.expect(wire.outputConfig, call.body).to.eql(expected); });",
+                  "  pm.test('schema string and native object member order are preserved on the wire', function () { pm.expect(call.body, 'schema/member ordering changed: ' + call.body).to.include('\"outputConfig\":' + JSON.stringify(expected)); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "198.2 bedrock/output-config-fixture ConverseStream preserves native outputConfig and schema string - #8058",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "false"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Say hello.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 8\n  },\n  \"outputConfig\": {\n    \"textFormat\": {\n      \"type\": \"json_schema\",\n      \"structure\": {\n        \"jsonSchema\": {\n          \"schema\": \"{ \\\"type\\\": \\\"object\\\", \\\"properties\\\": { \\\"z\\\": { \\\"type\\\": \\\"string\\\" }, \\\"a\\\": { \\\"type\\\": \\\"integer\\\" } }, \\\"required\\\": [\\\"z\\\", \\\"a\\\"], \\\"additionalProperties\\\": false }\",\n          \"description\": \"Keep the schema string and member order\",\n          \"name\": \"wire_answer\"\n        }\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/output-config-fixture/converse-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "output-config-fixture",
+                "converse-stream"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('bedrockOutputConfigFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: (pm.variables.get('bedrockOutputConfigControlUrl') || 'http://127.0.0.1:8804') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "    pm.test('local outputConfig fixture reset succeeded', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res && res.code, res ? res.text() : 'no fixture response').to.equal(200); });",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the fixture answered with a successful AWS event stream', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type') || '', pm.response.text()).to.include('application/vnd.amazon.eventstream');",
+                  "  var text = Buffer.from(pm.response.stream).toString('utf8');",
+                  "  pm.expect(text).to.include('hello');",
+                  "  pm.expect(text).to.include('messageStop');",
+                  "  pm.expect(text).to.include('end_turn');",
+                  "});",
+                  "pm.sendRequest({ url: (pm.variables.get('bedrockOutputConfigControlUrl') || 'http://127.0.0.1:8804') + '/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('local outputConfig wire witness is reachable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res && res.code, res ? res.text() : 'no fixture response').to.equal(200); });",
+                  "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST' && q.path === '/model/output-config-fixture/converse-stream'; });",
+                  "  pm.test('exactly one Converse request reached the fixture', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(1); });",
+                  "  var call = calls[0] || { body: '{}', headers: {} };",
+                  "  var wire = JSON.parse(call.body);",
+                  "  pm.test('the gateway sent the normal Converse body', function () { pm.expect(wire.messages, call.body).to.be.an('array').that.is.not.empty; pm.expect(wire.messages[0].role, call.body).to.equal('user'); });",
+                  "  pm.test('native outputConfig never moves under additionalModelRequestFields', function () { pm.expect((wire.additionalModelRequestFields || {}).outputConfig, call.body).to.equal(undefined); pm.expect((wire.additionalModelRequestFields || {}).output_config, call.body).to.equal(undefined); });",
+                  "  var expected = {\"textFormat\":{\"type\":\"json_schema\",\"structure\":{\"jsonSchema\":{\"schema\":\"{ \\\"type\\\": \\\"object\\\", \\\"properties\\\": { \\\"z\\\": { \\\"type\\\": \\\"string\\\" }, \\\"a\\\": { \\\"type\\\": \\\"integer\\\" } }, \\\"required\\\": [\\\"z\\\", \\\"a\\\"], \\\"additionalProperties\\\": false }\",\"description\":\"Keep the schema string and member order\",\"name\":\"wire_answer\"}}}};",
+                  "  pm.test('native outputConfig survives at the top level with passthrough disabled', function () { pm.expect(wire.outputConfig, call.body).to.eql(expected); });",
+                  "  pm.test('schema string and native object member order are preserved on the wire', function () { pm.expect(call.body, 'schema/member ordering changed: ' + call.body).to.include('\"outputConfig\":' + JSON.stringify(expected)); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "198.3 bedrock/output-config-fixture Converse without outputConfig keeps it absent - #8058",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "false"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Say hello.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 8\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/output-config-fixture/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "output-config-fixture",
+                "converse"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('bedrockOutputConfigFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: (pm.variables.get('bedrockOutputConfigControlUrl') || 'http://127.0.0.1:8804') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "    pm.test('local outputConfig fixture reset succeeded', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res && res.code, res ? res.text() : 'no fixture response').to.equal(200); });",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the fixture answered a successful Converse request', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output.message.content[0].text, pm.response.text()).to.equal('hello');",
+                  "  pm.expect(j.stopReason, pm.response.text()).to.equal('end_turn');",
+                  "});",
+                  "pm.sendRequest({ url: (pm.variables.get('bedrockOutputConfigControlUrl') || 'http://127.0.0.1:8804') + '/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('local outputConfig wire witness is reachable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res && res.code, res ? res.text() : 'no fixture response').to.equal(200); });",
+                  "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST' && q.path === '/model/output-config-fixture/converse'; });",
+                  "  pm.test('exactly one Converse request reached the fixture', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(1); });",
+                  "  var call = calls[0] || { body: '{}', headers: {} };",
+                  "  var wire = JSON.parse(call.body);",
+                  "  pm.test('the gateway sent the normal Converse body', function () { pm.expect(wire.messages, call.body).to.be.an('array').that.is.not.empty; pm.expect(wire.messages[0].role, call.body).to.equal('user'); });",
+                  "  pm.test('native outputConfig never moves under additionalModelRequestFields', function () { pm.expect((wire.additionalModelRequestFields || {}).outputConfig, call.body).to.equal(undefined); pm.expect((wire.additionalModelRequestFields || {}).output_config, call.body).to.equal(undefined); });",
+                  "  pm.test('a request without outputConfig does not synthesize one', function () { pm.expect(wire.outputConfig, call.body).to.equal(undefined); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "198.4 [EXPECT-400] bedrock/output-config-fixture Converse invalid native textFormat.type reaches upstream validation - #8058",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "false"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Say hello.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 8\n  },\n  \"outputConfig\": {\n    \"textFormat\": {\n      \"type\": \"invalid_fixture_type\",\n      \"structure\": {\n        \"jsonSchema\": {\n          \"schema\": \"{ \\\"type\\\": \\\"object\\\", \\\"properties\\\": { \\\"z\\\": { \\\"type\\\": \\\"string\\\" }, \\\"a\\\": { \\\"type\\\": \\\"integer\\\" } }, \\\"required\\\": [\\\"z\\\", \\\"a\\\"], \\\"additionalProperties\\\": false }\"\n        }\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/output-config-fixture/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "output-config-fixture",
+                "converse"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('bedrockOutputConfigFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: (pm.variables.get('bedrockOutputConfigControlUrl') || 'http://127.0.0.1:8804') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "    pm.test('local outputConfig fixture reset succeeded', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res && res.code, res ? res.text() : 'no fixture response').to.equal(200); });",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('invalid native textFormat.type is rejected by the fixture upstream', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('outputConfig.textFormat.type must be json_schema (fixture validation)');",
+                  "});",
+                  "pm.sendRequest({ url: (pm.variables.get('bedrockOutputConfigControlUrl') || 'http://127.0.0.1:8804') + '/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('local outputConfig wire witness is reachable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res && res.code, res ? res.text() : 'no fixture response').to.equal(200); });",
+                  "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST' && q.path === '/model/output-config-fixture/converse'; });",
+                  "  pm.test('exactly one Converse request reached the fixture', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(1); });",
+                  "  var call = calls[0] || { body: '{}', headers: {} };",
+                  "  var wire = JSON.parse(call.body);",
+                  "  pm.test('the gateway sent the normal Converse body', function () { pm.expect(wire.messages, call.body).to.be.an('array').that.is.not.empty; pm.expect(wire.messages[0].role, call.body).to.equal('user'); });",
+                  "  pm.test('native outputConfig never moves under additionalModelRequestFields', function () { pm.expect((wire.additionalModelRequestFields || {}).outputConfig, call.body).to.equal(undefined); pm.expect((wire.additionalModelRequestFields || {}).output_config, call.body).to.equal(undefined); });",
+                  "  var expected = {\"textFormat\":{\"type\":\"invalid_fixture_type\",\"structure\":{\"jsonSchema\":{\"schema\":\"{ \\\"type\\\": \\\"object\\\", \\\"properties\\\": { \\\"z\\\": { \\\"type\\\": \\\"string\\\" }, \\\"a\\\": { \\\"type\\\": \\\"integer\\\" } }, \\\"required\\\": [\\\"z\\\", \\\"a\\\"], \\\"additionalProperties\\\": false }\"}}}};",
+                  "  pm.test('native outputConfig survives at the top level with passthrough disabled', function () { pm.expect(wire.outputConfig, call.body).to.eql(expected); });",
+                  "  pm.test('schema string and native object member order are preserved on the wire', function () { pm.expect(call.body, 'schema/member ordering changed: ' + call.body).to.include('\"outputConfig\":' + JSON.stringify(expected)); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

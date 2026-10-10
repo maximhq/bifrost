@@ -2157,7 +2157,9 @@ func (event *BedrockStreamEvent) ToEncodedEvents() []BedrockEncodedEvent {
 	return events
 }
 
-// ToBifrostResponsesRequest converts a BedrockConverseRequest to Bifrost Responses Request format
+// ToBifrostResponsesRequest converts a BedrockConverseRequest to Bifrost Responses Request format.
+// Native outputConfig is carried through the provider-neutral parameters without
+// becoming a generic wire field for other providers.
 func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) (*schemas.BifrostResponsesRequest, error) {
 	if request == nil {
 		return nil, fmt.Errorf("bedrock request is nil")
@@ -2171,6 +2173,9 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 		Model:     model,
 		Params:    &schemas.ResponsesParameters{},
 		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
+	}
+	if len(request.OutputConfig) > 0 {
+		bifrostReq.Params.BedrockOutputConfig = append(json.RawMessage(nil), request.OutputConfig...)
 	}
 
 	// Convert messages using the new conversion method
@@ -2517,7 +2522,8 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 	return bifrostReq, nil
 }
 
-// ToBedrockResponsesRequest converts a BifrostRequest (Responses structure) back to BedrockConverseRequest
+// ToBedrockResponsesRequest converts a BifrostRequest (Responses structure) back to BedrockConverseRequest.
+// The native outputConfig carrier is restored only on the Bedrock Converse wire path.
 func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) (*BedrockConverseRequest, error) {
 	if bifrostReq == nil {
 		return nil, fmt.Errorf("bifrost request is nil")
@@ -2542,6 +2548,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 	bedrockReq := &BedrockConverseRequest{
 		ModelID: bifrostReq.Model,
+	}
+	if bifrostReq.Params != nil && len(bifrostReq.Params.BedrockOutputConfig) > 0 {
+		bedrockReq.OutputConfig = append(json.RawMessage(nil), bifrostReq.Params.BedrockOutputConfig...)
 	}
 
 	// map bifrost messages to bedrock messages using the new conversion method

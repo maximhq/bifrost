@@ -252,6 +252,52 @@ The cases are skipped unless `bedrockEndpointFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Native Bedrock Converse outputConfig retention
+
+Folder 198 uses a separate local TLS fixture to capture the gateway's outbound Converse and
+ConverseStream bodies. It checks that top-level `outputConfig`, the schema string, and nested
+member order survive with extra-parameter passthrough disabled. An absent-field control and an
+invalid `textFormat.type` rejection detect dropped or synthesized configuration. These are
+serializer checks; the fixture does not claim AWS model support or schema enforcement.
+
+Start the fixture in one terminal (requires `openssl`, as the other TLS fixtures do):
+
+```bash
+# Run from a complete checkout with development dependencies installed.
+lsof -nP -iTCP:8804 -iTCP:8806 -iTCP:8807 -sTCP:LISTEN
+bedrock_output_dir=${TMPDIR:-/tmp}/bifrost-bedrock-output-config
+mkdir -p "$bedrock_output_dir"
+node tests/e2e/api/runners/bedrock-outputconfig-fixture.mjs --app-dir "$bedrock_output_dir" --port 8804
+```
+
+Start an isolated gateway in a second terminal using the generated config. Every Bedrock
+endpoint and startup datasheet is local, and the key is a throwaway fixture credential. The
+dead proxy is a tripwire against accidental external traffic:
+
+```bash
+bedrock_output_dir=${TMPDIR:-/tmp}/bifrost-bedrock-output-config
+HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 \
+  make dev PORT=8807 HOST=127.0.0.1 APP_DIR="$bedrock_output_dir"
+```
+
+Run the four rows sequentially in a third terminal; they reset the same wire recorder:
+
+```bash
+bedrock_output_dir=${TMPDIR:-/tmp}/bifrost-bedrock-output-config
+curl -f http://127.0.0.1:8807/health
+make run-provider-harness-test PROVIDER=bedrock FEATURE="bedrock-output-config-fixture" \
+  BASE_URL=http://127.0.0.1:8807 APP_DIR="$bedrock_output_dir" \
+  ENV_FILE="$bedrock_output_dir/environment.json" PARALLEL=0 \
+  SKIP_STREAM_CANCEL=1 RETRY_429=0 DB_VERIFY=0
+```
+
+The port check must be empty before starting, and the health check must succeed before
+running the harness. The fixture profile also overrides the harness `APP_DIR` default so
+its fallback never selects a live provider profile. The rows are skipped unless
+`bedrockOutputConfigFixture=1`. If changing the fixture's `--port`,
+the generated environment file updates `bedrockOutputConfigControlUrl` automatically. Stop the fixture and
+isolated gateway with Ctrl+C after testing. No live provider sweep is required for these rows.
+
 ## Contents
 
 ### V1 Endpoint Tests

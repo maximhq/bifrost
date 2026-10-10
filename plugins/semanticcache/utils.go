@@ -976,6 +976,18 @@ func (plugin *Plugin) extractResponsesParametersToMetadata(params *schemas.Respo
 	if len(params.ExtraParams) > 0 {
 		maps.Copy(metadata, params.ExtraParams)
 	}
+	// Keep the native config and any same-named extra parameter distinct.
+	// Presence flags preserve explicit null without changing ordinary keys.
+	if extra, hasExtra := metadata["bedrock_output_config"]; len(params.BedrockOutputConfig) > 0 || hasExtra {
+		var native json.RawMessage
+		if len(params.BedrockOutputConfig) > 0 {
+			native = params.BedrockOutputConfig
+		}
+		metadata["bedrock_output_config"] = map[string]interface{}{
+			"native": native, "has_native": len(native) > 0,
+			"extra": extra, "has_extra": hasExtra,
+		}
+	}
 	if len(params.Tools) > 0 {
 		// Tools are an order-insensitive set; producer-side ordering (notably
 		// MCP's randomized map iteration) must not perturb the request hash.

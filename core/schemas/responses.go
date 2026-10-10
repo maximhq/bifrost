@@ -568,6 +568,8 @@ type ResponsesParameters struct {
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
+
+	BedrockOutputConfig json.RawMessage `json:"-"` // Native Converse outputConfig carrier.
 }
 
 type ResponsesStreamOptions struct {

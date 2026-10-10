@@ -1,0 +1,1 @@
+- [fix]: isolate native Bedrock Converse outputConfig in response cache keys [@xujiantop-crypto](https://github.com/xujiantop-crypto)

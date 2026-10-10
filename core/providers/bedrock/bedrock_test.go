@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -7425,6 +7426,116 @@ func TestReasoningConfigSurvivesHTTPUnmarshal(t *testing.T) {
 		require.NotNil(t, out.Params.Reasoning.Effort)
 		assert.Equal(t, "high", *out.Params.Reasoning.Effort)
 	})
+}
+
+// TestNativeConverseOutputConfigSurvivesResponsesConversion pins the AWS
+// top-level outputConfig contract. The field is native to Converse and must
+// remain distinct from Anthropic's model-specific additionalModelRequestFields.
+func TestNativeConverseOutputConfigSurvivesResponsesConversion(t *testing.T) {
+	// This assertion uses only the pre-existing request/converter API so it also
+	// runs against the parent revision, where the field disappears on the wire.
+	body := []byte(`{
+		"messages": [{"role": "user", "content": [{"text": "Return JSON."}]}],
+		"outputConfig": {
+			"textFormat": {
+				"type": "json_schema",
+				"structure": {"jsonSchema": {
+					"name": "answer",
+					"description": "A short answer",
+					"schema": "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}}}"
+				}}
+			}
+		}
+	}`)
+
+	expected := providerUtils.GetJSONField(body, "outputConfig")
+	for _, stream := range []bool{false, true} {
+		for _, passthrough := range []interface{}{nil, false, true} {
+			t.Run(fmt.Sprintf("stream=%v/passthrough=%v", stream, passthrough), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if passthrough != nil {
+					ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, passthrough)
+				}
+				var req bedrock.BedrockConverseRequest
+				require.NoError(t, json.Unmarshal(body, &req))
+				// Serializer fixture only; no model-capability claim or live call.
+				req.ModelID = "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0"
+				req.Stream = stream
+				bifrostReq, err := req.ToBifrostResponsesRequest(ctx)
+				require.NoError(t, err)
+				wire, bfErr := providerUtils.CheckContextAndGetRequestBody(ctx, bifrostReq, func() (providerUtils.RequestBodyWithExtraParams, error) {
+					return bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+				})
+				require.Nil(t, bfErr)
+				require.True(t, providerUtils.JSONFieldExists(wire, "outputConfig"), "native outputConfig must reach the provider wire body")
+				assert.JSONEq(t, expected.Raw, providerUtils.GetJSONField(wire, "outputConfig").Raw)
+				assert.Equal(t, providerUtils.GetJSONField(body, "outputConfig.textFormat.structure.jsonSchema.schema").Str,
+					providerUtils.GetJSONField(wire, "outputConfig.textFormat.structure.jsonSchema.schema").Str,
+					"schema stays a JSON string with the caller's property order")
+				assert.False(t, providerUtils.JSONFieldExists(wire, "additionalModelRequestFields.output_config"))
+				assert.False(t, providerUtils.JSONFieldExists(wire, "toolConfig"), "native outputConfig must not become a synthetic tool")
+
+				// A fallback using an OpenAI serializer must not inherit AWS fields.
+				bifrostReq.Provider = schemas.OpenAI
+				bifrostReq.Model = "gpt-4o-mini"
+				fallbackWire, err := providerUtils.MarshalProviderRequest(openai.ToOpenAIResponsesRequest(ctx, bifrostReq))
+				require.NoError(t, err)
+				assert.False(t, providerUtils.JSONFieldExists(fallbackWire, "outputConfig"))
+				assert.False(t, providerUtils.JSONFieldExists(fallbackWire, "BedrockOutputConfig"))
+			})
+		}
+	}
+}
+
+func TestNativeConverseOutputConfigRequestIsolation(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	config := json.RawMessage(`{"textFormat":{"type":"json_schema","structure":{"jsonSchema":{"schema":"{\"type\":\"object\"}"}}}}`)
+	req := bedrock.BedrockConverseRequest{
+		ModelID:      "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0",
+		Messages:     []bedrock.BedrockMessage{{Role: bedrock.BedrockMessageRoleUser, Content: []bedrock.BedrockContentBlock{{Text: schemas.Ptr("hello")}}}},
+		OutputConfig: append(json.RawMessage(nil), config...),
+	}
+	bifrostReq, err := req.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	_, extra := bifrostReq.Params.ExtraParams["outputConfig"]
+	assert.False(t, extra, "native config must not leak via generic passthrough to a fallback provider")
+	req.OutputConfig[0] = ' '
+	assert.Equal(t, string(config), string(bifrostReq.Params.BedrockOutputConfig), "ingress owns its config bytes")
+	egress, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	egress.OutputConfig[0] = ' '
+	assert.Equal(t, string(config), string(bifrostReq.Params.BedrockOutputConfig), "egress must not alias the request parameters")
+	neutral, err := providerUtils.MarshalSorted(bifrostReq)
+	require.NoError(t, err)
+	assert.False(t, providerUtils.JSONFieldExists(neutral, "outputConfig"))
+	assert.False(t, providerUtils.JSONFieldExists(neutral, "BedrockOutputConfig"))
+	assert.False(t, providerUtils.JSONFieldExists(neutral, "params.outputConfig"))
+	assert.False(t, providerUtils.JSONFieldExists(neutral, "params.BedrockOutputConfig"))
+
+	for _, test := range []struct {
+		name    string
+		suffix  string
+		present bool
+	}{
+		{name: "absent"},
+		{name: "explicit null", suffix: `,"outputConfig":null`, present: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var next bedrock.BedrockConverseRequest
+			require.NoError(t, json.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"text":"hello"}]}]`+test.suffix+`}`), &next))
+			next.ModelID = req.ModelID
+			request, err := next.ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			wire, bfErr := providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (providerUtils.RequestBodyWithExtraParams, error) {
+				return bedrock.ToBedrockResponsesRequest(ctx, request)
+			})
+			require.Nil(t, bfErr)
+			assert.Equal(t, test.present, providerUtils.JSONFieldExists(wire, "outputConfig"), "reusing context must not restore the previous request's config")
+			if test.present {
+				assert.Equal(t, "null", providerUtils.GetJSONField(wire, "outputConfig").Raw)
+			}
+		})
+	}
 }
 
 // TestReasoningConfigNoDoubleEmissionOnEgress guards against issue #5108's
