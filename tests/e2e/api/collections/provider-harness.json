@@ -218932,6 +218932,321 @@
           ]
         }
       ]
+    },
+    {
+      "name": "194. Claude Sonnet 5.5 forced tool_choice is dropped (#8166 / PR #8261) (sonnet55-forced-tool-choice)",
+      "description": "Claude Sonnet 5.5 rejects forced tool use: tool_choice {\"type\":\"any\"} and {\"type\":\"tool\"} return\n400 'tool_choice: type \"tool\" and \"any\" are not supported for this model.' (Anthropic tool use docs:\nOpus 5.5, Sonnet 5.5, Fable 5.1 and Mythos 5.1). The name-based fallback\nschemas.DefaultSupportsForcedToolChoice covered Fable/Mythos 5.1 and Opus 5.5 but not Sonnet 5.5, so\nBifrost still forwarded a forced choice to it (#8166).\n\nTwo production paths reach that gate:\n  1. a caller-supplied forced tool_choice (Anthropic \"any\"/\"tool\", OpenAI \"required\"), and\n  2. the synthetic bf_so_* tool Bifrost binds and pins for structured output on providers without\n     native output_config.format (Vertex, Azure, Bedrock Mantle). The issue hit this on Azure; the\n     harness config has no Azure Sonnet 5.5 deployment, so these cases use Vertex, which takes the\n     same synthetic structured-output branch.\n\nEach Sonnet 5.5 case fails with the 400 above before the fix. With the forced choice dropped the\nmodel answers under the default \"auto\"; the structured-output cases also assert that the answer is\nschema-valid JSON (the synthetic tool is still the only bound tool). The last case is a control:\nSonnet 5 still supports forced tool use, so the pin must survive there.",
+      "item": [
+        {
+          "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages tool_choice any is dropped instead of 400 - #8166",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('forced tool choice was not forwarded to a model that rejects it', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('are not supported for this model');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Tokyo?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a location.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"location\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"location\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"any\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages tool_choice tool pin is dropped instead of 400 - #8166",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('forced tool choice was not forwarded to a model that rejects it', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('are not supported for this model');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Tokyo?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a location.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"location\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"location\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"tool\",\n    \"name\": \"get_weather\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-5-5 /v1/chat/completions tool_choice required is dropped instead of 400 - #8166",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// OpenAI dialect in, Anthropic egress out: \"required\" maps to Anthropic \"any\",",
+                  "// which Sonnet 5.5 rejects. The gate must drop it before it reaches the wire.",
+                  "pm.test('forced tool choice was not forwarded to a model that rejects it', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('are not supported for this model');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Tokyo?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a location.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"required\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-5-5 /v1/chat/completions synthetic structured output drops the pin - #8166",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Vertex rejects native output_config.format, so Bifrost binds a synthetic bf_so_* tool and",
+                  "// pins it with a forced tool choice unless the model rejects forced tool use.",
+                  "pm.test('forced tool choice was not forwarded to a model that rejects it', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('are not supported for this model');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('content is schema-valid JSON', function () {",
+                  "  var c = pm.response.json().choices[0].message.content;",
+                  "  var parsed = JSON.parse(c);",
+                  "  pm.expect(parsed, 'content: ' + c).to.have.property('city');",
+                  "  pm.expect(parsed, 'content: ' + c).to.have.property('temp_c');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-5-5\",\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Weather in Tokyo, make it up.\"\n    }\n  ],\n  \"response_format\": {\n    \"type\": \"json_schema\",\n    \"json_schema\": {\n      \"name\": \"weather\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          },\n          \"temp_c\": {\n            \"type\": \"number\"\n          }\n        },\n        \"required\": [\n          \"city\",\n          \"temp_c\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-5-5 /anthropic/v1/messages output_config.format synthetic structured output drops the pin - #8166",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The route from #8166: Anthropic structured output (output_config.format) on a provider",
+                  "// that needs the synthetic bf_so_* tool. The synthetic tool call comes back as a text block.",
+                  "pm.test('forced tool choice was not forwarded to a model that rejects it', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('are not supported for this model');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('content is schema-valid JSON', function () {",
+                  "  var text = (pm.response.json().content || []).filter(function (b) { return b.type === 'text'; }).map(function (b) { return b.text; }).join('');",
+                  "  var parsed = JSON.parse(text);",
+                  "  pm.expect(parsed, 'content: ' + text).to.have.property('city');",
+                  "  pm.expect(parsed, 'content: ' + text).to.have.property('temp_c');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-5-5\",\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Weather in Tokyo, make it up.\"\n    }\n  ],\n  \"output_config\": {\n    \"format\": {\n      \"type\": \"json_schema\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          },\n          \"temp_c\": {\n            \"type\": \"number\"\n          }\n        },\n        \"required\": [\n          \"city\",\n          \"temp_c\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-5 /anthropic/v1/messages tool_choice any still forces a tool call - #8166",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Control: Sonnet 5 (not 5.5) still supports forced tool use. If the version gate",
+                  "// over-matches, the pin is dropped here and the model may answer in text instead.",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('model returned a tool_use block', function () {",
+                  "  var types = (pm.response.json().content || []).map(function (c) { return c.type; });",
+                  "  pm.expect(types, 'content types: ' + JSON.stringify(types)).to.include('tool_use');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Tokyo?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a location.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"location\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"location\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"any\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
