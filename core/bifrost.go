@@ -98,15 +98,19 @@ func (m *ChannelMessage) claimDelivery() bool {
 // abandonDelivery is called by tryRequest when its context ends before a value
 // arrived. False means the worker already claimed delivery: the value is in (or
 // about to enter) the buffer and the caller must receive it, since no one else
-// will. After a successful abandon the caller must not touch the message again.
+// will. After a successful abandon nobody on this side may touch the message
+// again, this function included: the moment the CAS lands the worker owns the
+// message and may release it (and nil its fields) concurrently, so everything the
+// abandon needs is read before the swap.
 func (m *ChannelMessage) abandonDelivery() bool {
+	ctx := m.Context
 	if !m.handoff.CompareAndSwap(handoffOpen, handoffAbandoned) {
 		return false
 	}
 	// The worker still writes response attributes and plugin logs, so the transport
 	// must not flush the trace yet. Set on the CAS so every abandonment marks it.
-	if m.Context != nil {
-		if tracer, traceID, err := GetTracerFromContext(m.Context); err == nil {
+	if ctx != nil {
+		if tracer, traceID, err := GetTracerFromContext(ctx); err == nil {
 			tracer.DeferTraceCompletion(traceID)
 		}
 	}
