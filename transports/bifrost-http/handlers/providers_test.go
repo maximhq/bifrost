@@ -3014,6 +3014,39 @@ func TestExternalURLErrorKeepsResolvedSecretsOutOfTheResponse(t *testing.T) {
 		}
 	})
 
+	t.Run("the reason survives the redaction", func(t *testing.T) {
+		// Hiding the value must not hide WHY: an operator has to be able to tell a
+		// bad scheme from a DNS failure from a blocked private address.
+		for _, tc := range []struct {
+			name   string
+			url    string
+			reason string
+		}{
+			{"scheme", "ftp://files.example.com", "only https and http schemes are allowed"},
+			// Not 127.0.0.1: ValidateExternalURL deliberately permits loopback.
+			{"private address", "https://10.0.0.1", "private IP addresses are not allowed"},
+			{"dns", "https://" + secretHost, "failed to resolve hostname"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				err := bifrost.ValidateExternalURL(tc.url, false)
+				if err == nil {
+					t.Skipf("%s unexpectedly validated", tc.url)
+				}
+				got := externalURLErrorForClient(schemas.NewSecretVar(ref), err)
+				if !strings.Contains(got, ref) {
+					t.Errorf("the message does not name the reference: %s", got)
+				}
+				if tc.reason != "" && !strings.Contains(got, tc.reason) {
+					t.Errorf("the reason was lost; want %q in: %s", tc.reason, got)
+				}
+				// Whatever the reason, the resolved host never appears.
+				if strings.Contains(got, secretHost) {
+					t.Errorf("the message exposed the resolved host: %s", got)
+				}
+			})
+		}
+	})
+
 	t.Run("a literal keeps its diagnostic", func(t *testing.T) {
 		err := bifrost.ValidateExternalURL("https://"+secretHost, false)
 		if err == nil {

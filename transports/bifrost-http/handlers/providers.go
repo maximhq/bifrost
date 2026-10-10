@@ -28,17 +28,35 @@ import (
 // validateProviderBaseURLShape keeps appended operation paths in the URL path.
 // Destination validation follows authentication so anonymous callers cannot
 // trigger DNS lookups while submitting endpoint changes.
+// valueBearingExternalURLErrors are the two ValidateExternalURL failures that
+// repeat the URL back: the parse error quotes it, and the DNS error names the
+// hostname. Its other failures (empty, scheme, missing hostname, unspecified /
+// link-local / private address) name a CLASS and carry nothing resolved.
+var valueBearingExternalURLErrors = []string{
+	"invalid URL format",
+	"failed to resolve hostname",
+}
+
 // externalURLErrorForClient keeps a resolved secret out of a destination
-// validation error. ValidateExternalURL reports the hostname it resolved and the
-// DNS error behind it -- the right diagnostic for a literal base_url, which the
-// operator can already see, and a disclosure for one that arrived as an
-// env./vault. reference. A reference is named instead; the detailed error is
-// kept for a literal.
+// validation error without throwing away the diagnosis.
+//
+// A literal base_url is already visible to the operator, so its error is passed
+// through whole. For one that arrived as an env./vault. reference the reference is
+// named and the REASON is kept -- an operator still has to be able to tell a bad
+// scheme from a DNS failure from a blocked private address -- with only the two
+// failures that repeat the resolved value trimmed to their reason.
 func externalURLErrorForClient(baseURL *schemas.SecretVar, err error) string {
-	if baseURL != nil && baseURL.IsFromSecret() {
-		return fmt.Sprintf("Invalid base URL resolved from %s", baseURL.GetRawRef())
+	if baseURL == nil || !baseURL.IsFromSecret() {
+		return fmt.Sprintf("Invalid base URL: %v", err)
 	}
-	return fmt.Sprintf("Invalid base URL: %v", err)
+	reason := err.Error()
+	for _, leaky := range valueBearingExternalURLErrors {
+		if strings.HasPrefix(reason, leaky) {
+			reason = leaky
+			break
+		}
+	}
+	return fmt.Sprintf("Invalid base URL resolved from %s: %s", baseURL.GetRawRef(), reason)
 }
 
 func validateProviderBaseURLShape(baseURL *schemas.SecretVar) error {
