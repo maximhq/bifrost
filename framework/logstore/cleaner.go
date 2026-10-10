@@ -74,6 +74,14 @@ func NewLogsCleaner(manager LogRetentionManager, config CleanerConfig, logger sc
 	}
 }
 
+// UpdateRetentionDays updates the retention period used by subsequent cleanup
+// passes. A pass already in progress keeps its cutoff for both log tables.
+func (c *LogsCleaner) UpdateRetentionDays(retentionDays int) {
+	c.mu.Lock()
+	c.config.RetentionDays = retentionDays
+	c.mu.Unlock()
+}
+
 // StartCleanupRoutine starts a goroutine that periodically cleans up old logs
 func (c *LogsCleaner) StartCleanupRoutine() {
 	c.mu.Lock()
@@ -149,7 +157,9 @@ func (c *LogsCleaner) runCleanupPass(stopCh <-chan struct{}) {
 // older than the retention period. Each table is drained in batches until no
 // expired rows remain or ctx ends.
 func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
+	c.mu.Lock()
 	retentionDays := c.config.RetentionDays
+	c.mu.Unlock()
 	if retentionDays < 1 {
 		retentionDays = defaultRetentionDays
 	}

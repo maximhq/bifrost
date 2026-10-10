@@ -1593,12 +1593,18 @@ func (s *RDBLogStore) listSelectColumns() string {
 			END AS responses_input_history`
 		outputMessageExpr = `CASE WHEN object_type = 'realtime.turn' THEN output_message ELSE NULL END AS output_message`
 	case "clickhouse":
-		// ClickHouse: return the full history columns as-is. The last-message
-		// truncation optimization the SQLite/Postgres list path applies is
-		// deferred (correctness over payload size); hybrid offloading and
-		// content_summary already bound list payloads in practice.
-		inputHistoryExpr = `input_history AS input_history`
-		responsesInputExpr = `responses_input_history AS responses_input_history`
+		// ClickHouse: extract the last message from JSON array histories while
+		// keeping realtime turns and non-array or invalid payloads untouched.
+		inputHistoryExpr = `CASE
+			WHEN object_type = 'realtime.turn' THEN input_history
+			WHEN isValidJSON(input_history) AND JSONType(input_history) = 'Array' AND JSONLength(input_history) > 0
+			THEN concat('[', JSONExtractRaw(input_history, -1), ']')
+			ELSE input_history END AS input_history`
+		responsesInputExpr = `CASE
+			WHEN object_type = 'realtime.turn' THEN responses_input_history
+			WHEN isValidJSON(responses_input_history) AND JSONType(responses_input_history) = 'Array' AND JSONLength(responses_input_history) > 0
+			THEN concat('[', JSONExtractRaw(responses_input_history, -1), ']')
+			ELSE responses_input_history END AS responses_input_history`
 		outputMessageExpr = `CASE WHEN object_type = 'realtime.turn' THEN output_message ELSE NULL END AS output_message`
 	default: // sqlite
 		inputHistoryExpr = `CASE

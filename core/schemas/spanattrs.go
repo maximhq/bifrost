@@ -90,6 +90,13 @@ func (d *LLMSpanData) appendFamily(attrs map[string]any) {
 		setIfNotNil(attrs, AttrFrequencyPenalty, p.FrequencyPenalty)
 		setIfNotNil(attrs, AttrParallelToolCall, p.ParallelToolCalls)
 		setIfNotNil(attrs, AttrRequestUser, p.User)
+		// Chat carried every other request parameter but never its tools, so a chat
+		// request with tools exported no gen_ai.request.tools while Responses did.
+		if len(p.Tools) > 0 {
+			if data, err := MarshalString(chatToolSummaries(p.Tools)); err == nil {
+				attrs[AttrTools] = data
+			}
+		}
 	}
 }
 
@@ -225,6 +232,25 @@ func (d *LLMSpanData) appendTranscriptionRequest(attrs map[string]any) {
 
 // responsesToolSummaries projects tool definitions to the name/description pairs
 // the span has always exported.
+// chatToolSummaries renders chat tool definitions for export. Mirrors
+// responsesToolSummaries: a tool with no function name falls back to its type, so a
+// built-in or custom tool still appears instead of being dropped.
+func chatToolSummaries(tools []ChatTool) []ToolSummary {
+	out := make([]ToolSummary, 0, len(tools))
+	for _, tool := range tools {
+		if tool.Function == nil || tool.Function.Name == "" {
+			out = append(out, ToolSummary{Name: string(tool.Type)})
+			continue
+		}
+		info := ToolSummary{Name: tool.Function.Name}
+		if tool.Function.Description != nil {
+			info.Description = *tool.Function.Description
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
 func responsesToolSummaries(tools []ResponsesTool) []ToolSummary {
 	out := make([]ToolSummary, 0, len(tools))
 	for _, tool := range tools {

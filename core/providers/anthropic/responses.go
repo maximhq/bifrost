@@ -81,6 +81,7 @@ type AnthropicResponsesStreamState struct {
 	StopReason                *string                           // Stop reason for the message
 	StopDetails               *schemas.ResponsesStopDetails     // Refusal stop_details (server-side fallback), carried to the final message_delta
 	StopSequence              *string                           // Matched custom stop sequence when stop_reason is stop_sequence
+	SafeguardResults          json.RawMessage                   // Claude Code auto-mode verdicts from the final message_delta
 	CreatedAt                 int                               // Timestamp for created_at consistency
 	HasEmittedCreated         bool                              // Whether we've emitted response.created
 	HasEmittedInProgress      bool                              // Whether we've emitted response.in_progress
@@ -756,6 +757,7 @@ func AcquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state.StopReason = nil
 	state.StopDetails = nil
 	state.StopSequence = nil
+	state.SafeguardResults = nil
 	state.Model = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
@@ -821,6 +823,7 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.StopReason = nil
 	state.StopDetails = nil
 	state.StopSequence = nil
+	state.SafeguardResults = nil
 	state.Model = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
@@ -2748,6 +2751,9 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		if chunk.Delta.StopDetails != nil {
 			state.StopDetails = stopDetailsToBifrost(chunk.Delta.StopDetails)
 		}
+		if len(chunk.Delta.SafeguardResults) > 0 {
+			state.SafeguardResults = chunk.Delta.SafeguardResults
+		}
 		// Check if integration type in ctx is anthropic
 		if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
 			// Convert usage from Anthropic format to Bifrost
@@ -2788,6 +2794,8 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				}
 			}
 
+			response.SafeguardResults = state.SafeguardResults
+
 			// Mark that we already emitted a message_delta so response.completed
 			// doesn't synthesize a duplicate one.
 			state.HasEmittedMessageDelta = true
@@ -2819,6 +2827,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		}
 		response.StopDetails = state.StopDetails
 		response.StopSequence = state.StopSequence
+		response.SafeguardResults = state.SafeguardResults
 
 		// Fold the sandbox container (delivered on the final message_delta) onto
 		// every code_interpreter_call so response.completed carries it (mirrors the
@@ -3931,6 +3940,12 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 					ExpiresAt: bifrostResp.Response.Container.ExpiresAt,
 				}
 			}
+			if len(bifrostResp.Response.SafeguardResults) > 0 {
+				if anthropicContentDeltaEvent.Delta == nil {
+					anthropicContentDeltaEvent.Delta = &AnthropicStreamDelta{}
+				}
+				anthropicContentDeltaEvent.Delta.SafeguardResults = bifrostResp.Response.SafeguardResults
+			}
 		}
 		return []*AnthropicStreamEvent{anthropicContentDeltaEvent, streamResp}
 
@@ -4011,6 +4026,12 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 					ID:        bifrostResp.Response.Container.ID,
 					ExpiresAt: bifrostResp.Response.Container.ExpiresAt,
 				}
+			}
+			if bifrostResp.Response != nil && len(bifrostResp.Response.SafeguardResults) > 0 {
+				if streamResp.Delta == nil {
+					streamResp.Delta = &AnthropicStreamDelta{}
+				}
+				streamResp.Delta.SafeguardResults = bifrostResp.Response.SafeguardResults
 			}
 		}
 

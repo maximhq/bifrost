@@ -218165,7 +218165,776 @@
       ]
     },
     {
-      "name": "187. Responses multi-part assistant output_text maps to chat text (#8196 / PR #8208) (responses-multipart-output-text)",
+      "name": "187. Chat reasoning.summary reaches the Responses upstream (reasoning summary)",
+      "description": "A chat request served through the Responses API (x-bf-compat convert_chat_to_responses) used to drop reasoning.summary, because the chat reasoning object had no summary field: the upstream got reasoning.summary null, or no reasoning at all when summary was the only field set, so only encrypted reasoning came back. 187.1 and 187.2 pin that /v1/chat/completions forwards it (asserted on extra_fields.raw_request). The /openai integration keeps OpenAI's chat shape, which has no reasoning.summary: 187.3 sends an invalid summary there and expects 200 (it would 400 if it leaked), and 187.4 pins the passthrough route (x-bf-passthrough-extra-params + extra_params) by sending the same invalid value and expecting OpenAI to reject it.",
+      "item": [
+        {
+          "name": "187.1 openai/gpt-5-mini /v1 chat reasoning.summary with effort is forwarded to responses (reasoning summary)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"how many primes between 7 and 70\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"low\",\n    \"summary\": \"auto\"\n  },\n  \"max_completion_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('187.1: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('187.1: the request was converted to the responses upstream', function () { pm.expect((j.extra_fields || {}).converted_request_type, pm.response.text().slice(0, 400)).to.equal('responses'); });",
+                  "var rr = (j.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 600);",
+                  "pm.test('187.1: reasoning.summary reached the upstream', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning, 'reasoning dropped from the upstream request: ' + wire).to.be.an('object');",
+                  "  pm.expect(rr.reasoning.summary, 'reasoning.summary not forwarded: ' + wire).to.equal('auto');",
+                  "  pm.expect(rr.reasoning.effort, 'reasoning.effort not forwarded: ' + wire).to.equal('low');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "187.2 openai/gpt-5-mini /v1 chat summary-only reasoning object is forwarded to responses (reasoning summary)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"how many primes between 7 and 70\"\n    }\n  ],\n  \"reasoning\": {\n    \"summary\": \"auto\"\n  },\n  \"max_completion_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('187.2: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('187.2: the request was converted to the responses upstream', function () { pm.expect((j.extra_fields || {}).converted_request_type, pm.response.text().slice(0, 400)).to.equal('responses'); });",
+                  "var rr = (j.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null).slice(0, 600);",
+                  "pm.test('187.2: reasoning.summary reached the upstream', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning, 'reasoning dropped from the upstream request: ' + wire).to.be.an('object');",
+                  "  pm.expect(rr.reasoning.summary, 'reasoning.summary not forwarded: ' + wire).to.equal('auto');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "187.3 openai/gpt-5-mini /openai chat ignores reasoning.summary without passthrough (reasoning summary)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"how many primes between 7 and 70\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"low\",\n    \"summary\": \"bogus\"\n  },\n  \"max_completion_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// An invalid summary that leaked upstream would make OpenAI answer 400.",
+                  "pm.test('187.3: reasoning.summary did not reach the upstream (200)', function () { pm.expect(pm.response.code, 'reasoning.summary leaked through the openai integration: ' + pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "187.4 [EXPECT-4XX] openai/gpt-5-mini /openai chat forwards reasoning.summary via passthrough extra_params (reasoning summary)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"how many primes between 7 and 70\"\n    }\n  ],\n  \"reasoning_effort\": \"low\",\n  \"max_completion_tokens\": 512,\n  \"extra_params\": {\n    \"reasoning\": {\n      \"summary\": \"bogus\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The invalid value only reaches OpenAI if passthrough deep-merged it into reasoning.",
+                  "pm.test('187.4: upstream rejected the passed-through reasoning.summary (4xx)', function () {",
+                  "  pm.expect(pm.response.code, 'passthrough reasoning.summary did not reach the upstream: ' + pm.response.text()).to.be.within(400, 499);",
+                  "  pm.expect(pm.response.text(), 'rejection is not about reasoning.summary: ' + pm.response.text()).to.match(/summary|bogus/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "188. Plugin config round-trip keeps a lone \"*\" header pattern (PR #8228)",
+      "description": "A lone \"*\" is a legitimate request_headers pattern, but restoreRedactedValue treated any all-asterisk string as the UI's redaction placeholder and substituted the stored value, so request_headers: [\"*\"] silently became whatever was saved before and captured nothing. The cases run in order: seed a disabled otel row with a distinct pattern, update it to [\"*\"], read it back, then delete the row so a rerun starts clean. The plugin is created disabled so nothing loads and no exporter is started; only the config round-trip is under test. The folder first checks that the gateway has no otel row of its own: if it does, the mutating cases skip instead of overwriting and deleting a configuration this run did not create.",
+      "item": [
+        {
+          "name": "[PREVIEW] openai plugin-config-roundtrip precondition no otel row - #8228",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var __list = (pm.response.json() || {}).plugins || [];",
+                  "var __found = __list.filter(function (p) { return p && p.name === 'otel'; }).length > 0;",
+                  "pm.collectionVariables.set('h188Preexisting', __found ? 'true' : 'false');",
+                  "pm.test('gateway has no otel row for this folder to create', function () {",
+                  "  pm.expect(__found, 'this gateway already configures otel; the round-trip cases are skipped rather than overwrite and delete a row this run did not create, so point the folder at a gateway without one').to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] openai plugin-config-roundtrip seed disabled otel row - #8228",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"otel\",\n  \"enabled\": false,\n  \"config\": {\n    \"request_headers\": [\n      \"x-bf-roundtrip-seed\"\n    ]\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These cases create, rewrite and delete a plugin row, so they run only after the",
+                  "// precondition above confirms there is no otel row to clobber. Skipping when that check",
+                  "// did not run keeps a filtered run from mutating an unchecked gateway.",
+                  "if (pm.collectionVariables.get('h188Preexisting') !== 'false') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('seeded the otel plugin row', function () {",
+                  "  pm.expect(pm.response.code, 'seed failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] openai plugin-config-roundtrip update request_headers to star - #8228",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/otel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "otel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false,\n  \"config\": {\n    \"request_headers\": [\n      \"*\"\n    ]\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These cases create, rewrite and delete a plugin row, so they run only after the",
+                  "// precondition above confirms there is no otel row to clobber. Skipping when that check",
+                  "// did not run keeps a filtered run from mutating an unchecked gateway.",
+                  "if (pm.collectionVariables.get('h188Preexisting') !== 'false') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('update accepted', function () {",
+                  "  pm.expect(pm.response.code, 'update failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] openai plugin-config-roundtrip star survives the read back - #8228",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/otel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "otel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These cases create, rewrite and delete a plugin row, so they run only after the",
+                  "// precondition above confirms there is no otel row to clobber. Skipping when that check",
+                  "// did not run keeps a filtered run from mutating an unchecked gateway.",
+                  "if (pm.collectionVariables.get('h188Preexisting') !== 'false') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request_headers round-trips a lone \"*\"', function () {",
+                  "  pm.expect(pm.response.code, 'read failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var body = pm.response.json();",
+                  "  var plugin = body.plugin || body;",
+                  "  var cfg = plugin.config || {};",
+                  "  var headers = cfg.request_headers;",
+                  "  pm.expect(headers, 'request_headers missing from the stored config: ' + pm.response.text()).to.be.an('array');",
+                  "  pm.expect(headers.length, 'expected exactly one pattern, got ' + JSON.stringify(headers)).to.eql(1);",
+                  "  pm.expect(headers[0], 'a lone \"*\" was replaced by the stored pattern: restoreRedactedValue treated it as a redaction placeholder').to.eql('*');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] openai plugin-config-roundtrip remove the otel row - #8228",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/otel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "otel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These cases create, rewrite and delete a plugin row, so they run only after the",
+                  "// precondition above confirms there is no otel row to clobber. Skipping when that check",
+                  "// did not run keeps a filtered run from mutating an unchecked gateway.",
+                  "if (pm.collectionVariables.get('h188Preexisting') !== 'false') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleaned up the otel plugin row', function () {",
+                  "  pm.expect(pm.response.code, 'cleanup failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "189. Bedrock chat prompt cache control preserved alongside guardrail tagging (#8215 / PR #8216) (bedrock-prompt-cache-guardrail)",
+      "description": "Pins that prompt cache control markers (cache_control) survive deep copying on the Bedrock Claude InvokeModel path during guardrail tagging, and map to Converse cachePoint blocks on the Converse path (#8215 / PR #8216).",
+      "item": [
+        {
+          "name": "Bedrock chat completions InvokeModel: cache_control survives guardrail deep copy (Sonnet 4.6) - #8215",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "// #8215: when guardrailConfig / guard_content is supplied on a Bedrock Claude InvokeModel chat request (e.g. carrying compaction),",
+                  "// the request is deep-copied in invokeChatGuardTagging for tag synthesis. Before the fix, deepCopyChatContentBlock dropped",
+                  "// cache_control, citations, and breakpoint fields. The raw request capture proves cache_control survives to the Anthropic payload.",
+                  "pm.test('Bedrock chat completions InvokeModel cache_control alongside guardrail - #8215: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('Bedrock chat completions InvokeModel cache_control alongside guardrail - #8215: raw request egresses via InvokeModel', function () {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "  pm.expect(raw, 'raw request capture missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(raw.anthropic_version, 'anthropic_version missing: request did not route to InvokeModel').to.eql('bedrock-2023-05-31');",
+                  "});",
+                  "pm.test('Bedrock chat completions InvokeModel cache_control alongside guardrail - #8215: prompt cache_control preserved in raw request', function () {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "  pm.expect(raw, 'raw request capture missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var blocks = ((raw.messages || [])[0] || {}).content || [];",
+                  "  pm.expect(blocks.length, 'expected at least 2 content blocks: ' + JSON.stringify(blocks)).to.be.at.least(2);",
+                  "  var cached = blocks.filter(function (b) { return b && b.cache_control && b.cache_control.type === 'ephemeral'; });",
+                  "  pm.expect(cached.length, 'cache_control was stripped by deep copy during guardrail tagging: ' + JSON.stringify(blocks)).to.eql(1);",
+                  "  var guarded = blocks.filter(function (b) { return b && typeof b.text === 'string' && b.text.indexOf('amazon-bedrock-guardrails-query_h7q2') !== -1; });",
+                  "  pm.expect(guarded.length, 'guardrail tag missing on guarded block: ' + JSON.stringify(blocks)).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Context prefix to cache.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the capital of France?\",\n          \"guard_content\": {\n            \"qualifiers\": [\n              \"query\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"context_management\": {\n    \"edits\": [\n      {\n        \"type\": \"compact_20260112\",\n        \"trigger\": {\n          \"type\": \"input_tokens\",\n          \"value\": 50000\n        }\n      }\n    ]\n  },\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n    \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n    \"tagSuffix\": \"h7q2\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock chat completions Converse: cache_control converts to cachePoint block (Haiku 4.5) - #8215",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "// On the standard Bedrock Converse chat completions path, cache_control converts to a separate { cachePoint: { type: \"default\" } } block.",
+                  "pm.test('Bedrock chat completions Converse cachePoint alongside guardrail - #8215: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('Bedrock chat completions Converse cachePoint alongside guardrail - #8215: cachePoint block present in raw request', function () {",
+                  "  var raw = (body.extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "  pm.expect(raw, 'raw request capture missing: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  var blocks = ((raw.messages || [])[0] || {}).content || [];",
+                  "  var cachePoints = blocks.filter(function (b) { return b && b.cachePoint && b.cachePoint.type === 'default'; });",
+                  "  pm.expect(cachePoints.length, 'expected exactly one cachePoint block in Converse request: ' + JSON.stringify(blocks)).to.eql(1);",
+                  "  var guarded = blocks.filter(function (b) { return b && b.guardContent && b.guardContent.text && b.guardContent.text.text === 'What is the capital of France?'; });",
+                  "  pm.expect(guarded.length, 'guardContent entry missing in Converse request: ' + JSON.stringify(blocks)).to.eql(1);",
+                  "  pm.expect(guarded[0].guardContent.text.qualifiers, 'qualifiers not forwarded').to.eql(['query']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Context prefix to cache.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the capital of France?\",\n          \"guard_content\": {\n            \"qualifiers\": [\n              \"query\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n    \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n    \"trace\": \"enabled\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "190. xai realtime client secret",
+      "description": "Native xAI client-secret minting through Bifrost. Previously rejected as unsupported provider. Asserts actual upstream mint succeeds and the gateway replaces the credential with an identity-bound mapped token. Does not validate WebSocket capture or voice execution. Deliberately excludes credentials from assertion messages.",
+      "item": [
+        {
+          "name": "xai grok-voice-latest realtime client secret",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-voice-latest\",\n  \"expires_after\": {\n    \"seconds\": 60\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/realtime/client_secrets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "realtime",
+                "client_secrets"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('xai realtime mint returns a mapped credential and actual expiry', function () {",
+                  "  pm.expect(pm.response.code, 'mint status (credentials redacted)').to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(typeof body.value).to.equal('string');",
+                  "  pm.expect(body.value.indexOf('ek_bf_') === 0, 'expected a Bifrost-mapped credential').to.equal(true);",
+                  "  pm.expect(body.expires_at).to.be.a('number');",
+                  "  pm.expect(body.expires_at).to.be.above(Math.floor(Date.now() / 1000));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "191. xai realtime native credentials",
+      "description": "Synthetic invalid browser credentials must return HTTP 400 before WebSocket upgrade, including on open deployments. No real provider credentials or inference calls. Valid native xAI credentials and OpenAI compatibility are covered by Go admission tests; these cases do not validate voice streaming.",
+      "item": [
+        {
+          "name": "xai grok-voice-latest realtime native credentials empty [EXPECT-400]",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Connection",
+                "value": "Upgrade"
+              },
+              {
+                "key": "Upgrade",
+                "value": "websocket"
+              },
+              {
+                "key": "Sec-WebSocket-Version",
+                "value": "13"
+              },
+              {
+                "key": "Sec-WebSocket-Key",
+                "value": "dGhlIHNhbXBsZSBub25jZQ=="
+              },
+              {
+                "key": "Sec-WebSocket-Protocol",
+                "value": "xai-client-secret."
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/realtime?model=xai/grok-voice-latest",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "realtime"
+              ],
+              "query": [
+                {
+                  "key": "model",
+                  "value": "xai/grok-voice-latest"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('invalid native credential is refused before upgrade', function () {",
+                  "  pm.expect(pm.response.code, 'expected HTTP refusal').to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('realtime subprotocol credential');",
+                  "  pm.expect(pm.response.text().indexOf('ek_synthetic')).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "xai grok-voice-latest realtime native credentials conflicting [EXPECT-400]",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Connection",
+                "value": "Upgrade"
+              },
+              {
+                "key": "Upgrade",
+                "value": "websocket"
+              },
+              {
+                "key": "Sec-WebSocket-Version",
+                "value": "13"
+              },
+              {
+                "key": "Sec-WebSocket-Key",
+                "value": "dGhlIHNhbXBsZSBub25jZQ=="
+              },
+              {
+                "key": "Sec-WebSocket-Protocol",
+                "value": "xai-client-secret.ek_synthetic_one, openai-insecure-api-key.ek_synthetic_two"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/realtime?model=xai/grok-voice-latest",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "realtime"
+              ],
+              "query": [
+                {
+                  "key": "model",
+                  "value": "xai/grok-voice-latest"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('invalid native credential is refused before upgrade', function () {",
+                  "  pm.expect(pm.response.code, 'expected HTTP refusal').to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('realtime subprotocol credential');",
+                  "  pm.expect(pm.response.text().indexOf('ek_synthetic')).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "192. Responses multi-part assistant output_text maps to chat text (#8196 / PR #8208) (responses-multipart-output-text)",
       "description": "Gateway regression for #8196. A Responses-API client (Zed's agent in the report) replays an assistant turn whose text is split across more than one output_text part. ToChatMessages in core/schemas/mux.go maps output_text to text only in its single-part short-circuit; the multi-part switch had no case for it, so the block fell through default: and carried the Responses-only output_text spelling into the chat messages[] Bifrost builds for a chat-only provider. Chat completions defines exactly four content parts (text, image_url, input_audio, file), so the request died with HTTP 422 \"unknown variant output_text\" naming an index in Bifrost's internal array rather than the client's input[]. The route is /v1/responses against deepseek, whose Responses handler falls back to ChatCompletion via ToChatRequest() - the reporter's own repro, and provider-independent per the issue. The rows read the outbound body with x-bf-send-back-raw-request so they pin the translated spelling rather than one provider's choice of error code. Cases: (1) two output_text parts, the reporter's exact body, red pre-fix; (2) a mixed output_text + input_text turn, also 422 pre-fix, pinning that the mapping is per-part and not a whole-turn special case; (3) a single output_text part, which the short-circuit already handled and which must keep working - a guard against fixing the multi-part path by breaking the collapse. Run with FEATURE=responses-multipart-output-text.",
       "item": [
         {
