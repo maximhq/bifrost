@@ -27,25 +27,25 @@ export function formatCurrencyNumber(value: number, maximumFractionDigits = 2): 
 
 const TOKEN_PRICE_MULTIPLIER = 1_000_000;
 
-function formatTokenPriceValue(cost: number): string {
+function formatTokenPriceValue(cost: number, maximumFractionDigits = 4): string {
 	return `$${(cost * TOKEN_PRICE_MULTIPLIER).toLocaleString(undefined, {
 		minimumFractionDigits: 2,
-		maximumFractionDigits: 2,
+		maximumFractionDigits,
 	})}`;
 }
 
-export function formatTokenPriceCompact(cost?: number): string {
-	if (cost === undefined || cost === null) return "—";
-	return formatTokenPriceValue(cost);
+export function formatTokenPriceCompact(cost?: number, maximumFractionDigits = 4): string {
+	if (cost === undefined || cost === null || !Number.isFinite(cost)) return "—";
+	return formatTokenPriceValue(cost, maximumFractionDigits);
 }
 
-export function formatTokenPriceFull(cost?: number): string {
-	if (cost === undefined || cost === null) return "Not available";
-	return `${formatTokenPriceValue(cost)} / 1M tokens`;
+export function formatTokenPriceFull(cost?: number, maximumFractionDigits = 4): string {
+	if (cost === undefined || cost === null || !Number.isFinite(cost)) return "Not available";
+	return `${formatTokenPriceValue(cost, maximumFractionDigits)} / 1M tokens`;
 }
 
 /** Per-1M like token pricing, but for fields priced per character. */
-export function formatCharacterPriceFull(cost?: number): string {
-	if (cost === undefined || cost === null) return "Not available";
-	return `${formatTokenPriceValue(cost)} / 1M characters`;
+export function formatCharacterPriceFull(cost?: number, maximumFractionDigits = 4): string {
+	if (cost === undefined || cost === null || !Number.isFinite(cost)) return "Not available";
+	return `${formatTokenPriceValue(cost, maximumFractionDigits)} / 1M characters`;
 }
