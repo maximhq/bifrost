@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -150,6 +152,7 @@ type Key struct {
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
 	DatabricksKeyConfig    *DatabricksKeyConfig    `json:"databricks_key_config,omitempty"`     // Databricks-specific key configuration
 	GithubCopilotKeyConfig *GithubCopilotKeyConfig `json:"github_copilot_key_config,omitempty"` // GitHub Copilot-specific key configuration
+	OAuthKeyConfig         *OAuthKeyConfig         `json:"oauth_key_config,omitempty"`          // OAuth-minted bearer for OpenAI-compatible providers; used when Value is empty
 	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
 	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	UseAnthropicEndpoints  *bool                   `json:"use_anthropic_endpoints,omitempty"`   // Whether to use anthropic endpoints for this key
@@ -1075,6 +1078,76 @@ type OAuthKeyConfig struct {
 	AuthStyle                OAuthAuthStyle    `json:"auth_style,omitempty"`                 // client_credentials: header (default) or body
 	ExtraParams              map[string]string `json:"extra_params,omitempty"`               // Extra form parameters sent on the token request
 	AssertionLifetimeSeconds int               `json:"assertion_lifetime_seconds,omitempty"` // jwt_bearer: assertion exp - iat (default 300)
+}
+
+// isLoopbackHost reports whether a URL hostname can only reach this machine.
+func isLoopbackHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"))
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// OAuthSigningAlgorithms lists the JWT algorithms a jwt_bearer config may name.
+var OAuthSigningAlgorithms = []string{"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"}
+
+// Validate checks the config at setup time, before it is stored or a request can use it, so
+// a half-configured key is refused where the operator can act on it rather than failing at
+// the first inference call. The request path repeats only the cheap checks.
+func (c *OAuthKeyConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	// An env. or vault reference counts as present; a literal must be non-blank. The URL
+	// shape is only checked for a literal, since a reference resolves elsewhere.
+	has := func(v *SecretVar) bool {
+		return v != nil && (v.IsFromSecret() || strings.TrimSpace(v.GetValue()) != "")
+	}
+	if !has(&c.TokenURL) {
+		return fmt.Errorf("oauth_key_config.token_url is required")
+	}
+	if !c.TokenURL.IsFromSecret() {
+		// The client secret or signed assertion travels on this request, so plain http is
+		// accepted only towards a loopback host, where it never leaves the machine.
+		u, err := url.Parse(strings.TrimSpace(c.TokenURL.GetValue()))
+		if err != nil || !u.IsAbs() || u.Host == "" || !(u.Scheme == "https" || (u.Scheme == "http" && isLoopbackHost(u.Hostname()))) {
+			return fmt.Errorf("oauth_key_config.token_url must be https (http is allowed for loopback hosts only)")
+		}
+	}
+	switch c.GrantType {
+	case OAuthGrantClientCredentials:
+		if !has(c.ClientID) || !has(c.ClientSecret) {
+			return fmt.Errorf("oauth_key_config.client_id and oauth_key_config.client_secret are required for the client_credentials grant")
+		}
+		switch c.AuthStyle {
+		case "", OAuthAuthStyleHeader, OAuthAuthStyleBody:
+		default:
+			return fmt.Errorf("oauth_key_config.auth_style must be header or body")
+		}
+	case OAuthGrantJWTBearer:
+		if !has(c.PrivateKey) {
+			return fmt.Errorf("oauth_key_config.private_key is required for the jwt_bearer grant")
+		}
+		if strings.TrimSpace(c.Issuer) == "" {
+			return fmt.Errorf("oauth_key_config.issuer is required for the jwt_bearer grant")
+		}
+		if strings.TrimSpace(c.Audience) == "" {
+			return fmt.Errorf("oauth_key_config.audience is required for the jwt_bearer grant")
+		}
+		if c.SigningAlgorithm != "" && !slices.Contains(OAuthSigningAlgorithms, c.SigningAlgorithm) {
+			return fmt.Errorf("oauth_key_config.signing_algorithm must be one of %s", strings.Join(OAuthSigningAlgorithms, ", "))
+		}
+		if c.AssertionLifetimeSeconds < 0 || c.AssertionLifetimeSeconds > 3600 {
+			return fmt.Errorf("oauth_key_config.assertion_lifetime_seconds must be between 0 (default) and 3600")
+		}
+	case "":
+		return fmt.Errorf("oauth_key_config.grant_type is required")
+	default:
+		return fmt.Errorf("oauth_key_config.grant_type must be client_credentials or jwt_bearer")
+	}
+	return nil
 }
 
 // GithubCopilotKeyConfig holds GitHub App credentials for server-to-server Copilot access.
