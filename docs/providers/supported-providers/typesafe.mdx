@@ -115,6 +115,8 @@ Cloudflare serves its Jev-compatible Clef models on per-model Workers AI URLs an
 
 Call it as `clef/clef`. For `clef-flash`, add a second provider whose override ends in `@cf/cloudflare/clef-flash` and call it as `<provider>/clef-flash`.
 
+Clef reads images. Send them as `input_image` parts with base64 data URLs, or in a top-level `images` array; both reach Clef's `images` field without any extra header. Cloudflare accepts up to 4 PNG, JPEG, or WebP images and no remote URLs.
+
 ## Decisions API
 
 `POST /v1/decisions` asks a list of questions about an input. Each question has a `type`, optional `name`, `instructions` (string or structured data), and type-specific details:
@@ -170,7 +172,7 @@ How Bifrost's `/v1/decisions` request reaches TypeSafe's native `/v1/systemone` 
 | `model` | `model` | `typesafe/<id>` (routing prefix stripped) |
 | `input` (string) | `state` (string) | Sent unchanged |
 | `input` (object) | `state` (object) | Sent unchanged |
-| `input` (messages) | `state` (array of `{role, content}`) | Text parts only; an image part is rejected with 400 for this attempt, so a fallback can serve it |
+| `input` (messages) | `state` (array of `{role, content}`) plus `images` | Text parts become the state; each `input_image` part (a base64 data URL) is sent in `images`, after any top-level `images`. A remote image URL, or a part of another type, is rejected with 400 for this attempt. An endpoint that reads text only (Jev) rejects `images` itself, so a fallback can serve it |
 | `input` (null) | `state: null` | Forwarded (api.typesafe.ai answers 422) |
 | `questions[]` | `questions` keyed by name | An unnamed question is sent as `question_<position>`; a repeated name is rejected with 400 |
 | `questions[].type` | `type` | `predicate` → `noul`; `choice`, `score` unchanged |

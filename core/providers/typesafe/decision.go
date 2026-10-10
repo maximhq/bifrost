@@ -5,7 +5,9 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/tidwall/gjson"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -57,18 +59,23 @@ func validStructuredValue(value interface{}) bool {
 // become an option -> description map, a boolean choice keyed "true" or
 // "false", and levels an ordered array of descriptions with their labels
 // folded in. Unsupported types and malformed criteria are rejected rather than
-// silently approximated, and so is an image in the input, which Typesafe would
-// read as text. Validation is never stricter than the official SDKs' types:
-// null state, null or absent instructions, and null descriptions are
-// forwarded for the endpoint to judge.
+// silently approximated. Images are sent in the "images" field (see
+// typesafeImages); any other non-text part is rejected rather than sent as
+// text. Validation is never stricter than the official SDKs' types: null state,
+// null or absent instructions, and null descriptions are forwarded for the
+// endpoint to judge.
 func ToTypesafeDecisionRequest(request *schemas.BifrostDecisionRequest) (*TypesafeDecisionRequest, error) {
 	if len(request.Questions) == 0 {
 		return nil, providerUtils.InvalidRequestErrorf("decision request requires at least one question")
 	}
-	if partType := request.Input.NonTextPartType(); partType != "" {
+	images, input, extraParams, err := typesafeImages(request.Input, request.ExtraParams)
+	if err != nil {
+		return nil, err
+	}
+	if partType := input.NonTextPartType(); partType != "" {
 		return nil, providerUtils.InvalidRequestErrorf("decision input carries an %q part, which Typesafe cannot read; route the request to a provider that accepts it", partType)
 	}
-	state := typesafeState(request.Input)
+	state := typesafeState(input)
 	if !isJSONNull(state) && !validStructuredValue(state) {
 		return nil, providerUtils.InvalidRequestErrorf("state must be a string, object, or array")
 	}
@@ -90,8 +97,67 @@ func ToTypesafeDecisionRequest(request *schemas.BifrostDecisionRequest) (*Typesa
 		State:       state,
 		Model:       request.Model,
 		Questions:   questions,
-		ExtraParams: request.ExtraParams,
+		Images:      images,
+		ExtraParams: extraParams,
 	}, nil
+}
+
+// typesafeImages collects a request's images for the "images" field, which
+// vision endpoints such as Clef read and text-only ones such as Jev reject
+// themselves, so a fallback can serve the request. They come from the native
+// "images" extension, kept verbatim and sent whether or not the request asked
+// for extensions to pass through, then from each input_image part, which must
+// be a base64 data URL since these endpoints do not fetch remote images. It
+// returns the input without its image parts (a message left with no parts is
+// dropped, and an input of only images becomes an empty state) and the extra
+// params without "images". Neither the request's input nor its extra params are
+// modified, since a fallback attempt reuses them.
+func typesafeImages(input schemas.DecisionInput, extraParams map[string]interface{}) ([]interface{}, schemas.DecisionInput, map[string]interface{}, error) {
+	var images []interface{}
+	if raw, ok := extraParams["images"]; ok {
+		data, err := providerUtils.MarshalSorted(raw)
+		if err != nil || sonic.Unmarshal(data, &images) != nil {
+			return nil, input, nil, providerUtils.InvalidRequestErrorf("images must be an array of base64 data URLs or {content_type, base64} objects")
+		}
+		rest := make(map[string]interface{}, len(extraParams)-1)
+		for key, value := range extraParams {
+			if key != "images" {
+				rest[key] = value
+			}
+		}
+		extraParams = rest
+	}
+
+	if input.Messages == nil {
+		return images, input, extraParams, nil
+	}
+	messages := make([]schemas.DecisionInputMessage, 0, len(input.Messages))
+	for _, message := range input.Messages {
+		if message.Content.Parts == nil {
+			messages = append(messages, message)
+			continue
+		}
+		parts := make([]schemas.DecisionInputPart, 0, len(message.Content.Parts))
+		for _, part := range message.Content.Parts {
+			if part.Type != schemas.DecisionInputPartTypeImage {
+				parts = append(parts, part)
+				continue
+			}
+			if part.ImageURL == nil || !strings.HasPrefix(strings.ToLower(*part.ImageURL), "data:") {
+				return nil, input, nil, providerUtils.InvalidRequestErrorf("decision image parts must be base64 data URLs for Typesafe-format endpoints, which do not fetch remote images")
+			}
+			images = append(images, *part.ImageURL)
+		}
+		if len(parts) == 0 {
+			continue
+		}
+		message.Content = schemas.DecisionInputContent{Parts: parts}
+		messages = append(messages, message)
+	}
+	if len(messages) == 0 {
+		return images, schemas.DecisionInput{Text: schemas.Ptr("")}, extraParams, nil
+	}
+	return images, schemas.DecisionInput{Messages: messages}, extraParams, nil
 }
 
 // typesafeState renders the input as a Typesafe state: text as a string, a
@@ -433,13 +499,25 @@ func (req *TypesafeDecisionRequest) ToBifrostDecisionRequest(ctx *schemas.Bifros
 		return nil, err
 	}
 
+	// The normalized request has no images slot outside message parts, which a
+	// string or structured state cannot hold, so images travel as the native
+	// extension that ToTypesafeDecisionRequest reads back.
+	extraParams := req.ExtraParams
+	if len(req.Images) > 0 {
+		extraParams = make(map[string]interface{}, len(req.ExtraParams)+1)
+		for key, value := range req.ExtraParams {
+			extraParams[key] = value
+		}
+		extraParams["images"] = req.Images
+	}
+
 	provider, model := schemas.ParseModelString(req.Model, schemas.Typesafe)
 	return &schemas.BifrostDecisionRequest{
 		Provider:    provider,
 		Model:       model,
 		Input:       ToBifrostDecisionInput(req.State),
 		Questions:   questions,
-		ExtraParams: req.ExtraParams,
+		ExtraParams: extraParams,
 	}, nil
 }
 

@@ -217964,15 +217964,17 @@
           "response": []
         },
         {
-          "name": "[EXPECT-400] /v1/decisions - image input rejected by a Typesafe model - typesafe/jev-1.13.0",
+          "name": "[EXPECT-400] /v1/decisions - image part reaches a Typesafe model, which rejects it upstream - typesafe/jev-1.13.0",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('an image is rejected rather than dropped', function () {",
+                  "pm.test('the image reaches Jev, which rejects it upstream rather than answering without it', function () {",
                   "    pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
-                  "    pm.expect(pm.response.text()).to.include(\"image\");",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.is_bifrost_error, 'expected the upstream rejection, not a local one: ' + pm.response.text()).to.eql(false);",
+                  "    pm.expect(body.answers, 'the image must not be dropped and answered as text: ' + pm.response.text()).to.be.undefined;",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -218000,6 +218002,92 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is a screenshot of my bill.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] /v1/decisions - images extension reaches a Typesafe model without the passthrough header - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the image reaches Jev, which rejects it upstream rather than answering without it', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.is_bifrost_error, 'expected the upstream rejection, not a local one: ' + pm.response.text()).to.eql(false);",
+                  "    pm.expect(body.answers, 'the image must not be dropped and answered as text: ' + pm.response.text()).to.be.undefined;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": \"Here is a screenshot of my bill.\",\n  \"images\": [\n    \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\"\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] /v1/decisions - remote image URL refused locally for a Typesafe model - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('a remote image URL is refused before the call, since Typesafe-format endpoints read only base64 data URLs', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.is_bifrost_error, 'expected the local rejection: ' + pm.response.text()).to.eql(true);",
+                  "    pm.expect(pm.response.text()).to.include('base64 data URL');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is a screenshot of my bill.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"https://example.com/bill.png\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
             }
           },
           "response": []

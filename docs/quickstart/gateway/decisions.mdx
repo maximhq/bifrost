@@ -54,7 +54,7 @@ curl --location 'http://localhost:8080/v1/decisions' \
 | `input` | Meaning |
 |---------|---------|
 | A string | Text to evaluate |
-| An array | Messages, each `{ "role": "user", "content": ... }` where content is text or parts: `{ "type": "input_text", "text": ... }` and `{ "type": "input_image", "image_url": "data:image/png;base64,...", "detail": "high" }`, where `image_url` is a base64 data URL or an HTTP(S) URL and `detail` (`low`, `high`, `auto`, or `original`) is optional. Images are read only by models that accept them; TypeSafe-based and chat models read text only and reject an image with a `400`, so a fallback can serve it. Parts of other types are rejected with a `400` |
+| An array | Messages, each `{ "role": "user", "content": ... }` where content is text or parts: `{ "type": "input_text", "text": ... }` and `{ "type": "input_image", "image_url": "data:image/png;base64,...", "detail": "high" }`, where `image_url` is a base64 data URL or an HTTP(S) URL and `detail` (`low`, `high`, `auto`, or `original`) is optional. Images are read only by models that accept them. TypeSafe-format endpoints receive base64 data URL images in their `images` field: Clef reads them, Jev rejects them with a `400`, and a remote URL is rejected before the call. Chat models answering through emulation reject an image with a `400`. Either way a fallback can serve it. Parts of other types are rejected with a `400` |
 | An object | Structured data, passed to TypeSafe-based models as their state and rendered as JSON for others |
 | `null` | No input; TypeSafe-based models receive a `null` state, and OpenAI's decision models reject it with a `400`, so a fallback can serve it |
 
@@ -177,7 +177,7 @@ The response keys answers by question name, each with a `kind` and a `value`:
 A body that does not read as the request above is read as the map form: its `questions` are an object keyed by name rather than a list. A `state` sent alongside `input` is ignored.
 
 <Note>
-OpenAI SDKs can send their own Decisions request to `POST /openai/v1/decisions` (see [OpenAI SDK](/integrations/openai-sdk/overview#decisions-api)). The body is the request above, and every decision model can answer it within the inputs it reads: TypeSafe-based and chat models read text only and reject image parts with a `400`, which a configured fallback can serve.
+OpenAI SDKs can send their own Decisions request to `POST /openai/v1/decisions` (see [OpenAI SDK](/integrations/openai-sdk/overview#decisions-api)). The body is the request above, and every decision model can answer it within the inputs it reads: models that cannot read an image reject it with a `400`, which a configured fallback can serve.
 </Note>
 
 <Note>
