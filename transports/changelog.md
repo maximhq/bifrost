@@ -1,3 +1,4 @@
+[fix]: skill marketplace URLs keep a non-default X-Forwarded-Port, so a gateway published on a port other than 80 or 443 is not rewritten to the scheme default (#7762) [@hmdsefi](https://github.com/hmdsefi)
 [fix]: apply saved log retention to the running cleaner without a restart (#8212) [@Constantine3](https://github.com/Constantine3)
 
 ## ✨ Features
