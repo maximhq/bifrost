@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -241,4 +242,105 @@ func indexSubstring(s, substr string) int {
 		}
 	}
 	return -1
+}
+
+// TestFitOutputTokens pins how a request sized for one model is fitted to another:
+// a cap above the ceiling is lowered and the budget scaled with it, a budget is
+// kept inside the model's range and under the cap it runs with, and only values
+// the caller sent are touched.
+func TestFitOutputTokens(t *testing.T) {
+	withResolver(t, func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		switch model {
+		case "gemini-2.5-pro":
+			return capsWithMax(65536)
+		case "gpt-oss-120b":
+			return &schemas.ModelCapabilities{MinOutputTokens: new(16)}
+		}
+		return nil
+	})
+
+	tests := []struct {
+		name        string
+		provider    schemas.ModelProvider
+		model       string
+		defaultMax  int
+		maxTokens   *int
+		budget      *int
+		wantMax     *int
+		wantBudget  *int
+		wantChanges []string
+	}{
+		{name: "cap above Claude ceiling is lowered and budget scaled with it", provider: schemas.Anthropic, model: "claude-haiku-4-5-20251001",
+			maxTokens: new(128000), budget: new(100000), wantMax: new(64000), wantBudget: new(50000),
+			wantChanges: []string{"max_completion_tokens: 128000 -> 64000", "reasoning.max_tokens: 100000 -> 50000"}},
+		{name: "huge cap and budget scale without overflowing", provider: schemas.Anthropic, model: "claude-haiku-4-5-20251001",
+			maxTokens: new(1000000000000000), budget: new(500000000000000), wantMax: new(64000), wantBudget: new(32000),
+			wantChanges: []string{"max_completion_tokens: 1000000000000000 -> 64000", "reasoning.max_tokens: 500000000000000 -> 32000"}},
+		{name: "cap and budget within limits are untouched", provider: schemas.Anthropic, model: "claude-haiku-4-5-20251001",
+			maxTokens: new(32000), budget: new(8000), wantMax: new(32000), wantBudget: new(8000)},
+		{name: "budget at or above the old cap ends under the lowered cap", provider: schemas.Anthropic, model: "claude-haiku-4-5-20251001",
+			maxTokens: new(200000), budget: new(200000), wantMax: new(64000), wantBudget: new(63999),
+			wantChanges: []string{"max_completion_tokens: 200000 -> 64000", "reasoning.max_tokens: 200000 -> 63999"}},
+		{name: "budget without a cap stays under the model ceiling", provider: schemas.Anthropic, model: "claude-haiku-4-5-20251001",
+			budget: new(100000), wantBudget: new(63999), wantChanges: []string{"reasoning.max_tokens: 100000 -> 63999"}},
+		{name: "budget below the Claude floor is raised", provider: schemas.Bedrock, model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			budget: new(512), wantBudget: new(1024), wantChanges: []string{"reasoning.max_tokens: 512 -> 1024"}},
+		{name: "caller's own cap/budget pairing is left alone", provider: schemas.Anthropic, model: "claude-haiku-4-5-20251001",
+			maxTokens: new(16000), budget: new(32000), wantMax: new(16000), wantBudget: new(32000)},
+		{name: "budget above the Gemini range is lowered", provider: schemas.Gemini, model: "gemini-2.5-pro",
+			budget: new(64000), wantBudget: new(32768), wantChanges: []string{"reasoning.max_tokens: 64000 -> 32768"}},
+		{name: "budget below the Gemini range is raised", provider: schemas.Gemini, model: "gemini-2.5-flash-lite",
+			budget: new(100), wantBudget: new(512), wantChanges: []string{"reasoning.max_tokens: 100 -> 512"}},
+		{name: "datasheet ceiling lowers the cap and the scaled budget lands in range", provider: schemas.Gemini, model: "gemini-2.5-pro",
+			maxTokens: new(1000000), budget: new(100000), wantMax: new(65536), wantBudget: new(6553),
+			wantChanges: []string{"max_completion_tokens: 1000000 -> 65536", "reasoning.max_tokens: 100000 -> 6553"}},
+		{name: "off and dynamic budgets pass through", provider: schemas.Gemini, model: "gemini-2.5-pro",
+			maxTokens: new(1000000), budget: new(-1), wantMax: new(65536), wantBudget: new(-1),
+			wantChanges: []string{"max_completion_tokens: 1000000 -> 65536"}},
+		{name: "cap below the datasheet floor is raised", provider: schemas.Bedrock, model: "gpt-oss-120b",
+			maxTokens: new(1), wantMax: new(16), wantChanges: []string{"max_completion_tokens: 1 -> 16"}},
+		{name: "default limit applies when the record has none", provider: schemas.OpenAI, model: "gpt-4o", defaultMax: 16384,
+			maxTokens: new(1000000), wantMax: new(16384), wantChanges: []string{"max_completion_tokens: 1000000 -> 16384"}},
+		{name: "record limit wins over the default", provider: schemas.Gemini, model: "gemini-2.5-pro", defaultMax: 8192,
+			maxTokens: new(1000000), wantMax: new(65536), wantChanges: []string{"max_completion_tokens: 1000000 -> 65536"}},
+		{name: "model with no limits is untouched", provider: schemas.OpenAI, model: "mystery-model",
+			maxTokens: new(1000000), budget: new(500000), wantMax: new(1000000), wantBudget: new(500000)},
+		{name: "absent values stay absent", provider: schemas.Anthropic, model: "claude-haiku-4-5-20251001"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotMax, gotBudget, changes := FitOutputTokens(schemas.ResolveModelCaps(tt.provider, tt.model), tt.defaultMax, "max_completion_tokens", tt.maxTokens, tt.budget)
+			if !equalIntPtr(gotMax, tt.wantMax) {
+				t.Errorf("max = %v, want %v", derefInt(gotMax), derefInt(tt.wantMax))
+			}
+			if !equalIntPtr(gotBudget, tt.wantBudget) {
+				t.Errorf("budget = %v, want %v", derefInt(gotBudget), derefInt(tt.wantBudget))
+			}
+			if !slices.Equal(changes, tt.wantChanges) {
+				t.Errorf("changes = %v, want %v", changes, tt.wantChanges)
+			}
+		})
+	}
+}
+
+// A fitted value is a new pointer; the caller's pointers keep what was sent, since
+// a fallback re-reads them for the next model.
+func TestFitOutputTokens_LeavesCallerPointers(t *testing.T) {
+	maxTokens, budget := new(128000), new(100000)
+	FitOutputTokens(schemas.ResolveModelCaps(schemas.Anthropic, "claude-haiku-4-5-20251001"), 0, "max_completion_tokens", maxTokens, budget)
+	if *maxTokens != 128000 || *budget != 100000 {
+		t.Errorf("caller's values mutated: max=%d budget=%d", *maxTokens, *budget)
+	}
+}
+
+func equalIntPtr(a, b *int) bool {
+	return (a == nil && b == nil) || (a != nil && b != nil && *a == *b)
+}
+
+func derefInt(p *int) any {
+	if p == nil {
+		return nil
+	}
+	return *p
 }

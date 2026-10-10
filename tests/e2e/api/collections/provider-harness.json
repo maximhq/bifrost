@@ -222376,6 +222376,245 @@
           }
         }
       ]
+    },
+    {
+      "name": "188. Compat convert params fits thinking budget per attempt (gemini fork) (convert params budget)",
+      "description": "Compat should_convert_params (UI: Convert Unsupported Param Values) now fits the output cap AND the thinking budget per attempt, against the model each attempt reaches (fallbacks rerun the plugin, so each gets its own limits). A cap above the model ceiling is lowered; a caller-sent reasoning.max_tokens is scaled with it, clamped into the model's thinking-budget range, and kept under the cap. Red before: the plugin clamped max tokens to the catalog limit but set the budget one below it, above gemini-2.5-flash's 24576 maximum, so Bifrost's thinking-budget validation failed the request. Green after: maxOutputTokens at the catalog limit, thinkingBudget = 100000/1000000 of it (6553). Cases: (1) /v1/chat/completions, (2) /v1/responses, (3) a fallback attempt after an invalid primary model, fitted to the fallback's own limits. Enabled per request via x-bf-compat so the rows do not depend on the profile's compat config; x-bf-send-back-raw-request exposes the Gemini wire body.",
+      "item": [
+        {
+          "name": "gemini gemini/gemini-2.5-flash /v1/chat/completions reasoning.max_tokens 100000 with max_tokens 1000000 fitted to model limits - convert params budget",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat: served, not rejected for an out-of-range thinking budget', function () {",
+                  "  // Before: the cap was clamped but the budget became cap-1 (65534), above gemini-2.5-flash's",
+                  "  // 24576 thinking-budget maximum, so Bifrost's own budget validation failed the request.",
+                  "  pm.expect(pm.response.code, 'expected 200, got ' + pm.response.code + ': ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('chat: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "var gc = (rr && rr.generationConfig) || {};",
+                  "var tc = gc.thinkingConfig || {};",
+                  "var gcs = JSON.stringify(gc);",
+                  "pm.test('chat: maxOutputTokens lowered to the model limit', function () {",
+                  "  pm.expect(gc.maxOutputTokens, 'generationConfig: ' + gcs).to.be.a('number');",
+                  "  pm.expect(gc.maxOutputTokens, 'generationConfig: ' + gcs).to.be.below(1000000);",
+                  "});",
+                  "pm.test('chat: thinkingBudget scaled with the lowered cap', function () {",
+                  "  // 100000 of 1000000 is a tenth of the output; the fitted budget keeps that share of the lowered cap.",
+                  "  pm.expect(tc.thinkingBudget, 'generationConfig: ' + gcs).to.eql(Math.floor(100000 * gc.maxOutputTokens / 1000000));",
+                  "});",
+                  "pm.test('chat: thinkingBudget inside gemini-2.5-flash range and under the cap', function () {",
+                  "  pm.expect(tc.thinkingBudget, 'generationConfig: ' + gcs).to.be.within(1, 24576);",
+                  "  pm.expect(tc.thinkingBudget, 'generationConfig: ' + gcs).to.be.below(gc.maxOutputTokens);",
+                  "});",
+                  "pm.test('Chat message carries text (convert params budget)', function () {",
+                  "  var msg = body.choices && body.choices[0] && body.choices[0].message;",
+                  "  pm.expect(msg, 'no assistant message: ' + pm.response.text()).to.exist;",
+                  "  pm.expect((msg.content || '').toString().length, 'empty content: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"should_convert_params\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":1000000,\"reasoning\":{\"max_tokens\":100000}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini gemini/gemini-2.5-flash /v1/responses reasoning.max_tokens 100000 with max_output_tokens 1000000 fitted to model limits - convert params budget",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses: served, not rejected for an out-of-range thinking budget', function () {",
+                  "  // Before: the cap was clamped but the budget became cap-1 (65534), above gemini-2.5-flash's",
+                  "  // 24576 thinking-budget maximum, so Bifrost's own budget validation failed the request.",
+                  "  pm.expect(pm.response.code, 'expected 200, got ' + pm.response.code + ': ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('responses: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "var gc = (rr && rr.generationConfig) || {};",
+                  "var tc = gc.thinkingConfig || {};",
+                  "var gcs = JSON.stringify(gc);",
+                  "pm.test('responses: maxOutputTokens lowered to the model limit', function () {",
+                  "  pm.expect(gc.maxOutputTokens, 'generationConfig: ' + gcs).to.be.a('number');",
+                  "  pm.expect(gc.maxOutputTokens, 'generationConfig: ' + gcs).to.be.below(1000000);",
+                  "});",
+                  "pm.test('responses: thinkingBudget scaled with the lowered cap', function () {",
+                  "  // 100000 of 1000000 is a tenth of the output; the fitted budget keeps that share of the lowered cap.",
+                  "  pm.expect(tc.thinkingBudget, 'generationConfig: ' + gcs).to.eql(Math.floor(100000 * gc.maxOutputTokens / 1000000));",
+                  "});",
+                  "pm.test('responses: thinkingBudget inside gemini-2.5-flash range and under the cap', function () {",
+                  "  pm.expect(tc.thinkingBudget, 'generationConfig: ' + gcs).to.be.within(1, 24576);",
+                  "  pm.expect(tc.thinkingBudget, 'generationConfig: ' + gcs).to.be.below(gc.maxOutputTokens);",
+                  "});",
+                  "pm.test('Responses output carries text (convert params budget)', function () {",
+                  "  var out = (body.output || []).filter(function (o) { return o.type === 'message'; });",
+                  "  pm.expect(out.length, 'no message item in output: ' + pm.response.text()).to.be.above(0);",
+                  "  var text = (out[0].content || []).map(function (c) { return c.text || ''; }).join('');",
+                  "  pm.expect(text.length, 'empty output text: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"should_convert_params\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"input\":\"Reply with the single word: ok\",\"max_output_tokens\":1000000,\"reasoning\":{\"max_tokens\":100000}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini gemini/does-not-exist-model-123 -> gemini/gemini-2.5-flash fallback /v1/chat/completions reasoning.max_tokens fitted on the fallback attempt - convert params budget",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('fallback: served, not rejected for an out-of-range thinking budget', function () {",
+                  "  // Before: the cap was clamped but the budget became cap-1 (65534), above gemini-2.5-flash's",
+                  "  // 24576 thinking-budget maximum, so Bifrost's own budget validation failed the request.",
+                  "  pm.expect(pm.response.code, 'expected 200, got ' + pm.response.code + ': ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('fallback: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "var gc = (rr && rr.generationConfig) || {};",
+                  "var tc = gc.thinkingConfig || {};",
+                  "var gcs = JSON.stringify(gc);",
+                  "pm.test('fallback: maxOutputTokens lowered to the model limit', function () {",
+                  "  pm.expect(gc.maxOutputTokens, 'generationConfig: ' + gcs).to.be.a('number');",
+                  "  pm.expect(gc.maxOutputTokens, 'generationConfig: ' + gcs).to.be.below(1000000);",
+                  "});",
+                  "pm.test('fallback: thinkingBudget scaled with the lowered cap', function () {",
+                  "  // 100000 of 1000000 is a tenth of the output; the fitted budget keeps that share of the lowered cap.",
+                  "  pm.expect(tc.thinkingBudget, 'generationConfig: ' + gcs).to.eql(Math.floor(100000 * gc.maxOutputTokens / 1000000));",
+                  "});",
+                  "pm.test('fallback: thinkingBudget inside gemini-2.5-flash range and under the cap', function () {",
+                  "  pm.expect(tc.thinkingBudget, 'generationConfig: ' + gcs).to.be.within(1, 24576);",
+                  "  pm.expect(tc.thinkingBudget, 'generationConfig: ' + gcs).to.be.below(gc.maxOutputTokens);",
+                  "});",
+                  "pm.test('Fallback attempt served the request (convert params budget)', function () {",
+                  "  var ri = (body.extra_fields || {}).routing_info || {};",
+                  "  pm.expect(ri.is_fallback, 'primary did not fall back: ' + JSON.stringify(body.extra_fields || {})).to.eql(true);",
+                  "  pm.expect(body.model || ri.model || '', 'served by an unexpected model: ' + pm.response.text().slice(0, 400)).to.match(/gemini-2\\.5-flash/);",
+                  "});",
+                  "pm.test('Chat message carries text (convert params budget)', function () {",
+                  "  var msg = body.choices && body.choices[0] && body.choices[0].message;",
+                  "  pm.expect(msg, 'no assistant message: ' + pm.response.text()).to.exist;",
+                  "  pm.expect((msg.content || '').toString().length, 'empty content: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"should_convert_params\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/does-not-exist-model-123\",\"fallbacks\":[\"gemini/gemini-2.5-flash\"],\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":1000000,\"reasoning\":{\"max_tokens\":100000}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
