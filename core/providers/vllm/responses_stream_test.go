@@ -2,12 +2,17 @@ package vllm
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -113,6 +118,109 @@ func testVLLMKey(serverURL string) schemas.Key {
 
 var noopPostHookRunner schemas.PostHookRunner = func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return result, err
+}
+
+type deadlineRecordingConn struct {
+	net.Conn
+	last *atomic.Int64
+}
+
+func (c deadlineRecordingConn) SetReadDeadline(d time.Time) error {
+	if !d.IsZero() {
+		c.last.Store(int64(time.Until(d)))
+	}
+	return c.Conn.SetReadDeadline(d)
+}
+
+func TestTranscriptionStreamSocketIdleTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   int
+		override time.Duration
+	}{
+		{"success", http.StatusOK, 0},
+		{"error_body", http.StatusBadRequest, 0},
+		{"caller_override", http.StatusOK, 7 * time.Second},
+		{"stalled_rejection", http.StatusBadRequest, 40 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			watchdog := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				if tc.name == "stalled_rejection" {
+					w.(http.Flusher).Flush()
+					select {
+					case <-r.Context().Done():
+					case <-watchdog:
+					}
+					return
+				}
+				// Exceed the header reader's buffer to force a body socket read.
+				if tc.status == http.StatusOK {
+					fmt.Fprintf(w, ": %s\n\ndata: {\"usage\":{}}\n\n", strings.Repeat("x", 16<<10))
+				} else {
+					fmt.Fprintf(w, `{"error":{"message":"%s"}}`, strings.Repeat("x", 16<<10))
+				}
+			}))
+			defer srv.Close()
+			provider, initErr := NewVLLMProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 10,
+				StreamIdleTimeoutInSeconds:     300,
+			}}, noopTestLogger{})
+			if initErr != nil {
+				t.Fatal(initErr)
+			}
+			var last atomic.Int64
+			provider.streamingClient.Dial = func(addr string) (net.Conn, error) {
+				conn, err := net.DialTimeout("tcp", addr, time.Second)
+				if err != nil {
+					return nil, err
+				}
+				return deadlineRecordingConn{conn, &last}, nil
+			}
+			defer provider.streamingClient.CloseIdleConnections()
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			want := 300 * time.Second
+			if tc.override > 0 {
+				ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, tc.override)
+				want = tc.override
+			}
+			req := &schemas.BifrostTranscriptionRequest{
+				Provider: schemas.VLLM, Model: "test-model", Input: &schemas.TranscriptionInput{File: []byte("audio")},
+			}
+			var timer *time.Timer
+			if tc.name == "stalled_rejection" {
+				timer = time.AfterFunc(2*time.Second, func() { close(watchdog) })
+			}
+			stream, err := provider.TranscriptionStream(ctx, noopPostHookRunner, nil, testVLLMKey(srv.URL), req)
+			if timer != nil && !timer.Stop() {
+				<-watchdog
+				t.Fatal("watchdog released the upstream before the socket idle timeout")
+			}
+			if tc.status == http.StatusOK {
+				if err != nil {
+					t.Fatal(err)
+				}
+				chunks := drainStreamWithTimeout(t, stream, 5*time.Second)
+				if len(chunks) != 1 || chunks[0].BifrostTranscriptionStreamResponse == nil || chunks[0].BifrostTranscriptionStreamResponse.Type != schemas.TranscriptionStreamResponseTypeDone {
+					t.Fatalf("expected a completed transcription, got %+v", chunks)
+				}
+			} else if tc.name == "stalled_rejection" {
+				if err == nil || err.Error == nil || !errors.Is(err.Error.Error, providerUtils.ErrStreamIdleTimeout) || err.EffectiveHTTPStatus() != 504 {
+					t.Fatalf("expected a body idle timeout, got %v", err)
+				}
+			} else if err == nil || err.EffectiveHTTPStatus() != tc.status {
+				t.Fatalf("upstream status = %v, want %d", err, tc.status)
+			}
+			if tc.status != http.StatusOK && tc.override == 0 && ctx.Value(schemas.BifrostContextKeyStreamIdleTimeout) != nil {
+				t.Error("failed provider left its idle timeout on the context used by fallbacks")
+			}
+			if got := time.Duration(last.Load()); got <= 0 || got > want || got < want-min(time.Second, want/2) {
+				t.Fatalf("socket idle timeout = %v, want %v", got.Round(time.Millisecond), want)
+			}
+		})
+	}
 }
 
 // TestResponsesStream_SSEErrorEvent_SurfacesErrorAndCloses is a regression

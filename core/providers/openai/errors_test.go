@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"bytes"
+	"io"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -207,5 +209,88 @@ func TestApplyStreamErrorStatus_PreservesExistingStatus(t *testing.T) {
 	applyStreamErrorStatus(bifrostErr)
 	if *bifrostErr.StatusCode != 429 {
 		t.Fatalf("StatusCode = %d, want 429 preserved", *bifrostErr.StatusCode)
+	}
+}
+
+// A one-shot reader detects accidental re-reading after the stream has failed.
+type failedErrorBodyReader struct{ reads int }
+
+func (r *failedErrorBodyReader) Read([]byte) (int, error) {
+	r.reads++
+	if r.reads > 1 {
+		panic("failed error body read again")
+	}
+	return 0, io.ErrUnexpectedEOF
+}
+
+func TestMaterializeErrorBodyRunsConverterAfterDetachingFailedStream(t *testing.T) {
+	var resp fasthttp.Response
+	resp.SetStatusCode(401)
+	resp.Header.Set("Retry-After", "7")
+	var reader failedErrorBodyReader
+	resp.SetBodyStream(&reader, -1)
+	calls := 0
+	got := materializeErrorBody(nil, &resp, func(response *fasthttp.Response) *schemas.BifrostError {
+		calls++
+		if response.BodyStream() != nil {
+			t.Fatal("converter received a live failed body")
+		}
+		if len(response.Body()) != 0 {
+			t.Fatal("failed body was not detached")
+		}
+		converted := ParseOpenAIError(response)
+		converted.AllowFallbacks = schemas.Ptr(false)
+		return converted
+	})
+	if calls != 1 || reader.reads != 1 {
+		t.Fatalf("converter calls=%d body reads=%d, want 1 each", calls, reader.reads)
+	}
+	if got == nil || got.Error == nil || got.Error.Error != io.ErrUnexpectedEOF || got.EffectiveHTTPStatus() != 401 {
+		t.Fatalf("read failure was replaced by converter output: %+v", got)
+	}
+	if got.AllowFallbacks == nil || *got.AllowFallbacks || got.ExtraFields.RetryAfter != 7000 {
+		t.Fatalf("lost fallback restriction or retry hint: %+v", got)
+	}
+}
+
+func BenchmarkMaterializeErrorBody(b *testing.B) {
+	for _, custom := range []bool{false, true} {
+		name := "default"
+		var converter ErrorConverter
+		if custom {
+			name, converter = "custom", ParseOpenAIError
+		}
+		b.Run(name, func(b *testing.B) {
+			for _, path := range []string{"buffered", "streamed", "body_error", "gzip_header_error"} {
+				b.Run(path, func(b *testing.B) {
+					var resp fasthttp.Response
+					defer resp.Reset()
+					resp.SetStatusCode(401)
+					payload := []byte(`{"error":{"message":"rejected"}}`)
+					var reader bytes.Reader
+					var failed failedErrorBodyReader
+					if path == "gzip_header_error" {
+						resp.Header.Set("Content-Encoding", "gzip")
+					}
+					b.ReportAllocs()
+					for b.Loop() {
+						switch path {
+						case "buffered":
+							resp.SetBody(payload)
+						case "body_error":
+							failed.reads = 0
+							resp.SetBodyStream(&failed, -1)
+						default:
+							reader.Reset(payload)
+							resp.SetBodyStream(&reader, -1)
+						}
+						got := materializeErrorBody(nil, &resp, converter)
+						if (got != nil) != (path == "body_error" || path == "gzip_header_error") {
+							b.Fatal(got)
+						}
+					}
+				})
+			}
+		})
 	}
 }

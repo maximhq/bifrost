@@ -1,10 +1,12 @@
 package vertex
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -40,9 +42,14 @@ func (vertexEndpointTestLogger) LogHTTPRequest(schemas.LogLevel, string) schemas
 
 func vertexOpenAIEndpointTestProvider(t testing.TB, handler http.Handler) (*VertexProvider, schemas.Key) {
 	t.Helper()
+	return vertexTestProviderWithIdleTimeout(t, handler, 0)
+}
+
+func vertexTestProviderWithIdleTimeout(t testing.TB, handler http.Handler, idleSeconds int) (*VertexProvider, schemas.Key) {
+	t.Helper()
 	upstream := httptest.NewTLSServer(handler)
 	t.Cleanup(upstream.Close)
-	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 5}}
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 5, StreamIdleTimeoutInSeconds: idleSeconds}}
 	config.CheckAndSetDefaults()
 	provider, err := NewVertexProvider(config, vertexEndpointTestLogger{})
 	if err != nil {
@@ -265,6 +272,122 @@ func TestVertexEndpointErrorEvictsCredentials(t *testing.T) {
 	}
 	if _, ok := provider.tokenSources.Load(getClientKey(vertexCredentialIdentity(key))); ok {
 		t.Fatal("credentials were not evicted")
+	}
+}
+
+func TestVertexUnaryRejectionIdleTimeout(t *testing.T) {
+	for _, route := range []string{"native", "custom"} {
+		for _, override := range []time.Duration{0, 30 * time.Millisecond} {
+			t.Run(route+"/"+override.String(), func(t *testing.T) {
+				release := make(chan struct{})
+				releasePeer := sync.OnceFunc(func() { close(release) })
+				provider, key := vertexTestProviderWithIdleTimeout(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Length", "1024")
+					w.WriteHeader(http.StatusUnauthorized)
+					w.(http.Flusher).Flush()
+					select {
+					case <-release:
+					case <-r.Context().Done():
+					}
+				}), 1)
+				defer releasePeer()
+				watchdog := time.AfterFunc(4*time.Second, releasePeer)
+				defer watchdog.Stop()
+				budget := 3 * time.Second
+				if override > 0 {
+					budget = 700 * time.Millisecond // Shorter than the provider default.
+				}
+				ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), budget)
+				defer cancel()
+				ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(16))
+				if override > 0 {
+					ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, override)
+				}
+				if route == "custom" {
+					ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: &schemas.AliasConfig{VertexAliasCfg: &schemas.VertexAliasCfg{VertexEndpoint: &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat}}}})
+				}
+				_, got := provider.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{Provider: schemas.Vertex, Model: "gemini-2.5-flash", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}})
+				if got == nil || got.Error == nil || !errors.Is(got.Error.Error, providerUtils.ErrStreamIdleTimeout) || got.EffectiveHTTPStatus() != 504 {
+					t.Fatalf("expected a 504 from the socket idle timeout, got %+v", got)
+				}
+				if _, cached := provider.tokenSources.Load(getClientKey(vertexCredentialIdentity(key))); cached {
+					t.Error("the 401 did not evict the token source")
+				}
+				if override == 0 && ctx.Value(schemas.BifrostContextKeyStreamIdleTimeout) != nil {
+					t.Error("provider idle default leaked into the request context")
+				}
+			})
+		}
+	}
+}
+
+// Custom endpoints delegate chat and Responses requests to the OpenAI helpers.
+// Even a failed error-body read must evict rejected credentials without losing its cause.
+func TestVertexEndpointErrorBodyFailureEvictsCredentials(t *testing.T) {
+	for _, method := range []schemas.VertexEndpointMethod{schemas.VertexEndpointRawPredict, schemas.VertexEndpointChatCompletions} {
+		for _, route := range []string{"chat", "chat-stream", "responses", "responses-stream"} {
+			for _, status := range []int{401, 403, 429} {
+				for _, failure := range []string{"truncated", "gzip", "idle"} {
+					t.Run(fmt.Sprintf("%s/%s/%d/%s", method, route, status, failure), func(t *testing.T) {
+						release := make(chan struct{})
+						var calls atomic.Int32
+						provider, key := vertexOpenAIEndpointTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							calls.Add(1)
+							w.Header().Set("Retry-After", "7")
+							if failure == "gzip" {
+								w.Header().Set("Content-Encoding", "gzip")
+							} else {
+								w.Header().Set("Content-Length", "1024")
+								w.Header().Set("Connection", "close")
+							}
+							w.WriteHeader(status)
+							w.(http.Flusher).Flush()
+							if failure == "idle" {
+								<-release
+							} else {
+								_, _ = io.WriteString(w, "invalid error body")
+							}
+						}))
+						t.Cleanup(func() { close(release) })
+						ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+						t.Cleanup(ctx.Cancel)
+						ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 100*time.Millisecond)
+						ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(1))
+						ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: &schemas.AliasConfig{VertexAliasCfg: &schemas.VertexAliasCfg{VertexEndpoint: &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat, Method: method}}}})
+						chat := &schemas.BifrostChatRequest{Provider: schemas.Vertex, Model: "custom", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}}}
+						responses := &schemas.BifrostResponsesRequest{Provider: schemas.Vertex, Model: "custom", Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}}}
+						var got *schemas.BifrostError
+						switch route {
+						case "chat":
+							_, got = provider.ChatCompletion(ctx, key, chat)
+						case "chat-stream":
+							_, got = provider.ChatCompletionStream(ctx, nil, nil, key, chat)
+						case "responses":
+							_, got = provider.Responses(ctx, key, responses)
+						case "responses-stream":
+							_, got = provider.ResponsesStream(ctx, nil, nil, key, responses)
+						}
+						wantStatus, wantRetry, wantCause := status, int64(7000), error(io.ErrUnexpectedEOF)
+						if failure == "gzip" {
+							wantCause = gzip.ErrHeader
+						}
+						if failure == "idle" {
+							wantStatus, wantRetry, wantCause = 504, 0, providerUtils.ErrStreamIdleTimeout
+						}
+						if got == nil || got.Error == nil || got.EffectiveHTTPStatus() != wantStatus || !errors.Is(got.Error.Error, wantCause) || got.ExtraFields.RetryAfter != wantRetry {
+							t.Fatalf("lost read error/status/retry hint: %+v", got)
+						}
+						_, cached := provider.tokenSources.Load(getClientKey(vertexCredentialIdentity(key)))
+						if cached != (status == 429) {
+							t.Errorf("credentials cached = %v after HTTP %d", cached, status)
+						}
+						if calls.Load() != 1 {
+							t.Errorf("upstream requests = %d, want 1", calls.Load())
+						}
+					})
+				}
+			}
+		}
 	}
 }
 

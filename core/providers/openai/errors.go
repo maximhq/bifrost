@@ -12,6 +12,20 @@ import (
 // ErrorConverter is a function that converts provider-specific error responses to BifrostError.
 type ErrorConverter func(resp *fasthttp.Response) *schemas.BifrostError
 
+// After a read failure the stream is detached. The converter can still apply
+// status-based policy (such as Vertex credential eviction or Copilot blocking
+// fallbacks), while the caller receives the original read error and retry hint.
+func materializeErrorBody(ctx *schemas.BifrostContext, resp *fasthttp.Response, converter ErrorConverter) *schemas.BifrostError {
+	readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp)
+	if readErr == nil || converter == nil {
+		return readErr
+	}
+	if converted := converter(resp); converted != nil && converted.AllowFallbacks != nil && !*converted.AllowFallbacks {
+		readErr.AllowFallbacks = converted.AllowFallbacks
+	}
+	return readErr
+}
+
 // responsesStreamError converts either Responses API error event shape into
 // Bifrost's provider-error envelope. Responses-compatible services can report
 // an error after the HTTP headers have been committed, so the transport status

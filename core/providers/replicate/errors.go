@@ -10,6 +10,9 @@ import (
 // parseReplicateError parses Replicate API error response, with the retry hint from the
 // response headers.
 func parseReplicateError(resp *fasthttp.Response) *schemas.BifrostError {
+	if readErr := providerUtils.MaterializeStreamErrorBody(nil, resp); readErr != nil {
+		return readErr
+	}
 	body := resp.Body()
 	statusCode := resp.StatusCode()
 
