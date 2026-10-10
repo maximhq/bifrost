@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -496,17 +497,25 @@ func (m *liveMeter) openUnit(kind, model string, continuation bool) (*liveBillin
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	if ids, ok := preCtx.Value(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys).([]string); ok {
-		m.narrowKeysLocked(ids)
-	}
 	traceID, _ := preCtx.Value(schemas.BifrostContextKeyTraceID).(string)
-	return &liveBillingUnit{
+	unit := &liveBillingUnit{
 		hooks:     hooks,
 		requestID: requestID,
 		traceID:   traceID,
 		startedAt: startedAt,
 		preValues: preCtx.GetUserValues(),
-	}, nil
+	}
+	if ids, restricted := preCtx.Value(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys).([]string); restricted {
+		// Initial admission narrows the keys before selection. Later units must permit the
+		// pinned key: the upstream connection cannot change credentials during the session.
+		if m.key.ID != "" && !slices.Contains(ids, m.key.ID) {
+			bifrostErr := newRealtimeWireBifrostError(403, "invalid_request_error", fmt.Sprintf("the key serving this session is not allowed for model %s", model))
+			m.closeUnitWithError(kind, unit, model, bifrostErr)
+			return nil, bifrostErr
+		}
+		m.narrowKeysLocked(ids)
+	}
+	return unit, nil
 }
 
 // narrowKeysLocked keeps only the keys every admitted unit may use.
