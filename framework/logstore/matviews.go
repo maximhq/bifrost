@@ -980,36 +980,14 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout t
 		return func() {}
 	}
 	stopCh := make(chan struct{})
+	gate := newMigrationLockProbe(db, logger)
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				// Bound each tick. refreshMatViews holds a pooled connection and a
-				// session advisory lock across REFRESH MATERIALIZED VIEW CONCURRENTLY
-				// for every view; without a deadline one pathological refresh keeps the
-				// lock forever, and every other replica's pg_try_advisory_lock then
-				// fails silently, leaving matviews permanently stale.
-				started := time.Now()
-				tickCtx, cancel := context.WithTimeout(ctx, timeout)
-				err := refreshMatViews(tickCtx, db)
-				cancel()
-				elapsed := time.Since(started)
-
-				switch {
-				case err != nil:
-					logger.Warn(fmt.Sprintf("logstore: matview refresh failed after %s: %s", elapsed.Round(time.Millisecond), err))
-				case readyFlag != nil && !readyFlag.Load():
-					logger.Info("logstore: materialized views are ready (recovered)")
-					readyFlag.Store(true)
-				}
-				// A refresh slower than the interval means the refresher itself is the
-				// bottleneck — surface it rather than letting ticks silently coalesce.
-				if elapsed > interval {
-					logger.Warn(fmt.Sprintf("logstore: matview refresh took %s, longer than the %s refresh interval; consider raising matview_refresh_interval",
-						elapsed.Round(time.Millisecond), interval))
-				}
+				runMatViewRefreshTick(ctx, db, gate, interval, timeout, logger, readyFlag)
 			case <-ctx.Done():
 				return
 			case <-stopCh:
@@ -1018,6 +996,41 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout t
 		}
 	}()
 	return func() { close(stopCh) }
+}
+
+// runMatViewRefreshTick is one iteration of the refresher. It is skipped
+// entirely while another node holds the migration lock: REFRESH MATERIALIZED
+// VIEW CONCURRENTLY reads the logs table, and any reader queued ahead of a
+// pending ALTER TABLE stalls that ALTER and everything queued behind it.
+func runMatViewRefreshTick(ctx context.Context, db *gorm.DB, gate *migrationLockProbe, interval, timeout time.Duration, logger schemas.Logger, readyFlag *atomic.Bool) {
+	if gate.inProgress(ctx) {
+		logger.Debug("logstore: skipping matview refresh tick, migration lock is held by another node")
+		return
+	}
+	// Bound each tick. refreshMatViews holds a pooled connection and a
+	// session advisory lock across REFRESH MATERIALIZED VIEW CONCURRENTLY
+	// for every view; without a deadline one pathological refresh keeps the
+	// lock forever, and every other replica's pg_try_advisory_lock then
+	// fails silently, leaving matviews permanently stale.
+	started := time.Now()
+	tickCtx, cancel := context.WithTimeout(ctx, timeout)
+	err := refreshMatViews(tickCtx, db)
+	cancel()
+	elapsed := time.Since(started)
+
+	switch {
+	case err != nil:
+		logger.Warn(fmt.Sprintf("logstore: matview refresh failed after %s: %s", elapsed.Round(time.Millisecond), err))
+	case readyFlag != nil && !readyFlag.Load():
+		logger.Info("logstore: materialized views are ready (recovered)")
+		readyFlag.Store(true)
+	}
+	// A refresh slower than the interval means the refresher itself is the
+	// bottleneck — surface it rather than letting ticks silently coalesce.
+	if elapsed > interval {
+		logger.Warn(fmt.Sprintf("logstore: matview refresh took %s, longer than the %s refresh interval; consider raising matview_refresh_interval",
+			elapsed.Round(time.Millisecond), interval))
+	}
 }
 
 // canUseMatViewFilters returns true if the given filters can be served from

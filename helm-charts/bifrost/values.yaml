@@ -1825,7 +1825,7 @@ storage:
     #   maxBatchSize: 1000
     #   batchInterval: "5s"
     #   maxBatchBytes: 314572800
-    #   writeQueueCapacity: 10000
+    #   writeQueueCapacity: 10000   # also buffers writes while another pod runs a log store migration
     #   deferredUsageConcurrency: 5
     # Keep selected payload fields in DB instead of offloading to object storage.
     # Uses log payload DB column names (e.g., input_history, output_message, raw_request, raw_response).

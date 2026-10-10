@@ -90170,6 +90170,11 @@
                     "dropped_requests": {
                       "type": "integer",
                       "format": "int64"
+                    },
+                    "dropped_during_maintenance": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Subset of dropped_requests dropped while the log writer was paused for another node's log store migration"
                     }
                   }
                 }

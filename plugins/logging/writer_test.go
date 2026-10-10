@@ -2,6 +2,7 @@ package logging
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net"
@@ -11,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/postgresconn"
 )
 
 // failingBatchStore wraps a real store and fails BatchCreateIfNotExists with a
@@ -459,4 +462,572 @@ func TestCleanupInterruptsBlockedFlushAndDrainsIt(t *testing.T) {
 	if dropped := plugin.droppedRequests.Load(); dropped != 0 {
 		t.Fatalf("expected 0 dropped requests, got %d", dropped)
 	}
+}
+
+// gatedStore wraps a real store and lets a test toggle the logstore
+// MaintenanceGate, standing in for another node holding the migration lock.
+// It also counts batch inserts so a test can prove nothing reached the store.
+type gatedStore struct {
+	logstore.LogStore
+	migrating atomic.Bool
+	batches   atomic.Int64
+}
+
+func (s *gatedStore) MigrationInProgress(context.Context) bool { return s.migrating.Load() }
+
+func (s *gatedStore) BatchCreateIfNotExists(ctx context.Context, entries []*logstore.Log) error {
+	s.batches.Add(1)
+	return s.LogStore.BatchCreateIfNotExists(ctx, entries)
+}
+
+// shrinkMaintenanceTimers makes the pause loop fast enough for a unit test and
+// restores the production values afterwards.
+func shrinkMaintenanceTimers(t *testing.T, poll, maxPause time.Duration) {
+	t.Helper()
+	prevPoll, prevMax := maintenancePollInterval, maintenanceMaxPause
+	maintenancePollInterval, maintenanceMaxPause = poll, maxPause
+	t.Cleanup(func() { maintenancePollInterval, maintenanceMaxPause = prevPoll, prevMax })
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	waitForWithin(t, 3*time.Second, what, cond)
+}
+
+func waitForWithin(t *testing.T, budget time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(budget)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func countLogs(t *testing.T, store logstore.LogStore) int64 {
+	t.Helper()
+	res, err := store.SearchLogs(context.Background(), logstore.SearchFilters{}, logstore.PaginationOptions{Limit: 100})
+	if err != nil {
+		t.Fatalf("SearchLogs() error = %v", err)
+	}
+	return res.Pagination.TotalCount
+}
+
+// TestBatchWriterPausesWhileMigrationLockHeld pins the gate: while another node
+// holds the logstore migration lock the batch writer issues no inserts, the
+// write queue is the only buffer (overflow drops as always, now also counted
+// under droppedDuringMaintenance), and everything buffered lands once the lock
+// is released.
+func TestBatchWriterPausesWhileMigrationLockHeld(t *testing.T) {
+	shrinkMaintenanceTimers(t, 10*time.Millisecond, time.Minute)
+	inner := newTestStore(t)
+	store := &gatedStore{LogStore: inner}
+	store.migrating.Store(true)
+	const batch, capacity, overflow = 2, 3, 2
+	plugin, err := Init(context.Background(), &Config{Writer: &logstore.WriterConfig{
+		MaxBatchSize:       batch,
+		BatchInterval:      "10ms",
+		WriteQueueCapacity: capacity,
+	}}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	for i := 0; i < batch; i++ {
+		plugin.enqueueLogEntry(makeTestLog(fmt.Sprintf("paused-batch-%d", i)), nil)
+	}
+	waitFor(t, "writer to pause on the held lock", plugin.writerPaused.Load)
+
+	// The writer is not consuming: these fill the channel, then two more overflow.
+	for i := 0; i < capacity+overflow; i++ {
+		plugin.enqueueLogEntry(makeTestLog(fmt.Sprintf("paused-queued-%d", i)), nil)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := store.batches.Load(); got != 0 {
+		t.Fatalf("expected no inserts while the migration lock is held, got %d batch calls", got)
+	}
+	if got := plugin.droppedRequests.Load(); got != overflow {
+		t.Fatalf("expected %d queue-full drops, got %d", overflow, got)
+	}
+	if got := plugin.droppedDuringMaintenance.Load(); got != overflow {
+		t.Fatalf("expected the %d drops to be attributed to the migration window, got %d", overflow, got)
+	}
+
+	store.migrating.Store(false)
+	waitFor(t, "buffered entries to be written after the lock cleared", func() bool {
+		return countLogs(t, inner) == batch+capacity
+	})
+	waitFor(t, "writer to clear its paused flag", func() bool { return !plugin.writerPaused.Load() })
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if got := plugin.droppedRequests.Load(); got != overflow {
+		t.Fatalf("resume must not drop anything further: expected %d, got %d", overflow, got)
+	}
+}
+
+// TestBatchWriterForcedFlushAfterMaxPause pins the safety valve: a lock that is
+// never released cannot stall writes forever; after maintenanceMaxPause the
+// writer flushes exactly as it did before the gate existed.
+func TestBatchWriterForcedFlushAfterMaxPause(t *testing.T) {
+	shrinkMaintenanceTimers(t, 10*time.Millisecond, 40*time.Millisecond)
+	inner := newTestStore(t)
+	store := &gatedStore{LogStore: inner}
+	store.migrating.Store(true)
+	const N = 2
+	plugin, err := Init(context.Background(), &Config{Writer: &logstore.WriterConfig{
+		MaxBatchSize:  N,
+		BatchInterval: "10ms",
+	}}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+
+	for i := 0; i < N; i++ {
+		plugin.enqueueLogEntry(makeTestLog(fmt.Sprintf("forced-%d", i)), nil)
+	}
+	waitFor(t, "forced flush after the pause cap", func() bool { return countLogs(t, inner) == N })
+	if plugin.droppedRequests.Load() != 0 {
+		t.Fatalf("forced flush must not drop entries, got %d", plugin.droppedRequests.Load())
+	}
+}
+
+// TestCleanupDuringMigrationPauseStillDrains pins shutdown behaviour: Cleanup
+// interrupts a paused writer at once and its drain writes both the held batch
+// and the queue without consulting the gate.
+func TestCleanupDuringMigrationPauseStillDrains(t *testing.T) {
+	shrinkMaintenanceTimers(t, 10*time.Millisecond, time.Minute)
+	inner := newTestStore(t)
+	store := &gatedStore{LogStore: inner}
+	store.migrating.Store(true)
+	const batch, queued = 2, 3
+	plugin, err := Init(context.Background(), &Config{Writer: &logstore.WriterConfig{
+		MaxBatchSize:       batch,
+		BatchInterval:      "10ms",
+		WriteQueueCapacity: queued,
+	}}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	for i := 0; i < batch; i++ {
+		plugin.enqueueLogEntry(makeTestLog(fmt.Sprintf("drain-batch-%d", i)), nil)
+	}
+	waitFor(t, "writer to pause on the held lock", plugin.writerPaused.Load)
+	for i := 0; i < queued; i++ {
+		plugin.enqueueLogEntry(makeTestLog(fmt.Sprintf("drain-queued-%d", i)), nil)
+	}
+
+	start := time.Now()
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("Cleanup took %s; a paused writer must hand off immediately", took)
+	}
+	if got := countLogs(t, inner); got != batch+queued {
+		t.Fatalf("expected the drain to persist all %d entries despite the held lock, got %d", batch+queued, got)
+	}
+	if plugin.droppedRequests.Load() != 0 {
+		t.Fatalf("expected 0 dropped requests, got %d", plugin.droppedRequests.Load())
+	}
+}
+
+// TestBatchWriterGateFalseWritesAsUsual pins the non-regression invariant: a
+// store whose gate reports no migration behaves exactly like a store without
+// a gate at all.
+func TestBatchWriterGateFalseWritesAsUsual(t *testing.T) {
+	const N = 5
+	for name, mk := range map[string]func(inner logstore.LogStore) logstore.LogStore{
+		"no gate":    func(inner logstore.LogStore) logstore.LogStore { return &recordingStore{LogStore: inner} },
+		"gate false": func(inner logstore.LogStore) logstore.LogStore { return &gatedStore{LogStore: inner} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			inner := newTestStore(t)
+			plugin, err := Init(context.Background(), &Config{Writer: &logstore.WriterConfig{
+				MaxBatchSize:  N,
+				BatchInterval: "10ms",
+			}}, testLogger{}, mk(inner), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			for i := 0; i < N; i++ {
+				plugin.enqueueLogEntry(makeTestLog(fmt.Sprintf("plain-%d", i)), nil)
+			}
+			waitFor(t, "all entries to be written", func() bool { return countLogs(t, inner) == N })
+			if err := plugin.Cleanup(); err != nil {
+				t.Fatalf("Cleanup() error = %v", err)
+			}
+			if plugin.writerPaused.Load() || plugin.droppedDuringMaintenance.Load() != 0 || plugin.droppedRequests.Load() != 0 {
+				t.Fatalf("no pause or drops expected: paused=%v maintenanceDrops=%d drops=%d",
+					plugin.writerPaused.Load(), plugin.droppedDuringMaintenance.Load(), plugin.droppedRequests.Load())
+			}
+		})
+	}
+}
+
+// TestBatchWriterKeepsWritingAfterPauseCapUntilLockClears pins the cap's reach:
+// once maintenanceMaxPause has been spent on a migration window, later batches
+// flush at once instead of each waiting out another cap, and the next window
+// (after the lock has been seen released) pauses again.
+func TestBatchWriterKeepsWritingAfterPauseCapUntilLockClears(t *testing.T) {
+	const poll, maxPause = 10 * time.Millisecond, 200 * time.Millisecond
+	shrinkMaintenanceTimers(t, poll, maxPause)
+	inner := newTestStore(t)
+	store := &gatedStore{LogStore: inner}
+	store.migrating.Store(true)
+	const batch = 2
+	plugin, err := Init(context.Background(), &Config{Writer: &logstore.WriterConfig{
+		MaxBatchSize:  batch,
+		BatchInterval: "10ms",
+	}}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	enqueue := func(prefix string, n int) {
+		for i := 0; i < n; i++ {
+			plugin.enqueueLogEntry(makeTestLog(fmt.Sprintf("%s-%d", prefix, i)), nil)
+		}
+	}
+
+	enqueue("cap-first", batch)
+	waitFor(t, "forced flush after the pause cap", func() bool { return countLogs(t, inner) == batch })
+
+	const more = 3 * batch
+	enqueue("cap-later", more)
+	deadline := time.Now().Add(maxPause)
+	for countLogs(t, inner) < batch+more {
+		if time.Now().After(deadline) {
+			t.Fatalf("after the pause cap, later batches must flush at once while the lock stays held: wrote %d of %d within %s",
+				countLogs(t, inner)-batch, more, maxPause)
+		}
+		time.Sleep(poll)
+	}
+
+	store.migrating.Store(false)
+	enqueue("cap-released", batch)
+	waitFor(t, "writes after the lock cleared", func() bool { return countLogs(t, inner) == 2*batch+more })
+	store.migrating.Store(true)
+	enqueue("cap-again", batch)
+	waitFor(t, "writer to pause for the next migration window", plugin.writerPaused.Load)
+	if plugin.droppedRequests.Load() != 0 {
+		t.Fatalf("expected 0 dropped requests, got %d", plugin.droppedRequests.Load())
+	}
+}
+
+// usageGatedStore is a gatedStore that also counts the deferred-usage lookups
+// and updates so a test can tell whether the usage path touched the store.
+type usageGatedStore struct {
+	gatedStore
+	present atomic.Bool
+	lookups atomic.Int64
+	updates atomic.Int64
+}
+
+func (s *usageGatedStore) IsLogEntryPresent(context.Context, string) (bool, error) {
+	s.lookups.Add(1)
+	return s.present.Load(), nil
+}
+
+func (s *usageGatedStore) Update(context.Context, string, any) error {
+	s.updates.Add(1)
+	return nil
+}
+
+// scheduleUsage runs scheduleDeferredUsageUpdate for requestID and delivers the
+// trailing usage, so the worker goroutine moves on to the store.
+func scheduleUsage(plugin *LoggerPlugin, requestID string) {
+	ch := make(chan *schemas.BifrostLLMUsage, 1)
+	ctx := schemas.NewBifrostContextWithValue(context.Background(), time.Time{},
+		schemas.BifrostContextKeyDeferredUsage, (<-chan *schemas.BifrostLLMUsage)(ch))
+	plugin.scheduleDeferredUsageUpdate(ctx, requestID, false)
+	ch <- &schemas.BifrostLLMUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}
+	close(ch)
+}
+
+func newUsageGatedPlugin(t *testing.T) (*LoggerPlugin, *usageGatedStore) {
+	t.Helper()
+	store := &usageGatedStore{gatedStore: gatedStore{LogStore: newTestStore(t)}}
+	store.present.Store(true)
+	store.migrating.Store(true)
+	plugin, err := Init(context.Background(), &Config{Writer: &logstore.WriterConfig{
+		MaxBatchSize:  2,
+		BatchInterval: "10ms",
+	}}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	return plugin, store
+}
+
+// TestDeferredUsageWaitsForMigrationAndWriterResume pins the usage path's gate:
+// while another node holds the migration lock no lookup or update is issued;
+// once the lock clears the update still waits for our own paused batch writer
+// to resume (it polls the lock on its own cadence, so the row it holds may not
+// have landed yet); then the lookup and update run as usual.
+func TestDeferredUsageWaitsForMigrationAndWriterResume(t *testing.T) {
+	shrinkMaintenanceTimers(t, 10*time.Millisecond, time.Minute)
+	plugin, store := newUsageGatedPlugin(t)
+	// Nothing is enqueued, so the batch writer never flushes and the paused flag
+	// is the test's to drive.
+	plugin.writerPaused.Store(true)
+
+	scheduleUsage(plugin, "usage-gated")
+	time.Sleep(50 * time.Millisecond)
+	if l, u := store.lookups.Load(), store.updates.Load(); l != 0 || u != 0 {
+		t.Fatalf("no store access expected while the migration lock is held: lookups=%d updates=%d", l, u)
+	}
+
+	store.migrating.Store(false)
+	time.Sleep(50 * time.Millisecond)
+	if l := store.lookups.Load(); l != 0 {
+		t.Fatalf("lookup ran %d time(s) before the paused writer resumed; the row it holds cannot be present yet", l)
+	}
+
+	plugin.writerPaused.Store(false)
+	waitFor(t, "deferred usage update after the writer resumed", func() bool { return store.updates.Load() == 1 })
+	if l := store.lookups.Load(); l != 1 {
+		t.Fatalf("expected exactly one presence lookup, got %d", l)
+	}
+	if d := plugin.droppedDeferredUsage.Load(); d != 0 {
+		t.Fatalf("expected no dropped deferred usage, got %d", d)
+	}
+}
+
+// TestDeferredUsageDroppedWhenMigrationOutlivesBudget pins the bound: a lock
+// still held when the deferred-usage budget runs out drops the update, counts
+// it, and never touches the store.
+func TestDeferredUsageDroppedWhenMigrationOutlivesBudget(t *testing.T) {
+	shrinkMaintenanceTimers(t, 10*time.Millisecond, time.Minute)
+	prev := deferredUsageDBTimeout
+	deferredUsageDBTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { deferredUsageDBTimeout = prev })
+	plugin, store := newUsageGatedPlugin(t)
+
+	scheduleUsage(plugin, "usage-budget")
+	waitFor(t, "the deferred usage update to be dropped", func() bool { return plugin.droppedDeferredUsage.Load() == 1 })
+	if l, u := store.lookups.Load(), store.updates.Load(); l != 0 || u != 0 {
+		t.Fatalf("a dropped update must not touch the store: lookups=%d updates=%d", l, u)
+	}
+}
+
+// testPostgresConnConfig points at the Postgres from tests/docker-compose.yml.
+func testPostgresConnConfig() *postgresconn.Config {
+	return &postgresconn.Config{
+		Host:     schemas.NewSecretVar("localhost"),
+		Port:     schemas.NewSecretVar("5432"),
+		User:     schemas.NewSecretVar("bifrost"),
+		Password: schemas.NewSecretVar("bifrost_password"),
+		DBName:   schemas.NewSecretVar("bifrost"),
+		SSLMode:  schemas.NewSecretVar("disable"),
+	}
+}
+
+// openTestPostgres returns a plain pool on the test Postgres for a test's own
+// locking, counting and cleanup, or skips the test when it is unreachable.
+func openTestPostgres(t *testing.T, cfg *postgresconn.Config) *sql.DB {
+	t.Helper()
+	db, err := postgresconn.Open(postgresconn.BuildDSN(cfg), cfg, nil)
+	if err != nil {
+		t.Skipf("Postgres not available, skipping test: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Skipf("Postgres not available, skipping test: %v", err)
+	}
+	if err := sqlDB.Ping(); err != nil {
+		_ = sqlDB.Close()
+		t.Skipf("Postgres not available, skipping test: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	return sqlDB
+}
+
+// newTestPostgresStore opens the logging plugin's log store against the test
+// Postgres. Unlike the SQLite store this one carries the real migration-lock
+// probe, so the gate under test is the production one.
+func newTestPostgresStore(t *testing.T, cfg *postgresconn.Config) logstore.LogStore {
+	t.Helper()
+	store, err := logstore.NewLogStore(context.Background(), &logstore.Config{
+		Enabled: true,
+		Type:    logstore.LogStoreTypePostgres,
+		Config:  &logstore.PostgresConfig{Config: *cfg},
+	}, testLogger{})
+	if err != nil {
+		t.Fatalf("NewLogStore(postgres) error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	return store
+}
+
+// logstoreMigrationLockKey mirrors logstore's migrationAdvisoryLockKey. If the
+// key ever changes this test stops seeing the writer pause and fails, which is
+// the point: the gate must watch the key the migrator actually takes.
+const logstoreMigrationLockKey int64 = 1000011
+
+// holdMigrationLockLikeMigrator takes the logstore migration advisory lock on a
+// dedicated session exactly as the migrator does (pg_try_advisory_lock on its
+// own connection, held for the whole run) and returns that session plus a
+// release func that unlocks and closes it.
+//
+// Advisory locks are scoped per database, not per schema, so the
+// framework/logstore tests (which run the real migrator against the same
+// `bifrost` database) can legitimately hold this key for a few seconds when
+// both packages run at once. Like the migrator, the helper retries instead of
+// treating a held lock as a failure, and only gives up after a deadline.
+func holdMigrationLockLikeMigrator(t *testing.T, sqlDB *sql.DB) (*sql.Conn, func()) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		t.Fatalf("Conn() error = %v", err)
+	}
+	const lockWait = 30 * time.Second
+	deadline := time.Now().Add(lockWait)
+	for {
+		var got bool
+		if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", logstoreMigrationLockKey).Scan(&got); err != nil {
+			_ = conn.Close()
+			t.Fatalf("pg_try_advisory_lock error = %v", err)
+		}
+		if got {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = conn.Close()
+			t.Fatalf("migration lock %d still held by another session after %s", logstoreMigrationLockKey, lockWait)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", logstoreMigrationLockKey)
+			_ = conn.Close()
+		})
+	}
+	t.Cleanup(release)
+	return conn, release
+}
+
+// TestBatchWriterGateUnderSteadyLoadPostgres is the end-to-end check of the gate
+// against a real Postgres store with production timers. Logs arrive through the
+// writer at 100/s for the whole run. Part way through, a migrator-style session
+// takes the migration advisory lock and then the ACCESS EXCLUSIVE lock on logs
+// that ALTER TABLE needs. The writer must pause within one probe TTL plus a
+// flush, the table lock must be granted without waiting behind inserts, no row
+// may land while the advisory lock is held, and every log must land with zero
+// drops once it clears.
+func TestBatchWriterGateUnderSteadyLoadPostgres(t *testing.T) {
+	cfg := testPostgresConnConfig()
+	aux := openTestPostgres(t, cfg)
+	store := newTestPostgresStore(t, cfg)
+	ctx := context.Background()
+
+	prefix := fmt.Sprintf("gate-load-%d-", time.Now().UnixNano())
+	t.Cleanup(func() {
+		_, _ = aux.ExecContext(ctx, "DELETE FROM logs WHERE id LIKE $1", prefix+"%")
+	})
+	written := func() int64 {
+		var n int64
+		if err := aux.QueryRowContext(ctx, "SELECT count(*) FROM logs WHERE id LIKE $1", prefix+"%").Scan(&n); err != nil {
+			t.Fatalf("count error = %v", err)
+		}
+		return n
+	}
+
+	plugin, err := Init(ctx, &Config{Writer: &logstore.WriterConfig{
+		MaxBatchSize:  50,
+		BatchInterval: "500ms",
+	}}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+
+	// Producer: one log every 10ms (100 logs/s) until stopped.
+	var enqueued atomic.Int64
+	stop := make(chan struct{})
+	producerDone := make(chan struct{})
+	var stopOnce sync.Once
+	stopProducer := func() {
+		stopOnce.Do(func() { close(stop) })
+		<-producerDone
+	}
+	t.Cleanup(stopProducer)
+	go func() {
+		defer close(producerDone)
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+			}
+			plugin.enqueueLogEntry(makeTestLog(fmt.Sprintf("%s%d", prefix, i)), nil)
+			enqueued.Add(1)
+		}
+	}()
+
+	// Steady state first: the writer is landing rows under load.
+	waitForWithin(t, 5*time.Second, "rows to land under steady load", func() bool { return written() >= 100 })
+
+	// Another node starts a migration.
+	conn, release := holdMigrationLockLikeMigrator(t, aux)
+	lockedAt := time.Now()
+	waitForWithin(t, 5*time.Second, "writer to pause once the migration lock is held", plugin.writerPaused.Load)
+	t.Logf("writer paused %s after the migration lock was taken (probe TTL %s, batch interval 500ms)", time.Since(lockedAt).Round(time.Millisecond), time.Second)
+	atPause := written()
+
+	// The migrator's DDL needs ACCESS EXCLUSIVE on logs. With the writer paused
+	// nothing is queued ahead of it, so it must be granted without waiting.
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx error = %v", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit; keeps conn.Close from hanging on a failed lock
+	if _, err := tx.ExecContext(ctx, "SET LOCAL lock_timeout = '5s'"); err != nil {
+		t.Fatalf("SET LOCAL lock_timeout error = %v", err)
+	}
+	ddlStart := time.Now()
+	if _, err := tx.ExecContext(ctx, "LOCK TABLE logs IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatalf("ALTER-style lock on logs must not wait behind log inserts while the gate is engaged: %v", err)
+	}
+	t.Logf("ACCESS EXCLUSIVE lock on logs granted in %s", time.Since(ddlStart).Round(time.Millisecond))
+	time.Sleep(1500 * time.Millisecond) // the "migration" runs while ~150 more logs arrive
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit error = %v", err)
+	}
+
+	// Advisory lock still held: nothing may have landed, and nothing was dropped
+	// (the queue holds 10000; a few seconds at 100/s is nowhere near it).
+	if got := written(); got != atPause {
+		t.Fatalf("%d rows were written while the migration lock was held (had %d at pause)", got-atPause, atPause)
+	}
+	time.Sleep(time.Second)
+	if got := written(); got != atPause {
+		t.Fatalf("%d rows were written while the migration lock was still held (had %d at pause)", got-atPause, atPause)
+	}
+	if d := plugin.droppedRequests.Load(); d != 0 {
+		t.Fatalf("expected no drops while buffering through the pause, got %d", d)
+	}
+
+	// Migration done: the lock clears, the writer resumes and the backlog lands.
+	release()
+	stopProducer()
+	total := enqueued.Load()
+	if total-atPause < 100 {
+		t.Fatalf("expected at least 100 logs to arrive during the pause, got %d", total-atPause)
+	}
+	waitForWithin(t, 15*time.Second, "every log to land after the lock cleared", func() bool { return written() == total })
+	waitFor(t, "writer to clear its paused flag", func() bool { return !plugin.writerPaused.Load() })
+	if d, m := plugin.droppedRequests.Load(), plugin.droppedDuringMaintenance.Load(); d != 0 || m != 0 {
+		t.Fatalf("expected zero drops end to end, got dropped=%d droppedDuringMaintenance=%d", d, m)
+	}
+	t.Logf("%d logs enqueued at 100/s, %d written before the pause, all %d landed after the lock cleared with 0 drops", total, atPause, total)
 }

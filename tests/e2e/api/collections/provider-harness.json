@@ -220878,11 +220878,72 @@
       ]
     },
     {
-      "name": "195. Fixed-length streamed response integrity (content-length truncation)",
+      "name": "195. Log writer migration gate surfaces maintenance drops (dropped logs)",
+      "description": "PR: pause the logging plugin's batch writer while another node holds the logstore migration advisory lock. The only wire-visible change is the additive dropped_during_maintenance counter on GET /api/logs/dropped; it must be present, numeric, and never exceed dropped_requests.",
+      "item": [
+        {
+          "name": "195.1: dropped logs endpoint reports the maintenance-window subset",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('195.1: dropped logs endpoint answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('195.1: dropped_requests is still reported as a number', function () {",
+                  "  pm.expect(body.dropped_requests, pm.response.text()).to.be.a('number');",
+                  "});",
+                  "pm.test('195.1: dropped_during_maintenance is reported as a number bounded by dropped_requests', function () {",
+                  "  pm.expect(body.dropped_during_maintenance, 'missing dropped_during_maintenance: ' + pm.response.text()).to.be.a('number');",
+                  "  pm.expect(body.dropped_during_maintenance, pm.response.text()).to.be.at.least(0);",
+                  "  pm.expect(body.dropped_during_maintenance, pm.response.text()).to.be.at.most(body.dropped_requests);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/dropped",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "dropped"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "196. Fixed-length streamed response integrity (content-length truncation)",
       "description": "Local fixture regression, no live provider calls. Start provider-error-fixture.mjs and an isolated gateway using provider-error-fixture.config.json; enable providerErrorFixture=1. Both fixture models emit valid SSE with finish_reason=stop but no upstream [DONE]. upstream-fixed-length-short declares 100 extra body bytes and gracefully closes without Connection: close; the native and OpenAI SDK routes must emit a structured unexpected EOF read error instead of accepting the semantic finish marker as proof of HTTP completeness. upstream-fixed-length-ok declares the exact length and must complete successfully. Connection disposal and the next non-idempotent POST are pinned by TestContextTransport_TruncatedContentLengthStreamReportsUnexpectedEOFAndDiscardsConn. Setup and scoped run commands are in tests/e2e/api/README.md under Fixed-length response truncation.",
       "item": [
         {
-          "name": "195.1 openai openai/upstream-fixed-length-short rejects short Content-Length (content-length truncation)",
+          "name": "196.1 openai openai/upstream-fixed-length-short rejects short Content-Length (content-length truncation)",
           "event": [
             {
               "listen": "prerequest",
@@ -220940,7 +221001,7 @@
           }
         },
         {
-          "name": "195.2 openai upstream-fixed-length-short rejects short Content-Length (content-length truncation)",
+          "name": "196.2 openai upstream-fixed-length-short rejects short Content-Length (content-length truncation)",
           "event": [
             {
               "listen": "prerequest",
@@ -220999,7 +221060,7 @@
           }
         },
         {
-          "name": "195.3 openai openai/upstream-fixed-length-ok accepts exact Content-Length (content-length truncation)",
+          "name": "196.3 openai openai/upstream-fixed-length-ok accepts exact Content-Length (content-length truncation)",
           "event": [
             {
               "listen": "prerequest",

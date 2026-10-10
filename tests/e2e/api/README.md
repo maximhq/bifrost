@@ -76,7 +76,7 @@ Stop the fixture and isolated gateway with Ctrl+C after testing.
 
 ## Fixed-length response truncation
 
-Folder 195 pins Content-Length validation through both native and OpenAI SDK chat streaming
+Folder 196 pins Content-Length validation through both native and OpenAI SDK chat streaming
 routes. The local fixture sends valid SSE with `finish_reason: "stop"`, declares 100 extra
 bytes, then closes without a `Connection: close` header. The gateway must emit a structured
 `unexpected EOF` error. A control case with the exact body length must complete normally.
