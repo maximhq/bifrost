@@ -89,6 +89,11 @@ type MCPManagerInterface interface {
 	// nil to clear a previously registered callback.
 	SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string))
 
+	// SetInProcessServerFactory replaces the factory that synthesizes
+	// in-process servers for openapi clients (see
+	// schemas.MCPConfig.InProcessServerFactory). Applies on the next connect.
+	SetInProcessServerFactory(factory schemas.InProcessServerFactory)
+
 	// AddClient adds a new MCP client with the given configuration
 	AddClient(ctx context.Context, config *schemas.MCPClientConfig) error
 

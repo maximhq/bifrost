@@ -255,6 +255,22 @@ func (bc *BifrostContext) Grant() Grant {
 // is not itself a *BifrostContext.
 type bifrostContextSelfKey struct{}
 
+// BifrostContextFromContext returns the nearest *BifrostContext reachable from ctx: ctx itself,
+// or the one a foreign wrapper (context.WithTimeout, mcp-go's per-request WithValue, ...) was
+// derived from. ok is false when no BifrostContext is in the chain. Callers that only need to
+// read request values (identity, extra headers) use this instead of wrapping ctx in a fresh
+// BifrostContext, which would start a cancellation watcher per call.
+func BifrostContextFromContext(ctx context.Context) (*BifrostContext, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	if bc, ok := ctx.(*BifrostContext); ok {
+		return bc, true
+	}
+	bc, ok := ctx.Value(bifrostContextSelfKey{}).(*BifrostContext)
+	return bc, ok && bc != nil
+}
+
 // inheritedGrant finds the grant of the nearest ancestor request context that has one. A
 // BifrostContext parent is walked directly; a foreign parent is asked for one via Value before
 // giving up, since a foreign context with nothing to offer still answers nil for that key the
