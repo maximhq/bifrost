@@ -255994,6 +255994,1066 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "215. Provider objects belong to the virtual key that created them (object-ownership) [SERIAL]",
+      "description": "Two virtual keys share the operator's OpenAI key. A file uploaded under the first is a 404 to the second on retrieve, content and delete, and is missing from the second key's list, while the first key still retrieves, downloads, lists and deletes it. Files are the probe because they are free; the same binding covers videos, containers and cached contents.",
+      "item": [
+        {
+          "name": "openai object-ownership setup: create virtual key A (owner)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('objOwnVkId');",
+                  "  pm.collectionVariables.unset('objOwnVkValue');",
+                  "  pm.collectionVariables.set('objOwnVkName', 'harness-object-ownership-A (owner)-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleVkId = pm.collectionVariables.get('objOwnVkId');",
+                  "if (!staleVkId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  var deleteStaleKey = function () { pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleVkId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('object-ownership: the retained virtual key A (owner) from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleVkId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleVkId + ' not deleted: ' + response.text()).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.collectionVariables.unset('objOwnVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  }); };",
+                  "  var staleFileId = pm.collectionVariables.get('objFileId');",
+                  "  var staleVkValue = pm.collectionVariables.get('objOwnVkValue');",
+                  "  if (staleFileId && staleVkValue) {",
+                  "    // The retained owner key deletes the file it failed to delete last run; the key goes afterwards either way.",
+                  "    pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/v1/files/' + staleFileId + '?provider=openai', method: 'DELETE', header: {Authorization: 'Bearer ' + staleVkValue}}, function (err, response) {",
+                  "      var gone = !err && (response.code === 200 || response.code === 404);",
+                  "      pm.test('object-ownership: the retained file from an earlier run is deleted', function () {",
+                  "        pm.expect(err, 'stale file ' + staleFileId + ' delete errored: ' + err).to.equal(null);",
+                  "        pm.expect([200, 404], 'stale file ' + staleFileId + ' not deleted: ' + response.text()).to.include(response.code);",
+                  "      });",
+                  "      if (gone) { pm.collectionVariables.unset('objFileId'); }",
+                  "      deleteStaleKey();",
+                  "    });",
+                  "  } else {",
+                  "    deleteStaleKey();",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('object-ownership: virtual key A (owner) created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('object-ownership: virtual key A (owner) has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('objOwnVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('objOwnVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{objOwnVkName}}\",\"provider_configs\":[{\"provider\":\"openai\",\"allowed_models\":[\"*\"],\"key_ids\":[\"*\"],\"weight\":1}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership setup: create virtual key B (other)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('objOtherVkId');",
+                  "  pm.collectionVariables.unset('objOtherVkValue');",
+                  "  pm.collectionVariables.set('objOtherVkName', 'harness-object-ownership-B (other)-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleVkId = pm.collectionVariables.get('objOtherVkId');",
+                  "if (!staleVkId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleVkId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('object-ownership: the retained virtual key B (other) from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleVkId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleVkId + ' not deleted: ' + response.text()).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.collectionVariables.unset('objOtherVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('object-ownership: virtual key B (other) created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('object-ownership: virtual key B (other) has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('objOtherVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('objOtherVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{objOtherVkName}}\",\"provider_configs\":[{\"provider\":\"openai\",\"allowed_models\":[\"*\"],\"key_ids\":[\"*\"],\"weight\":1}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership: the owning key uploads a file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('objFileId');",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('object-ownership: upload under the owning key is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('object-ownership: the upload has a file id', function () {",
+                  "  pm.expect(j.id, 'no id: ' + txt.slice(0, 400)).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (j.id) { pm.collectionVariables.set('objFileId', j.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOwnVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.jsonl",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "openai",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/v1/files"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-404] openai object-ownership: another key cannot retrieve the file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The file exists on the shared provider key; the other virtual key must get a 404, never the object",
+                  "// and never a 401/403/500 that would mean the request was refused for a different reason.",
+                  "pm.test('object-ownership: retrieve under another key is 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "});",
+                  "pm.test('object-ownership: the 404 names the file as not found', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOtherVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/files/{{objFileId}}?provider=openai"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-404] openai object-ownership: another key cannot download the file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The file exists on the shared provider key; the other virtual key must get a 404, never the object",
+                  "// and never a 401/403/500 that would mean the request was refused for a different reason.",
+                  "pm.test('object-ownership: download under another key is 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "});",
+                  "pm.test('object-ownership: the 404 names the file as not found', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOtherVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/files/{{objFileId}}/content?provider=openai"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-404] openai object-ownership: another key cannot delete the file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The file exists on the shared provider key; the other virtual key must get a 404, never the object",
+                  "// and never a 401/403/500 that would mean the request was refused for a different reason.",
+                  "pm.test('object-ownership: delete under another key is 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "});",
+                  "pm.test('object-ownership: the 404 names the file as not found', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOtherVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/files/{{objFileId}}?provider=openai"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-404] openai object-ownership: another key cannot create a container copying the file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// A container create copies the files in file_ids into the new container. Naming another key's",
+                  "// file is refused before the provider is called: 404 on the file, never a container and never a",
+                  "// 401/403/500 that would mean the request was refused for a different reason.",
+                  "pm.test('object-ownership: a container create copying another key\\'s file is 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "});",
+                  "pm.test('object-ownership: the 404 names the file as not found', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('not found');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include(pm.collectionVariables.get('objFileId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOtherVkValue}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"openai\",\"name\":\"harness-object-ownership-{{$guid}}\",\"file_ids\":[\"{{objFileId}}\"]}"
+            },
+            "url": "{{baseUrl}}/v1/containers"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-404] openai object-ownership: another key cannot read the file through a chat message file_id",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// A chat message can carry an uploaded file by file_id; the provider would read it for whoever asks.",
+                  "// Naming another key's file is refused before the provider is called: 404 on the file, never a model",
+                  "// answer and never a 401/403/500 that would mean the request was refused for a different reason.",
+                  "pm.test('object-ownership: a chat request with a file block naming another key\\'s file is 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "});",
+                  "pm.test('object-ownership: the 404 names the file as not found', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('not found');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include(pm.collectionVariables.get('objFileId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOtherVkValue}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Summarize the attached file in one sentence.\"},{\"type\":\"file\",\"file\":{\"file_id\":\"{{objFileId}}\"}}]}],\"max_tokens\":16}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-404] openai object-ownership: another key cannot read the file through a responses input_file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// A responses input block can carry an uploaded file by file_id; the provider would read it for whoever asks.",
+                  "// Naming another key's file is refused before the provider is called: 404 on the file, never a model",
+                  "// answer and never a 401/403/500 that would mean the request was refused for a different reason.",
+                  "pm.test('object-ownership: a responses request with an input_file block naming another key\\'s file is 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "});",
+                  "pm.test('object-ownership: the 404 names the file as not found', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('not found');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include(pm.collectionVariables.get('objFileId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOtherVkValue}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Summarize the attached file in one sentence.\"},{\"type\":\"input_file\",\"file_id\":\"{{objFileId}}\"}]}],\"max_output_tokens\":16}"
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-404] openai object-ownership: another key cannot read the file through the OpenAI passthrough route",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The OpenAI passthrough forwards the raw body under the shared key; an input_file naming another key's file is refused like on /v1/responses.",
+                  "// Naming another key's file is refused before the provider is called: 404 on the file, never a model",
+                  "// answer and never a 401/403/500 that would mean the request was refused for a different reason.",
+                  "pm.test('object-ownership: a passthrough responses body with an input_file block naming another key\\'s file is 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "});",
+                  "pm.test('object-ownership: the 404 names the file as not found', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('not found');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include(pm.collectionVariables.get('objFileId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOtherVkValue}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Summarize the attached file in one sentence.\"},{\"type\":\"input_file\",\"file_id\":\"{{objFileId}}\"}]}],\"max_output_tokens\":16}"
+            },
+            "url": "{{baseUrl}}/openai_passthrough/v1/responses"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-404] openai object-ownership: another key cannot read the file through the OpenAI passthrough route by spelling file_id with a JSON escape",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// JSON lets a key spell a character as a \\u escape; the provider decodes file\\u005fid to file_id, so the escaped key is checked like the plain one.",
+                  "// Naming another key's file is refused before the provider is called: 404 on the file, never a model",
+                  "// answer and never a 401/403/500 that would mean the request was refused for a different reason.",
+                  "pm.test('object-ownership: a passthrough body spelling file_id as file\\\\u005fid and naming another key\\'s file is 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "});",
+                  "pm.test('object-ownership: the 404 names the file as not found', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('not found');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include(pm.collectionVariables.get('objFileId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOtherVkValue}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Summarize the attached file in one sentence.\"},{\"type\":\"input_file\",\"file\\u005fid\":\"{{objFileId}}\"}]}],\"max_output_tokens\":16}"
+            },
+            "url": "{{baseUrl}}/openai_passthrough/v1/responses"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-404] openai object-ownership: another key cannot run a batch on the file through the OpenAI passthrough route",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// A batch created through passthrough runs on the input_file_id its body names, under the shared key, as the native batch create runs on its input file.",
+                  "// Naming another key's file is refused before the provider is called: 404 on the file, never a model",
+                  "// answer and never a 401/403/500 that would mean the request was refused for a different reason.",
+                  "pm.test('object-ownership: a passthrough batch create naming another key\\'s file as input_file_id is 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "});",
+                  "pm.test('object-ownership: the 404 names the file as not found', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('not found');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include(pm.collectionVariables.get('objFileId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOtherVkValue}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"input_file_id\":\"{{objFileId}}\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\"}"
+            },
+            "url": "{{baseUrl}}/openai_passthrough/v1/batches"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-404] openai object-ownership: another key cannot run code against the file through a code_interpreter container",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// A code_interpreter tool can seed an automatic container with file_ids; the provider would run code against them for whoever asks.",
+                  "// Naming another key's file is refused before the provider is called: 404 on the file, never a model",
+                  "// answer and never a 401/403/500 that would mean the request was refused for a different reason.",
+                  "pm.test('object-ownership: a code_interpreter tool seeding its container with the file naming another key\\'s file is 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "});",
+                  "pm.test('object-ownership: the 404 names the file as not found', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('not found');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include(pm.collectionVariables.get('objFileId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOtherVkValue}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"List the files you can see.\",\"tools\":[{\"type\":\"code_interpreter\",\"container\":{\"type\":\"auto\",\"file_ids\":[\"{{objFileId}}\"]}}],\"max_output_tokens\":16}"
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership: the file list under the other key omits the file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('object-ownership: file list under the other key is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "var ids = (j.data || []).map(function (f) { return f.id; });",
+                  "pm.test('object-ownership: the list under the other key omits the uploaded file', function () {",
+                  "  pm.expect(ids, 'list: ' + txt.slice(0, 400)).to.not.include(pm.collectionVariables.get('objFileId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOtherVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/files?provider=openai&limit=10000&order=desc"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership: the file list under the owning key includes the file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('object-ownership: file list under the owning key is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "var ids = (j.data || []).map(function (f) { return f.id; });",
+                  "pm.test('object-ownership: the list under the owning key includes the uploaded file', function () {",
+                  "  pm.expect(ids, 'list: ' + txt.slice(0, 400)).to.include(pm.collectionVariables.get('objFileId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOwnVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/files?provider=openai&limit=10000&order=desc"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership: the owning key can retrieve the file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('object-ownership: retrieve under the owning key is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('object-ownership: the owning key gets its own file back', function () {",
+                  "  pm.expect(j.id, 'wrong file: ' + txt.slice(0, 400)).to.eql(pm.collectionVariables.get('objFileId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOwnVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/files/{{objFileId}}?provider=openai"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership: the owning key can download the file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('object-ownership: download under the owning key is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('object-ownership: the content is the uploaded fixture', function () {",
+                  "  pm.expect(txt, 'unexpected content: ' + txt.slice(0, 200)).to.include('custom_id');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOwnVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/files/{{objFileId}}/content?provider=openai"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership: the owning key can delete the file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('object-ownership: delete under the owning key is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('object-ownership: the owning key deleted its file', function () {",
+                  "  pm.expect(j.deleted, 'not deleted: ' + txt.slice(0, 400)).to.eql(true);",
+                  "});",
+                  "if (pm.response.code === 200 && j.deleted === true) { pm.collectionVariables.unset('objFileId'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{objOwnVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/files/{{objFileId}}?provider=openai"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership cleanup: delete virtual key A (owner)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('objOwnVkId')) { pm.execution.skipRequest(); return; }",
+                  "// A file the owner failed to delete is retained with its key, so the next run can still delete it.",
+                  "if (pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('object-ownership: virtual key A (owner) deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('objOwnVkId');",
+                  "  pm.collectionVariables.unset('objOwnVkValue');",
+                  "  pm.collectionVariables.unset('objOwnVkName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{objOwnVkId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "openai object-ownership cleanup: delete virtual key B (other)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('objOtherVkId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('object-ownership: virtual key B (other) deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('objOtherVkId');",
+                  "  pm.collectionVariables.unset('objOtherVkValue');",
+                  "  pm.collectionVariables.unset('objOtherVkName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{objOtherVkId}}"
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
