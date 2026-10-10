@@ -111,3 +111,81 @@ func TestGetProviderJobsByFileIDs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, jobs, "no provider, no lookup")
 }
+
+// A delete that names a full resource name by its last segment forgets the row the full name
+// is recorded under: whole, at a path boundary, with LIKE metacharacters literal, among the
+// named kind and provider only.
+func TestDeleteProviderObjectsByObjectIDSuffixForgetsTheFullName(t *testing.T) {
+	store := setupProviderObjectTestStore(t)
+	ctx := context.Background()
+	seed := func(kind, provider, objectID string) string {
+		id := tables.ProviderObjectID(kind, provider, objectID)
+		require.NoError(t, store.UpsertProviderObject(ctx, &tables.TableProviderObject{
+			ID: id, Kind: kind, Provider: provider, ObjectID: objectID, VirtualKeyID: "vk-a",
+		}))
+		return id
+	}
+	gone := seed(tables.ProviderObjectKindBatch, "vertex", "projects/p/locations/l/batchPredictionJobs/123")
+	kept := []string{
+		seed(tables.ProviderObjectKindBatch, "vertex", "projects/p/locations/l/batchPredictionJobs/9123"),
+		seed(tables.ProviderObjectKindBatch, "vertex", "projects/p/locations/l/batchPredictionJobs/1_3"),
+		seed(tables.ProviderObjectKindBatch, "vertex", "123"),
+		seed(tables.ProviderObjectKindCachedContent, "vertex", "projects/p/locations/l/cachedContents/123"),
+		seed(tables.ProviderObjectKindBatch, "gemini", "batches/123"),
+	}
+	// Another key's job with the same number in another project is not the deleter's to forget.
+	otherKeys := tables.ProviderObjectID(tables.ProviderObjectKindBatch, "vertex", "projects/q/locations/l/batchPredictionJobs/123")
+	require.NoError(t, store.UpsertProviderObject(ctx, &tables.TableProviderObject{
+		ID: otherKeys, Kind: tables.ProviderObjectKindBatch, Provider: "vertex", ObjectID: "projects/q/locations/l/batchPredictionJobs/123", VirtualKeyID: "vk-b",
+	}))
+	kept = append(kept, otherKeys)
+
+	require.NoError(t, store.DeleteProviderObjectsByObjectIDSuffix(ctx, tables.ProviderObjectKindBatch, "vertex", "123", "vk-a"))
+
+	objects, err := store.GetProviderObjectsByIDs(ctx, append([]string{gone}, kept...))
+	require.NoError(t, err)
+	ids := make([]string, 0, len(objects))
+	for _, object := range objects {
+		ids = append(ids, object.ID)
+	}
+	assert.ElementsMatch(t, kept, ids, "only vk-a's vertex batch whose name ends in /123 is forgotten")
+
+	assert.Error(t, store.DeleteProviderObjectsByObjectIDSuffix(ctx, tables.ProviderObjectKindBatch, "vertex", "", "vk-a"), "an empty suffix would forget every full name")
+	assert.Error(t, store.DeleteProviderObjectsByObjectIDSuffix(ctx, tables.ProviderObjectKindBatch, "vertex", "123", ""), "an empty virtual key would forget every key's full name")
+}
+
+// A full resource name is also addressed by its last segment. The suffix lookup finds the
+// ownership rows by that segment alone, whole and at a path boundary, with LIKE metacharacters
+// taken literally, among the named kind and provider only, for several suffixes at once.
+func TestGetProviderObjectsByObjectIDSuffixesMatchTheLastSegmentWhole(t *testing.T) {
+	store := setupProviderObjectTestStore(t)
+	ctx := context.Background()
+	seed := func(kind, provider, objectID, vk string) {
+		require.NoError(t, store.UpsertProviderObject(ctx, &tables.TableProviderObject{
+			ID: tables.ProviderObjectID(kind, provider, objectID), Kind: kind, Provider: provider, ObjectID: objectID, VirtualKeyID: vk,
+		}))
+	}
+	seed(tables.ProviderObjectKindCachedContent, "vertex", "projects/p/locations/l/cachedContents/123", "vk-a")
+	seed(tables.ProviderObjectKindCachedContent, "vertex", "projects/q/locations/l/cachedContents/123", "vk-b")
+	seed(tables.ProviderObjectKindCachedContent, "vertex", "projects/p/locations/l/cachedContents/9123", "vk-a")
+	seed(tables.ProviderObjectKindCachedContent, "vertex", "projects/p/locations/l/cachedContents/1_3", "vk-a")
+	seed(tables.ProviderObjectKindCachedContent, "vertex", "123", "vk-a")
+	seed(tables.ProviderObjectKindBatch, "vertex", "projects/p/locations/l/batchPredictionJobs/123", "vk-a")
+	seed(tables.ProviderObjectKindCachedContent, "gemini", "cachedContents/123", "vk-a")
+
+	objects, err := store.GetProviderObjectsByObjectIDSuffixes(ctx, tables.ProviderObjectKindCachedContent, "vertex", []string{"123", "1_3", ""})
+	require.NoError(t, err)
+	ids := make([]string, 0, len(objects))
+	for _, object := range objects {
+		ids = append(ids, object.ObjectID)
+	}
+	assert.ElementsMatch(t, []string{
+		"projects/p/locations/l/cachedContents/123",
+		"projects/q/locations/l/cachedContents/123",
+		"projects/p/locations/l/cachedContents/1_3",
+	}, ids, "9123 is not 123, a bare 123 is not a resource name, the underscore is literal, and other kinds and providers are not consulted")
+
+	objects, err = store.GetProviderObjectsByObjectIDSuffixes(ctx, tables.ProviderObjectKindCachedContent, "vertex", nil)
+	require.NoError(t, err)
+	assert.Nil(t, objects, "no suffixes match nothing")
+}

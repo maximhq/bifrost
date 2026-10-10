@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -104,6 +105,48 @@ func (s *RDBConfigStore) GetProviderJobsByFileIDs(ctx context.Context, provider 
 		return nil, err
 	}
 	return jobs, nil
+}
+
+// GetProviderJobsByJobIDSuffixes returns the provider jobs of kind on provider whose
+// provider-side id ends in "/"+one of suffixes, in no particular order: the jobs full
+// resource names such as "projects/<p>/locations/<l>/batchPredictionJobs/<n>" name
+// by their last segment alone. Each suffix matches whole, at a path boundary, with
+// LIKE metacharacters taken literally; empty suffixes are ignored.
+func (s *RDBConfigStore) GetProviderJobsByJobIDSuffixes(ctx context.Context, kind, provider string, suffixes []string) ([]*tables.TableProviderJob, error) {
+	patterns := suffixLikePatterns(suffixes)
+	if kind == "" || provider == "" || len(patterns) == 0 {
+		return nil, nil
+	}
+	query := s.DB().WithContext(ctx).Where("kind = ? AND provider = ?", kind, provider)
+	suffixWhere := s.DB()
+	for _, pattern := range patterns {
+		suffixWhere = suffixWhere.Or(`batch_id LIKE ? ESCAPE '\'`, pattern)
+	}
+	var jobs []*tables.TableProviderJob
+	if err := query.Where(suffixWhere).Find(&jobs).Error; err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
+// suffixLikePatterns turns id suffixes into the LIKE patterns that match a full resource name
+// ending in "/"+suffix, with LIKE metacharacters in the suffix taken literally. Empty suffixes are
+// dropped and duplicates collapsed.
+func suffixLikePatterns(suffixes []string) []string {
+	escaper := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	patterns := make([]string, 0, len(suffixes))
+	seen := make(map[string]struct{}, len(suffixes))
+	for _, suffix := range suffixes {
+		if suffix == "" {
+			continue
+		}
+		if _, dup := seen[suffix]; dup {
+			continue
+		}
+		seen[suffix] = struct{}{}
+		patterns = append(patterns, "%/"+escaper.Replace(suffix))
+	}
+	return patterns
 }
 
 // GetProviderJob returns a provider job by its stable id, or ErrNotFound.
