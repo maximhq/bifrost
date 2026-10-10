@@ -221538,6 +221538,137 @@
           }
         }
       ]
+    },
+    {
+      "name": "198. Streamed safeguard verdicts survive the message_delta re-render (safeguard-verdict-stream)",
+      "description": "Claude Code sends safeguards on each request and expects the auto-mode classifier verdicts back as safeguard_results; when they are missing it marks the session ineligible for server-side checks, stops sending safeguards, and shows the 'this session isn't eligible' notice (https://code.claude.com/docs/en/auto-mode-classifier-billing). Bedrock InvokeModel streams the verdicts inside the final message_delta's delta, and Bifrost re-renders every Bedrock stream frame for the /anthropic route (bedrock is not on the raw-passthrough list), so AnthropicStreamDelta lacking a safeguard_results field dropped them: the client saw only stop_reason and stop_sequence. The stream case asserts the verdict survives inside message_delta.delta (red before the fix); the non-streaming case pins the top-level safeguard_results on the unary path, which already worked. The prompt makes the model call the Bash tool, since a verdict is only owed for a tool_use.",
+      "item": [
+        {
+          "name": "Bedrock /anthropic/v1/messages stream - safeguard_results kept inside message_delta.delta (global.anthropic.claude-sonnet-5-5)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.2.4 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"stream\": true,\n  \"tools\": [\n    {\n      \"name\": \"Bash\",\n      \"description\": \"Run a shell command\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use the Bash tool to run: ls -la\"\n    }\n  ],\n  \"safeguards\": [\n    {\n      \"type\": \"dangerous_tool_use\",\n      \"classifier_context\": {\n        \"v\": 1,\n        \"permission_mode\": \"auto\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('safeguard verdict stream: request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var text = pm.response.text();",
+                  "var deltas = [];",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload) { return; }",
+                  "  try { var ev = JSON.parse(payload); if (ev.type === 'message_delta') { deltas.push(ev); } } catch (e) {}",
+                  "});",
+                  "pm.test('safeguard verdict stream: exactly one message_delta', function () { pm.expect(deltas.length, 'stream: ' + text.slice(0, 3000)).to.equal(1); });",
+                  "var ev = deltas[0] || {};",
+                  "var delta = ev.delta || {};",
+                  "pm.test('safeguard verdict stream: the model called the tool, so a verdict is owed', function () { pm.expect(delta.stop_reason, 'message_delta: ' + JSON.stringify(ev)).to.equal('tool_use'); });",
+                  "pm.test('safeguard verdict stream: safeguard_results survives inside message_delta.delta', function () {",
+                  "  pm.expect(delta.safeguard_results, 'message_delta: ' + JSON.stringify(ev)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(delta.safeguard_results[0].type, 'message_delta: ' + JSON.stringify(ev)).to.equal('dangerous_tool_use');",
+                  "  pm.expect(ev.safeguard_results, 'verdict must stay inside delta, not at the event top level: ' + JSON.stringify(ev)).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Bedrock /anthropic/v1/messages - safeguard_results kept at the message top level (global.anthropic.claude-sonnet-5-5)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.2.4 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"tools\": [\n    {\n      \"name\": \"Bash\",\n      \"description\": \"Run a shell command\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use the Bash tool to run: ls -la\"\n    }\n  ],\n  \"safeguards\": [\n    {\n      \"type\": \"dangerous_tool_use\",\n      \"classifier_context\": {\n        \"v\": 1,\n        \"permission_mode\": \"auto\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('safeguard verdict unary: request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('safeguard verdict unary: the model called the tool, so a verdict is owed', function () { pm.expect(body.stop_reason, 'response: ' + pm.response.text()).to.equal('tool_use'); });",
+                  "pm.test('safeguard verdict unary: safeguard_results survives at the message top level', function () {",
+                  "  pm.expect(body.safeguard_results, 'response: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.safeguard_results[0].type, 'response: ' + pm.response.text()).to.equal('dangerous_tool_use');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
     }
   ]
 }
