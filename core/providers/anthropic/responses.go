@@ -2790,9 +2790,9 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			if chunk.Delta.StopDetails != nil {
 				state.StopDetails = stopDetailsToBifrost(chunk.Delta.StopDetails)
 			}
-		}
-		if len(chunk.Delta.SafeguardResults) > 0 {
-			state.SafeguardResults = chunk.Delta.SafeguardResults
+			if len(chunk.Delta.SafeguardResults) > 0 {
+				state.SafeguardResults = chunk.Delta.SafeguardResults
+			}
 		}
 		// Check if integration type in ctx is anthropic
 		if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
