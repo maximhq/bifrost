@@ -245,6 +245,27 @@ When the provider named a wait shorter than 10 seconds, the first line says so: 
 
 ---
 
+## Incidents
+
+The **Incidents** page lists every problem adaptive routing saw on a provider, model or key in the selected time window, combined across nodes. Open it from **Adaptive Routing > Incidents** in the sidebar. You need View on the `AdaptiveRouter` resource, same as the dashboard.
+
+Four figures at the top cover the incidents that match your filters:
+
+| Figure | Meaning |
+|--------|---------|
+| Incidents | Number of matches, out of the window's total when a filter is on |
+| Needs attention | Incidents waiting on an operator. Click to filter to them. |
+| Median time to resolve | Median duration of resolved incidents |
+| Longest ongoing | Duration of the longest open incident. Click to list open incidents, longest first. |
+
+Each table row shows when the incident opened, how long it lasted, its status, where it happened and its cause. Click a row for details, then use Previous and Next to move through the list.
+
+Status is one of Needs attention, Recovering, Mitigated, Waiting for traffic, Resolved or No longer observed. Waiting for traffic means no requests have reached the route since it recovered, so recovery is unconfirmed. No longer observed means history lost track of the incident before it closed.
+
+The sidebar filters by status, provider, model, reason, worst state, scope, region and node. Each value shows how many incidents it matches. Scope is a key on a model, a provider and model, or a key across all models. Search matches provider, model or key. You can sort by needs attention, newest, oldest, longest or shortest.
+
+The page shares the dashboard's time window, Live mode and filters, so switching between them keeps your view. The same list is available through the [API](#listing-incidents-through-the-api).
+
 ## Listing incidents through the API
 
 `GET /api/adaptive-routing/history/issues` returns the issues in a time window. With no `limit` or `offset` it returns all of them, which is what the dashboard uses. With either one it returns a filtered, sorted page, which is what the Incidents page uses.
