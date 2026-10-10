@@ -47,7 +47,7 @@ func TestXAIRealtimeMint(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			provider := &XAIProvider{client: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: server.URL, ExtraHeaders: map[string]string{"authorization": "wrong"}}}
+			provider := &XAIProvider{client: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL), ExtraHeaders: map[string]string{"authorization": "wrong"}}}
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			out, err := provider.CreateRealtimeClientSecret(ctx, schemas.Key{Value: *schemas.NewSecretVar("synthetic-key")}, json.RawMessage(`{"session":{"type":"realtime","model":"grok-voice-latest"},"expires_after":{"seconds":123},"future":{"n":9007199254740993}}`))
 			if calls != 1 {
@@ -66,7 +66,7 @@ func TestXAIRealtimeMint(t *testing.T) {
 
 // TestXAIRealtimeURLHeaders checks selected-key authentication, model escaping, native transport boundaries and absence of generated settings.
 func TestXAIRealtimeURLHeaders(t *testing.T) {
-	provider := &XAIProvider{networkConfig: schemas.NetworkConfig{BaseURL: "https://voice.example/base/", ExtraHeaders: map[string]string{"authorization": "wrong", "X-Trace": "test"}}}
+	provider := &XAIProvider{networkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://voice.example/base/"), ExtraHeaders: map[string]string{"authorization": "wrong", "X-Trace": "test"}}}
 	endpoint, err := provider.RealtimeWebSocketURL(schemas.Key{}, "grok voice+test", "")
 	if err != nil || endpoint != "wss://voice.example/base/v1/realtime?model=grok+voice%2Btest" {
 		t.Fatal(endpoint, err)
@@ -169,7 +169,7 @@ func TestXAIRealtimeCancelledMint(t *testing.T) {
 		w.WriteHeader(500)
 	}))
 	defer server.Close()
-	provider := &XAIProvider{client: &fasthttp.Client{ReadTimeout: time.Second}, networkConfig: schemas.NetworkConfig{BaseURL: server.URL}}
+	provider := &XAIProvider{client: &fasthttp.Client{ReadTimeout: time.Second}, networkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL)}}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.Cancel()
 	out, err := provider.CreateRealtimeClientSecret(ctx, schemas.Key{Value: *schemas.NewSecretVar("synthetic")}, json.RawMessage(`{}`))
@@ -191,7 +191,7 @@ func TestXAIRealtimeActiveMintCancellation(t *testing.T) {
 	defer server.Close()
 	defer close(released)
 	client := providerUtils.ConfigureDialer(&fasthttp.Client{ReadTimeout: 3 * time.Second}, true)
-	provider := &XAIProvider{client: client, networkConfig: schemas.NetworkConfig{BaseURL: server.URL}}
+	provider := &XAIProvider{client: client, networkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL)}}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	defer ctx.Cancel()
 	done := make(chan bool, 1)

@@ -26,7 +26,7 @@ func (provider *XAIProvider) RealtimeWebSocketURL(_ schemas.Key, model, intent s
 	if strings.TrimSpace(model) == "" || intent != "" {
 		return "", xaiRealtimeError(400, "xai realtime requires a model and does not support a transcription-only intent", nil)
 	}
-	endpoint, err := url.Parse(provider.networkConfig.BaseURL)
+	endpoint, err := url.Parse(provider.networkConfig.BaseURL.GetValue())
 	if err != nil || endpoint == nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
 		return "", xaiRealtimeError(400, "invalid xai realtime base URL", err)
 	}
@@ -115,7 +115,7 @@ func (provider *XAIProvider) CreateRealtimeClientSecret(ctx *schemas.BifrostCont
 	req, resp := fasthttp.AcquireRequest(), fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
-	req.SetRequestURI(strings.TrimRight(provider.networkConfig.BaseURL, "/") + "/v1/realtime/client_secrets")
+	req.SetRequestURI(strings.TrimRight(provider.networkConfig.BaseURL.GetValue(), "/") + "/v1/realtime/client_secrets")
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	for name, value := range headers {

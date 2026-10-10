@@ -1368,9 +1368,9 @@ func (a directKeyTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*sc
 	nc := schemas.DefaultNetworkConfig
 	switch p {
 	case schemas.OpenAI:
-		nc.BaseURL = a.openAIURL
+		nc.BaseURL = schemas.NewSecretVar(a.openAIURL)
 	case schemas.Anthropic:
-		nc.BaseURL = a.anthropicURL
+		nc.BaseURL = schemas.NewSecretVar(a.anthropicURL)
 	default:
 		return nil, fmt.Errorf("unsupported provider %s", p)
 	}
