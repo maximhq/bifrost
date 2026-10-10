@@ -1660,6 +1660,54 @@ func TestToBifrostChatResponse_StructuredOutput_MixedWithRealTools(t *testing.T)
 	}
 }
 
+// TestToBifrostChatResponse_StructuredOutput_TextOnlyUnderAuto covers models that
+// reject a forced tool_choice (Fable/Mythos 5.1, Opus 5.5, Sonnet 5.5): the
+// synthetic tool is bound under "auto", so the model may answer in plain text
+// without calling it. That text must reach the caller unchanged as a normal
+// completion, not as an empty message or a tool call.
+func TestToBifrostChatResponse_StructuredOutput_TextOnlyUnderAuto(t *testing.T) {
+	text := "It is sunny in Tokyo."
+	response := &AnthropicMessageResponse{
+		ID:         "msg_so_text_only",
+		Type:       "message",
+		Role:       "assistant",
+		Model:      "claude-sonnet-5-5",
+		Content:    []AnthropicContentBlock{{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr(text)}},
+		StopReason: AnthropicStopReasonEndTurn,
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, "bf_so_weather")
+
+	result := response.ToBifrostChatResponse(ctx)
+	if result == nil || len(result.Choices) == 0 {
+		t.Fatal("expected a choice")
+	}
+	choice := result.Choices[0]
+	msg := choice.ChatNonStreamResponseChoice.Message
+
+	var got string
+	if msg.Content != nil && msg.Content.ContentStr != nil {
+		got = *msg.Content.ContentStr
+	} else if msg.Content != nil {
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Text != nil {
+				got += *block.Text
+			}
+		}
+	}
+	if got != text {
+		t.Errorf("expected the text answer %q to pass through, got %q", text, got)
+	}
+	if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ToolCalls) > 0 {
+		t.Errorf("expected no tool calls, got %d", len(msg.ChatAssistantMessage.ToolCalls))
+	}
+	if choice.FinishReason == nil || *choice.FinishReason != string(schemas.BifrostFinishReasonStop) {
+		t.Errorf("expected FinishReason=%q, got %v", schemas.BifrostFinishReasonStop, choice.FinishReason)
+	}
+}
+
 // TestToAnthropicChatRequest_MidConversationSystem_Opus48 verifies that a
 // role:"system" message in a valid placement (followed by an assistant turn)
 // is emitted as role:"system" in the Anthropic messages array when the

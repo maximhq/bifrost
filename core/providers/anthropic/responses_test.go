@@ -672,6 +672,51 @@ func TestAnthropicSafeguardResultsUnaryRoundTrip(t *testing.T) {
 	}
 }
 
+// Models that reject a forced tool_choice (Fable/Mythos 5.1, Opus 5.5, Sonnet
+// 5.5) get the synthetic structured-output tool under "auto", so the model may
+// answer in plain text without calling it. That text must come back as a normal
+// completed message, not as an empty output or a function call.
+func TestToBifrostResponsesResponse_StructuredOutput_TextOnlyUnderAuto(t *testing.T) {
+	text := "It is sunny in Tokyo."
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, "bf_so_weather")
+
+	resp := (&AnthropicMessageResponse{
+		ID:         "msg_so_text_only",
+		Model:      "claude-sonnet-5-5",
+		Content:    []AnthropicContentBlock{{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr(text)}},
+		StopReason: AnthropicStopReasonEndTurn,
+		Usage:      &AnthropicUsage{InputTokens: 10, OutputTokens: 8},
+	}).ToBifrostResponsesResponse(ctx)
+	if resp == nil {
+		t.Fatal("nil bifrost response")
+	}
+	if resp.Status == nil || *resp.Status != schemas.ResponsesResponseStatusCompleted {
+		t.Errorf("expected status %q, got %v", schemas.ResponsesResponseStatusCompleted, resp.Status)
+	}
+
+	var got string
+	for _, item := range resp.Output {
+		if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeFunctionCall {
+			t.Errorf("expected no function call, got %+v", item)
+		}
+		if item.Content == nil {
+			continue
+		}
+		if item.Content.ContentStr != nil {
+			got += *item.Content.ContentStr
+		}
+		for _, block := range item.Content.ContentBlocks {
+			if block.Text != nil {
+				got += *block.Text
+			}
+		}
+	}
+	if got != text {
+		t.Errorf("expected the text answer %q to pass through, got %q", text, got)
+	}
+}
+
 // Issue #7601: /v1/responses on anthropic/* returned no status, and a turn cut
 // short by max_tokens was indistinguishable from a complete one. OpenAI's
 // Responses contract (and the Bedrock fix in #4679) sets status "completed" on a

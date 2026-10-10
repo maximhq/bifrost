@@ -422,6 +422,13 @@ func TestForcedToolChoice_DroppedWhenUnsupported(t *testing.T) {
 			assert.Nil(t, req.ToolChoice, "forced tool choice must be dropped on %s", model)
 		})
 
+		t.Run(model+" responses required", func(t *testing.T) {
+			req, err := ToAnthropicResponsesRequest(ctx, forcedToolChoiceResponsesRequest(model,
+				&schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("required")}))
+			require.NoError(t, err)
+			assert.Nil(t, req.ToolChoice, "forced tool choice must be dropped on %s", model)
+		})
+
 		t.Run(model+" responses named tool", func(t *testing.T) {
 			req, err := ToAnthropicResponsesRequest(ctx, forcedToolChoiceResponsesRequest(model,
 				&schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
