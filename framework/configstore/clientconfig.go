@@ -16,6 +16,12 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
+// hashJSON serializes hash inputs. It differs from sonic's default config only
+// in sorting map keys: sonic.Marshal emits map entries in Go's randomized
+// iteration order, so a hash over a map with two or more entries (extra_headers,
+// request_path_overrides, ...) would otherwise change from one call to the next.
+var hashJSON = sonic.Config{SortMapKeys: true}.Froze()
+
 type EnvKeyType string
 
 const (
@@ -296,7 +302,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 
 	// Only hash when present to avoid legacy config hash churn on upgrade.
 	if c.WebhookConfig != nil {
-		data, err := sonic.Marshal(c.WebhookConfig)
+		data, err := hashJSON.Marshal(c.WebhookConfig)
 		if err != nil {
 			return "", err
 		}
@@ -305,19 +311,19 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 
 	// Hash integer fields
-	data, err := sonic.Marshal(c.InitialPoolSize)
+	data, err := hashJSON.Marshal(c.InitialPoolSize)
 	if err != nil {
 		return "", err
 	}
 	hash.Write(data)
 
-	data, err = sonic.Marshal(c.LogRetentionDays)
+	data, err = hashJSON.Marshal(c.LogRetentionDays)
 	if err != nil {
 		return "", err
 	}
 	hash.Write(data)
 
-	data, err = sonic.Marshal(c.MaxRequestBodySizeMB)
+	data, err = hashJSON.Marshal(c.MaxRequestBodySizeMB)
 	if err != nil {
 		return "", err
 	}
@@ -328,7 +334,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		sortedLabels := make([]string, len(c.PrometheusLabels))
 		copy(sortedLabels, c.PrometheusLabels)
 		sort.Strings(sortedLabels)
-		data, err := sonic.Marshal(sortedLabels)
+		data, err := hashJSON.Marshal(sortedLabels)
 		if err != nil {
 			return "", err
 		}
@@ -340,7 +346,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		sortedOrigins := make([]string, len(c.AllowedOrigins))
 		copy(sortedOrigins, c.AllowedOrigins)
 		sort.Strings(sortedOrigins)
-		data, err := sonic.Marshal(sortedOrigins)
+		data, err := hashJSON.Marshal(sortedOrigins)
 		if err != nil {
 			return "", err
 		}
@@ -352,7 +358,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		sortedHeaders := make([]string, len(c.AllowedHeaders))
 		copy(sortedHeaders, c.AllowedHeaders)
 		sort.Strings(sortedHeaders)
-		data, err := sonic.Marshal(sortedHeaders)
+		data, err := hashJSON.Marshal(sortedHeaders)
 		if err != nil {
 			return "", err
 		}
@@ -364,7 +370,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		sortedLogging := make([]string, len(c.LoggingHeaders))
 		copy(sortedLogging, c.LoggingHeaders)
 		sort.Strings(sortedLogging)
-		data, err := sonic.Marshal(sortedLogging)
+		data, err := hashJSON.Marshal(sortedLogging)
 		if err != nil {
 			return "", err
 		}
@@ -378,7 +384,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		sortedHidden := make([]string, len(c.HiddenRequestTypes))
 		copy(sortedHidden, c.HiddenRequestTypes)
 		sort.Strings(sortedHidden)
-		data, err := sonic.Marshal(sortedHidden)
+		data, err := hashJSON.Marshal(sortedHidden)
 		if err != nil {
 			return "", err
 		}
@@ -391,7 +397,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		sortedRequired := make([]string, len(c.RequiredHeaders))
 		copy(sortedRequired, c.RequiredHeaders)
 		sort.Strings(sortedRequired)
-		data, err := sonic.Marshal(sortedRequired)
+		data, err := hashJSON.Marshal(sortedRequired)
 		if err != nil {
 			return "", err
 		}
@@ -404,7 +410,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		sortedRoutes := make([]string, len(c.WhitelistedRoutes))
 		copy(sortedRoutes, c.WhitelistedRoutes)
 		sort.Strings(sortedRoutes)
-		data, err := sonic.Marshal(sortedRoutes)
+		data, err := hashJSON.Marshal(sortedRoutes)
 		if err != nil {
 			return "", err
 		}
@@ -419,7 +425,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			sortedAllowlist := make([]string, len(c.HeaderFilterConfig.Allowlist))
 			copy(sortedAllowlist, c.HeaderFilterConfig.Allowlist)
 			sort.Strings(sortedAllowlist)
-			data, err := sonic.Marshal(sortedAllowlist)
+			data, err := hashJSON.Marshal(sortedAllowlist)
 			if err != nil {
 				return "", err
 			}
@@ -431,7 +437,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			sortedDenylist := make([]string, len(c.HeaderFilterConfig.Denylist))
 			copy(sortedDenylist, c.HeaderFilterConfig.Denylist)
 			sort.Strings(sortedDenylist)
-			data, err := sonic.Marshal(sortedDenylist)
+			data, err := hashJSON.Marshal(sortedDenylist)
 			if err != nil {
 				return "", err
 			}
@@ -771,7 +777,7 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 
 	// Hash NetworkConfig
 	if p.NetworkConfig != nil {
-		data, err := sonic.Marshal(p.NetworkConfig)
+		data, err := hashJSON.Marshal(p.NetworkConfig)
 		if err != nil {
 			return "", err
 		}
@@ -780,7 +786,7 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 
 	// Hash ConcurrencyAndBufferSize
 	if p.ConcurrencyAndBufferSize != nil {
-		data, err := sonic.Marshal(p.ConcurrencyAndBufferSize)
+		data, err := hashJSON.Marshal(p.ConcurrencyAndBufferSize)
 		if err != nil {
 			return "", err
 		}
@@ -789,7 +795,7 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 
 	// Hash ProxyConfig
 	if p.ProxyConfig != nil {
-		data, err := sonic.Marshal(p.ProxyConfig)
+		data, err := hashJSON.Marshal(p.ProxyConfig)
 		if err != nil {
 			return "", err
 		}
@@ -798,7 +804,7 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 
 	// Hash CustomProviderConfig
 	if p.CustomProviderConfig != nil {
-		data, err := sonic.Marshal(p.CustomProviderConfig)
+		data, err := hashJSON.Marshal(p.CustomProviderConfig)
 		if err != nil {
 			return "", err
 		}
@@ -807,7 +813,7 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 
 	// Hash OpenAIConfig
 	if p.OpenAIConfig != nil {
-		data, err := sonic.Marshal(p.OpenAIConfig)
+		data, err := hashJSON.Marshal(p.OpenAIConfig)
 		if err != nil {
 			return "", err
 		}
@@ -816,7 +822,7 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 
 	// Hash PromptCache
 	if p.PromptCache != nil {
-		data, err := sonic.Marshal(p.PromptCache)
+		data, err := hashJSON.Marshal(p.PromptCache)
 		if err != nil {
 			return "", err
 		}
@@ -859,7 +865,7 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		sortedModels := make([]string, len(key.Models))
 		copy(sortedModels, key.Models)
 		sort.Strings(sortedModels)
-		data, err := sonic.Marshal(sortedModels)
+		data, err := hashJSON.Marshal(sortedModels)
 		if err != nil {
 			return "", err
 		}
@@ -870,7 +876,7 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		sortedBlacklistedModels := make([]string, len(key.BlacklistedModels))
 		copy(sortedBlacklistedModels, key.BlacklistedModels)
 		sort.Strings(sortedBlacklistedModels)
-		data, err := sonic.Marshal(sortedBlacklistedModels)
+		data, err := hashJSON.Marshal(sortedBlacklistedModels)
 		if err != nil {
 			return "", err
 		}
@@ -878,14 +884,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		hash.Write(data)
 	}
 	// Hash Weight
-	data, err := sonic.Marshal(key.Weight)
+	data, err := hashJSON.Marshal(key.Weight)
 	if err != nil {
 		return "", err
 	}
 	hash.Write(data)
 	// Hash AzureKeyConfig
 	if key.AzureKeyConfig != nil {
-		data, err := sonic.Marshal(key.AzureKeyConfig)
+		data, err := hashJSON.Marshal(key.AzureKeyConfig)
 		if err != nil {
 			return "", err
 		}
@@ -893,7 +899,7 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	}
 	// Hash VertexKeyConfig
 	if key.VertexKeyConfig != nil {
-		data, err := sonic.Marshal(key.VertexKeyConfig)
+		data, err := hashJSON.Marshal(key.VertexKeyConfig)
 		if err != nil {
 			return "", err
 		}
@@ -901,7 +907,7 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	}
 	// Hash BedrockKeyConfig
 	if key.BedrockKeyConfig != nil {
-		data, err := sonic.Marshal(key.BedrockKeyConfig)
+		data, err := hashJSON.Marshal(key.BedrockKeyConfig)
 		if err != nil {
 			return "", err
 		}
@@ -909,7 +915,7 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	}
 	// Hash BedrockMantleKeyConfig
 	if key.BedrockMantleKeyConfig != nil {
-		data, err := sonic.Marshal(key.BedrockMantleKeyConfig)
+		data, err := hashJSON.Marshal(key.BedrockMantleKeyConfig)
 		if err != nil {
 			return "", err
 		}
@@ -917,7 +923,7 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	}
 	// Hash Aliases
 	if key.Aliases != nil {
-		data, err := sonic.Marshal(key.Aliases)
+		data, err := hashJSON.Marshal(key.Aliases)
 		if err != nil {
 			return "", err
 		}
@@ -925,7 +931,7 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	}
 	// Hash VLLMKeyConfig
 	if key.VLLMKeyConfig != nil {
-		data, err := sonic.Marshal(key.VLLMKeyConfig)
+		data, err := hashJSON.Marshal(key.VLLMKeyConfig)
 		if err != nil {
 			return "", err
 		}
@@ -933,7 +939,7 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	}
 	// Hash ReplicateKeyConfig
 	if key.ReplicateKeyConfig != nil {
-		data, err := sonic.Marshal(key.ReplicateKeyConfig)
+		data, err := hashJSON.Marshal(key.ReplicateKeyConfig)
 		if err != nil {
 			return "", err
 		}
@@ -941,7 +947,7 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	}
 	// Hash OllamaKeyConfig
 	if key.OllamaKeyConfig != nil {
-		data, err := sonic.Marshal(key.OllamaKeyConfig)
+		data, err := hashJSON.Marshal(key.OllamaKeyConfig)
 		if err != nil {
 			return "", err
 		}
@@ -949,7 +955,7 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	}
 	// Hash SGLKeyConfig
 	if key.SGLKeyConfig != nil {
-		data, err := sonic.Marshal(key.SGLKeyConfig)
+		data, err := hashJSON.Marshal(key.SGLKeyConfig)
 		if err != nil {
 			return "", err
 		}
@@ -957,7 +963,7 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	}
 	// Hash DatabricksKeyConfig
 	if key.DatabricksKeyConfig != nil {
-		data, err := sonic.Marshal(key.DatabricksKeyConfig)
+		data, err := hashJSON.Marshal(key.DatabricksKeyConfig)
 		if err != nil {
 			return "", err
 		}
@@ -965,7 +971,7 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	}
 	// Hash GithubCopilotKeyConfig
 	if key.GithubCopilotKeyConfig != nil {
-		data, err := sonic.Marshal(key.GithubCopilotKeyConfig)
+		data, err := hashJSON.Marshal(key.GithubCopilotKeyConfig)
 		if err != nil {
 			return "", err
 		}
@@ -1123,7 +1129,7 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 				KeyIDs:            keyIDs,
 			}
 		}
-		data, err := sonic.Marshal(providerConfigsForHash)
+		data, err := hashJSON.Marshal(providerConfigsForHash)
 		if err != nil {
 			return "", err
 		}
@@ -1150,7 +1156,7 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 				ToolsToExecute: sortedTools,
 			}
 		}
-		data, err := sonic.Marshal(mcpConfigsForHash)
+		data, err := hashJSON.Marshal(mcpConfigsForHash)
 		if err != nil {
 			return "", err
 		}
@@ -1169,7 +1175,7 @@ func GenerateBudgetHash(b tables.TableBudget) (string, error) {
 	hash.Write([]byte(b.ID))
 
 	// Hash MaxLimit
-	data, err := sonic.Marshal(b.MaxLimit)
+	data, err := hashJSON.Marshal(b.MaxLimit)
 	if err != nil {
 		return "", err
 	}
@@ -1205,7 +1211,7 @@ func GenerateRateLimitHash(rl tables.TableRateLimit) (string, error) {
 
 	// Hash TokenMaxLimit
 	if rl.TokenMaxLimit != nil {
-		data, err := sonic.Marshal(*rl.TokenMaxLimit)
+		data, err := hashJSON.Marshal(*rl.TokenMaxLimit)
 		if err != nil {
 			return "", err
 		}
@@ -1219,7 +1225,7 @@ func GenerateRateLimitHash(rl tables.TableRateLimit) (string, error) {
 
 	// Hash RequestMaxLimit
 	if rl.RequestMaxLimit != nil {
-		data, err := sonic.Marshal(*rl.RequestMaxLimit)
+		data, err := hashJSON.Marshal(*rl.RequestMaxLimit)
 		if err != nil {
 			return "", err
 		}
@@ -1524,11 +1530,11 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	sort.Slice(targets, func(i, j int) bool {
 		pi := routingTargetHashPayload{Provider: derefStr(targets[i].Provider), Model: derefStr(targets[i].Model), KeyID: derefStr(targets[i].KeyID), Weight: targets[i].Weight}
 		pj := routingTargetHashPayload{Provider: derefStr(targets[j].Provider), Model: derefStr(targets[j].Model), KeyID: derefStr(targets[j].KeyID), Weight: targets[j].Weight}
-		di, err := sonic.Marshal(pi)
+		di, err := hashJSON.Marshal(pi)
 		if err != nil {
 			return false
 		}
-		dj, err := sonic.Marshal(pj)
+		dj, err := hashJSON.Marshal(pj)
 		if err != nil {
 			return false
 		}
@@ -1536,7 +1542,7 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	})
 	for _, t := range targets {
 		payload := routingTargetHashPayload{Provider: derefStr(t.Provider), Model: derefStr(t.Model), KeyID: derefStr(t.KeyID), Weight: t.Weight}
-		data, err := sonic.Marshal(payload)
+		data, err := hashJSON.Marshal(payload)
 		if err != nil {
 			return "", err
 		}
@@ -1547,7 +1553,7 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	if r.Fallbacks != nil {
 		hash.Write([]byte(*r.Fallbacks))
 	} else if len(r.ParsedFallbacks) > 0 {
-		data, err := sonic.Marshal(r.ParsedFallbacks)
+		data, err := hashJSON.Marshal(r.ParsedFallbacks)
 		if err != nil {
 			return "", err
 		}
@@ -1632,7 +1638,7 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 
 	// Hash StdioConfig
 	if m.StdioConfig != nil {
-		data, err := sonic.Marshal(m.StdioConfig)
+		data, err := hashJSON.Marshal(m.StdioConfig)
 		if err != nil {
 			return "", err
 		}
@@ -1641,7 +1647,7 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 
 	// Hash TLSConfig
 	if m.TLSConfig != nil {
-		data, err := sonic.Marshal(m.TLSConfig)
+		data, err := hashJSON.Marshal(m.TLSConfig)
 		if err != nil {
 			return "", err
 		}
@@ -1653,7 +1659,7 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		sortedTools := make([]string, len(m.ToolsToExecute))
 		copy(sortedTools, m.ToolsToExecute)
 		sort.Strings(sortedTools)
-		data, err := sonic.Marshal(sortedTools)
+		data, err := hashJSON.Marshal(sortedTools)
 		if err != nil {
 			return "", err
 		}
@@ -1718,7 +1724,7 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		sortedKeys := make([]string, len(m.PerUserHeaderKeys))
 		copy(sortedKeys, m.PerUserHeaderKeys)
 		sort.Strings(sortedKeys)
-		data, err := sonic.Marshal(sortedKeys)
+		data, err := hashJSON.Marshal(sortedKeys)
 		if err != nil {
 			return "", err
 		}
@@ -1782,7 +1788,7 @@ func GenerateWebhookEndpointHash(endpoint *tables.TableWebhookEndpoint) (string,
 			sortedEvents = append(sortedEvents, string(event))
 		}
 		sort.Strings(sortedEvents)
-		data, err := sonic.Marshal(sortedEvents)
+		data, err := hashJSON.Marshal(sortedEvents)
 		if err != nil {
 			return "", err
 		}
@@ -1860,7 +1866,7 @@ func GeneratePluginHash(p tables.TablePlugin) (string, error) {
 
 	// Hash Version when set, so hashes already persisted by the config_hash migration stay valid.
 	if p.Version != 0 {
-		data, err := sonic.Marshal(p.Version)
+		data, err := hashJSON.Marshal(p.Version)
 		if err != nil {
 			return "", err
 		}
@@ -1921,14 +1927,14 @@ func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string,
 			// Only live-models config was supplied. Staying on the pricing-only
 			// payload keeps the digest identical to a pre-MCP deployment's when
 			// the live interval is also nil.
-			data, err = sonic.Marshal(frameworkConfigHashPayload{
+			data, err = hashJSON.Marshal(frameworkConfigHashPayload{
 				PricingURL:             pricingURL,
 				ModelParametersURL:     modelParametersURL,
 				PricingSyncInterval:    pricingSyncInterval,
 				LiveModelsSyncInterval: opts[0].LiveModelsSyncInterval,
 			})
 		} else {
-			data, err = sonic.Marshal(frameworkConfigHashPayloadWithMCP{
+			data, err = hashJSON.Marshal(frameworkConfigHashPayloadWithMCP{
 				PricingURL:             pricingURL,
 				ModelParametersURL:     modelParametersURL,
 				PricingSyncInterval:    pricingSyncInterval,
@@ -1938,7 +1944,7 @@ func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string,
 			})
 		}
 	} else {
-		data, err = sonic.Marshal(frameworkConfigHashPayload{
+		data, err = hashJSON.Marshal(frameworkConfigHashPayload{
 			PricingURL:          pricingURL,
 			ModelParametersURL:  modelParametersURL,
 			PricingSyncInterval: pricingSyncInterval,
