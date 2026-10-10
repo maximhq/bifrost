@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -322,6 +323,11 @@ func TestSyncModelParamsFromURL_UnusableFeedKeepsDBAndIndexes(t *testing.T) {
 		{"empty parameters", `{"feed-model":{"model_parameters":[]}}`},
 		{"empty tools", `{"feed-model":{"server_tools":{}}}`},
 		{"empty collections", `{"feed-model":{"supported_endpoints":[],"server_tools":{}}}`},
+		{"empty budget", `{"feed-model":{"reasoning_budget":{}}}`},
+		{"null budget bounds", `{"feed-model":{"reasoning_budget":{"min":null,"max":null}}}`},
+		{"null endpoints", `{"feed-model":{"supported_endpoints":[null]}}`},
+		{"blank endpoints", `{"feed-model":{"supported_endpoints":[""]}}`},
+		{"empty parameter descriptors", `{"feed-model":{"model_parameters":[{},null,{"id":""}]}}`},
 		{"provider only", `{"feed-model":{"provider":"anthropic"}}`},
 		{"null record", `{"feed-model":null}`},
 		{"malformed capability", `{"feed-model":{"provider":"anthropic","max_output_tokens":"invalid"}}`},
@@ -382,6 +388,11 @@ func TestSyncModelParamsFromURL_MixedFeedKeepsUnusableRows(t *testing.T) {
 		{"empty parameters", `{"model_parameters":[]}`},
 		{"empty tools", `{"server_tools":{}}`},
 		{"empty collections", `{"supported_endpoints":[],"server_tools":{}}`},
+		{"empty budget", `{"reasoning_budget":{}}`},
+		{"null budget bounds", `{"reasoning_budget":{"min":null,"max":null}}`},
+		{"null endpoints", `{"supported_endpoints":[null]}`},
+		{"blank endpoints", `{"supported_endpoints":[""]}`},
+		{"empty parameter descriptors", `{"model_parameters":[{},null,{"id":""}]}`},
 		{"provider only", `{"provider":"custom-anthropic"}`},
 		{"null record", `null`},
 		{"malformed capability", `{"provider":"custom-anthropic","max_output_tokens":"invalid"}`},
@@ -450,7 +461,7 @@ func (s *modelParamsReloadErrorStore) GetModelParameters(context.Context) ([]con
 	return nil, s.err
 }
 
-func TestSyncModelParamsFromURL_DBReloadErrorKeepsIndexes(t *testing.T) {
+func TestSyncModelParamsFromURL_DBReadErrorKeepsIndexes(t *testing.T) {
 	feedPath := filepath.Join(t.TempDir(), "params.json")
 	if err := os.WriteFile(feedPath, []byte(`{"new-model":{"provider":"anthropic","max_output_tokens":16000}}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -466,8 +477,8 @@ func TestSyncModelParamsFromURL_DBReloadErrorKeepsIndexes(t *testing.T) {
 	if err := s.SyncModelParamsFromURL(t.Context()); !errors.Is(err, dbErr) {
 		t.Errorf("sync error = %v, want database reload error", err)
 	}
-	if !cs.upserted {
-		t.Fatal("feed was not persisted before the reload")
+	if cs.upserted {
+		t.Error("failed snapshot read must not persist the feed")
 	}
 	if fired || !slices.Contains(s.GetSupportedParameters("custom-anthropic/old-model"), "tools") {
 		t.Fatal("failed DB reload must preserve the existing indexes and capability cache")
@@ -485,5 +496,91 @@ func TestSyncModelParamsFromURL_WithoutConfigStore(t *testing.T) {
 	}
 	if !slices.Contains(s.GetSupportedParameters("feed-model"), "tools") || !s.IsRequestTypeSupported("feed-model", schemas.ResponsesRequest) {
 		t.Fatal("URL-only sync did not apply the feed")
+	}
+}
+
+// Pause the first snapshot after reading it, while another sync tries to add a
+// different row. Both committed rows must remain in the published indexes.
+type modelParamsSnapshotStore struct {
+	configstore.ConfigStore
+	mu           sync.Mutex
+	rows         map[string]string
+	reads        int
+	firstRead    chan struct{}
+	secondRead   chan struct{}
+	releaseFirst chan struct{}
+}
+
+func (s *modelParamsSnapshotStore) GetModelParameters(context.Context) ([]configstoreTables.TableModelParameters, error) {
+	s.mu.Lock()
+	rows := make([]configstoreTables.TableModelParameters, 0, len(s.rows))
+	for model, data := range s.rows {
+		rows = append(rows, configstoreTables.TableModelParameters{Model: model, Data: data})
+	}
+	s.reads++
+	read := s.reads
+	s.mu.Unlock()
+	if read == 1 {
+		close(s.firstRead)
+		<-s.releaseFirst
+	}
+	if read == 2 {
+		close(s.secondRead)
+	}
+	return rows, nil
+}
+
+func (s *modelParamsSnapshotStore) UpsertModelParametersBatch(_ context.Context, rows []configstoreTables.TableModelParameters, _ ...*gorm.DB) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, row := range rows {
+		s.rows[row.Model] = row.Data
+	}
+	return nil
+}
+
+func TestSyncModelParamsFromURL_ConcurrentSnapshotsKeepBothRows(t *testing.T) {
+	cs := &modelParamsSnapshotStore{rows: make(map[string]string), firstRead: make(chan struct{}), secondRead: make(chan struct{}), releaseFirst: make(chan struct{})}
+	var release sync.Once
+	t.Cleanup(func() { release.Do(func() { close(cs.releaseFirst) }) })
+	dir := t.TempDir()
+	for _, model := range []string{"first-model", "second-model"} {
+		if err := os.WriteFile(filepath.Join(dir, model+".json"), []byte(`{"`+model+`":{"provider":"anthropic","supports_function_calling":true}}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := New(cs, nil, Config{ModelParametersURL: "file://" + filepath.Join(dir, "first-model.json")})
+	done := make(chan error, 2)
+	go func() { done <- s.SyncModelParamsFromURL(t.Context()) }()
+	select {
+	case <-cs.firstRead:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first sync never read its snapshot")
+	}
+	s.UpdateSyncConfig(Config{ModelParametersURL: "file://" + filepath.Join(dir, "second-model.json")})
+	go func() { done <- s.SyncModelParamsFromURL(t.Context()) }()
+	// Without serialization the second sync can finish before the stale first
+	// snapshot publishes. With serialization it waits until the first commits.
+	select {
+	case <-cs.secondRead:
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		release.Do(func() { close(cs.releaseFirst) })
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		release.Do(func() { close(cs.releaseFirst) })
+		for range 2 {
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, model := range []string{"first-model", "second-model"} {
+		if !slices.Contains(s.GetSupportedParameters(model), "tools") {
+			t.Errorf("committed model %s missing from indexes", model)
+		}
 	}
 }

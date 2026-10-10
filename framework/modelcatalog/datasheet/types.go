@@ -1016,27 +1016,44 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 }
 
 // IsEmptyModelCapabilities reports whether a record contains no capability values.
-// Empty slices and maps contribute nothing; non-nil pointers remain meaningful,
-// including explicit false, zero, and empty-string overrides.
+// Empty objects and array elements contribute nothing. Scalar pointers and map
+// entries retain explicit false, zero, and empty-string overrides.
 func IsEmptyModelCapabilities(ov *schemas.ModelCapabilities) bool {
 	if ov == nil {
 		return true
 	}
-	value := reflect.ValueOf(ov).Elem()
-	for i := 0; i < value.NumField(); i++ {
-		field := value.Field(i)
-		switch field.Kind() {
-		case reflect.Slice, reflect.Map:
-			if field.Len() > 0 {
-				return false
-			}
-		default:
-			if !field.IsZero() {
+	return isEmptyCapabilityValue(reflect.ValueOf(ov).Elem())
+}
+
+func isEmptyCapabilityValue(value reflect.Value) bool {
+	switch value.Kind() {
+	case reflect.Pointer:
+		if value.IsNil() {
+			return true
+		}
+		if value.Elem().Kind() == reflect.Struct {
+			return isEmptyCapabilityValue(value.Elem())
+		}
+		return false
+	case reflect.Struct:
+		for i := 0; i < value.NumField(); i++ {
+			if !isEmptyCapabilityValue(value.Field(i)) {
 				return false
 			}
 		}
+		return true
+	case reflect.Slice:
+		for i := 0; i < value.Len(); i++ {
+			if !isEmptyCapabilityValue(value.Index(i)) {
+				return false
+			}
+		}
+		return true
+	case reflect.Map:
+		return value.Len() == 0
+	default:
+		return value.IsZero()
 	}
-	return true
 }
 
 // convertTableOverride converts a TablePricingOverride to an Override.

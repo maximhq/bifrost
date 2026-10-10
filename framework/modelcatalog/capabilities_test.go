@@ -21,6 +21,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/lrucache"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"gorm.io/gorm"
 )
 
 // capabilityTestCatalog builds a catalog whose capability lookups are served by
@@ -267,6 +268,10 @@ func TestModelParametersSyncPreservesCustomProviderMaxTokens(t *testing.T) {
 				_, _ = w.Write([]byte(`{"custom-params-model":{"provider":"anthropic","max_output_tokens":28000},"custom-anthropic/custom-params-model":{"supported_endpoints":[],"server_tools":{}}}`))
 				return
 			}
+			if feedMode.Load() == 4 {
+				_, _ = w.Write([]byte(`{"custom-params-model":{"provider":"anthropic","max_output_tokens":30000},"custom-anthropic/custom-params-model":{"provider":"custom-anthropic","reasoning_budget":{},"model_parameters":[{}],"supported_endpoints":[null]}}`))
+				return
+			}
 			_, _ = w.Write([]byte(`{"custom-params-model":{"provider":"anthropic","max_output_tokens":16000}}`))
 			return
 		}
@@ -302,8 +307,13 @@ func TestModelParametersSyncPreservesCustomProviderMaxTokens(t *testing.T) {
 			IsKeyLess:        true,
 		},
 	}, logger)
-	for _, phase := range []string{"before sync", "after sync", "after mixed sync", "after unusable sync", "after empty collections sync", "after DB reload"} {
+	for _, phase := range []string{"before sync", "after sync", "after mixed sync", "after unusable sync", "after empty collections sync", "after nested empty sync", "after DB reload"} {
 		switch phase {
+		case "after nested empty sync":
+			feedMode.Store(4)
+			if err := ds.SyncModelParamsFromURL(ctx); err != nil {
+				t.Fatal(err)
+			}
 		case "after empty collections sync":
 			feedMode.Store(3)
 			if err := ds.SyncModelParamsFromURL(ctx); err != nil {
@@ -351,5 +361,100 @@ func TestModelParametersSyncPreservesCustomProviderMaxTokens(t *testing.T) {
 				t.Errorf("%s: upstream max_tokens = %d, want %d", phase, got, want)
 			}
 		}
+	}
+}
+
+// Delegate to real SQLite except for the operation whose failure is under test.
+type modelParamsFailureStore struct {
+	configstore.ConfigStore
+	readErr  error
+	writeErr error
+}
+
+func (s *modelParamsFailureStore) GetModelParameters(ctx context.Context) ([]tables.TableModelParameters, error) {
+	if s.readErr != nil {
+		return nil, s.readErr
+	}
+	return s.ConfigStore.GetModelParameters(ctx)
+}
+
+func (s *modelParamsFailureStore) UpsertModelParametersBatch(ctx context.Context, rows []tables.TableModelParameters, tx ...*gorm.DB) error {
+	if s.writeErr != nil {
+		return s.writeErr
+	}
+	return s.ConfigStore.UpsertModelParametersBatch(ctx, rows, tx...)
+}
+
+func TestModelParametersSyncDBFailurePreservesSnapshot(t *testing.T) {
+	for _, operation := range []string{"read", "write"} {
+		t.Run(operation, func(t *testing.T) {
+			ctx := t.Context()
+			cs, err := configstore.NewConfigStore(ctx, &configstore.Config{
+				Enabled: true, Type: configstore.ConfigStoreTypeSQLite,
+				Config: &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+			}, bifrost.NewNoOpLogger())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cs.Close(context.Background()) })
+			const model = "sync-failure-model"
+			const original = `{"provider":"anthropic","max_output_tokens":32000,"supported_endpoints":["/v1/responses"],"supports_function_calling":true}`
+			if err := cs.UpsertModelParametersBatch(ctx, []tables.TableModelParameters{{Model: model, Data: original}}); err != nil {
+				t.Fatal(err)
+			}
+			feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"sync-failure-model":{"provider":"anthropic","max_output_tokens":16000,"supported_endpoints":["/v1/chat/completions"],"supports_function_calling":false}}`))
+			}))
+			defer feed.Close()
+			wrapper := &modelParamsFailureStore{ConfigStore: cs}
+			ds := datasheet.New(wrapper, nil, datasheet.Config{ModelParametersURL: feed.URL})
+			mc := &ModelCatalog{datasheet: ds, capabilities: lrucache.New[*schemas.ModelCapabilities](capabilityCacheSize)}
+			mc.loadCapabilities = mc.datasheetCapabilityLoader
+			applied := 0
+			ds.SetOnModelParametersApplied(func() { applied++; mc.capabilities.Flush() })
+			if _, err := ds.LoadModelParamsFromDB(ctx); err != nil {
+				t.Fatal(err)
+			}
+			warm := mc.GetModelCapabilities(schemas.Anthropic, model)
+			if warm == nil || warm.MaxOutputTokens == nil || *warm.MaxOutputTokens != 32000 {
+				t.Fatalf("unexpected seed: %+v", warm)
+			}
+			injected := errors.New("injected database failure")
+			if operation == "read" {
+				wrapper.readErr = injected
+			} else {
+				wrapper.writeErr = injected
+			}
+			err = ds.SyncModelParamsFromURL(ctx)
+			wrapper.readErr, wrapper.writeErr = nil, nil
+			if !errors.Is(err, injected) {
+				t.Fatalf("sync error=%v, want injected database failure", err)
+			}
+			row, err := cs.GetModelParametersByModel(ctx, model)
+			if err != nil || row == nil || row.Data != original {
+				t.Errorf("failed sync changed stored row: %+v, %v", row, err)
+			}
+			for _, name := range []string{model, "anthropic/" + model} {
+				caps := mc.GetModelCapabilities(schemas.Anthropic, name)
+				if caps == nil || caps.MaxOutputTokens == nil || *caps.MaxOutputTokens != 32000 {
+					t.Errorf("failed sync: capabilities for %s = %+v, want 32000", name, caps)
+				}
+			}
+			if applied != 1 || !ds.IsRequestTypeSupported(model, schemas.ResponsesRequest) {
+				t.Error("failed sync changed cache or indexes")
+			}
+			if err := ds.SyncModelParamsFromURL(ctx); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{model, "anthropic/" + model} {
+				caps := mc.GetModelCapabilities(schemas.Anthropic, name)
+				if caps == nil || caps.MaxOutputTokens == nil || *caps.MaxOutputTokens != 16000 {
+					t.Errorf("retry: capabilities for %s = %+v, want 16000", name, caps)
+				}
+			}
+			if applied != 2 || ds.IsRequestTypeSupported(model, schemas.ResponsesRequest) || !ds.IsRequestTypeSupported(model, schemas.ChatCompletionRequest) {
+				t.Error("successful retry did not publish the new snapshot")
+			}
+		})
 	}
 }

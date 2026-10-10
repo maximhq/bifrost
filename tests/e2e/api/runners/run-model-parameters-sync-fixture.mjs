@@ -12,6 +12,7 @@ if (args.length !== 4 || args[0] !== "--app-dir" || args[2] !== "--port") {
   throw new Error("Usage: run-model-parameters-sync-fixture.mjs --app-dir NEW_DIRECTORY --port PORT");
 }
 const appDir = path.resolve(args[1]);
+const dbPath = path.join(appDir, "config.db");
 const port = Number(args[3]);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("port must be 1..65535");
 if (fs.existsSync(appDir)) throw new Error("app-dir must not exist; use a fresh isolated profile");
@@ -49,6 +50,15 @@ const server = http.createServer(async (req, res) => {
         [`${provider}/${model}`]: { supported_endpoints: [], server_tools: {} },
       });
     }
+    if (feedMode === "nested-empty") {
+      return json(200, {
+        [model]: { provider: "anthropic", max_output_tokens: 30000 },
+        [`${provider}/${model}`]: { provider, reasoning_budget: {}, model_parameters: [{}], supported_endpoints: [null] },
+      });
+    }
+    if (feedMode === "update-custom") {
+      return json(200, { [`${provider}/${model}`]: { provider, max_output_tokens: 16000 } });
+    }
     // Same bare model, a different provider: it cannot answer the custom
     // provider's lookup. The qualified custom row exists only in SQLite.
     return json(200, { [model]: { provider: "anthropic", max_output_tokens: 16000 } });
@@ -56,7 +66,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && route === "/v1/models") {
     return json(200, { data: [{ id: model, type: "model", display_name: model, created_at: "2026-01-01T00:00:00Z" }], has_more: false });
   }
-  if (req.method !== "POST" || (route !== "/v1/messages" && route !== "/api/params-feed")) {
+  if (req.method !== "POST" || !["/v1/messages", "/api/params-feed", "/api/params-db-fault"].includes(route)) {
     return json(404, { error: { message: "unknown fixture route" } });
   }
   try {
@@ -67,12 +77,30 @@ const server = http.createServer(async (req, res) => {
       if (Buffer.byteLength(raw) > 65536) throw new Error("fixture request too large");
     }
     const body = JSON.parse(raw);
+    if (route === "/api/params-db-fault") {
+      if (!["after-write", "off"].includes(body.mode)) return json(400, { error: { message: "invalid fault mode" } });
+      const db = new DatabaseSync(dbPath);
+      try {
+        db.exec("DROP TRIGGER IF EXISTS fixture_params_read_failure; DELETE FROM governance_model_parameters WHERE id = -1 AND model = 'fixture-read-fault'");
+        if (body.mode === "after-write") {
+          // The normal upsert commits, but a subsequent bulk read cannot scan
+          // this sentinel's negative ID into TableModelParameters.ID (uint).
+          // Only this fresh fixture DB is touched; the next request removes it.
+          db.exec(`CREATE TRIGGER fixture_params_read_failure AFTER UPDATE ON governance_model_parameters
+            WHEN NEW.model = '${provider}/${model}' BEGIN
+              INSERT OR IGNORE INTO governance_model_parameters (id, model, data) VALUES (-1, 'fixture-read-fault', '{}');
+            END`);
+          feedMode = "update-custom";
+        }
+      } finally { db.close(); }
+      return json(200, { mode: body.mode });
+    }
     if (route === "/api/params-feed") {
-      if (!["valid", "invalid", "mixed", "empty-collections"].includes(body.mode)) return json(400, { error: { message: "invalid feed mode" } });
+      if (!["valid", "invalid", "mixed", "empty-collections", "nested-empty"].includes(body.mode)) return json(400, { error: { message: "invalid feed mode" } });
       feedMode = body.mode;
       return json(200, { mode: feedMode });
     }
-    if (body.model !== model || req.headers["x-api-key"] !== "fixture-key" || !Number.isInteger(body.max_tokens)) {
+    if (![model, `anthropic/${model}`].includes(body.model) || req.headers["x-api-key"] !== "fixture-key" || !Number.isInteger(body.max_tokens)) {
       return json(400, { error: { message: "invalid fixture model, key or max_tokens" } });
     }
     // The response witnesses the actual upstream field, including 4096 on
@@ -105,7 +133,6 @@ await new Promise((resolve, reject) => {
 try {
   fs.mkdirSync(path.dirname(appDir), { recursive: true });
   fs.mkdirSync(appDir);
-  const dbPath = path.join(appDir, "config.db");
   const db = new DatabaseSync(dbPath);
   try {
     // Mirrors framework/configstore/tables/modelparameters.go; the gateway

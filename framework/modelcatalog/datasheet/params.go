@@ -32,6 +32,8 @@ func (s *Store) LoadModelParamsFromDB(ctx context.Context) (int, error) {
 	if s.configStore == nil {
 		return 0, nil
 	}
+	s.modelParamsSyncMu.Lock()
+	defer s.modelParamsSyncMu.Unlock()
 	rows, err := s.configStore.GetModelParameters(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("failed to load model parameters from database: %w", err)
@@ -101,6 +103,8 @@ func (s *Store) SyncModelParamsFromURL(ctx context.Context) error {
 		return nil
 	}
 
+	s.modelParamsSyncMu.Lock()
+	defer s.modelParamsSyncMu.Unlock()
 	if s.configStore != nil {
 		records := make([]configstoreTables.TableModelParameters, 0, len(paramsData))
 		for model, data := range paramsData {
@@ -114,14 +118,25 @@ func (s *Store) SyncModelParamsFromURL(ctx context.Context) error {
 				Data:  string(data),
 			})
 		}
+		// Read the full snapshot before committing. A failed read must not leave
+		// new DB rows behind an old capability cache. Merge only usable feed rows
+		// so DB-only and rejected feed rows keep their stored capabilities.
+		rows, err := s.configStore.GetModelParameters(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to load model parameters before sync: %w", err)
+		}
+		merged := make(map[string]json.RawMessage, len(rows)+len(records))
+		for _, row := range rows {
+			merged[row.Model] = json.RawMessage(row.Data)
+		}
+		for _, record := range records {
+			merged[record.Model] = json.RawMessage(record.Data)
+		}
 		if err := s.configStore.UpsertModelParametersBatch(ctx, records); err != nil {
 			return fmt.Errorf("failed to sync model parameters to database: %w", err)
 		}
-		// The feed updates only its own keys. Rebuild from the full DB so
-		// provider-qualified rows absent from the feed remain discoverable.
-		if _, err := s.LoadModelParamsFromDB(ctx); err != nil {
-			return fmt.Errorf("failed to reload model parameters after sync: %w", err)
-		}
+		// No fallible DB I/O between commit and publishing indexes/cache flush.
+		s.applyModelParameters(merged)
 	} else {
 		s.applyModelParameters(paramsData)
 	}
@@ -141,6 +156,8 @@ func (s *Store) LoadModelParamsFromURLIntoMemory(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to load model parameters from URL: %w", err)
 	}
+	s.modelParamsSyncMu.Lock()
+	defer s.modelParamsSyncMu.Unlock()
 	s.applyModelParameters(paramsData)
 	return nil
 }
