@@ -5,7 +5,7 @@
 
 export const Selectors = {
   // Common
-  toast: '[data-sonner-toast]:not([data-removed="true"])',
+  toast: '[data-sonner-toast]:not([data-removed="true"]):not([data-e2e-dismissed])',
   loadingSpinner: '[data-testid="loading-spinner"]',
 
   // Providers Page

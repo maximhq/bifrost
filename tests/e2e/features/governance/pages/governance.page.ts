@@ -51,7 +51,7 @@ export class GovernancePage extends BasePage {
 
     this.teamsCreateBtn = page.getByTestId('create-team-btn').or(page.getByTestId('team-button-add'))
     this.teamsTable = page.getByTestId('teams-table')
-    this.teamDialog = page.getByTestId('team-dialog-content')
+    this.teamDialog = page.getByTestId('team-sheet-content')
     this.teamNameInput = page.getByTestId('team-name-input')
 
     this.customersCreateBtn = page.getByTestId('customer-button-create')
@@ -122,8 +122,8 @@ export class GovernancePage extends BasePage {
     }
 
     if (config.budget?.maxLimit !== undefined) {
-      const budgetInput = this.page.getByTestId('budget-max-limit-input')
-      await budgetInput.fill(String(config.budget.maxLimit))
+      await this.teamDialog.getByTestId('team-add-budget-btn').click()
+      await this.teamDialog.getByTestId('budget-max-limit-input-0').fill(String(config.budget.maxLimit))
     }
 
     const saveBtn = this.teamDialog.getByRole('button', { name: /Create Team/i })
@@ -134,8 +134,8 @@ export class GovernancePage extends BasePage {
   }
 
   async deleteTeam(name: string): Promise<void> {
-    const deleteBtn = this.page.getByTestId(`team-delete-btn-${name}`)
-    await deleteBtn.click()
+    await this.page.getByTestId(`team-actions-btn-${name}`).click()
+    await this.page.getByTestId(`team-delete-btn-${name}`).click()
 
     const confirmDialog = this.page.locator('[role="alertdialog"]')
     await confirmDialog.getByRole('button', { name: /Delete/i }).click()
@@ -167,8 +167,8 @@ export class GovernancePage extends BasePage {
     await this.customerNameInput.fill(config.name)
 
     if (config.budget?.maxLimit !== undefined) {
-      const budgetInput = this.page.getByTestId('budget-max-limit-input')
-      await budgetInput.fill(String(config.budget.maxLimit))
+      await this.customerDialog.getByTestId('customer-budgets-add-btn').click()
+      await this.customerDialog.getByTestId('customer-budgets-amount-0').fill(String(config.budget.maxLimit))
     }
 
     const saveBtn = this.customerDialog.getByRole('button', { name: /Create Customer/i })
@@ -180,8 +180,9 @@ export class GovernancePage extends BasePage {
 
   async deleteCustomer(name: string): Promise<void> {
     const row = this.getCustomerRow(name)
-    const deleteBtn = row.locator('[data-testid^="customer-button-delete-"]')
-    await deleteBtn.click()
+    // Row actions live in a menu portaled outside the row.
+    await row.locator('[data-testid^="customer-actions-btn-"]').click()
+    await this.page.locator('[data-testid^="customer-button-delete-"]').click()
 
     const confirmBtn = this.page.getByTestId('customer-button-delete-confirm')
     await confirmBtn.waitFor({ state: 'visible', timeout: 5000 })
@@ -191,8 +192,8 @@ export class GovernancePage extends BasePage {
   }
 
   async editTeam(name: string, updates: Partial<TeamConfig>): Promise<void> {
-    const editBtn = this.page.getByTestId(`team-edit-btn-${name}`)
-    await editBtn.click()
+    await this.page.getByTestId(`team-actions-btn-${name}`).click()
+    await this.page.getByTestId(`team-edit-btn-${name}`).click()
     await expect(this.teamDialog).toBeVisible({ timeout: 5000 })
     await this.waitForSheetAnimation()
 
@@ -208,22 +209,30 @@ export class GovernancePage extends BasePage {
     }
 
     if (updates.budget?.maxLimit !== undefined) {
-      const budgetInput = this.page.getByTestId('budget-max-limit-input')
-      await budgetInput.clear()
+      const budgetInput = this.teamDialog.getByTestId('budget-max-limit-input-0')
+      if (!(await budgetInput.isVisible())) {
+        await this.teamDialog.getByTestId('team-add-budget-btn').click()
+      }
       await budgetInput.fill(String(updates.budget.maxLimit))
     }
 
     const saveBtn = this.teamDialog.getByRole('button', { name: /Save|Update/i })
     await expect(saveBtn).toBeEnabled()
     await saveBtn.click()
+    // A changed budget asks whether to reset its usage before saving.
+    const preserveUsage = this.page.getByTestId('team-budget-reset-dialog-preserve-btn')
+    await preserveUsage.or(this.getToast('success')).first().waitFor()
+    if (await preserveUsage.isVisible()) {
+      await preserveUsage.click()
+    }
     await this.waitForSuccessToast()
     await expect(this.teamDialog).not.toBeVisible({ timeout: 10000 })
   }
 
   async editCustomer(name: string, updates: Partial<CustomerConfig>): Promise<void> {
     const row = this.getCustomerRow(name)
-    const editBtn = row.locator('[data-testid^="customer-button-edit-"]')
-    await editBtn.click()
+    await row.locator('[data-testid^="customer-actions-btn-"]').click()
+    await this.page.locator('[data-testid^="customer-button-edit-"]').click()
     await expect(this.customerDialog).toBeVisible({ timeout: 5000 })
     await this.waitForSheetAnimation()
 

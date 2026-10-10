@@ -72,6 +72,12 @@ test.describe('Complexity Router', () => {
       )
     })
 
+    // The page polls /api/providers; a poll still inside route.fetch when the page
+    // closes would otherwise fail the test.
+    test.afterEach(async ({ page }) => {
+      await page.unrouteAll({ behavior: 'ignoreErrors' })
+    })
+
     for (const provider of ['openai', CUSTOM_OPENAI]) {
       test(`should list only OpenAI decision models for the ${provider} provider`, async ({ page }) => {
         decisionProvider = provider
