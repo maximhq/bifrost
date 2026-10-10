@@ -4501,6 +4501,14 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
 					}
 				} else {
+					// An explicit budget must not cost the caller their effort. The
+					// adaptive sub-branch above already preserves a co-present effort;
+					// this is the same courtesy on the budget path, for a surface that
+					// takes output_config.effort.
+					if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" &&
+						caps.SupportsNativeEffort(defaultSupportsNativeEffort(caps)) {
+						setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
+					}
 					budgetTokens := *bifrostReq.Params.Reasoning.MaxTokens
 					if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
 						// anthropic does not support dynamic reasoning budget like gemini
@@ -4527,7 +4535,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				// the model applies its own default. Synthesizing thinking here would
 				// turn it on against the caller's request on every model that defaults
 				// it off (Opus 4.6/4.7/4.8, Sonnet 4.6).
-				if caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
+				if caps.SupportsNativeEffort(defaultSupportsNativeEffort(caps)) {
 					setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(native.Effort))
 				}
 			} else {
@@ -4540,15 +4548,24 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 							anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 							setEffortOnOutputConfig(anthropicReq, effort)
 						} else if SupportsNativeEffort(caps) {
-							// Opus 4.5: native effort + budget_tokens thinking
+							// Opus 4.5: native effort + budget_tokens thinking. A provider that
+							// declares EffortWithoutThinkingBudget documents budget_tokens as
+							// ignored, so the synthesized block would be a dead field on its wire.
 							setEffortOnOutputConfig(anthropicReq, effort)
-							budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
-							if err != nil {
-								return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)
-							}
-							anthropicReq.Thinking = &AnthropicThinking{
-								Type:         "enabled",
-								BudgetTokens: schemas.Ptr(budgetTokens),
+							if forwardsEffortWithoutThinkingBudget(caps) {
+								// Thinking still has to be switched on - that is what makes the model
+								// reason, and an upstream test pins it for this provider. Only the
+								// budget comes off, because this surface documents it as ignored.
+								anthropicReq.Thinking = &AnthropicThinking{Type: "enabled"}
+							} else {
+								budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
+								if err != nil {
+									return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)
+								}
+								anthropicReq.Thinking = &AnthropicThinking{
+									Type:         "enabled",
+									BudgetTokens: schemas.Ptr(budgetTokens),
+								}
 							}
 						} else {
 							// Older models: budget_tokens only
@@ -4577,7 +4594,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						// The neutral params collapsed the caller's effort into "none"
 						// to signal reasoning-off, so restore it from what they sent.
 						if native, ok := anthropicNativeEffortFrom(ctx); ok && native.Effort != "" &&
-							caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
+							caps.SupportsNativeEffort(defaultSupportsNativeEffort(caps)) {
 							setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(native.Effort))
 						}
 					}

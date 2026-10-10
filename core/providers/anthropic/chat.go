@@ -777,6 +777,15 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*reasoningParams.Effort))
 				}
 			} else if reasoningParams.MaxTokens != nil {
+				// An explicit budget must not cost the caller their effort: a surface
+				// that takes output_config.effort still wants it, and responses.go
+				// already preserves a co-present effort on its adaptive path. Set
+				// ahead of the budget handling so neither sub-branch here can return
+				// without it.
+				if reasoningParams.Effort != nil && *reasoningParams.Effort != "none" &&
+					caps.SupportsNativeEffort(defaultSupportsNativeEffort(caps)) {
+					setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*reasoningParams.Effort))
+				}
 				if caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
 					// Opus 4.7+ and Fable/Mythos: budget_tokens removed; adaptive thinking is the only thinking-on mode.
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
@@ -808,15 +817,24 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 					setEffortOnOutputConfig(anthropicReq, effort)
 				} else if SupportsNativeEffort(caps) {
-					// Opus 4.5: native effort + budget_tokens thinking
+					// Opus 4.5: native effort + budget_tokens thinking. A provider that
+					// declares EffortWithoutThinkingBudget documents budget_tokens as
+					// ignored, so the synthesized block would be a dead field on its wire.
 					setEffortOnOutputConfig(anthropicReq, effort)
-					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
-					if err != nil {
-						return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)
-					}
-					anthropicReq.Thinking = &AnthropicThinking{
-						Type:         "enabled",
-						BudgetTokens: schemas.Ptr(budgetTokens),
+					if forwardsEffortWithoutThinkingBudget(caps) {
+						// Thinking still has to be switched on - that is what makes the model
+						// reason, and an upstream test pins it for this provider. Only the
+						// budget comes off, because this surface documents it as ignored.
+						anthropicReq.Thinking = &AnthropicThinking{Type: "enabled"}
+					} else {
+						budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
+						if err != nil {
+							return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)
+						}
+						anthropicReq.Thinking = &AnthropicThinking{
+							Type:         "enabled",
+							BudgetTokens: schemas.Ptr(budgetTokens),
+						}
 					}
 				} else {
 					// Older models: budget_tokens only
