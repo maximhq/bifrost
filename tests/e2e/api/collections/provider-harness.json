@@ -220939,8 +220939,8 @@
       ]
     },
     {
-      "name": "196. Anthropic structured outputs routed to OpenAI send text.format.strict false (#8159 / PR #8262)",
-      "description": "Regression for #8159: an Anthropic Messages request with structured outputs (output_config.format, or the legacy top-level output_format) routed to an openai/<model> is converted to an OpenAI Responses request. The converted text.format omitted strict, the Responses API defaults it to true, and strict mode requires every property to be listed in \"required\" - so a schema with an optional property was rejected with a 400. The fix sends text.format.strict false.\n\nBoth cases send a schema with an optional property (note) on /anthropic/v1/messages and pin: a 200 with no strict-schema rejection; text.format.strict false and the caller's required list on the wire (raw_request); and a JSON reply that matches the schema.",
+      "name": "196. Anthropic structured outputs routed to OpenAI send text.format.strict false only for strict-incompatible schemas (#8159 / PR #8262)",
+      "description": "Regression for #8159: an Anthropic Messages request with structured outputs (output_config.format, or the legacy top-level output_format) routed to an openai/<model> is converted to an OpenAI Responses request. The converted text.format omitted strict, the Responses API defaults it to true, and strict mode requires every property to be listed in \"required\" - so a schema with an optional property was rejected with a 400. The fix sends text.format.strict false for schemas that cannot meet strict mode, and leaves it unset for strict-compatible schemas so they keep strict enforcement.\n\nThe first two cases send a schema with an optional property (note) on /anthropic/v1/messages and pin: a 200 with no strict-schema rejection; text.format.strict false and the caller's required list on the wire (raw_request); and a JSON reply that matches the schema.\n\nA third case sends a strict-compatible schema (every property required, additionalProperties false) and pins that text.format.strict is not sent, so the Responses API applies its default of true.",
       "item": [
         {
           "name": "openai/gpt-4o-mini /anthropic/v1/messages output_config.format with an optional property sends text.format.strict false - #8159",
@@ -221068,6 +221068,74 @@
                   "  pm.expect((fmt.schema || {}).required, 'schema.required must stay the caller list, not every property').to.eql(['answer', 'confident']);",
                   "});",
                   "pm.test('openai/gpt-4o-mini /anthropic output_format: reply is JSON that matches the schema', function () {",
+                  "  var text = (body.content || []).filter(function (b) { return b && b.type === 'text'; }).map(function (b) { return b.text || ''; }).join('');",
+                  "  var parsed = null;",
+                  "  try { parsed = JSON.parse(text); } catch (e) { parsed = null; }",
+                  "  pm.expect(parsed, 'reply is not JSON: ' + text).to.be.an('object');",
+                  "  pm.expect(parsed.answer, 'answer must be a string').to.be.a('string');",
+                  "  pm.expect(parsed.confident, 'confident must be a boolean').to.be.a('boolean');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-4o-mini /anthropic/v1/messages output_config.format with a strict-compatible schema keeps strict mode - #8159",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"max_tokens\":100,\"output_config\":{\"format\":{\"type\":\"json_schema\",\"schema\":{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"},\"confident\":{\"type\":\"boolean\"}},\"required\":[\"answer\",\"confident\"],\"additionalProperties\":false}}},\"messages\":[{\"role\":\"user\",\"content\":\"What is the capital of France? Reply with the answer and whether you are confident.\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai/gpt-4o-mini /anthropic output_config.format strict-compatible: 200 - #8159', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('openai/gpt-4o-mini /anthropic output_config.format strict-compatible: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored (needs client_config.allow_per_request_raw_override)').to.be.an('object');",
+                  "});",
+                  "pm.test('openai/gpt-4o-mini /anthropic output_config.format strict-compatible: text.format.strict is not sent, so strict mode applies - #8159', function () {",
+                  "  var fmt = ((rr || {}).text || {}).format || {};",
+                  "  pm.expect(fmt.strict, 'text.format.strict must not be sent for a strict-compatible schema, so the Responses API default of true applies (#8159). body=' + JSON.stringify(rr)).to.be.undefined;",
+                  "  pm.expect((fmt.schema || {}).required, 'schema.required must stay the caller list').to.eql(['answer', 'confident']);",
+                  "});",
+                  "pm.test('openai/gpt-4o-mini /anthropic output_config.format strict-compatible: reply is JSON that matches the schema', function () {",
                   "  var text = (body.content || []).filter(function (b) { return b && b.type === 'text'; }).map(function (b) { return b.text || ''; }).join('');",
                   "  var parsed = null;",
                   "  try { parsed = JSON.parse(text); } catch (e) { parsed = null; }",
