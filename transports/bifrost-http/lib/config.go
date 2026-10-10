@@ -4095,7 +4095,7 @@ func planComplexityAnalyzerConfigUpdate(config *Config, configData *ConfigData) 
 		config.GovernanceConfig = &configstore.GovernanceConfig{}
 	}
 
-	fileConfig, fileHashes, ok := complexityAnalyzerConfigFromFile(configData)
+	fileConfig, fileAsWritten, fileHashes, ok := complexityAnalyzerConfigFromFile(configData)
 	if !ok {
 		return nil
 	}
@@ -4111,7 +4111,7 @@ func planComplexityAnalyzerConfigUpdate(config *Config, configData *ConfigData) 
 		return nil
 	}
 
-	merged, err := mergeComplexityAnalyzerConfigFromFile(current, fileConfig)
+	merged, err := mergeComplexityAnalyzerConfigFromFile(current, fileAsWritten)
 	if err != nil {
 		logger.Warn("failed to merge complexity analyzer config from config file: %v", err)
 		return nil
@@ -4123,20 +4123,29 @@ func planComplexityAnalyzerConfigUpdate(config *Config, configData *ConfigData) 
 }
 
 // complexityAnalyzerConfigFromFile validates the file-backed analyzer config and
-// returns the canonical section hashes used to detect whether config.json changed.
-func complexityAnalyzerConfigFromFile(configData *ConfigData) (*configstore.ComplexityAnalyzerConfig, configstore.ComplexityAnalyzerConfigHashes, bool) {
-	fileConfig, err := complexity.ValidateAndNormalize(configData.Governance.ComplexityAnalyzerConfig)
+// returns the normalized config (what source-of-truth mode persists), the file as
+// written (what the split-mode merge reads), and the canonical section hashes used
+// to detect whether config.json changed. Hashes and the merge take presence from
+// the file as written: GenerateComplexityAnalyzerConfigHashes and
+// MergeComplexityAnalyzerConfigByHashes treat an omitted classifier, decision or
+// semantic section as "no opinion", and normalizing first would hand them a default
+// classifier, hash it, and then apply it over the one chosen in the dashboard.
+func complexityAnalyzerConfigFromFile(configData *ConfigData) (normalized, asWritten *configstore.ComplexityAnalyzerConfig, hashes configstore.ComplexityAnalyzerConfigHashes, ok bool) {
+	raw := configData.Governance.ComplexityAnalyzerConfig
+	fileConfig, err := complexity.ValidateAndNormalize(raw)
 	if err != nil {
 		logger.Error("invalid complexity analyzer config in config file: %v", err)
-		return nil, configstore.ComplexityAnalyzerConfigHashes{}, false
+		return nil, nil, configstore.ComplexityAnalyzerConfigHashes{}, false
 	}
-	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(raw)
 	if err != nil {
 		logger.Warn("failed to generate complexity analyzer config hashes: %v", err)
-		return nil, configstore.ComplexityAnalyzerConfigHashes{}, false
+		return nil, nil, configstore.ComplexityAnalyzerConfigHashes{}, false
 	}
 	fileConfig.ConfigHashes = fileHashes
-	return fileConfig, fileHashes, true
+	fileCopy := *raw
+	fileCopy.ConfigHashes = fileHashes
+	return fileConfig, &fileCopy, fileHashes, true
 }
 
 // mergeComplexityAnalyzerConfigFromFile uses defaults as the first split-mode
