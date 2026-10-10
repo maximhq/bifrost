@@ -91,7 +91,7 @@ describe("pricingFieldUnit", () => {
 			expect(byUnit[unit], `${field.key} resolved to unexpected unit ${unit}`).toBeDefined();
 			byUnit[unit].push(field.key);
 		}
-		expect(PRICING_FIELDS).toHaveLength(117);
+		expect(PRICING_FIELDS).toHaveLength(119);
 		expect(byUnit.multiplier).toEqual(["inference_geo_us_multiplier", "off_peak_cost_multiplier"]);
 		expect(byUnit.character).toEqual(["input_cost_per_character"]);
 		// Sanity: the split is real, not everything collapsing into one bucket.
@@ -138,12 +138,21 @@ describe("request type groups", () => {
 		expect(perSecond?.requestTypeGroups).toContain("audio");
 	});
 
-	// Decision cost is priced on input and output tokens only, so an override
-	// scoped to decisions offers exactly those two fields.
-	it("offers decisions with its input and output token fields", () => {
+	// Decision cost is priced on input and output tokens only, and an override
+	// names the same decision fields the datasheet does, so an override scoped to
+	// decisions offers exactly those two fields.
+	it("offers decisions with its input and output decision token fields", () => {
 		expect(REQUEST_TYPE_OPTIONS).toContain("decisions");
 		expect(getRequestTypeGroup("decisions")).toBe("Decisions");
 		const decisionFields = PRICING_FIELDS.filter((f) => (f.requestTypeGroups as readonly string[]).includes("decisions")).map((f) => f.key);
-		expect(decisionFields).toEqual(["input_cost_per_token", "output_cost_per_token"]);
+		expect(decisionFields).toEqual(["input_cost_per_token_decisions", "output_cost_per_token_decisions"]);
+	});
+
+	// The decision fields are decision-only: a chat override must not offer them.
+	it("keeps the decision fields out of the chat group", () => {
+		const decisionField = PRICING_FIELDS.find((f) => f.key === "input_cost_per_token_decisions");
+		expect(decisionField?.requestTypeGroups).toEqual(["decisions"]);
+		const plain = PRICING_FIELDS.find((f) => f.key === "input_cost_per_token");
+		expect(plain?.requestTypeGroups).not.toContain("decisions");
 	});
 });

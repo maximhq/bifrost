@@ -121756,6 +121756,16 @@
             "type": "number",
             "minimum": 0
           },
+          "input_cost_per_token_decisions": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Input token cost for decision requests. A decision rate always wins over input_cost_per_token, whether it comes from the datasheet or an override; input_cost_per_token is only the fallback when no decision rate is set."
+          },
+          "output_cost_per_token_decisions": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Output token cost for decision requests. A decision rate always wins over output_cost_per_token, whether it comes from the datasheet or an override; output_cost_per_token is only the fallback when no decision rate is set."
+          },
           "input_cost_per_token_fast": {
             "type": "number",
             "minimum": 0,

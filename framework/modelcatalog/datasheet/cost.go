@@ -1254,13 +1254,35 @@ func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *sche
 // input tokens only, so the output rate is normally zero, but both sides are
 // honored from the datasheet so a provider that later charges output stays
 // correct without a code change.
+//
+// A model served natively on a decisions endpoint carries its own rates on its
+// chat row (input_cost_per_token_decisions / output_cost_per_token_decisions).
+// Each side uses its decision rate when the row has one, flat across the context
+// window, wherever it came from (the datasheet or an override), and the row's
+// normal rate otherwise, which is also what a decision answered through a chat
+// model costs.
+//
+// A negative rate is the datasheet's marker for a model with no fixed price
+// (e.g. openrouter/typesafe/jev-router at -1), so it is left unpriced rather
+// than billed as a negative cost.
 func computeDecisionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) *schemas.BifrostCost {
 	if usage == nil {
 		return nil
 	}
 	tierTokens := usage.PromptTokens
-	inputCost := float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
-	outputCost := float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
+	inputRate := tieredInputRate(pricing, tierTokens, tier)
+	if pricing.InputCostPerTokenDecisions != nil {
+		inputRate = *pricing.InputCostPerTokenDecisions
+	}
+	outputRate := tieredOutputRate(pricing, tierTokens, tier)
+	if pricing.OutputCostPerTokenDecisions != nil {
+		outputRate = *pricing.OutputCostPerTokenDecisions
+	}
+	if inputRate < 0 || outputRate < 0 {
+		return nil
+	}
+	inputCost := float64(usage.PromptTokens) * inputRate
+	outputCost := float64(usage.CompletionTokens) * outputRate
 	return newInputOutputCost(inputCost, outputCost)
 }
 
@@ -2262,6 +2284,7 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 //   - Bedrock: prepends the vendor namespace ("anthropic.", "openai.", "google.", "xai.") inferred from the model family, then falls back to the counterpart chat/responses mode.
 //   - Bedrock Mantle: folded onto the "bedrock" provider up front (datasheet rows for all Bedrock variants are stored there), so it shares every Bedrock fallback.
 //   - All providers: chat and responses requests retry in each other's mode, since a model served over both APIs often has a datasheet row under only one of them.
+//   - All providers: decision requests retry in chat mode, since a decision served natively or by emulation is priced from the model's chat row.
 //   - All providers: for ImageEdit/ImageVariation requests, retries the lookup in image-generation mode.
 //   - All providers: live requests retry in "realtime" mode, where the datasheet feed files GPT Live models.
 //

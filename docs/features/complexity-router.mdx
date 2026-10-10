@@ -68,7 +68,7 @@ Typesafe Jev, OpenAI's decision models, Laya, Nimble, and Clef can classify. In 
 | Model | Provider setup | `model` |
 |---|---|---|
 | Typesafe Jev (default) | The built-in `typesafe` provider, or `openrouter` | `jev-latest`, or a pinned version |
-| OpenAI decision models | The built-in `openai` provider, or a custom provider with `base_provider_type: openai` | `gpt-6-luna`; the UI lists only models whose datasheet marks them as serving decisions |
+| OpenAI decision models | The built-in `openai` provider, or a custom provider with `base_provider_type: openai` | `gpt-6-luna`; the UI lists only models the datasheet marks as serving decisions (`supports_decisions`), plus the built-in `gpt-6-luna` family when the datasheet has no row |
 | Laya | A custom provider with `base_provider_type: typesafe` pointing at your `laya-serve` server | `english`, `multilingual`, or `typed-decisions` |
 | Nimble | A custom provider with `base_provider_type: typesafe` pointing at your Nimble deployment | `nimble-latest` |
 | Clef | A custom provider with `base_provider_type: typesafe` and a full-URL `decisions` override to Cloudflare Workers AI | `clef` or `clef-flash`, matching the model in the override URL |
@@ -212,7 +212,7 @@ The intent is that "add a null check to `parseConfig`" stays Medium, while "move
 
 - `decision.previous_message_count` sets how many earlier user messages are sent with the current request, oldest first. The default is `1` and the range is `0` to `5`. Raising it lets a short follow-up such as "and make it faster" inherit earlier intent, at the cost of more input tokens. Assistant replies are never sent.
 - `decision.timeout` bounds each decision call and defaults to `1.5s`. Typesafe Jev typically answers in 600–800 ms; a self-hosted model that scales to zero can take minutes on its first call, which times out and falls through. Each call runs on the request path, so it adds that latency to every request it classifies.
-- Decision-model usage counts toward the request's cost and budgets, including when it runs as the semantic fallback. It is recorded under the provider and model that served the call; self-hosted models with no pricing entry record zero cost.
+- Decision-model usage counts toward the request's cost and budgets, including when it runs as the semantic fallback. It is recorded under the provider and model that served the call. A decision is priced from the model's `decisions` pricing row when it has one (Typesafe Jev), else from the `input_cost_per_token_decisions` and `output_cost_per_token_decisions` rates on its chat row, else from its chat rates, which is what a decision answered through a chat model costs. A model with a variable price (a negative rate) and self-hosted models with no pricing entry record zero cost. A Decisions-scoped custom pricing override applies on top of any of these.
 
 ### Semantic classifier
 
