@@ -1753,6 +1753,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
 					TokenExchange:             dbClient.TokenExchange,
 					PendingOAuthConfig:        dbClient.PendingOAuthConfig,
+					OpenAPIConfig:             dbClient.OpenAPIConfig,
 					// ConfigHash must round-trip so config-file reconciliation
 					// can compare the stored hash against the file hash; an
 					// empty hash reads as "changed" and re-syncs every client
@@ -1811,6 +1812,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
 			TokenExchange:             dbClient.TokenExchange,
 			PendingOAuthConfig:        dbClient.PendingOAuthConfig,
+			OpenAPIConfig:             dbClient.OpenAPIConfig,
 			// ConfigHash must round-trip so config-file reconciliation can
 			// compare the stored hash against the file hash; an empty hash
 			// reads as "changed" and re-syncs every client on every boot,
@@ -2252,6 +2254,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
 		TokenExchange:             dbClient.TokenExchange,
 		PendingOAuthConfig:        dbClient.PendingOAuthConfig,
+		OpenAPIConfig:             dbClient.OpenAPIConfig,
 	}, nil
 }
 
@@ -2427,6 +2430,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			PerUserHeaderKeys:  clientConfigCopy.PerUserHeaderKeys,
 			TokenExchange:      clientConfigCopy.TokenExchange,
 			PendingOAuthConfig: clientConfigCopy.PendingOAuthConfig,
+			OpenAPIConfig:      clientConfigCopy.OpenAPIConfig,
 			Disabled:           clientConfigCopy.Disabled,
 			// ConfigHash has json:"-" so deepCopy loses it; use original
 			// clientConfig. Empty for dashboard-created clients; set for
@@ -2462,6 +2466,25 @@ func marshalTokenExchangeJSON(cfg *schemas.MCPTokenExchangeConfig) (*string, err
 		s = encrypted
 	}
 	return &s, nil
+}
+
+// marshalOpenAPIConfigColumns splits openapi_config into its spec and JSON
+// columns the way TableMCPClient.BeforeSave does (JSON encrypted at rest when
+// enabled, since it carries the upstream credentials), for the map-based
+// update path that bypasses GORM hooks. nil -> ("", nil).
+func marshalOpenAPIConfigColumns(cfg *schemas.MCPOpenAPIConfig) (string, *string, error) {
+	spec, configJSON, err := tables.SplitOpenAPIConfigForStorage(cfg)
+	if err != nil {
+		return "", nil, err
+	}
+	if configJSON != nil && encrypt.IsEnabled() && *configJSON != "" {
+		encrypted, err := encrypt.Encrypt(*configJSON)
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to encrypt mcp openapi config: %w", err)
+		}
+		configJSON = &encrypted
+	}
+	return spec, configJSON, nil
 }
 
 // UpdateMCPClientConfig updates an existing MCP client configuration in the database.
@@ -2639,6 +2662,16 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if tokenExchangeJSON != nil {
 			updates["token_exchange_json"] = tokenExchangeJSON
 		}
+		// openapi_config follows the same PATCH convention: nil preserves the
+		// stored spec and credentials, non-nil replaces both columns.
+		openAPISpec, openAPIConfigJSON, openAPIErr := marshalOpenAPIConfigColumns(clientConfig.OpenAPIConfig)
+		if openAPIErr != nil {
+			return openAPIErr
+		}
+		if openAPIConfigJSON != nil {
+			updates["openapi_spec"] = openAPISpec
+			updates["openapi_config_json"] = openAPIConfigJSON
+		}
 		// Config-file driven reconciliation passes ConfigHash. In this mode we should
 		// also sync connection/auth metadata from config.json and persist the hash.
 		if clientConfigCopy.ConfigHash != "" {
@@ -2686,6 +2719,10 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 				pendingOAuthConfigJSON = &s
 			}
 			updates["pending_oauth_config_json"] = pendingOAuthConfigJSON
+			// Config-file mode syncs the full connection block, so nil here
+			// means "clear" for openapi_config too.
+			updates["openapi_spec"] = openAPISpec
+			updates["openapi_config_json"] = openAPIConfigJSON
 		}
 
 		// Only update is_ping_available if explicitly provided (non-nil)

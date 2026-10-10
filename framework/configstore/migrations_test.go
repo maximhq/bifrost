@@ -4562,3 +4562,45 @@ func TestMigrationAddIgnoreProviderCostColumn_NonRollbackable(t *testing.T) {
 	assert.True(t, db.Migrator().HasColumn(&tables.TableProvider{}, "ignore_provider_cost"),
 		"a refused rollback must leave the column in place")
 }
+
+// TestMigrationAddMCPClientOpenAPIColumns_Idempotent runs both openapi column
+// migrations against a config_mcp_clients table created without them and again
+// once they exist: both passes succeed, both columns are present, and existing
+// rows are untouched.
+func TestMigrationAddMCPClientOpenAPIColumns_Idempotent(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec(`
+		CREATE TABLE config_mcp_clients (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			client_id VARCHAR(255) NOT NULL UNIQUE,
+			name VARCHAR(255) NOT NULL UNIQUE,
+			connection_type VARCHAR(20) NOT NULL,
+			tools_to_execute_json TEXT,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			encryption_status VARCHAR(20) DEFAULT 'plain_text'
+		)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	now := time.Now()
+	require.NoError(t, db.Exec(`INSERT INTO config_mcp_clients (client_id, name, connection_type, tools_to_execute_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`, "pre-existing", "pre_existing", "http", `["*"]`, now, now).Error)
+
+	ctx := context.Background()
+	for pass := 1; pass <= 2; pass++ {
+		require.NoError(t, migrationAddMCPClientOpenAPISpecColumn(ctx, db, testMigrationLogger), "spec column pass %d", pass)
+		require.NoError(t, migrationAddMCPClientOpenAPIConfigJSONColumn(ctx, db, testMigrationLogger), "config json column pass %d", pass)
+	}
+	assert.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, "openapi_spec"))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, "openapi_config_json"))
+
+	var row struct {
+		Name              string
+		OpenAPISpec       *string
+		OpenAPIConfigJSON *string
+	}
+	require.NoError(t, db.Table("config_mcp_clients").Select("name, openapi_spec, openapi_config_json").Where("client_id = ?", "pre-existing").Scan(&row).Error)
+	assert.Equal(t, "pre_existing", row.Name)
+	assert.True(t, row.OpenAPISpec == nil || *row.OpenAPISpec == "")
+	assert.Nil(t, row.OpenAPIConfigJSON)
+}
