@@ -52,11 +52,8 @@ func NewTypesafeProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 
-	defaultBaseURL := config.NetworkConfig.BaseURL == ""
-	if defaultBaseURL {
-		config.NetworkConfig.BaseURL = typesafeDefaultBaseURL
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	defaultBaseURL := !config.NetworkConfig.BaseURL.IsSet()
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, typesafeDefaultBaseURL)
 
 	return &TypesafeProvider{
 		logger:               logger,
@@ -83,7 +80,7 @@ func (provider *TypesafeProvider) buildRequestURL(ctx *schemas.BifrostContext, d
 	if isCompleteURL {
 		return path
 	}
-	return provider.networkConfig.BaseURL + path
+	return provider.networkConfig.BaseURL.GetValue() + path
 }
 
 // ListModels serves the endpoint's native GET /v1/models catalog. Against

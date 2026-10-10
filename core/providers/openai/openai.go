@@ -62,10 +62,7 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.openai.com"
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "https://api.openai.com")
 
 	return &OpenAIProvider{
 		logger:               logger,
@@ -90,7 +87,7 @@ func (provider *OpenAIProvider) buildRequestURL(ctx *schemas.BifrostContext, def
 	if isCompleteURL {
 		return path
 	}
-	return provider.networkConfig.BaseURL + path
+	return provider.networkConfig.BaseURL.GetValue() + path
 }
 
 func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
@@ -6318,7 +6315,7 @@ func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID)
+		req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + "/v1/files/" + escapedFileID)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -6398,7 +6395,7 @@ func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID)
+		req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + "/v1/files/" + escapedFileID)
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 
@@ -6492,7 +6489,7 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID + "/content")
+		req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + "/v1/files/" + escapedFileID + "/content")
 		req.Header.SetMethod(http.MethodGet)
 
 		if key.Value.GetValue() != "" {
@@ -6907,7 +6904,7 @@ func (provider *OpenAIProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys 
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/batches/" + escapedBatchID)
+		req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + "/v1/batches/" + escapedBatchID)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -6985,7 +6982,7 @@ func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/batches/" + escapedBatchID + "/cancel")
+		req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + "/v1/batches/" + escapedBatchID + "/cancel")
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
 
@@ -7106,7 +7103,7 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedOutputFileID + "/content")
+		req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + "/v1/files/" + escapedOutputFileID + "/content")
 		req.Header.SetMethod(http.MethodGet)
 
 		if key.Value.GetValue() != "" {
@@ -8330,7 +8327,7 @@ func (provider *OpenAIProvider) Passthrough(
 // URL is checked against the base URL's authority (see providerUtils.BuildPassthroughURL).
 func (provider *OpenAIProvider) buildPassthroughURL(req *schemas.BifrostPassthroughRequest) (string, error) {
 	path := req.Path
-	baseURL := provider.networkConfig.BaseURL
+	baseURL := provider.networkConfig.BaseURL.GetValue()
 	if req.UpstreamURL != "" {
 		baseURL = req.UpstreamURL
 		if !strings.HasPrefix(path, "/") {
@@ -8344,7 +8341,7 @@ func (provider *OpenAIProvider) buildPassthroughURL(req *schemas.BifrostPassthro
 		path = after
 	}
 
-	return providerUtils.BuildPassthroughURL(baseURL, "/v1"+path, req.RawQuery)
+	return providerUtils.BuildPassthroughURLFromSecret(provider.networkConfig.BaseURL, "/v1"+path, req.RawQuery)
 }
 
 func (provider *OpenAIProvider) PassthroughStream(

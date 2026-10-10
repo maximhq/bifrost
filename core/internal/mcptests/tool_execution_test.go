@@ -707,7 +707,7 @@ func (a *injectedToolsAccount) GetKeysForProvider(ctx context.Context, provider 
 
 func (a *injectedToolsAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
 	network := schemas.DefaultNetworkConfig
-	network.BaseURL = a.baseURL
+	network.BaseURL = schemas.NewSecretVar(a.baseURL)
 	network.MaxRetries = 0
 	return &schemas.ProviderConfig{
 		NetworkConfig:            network,

@@ -60,7 +60,7 @@ func anthropicSSEServer(t *testing.T, prelude string, truncate bool) *httptest.S
 
 func newTruncationTestProvider(baseURL string) *AnthropicProvider {
 	return NewAnthropicProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: baseURL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(baseURL)},
 	}, truncationTestLogger{})
 }
 

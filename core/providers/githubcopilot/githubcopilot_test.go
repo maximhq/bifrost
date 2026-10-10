@@ -20,7 +20,7 @@ func TestProviderConstructor(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Equal(t, schemas.GithubCopilot, provider.GetProviderKey())
-		assert.Empty(t, provider.networkConfig.BaseURL,
+		assert.Empty(t, provider.networkConfig.BaseURL.GetValue(),
 			"a default base URL here would pin every account to the public host")
 		assert.NotNil(t, provider.streamingClient)
 		assert.NotSame(t, provider.client, provider.streamingClient,
@@ -29,12 +29,12 @@ func TestProviderConstructor(t *testing.T) {
 
 	t.Run("honours a configured base URL and strips the trailing slash", func(t *testing.T) {
 		config := &schemas.ProviderConfig{
-			NetworkConfig: schemas.NetworkConfig{BaseURL: "https://copilot.ghe.acme.com/"},
+			NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://copilot.ghe.acme.com/")},
 		}
 		provider, err := NewGithubCopilotProvider(config, nil)
 		require.NoError(t, err)
 
-		assert.Equal(t, "https://copilot.ghe.acme.com", provider.networkConfig.BaseURL)
+		assert.Equal(t, "https://copilot.ghe.acme.com", provider.networkConfig.BaseURL.GetValue())
 	})
 }
 

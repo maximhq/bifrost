@@ -28,15 +28,60 @@ import (
 // validateProviderBaseURLShape keeps appended operation paths in the URL path.
 // Destination validation follows authentication so anonymous callers cannot
 // trigger DNS lookups while submitting endpoint changes.
-func validateProviderBaseURLShape(raw string) error {
+// valueBearingExternalURLErrors are the two ValidateExternalURL failures that
+// repeat the URL back: the parse error quotes it, and the DNS error names the
+// hostname. Its other failures (empty, scheme, missing hostname, unspecified /
+// link-local / private address) name a CLASS and carry nothing resolved.
+var valueBearingExternalURLErrors = []string{
+	"invalid URL format",
+	"failed to resolve hostname",
+}
+
+// externalURLErrorForClient keeps a resolved secret out of a destination
+// validation error without throwing away the diagnosis.
+//
+// A literal base_url is already visible to the operator, so its error is passed
+// through whole. For one that arrived as an env./vault. reference the reference is
+// named and the REASON is kept -- an operator still has to be able to tell a bad
+// scheme from a DNS failure from a blocked private address -- with only the two
+// failures that repeat the resolved value trimmed to their reason.
+func externalURLErrorForClient(baseURL *schemas.SecretVar, err error) string {
+	if baseURL == nil || !baseURL.IsFromSecret() {
+		return fmt.Sprintf("Invalid base URL: %v", err)
+	}
+	reason := err.Error()
+	for _, leaky := range valueBearingExternalURLErrors {
+		if strings.HasPrefix(reason, leaky) {
+			reason = leaky
+			break
+		}
+	}
+	return fmt.Sprintf("Invalid base URL resolved from %s: %s", baseURL.GetRawRef(), reason)
+}
+
+func validateProviderBaseURLShape(baseURL *schemas.SecretVar) error {
+	if baseURL == nil {
+		return nil
+	}
+	// A reference is checked by the value it resolves to, so an env./vault.
+	// base_url cannot carry credentials, a query, or a fragment past the
+	// indirection. The resolved value never reaches the response: a parse
+	// failure on a reference reports the reference instead.
+	raw := baseURL.GetValue()
 	if raw == "" {
 		return nil
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
+		if baseURL.IsFromSecret() {
+			return fmt.Errorf("base URL resolved from %s is not a valid URL", baseURL.GetRawRef())
+		}
 		return fmt.Errorf("invalid base URL: %w", err)
 	}
 	if u.User != nil || strings.ContainsAny(raw, "?#") {
+		if baseURL.IsFromSecret() {
+			return fmt.Errorf("base URL resolved from %s must not contain credentials, a query, or a fragment", baseURL.GetRawRef())
+		}
 		return errors.New("base URL must not contain credentials, a query, or a fragment")
 	}
 	return nil
@@ -395,9 +440,9 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusForbidden, providerDialTargetForbiddenMsg)
 			return
 		}
-		if payload.NetworkConfig.BaseURL != "" {
-			if err := bifrost.ValidateExternalURL(payload.NetworkConfig.BaseURL, payload.NetworkConfig.AllowPrivateNetwork); err != nil {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid base URL: %v", err))
+		if baseURL := payload.NetworkConfig.BaseURL.GetValue(); baseURL != "" {
+			if err := bifrost.ValidateExternalURL(baseURL, payload.NetworkConfig.AllowPrivateNetwork); err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, externalURLErrorForClient(payload.NetworkConfig.BaseURL, err))
 				return
 			}
 		}
@@ -642,9 +687,9 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusForbidden, providerDialTargetForbiddenMsg)
 		return
 	}
-	if nc.BaseURL != "" {
-		if err := bifrost.ValidateExternalURL(nc.BaseURL, nc.AllowPrivateNetwork); err != nil {
-			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid base URL: %v", err))
+	if baseURL := nc.BaseURL.GetValue(); baseURL != "" {
+		if err := bifrost.ValidateExternalURL(baseURL, nc.AllowPrivateNetwork); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, externalURLErrorForClient(nc.BaseURL, err))
 			return
 		}
 	}
@@ -1822,7 +1867,7 @@ const providerDialTargetForbiddenMsg = "Setting a provider's base URL or allow_p
 // the dialer enforces it at connect time, where DNS can move an allowed hostname to a private
 // IP. Clearing the base URL or turning the flag off only narrows the target and passes.
 func providerDialTargetChanged(old *schemas.NetworkConfig, next schemas.NetworkConfig) bool {
-	var oldBaseURL string
+	var oldBaseURL *schemas.SecretVar
 	var oldAllowPrivate bool
 	if old != nil {
 		oldBaseURL, oldAllowPrivate = old.BaseURL, old.AllowPrivateNetwork
@@ -1830,5 +1875,14 @@ func providerDialTargetChanged(old *schemas.NetworkConfig, next schemas.NetworkC
 	if next.AllowPrivateNetwork && !oldAllowPrivate {
 		return true
 	}
-	return next.BaseURL != "" && next.BaseURL != oldBaseURL
+	if !next.BaseURL.IsSet() {
+		return false
+	}
+	// base_url may now be an env./vault. reference, so "different" is judged on both the
+	// declaration and what it resolves to, and either differing counts. Comparing only the
+	// declaration would let a reference that now points elsewhere through on an unchanged
+	// string; comparing only the resolved value would let an unresolvable reference through
+	// as if nothing had been set. A guard that answers 403 should err towards changed.
+	return schemas.SecretVarAsString(next.BaseURL) != schemas.SecretVarAsString(oldBaseURL) ||
+		next.BaseURL.GetValue() != oldBaseURL.GetValue()
 }

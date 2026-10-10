@@ -4,7 +4,6 @@ package xai
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -45,11 +44,7 @@ func NewXAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*XAI
 	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
-
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.x.ai"
-	}
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "https://api.x.ai")
 
 	return &XAIProvider{
 		logger:              logger,
@@ -68,14 +63,14 @@ func (provider *XAIProvider) GetProviderKey() schemas.ModelProvider {
 
 // ListModels performs a list models request to xAI's API.
 func (provider *XAIProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	if provider.networkConfig.BaseURL == "" {
+	if provider.networkConfig.BaseURL.GetValue() == "" {
 		return nil, providerUtils.NewConfigurationError("base_url is not set")
 	}
 	return openai.HandleOpenAIListModelsRequest(
 		ctx,
 		provider.client,
 		request,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/models"),
 		keys,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
@@ -86,7 +81,7 @@ func (provider *XAIProvider) ListModels(ctx *schemas.BifrostContext, keys []sche
 
 // ModelRetrieve retrieves a single model's metadata from the xAI API.
 func (provider *XAIProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
-	if provider.networkConfig.BaseURL == "" {
+	if provider.networkConfig.BaseURL.GetValue() == "" {
 		return nil, providerUtils.NewConfigurationError("base_url is not set")
 	}
 	if request == nil || request.Model == "" {
@@ -100,7 +95,7 @@ func (provider *XAIProvider) ModelRetrieve(ctx *schemas.BifrostContext, key sche
 	return openai.HandleOpenAIModelRetrieveRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models/"+escapedModel),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/models/"+escapedModel),
 		key,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
@@ -114,7 +109,7 @@ func (provider *XAIProvider) TextCompletion(ctx *schemas.BifrostContext, key sch
 	return openai.HandleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -134,7 +129,7 @@ func (provider *XAIProvider) TextCompletionStream(ctx *schemas.BifrostContext, p
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+"/v1/completions",
+		provider.networkConfig.BaseURL.GetValue()+"/v1/completions",
 		request,
 		nil,
 		provider.networkConfig.ExtraHeaders,
@@ -156,7 +151,7 @@ func (provider *XAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 	response, bifrostErr := openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -183,7 +178,7 @@ func (provider *XAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL.GetValue()+"/v1/chat/completions",
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -238,7 +233,7 @@ func (provider *XAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.
 	response, bifrostErr := openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -262,7 +257,7 @@ func (provider *XAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHo
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -338,7 +333,7 @@ func (provider *XAIProvider) ImageGeneration(ctx *schemas.BifrostContext, key sc
 	response, bifrostErr := openai.HandleOpenAIImageGenerationRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/images/generations"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/images/generations"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -474,7 +469,7 @@ func (provider *XAIProvider) Compaction(ctx *schemas.BifrostContext, key schemas
 	return openai.HandleOpenAICompactionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses/compact"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/responses/compact"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,

@@ -574,7 +574,7 @@ func TestExecuteRequestWithRetries_LoggingAndCounting(t *testing.T) {
 func TestCreateBaseProvider_CustomTypesafeBase(t *testing.T) {
 	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
 	provider, err := bifrost.createBaseProvider("my-typesafe", &schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", DefaultRequestTimeoutInSeconds: 1},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("http://127.0.0.1:1"), DefaultRequestTimeoutInSeconds: 1},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			BaseProviderType: schemas.Typesafe,
 		},
@@ -597,7 +597,7 @@ func TestCreateBaseProvider_CustomTypesafeBase(t *testing.T) {
 func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	providerConfig := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        "http://127.0.0.1:1",
+			BaseURL:                        schemas.NewSecretVar("http://127.0.0.1:1"),
 			DefaultRequestTimeoutInSeconds: 1,
 		},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
@@ -852,7 +852,7 @@ func (ma *MockAccount) AddProviderWithBaseURL(provider schemas.ModelProvider, co
 	defer ma.mu.Unlock()
 	ma.configs[provider] = &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        baseURL,
+			BaseURL:                        schemas.NewSecretVar(baseURL),
 			DefaultRequestTimeoutInSeconds: 300,
 			MaxRetries:                     3,
 			RetryBackoffInitial:            500 * time.Millisecond,

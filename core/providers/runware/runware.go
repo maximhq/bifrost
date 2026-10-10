@@ -51,10 +51,7 @@ func NewRunwareProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	streamingClient := providerUtils.BuildStreamingClient(client)
 
 	// Set default BaseURL if not provided. Runware's single endpoint already includes /v1.
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.runware.ai/v1"
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "https://api.runware.ai/v1")
 
 	return &RunwareProvider{
 		logger:              logger,
@@ -157,7 +154,7 @@ func (provider *RunwareProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -178,7 +175,7 @@ func (provider *RunwareProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -288,7 +285,7 @@ func (provider *RunwareProvider) handleImageInference(ctx *schemas.BifrostContex
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, ""))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, ""))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
@@ -393,7 +390,7 @@ func (provider *RunwareProvider) sendTaskArray(ctx *schemas.BifrostContext, key 
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, ""))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, ""))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
@@ -763,17 +760,18 @@ func (provider *RunwareProvider) ContainerFileDelete(_ *schemas.BifrostContext, 
 // passthrough path is stripped to avoid duplicating it — both /runware_passthrough and
 // /runware_passthrough/v1 therefore map to the base endpoint.
 func (provider *RunwareProvider) buildPassthroughURL(req *schemas.BifrostPassthroughRequest) (string, error) {
-	baseURL := provider.networkConfig.BaseURL
-	if req.UpstreamURL != "" {
-		baseURL = req.UpstreamURL
-	}
 	// Collapse a leading /v1 only as a whole segment: /v1 and /v1/... map onto the base
 	// endpoint, while /v1beta/... merely shares the prefix and is forwarded as sent.
 	path := req.Path
 	if path == "/v1" || strings.HasPrefix(path, "/v1/") {
 		path = strings.TrimPrefix(path, "/v1")
 	}
-	return providerUtils.BuildPassthroughURL(baseURL, path, req.RawQuery)
+	// A caller-supplied upstream URL is the caller's own value, so it stays in any
+	// error; the configured base_url may have been resolved from a secret.
+	if req.UpstreamURL != "" {
+		return providerUtils.BuildPassthroughURL(req.UpstreamURL, path, req.RawQuery)
+	}
+	return providerUtils.BuildPassthroughURLFromSecret(provider.networkConfig.BaseURL, path, req.RawQuery)
 }
 
 // Passthrough forwards a raw request to Runware's unified endpoint and returns the untouched
