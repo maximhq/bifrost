@@ -221119,6 +221119,157 @@
           }
         }
       ]
+    },
+    {
+      "name": "200. Bedrock streamed structured output as a text block (#8158) (bedrock-structured-output-stream)",
+      "description": "Bedrock implements structured output with a synthetic bf_so_* tool and turns that tool's input\ninto text. In ResponsesStream the input deltas were sent as bare response.output_text.delta events\nwith no item_id, output_index or content_index, and no output_item.added / content_part.added\nbefore them (and the item was never closed or recorded in response.completed).\n\nOn /anthropic/v1/messages this surfaced as content_block_delta events with a new index each time\nand no content_block_start or content_block_stop (#8158, shape 1). Clients that track blocks by\nindex cannot assemble the message. After the fix the deltas go through the normal Bedrock text\npath, so the stream carries one text block with a stable index.\n\nEvery Bedrock model takes the synthetic tool path, and Haiku 4.5 accepts the forced tool choice,\nso the tool is pinned and these cases hit the converted-tool path on every run.",
+      "item": [
+        {
+          "name": "bedrock/claude-haiku-4-5 /anthropic/v1/messages streaming output_config.format is one text block - #8158",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "var events = [];",
+                  "body.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  try { events.push(JSON.parse(line.slice(6))); } catch (e) { /* [DONE] */ }",
+                  "});",
+                  "var starts = events.filter(function (e) { return e.type === 'content_block_start'; });",
+                  "var deltas = events.filter(function (e) { return e.type === 'content_block_delta'; });",
+                  "var stops = events.filter(function (e) { return e.type === 'content_block_stop'; });",
+                  "pm.test('exactly one text content_block_start', function () {",
+                  "  pm.expect(starts.length, 'events: ' + body.slice(0, 600)).to.equal(1);",
+                  "  pm.expect(starts[0].content_block.type).to.equal('text');",
+                  "});",
+                  "pm.test('every content_block_delta is on the started block index', function () {",
+                  "  pm.expect(deltas.length, 'no deltas: ' + body.slice(0, 600)).to.be.above(0);",
+                  "  deltas.forEach(function (d) { pm.expect(d.index, JSON.stringify(d)).to.equal(starts[0].index); });",
+                  "});",
+                  "pm.test('the block is closed by a content_block_stop on the same index', function () {",
+                  "  pm.expect(stops.length).to.equal(1);",
+                  "  pm.expect(stops[0].index).to.equal(starts[0].index);",
+                  "});",
+                  "var text = deltas.map(function (d) { return (d.delta && d.delta.text) || ''; }).join('');",
+                  "pm.test('assembled text is the schema-valid JSON answer', function () {",
+                  "  var parsed = JSON.parse(text);",
+                  "  pm.expect(parsed.answer, 'text: ' + text).to.be.a('string');",
+                  "  pm.expect(parsed.confident, 'text: ' + text).to.be.a('boolean');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 256,\n  \"stream\": true,\n  \"output_config\": {\n    \"format\": {\n      \"type\": \"json_schema\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"answer\": {\n            \"type\": \"string\"\n          },\n          \"confident\": {\n            \"type\": \"boolean\"\n          }\n        },\n        \"required\": [\n          \"answer\",\n          \"confident\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the capital of France?\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/claude-haiku-4-5 /v1/responses streaming text.format deltas belong to an added item - #8158",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The same conversion seen at the Responses layer, before any Anthropic re-encoding.",
+                  "var body = pm.response.text();",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "var events = [];",
+                  "body.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  try { events.push(JSON.parse(line.slice(6))); } catch (e) { /* [DONE] */ }",
+                  "});",
+                  "var deltas = events.filter(function (e) { return e.type === 'response.output_text.delta'; });",
+                  "pm.test('each output_text.delta carries item_id, output_index and content_index', function () {",
+                  "  pm.expect(deltas.length, 'no deltas: ' + body.slice(0, 600)).to.be.above(0);",
+                  "  deltas.forEach(function (d) {",
+                  "    pm.expect(d.item_id, JSON.stringify(d)).to.be.a('string').and.not.empty;",
+                  "    pm.expect(d.output_index, JSON.stringify(d)).to.be.a('number');",
+                  "    pm.expect(d.content_index, JSON.stringify(d)).to.be.a('number');",
+                  "  });",
+                  "});",
+                  "pm.test('the deltas belong to a message item that was added first and is done at the end', function () {",
+                  "  var added = events.findIndex(function (e) { return e.type === 'response.output_item.added' && e.item && e.item.type === 'message'; });",
+                  "  var firstDelta = events.findIndex(function (e) { return e.type === 'response.output_text.delta'; });",
+                  "  pm.expect(added, 'no message output_item.added: ' + body.slice(0, 600)).to.be.at.least(0);",
+                  "  pm.expect(added).to.be.below(firstDelta);",
+                  "  pm.expect(events.some(function (e) { return e.type === 'response.output_item.done' && e.output_index === deltas[0].output_index; })).to.equal(true);",
+                  "});",
+                  "var text = deltas.map(function (d) { return d.delta || ''; }).join('');",
+                  "pm.test('assembled text is the schema-valid JSON answer', function () {",
+                  "  var parsed = JSON.parse(text);",
+                  "  pm.expect(parsed.answer, 'text: ' + text).to.be.a('string');",
+                  "  pm.expect(parsed.confident, 'text: ' + text).to.be.a('boolean');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_output_tokens\": 256,\n  \"stream\": true,\n  \"text\": {\n    \"format\": {\n      \"type\": \"json_schema\",\n      \"name\": \"answer\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"answer\": {\n            \"type\": \"string\"\n          },\n          \"confident\": {\n            \"type\": \"boolean\"\n          }\n        },\n        \"required\": [\n          \"answer\",\n          \"confident\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  },\n  \"input\": \"What is the capital of France?\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

@@ -23,6 +23,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/maximhq/bifrost/core/network/proxytest"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1022,4 +1023,117 @@ func TestBedrockTransportProxyMatrix(t *testing.T) {
 			}
 		}
 	}
+}
+
+// Structured output on Bedrock is a synthetic bf_so_* tool call whose input is
+// streamed back as text. It must stream as a regular text item, so that the
+// Anthropic SSE stream has one text block: content_block_start, deltas on a
+// stable index, then content_block_stop (#8158).
+func TestResponsesStream_StructuredOutputStreamsAsTextBlock(t *testing.T) {
+	events := []struct{ eventType, payload string }{
+		{"messageStart", `{"role":"assistant"}`},
+		{"contentBlockStart", `{"start":{"toolUse":{"toolUseId":"tooluse_1","name":"bf_so_answer"}},"contentBlockIndex":0}`},
+		{"contentBlockDelta", `{"delta":{"toolUse":{"input":"{\"answer\":"}},"contentBlockIndex":0}`},
+		{"contentBlockDelta", `{"delta":{"toolUse":{"input":"\"Paris\",\"confident\":true}"}},"contentBlockIndex":0}`},
+		{"contentBlockStop", `{"contentBlockIndex":0}`},
+		{"messageStop", `{"stopReason":"tool_use"}`},
+		{"metadata", `{"usage":{"inputTokens":10,"outputTokens":5,"totalTokens":15},"metrics":{"latencyMs":1}}`},
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(http.StatusOK)
+		for _, e := range events {
+			writeEventStreamEvent(t, w, e.eventType, []byte(e.payload))
+		}
+	}))
+	defer ts.Close()
+
+	req := testResponsesRequest()
+	var text schemas.ResponsesTextConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"format":{"type":"json_schema","name":"answer","schema":{
+		"type":"object",
+		"properties":{"answer":{"type":"string"},"confident":{"type":"boolean"}},
+		"required":["answer","confident"],
+		"additionalProperties":false}}}`), &text))
+	req.Params = &schemas.ResponsesParameters{Text: &text}
+
+	provider := newTestProviderWithServer(t, ts)
+	streamChan, bifrostErr := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
+	require.Nil(t, bifrostErr)
+
+	var responses []*schemas.BifrostResponsesStreamResponse
+	timeout := time.After(5 * time.Second)
+	for done := false; !done; {
+		select {
+		case chunk, ok := <-streamChan:
+			if !ok {
+				done = true
+				break
+			}
+			require.Nil(t, chunk.BifrostError, "unexpected stream error: %+v", chunk.BifrostError)
+			if chunk.BifrostResponsesStreamResponse != nil {
+				responses = append(responses, chunk.BifrostResponsesStreamResponse)
+			}
+		case <-timeout:
+			t.Fatal("stream did not finish")
+		}
+	}
+
+	// Responses events: the deltas belong to a text item that was added before them.
+	var deltas strings.Builder
+	added := map[int]bool{}
+	textOutputIndex := -1
+	for _, r := range responses {
+		switch r.Type {
+		case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+			if r.OutputIndex != nil {
+				added[*r.OutputIndex] = true
+			}
+		case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+			require.NotNil(t, r.OutputIndex, "output_text.delta without output_index")
+			require.NotNil(t, r.ContentIndex, "output_text.delta without content_index")
+			require.NotNil(t, r.ItemID, "output_text.delta without item_id")
+			require.True(t, added[*r.OutputIndex], "output_text.delta before its output_item.added")
+			if textOutputIndex == -1 {
+				textOutputIndex = *r.OutputIndex
+			}
+			require.Equal(t, textOutputIndex, *r.OutputIndex, "deltas of one answer must share an output index")
+			if r.Delta != nil {
+				deltas.WriteString(*r.Delta)
+			}
+		}
+	}
+	require.Equal(t, `{"answer":"Paris","confident":true}`, deltas.String())
+
+	// Anthropic SSE: one text block, deltas on its index, then its stop.
+	anthropicCtx := testBedrockCtx()
+	var blockStarts, blockStops int
+	blockIndex := -1
+	var stopReason anthropic.AnthropicStopReason
+	for _, r := range responses {
+		for _, ev := range anthropic.ToAnthropicResponsesStreamResponse(anthropicCtx, r) {
+			switch ev.Type {
+			case anthropic.AnthropicStreamEventTypeContentBlockStart:
+				blockStarts++
+				require.NotNil(t, ev.Index)
+				require.NotNil(t, ev.ContentBlock)
+				require.Equal(t, anthropic.AnthropicContentBlockTypeText, ev.ContentBlock.Type)
+				blockIndex = *ev.Index
+			case anthropic.AnthropicStreamEventTypeContentBlockDelta:
+				require.NotNil(t, ev.Index)
+				require.Equal(t, blockIndex, *ev.Index, "content_block_delta outside the started block")
+			case anthropic.AnthropicStreamEventTypeContentBlockStop:
+				blockStops++
+				require.NotNil(t, ev.Index)
+				require.Equal(t, blockIndex, *ev.Index)
+			case anthropic.AnthropicStreamEventTypeMessageDelta:
+				if ev.Delta != nil && ev.Delta.StopReason != nil {
+					stopReason = *ev.Delta.StopReason
+				}
+			}
+		}
+	}
+	require.Equal(t, 1, blockStarts, "expected exactly one content_block_start")
+	require.Equal(t, 1, blockStops, "expected exactly one content_block_stop")
+	require.Equal(t, anthropic.AnthropicStopReasonEndTurn, stopReason)
 }

@@ -2193,34 +2193,17 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 
 					// Check for tool use delta event
 					if streamEvent.Delta != nil && streamEvent.Delta.ToolUse != nil && isAccumulatingStructuredOutput {
-						// Convert tool use delta to text delta
-						content := streamEvent.Delta.ToolUse.Input
-						response := &schemas.BifrostResponsesStreamResponse{
-							Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
-							SequenceNumber: chunkIndex,
-							Delta:          &content,
-							ExtraFields: schemas.BifrostResponseExtraFields{
-								ChunkIndex: chunkIndex,
-								Latency:    time.Since(lastChunkTime).Milliseconds(),
-							},
-						}
-						chunkIndex++
-						lastChunkTime = time.Now()
-
-						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-							response.ExtraFields.RawResponse = string(message.Payload)
-						}
-
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
-						continue
-					}
-
-					// Suppress non-tool content events that would leak into the
-					// assembled structured output. Bedrock Claude can emit prose
-					// alongside the forced tool call (markdown, preambles, reasoning
-					// blocks); forwarding those as text deltas corrupts the JSON
-					// the client assembles from the structured-output stream.
-					if streamEvent.Delta != nil && (streamEvent.Delta.Text != nil || streamEvent.Delta.ReasoningContent != nil) {
+						// Convert tool use delta to text delta. It goes through the stream
+						// state below like any text delta, so the text item is opened
+						// before the first delta and closed at messageStop.
+						input := streamEvent.Delta.ToolUse.Input
+						streamEvent.Delta = &BedrockContentBlockDelta{Text: &input}
+					} else if streamEvent.Delta != nil && (streamEvent.Delta.Text != nil || streamEvent.Delta.ReasoningContent != nil) {
+						// Suppress non-tool content events that would leak into the
+						// assembled structured output. Bedrock Claude can emit prose
+						// alongside the forced tool call (markdown, preambles, reasoning
+						// blocks); forwarding those as text deltas corrupts the JSON
+						// the client assembles from the structured-output stream.
 						continue
 					}
 					if streamEvent.Start != nil && streamEvent.Start.ToolUse == nil {
