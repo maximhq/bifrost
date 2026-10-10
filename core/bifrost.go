@@ -8919,26 +8919,17 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		}
 		response.RerankResponse = rerankResponse
 	case schemas.DecisionRequest:
-		decisionResponse, bifrostError := provider.Decision(req.Context, key, req.BifrostRequest.DecisionRequest)
-		// A provider without native decision support returns unsupported_operation;
-		// emulate the judgment through that provider's model (tool-calling /
-		// structured output). Covers both an LLM named as the decision model and an
-		// LLM reached as a fallback - both flow through this one case.
-		if isUnsupportedOperation(bifrostError) {
-			// unsupported_operation also covers a policy denial (AllowedRequests without
-			// Decision). Emulate only when the operation is actually permitted, so a
-			// config that denies Decision cannot run it through the chat/responses path.
-			var customProviderConfig *schemas.CustomProviderConfig
-			if config != nil {
-				customProviderConfig = config.CustomProviderConfig
-			}
-			if denyErr := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), customProviderConfig, schemas.DecisionRequest); denyErr != nil {
-				if req.BifrostRequest.DecisionRequest != nil {
-					denyErr.ExtraFields.OriginalModelRequested = req.BifrostRequest.DecisionRequest.Model
-				}
-				return nil, denyErr
-			}
+		var decisionResponse *schemas.BifrostDecisionResponse
+		var bifrostError *schemas.BifrostError
+		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ResponsesRequest {
+			// The compat plugin (convert_decision_to_responses) marked this decision for
+			// emulation because the model catalog does not list the model as a native
+			// decisions model: answer it through the model's Responses API (tool calling /
+			// structured output). As with the other compat conversions, the provider's
+			// Responses method checks the operation it actually runs.
 			decisionResponse, bifrostError = bifrost.emulateDecisionViaResponses(req.Context, provider, key, req.BifrostRequest.DecisionRequest)
+		} else {
+			decisionResponse, bifrostError = provider.Decision(req.Context, key, req.BifrostRequest.DecisionRequest)
 		}
 		if bifrostError != nil {
 			return nil, bifrostError
