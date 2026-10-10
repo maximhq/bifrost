@@ -1,7 +1,101 @@
 import { Function as ToolFunction } from "./logs";
 import { SecretVar } from "./schemas";
 
-export type MCPConnectionType = "http" | "stdio" | "sse";
+export type MCPConnectionType = "http" | "stdio" | "sse" | "openapi";
+
+// ---------------------------------------------------------------------------
+// OpenAPI-backed servers (connection_type === "openapi"): Bifrost synthesizes
+// the MCP server from an OpenAPI/Swagger document; every supported operation
+// becomes a tool whose call is proxied to the described API.
+// ---------------------------------------------------------------------------
+
+// Secret material for one securitySchemes entry. apiKey and http-bearer
+// schemes use value; http-basic uses username and password.
+export interface MCPOpenAPICredential {
+	value?: SecretVar;
+	username?: SecretVar;
+	password?: SecretVar;
+}
+
+export interface MCPOpenAPIConfig {
+	// Inline document text (JSON or YAML). Write-only: client reads omit it;
+	// GET /mcp/client/{id}/openapi-spec serves it on demand.
+	spec?: string;
+	// Fetched on create when spec is empty; kept as provenance afterwards.
+	spec_url?: string;
+	// Upstream base URL. Defaults to the document's first server.
+	base_url?: string;
+	// Keyed by the document's securitySchemes name. Redacted on GET; sending a
+	// redacted value back keeps the stored secret.
+	security_credentials?: Record<string, MCPOpenAPICredential>;
+	include_deprecated?: boolean;
+	// Cap on the upstream response body returned to the model (0 = default).
+	max_response_bytes?: number;
+	// Server-computed, read-only metadata describing the stored document.
+	spec_size?: number;
+	spec_hash?: string;
+	spec_title?: string;
+	openapi_version?: string;
+	operation_count?: number;
+}
+
+export type MCPOpenAPISecuritySchemeType = "apiKey" | "http" | "oauth2" | "openIdConnect" | "mutualTLS";
+
+export interface MCPOpenAPISecurityScheme {
+	name: string;
+	type: MCPOpenAPISecuritySchemeType;
+	in?: "header" | "query" | "cookie"; // apiKey only
+	param_name?: string; // apiKey only
+	scheme?: string; // http only: bearer | basic
+	description?: string;
+	supported: boolean;
+	reason?: string; // why unsupported
+}
+
+export interface MCPOpenAPIPreviewTool {
+	name: string;
+	operation_id?: string;
+	method: string;
+	path: string;
+	summary?: string;
+	description?: string;
+	deprecated?: boolean;
+	input_schema?: Record<string, unknown>;
+	annotations?: Record<string, unknown>;
+	warnings?: string[];
+}
+
+export interface MCPOpenAPIUnsupportedOperation {
+	operation_id?: string;
+	method: string;
+	path: string;
+	reason: string;
+}
+
+export interface MCPOpenAPIPreviewRequest {
+	spec?: string;
+	spec_url?: string;
+	base_url?: string;
+	include_deprecated?: boolean;
+}
+
+export interface MCPOpenAPIPreviewResponse {
+	title: string;
+	version: string;
+	openapi_version: string;
+	description?: string;
+	servers: string[];
+	base_url?: string;
+	security_schemes: MCPOpenAPISecurityScheme[];
+	tools: MCPOpenAPIPreviewTool[];
+	unsupported: MCPOpenAPIUnsupportedOperation[];
+	warnings: string[];
+	tool_count: number;
+	spec_size: number;
+	spec_hash: string;
+	// The fetched document text, present only when the request named a spec_url.
+	spec?: string;
+}
 
 export type MCPConnectionState =
 	| "healthy"
@@ -125,6 +219,8 @@ export interface MCPClientConfig {
 	connection_string?: SecretVar;
 	stdio_config?: MCPStdioConfig;
 	tls_config?: MCPTLSConfig;
+	// Present for openapi clients; spec omitted and credentials redacted on GET.
+	openapi_config?: MCPOpenAPIConfig;
 	auth_type?: MCPAuthType;
 	oauth_config_id?: string;
 	oauth_client_id?: SecretVar; // Redacted existing client ID (populated on GET for oauth clients)
@@ -236,6 +332,8 @@ export interface CreateMCPClientRequest {
 	connection_string?: SecretVar;
 	stdio_config?: MCPStdioConfig;
 	tls_config?: MCPTLSConfig;
+	// openapi-only: the document (spec or spec_url), upstream and credentials.
+	openapi_config?: MCPOpenAPIConfig;
 	auth_type?: MCPAuthType;
 	oauth_config?: OAuthConfig;
 	tools_to_execute?: string[];
@@ -318,6 +416,10 @@ export interface UpdateMCPClientRequest {
 	tls_config?: MCPTLSConfig; // TLS configuration for HTTP/SSE connections
 	oauth_config?: OAuthConfigUpdate; // Only supported for existing oauth/per_user_oauth clients (credential rotation)
 	token_exchange?: MCPTokenExchangeConfig; // Only supported for existing token_exchange clients; omitted = preserve
+	// openapi clients only: replaces the document and/or credentials (merged
+	// onto the stored block; a redacted credential keeps the stored secret) and
+	// rebuilds the server. Omitted = preserve.
+	openapi_config?: MCPOpenAPIConfig;
 	vk_configs?: MCPVKConfig[]; // When provided, replaces all VK assignments for this MCP client
 }
 

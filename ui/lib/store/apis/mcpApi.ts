@@ -7,6 +7,8 @@ import {
 	GetMCPLibraryResponse,
 	MCPLibraryEntry,
 	MCPLibraryFilterData,
+	MCPOpenAPIPreviewRequest,
+	MCPOpenAPIPreviewResponse,
 	OAuthFlowResponse,
 	OAuthStatusResponse,
 	UpdateMCPClientRequest,
@@ -150,8 +152,26 @@ export const mcpApi = baseApi.injectEndpoints({
 						dispatch(mcpApi.util.invalidateTags(["MCPClients"]));
 						break;
 					}
-				} catch { }
+				} catch {}
 			},
+		}),
+
+		// Parse an OpenAPI/Swagger document into the tools Bifrost would synthesize.
+		// Nothing is persisted, so no cache tags are involved.
+		previewOpenAPISpec: builder.mutation<MCPOpenAPIPreviewResponse, MCPOpenAPIPreviewRequest>({
+			query: (body) => ({
+				url: "/mcp/openapi/preview",
+				method: "POST",
+				body,
+			}),
+		}),
+
+		// The stored document of an openapi client (client reads omit it).
+		getMCPClientOpenAPISpec: builder.query<string, string>({
+			query: (id) => ({
+				url: `/mcp/client/${id}/openapi-spec`,
+				responseHandler: (response: Response) => response.text(),
+			}),
 		}),
 
 		// Update existing MCP client
@@ -164,6 +184,12 @@ export const mcpApi = baseApi.injectEndpoints({
 			async onQueryStarted({ id, data }, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;
+					// A replaced OpenAPI document changes the tool list, which the
+					// field-by-field patch below cannot reconstruct: refetch instead.
+					if (data.openapi_config !== undefined) {
+						dispatch(mcpApi.util.invalidateTags(["MCPClients"]));
+						return;
+					}
 					const queries = (getState() as any).api.queries;
 					for (const entry of Object.values(queries) as any[]) {
 						if (entry?.endpointName !== "getMCPClients" || entry?.status !== "fulfilled") continue;
@@ -199,7 +225,7 @@ export const mcpApi = baseApi.injectEndpoints({
 							}),
 						);
 					}
-				} catch { }
+				} catch {}
 			},
 		}),
 
@@ -227,7 +253,7 @@ export const mcpApi = baseApi.injectEndpoints({
 							}),
 						);
 					}
-				} catch { }
+				} catch {}
 			},
 		}),
 
@@ -349,6 +375,8 @@ export const {
 	useCreateMCPLibraryEntryMutation,
 	useDeleteMCPLibraryEntryMutation,
 	useCreateMCPClientMutation,
+	usePreviewOpenAPISpecMutation,
+	useLazyGetMCPClientOpenAPISpecQuery,
 	useUpdateMCPClientMutation,
 	useDeleteMCPClientMutation,
 	useReconnectMCPClientMutation,

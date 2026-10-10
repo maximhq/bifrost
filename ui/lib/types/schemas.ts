@@ -1389,6 +1389,38 @@ export const prometheusFormSchema = z
 		}
 	});
 
+const httpUrlOrEmpty = (message: string) =>
+	z
+		.string()
+		.optional()
+		.refine((v) => !v || /^https?:\/\/.+$/.test(v.trim()), message);
+
+// Credential for one OpenAPI securitySchemes entry (apiKey/bearer: value; basic: username + password).
+export const mcpOpenAPICredentialSchema = z.object({
+	value: _secretVarBase.optional(),
+	username: _secretVarBase.optional(),
+	password: _secretVarBase.optional(),
+});
+
+// openapi_config as sent on create/update. Exactly one spec source (inline text or URL).
+export const mcpOpenAPIConfigSchema = z
+	.object({
+		spec: z.string().optional(),
+		spec_url: httpUrlOrEmpty("Spec URL must start with http:// or https://"),
+		base_url: httpUrlOrEmpty("Base URL must start with http:// or https://"),
+		security_credentials: z.record(z.string(), mcpOpenAPICredentialSchema).optional(),
+		include_deprecated: z.boolean().optional(),
+		max_response_bytes: z.number().int().min(0).optional(),
+	})
+	.superRefine((v, ctx) => {
+		const hasSpec = !!v.spec?.trim();
+		const hasUrl = !!v.spec_url?.trim();
+		if (!hasSpec && !hasUrl) {
+			ctx.addIssue({ code: "custom", path: ["spec"], message: "Paste or upload a spec, or provide a spec URL" });
+		}
+	});
+export type MCPOpenAPIConfigSchema = z.infer<typeof mcpOpenAPIConfigSchema>;
+
 // MCP Client update schema
 export const mcpClientUpdateSchema = z
 	.object({
@@ -1397,6 +1429,8 @@ export const mcpClientUpdateSchema = z
 		needs_session_stickiness: z.boolean().optional(),
 		allow_by_default: z.boolean().optional(),
 		disabled: z.boolean().optional(),
+		// openapi clients only; undefined = leave the stored document alone.
+		openapi_config: mcpOpenAPIConfigSchema.optional(),
 		name: z
 			.string()
 			.min(1, "Name is required")
