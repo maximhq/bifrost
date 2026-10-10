@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sync/atomic"
 	"net/url"
 	"os"
 	"os/exec"
@@ -21,6 +20,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fasthttp/router"
@@ -1705,6 +1705,35 @@ func (h *SkillsServingHandler) resolveBaseURL(ctx *fasthttp.RequestCtx) string {
 	if host == "" {
 		host = string(ctx.Host())
 	}
+	if port := forwardedPort(ctx); port != "" && !hostHasPort(host) && !isDefaultForwardedPort(scheme, port) {
+		host = host + ":" + port
+	}
 
 	return scheme + "://" + host
+}
+
+func forwardedPort(ctx *fasthttp.RequestCtx) string {
+	raw := string(ctx.Request.Header.Peek("X-Forwarded-Port"))
+	if raw == "" {
+		return ""
+	}
+	return strings.TrimSpace(strings.Split(raw, ",")[0])
+}
+
+func hostHasPort(host string) bool {
+	if strings.HasPrefix(host, "[") {
+		return strings.Contains(host, "]:")
+	}
+	return strings.Contains(host, ":")
+}
+
+func isDefaultForwardedPort(scheme, port string) bool {
+	switch strings.ToLower(scheme) {
+	case "http", "ws":
+		return port == "80"
+	case "https", "wss":
+		return port == "443"
+	default:
+		return false
+	}
 }
