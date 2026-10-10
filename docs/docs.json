@@ -181,6 +181,7 @@
             "pages": [
               "mcp/overview",
               "mcp/connecting-to-servers",
+              "mcp/openapi-servers",
               "mcp/connections",
               "mcp/virtual-mcps",
               {
