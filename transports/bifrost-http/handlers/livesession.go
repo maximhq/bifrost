@@ -540,6 +540,13 @@ func (c *liveSessionController) fromUpstream(message []byte) bool {
 				c.endForRefusal(refusal)
 			}
 		}
+	case schemas.LiveEventError:
+		// A delegation the provider refuses to run never opens; the session goes on without it.
+		if bifrostErr := delegationError(message); bifrostErr != nil {
+			if refusal := c.meter.failBackend(bifrostErr); refusal != nil {
+				c.endForRefusal(refusal)
+			}
+		}
 	case schemas.LiveEventSessionClosed:
 		c.meter.setEnding(c.transcript.snapshot())
 		c.meter.finish(providerUtils.GetJSONField(message, "usage.seconds").Float())
@@ -547,6 +554,18 @@ func (c *liveSessionController) fromUpstream(message []byte) bool {
 		return true
 	}
 	return false
+}
+
+// delegationError reads an upstream error frame about the session's delegation; nil for any other.
+func delegationError(message []byte) *schemas.BifrostError {
+	if !strings.HasPrefix(providerUtils.GetJSONField(message, "error.param").Str, "session.delegation") {
+		return nil
+	}
+	code := providerUtils.GetJSONField(message, "error.code").Str
+	if code == "" {
+		code = "invalid_request_error"
+	}
+	return newRealtimeWireBifrostError(400, code, providerUtils.GetJSONField(message, "error.message").Str)
 }
 
 // appendTranscript records one transcript fragment with its place on the session timeline.
