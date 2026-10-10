@@ -239,3 +239,67 @@ func TestBilling_WebRTCSetupFailureKeepsInitializationCharge(t *testing.T) {
 	assert.Empty(t, row.Get("live_session.delegations").Array(), "no backend call ran during setup")
 	waitBudgetUsage(t, vk.BudgetID, 15*fakeVoiceCostPerSecond)
 }
+
+func TestBilling_BackendAliasAcknowledgmentKeepsSession(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	forEachTransport(t, func(t *testing.T, tr transport) {
+		for _, rejectDirect := range []bool{false, true} {
+			name := "alias only"
+			if rejectDirect {
+				name = "refused direct model"
+			}
+			t.Run(name, func(t *testing.T) {
+				budget := 1.0
+				vk := createVirtualKey(t, virtualKeySpec{budgetUSD: &budget, allowedModels: []string{voiceModel, "live-luna", "live-terra", "live-terra-other"}})
+				c, s := openFakeSession(t, tr, vk, "live-luna", nil)
+				assert.Equal(t, backendModel, s.StartBackend())
+				// A settings-only update acknowledges the full configuration, including the resolved model.
+				c.Send(`{"type":"session.update","session":{"instructions":"Keep the admitted alias."}}`)
+				assert.Equal(t, backendModel, c.WaitFor("session.updated").Get("session.delegation.responses.model").Str)
+				s.Play(delegation{ID: "item_luna", ResponseID: "resp_luna", Model: backendModel, Created: true, Input: 8, Output: 2, Items: []string{messageItem("msg_luna", "On luna.")}})
+				c.WaitFor("response.event")
+				c.WaitFor("response.event")
+
+				for i, alias := range []string{"live-terra", "live-terra-other"} {
+					c.Send(`{"type":"session.update","session":{"delegation":{"responses":{"model":"` + alias + `"}}}}`)
+					update := s.WaitInbound(t, "session.update", i+2)
+					assert.Equal(t, backendModel2, update.Get("session.delegation.responses.model").Str)
+					ack := c.WaitFor("session.updated")
+					assert.Equal(t, backendModel2, ack.Get("session.delegation.responses.model").Str)
+					// Repeated provider snapshots must not switch to a raw-name lane.
+					s.Emit(ack.Raw)
+					c.WaitFor("session.updated")
+				}
+				// Direct use of the underlying model remains forbidden despite its admitted alias.
+				if rejectDirect {
+					c.Send(`{"type":"session.update","session":{"delegation":{"responses":{"model":"` + backendModel2 + `"}}}}`)
+					assert.NotEmpty(t, errorMessage(c.WaitFor("error")))
+				}
+				s.Play(delegation{ID: "item_terra", ResponseID: "resp_terra", Model: backendModel2, Created: true, Input: 3, Output: 2, Items: []string{messageItem("msg_terra", "Still here.")}})
+				c.WaitFor("response.event")
+				c.WaitFor("response.event")
+				s.EmitUsage(20)
+				c.WaitFor("session.usage.updated")
+				c.CloseSession()
+
+				row := findLiveLog(t, s.ID())
+				if rejectDirect {
+					// Existing logging records the refused request, although the live session continues.
+					assert.Equal(t, "error", row.Get("status").Str)
+					assert.Contains(t, row.Get("error_details.error.message").Str, "Model '"+backendModel2+"' is not allowed")
+				} else {
+					assert.Equal(t, "success", row.Get("status").Str)
+				}
+				delegations := row.Get("live_session.delegations").Array()
+				require.Len(t, delegations, 2)
+				assert.Equal(t, backendModel, delegations[0].Get("model").Str)
+				assert.Equal(t, backendModel2, delegations[1].Get("model").Str)
+				assert.Equal(t, 15.0, row.Get("token_usage.total_tokens").Float())
+				backendCost := 11*fakeInputCostPerToken + 4*fakeOutputCostPerToken
+				assert.InDelta(t, backendCost, row.Get("live_session.backend_cost").Float(), 1e-9)
+				waitBudgetUsage(t, vk.BudgetID, 20*fakeVoiceCostPerSecond+backendCost)
+			})
+		}
+	})
+}

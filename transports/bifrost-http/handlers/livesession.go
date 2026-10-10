@@ -512,7 +512,7 @@ func (c *liveSessionController) fromUpstream(message []byte) bool {
 	case schemas.LiveEventSessionUpdated:
 		// A sideband can switch the backend too; the primary bills whatever the session now runs.
 		if model := providerUtils.GetJSONField(message, "session.delegation.responses.model").Str; model != "" {
-			if refusal := c.meter.switchBackend(model); refusal != nil {
+			if refusal := c.meter.confirmBackend(model); refusal != nil {
 				c.endForRefusal(refusal)
 			}
 		}

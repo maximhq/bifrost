@@ -163,3 +163,177 @@ func TestLiveAdmitSelectsAmongGovernanceAllowedKeys(t *testing.T) {
 		})
 	}
 }
+
+// aliasLiveRunner grants the caller aliases, not their provider model identifiers.
+type aliasLiveRunner struct {
+	inner   *fakeLiveRunner
+	allowed []string
+}
+
+func (r aliasLiveRunner) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*bifrost.RealtimeTurnHooks, *schemas.BifrostError) {
+	_, model, _ := req.GetRequestFields()
+	if !slices.Contains(r.allowed, model) {
+		return nil, newRealtimeWireBifrostError(403, "model_blocked", "model is not allowed")
+	}
+	return r.inner.RunRealtimeTurnPreHooks(ctx, req)
+}
+
+type aliasLiveIO struct{ messages [][]byte }
+
+func (io *aliasLiveIO) sendUpstream(message []byte) error {
+	io.messages = append(io.messages, message)
+	return nil
+}
+func (io *aliasLiveIO) sendClient(message []byte) error {
+	io.messages = append(io.messages, message)
+	return nil
+}
+func (*aliasLiveIO) abandonUpstream() {}
+
+func TestLiveSessionUpdatedRetainsAdmittedAlias(t *testing.T) {
+	t.Parallel()
+	for _, initial := range []string{"terra", "gpt-5.6-luna"} {
+		t.Run(initial, func(t *testing.T) {
+			runner := &fakeLiveRunner{}
+			meter := newTestLiveMeter(runner)
+			meter.runner = aliasLiveRunner{inner: runner, allowed: []string{"gpt-live-1", "gpt-5.6-luna", "terra", "terra-other"}}
+			require.Nil(t, meter.admit("gpt-live-1", initial))
+			key := schemas.Key{ID: "key-1", Aliases: schemas.KeyAliases{
+				"terra": {ModelID: "gpt-5.6-terra"}, "terra-other": {ModelID: "gpt-5.6-terra"},
+				"forbidden-alias": {ModelID: "gpt-5.6-sol"},
+			}}
+			// The key is selected after the initial units have been admitted.
+			meter.setKey(key)
+			wire := &aliasLiveIO{}
+			controller := newTestLiveController(fakeLiveModels{allowed: true}, meter, wire)
+			controller.key = key
+			defer controller.markUpstreamDone()
+			defer meter.finish(0)
+			update := []byte(`{"type":"session.update","session":{"delegation":{"responses":{"model":"openai/terra"}}}}`)
+			checked, accepted := controller.fromClient(update)
+			require.True(t, accepted)
+			assert.Contains(t, string(checked), `"model":"gpt-5.6-terra"`)
+			opens, _, _ := runner.snapshot()
+			ack := []byte(`{"type":"session.updated","session":{"delegation":{"responses":{"model":"gpt-5.6-terra"}}}}`)
+			for i := 0; i < 2; i++ {
+				assert.False(t, controller.fromUpstream(ack))
+			}
+			after, _, _ := runner.snapshot()
+			require.Empty(t, wire.messages, "an acknowledged alias must not send an error or session.close")
+			assert.Len(t, after, len(opens), "acknowledgments do not open another billing lane")
+			assert.Equal(t, "terra", meter.activeBackend)
+
+			// Two admitted aliases can resolve to the same provider model. The active alias wins.
+			_, accepted = controller.fromClient([]byte(`{"type":"session.update","session":{"delegation":{"responses":{"model":"terra-other"}}}}`))
+			require.True(t, accepted)
+			controller.fromUpstream(ack)
+			assert.Equal(t, "terra-other", meter.activeBackend)
+			require.Empty(t, wire.messages)
+
+			// A refused update must not acquire an identity that later bypasses authorization.
+			_, accepted = controller.fromClient([]byte(`{"type":"session.update","session":{"delegation":{"responses":{"model":"forbidden-alias"}}}}`))
+			require.False(t, accepted)
+			require.Len(t, wire.messages, 1)
+			wire.messages = nil
+			controller.fromUpstream(ack)
+			assert.Equal(t, "terra-other", meter.activeBackend)
+			require.Empty(t, wire.messages)
+			controller.fromUpstream([]byte(`{"type":"session.updated","session":{"delegation":{"responses":{"model":"gpt-5.6-sol"}}}}`))
+			assert.Equal(t, "terra-other", meter.activeBackend)
+			require.Len(t, wire.messages, 2, "an unknown sideband model still triggers authorization and refusal")
+			assert.Contains(t, string(wire.messages[0]), "model is not allowed")
+			assert.Equal(t, `{"type":"session.close"}`, string(wire.messages[1]))
+		})
+	}
+}
+
+func TestLiveMeterAliasResponsesKeepTheirBillingLane(t *testing.T) {
+	t.Parallel()
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	meter.runner = aliasLiveRunner{inner: runner, allowed: []string{"gpt-live-1", "luna", "terra"}}
+	require.Nil(t, meter.admit("gpt-live-1", "luna"))
+	meter.setKey(schemas.Key{ID: "key-1", Aliases: schemas.KeyAliases{
+		"luna": {ModelID: "gpt-5.6-luna"}, "terra": {ModelID: "gpt-5.6-terra"},
+	}})
+	require.Nil(t, meter.switchBackend("terra"))
+	// An older response can finish after a backend switch, including a dated provider name.
+	require.Nil(t, meter.onBackendResponse(&schemas.BifrostResponsesResponse{
+		ID: new("resp_luna"), Model: "gpt-5.6-luna-2026-10-01",
+		Usage: &schemas.ResponsesResponseUsage{InputTokens: 8, OutputTokens: 2, TotalTokens: 10},
+	}, "item_luna", 0))
+	_, posts, _ := runner.snapshot()
+	require.Len(t, posts, 1)
+	assert.Equal(t, "luna", posts[0].model, "the old response must not be billed to the new active alias")
+	assert.Equal(t, "gpt-5.6-luna", posts[0].resp.Model)
+	_, _, requested, resolved := bifrost.GetResponseFields(&schemas.BifrostResponse{ResponsesResponse: posts[0].resp}, nil)
+	assert.Equal(t, "luna", requested)
+	assert.Equal(t, "gpt-5.6-luna", resolved)
+	assert.Equal(t, 10, posts[0].resp.Usage.TotalTokens)
+	assert.Equal(t, "terra", meter.activeBackend)
+	meter.finish(0)
+	opens, _, cleanups := runner.snapshot()
+	assert.Equal(t, len(opens), cleanups)
+}
+
+type liveAliasMetadataPlugin struct {
+	allowedKeysPlugin
+	seen [2]string
+}
+
+func (p *liveAliasMetadataPlugin) PostLLMHook(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	_, _, requested, resolved := bifrost.GetResponseFields(result, err)
+	p.seen = [2]string{requested, resolved}
+	return result, err, nil
+}
+
+func TestLiveAliasedPostHooksPreserveModelIdentity(t *testing.T) {
+	plugin := &liveAliasMetadataPlugin{allowedKeysPlugin: allowedKeysPlugin{ids: []string{"every-model"}}}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: splitKeysAccount{}, LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger: bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	for _, requestType := range []schemas.RequestType{schemas.LiveRequest, schemas.RealtimeRequest} {
+		t.Run(string(requestType), func(t *testing.T) {
+			for _, failed := range []bool{false, true} {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: "terra", Config: &schemas.AliasConfig{ModelID: "gpt-5.6-terra"}})
+				hooks, bifrostErr := client.RunRealtimeTurnPreHooks(ctx, &schemas.BifrostRequest{
+					RequestType: requestType, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "terra"},
+				})
+				require.Nil(t, bifrostErr)
+				defer hooks.Cleanup()
+				result := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Model: "gpt-5.6-terra"}}
+				var unitErr *schemas.BifrostError
+				if failed {
+					result = nil
+					unitErr = newRealtimeWireBifrostError(502, "server_error", "backend failed")
+				}
+				result, unitErr = hooks.PostHookRunner(ctx, result, unitErr)
+				resolved := "terra"
+				if requestType == schemas.LiveRequest {
+					resolved = "gpt-5.6-terra"
+				}
+				assert.Equal(t, [2]string{"terra", resolved}, plugin.seen, "post-hooks receive both identities; Realtime keeps its existing behavior")
+				_, _, requested, actual := bifrost.GetResponseFields(result, unitErr)
+				assert.Equal(t, "terra", requested)
+				assert.Equal(t, resolved, actual)
+			}
+		})
+	}
+}
+
+func TestLiveMeterAliasResponsePrefersExactModelOverSnapshot(t *testing.T) {
+	t.Parallel()
+	meter := newTestLiveMeter(&fakeLiveRunner{})
+	require.Nil(t, meter.admit("gpt-live-1", "mini"))
+	meter.setKey(schemas.Key{Aliases: schemas.KeyAliases{
+		"terra": {ModelID: "gpt-5.6-terra"}, "mini": {ModelID: "gpt-5.6-terra-mini"},
+	}})
+	require.Nil(t, meter.switchBackend("terra"))
+	defer meter.finish(0)
+	assert.Equal(t, "mini", meter.backendLaneForLocked("gpt-5.6-terra-mini").model,
+		"an exact admitted model must win over another model's snapshot prefix")
+}
