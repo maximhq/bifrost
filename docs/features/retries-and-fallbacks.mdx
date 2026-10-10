@@ -282,6 +282,8 @@ Fallbacks provide automatic failover to a different provider when the primary fa
 4. **First success wins**: Returns the response from the first provider that succeeds
 5. **All fail**: Returns the original error from the primary provider. Exception: if a plugin on a fallback provider sets `AllowFallbacks = false` on the error (e.g. a security or compliance plugin that should halt the chain regardless of remaining fallbacks), Bifrost stops immediately and returns that fallback's error rather than continuing to the next provider or returning the primary error.
 
+**Requests the provider refuses as malformed:** if the primary answers `400` or `422` with an error body and the failure is classed `caller_fault`, Bifrost returns that error to the caller without trying fallbacks, since the same request would be refused by every provider. A `400` that is really about the key or the model (a bad API key, an empty credit balance, a retired model) is classed differently and still falls back. `409`, `413` and `415` also still fall back. SDK callers who want the previous behaviour can set the context key `schemas.BifrostContextKeyFallbackOnCallerFault` to `true` on the request.
+
 Each fallback is treated as a completely fresh request - all configured plugins (semantic caching, governance, logging) run again for the fallback provider.
 
 ### Implementation
