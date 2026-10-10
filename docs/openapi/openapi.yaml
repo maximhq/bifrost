@@ -1603,6 +1603,22 @@ components:
       $ref: "./schemas/inference/decisions.yaml#/DecisionQuestion"
     DecisionAnswer:
       $ref: "./schemas/inference/decisions.yaml#/DecisionAnswer"
+    DecisionInputMessage:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInputMessage"
+    DecisionInputPart:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInputPart"
+    DecisionInputText:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInputText"
+    DecisionInputImage:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInputImage"
+    DecisionMapFormRequest:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionMapFormRequest"
+    DecisionMapFormResponse:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionMapFormResponse"
+    DecisionMapQuestion:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionMapQuestion"
+    DecisionMapAnswer:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionMapAnswer"
 
     # ==================== Embeddings ====================
     EmbeddingRequest:

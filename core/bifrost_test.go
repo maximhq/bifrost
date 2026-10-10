@@ -4697,15 +4697,14 @@ func TestSDKFidelityDecisionRequestNullStateReachesProvider(t *testing.T) {
 	resp, bifrostErr := client.DecisionRequest(ctx, &schemas.BifrostDecisionRequest{
 		Provider: schemas.Typesafe,
 		Model:    "jev-1.13.0",
-		State:    nil,
-		Questions: map[string]schemas.DecisionQuestion{
-			"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+		Questions: []schemas.DecisionQuestion{
+			{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("q"), Instructions: schemas.NewDecisionText("Evaluate this state.")},
 		},
 	})
 	if bifrostErr != nil {
 		t.Fatalf("null state must reach the provider, got error: %v", bifrostErr)
 	}
-	if resp == nil || resp.Answers["q"].Value != 0.25 {
+	if resp == nil || len(resp.Answers) != 1 || resp.Answers[0].Probability == nil || *resp.Answers[0].Probability != 0.25 {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 	mu.Lock()

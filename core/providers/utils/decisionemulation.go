@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -14,24 +13,17 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-// scoreCriteriaLevels validates a score question's criteria and returns its
-// ordered levels. The shared decision contract requires an ordered array of
-// 2-10 level descriptions; missing, non-array, or out-of-range criteria are
-// rejected so an emulated score is never generated or accepted without a rubric.
-func scoreCriteriaLevels(criteria any) ([]any, error) {
-	var levels []any
-	switch typed := criteria.(type) {
-	case []any:
-		levels = typed
-	case []string:
-		for _, l := range typed {
-			levels = append(levels, l)
-		}
-	default:
-		return nil, fmt.Errorf("score criteria must be an ordered array of level descriptions")
+// scoreLevelDescriptions returns a score question's level descriptions, each
+// label folded in (see schemas.DecisionLevel.LabelledDescription). The shared
+// decision contract requires 2-10 levels; fewer or more are rejected so an
+// emulated score is never generated or accepted without a rubric.
+func scoreLevelDescriptions(question schemas.DecisionQuestion) ([]any, error) {
+	if len(question.Levels) < 2 || len(question.Levels) > 10 {
+		return nil, fmt.Errorf("score criteria must have 2-10 levels, got %d", len(question.Levels))
 	}
-	if len(levels) < 2 || len(levels) > 10 {
-		return nil, fmt.Errorf("score criteria must have 2-10 levels, got %d", len(levels))
+	levels := make([]any, len(question.Levels))
+	for i, level := range question.Levels {
+		levels[i] = DecisionLevelDescription(i, level)
 	}
 	return levels, nil
 }
@@ -94,8 +86,9 @@ func normalizeProbabilities(name string, probs map[string]float64, allowed map[s
 // Decision emulation lets any tool-capable chat model answer a decision request.
 // The question set is encoded as a single function tool whose flat result object
 // carries one property per question; the model fills value + confidence (and a
-// probability distribution for choice). ParseDecisionAnswers maps the tool-call
-// arguments back to the neutral DecisionAnswer shape, validating each value
+// probability distribution for choice). Each question is a property named by
+// schemas.DecisionQuestionNames. ParseDecisionAnswers maps the tool-call
+// arguments back to the normalized DecisionAnswer shape, validating each value
 // against its question kind the way the typesafe provider validates native
 // answers (core/providers/typesafe/decision.go).
 
@@ -156,11 +149,8 @@ func probabilitiesSchema(desc string, keys []string) map[string]interface{} {
 
 // instructionsText renders a question's instructions (string or structured) into
 // a description string for the schema.
-func instructionsText(instructions interface{}) string {
-	if instructions == nil {
-		return ""
-	}
-	return renderStructuredText(instructions)
+func instructionsText(instructions *schemas.DecisionText) string {
+	return renderStructuredText(instructions.Value())
 }
 
 // renderStructuredText renders a criteria or instructions value for prompt
@@ -179,50 +169,35 @@ func renderStructuredText(value any) string {
 	return ""
 }
 
-// choiceOptions extracts the ordered option keys from a choice question's
-// criteria (a map of option -> description). Sorted for deterministic schemas.
-// Descriptions may be strings, structured values (rendered as JSON), or null
-// (rendered empty), matching the criteria shapes the typesafe API accepts.
-func choiceOptions(criteria interface{}) ([]string, map[string]string, error) {
-	descs := map[string]string{}
-	switch typed := criteria.(type) {
-	case map[string]string:
-		for k, v := range typed {
-			descs[k] = v
-		}
-	case map[string]any:
-		for k, v := range typed {
-			descs[k] = renderStructuredText(v)
-		}
-	default:
-		return nil, nil, fmt.Errorf("choice criteria must be a map of options")
-	}
+// choiceOptions returns a choice question's option names, in the question's
+// choice order, and their descriptions. Descriptions may be strings,
+// structured values (rendered as JSON), or null (rendered empty); a boolean
+// choice is named "true" or "false".
+func choiceOptions(question schemas.DecisionQuestion) ([]string, map[string]string, error) {
 	// A choice with no options would emit enum: [] and make every answer
 	// unparseable; fail locally before any model is called.
-	if len(descs) == 0 {
+	if len(question.Choices) == 0 {
 		return nil, nil, fmt.Errorf("choice criteria requires at least one option")
 	}
-	opts := make([]string, 0, len(descs))
-	for k := range descs {
-		opts = append(opts, k)
+	opts := make([]string, 0, len(question.Choices))
+	descs := make(map[string]string, len(question.Choices))
+	for _, choice := range question.Choices {
+		opt, err := choice.Key()
+		if err != nil {
+			return nil, nil, err
+		}
+		if _, seen := descs[opt]; seen {
+			return nil, nil, fmt.Errorf("choice criteria repeats option %q", opt)
+		}
+		opts = append(opts, opt)
+		descs[opt] = renderStructuredText(choice.Description.Value())
 	}
-	sort.Strings(opts)
 	return opts, descs, nil
 }
 
-// scoreLevels renders a score question's ordered criteria into a description.
-func scoreLevels(criteria interface{}) string {
-	var levels []interface{}
-	switch typed := criteria.(type) {
-	case []interface{}:
-		levels = typed
-	case []string:
-		for _, l := range typed {
-			levels = append(levels, l)
-		}
-	default:
-		return ""
-	}
+// scoreLevels renders a score question's level descriptions into a
+// description.
+func scoreLevels(levels []any) string {
 	var out strings.Builder
 	out.WriteString("Score levels (index -> meaning): ")
 	for i, l := range levels {
@@ -237,19 +212,11 @@ func scoreLevels(criteria interface{}) string {
 // noulCriteriaText renders the optional true/false rubric descriptions for
 // the noul value description, skipping absent keys. Like the choice and score
 // rubrics, these are part of the question and must reach the model.
-func noulCriteriaText(criteria any) string {
-	var m map[string]any
-	switch typed := criteria.(type) {
-	case map[string]string:
-		m = make(map[string]any, len(typed))
-		for k, v := range typed {
-			m[k] = v
-		}
-	case map[string]any:
-		m = typed
-	default:
+func noulCriteriaText(criteria *schemas.DecisionCriteria) string {
+	if criteria == nil {
 		return ""
 	}
+	m := map[string]any{"true": criteria.True.Value(), "false": criteria.False.Value()}
 	var out strings.Builder
 	for _, key := range []string{"true", "false"} {
 		desc := renderStructuredText(m[key])
@@ -290,52 +257,35 @@ func choiceOptionsText(opts []string, descs map[string]string) string {
 	return out.String()
 }
 
-// scoreLegend builds the level index -> description legend from score criteria,
-// so the emulated answer carries the same legend a native provider would: each
-// level's description echoed verbatim (string, object, or array).
-func scoreLegend(criteria interface{}) map[string]any {
-	var levels []interface{}
-	switch typed := criteria.(type) {
-	case []interface{}:
-		levels = typed
-	case []string:
-		for _, l := range typed {
-			levels = append(levels, l)
-		}
-	default:
-		return nil
-	}
-	if len(levels) == 0 {
-		return nil
-	}
+// scoreLegend builds the level index -> description legend from a score
+// question's level descriptions, so the emulated answer carries the same legend
+// a native provider would: each level's description echoed verbatim (string,
+// object, or array).
+func scoreLegend(levels []any) map[string]any {
 	legend := make(map[string]any, len(levels))
 	for i, l := range levels {
-		legend[fmt.Sprintf("%d", i)] = l
+		legend[strconv.Itoa(i)] = l
 	}
 	return legend
 }
 
 // BuildDecisionSchema builds the tool parameters: an object with one nested
 // object property per question (value/choice + confidence, plus probabilities
-// for choice). Property names are the question identifiers.
-func BuildDecisionSchema(questions map[string]schemas.DecisionQuestion) (*schemas.ToolFunctionParameters, error) {
+// for choice and score), in question order. Property names are the
+// questions' names (see schemas.DecisionQuestionNames).
+func BuildDecisionSchema(questions []schemas.DecisionQuestion, names []string) (*schemas.ToolFunctionParameters, error) {
 	if len(questions) == 0 {
 		return nil, fmt.Errorf("decision emulation requires at least one question")
 	}
-	names := make([]string, 0, len(questions))
-	for name := range questions {
-		names = append(names, name)
-	}
-	sort.Strings(names)
 
-	props := schemas.NewOrderedMapWithCapacity(len(names))
+	props := schemas.NewOrderedMapWithCapacity(len(questions))
 	zero, one := 0.0, 1.0
-	for _, name := range names {
-		q := questions[name]
+	for i, q := range questions {
+		name := names[i]
 		desc := instructionsText(q.Instructions)
 		var nested map[string]interface{}
-		switch q.Kind {
-		case schemas.DecisionKindNoul:
+		switch q.Type {
+		case schemas.DecisionTypePredicate:
 			// The native noul answer is {type, noul} only - the value near 0.5
 			// is the uncertainty signal - so confidence is an optional extra
 			// the model may volunteer, never a required field.
@@ -348,8 +298,8 @@ func BuildDecisionSchema(questions map[string]schemas.DecisionQuestion) (*schema
 				"required":             []string{"value"},
 				"additionalProperties": false,
 			}
-		case schemas.DecisionKindChoice:
-			opts, descs, err := choiceOptions(q.Criteria)
+		case schemas.DecisionTypeChoice:
+			opts, descs, err := choiceOptions(q)
 			if err != nil {
 				return nil, fmt.Errorf("question %q: %w", name, err)
 			}
@@ -363,29 +313,29 @@ func BuildDecisionSchema(questions map[string]schemas.DecisionQuestion) (*schema
 				"required":             []string{"choice", "confidence", "probabilities"},
 				"additionalProperties": false,
 			}
-		case schemas.DecisionKindScore:
-			scoreLevelsList, err := scoreCriteriaLevels(q.Criteria)
+		case schemas.DecisionTypeScore:
+			levels, err := scoreLevelDescriptions(q)
 			if err != nil {
 				return nil, fmt.Errorf("question %q: %w", name, err)
 			}
 			// The score is the probability-weighted average of the level
 			// indexes, so it is bounded by the first and last index.
-			maxLevel := float64(len(scoreLevelsList) - 1)
+			maxLevel := float64(len(levels) - 1)
 			nested = map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"value":      numberSchema(desc+" "+scoreLevels(q.Criteria), &zero, &maxLevel),
+					"value":      numberSchema(desc+" "+scoreLevels(levels), &zero, &maxLevel),
 					"confidence": confidenceSchema(),
 					"probabilities": probabilitiesSchema(
 						"Required. Probability for each level index (\"0\", \"1\", ...); values must sum to 1.",
-						scoreIndexKeys(len(scoreLevelsList)),
+						scoreIndexKeys(len(levels)),
 					),
 				},
 				"required":             []string{"value", "confidence", "probabilities"},
 				"additionalProperties": false,
 			}
 		default:
-			return nil, fmt.Errorf("question %q has unsupported kind %q", name, q.Kind)
+			return nil, fmt.Errorf("question %q has unsupported type %q", name, q.Type)
 		}
 		props.Set(name, nested)
 	}
@@ -405,8 +355,8 @@ const DecisionToolDescription = "Emit the decision for every question. Fill each
 // (the richest interface every provider implements - natively on openai/anthropic/
 // gemini, via chat translation elsewhere), so the tool is expressed in the
 // Responses tool shape rather than the chat one.
-func BuildDecisionResponsesTool(questions map[string]schemas.DecisionQuestion) (*schemas.ResponsesTool, error) {
-	params, err := BuildDecisionSchema(questions)
+func BuildDecisionResponsesTool(questions []schemas.DecisionQuestion, names []string) (*schemas.ResponsesTool, error) {
+	params, err := BuildDecisionSchema(questions, names)
 	if err != nil {
 		return nil, err
 	}
@@ -449,7 +399,11 @@ const leakedParameterTagPrefix = `<parameter name="`
 // question, a repeated field, an unknown key, a string answer without the tag)
 // fails recovery. The result still goes through the full answer validation, so
 // recovery can only restore answers the model gave, never invent one.
-func recoverFlattenedDecisionArguments(argumentsJSON []byte, questions map[string]schemas.DecisionQuestion) (map[string]emulatedAnswer, bool) {
+func recoverFlattenedDecisionArguments(argumentsJSON []byte, names []string) (map[string]emulatedAnswer, bool) {
+	questions := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		questions[name] = struct{}{}
+	}
 	dec := json.NewDecoder(bytes.NewReader(argumentsJSON))
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
 		return nil, false
@@ -556,22 +510,24 @@ func parseLeakedParameterTag(value json.RawMessage) (string, json.RawMessage, bo
 }
 
 // ParseDecisionAnswers decodes the tool-call arguments and validates each answer
-// against its question kind, producing the neutral DecisionAnswer map. Every
-// requested question must be answered; a missing, wrong-typed, or out-of-range
-// answer is an error so the request falls through to the next fallback rather
-// than returning a fabricated result.
-func ParseDecisionAnswers(argumentsJSON []byte, questions map[string]schemas.DecisionQuestion) (map[string]schemas.DecisionAnswer, error) {
+// against its question type, producing normalized answers in question order;
+// names are the questions' property names. Every requested question must be
+// answered; a missing, wrong-typed, or out-of-range answer is an error so the
+// request falls through to the next fallback rather than returning a
+// fabricated result.
+func ParseDecisionAnswers(argumentsJSON []byte, questions []schemas.DecisionQuestion, names []string) ([]schemas.DecisionAnswer, error) {
 	var raw map[string]emulatedAnswer
 	if err := sonic.Unmarshal(argumentsJSON, &raw); err != nil {
-		recovered, ok := recoverFlattenedDecisionArguments(argumentsJSON, questions)
+		recovered, ok := recoverFlattenedDecisionArguments(argumentsJSON, names)
 		if !ok {
 			return nil, fmt.Errorf("decision tool-call arguments are not a JSON object: %w", err)
 		}
 		raw = recovered
 	}
 
-	answers := make(map[string]schemas.DecisionAnswer, len(questions))
-	for name, q := range questions {
+	answers := make([]schemas.DecisionAnswer, 0, len(questions))
+	for i, q := range questions {
+		name := names[i]
 		got, ok := raw[name]
 		if !ok {
 			return nil, fmt.Errorf("model returned no answer for question %q", name)
@@ -579,14 +535,14 @@ func ParseDecisionAnswers(argumentsJSON []byte, questions map[string]schemas.Dec
 		// Confidence is required on choice and score answers; a noul answer
 		// carries none natively, so there it is validated only when the model
 		// volunteers one.
-		if q.Kind != schemas.DecisionKindNoul || got.Confidence != nil {
+		if q.Type != schemas.DecisionTypePredicate || got.Confidence != nil {
 			if err := validateConfidence(name, got.Confidence); err != nil {
 				return nil, err
 			}
 		}
-		answer := schemas.DecisionAnswer{Kind: q.Kind, Confidence: got.Confidence}
-		switch q.Kind {
-		case schemas.DecisionKindNoul:
+		answer := schemas.DecisionAnswer{Type: q.Type, Name: q.Name, Confidence: got.Confidence}
+		switch q.Type {
+		case schemas.DecisionTypePredicate:
 			f, ok := toFloat(got.Value)
 			if !ok {
 				return nil, fmt.Errorf("noul answer for %q is not a number", name)
@@ -594,12 +550,12 @@ func ParseDecisionAnswers(argumentsJSON []byte, questions map[string]schemas.Dec
 			if f < 0 || f > 1 {
 				return nil, fmt.Errorf("noul answer for %q is outside [0,1]: %v", name, f)
 			}
-			answer.Value = f
-		case schemas.DecisionKindChoice:
+			answer.Probability = &f
+		case schemas.DecisionTypeChoice:
 			if got.Choice == nil {
 				return nil, fmt.Errorf("choice answer for %q carries no choice", name)
 			}
-			opts, _, err := choiceOptions(q.Criteria)
+			opts, _, err := choiceOptions(q)
 			if err != nil {
 				return nil, fmt.Errorf("question %q: %w", name, err)
 			}
@@ -624,10 +580,11 @@ func ParseDecisionAnswers(argumentsJSON []byte, questions map[string]schemas.Dec
 					return nil, fmt.Errorf("choice answer %q for %q does not have the highest probability (option %q is higher)", *got.Choice, name, option)
 				}
 			}
-			answer.Value = *got.Choice
-			answer.Probabilities = probabilities
-		case schemas.DecisionKindScore:
-			levels, err := scoreCriteriaLevels(q.Criteria)
+			choice := DecisionChoiceForKey(q, *got.Choice)
+			answer.Choice = &choice
+			answer.Probabilities = DecisionProbabilitiesFromKeys(q, probabilities)
+		case schemas.DecisionTypeScore:
+			levels, err := scoreLevelDescriptions(q)
 			if err != nil {
 				return nil, fmt.Errorf("score question %q: %w", name, err)
 			}
@@ -639,10 +596,9 @@ func ParseDecisionAnswers(argumentsJSON []byte, questions map[string]schemas.Dec
 			if len(got.Probabilities) == 0 {
 				return nil, fmt.Errorf("score answer for %q is missing probabilities", name)
 			}
-			legend := scoreLegend(q.Criteria)
 			allowed := make(map[string]bool, len(levels))
-			for i := range levels {
-				allowed[fmt.Sprintf("%d", i)] = true
+			for _, key := range scoreIndexKeys(len(levels)) {
+				allowed[key] = true
 			}
 			probabilities, err := normalizeProbabilities(name, got.Probabilities, allowed)
 			if err != nil {
@@ -659,13 +615,13 @@ func ParseDecisionAnswers(argumentsJSON []byte, questions map[string]schemas.Dec
 				index, _ := strconv.Atoi(key) // keys already validated against the "0".."n-1" set
 				derived += float64(index) * p
 			}
-			answer.Value = derived
-			answer.Legend = legend
-			answer.Probabilities = probabilities
+			answer.Score = &derived
+			answer.Legend = scoreLegend(levels)
+			answer.Probabilities = DecisionProbabilitiesFromKeys(q, probabilities)
 		default:
-			return nil, fmt.Errorf("question %q has unsupported kind %q", name, q.Kind)
+			return nil, fmt.Errorf("question %q has unsupported type %q", name, q.Type)
 		}
-		answers[name] = answer
+		answers = append(answers, answer)
 	}
 	return answers, nil
 }
