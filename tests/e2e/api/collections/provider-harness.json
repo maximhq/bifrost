@@ -221669,6 +221669,135 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "185. Streamed Responses events keep their extra_fields on the OpenAI drop-in route (responses-stream-extra-fields)",
+      "description": "Core stamps request_type, provider and routing_info on every streamed Responses event, and the native /v1/responses route writes the chunk as-is. The OpenAI drop-in /openai/v1/responses route re-renders each event through BifrostResponsesStreamResponse.WithDefaults(), which copied every event field except ExtraFields, so every event went out with a zero-valued extra_fields ({\"request_type\":\"\",\"routing_info\":{},\"latency\":0,\"chunk_index\":0}) while the non-streaming WithDefaults kept it. The drop-in case asserts every event carries request_type and routing_info.provider (red before the fix); the native case pins the same invariant on the route that already worked. A non-OpenAI provider is used because the harness profile enables send_back_raw_response, which makes the OpenAI provider's events bypass WithDefaults as raw frames.",
+      "item": [
+        {
+          "name": "Anthropic /openai/v1/responses stream - extra_fields populated on every event (claude-haiku-4-5)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"input\": \"Reply with the single word ok\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('drop-in stream extra_fields: request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var text = pm.response.text();",
+                  "var events = [];",
+                  "var badFrames = [];",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(payload)); } catch (e) { badFrames.push(payload); }",
+                  "});",
+                  "pm.test('drop-in stream extra_fields: every data frame is valid JSON', function () {",
+                  "  pm.expect(badFrames, 'unparseable frames: ' + badFrames.join(' | ').slice(0, 2000)).to.be.empty;",
+                  "});",
+                  "pm.test('drop-in stream extra_fields: stream reaches response.completed', function () {",
+                  "  var types = events.map(function (ev) { return ev.type; });",
+                  "  pm.expect(types, 'stream: ' + text.slice(0, 3000)).to.include('response.completed');",
+                  "});",
+                  "pm.test('drop-in stream extra_fields: every event carries populated extra_fields', function () {",
+                  "  events.forEach(function (ev) {",
+                  "    var ef = ev.extra_fields || {};",
+                  "    pm.expect(ef.request_type, ev.type + ': ' + JSON.stringify(ev)).to.equal('responses_stream');",
+                  "    pm.expect((ef.routing_info || {}).provider, ev.type + ': ' + JSON.stringify(ev)).to.equal('anthropic');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Anthropic /v1/responses stream - extra_fields populated on every event (claude-haiku-4-5)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"input\": \"Reply with the single word ok\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native stream extra_fields: request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var text = pm.response.text();",
+                  "var events = [];",
+                  "var badFrames = [];",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(payload)); } catch (e) { badFrames.push(payload); }",
+                  "});",
+                  "pm.test('native stream extra_fields: every data frame is valid JSON', function () {",
+                  "  pm.expect(badFrames, 'unparseable frames: ' + badFrames.join(' | ').slice(0, 2000)).to.be.empty;",
+                  "});",
+                  "pm.test('native stream extra_fields: stream reaches response.completed', function () {",
+                  "  var types = events.map(function (ev) { return ev.type; });",
+                  "  pm.expect(types, 'stream: ' + text.slice(0, 3000)).to.include('response.completed');",
+                  "});",
+                  "pm.test('native stream extra_fields: every event carries populated extra_fields', function () {",
+                  "  events.forEach(function (ev) {",
+                  "    var ef = ev.extra_fields || {};",
+                  "    pm.expect(ef.request_type, ev.type + ': ' + JSON.stringify(ev)).to.equal('responses_stream');",
+                  "    pm.expect((ef.routing_info || {}).provider, ev.type + ': ' + JSON.stringify(ev)).to.equal('anthropic');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
     }
   ]
 }
