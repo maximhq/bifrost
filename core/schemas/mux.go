@@ -762,6 +762,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 	var currentToolCalls []ChatAssistantMessageToolCall
 	var pendingReasoning strings.Builder
 	var pendingReasoningDetails []ChatReasoningDetails
+	pastLeadingInstructions := false
 
 	// attachPendingReasoning carries the buffered reasoning onto the next assistant turn so multi-turn flows via the Responses→Chat fallback don't 400 on DeepSeek thinking mode.
 	attachPendingReasoning := func(msg *ChatAssistantMessage) {
@@ -858,6 +859,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 				ChatAssistantMessage: assistant,
 			})
 			currentToolCalls = nil // Reset for next batch
+			pastLeadingInstructions = true
 		}
 
 		// Convert regular message
@@ -1042,6 +1044,18 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 			cm.Content = &ChatMessageContent{ContentStr: Ptr("")}
 		}
 
+		// A system or developer message after the conversation has started is a
+		// mid-conversation instruction. Chat templates such as Qwen's reject a
+		// system message that is not in the leading run, so it becomes a user
+		// turn wrapped in <system-reminder>, matching the Bedrock provider.
+		if pastLeadingInstructions && (cm.Role == ChatMessageRoleSystem || cm.Role == ChatMessageRoleDeveloper) {
+			cm.Role = ChatMessageRoleUser
+			inlineSystemReminder(&cm)
+		}
+		if cm.Role != ChatMessageRoleSystem && cm.Role != ChatMessageRoleDeveloper {
+			pastLeadingInstructions = true
+		}
+
 		chatMessages = append(chatMessages, cm)
 	}
 
@@ -1060,6 +1074,32 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 	}
 
 	return chatMessages
+}
+
+func inlineSystemReminder(cm *ChatMessage) {
+	if cm == nil || cm.Content == nil {
+		return
+	}
+	if cm.Content.ContentStr != nil {
+		wrapped := systemReminderText(*cm.Content.ContentStr)
+		cm.Content.ContentStr = &wrapped
+		return
+	}
+	for i := range cm.Content.ContentBlocks {
+		block := &cm.Content.ContentBlocks[i]
+		if block.Text == nil || (block.Type != ChatContentBlockTypeText && block.Type != "") {
+			continue
+		}
+		wrapped := systemReminderText(*block.Text)
+		block.Text = &wrapped
+	}
+}
+
+func systemReminderText(text string) string {
+	if strings.HasPrefix(strings.TrimSpace(text), "<system-reminder>") {
+		return text
+	}
+	return "<system-reminder>\n" + text + "\n</system-reminder>\n"
 }
 
 func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
