@@ -559,6 +559,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_agent_push_config_tenant_column"}, run: migrationAddAgentPushConfigTenantColumn},
 	{IDs: []string{"add_ignore_provider_cost_column"}, run: migrationAddIgnoreProviderCostColumn},
 	{IDs: []string{"add_100k_token_pricing_columns"}, run: migrationAdd100kTokenPricingColumns},
+	{IDs: []string{"add_injected_tools_json_column"}, run: migrationAddInjectedToolsJSONColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -7807,6 +7808,29 @@ func migrationAddPromptCacheJSONColumn(ctx context.Context, db *gorm.DB, logger 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running add_prompt_cache_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddInjectedToolsJSONColumn adds the injected_tools_json column to the
+// provider table, backing ProviderConfig.InjectedTools.
+func migrationAddInjectedToolsJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_injected_tools_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "InjectedToolsJSON")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableProvider{}, "injected_tools_json")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
 }
