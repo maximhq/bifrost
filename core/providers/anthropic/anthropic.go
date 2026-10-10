@@ -303,7 +303,9 @@ func completeRequest(
 
 	// Handle error response — materialize stream body for error parsing
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(readErr, latency)
+		}
 		logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(ParseAnthropicError(resp), latency)
 	}

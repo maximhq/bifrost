@@ -220876,6 +220876,193 @@
           ]
         }
       ]
+    },
+    {
+      "name": "195. Stream body lifecycle (stream-body-lifecycle)",
+      "description": "Response headers do not end socket ownership. The local provider-error-fixture at :8791 holds an error body, a gzip header, or the HTTP body after an in-band SSE error open for five seconds. With a one-second stream idle timeout, every gateway response must finish before that fixture fallback: 504 for error materialization, the existing 500 stream-read error for gzip initialization, and a 200 SSE response preserving the in-band upstream error for cleanup drain. Each case creates and deletes its own unique keyless custom OpenAI provider; no paid provider is called. Start node tests/e2e/api/runners/provider-error-fixture.mjs before running FEATURE=stream-body-lifecycle. Mid-read cancellation, explicit deadlines, first-token aborts and connection reuse are covered by the local Go regression tests.",
+      "item": [
+        {
+          "name": "openai/body-lifecycle-error stream-body-lifecycle error body idle timeout [EXPECT-504]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A unique, keyless custom OpenAI provider routes only this case to the local fixture.",
+                  "var provider = 'harness-body-lifecycle-' + Date.now() + '-' + Math.floor(Math.random() * 1000000);",
+                  "pm.variables.set('bodyLifecycleProvider', provider);",
+                  "pm.variables.set('bodyLifecycleModel', provider + '/body-lifecycle-error');",
+                  "var config = { provider: provider, custom_provider_config: { base_provider_type: 'openai', is_key_less: true }, network_config: { base_url: 'http://127.0.0.1:8791', max_retries: 0, default_request_timeout_in_seconds: 2, stream_idle_timeout_in_seconds: 1 } };",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/providers', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify(config) } }, function (err, res) {",
+                  "  pm.test('fixture provider created', function () { pm.expect(err, String(err)).to.eql(null); pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200); });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('exact gateway status', function () { pm.expect(pm.response.code, body).to.eql(504); });",
+                  "pm.test('response completes under the body idle budget', function () { pm.expect(pm.response.responseTime, body).to.be.below(4000); });",
+                  "pm.test('expected body outcome', function () { pm.expect(body, body).to.include('request timed out'); });",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/providers/' + encodeURIComponent(pm.variables.get('bodyLifecycleProvider')), method: 'DELETE' }, function (err, res) {",
+                  "  pm.test('fixture provider removed', function () { pm.expect(err, String(err)).to.eql(null); pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{bodyLifecycleModel}}\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/body-lifecycle-gzip stream-body-lifecycle gzip header idle timeout [EXPECT-500]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A unique, keyless custom OpenAI provider routes only this case to the local fixture.",
+                  "var provider = 'harness-body-lifecycle-' + Date.now() + '-' + Math.floor(Math.random() * 1000000);",
+                  "pm.variables.set('bodyLifecycleProvider', provider);",
+                  "pm.variables.set('bodyLifecycleModel', provider + '/body-lifecycle-gzip');",
+                  "var config = { provider: provider, custom_provider_config: { base_provider_type: 'openai', is_key_less: true }, network_config: { base_url: 'http://127.0.0.1:8791', max_retries: 0, default_request_timeout_in_seconds: 2, stream_idle_timeout_in_seconds: 1 } };",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/providers', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify(config) } }, function (err, res) {",
+                  "  pm.test('fixture provider created', function () { pm.expect(err, String(err)).to.eql(null); pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200); });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('exact gateway status', function () { pm.expect(pm.response.code, body).to.eql(500); });",
+                  "pm.test('response completes under the body idle budget', function () { pm.expect(pm.response.responseTime, body).to.be.below(4000); });",
+                  "pm.test('expected body outcome', function () { pm.expect(body, body).to.include('stream idle timeout'); });",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/providers/' + encodeURIComponent(pm.variables.get('bodyLifecycleProvider')), method: 'DELETE' }, function (err, res) {",
+                  "  pm.test('fixture provider removed', function () { pm.expect(err, String(err)).to.eql(null); pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{bodyLifecycleModel}}\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/body-lifecycle-drain stream-body-lifecycle cleanup drain idle timeout [EXPECT-200]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A unique, keyless custom OpenAI provider routes only this case to the local fixture.",
+                  "var provider = 'harness-body-lifecycle-' + Date.now() + '-' + Math.floor(Math.random() * 1000000);",
+                  "pm.variables.set('bodyLifecycleProvider', provider);",
+                  "pm.variables.set('bodyLifecycleModel', provider + '/body-lifecycle-drain');",
+                  "var config = { provider: provider, custom_provider_config: { base_provider_type: 'openai', is_key_less: true }, network_config: { base_url: 'http://127.0.0.1:8791', max_retries: 0, default_request_timeout_in_seconds: 2, stream_idle_timeout_in_seconds: 1 } };",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/providers', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify(config) } }, function (err, res) {",
+                  "  pm.test('fixture provider created', function () { pm.expect(err, String(err)).to.eql(null); pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200); });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('exact gateway status', function () { pm.expect(pm.response.code, body).to.eql(200); });",
+                  "pm.test('response completes under the body idle budget', function () { pm.expect(pm.response.responseTime, body).to.be.below(4000); });",
+                  "pm.test('expected body outcome', function () { pm.expect(body, body).to.include('hello'); });",
+                  "pm.test('cleanup preserves the upstream SSE error', function () { pm.expect(body, body).to.include('fixture cleanup error'); pm.expect(body, body).to.not.include('stream idle timeout'); });",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/providers/' + encodeURIComponent(pm.variables.get('bodyLifecycleProvider')), method: 'DELETE' }, function (err, res) {",
+                  "  pm.test('fixture provider removed', function () { pm.expect(err, String(err)).to.eql(null); pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{bodyLifecycleModel}}\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hello\" }],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

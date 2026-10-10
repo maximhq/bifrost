@@ -1055,3 +1055,405 @@ func TestDoHTTPRequest_DisarmedDeadlineKeepsBody(t *testing.T) {
 		t.Fatalf("body = %q err = %v, want the full body after disarm", body, err)
 	}
 }
+
+// A peer sends headers and then leaves the response body unfinished. Every
+// read path, including deferred cleanup, must retain cancellation and idle protection.
+func TestContextTransport_StreamBodyLifecycle(t *testing.T) {
+	for _, path := range []string{"raw_body", "error_body_default", "error_materialization", "gzip_initialization", "stream_cleanup", "large_reader_close"} {
+		for _, trigger := range []string{"cancel", "deadline", "idle", "first_token"} {
+			t.Run(path+"/"+trigger, func(t *testing.T) {
+				releasePeer := make(chan struct{})
+				var releaseOnce sync.Once
+				release := func() { releaseOnce.Do(func() { close(releasePeer) }) }
+				const prefix = "data: [DONE]\n\n"
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Length", "1024")
+					if path == "gzip_initialization" {
+						w.Header().Set("Content-Encoding", "gzip")
+					}
+					if path == "error_body_default" || path == "error_materialization" {
+						w.WriteHeader(http.StatusBadRequest)
+					} else {
+						w.WriteHeader(http.StatusOK)
+					}
+					if path == "stream_cleanup" || path == "large_reader_close" {
+						_, _ = io.WriteString(w, prefix)
+					}
+					w.(http.Flusher).Flush()
+					<-releasePeer
+				}))
+				defer srv.Close()
+				defer release()
+				parent, cancel := context.WithCancel(context.Background())
+				if trigger == "deadline" {
+					cancel()
+					parent, cancel = context.WithTimeout(context.Background(), 150*time.Millisecond)
+				}
+				defer cancel()
+				ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+				idleTimeout := 100 * time.Millisecond
+				if trigger == "deadline" {
+					idleTimeout = time.Second // deadline must win independently of idle
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, idleTimeout)
+				var abort *AttemptAbort
+				if trigger == "first_token" {
+					abort = NewAttemptAbort(time.Hour)
+					defer abort.Disarm()
+					ctx.SetValue(schemas.BifrostContextKeyStreamAttemptAbort, abort)
+				}
+				if path == "error_materialization" {
+					ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(1))
+				}
+				client := BuildStreamingClient(&fasthttp.Client{ReadTimeout: 100 * time.Millisecond, WriteTimeout: 100 * time.Millisecond})
+				defer client.CloseIdleConnections()
+				req, resp := fasthttp.AcquireRequest(), fasthttp.AcquireResponse()
+				defer fasthttp.ReleaseRequest(req)
+				req.SetRequestURI(srv.URL)
+				resp.StreamBody = true
+				if err := DoStreamingRequest(ctx, client, req, resp); err != nil {
+					fasthttp.ReleaseResponse(resp)
+					t.Fatalf("header setup: %v", err)
+				}
+				var large *LargeResponseReader
+				if path == "stream_cleanup" {
+					reader, stopIdle := NewIdleTimeoutReader(resp.BodyStream(), resp.BodyStream(), GetStreamIdleTimeout(ctx), ctx)
+					stopCancel := SetupStreamCancellation(ctx, resp.BodyStream(), nil)
+					buf := make([]byte, len(prefix))
+					if _, err := io.ReadFull(reader, buf); err != nil {
+						t.Fatalf("prefix: %v", err)
+					}
+					stopCancel()
+					stopIdle()
+				} else if path == "large_reader_close" {
+					large = WrapStreamingResponseBody(ctx, resp)
+					buf := make([]byte, len(prefix))
+					if _, err := io.ReadFull(large, buf); err != nil {
+						t.Fatalf("prefix: %v", err)
+					}
+				}
+				done := make(chan struct{})
+				started := make(chan struct{})
+				go func() {
+					defer close(done)
+					close(started)
+					switch path {
+					case "raw_body":
+						var buf [1]byte
+						_, _ = resp.BodyStream().Read(buf[:])
+					case "error_body_default":
+						MaterializeStreamErrorBody(ctx, resp)
+						_ = resp.Body() // HandleProviderAPIError reads via this API.
+					case "error_materialization":
+						MaterializeStreamErrorBody(ctx, resp)
+					case "gzip_initialization":
+						_, cleanup := DecompressStreamBody(resp)
+						cleanup()
+					case "stream_cleanup":
+						ReleaseStreamingResponse(ctx, resp)
+					case "large_reader_close":
+						_ = large.Close()
+					}
+				}()
+				<-started
+				if trigger == "cancel" {
+					time.Sleep(20 * time.Millisecond)
+					cancel()
+				} else if trigger == "deadline" {
+					<-ctx.Done()
+				} else if trigger == "first_token" {
+					time.Sleep(20 * time.Millisecond)
+					abort.Expire()
+				}
+				// Allow 350ms after cancellation/deadline/abort, or without
+				// cancellation for idle. The peer remains blocked throughout.
+				select {
+				case <-done:
+					t.Logf("body operation returned under %s protection", trigger)
+				case <-time.After(350 * time.Millisecond):
+					t.Errorf("body operation still blocked: trigger=%s ctx.Err=%v ReadTimeout=100ms idle=%s observation=350ms", trigger, ctx.Err(), GetStreamIdleTimeout(ctx))
+				}
+				// Release the peer so a failing test leaks neither a blocked
+				// worker nor a socket. This is teardown, not the tested behavior.
+				release()
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Fatal("peer release did not unblock operation")
+				}
+				if path != "stream_cleanup" && path != "large_reader_close" {
+					_ = resp.CloseBodyStream()
+					fasthttp.ReleaseResponse(resp)
+				}
+			})
+		}
+	}
+}
+
+// pendingDeadlineContext holds cancellation delivery pending after its deadline.
+// This fixes the interleaving where the socket deadline fires before the context
+// timer goroutine updates Err and closes Done, without relying on scheduler timing.
+type pendingDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c pendingDeadlineContext) Deadline() (time.Time, bool) { return c.deadline, true }
+
+func TestContextTransport_StreamBodyDeadlineBeforeContextCancellation(t *testing.T) {
+	for _, path := range []string{"raw_body", "error_materialization", "gzip_error_materialization"} {
+		t.Run(path, func(t *testing.T) {
+			baseCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer baseCtx.Cancel()
+			ctx := pendingDeadlineContext{Context: baseCtx, deadline: time.Now().Add(-time.Millisecond)}
+			conn, peer := net.Pipe()
+			defer peer.Close()
+			defer conn.Close()
+			watcher := startCancelWatcher(ctx, nil, conn)
+			defer watcher.stop()
+			body := &streamBody{
+				reader: &streamConn{Conn: conn, ctx: ctx, idleTimeout: time.Second, readingBody: true},
+				conn:   conn, ctx: ctx, watcher: watcher,
+				release: func(bool) { _ = conn.Close() },
+			}
+			resp := fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseResponse(resp)
+			resp.SetStatusCode(http.StatusBadRequest)
+			resp.SetBodyStream(body, 1024)
+			if path == "gzip_error_materialization" {
+				resp.Header.Set("Content-Encoding", "gzip")
+			}
+			if path == "raw_body" {
+				var buf [1]byte
+				_, err := resp.BodyStream().Read(buf[:])
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("body read error = %v, want context.DeadlineExceeded", err)
+				}
+			} else {
+				err := MaterializeStreamErrorBody(baseCtx, resp)
+				if err == nil || err.Error == nil {
+					t.Fatalf("materialization error = %+v, want a deadline error", err)
+				}
+				if !errors.Is(err.Error.Error, context.DeadlineExceeded) {
+					t.Errorf("materialization cause = %v, want context.DeadlineExceeded", err.Error.Error)
+				}
+				if status := err.EffectiveHTTPStatus(); status != http.StatusGatewayTimeout {
+					t.Errorf("materialization status = %d, want 504: %s", status, err.Error.Message)
+				}
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("cancellation was delivered before classification: %v", ctx.Err())
+			}
+		})
+	}
+}
+
+type failedMaterializationReader struct{ reads int }
+
+func (r *failedMaterializationReader) Read(p []byte) (int, error) {
+	r.reads++
+	if r.reads == 1 {
+		return copy(p, "partial"), io.ErrUnexpectedEOF
+	}
+	return copy(p, `{"error":{"message":"second read"}}`), io.EOF
+}
+func TestMaterializeStreamErrorBody_DoesNotRereadFailedBody(t *testing.T) {
+	for _, threshold := range []int64{0, 1} {
+		for _, encoding := range []string{"identity", "gzip"} {
+			t.Run(fmt.Sprintf("threshold_%d/%s", threshold, encoding), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				defer ctx.Cancel()
+				ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, threshold)
+				body := &failedMaterializationReader{}
+				resp := fasthttp.AcquireResponse()
+				defer fasthttp.ReleaseResponse(resp)
+				resp.SetStatusCode(http.StatusBadRequest)
+				resp.Header.Set("Content-Encoding", encoding)
+				resp.SetBodyStream(body, -1)
+				readErr := MaterializeStreamErrorBody(ctx, resp)
+				if readErr == nil || readErr.Error == nil || !errors.Is(readErr.Error.Error, io.ErrUnexpectedEOF) {
+					t.Fatalf("materialization lost the body read error: %+v", readErr)
+				}
+				before := body.reads
+				if before != 1 {
+					t.Fatalf("failed materialization read the body %d times, want 1", before)
+				}
+				var parsed schemas.BifrostError
+				result := HandleProviderAPIError(resp, &parsed)
+				if body.reads != before {
+					t.Errorf("error parser read body again after materialization failed: reads before=%d after=%d returned=%q", before, body.reads, result.Error.Message)
+				}
+			})
+		}
+	}
+}
+
+// Closing a fully consumed body must join its watcher before the connection is
+// reused, so a late cancellation cannot close another request's active socket.
+func TestContextTransport_StreamBodyLateCancelDoesNotPoisonPool(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	srv := newScriptedServer(t, func(conn net.Conn, br *bufio.Reader) {
+		if !readRequest(br) {
+			return
+		}
+		writeAll(t, conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+		if !readRequest(br) {
+			return
+		}
+		writeAll(t, conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n")
+		<-release
+		writeAll(t, conn, "ok")
+	})
+	client := BuildStreamingClient(srv.client(time.Second))
+	defer client.CloseIdleConnections()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, resp := fasthttp.AcquireRequest(), fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	req.SetRequestURI("http://scripted/first")
+	if err := DoStreamingRequest(ctx, client, req, resp); err != nil {
+		t.Fatal(err)
+	}
+	if string(resp.Body()) != "ok" {
+		t.Fatalf("first body = %q", resp.Body())
+	}
+	fasthttp.ReleaseResponse(resp)
+	req2, resp2 := fasthttp.AcquireRequest(), fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req2)
+	defer fasthttp.ReleaseResponse(resp2)
+	req2.SetRequestURI("http://scripted/second")
+	if err := DoStreamingRequest(context.Background(), client, req2, resp2); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		b, err := io.ReadAll(resp2.BodyStream())
+		if err == nil && string(b) != "ok" {
+			err = fmt.Errorf("second body = %q", b)
+		}
+		done <- err
+	}()
+	cancel()
+	select {
+	case err := <-done:
+		t.Fatalf("old cancellation interrupted the next request: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	unblock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second body did not finish")
+	}
+	if got := srv.accepted.Load(); got != 1 {
+		t.Fatalf("accepted %d connections, want one reused connection", got)
+	}
+}
+
+// Network progress renews the idle budget even when gzip initialization has
+// not returned to the caller yet. The whole body is allowed to exceed ReadTimeout.
+func TestContextTransport_GzipHeaderProgressRenewsIdleTimeout(t *testing.T) {
+	var compressed bytes.Buffer
+	gz := gzip.NewWriter(&compressed)
+	_, _ = gz.Write([]byte("hello"))
+	_ = gz.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Length", fmt.Sprint(compressed.Len()))
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		for _, b := range compressed.Bytes() {
+			if _, err := w.Write([]byte{b}); err != nil {
+				return
+			}
+			w.(http.Flusher).Flush()
+			time.Sleep(20 * time.Millisecond)
+		}
+	}))
+	defer srv.Close()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 100*time.Millisecond)
+	client := BuildStreamingClient(&fasthttp.Client{ReadTimeout: 100 * time.Millisecond})
+	defer client.CloseIdleConnections()
+	req, resp := fasthttp.AcquireRequest(), fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	req.SetRequestURI(srv.URL)
+	if err := DoStreamingRequest(ctx, client, req, resp); err != nil {
+		t.Fatal(err)
+	}
+	reader, cleanup := DecompressStreamBody(resp)
+	defer cleanup()
+	body, err := io.ReadAll(reader)
+	if err != nil || string(body) != "hello" {
+		t.Fatalf("body = %q, error = %v", body, err)
+	}
+}
+
+func TestContextTransport_StreamBodyReadErrorIsTerminal(t *testing.T) {
+	bodyReader := &failedMaterializationReader{}
+	body := &streamBody{reader: bodyReader}
+	var buf [10]byte
+	_, firstErr := body.Read(buf[:])
+	_, secondErr := body.Read(buf[:])
+	if firstErr != secondErr || firstErr == nil {
+		t.Fatalf("terminal error changed: first=%v second=%v", firstErr, secondErr)
+	}
+	if bodyReader.reads != 1 {
+		t.Fatalf("failed body read %d times, want 1", bodyReader.reads)
+	}
+}
+
+// Done == nil does not mean a context carries no stream protection: callers can
+// supply idle settings and an attempt abort through values on Background.
+func TestContextTransport_StreamContextWithoutDone(t *testing.T) {
+	for _, trigger := range []string{"idle", "first_token"} {
+		t.Run(trigger, func(t *testing.T) {
+			release := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Length", "1024")
+				w.WriteHeader(http.StatusOK)
+				w.(http.Flusher).Flush()
+				<-release
+			}))
+			t.Cleanup(func() { close(release); server.Close() })
+			ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyStreamIdleTimeout, 50*time.Millisecond)
+			var abort *AttemptAbort
+			wantErr := ErrStreamIdleTimeout
+			if trigger == "first_token" {
+				abort = NewAttemptAbort(time.Hour)
+				defer abort.Disarm()
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamAttemptAbort, abort)
+				wantErr = ErrStreamFirstTokenTimeout
+			}
+			client := BuildStreamingClient(&fasthttp.Client{ReadTimeout: time.Second})
+			defer client.CloseIdleConnections()
+			req, resp := fasthttp.AcquireRequest(), fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseRequest(req)
+			defer fasthttp.ReleaseResponse(resp)
+			req.SetRequestURI(server.URL)
+			if err := DoStreamingRequest(ctx, client, req, resp); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { var b [1]byte; _, err := resp.BodyStream().Read(b[:]); done <- err }()
+			if abort != nil {
+				abort.Expire()
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, wantErr) {
+					t.Fatalf("error = %v, want %v", err, wantErr)
+				}
+			case <-time.After(500 * time.Millisecond):
+				t.Fatal("context values did not reach the streaming transport")
+			}
+		})
+	}
+}

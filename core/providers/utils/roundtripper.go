@@ -30,10 +30,10 @@ import (
 //     to the request write and to the wait for response headers, tightened by the
 //     request context's deadline;
 //   - clear those deadlines the moment headers are parsed for a streamed body, so
-//     stream_idle_timeout_in_seconds (NewIdleTimeoutReader) is the only bound on the
-//     body, exactly as before;
-//   - close the socket when the request context is cancelled at any point before the
-//     body is handed over, so the blocked write or read returns immediately.
+//     body is governed by stream_idle_timeout_in_seconds and an explicit context
+//     deadline, including error reads, gzip initialization and cleanup drains;
+//   - close the socket when the request context is cancelled until the body closes,
+//     so every blocked write or read returns immediately.
 //
 // The request context reaches the transport through bindRequestContext, called by
 // DoStreamingRequest and MakeRequestWithContext around client.Do. fasthttp's Request
@@ -60,10 +60,10 @@ var requestContexts sync.Map // *fasthttp.Request -> context.Context
 
 // bindRequestContext associates ctx with req for the duration of a client.Do call
 // so contextTransport can honor its deadline and cancellation. The returned unbind
-// is idempotent and must run after client.Do has returned. A ctx that can never be
-// cancelled or expire binds nothing.
+// is idempotent and must run after client.Do has returned. Context values carry
+// body idle and first-token protection even when Done is nil.
 func bindRequestContext(req *fasthttp.Request, ctx context.Context) (unbind func()) {
-	if req == nil || ctx == nil || ctx.Done() == nil {
+	if req == nil || ctx == nil {
 		return func() {}
 	}
 	requestContexts.Store(req, ctx)
@@ -140,7 +140,12 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	}
 
 	watcher := startCancelWatcher(ctx, abort, conn)
-	defer watcher.stop()
+	streamOwnsConnection := false
+	defer func() {
+		if !streamOwnsConnection {
+			watcher.stop()
+		}
+	}()
 
 	if err = conn.SetWriteDeadline(deadlineFor(hc.WriteTimeout, ctx)); err != nil {
 		hc.CloseConn(cc)
@@ -181,7 +186,15 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 		resp.Header.DisableNormalizing()
 	}
 
-	br := hc.AcquireReader(conn)
+	// Install the socket reader before parsing headers so buffered body bytes
+	// survive the handoff. Idle deadlines start only after the final headers.
+	var bodyConn *streamConn
+	readerConn := conn
+	if resp.StreamBody {
+		bodyConn = &streamConn{Conn: conn, ctx: ctx, idleTimeout: GetStreamIdleTimeout(ctx)}
+		readerConn = bodyConn
+	}
+	br := hc.AcquireReader(readerConn)
 
 	if !resp.StreamBody {
 		// Buffered body: the read deadline covers the whole response, which is
@@ -193,11 +206,13 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 		// and is never replayed on a new socket.
 		resp.ResetBody()
 		if err = readResponseHeaders(resp, br); err != nil {
+			br.Reset(nil) // do not retain the request context in the reader pool
 			hc.ReleaseReader(br)
 			hc.CloseConn(cc)
 			return retryOn(err), watcher.classify(err)
 		}
 		err = readBufferedBody(resp, br, hc.MaxResponseBodySize)
+		br.Reset(nil) // do not retain the request context in the reader pool
 		hc.ReleaseReader(br)
 		if err != nil {
 			hc.CloseConn(cc)
@@ -225,24 +240,19 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	// Streamed body: parse headers only, then hand the socket to the body.
 	resp.ResetBody()
 	if err = readResponseHeaders(resp, br); err != nil {
+		br.Reset(nil) // do not retain the request context in the reader pool
 		hc.ReleaseReader(br)
 		hc.CloseConn(cc)
 		return retryOn(err), watcher.classify(err)
 	}
 
-	// Headers are in: the header wait is over. From here on the body is bounded
-	// by NewIdleTimeoutReader and cancelled by SetupStreamCancellation, both of
-	// which close the stream through CloseWithError below.
-	watcher.stop()
-	if watcher.wasCancelled() {
-		hc.ReleaseReader(br)
-		hc.CloseConn(cc)
-		return false, watcher.cancelErr()
-	}
+	// Keep the existing watcher alive through the body lifetime. Only the
+	// response-header deadline ends here; each socket read gets an idle bound.
 	if err = conn.SetDeadline(time.Time{}); err != nil {
+		br.Reset(nil) // do not retain the request context in the reader pool
 		hc.ReleaseReader(br)
 		hc.CloseConn(cc)
-		return false, err
+		return false, watcher.classify(err)
 	}
 
 	// Decide reuse from req now: the caller releases req to fasthttp's pool as
@@ -253,9 +263,12 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	// does, since a consumer may mark the connection unusable mid-body.
 	closeConn := resetConnection || req.ConnectionClose() || resp.ConnectionClose()
 	body := &streamBody{
-		reader: newStreamBodyReader(resp, br),
-		conn:   conn,
+		reader:  newStreamBodyReader(resp, br),
+		conn:    conn,
+		ctx:     ctx,
+		watcher: watcher,
 		release: func(discard bool) {
+			br.Reset(nil) // the pooled reader must not retain the request context
 			hc.ReleaseReader(br)
 			if discard || closeConn || resp.ConnectionClose() {
 				hc.CloseConn(cc)
@@ -264,7 +277,9 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 			}
 		},
 	}
+	bodyConn.readingBody = true
 	resp.SetBodyStream(body, resp.Header.ContentLength())
+	streamOwnsConnection = true
 	return false, nil
 }
 
@@ -373,6 +388,38 @@ func (c *chunkedBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// streamConn bounds each network read after headers, rather than each decoded
+// body Read: a chunk or gzip header may require several socket reads, and every
+// successful read must renew the idle budget. Header and body share one buffered
+// reader, so enabling this cannot discard bytes read ahead with the headers.
+type streamConn struct {
+	net.Conn
+	ctx         context.Context
+	idleTimeout time.Duration
+	readingBody bool
+}
+
+func (c *streamConn) Read(p []byte) (int, error) {
+	if !c.readingBody {
+		return c.Conn.Read(p)
+	}
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	if err := c.Conn.SetReadDeadline(deadlineFor(c.idleTimeout, c.ctx)); err != nil {
+		return 0, err
+	}
+	n, err := c.Conn.Read(p)
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		if deadline, ok := c.ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			return n, context.DeadlineExceeded
+		}
+		return n, ErrStreamIdleTimeout
+	}
+	return n, err
+}
+
 // streamBody is the io.Reader handed out as Response.BodyStream for a streamed
 // response. It mirrors fasthttp's clientStreamBody (client.go:3351-3396):
 // reads are serialized, CloseWithError interrupts an in-flight read by closing
@@ -382,6 +429,9 @@ func (c *chunkedBody) Read(p []byte) (int, error) {
 type streamBody struct {
 	reader    io.Reader
 	conn      net.Conn
+	ctx       context.Context
+	watcher   *cancelWatcher
+	readErr   error
 	release   func(discard bool)
 	closed    atomic.Bool
 	fullyRead bool
@@ -398,7 +448,21 @@ func (s *streamBody) Read(p []byte) (int, error) {
 	if s.closed.Load() {
 		return 0, io.ErrClosedPipe
 	}
+	if s.readErr != nil {
+		return 0, s.readErr
+	}
+	if s.ctx != nil && s.ctx.Err() != nil {
+		s.readErr = s.ctx.Err()
+		return 0, s.readErr
+	}
 	n, err := s.reader.Read(p)
+	if err != nil {
+		if s.ctx != nil && s.ctx.Err() != nil {
+			err = s.ctx.Err()
+		} else {
+			err = s.watcher.classify(err)
+		}
+	}
 	if errors.Is(err, io.EOF) {
 		s.fullyRead = true
 	} else if errors.Is(err, io.ErrUnexpectedEOF) {
@@ -412,6 +476,7 @@ func (s *streamBody) Read(p []byte) (int, error) {
 		// connection is closed on release, never returned to the pool.
 		err = io.EOF
 	}
+	s.readErr = err
 	return n, err
 }
 
@@ -431,15 +496,26 @@ func (s *streamBody) CloseWithError(err error) error {
 			s.readLock.Lock()
 		}
 		defer s.readLock.Unlock()
+		// Cancellation only interrupts I/O. This is the sole resource release
+		// path, and it joins the watcher before the connection can be reused.
+		s.watcher.stop()
+		if s.watcher.wasCancelled() || (s.readErr != nil && !errors.Is(s.readErr, io.EOF)) {
+			discard = true
+		}
+		if !discard {
+			if deadlineErr := s.conn.SetDeadline(time.Time{}); deadlineErr != nil {
+				discard = true
+			}
+		}
 		s.release(discard)
 	})
 	return nil
 }
 
 // cancelWatcher closes the connection when the request context ends, or when
-// the stream attempt misses its first-token deadline, while the transport still
-// owns the socket (write phase and header wait). It is stopped once the body is
-// handed over, or when RoundTrip returns.
+// the stream attempt misses its first-token deadline. On the streamed path it
+// stays live until streamBody.CloseWithError joins it before releasing resources;
+// cancellation itself never returns a reader or connection to the pool.
 type cancelWatcher struct {
 	ctx       context.Context
 	cancelled atomic.Bool
@@ -515,6 +591,12 @@ func (w *cancelWatcher) classify(err error) error {
 		if ctxErr := w.ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
+	}
+	// streamConn can identify the context deadline before the context timer
+	// updates Err or the watcher observes Done. Preserve that cause: it also
+	// implements net.Error, but is not an unclassified socket timeout.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return err
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {

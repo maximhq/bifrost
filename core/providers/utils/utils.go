@@ -495,7 +495,7 @@ func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp
 // call, and the client's contextTransport applies the client's ReadTimeout
 // (default_request_timeout_in_seconds) and the ctx deadline to the header wait,
 // closes the socket when ctx is cancelled, and lifts the deadline once headers
-// arrive so the body is governed only by the stream idle timeout
+// arrive so body reads use the idle timeout and explicit context deadline
 // (maximhq/bifrost#7034). A silent upstream therefore fails with
 // fasthttp.ErrTimeout instead of pinning the worker until it closes.
 //
@@ -2144,8 +2144,9 @@ func CloneFastHTTPClientConfig(base *fasthttp.Client) *fasthttp.Client {
 // is what turned a transient connection fault into one that persisted until the
 // process was restarted.
 //
-// Per-chunk idle detection is enforced at the application layer via
-// NewIdleTimeoutReader (see GetStreamIdleTimeout / StreamIdleTimeoutInSeconds).
+// contextTransport applies the idle timeout to raw socket reads, including
+// gzip initialization and cleanup. NewIdleTimeoutReader also monitors decoded
+// reads at the application layer (see GetStreamIdleTimeout).
 func BuildStreamingClient(base *fasthttp.Client) *fasthttp.Client {
 	c := CloneFastHTTPClientConfig(base)
 	c.StreamResponseBody = true
@@ -2175,20 +2176,27 @@ func BuildStreamingHTTPClient(base *http.Client) *http.Client {
 // decompressBodyStreamIfGzip checks Content-Encoding for gzip and wraps the stream
 // with on-the-fly decompression using a pooled gzip.Reader. Clears Content-Encoding
 // header so downstream consumers don't double-decompress. Returns original reader
-// unchanged if not gzip-encoded or if gzip reader creation fails.
-func decompressBodyStreamIfGzip(resp *fasthttp.Response, stream io.Reader) (*gzip.Reader, io.Reader, bool) {
+// unchanged if not gzip-encoded. Initialization errors are returned to prevent
+// consumers from reading the failed body again.
+func decompressBodyStreamIfGzip(resp *fasthttp.Response, stream io.Reader) (*gzip.Reader, io.Reader, bool, error) {
 	ce := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
 	if !strings.Contains(ce, "gzip") {
-		return nil, stream, false
+		return nil, stream, false, nil
 	}
 	gz, err := AcquireGzipReader(stream)
 	if err != nil {
 		ReleaseGzipReader(gz)
-		return nil, stream, false
+		return nil, nil, false, err
 	}
 	resp.Header.Del("Content-Encoding")
-	return gz, gz, true
+	return gz, gz, true, nil
 }
+
+// failedStreamReader preserves an eager decompression failure for read-based
+// consumers without touching the underlying body a second time.
+type failedStreamReader struct{ err error }
+
+func (r failedStreamReader) Read([]byte) (int, error) { return 0, r.err }
 
 // DecompressStreamBody returns a reader for consuming the response body, with
 // on-the-fly gzip decompression when Content-Encoding indicates gzip. The response
@@ -2208,7 +2216,10 @@ func DecompressStreamBody(resp *fasthttp.Response) (io.Reader, func()) {
 		// that pass the reader to bufio.NewScanner without nil checks.
 		return bytes.NewReader(nil), func() {}
 	}
-	gz, decompressed, wasGzip := decompressBodyStreamIfGzip(resp, bodyStream)
+	gz, decompressed, wasGzip, err := decompressBodyStreamIfGzip(resp, bodyStream)
+	if err != nil {
+		return failedStreamReader{err: err}, func() {}
+	}
 	if !wasGzip {
 		return bodyStream, func() {}
 	}
@@ -3935,7 +3946,10 @@ func SetStreamIdleTimeoutIfEmpty(ctx *schemas.BifrostContext, configSeconds int)
 
 // GetStreamIdleTimeout reads the per-chunk idle timeout from context,
 // falling back to DefaultStreamIdleTimeout if not set.
-func GetStreamIdleTimeout(ctx *schemas.BifrostContext) time.Duration {
+func GetStreamIdleTimeout(ctx context.Context) time.Duration {
+	if ctx == nil {
+		return DefaultStreamIdleTimeout
+	}
 	if timeout, ok := ctx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration); ok && timeout > 0 {
 		return timeout
 	}
