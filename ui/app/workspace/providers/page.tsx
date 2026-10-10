@@ -35,6 +35,7 @@ import ConfirmRedirectionDialog from "./dialogs/confirmRedirection";
 import DatabricksMigrationDialog from "./dialogs/databricksMigrationDialog";
 import FirstPartyProviderAvailableDialog from "./dialogs/firstPartyProviderAvailableDialog";
 import { AddProviderDropdown } from "./views/addProviderDropdown";
+import { showProvidersLoadError } from "./page.utils";
 import { ProvidersEmptyState } from "./views/providersEmptyState";
 
 export default function Providers() {
@@ -176,7 +177,7 @@ export default function Providers() {
 	if (isLoadingProviders) {
 		return <FullPageLoader />;
 	}
-	if (isProvidersError && !savedProviders) {
+	if (showProvidersLoadError(isProvidersError, savedProviders)) {
 		return (
 			<div className="mx-auto w-full max-w-7xl">
 				<div className="border-destructive bg-destructive/10 text-destructive rounded-lg border p-6 text-sm">
