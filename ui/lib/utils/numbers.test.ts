@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+	DEFAULT_TOKEN_PRICE_MAX_FRACTION_DIGITS,
 	formatCharacterPriceFull,
 	formatCompactNumber,
 	formatCurrencyNumber,
@@ -8,6 +9,10 @@ import {
 } from "./numbers";
 
 describe("formatTokenPriceCompact", () => {
+	test("defaults to 6 maximum fraction digits", () => {
+		expect(DEFAULT_TOKEN_PRICE_MAX_FRACTION_DIGITS).toBe(6);
+	});
+
 	test("formats standard prices with at least 2 decimal places", () => {
 		expect(formatTokenPriceCompact(0)).toBe("$0.00");
 		expect(formatTokenPriceCompact(0.3 / 1e6)).toBe("$0.30");
@@ -35,11 +40,14 @@ describe("formatTokenPriceCompact", () => {
 		// Sub-half-cent rates (< $0.005) previously rounded down to $0.00
 		expect(formatTokenPriceCompact(4e-10)).toBe("$0.0004");
 		expect(formatTokenPriceCompact(5e-9)).toBe("$0.005");
+
+		// amazon.nova-micro cache read ($0.00875 / 1M) requires 5 decimal places and formats cleanly by default
+		expect(formatTokenPriceCompact(8.75e-9)).toBe("$0.00875");
 	});
 
 	test("respects custom maximumFractionDigits when provided", () => {
-		// amazon.nova-micro cache read ($0.00875 / 1M) with 5 decimal places
-		expect(formatTokenPriceCompact(8.75e-9, 5)).toBe("$0.00875");
+		// Custom 4 decimal places rounds $0.00875 to $0.0088
+		expect(formatTokenPriceCompact(8.75e-9, 4)).toBe("$0.0088");
 		// Explicit 2 decimal places rounds like fiat currency
 		expect(formatTokenPriceCompact(7.5e-8, 2)).toBe("$0.08");
 	});
