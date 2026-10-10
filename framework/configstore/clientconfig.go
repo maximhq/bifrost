@@ -51,9 +51,11 @@ type CompatConfig struct {
 	ShouldConvertParams                 bool `json:"should_convert_params"`
 	AzureDeepseek                       bool `json:"azure_deepseek"`
 	ForceReasoningOnlyModelsToResponses bool `json:"force_reasoning_only_models_to_responses"`
+	ConvertDecisionToResponses          bool `json:"convert_decision_to_responses"`
 }
 
-// UnmarshalJSON defaults all bool fields to true when absent from JSON.
+// UnmarshalJSON defaults all bool fields to true when absent from JSON, except
+// ConvertDecisionToResponses: emulating a decision through a chat model is opt-in.
 func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 	type compatConfig struct {
 		ConvertTextToChat                   *bool `json:"convert_text_to_chat"`
@@ -62,6 +64,7 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 		ShouldConvertParams                 *bool `json:"should_convert_params"`
 		AzureDeepseek                       *bool `json:"azure_deepseek"`
 		ForceReasoningOnlyModelsToResponses *bool `json:"force_reasoning_only_models_to_responses"`
+		ConvertDecisionToResponses          *bool `json:"convert_decision_to_responses"`
 	}
 	var s compatConfig
 	if err := sonic.Unmarshal(data, &s); err != nil {
@@ -73,6 +76,7 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
 	c.AzureDeepseek = s.AzureDeepseek == nil || *s.AzureDeepseek
 	c.ForceReasoningOnlyModelsToResponses = s.ForceReasoningOnlyModelsToResponses == nil || *s.ForceReasoningOnlyModelsToResponses
+	c.ConvertDecisionToResponses = s.ConvertDecisionToResponses != nil && *s.ConvertDecisionToResponses
 	return nil
 }
 
@@ -225,6 +229,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 	if !c.Compat.ForceReasoningOnlyModelsToResponses {
 		hash.Write([]byte("compatForceReasoningOnlyModelsToResponses:false"))
+	}
+	if c.Compat.ConvertDecisionToResponses {
+		hash.Write([]byte("compatConvertDecisionToResponses:true"))
 	}
 
 	// Only hash non-default value to avoid legacy config hash churn.

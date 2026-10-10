@@ -251,3 +251,89 @@ func TestConfigForceReasoningOnlyModelsToResponsesDefaultsOn(t *testing.T) {
 		t.Error("force_reasoning_only_models_to_responses should default to true when absent")
 	}
 }
+
+// TestDecisionToResponsesEmulationOptIn pins that, with convert_decision_to_responses
+// on (config or x-bf-compat override), the compat plugin marks a decision for
+// emulation unless the model catalog lists the model as a native decisions model:
+// a supports_decisions row decides in either direction, and without a row the
+// gpt-6-luna and Typesafe families are native. Typesafe and other request types
+// are never marked.
+func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
+	rows := map[string]bool{"microsoft/decision-1": true, "typesafe/jev-router": false}
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if supports, ok := rows[model]; ok {
+			return &schemas.ModelCapabilities{SupportsDecisions: &supports}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	decision := func(provider schemas.ModelProvider, model string) func() *schemas.BifrostRequest {
+		return func() *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{
+				RequestType:     schemas.DecisionRequest,
+				DecisionRequest: &schemas.BifrostDecisionRequest{Provider: provider, Model: model},
+			}
+		}
+	}
+	chat := func() *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"},
+		}
+	}
+
+	tests := []struct {
+		name          string
+		enabled       bool
+		override      bool
+		req           func() *schemas.BifrostRequest
+		wantConverted bool
+	}{
+		{name: "off by default", req: decision(schemas.OpenAI, "gpt-4o")},
+		{name: "chat model marked", enabled: true, req: decision(schemas.OpenAI, "gpt-4o"), wantConverted: true},
+		{name: "header override", override: true, req: decision(schemas.OpenAI, "gpt-4o"), wantConverted: true},
+		{name: "gpt-6-luna family is native", enabled: true, req: decision(schemas.OpenAI, "gpt-6-luna")},
+		{name: "typesafe model on openrouter is native", enabled: true, req: decision(schemas.OpenRouter, "~typesafe/jev-latest")},
+		{name: "true row is native", enabled: true, req: decision(schemas.OpenRouter, "microsoft/decision-1")},
+		{name: "false row overrides the typesafe name", enabled: true, req: decision(schemas.OpenRouter, "typesafe/jev-router"), wantConverted: true},
+		{name: "typesafe provider never marked", enabled: true, req: decision(schemas.Typesafe, "jev-latest")},
+		{name: "chat request untouched", enabled: true, req: chat},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, err := Init(Config{ConvertDecisionToResponses: tt.enabled}, bifrost.NewNoOpLogger(), nil)
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			ctx := newTestContext()
+			if tt.override {
+				ctx.SetValue(schemas.BifrostContextKeyCompatConvertDecisionToResponses, true)
+			}
+			if _, _, err := p.PreLLMHook(ctx, tt.req()); err != nil {
+				t.Fatalf("PreLLMHook: %v", err)
+			}
+			changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
+			converted := ok && changeType == schemas.ResponsesRequest
+			if converted != tt.wantConverted {
+				t.Errorf("converted to responses = %v, want %v", converted, tt.wantConverted)
+			}
+		})
+	}
+}
+
+func TestConfigConvertDecisionToResponsesDefaultsOff(t *testing.T) {
+	var c Config
+	if err := c.UnmarshalJSON([]byte(`{}`)); err != nil {
+		t.Fatalf("UnmarshalJSON: %v", err)
+	}
+	if c.ConvertDecisionToResponses {
+		t.Error("convert_decision_to_responses should default to false when absent")
+	}
+	if err := c.UnmarshalJSON([]byte(`{"convert_decision_to_responses": true}`)); err != nil {
+		t.Fatalf("UnmarshalJSON: %v", err)
+	}
+	if !c.ConvertDecisionToResponses {
+		t.Error("convert_decision_to_responses should be true when set")
+	}
+}

@@ -561,6 +561,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_100k_token_pricing_columns"}, run: migrationAdd100kTokenPricingColumns},
 	{IDs: []string{"add_decisions_pricing_columns"}, run: migrationAddDecisionsPricingColumns},
 	{IDs: []string{"add_injected_tools_json_column"}, run: migrationAddInjectedToolsJSONColumn},
+	{IDs: []string{"add_compat_convert_decision_to_responses_column"}, run: migrationAddCompatConvertDecisionToResponsesColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -15290,6 +15291,35 @@ func migrationAddCompatForceReasoningOnlyModelsToResponsesColumn(ctx context.Con
 			tx = tx.WithContext(ctx)
 			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "compat_force_reasoning_only_models_to_responses"); err != nil {
 				return fmt.Errorf("failed to drop compat_force_reasoning_only_models_to_responses column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddCompatConvertDecisionToResponsesColumn adds compat_convert_decision_to_responses
+// to config_client. No backfill: decision emulation is opt-in, so existing rows stay false.
+func migrationAddCompatConvertDecisionToResponsesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_compat_convert_decision_to_responses_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "CompatConvertDecisionToResponses"); err != nil {
+				return fmt.Errorf("failed to add compat_convert_decision_to_responses column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "compat_convert_decision_to_responses"); err != nil {
+				return fmt.Errorf("failed to drop compat_convert_decision_to_responses column: %w", err)
 			}
 			return nil
 		},

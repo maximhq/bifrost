@@ -5378,3 +5378,55 @@ func TestProviderInjectedToolsRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, got.InjectedTools, "updating with a nil block must clear the stored column")
 }
+
+func TestUpdateClientConfig_CompatConvertDecisionToResponsesRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := func(enabled bool) *ClientConfig {
+		return &ClientConfig{
+			EnableLogging:        new(true),
+			InitialPoolSize:      100,
+			LogRetentionDays:     30,
+			MaxRequestBodySizeMB: 50,
+			Compat:               CompatConfig{ConvertDecisionToResponses: enabled},
+		}
+	}
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(true)))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.Compat.ConvertDecisionToResponses, "enabling the toggle must persist")
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(false)))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.Compat.ConvertDecisionToResponses, "disabling the toggle must persist")
+}
+
+func TestGenerateClientConfigHash_CompatConvertDecisionToResponses(t *testing.T) {
+	on := &ClientConfig{InitialPoolSize: 100, Compat: CompatConfig{ConvertDecisionToResponses: true}}
+	off := &ClientConfig{InitialPoolSize: 100}
+	onHash, err := on.GenerateClientConfigHash()
+	require.NoError(t, err)
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, onHash, offHash, "toggling convert_decision_to_responses must change the hash")
+}
+
+// TestClientConfigUnmarshal_CompatConvertDecisionToResponsesDefaultsOff pins that,
+// unlike the other compat toggles, decision emulation stays off when config.json
+// omits it - both when compat is absent and when it is present without the field.
+func TestClientConfigUnmarshal_CompatConvertDecisionToResponsesDefaultsOff(t *testing.T) {
+	for name, raw := range map[string]string{
+		"compat absent":      `{}`,
+		"field absent":       `{"compat": {"convert_text_to_chat": true}}`,
+		"explicitly enabled": `{"compat": {"convert_decision_to_responses": true}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var c ClientConfig
+			require.NoError(t, json.Unmarshal([]byte(raw), &c))
+			assert.Equal(t, name == "explicitly enabled", c.Compat.ConvertDecisionToResponses)
+		})
+	}
+}

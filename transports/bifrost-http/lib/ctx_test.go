@@ -345,6 +345,33 @@ func TestConvertToBifrostContext_CompatHeaderForceReasoningOnlyToResponses(t *te
 	}
 }
 
+func TestConvertToBifrostContext_CompatHeaderConvertDecisionToResponses(t *testing.T) {
+	cases := []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{"named feature", `["convert_decision_to_responses"]`, true},
+		{"true enables all", "true", true},
+		{"star enables all", `["*"]`, true},
+		{"other feature only", `["convert_text_to_chat"]`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.Set("x-bf-compat", tc.header)
+
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+			defer cancel()
+
+			got, _ := bifrostCtx.Value(schemas.BifrostContextKeyCompatConvertDecisionToResponses).(bool)
+			if got != tc.want {
+				t.Fatalf("convert_decision_to_responses override = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestConvertToBifrostContext_KeyPinHeaders pins how the caller's key pins reach core: x-bf-api-key
 // names a key and x-bf-api-key-id identifies one, each trimmed, and a blank value pins nothing, so
 // a client that always sends the header empty is not refused for a key that does not exist.

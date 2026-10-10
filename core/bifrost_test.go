@@ -4714,6 +4714,124 @@ func TestSDKFidelityDecisionRequestNullStateReachesProvider(t *testing.T) {
 	}
 }
 
+// TestDecisionEmulationRequiresCompatOptIn pins that core emulates a decision
+// only when the compat plugin marks it (ChangeRequestType = ResponsesRequest, set
+// by convert_decision_to_responses for a model the catalog does not list as a
+// native decisions model). Unmarked, the provider answers: natively for a
+// decisions model, and with an unsupported_operation that names the setting for
+// any other model, without calling the emulating model.
+func TestDecisionEmulationRequiresCompatOptIn(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/decisions" {
+			_, _ = w.Write([]byte(`{"id":"dec_1","model":"gpt-6-luna","answers":[{"type":"predicate","name":"approve","probability":0.9}],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}`))
+			return
+		}
+		if r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"model":"gpt-4o","status":"completed","output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"emit_decision","arguments":"{\"approve\":{\"value\":0.9,\"confidence\":0.8}}","status":"completed"}],"usage":{"input_tokens":5,"output_tokens":5,"total_tokens":10}}`))
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID:     "test-key-openai",
+		Value:  *schemas.NewSecretVar("sk-test-openai"),
+		Models: schemas.WhiteList{"*"},
+		Weight: 100,
+	}})
+
+	initCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	client, err := Init(initCtx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	newRequest := func(model ...string) *schemas.BifrostDecisionRequest {
+		m := "gpt-4o"
+		if len(model) > 0 {
+			m = model[0]
+		}
+		return &schemas.BifrostDecisionRequest{
+			Provider: schemas.OpenAI,
+			Model:    m,
+			Input:    schemas.DecisionInput{Text: schemas.Ptr("Customer message: I was double charged.")},
+			Questions: []schemas.DecisionQuestion{
+				{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("approve"), Instructions: schemas.NewDecisionText("Approve a billing review?")},
+			},
+		}
+	}
+
+	t.Run("disabled", func(t *testing.T) {
+		mu.Lock()
+		paths = nil
+		mu.Unlock()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := client.DecisionRequest(ctx, newRequest())
+		if bifrostErr == nil {
+			t.Fatalf("expected unsupported_operation without compat opt-in, got response %+v", resp)
+		}
+		if !isUnsupportedOperation(bifrostErr) {
+			t.Fatalf("expected unsupported_operation code, got %+v", bifrostErr.Error)
+		}
+		if !strings.Contains(bifrostErr.Error.Message, "convert_decision_to_responses") {
+			t.Errorf("error should point at the compat setting, got %q", bifrostErr.Error.Message)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(paths) != 0 {
+			t.Errorf("no upstream call expected without opt-in, got %v", paths)
+		}
+	})
+
+	t.Run("enabled", func(t *testing.T) {
+		mu.Lock()
+		paths = nil
+		mu.Unlock()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+		resp, bifrostErr := client.DecisionRequest(ctx, newRequest())
+		if bifrostErr != nil {
+			t.Fatalf("expected emulated decision, got error: %+v", bifrostErr.Error)
+		}
+		if resp == nil || len(resp.Answers) != 1 {
+			t.Fatalf("expected one emulated answer, got %+v", resp)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(paths) != 1 || paths[0] != "/v1/responses" {
+			t.Errorf("emulation must call the Responses API once, got %v", paths)
+		}
+	})
+
+	t.Run("unmarked native model is served natively", func(t *testing.T) {
+		mu.Lock()
+		paths = nil
+		mu.Unlock()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := client.DecisionRequest(ctx, newRequest("gpt-6-luna")); bifrostErr != nil {
+			t.Fatalf("expected a native decision, got error: %+v", bifrostErr.Error)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(paths) != 1 || paths[0] != "/v1/decisions" {
+			t.Errorf("a native model must call the decisions endpoint once, got %v", paths)
+		}
+	})
+}
+
 // An attempt that already ran a provider-injected MCP tool is not retried: a retry would
 // restart the injected loop from the original request and run the tool's side effects,
 // and bill the finished turns, a second time.

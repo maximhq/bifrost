@@ -24,9 +24,11 @@ type Config struct {
 	ShouldConvertParams                 bool `json:"should_convert_params"`
 	AzureDeepseek                       bool `json:"azure_deepseek"`
 	ForceReasoningOnlyModelsToResponses bool `json:"force_reasoning_only_models_to_responses"`
+	ConvertDecisionToResponses          bool `json:"convert_decision_to_responses"`
 }
 
-// UnmarshalJSON defaults all bool fields to true when absent from JSON.
+// UnmarshalJSON defaults all bool fields to true when absent from JSON, except
+// ConvertDecisionToResponses: emulating a decision through a chat model is opt-in.
 func (c *Config) UnmarshalJSON(data []byte) error {
 	type config struct {
 		ConvertTextToChat                   *bool `json:"convert_text_to_chat"`
@@ -35,6 +37,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		ShouldConvertParams                 *bool `json:"should_convert_params"`
 		AzureDeepseek                       *bool `json:"azure_deepseek"`
 		ForceReasoningOnlyModelsToResponses *bool `json:"force_reasoning_only_models_to_responses"`
+		ConvertDecisionToResponses          *bool `json:"convert_decision_to_responses"`
 	}
 	var s config
 	if err := sonic.Unmarshal(data, &s); err != nil {
@@ -46,12 +49,13 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
 	c.AzureDeepseek = s.AzureDeepseek == nil || *s.AzureDeepseek
 	c.ForceReasoningOnlyModelsToResponses = s.ForceReasoningOnlyModelsToResponses == nil || *s.ForceReasoningOnlyModelsToResponses
+	c.ConvertDecisionToResponses = s.ConvertDecisionToResponses != nil && *s.ConvertDecisionToResponses
 	return nil
 }
 
 // IsEnabled returns true if any compat feature is enabled
 func (c Config) IsEnabled() bool {
-	return c.ConvertTextToChat || c.ConvertChatToResponses || c.ShouldDropParams || c.ShouldConvertParams || c.AzureDeepseek || c.ForceReasoningOnlyModelsToResponses
+	return c.ConvertTextToChat || c.ConvertChatToResponses || c.ShouldDropParams || c.ShouldConvertParams || c.AzureDeepseek || c.ForceReasoningOnlyModelsToResponses || c.ConvertDecisionToResponses
 }
 
 // CompatPlugin provides LiteLLM-compatible request/response transformations.
@@ -135,6 +139,7 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	shouldConvertParamsOverride, shouldConvertParamsOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatShouldConvertParams).(bool)
 	azureDeepseekOverride, azureDeepseekOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatAzureDeepseek).(bool)
 	reasoningOnlyOverride, reasoningOnlyOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses).(bool)
+	decisionToResponsesOverride, decisionToResponsesOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatConvertDecisionToResponses).(bool)
 
 	modifiedReq := req
 	if (shouldDropParamsOverrideEnabled && shouldDropParamsOverride) || (shouldConvertParamsOverrideEnabled && shouldConvertParamsOverride) || p.config.ShouldConvertParams || p.config.ShouldDropParams {
@@ -152,6 +157,13 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	if (convertChatToResponsesOverrideEnabled && convertChatToResponsesOverride) || p.config.ConvertChatToResponses {
 		if (modifiedReq.RequestType == schemas.ChatCompletionRequest || modifiedReq.RequestType == schemas.ChatCompletionStreamRequest) && modifiedReq.ChatRequest != nil {
 			p.markForConversion(ctx, modifiedReq.ChatRequest.Provider, modifiedReq.ChatRequest.Model, schemas.ChatCompletionRequest, schemas.ResponsesRequest)
+		}
+	}
+
+	// Decision → responses emulation
+	if (decisionToResponsesOverrideEnabled && decisionToResponsesOverride) || p.config.ConvertDecisionToResponses {
+		if modifiedReq.RequestType == schemas.DecisionRequest && modifiedReq.DecisionRequest != nil {
+			p.markDecisionForEmulation(ctx, modifiedReq.DecisionRequest.Provider, modifiedReq.DecisionRequest.Model)
 		}
 	}
 
@@ -267,6 +279,25 @@ func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider s
 		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, targetType)
 		ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("model %s (%s) does not support %s, converting request to %s", model, provider, currentType, targetType))
 	}
+}
+
+// markDecisionForEmulation marks a decision request for emulation through the
+// Responses API unless the model catalog lists the model as a native decisions
+// model: its supports_decisions row, or without a row the decisions model
+// families the providers recognize by name (gpt-6-luna, Typesafe's typesafe/
+// models). Typesafe serves every model natively, so it is never marked. Custom
+// providers have no catalog rows, so one serving a decisions model under an
+// unrecognized name would be emulated; the docs ask users to leave the setting
+// off for them.
+func (p *CompatPlugin) markDecisionForEmulation(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) {
+	if provider == schemas.Typesafe {
+		return
+	}
+	if schemas.ResolveModelCaps(provider, model).SupportsDecisions(schemas.DefaultSupportsDecisions(model) || schemas.IsTypesafeModel(model)) {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+	ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("model %s (%s) does not serve %s natively, emulating it through %s", model, provider, schemas.DecisionRequest, schemas.ResponsesRequest))
 }
 
 // markReasoningWithToolsForResponses routes a chat request to Responses when the
