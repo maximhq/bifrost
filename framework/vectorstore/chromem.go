@@ -93,8 +93,25 @@ func (s *ChromemStore) CreateNamespace(ctx context.Context, namespace string, di
 		return fmt.Errorf("dimension must be positive, got %d", dimension)
 	}
 
-	if _, err := s.db.GetOrCreateCollection(namespace, nil, chromemStubEmbeddingFunc); err != nil {
+	col, err := s.db.GetOrCreateCollection(namespace, nil, chromemStubEmbeddingFunc)
+	if err != nil {
 		return fmt.Errorf("failed to create chromem collection %s: %w", namespace, err)
+	}
+
+	// Refuse to reopen a collection at a dimension other than the one its
+	// vectors already have, as every store does. chromem records no dimension
+	// and has no listing call, so one query at the requested size is the
+	// probe: chromem compares it against every stored vector and fails on a
+	// length difference. An empty collection has nothing to compare and passes.
+	if col.Count() > 0 {
+		probe := make([]float32, dimension)
+		probe[0] = 1
+		if _, err := col.QueryEmbedding(ctx, probe, 1, nil, nil); err != nil {
+			if strings.Contains(err.Error(), "same length") {
+				return dimensionMismatchError(namespace, 0, dimension, "collection")
+			}
+			return fmt.Errorf("failed to validate chromem collection %s dimension: %w", namespace, err)
+		}
 	}
 
 	s.mu.Lock()

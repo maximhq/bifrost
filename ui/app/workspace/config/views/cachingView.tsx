@@ -74,8 +74,9 @@ const inferMode = (config: EditorCacheConfig): CacheMode => {
 	return "direct";
 };
 
-// Strip semantic-only fields when persisting a direct-only payload so the
-// server validator doesn't reject a stale provider choice.
+// Clear semantic-only fields when persisting a direct-only payload so the
+// server validator doesn't reject a stale provider choice. An update merges
+// over the saved config, so they are sent empty rather than left out.
 const buildPayload = (config: EditorCacheConfig, mode: CacheMode): CacheConfig => {
 	const base = {
 		ttl: config.ttl ?? 0,
@@ -89,7 +90,7 @@ const buildPayload = (config: EditorCacheConfig, mode: CacheMode): CacheConfig =
 		default_cache_key: config.default_cache_key?.trim() || undefined,
 	};
 	if (mode === "direct") {
-		return { ...base, dimension: 1 } as CacheConfig;
+		return { ...base, provider: "", embedding_model: "", dimension: 1 } as CacheConfig;
 	}
 	return {
 		...base,

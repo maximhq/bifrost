@@ -31,6 +31,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
+	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/valyala/fasthttp"
 )
 
@@ -216,6 +217,35 @@ func TestConvertToBifrostContext_AsyncWebhookHeaderSurvivesStarAllowlist(t *test
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
 	if _, ok := extraHeaders["x-bf-async-webhook"]; ok {
 		t.Error("expected reserved x-bf-async-webhook to be consumed, not forwarded as an extra header")
+	}
+}
+
+// TestConvertToBifrostContext_CacheNoStoreHeaderIgnoresCase pins x-bf-cache-no-store as a boolean
+// header read without regard to case or surrounding space: TRUE and True switch the cache write
+// off like true does, and anything else leaves it on.
+func TestConvertToBifrostContext_CacheNoStoreHeaderIgnoresCase(t *testing.T) {
+	for value, want := range map[string]bool{
+		"true":   true,
+		"TRUE":   true,
+		"True":   true,
+		" true ": true,
+		"false":  false,
+		"FALSE":  false,
+		"1":      false,
+		"yes":    false,
+	} {
+		t.Run(value, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.Set("x-bf-cache-no-store", value)
+
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+			defer cancel()
+
+			got, _ := bifrostCtx.Value(semanticcache.CacheNoStoreKey).(bool)
+			if got != want {
+				t.Errorf("x-bf-cache-no-store %q: no-store = %v, want %v", value, got, want)
+			}
+		})
 	}
 }
 

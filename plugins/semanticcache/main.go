@@ -602,15 +602,28 @@ func (plugin *Plugin) resolveCacheTypes(ctx *schemas.BifrostContext) (direct boo
 // setPlaceholderVectorIfRequired writes a fixed unit-vector placeholder when
 // the store mandates a non-zero vector per entry (e.g. Pinecone rejects
 // all-zero vectors). The first element is set to 1 so the vector satisfies
-// that constraint. All direct-cache entries share the same placeholder, so
-// isolation is provided entirely by params_hash filtering — not proximity.
+// that constraint. Entries stored under it are written without a params_hash,
+// so no semantic search ever selects them (see PostLLMHook).
 func (plugin *Plugin) setPlaceholderVectorIfRequired(state *cacheState) {
-	if !plugin.store.RequiresVectors() || plugin.config.Dimension <= 0 {
+	if !plugin.store.RequiresVectors() {
 		return
+	}
+	if vec := plugin.placeholderVector(); vec != nil {
+		state.Embeddings = vec
+		state.PlaceholderEmbeddings = true
+	}
+}
+
+// placeholderVector is the fixed unit vector stored for entries that have no
+// embedding of their own on a store that requires one. Nil when the configured
+// dimension cannot hold one.
+func (plugin *Plugin) placeholderVector() []float32 {
+	if plugin.config.Dimension <= 0 {
+		return nil
 	}
 	vec := make([]float32, plugin.config.Dimension)
 	vec[0] = 1.0
-	state.Embeddings = vec
+	return vec
 }
 
 // PostLLMHook caches the upstream response keyed by the storageID resolved
@@ -727,21 +740,40 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	paramsHash := state.ParamsHash
 
 	embeddingToStore := embedding
+	placeholder := state.PlaceholderEmbeddings
 	if !shouldStoreEmbeddings {
 		embeddingToStore = nil
 	}
 
-	// A store that requires vectors (Qdrant, Pinecone) rejects an empty-vector
-	// upsert ("Expected some vectors"). If embedding generation failed upstream
-	// (e.g. transient provider error, key resolution failure), skip the write
-	// rather than emit a broken point. cache_debug was already stamped above,
-	// so the miss stays observable.
-	if plugin.store.RequiresVectors() && len(embeddingToStore) == 0 {
-		// PostLLMHook runs once per streaming chunk; warn only once per request.
+	// Without a direct cache ID (a semantic-only request skips the direct lookup) the entry is
+	// stored under the request's own ID, which no lookup reads, so only a semantic search can
+	// find it, and only through a real embedding. Without one the entry could never be served.
+	if state.DirectCacheID == "" && (placeholder || len(embeddingToStore) == 0) {
 		if !isStream || isFinalChunk {
-			plugin.logger.Warn("Skipping semantic cache write (namespace=%s, id=%s): store requires vectors but no embedding is available (embedding generation likely failed)", plugin.config.VectorStoreNamespace, storageID)
+			plugin.logger.Debug("Skipping semantic cache write (namespace=%s, id=%s): no direct cache ID and no embedding, so no lookup could find the entry", plugin.config.VectorStoreNamespace, storageID)
 		}
 		return res, nil, nil
+	}
+
+	// A store that requires vectors (Weaviate, Qdrant, Pinecone, chromem)
+	// rejects an empty-vector upsert ("Expected some vectors"). When embedding
+	// generation failed upstream (transient provider error, key resolution
+	// failure), the entry is still written, under the placeholder vector, so the
+	// direct path serves it exactly as on a store that needs no vector. Only
+	// semantic hits are lost for this entry. The embedding failure itself was
+	// already reported as a warning by PreLLMHook, once per request.
+	if plugin.store.RequiresVectors() && len(embeddingToStore) == 0 {
+		placeholder = true
+		embeddingToStore = plugin.placeholderVector()
+		if len(embeddingToStore) == 0 {
+			if !isStream || isFinalChunk {
+				plugin.logger.Warn("Skipping semantic cache write (namespace=%s, id=%s): store requires vectors, no embedding is available and dimension %d cannot hold a placeholder", plugin.config.VectorStoreNamespace, storageID, plugin.config.Dimension)
+			}
+			return res, nil, nil
+		}
+		if !isStream || isFinalChunk {
+			plugin.logger.Debug("No embedding for cache entry (namespace=%s, id=%s); storing it under the placeholder vector for direct lookups only", plugin.config.VectorStoreNamespace, storageID)
+		}
 	}
 
 	// Serialize the response NOW, while this goroutine still owns a safe view
@@ -766,6 +798,12 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 		return res, nil, nil
 	}
 
+	// The placeholder says nothing about the prompt, yet a different prompt's embedding can sit
+	// close to it. Semantic searches filter on params_hash, so leaving it off keeps the entry out
+	// of every one; the direct path reads the entry by its ID and never looks at params_hash.
+	if placeholder {
+		paramsHash = ""
+	}
 	unifiedMetadata := plugin.buildUnifiedMetadata(provider, model, paramsHash, cacheKey, cacheTTL)
 
 	if isStream {

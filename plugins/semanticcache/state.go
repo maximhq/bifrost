@@ -22,6 +22,7 @@ type cacheState struct {
 	ParamsHash            string
 	Embeddings            []float32
 	EmbeddingsInputTokens int
+	PlaceholderEmbeddings bool // Embeddings is the placeholder vector, not an embedding of the prompt
 
 	// FilteredInput caches getInputForCaching(req) so attachment extraction,
 	// embedding text extraction, and history-threshold checks reuse the same

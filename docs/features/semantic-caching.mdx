@@ -522,7 +522,7 @@ Every plugin default can be overridden per request via headers (HTTP) or context
 | `x-bf-cache-ttl` | `CacheTTLKey` | duration string or seconds | Override TTL for this request. Invalid values are ignored. |
 | `x-bf-cache-threshold` | `CacheThresholdKey` | float (0–1) | Raise the semantic similarity threshold for this request (stricter matching, fewer hits). Clamped to `[0,1]`; a value below the plugin's configured threshold is floored at the configured value rather than loosening it - callers can only make matching stricter, never looser. |
 | `x-bf-cache-type` | `CacheTypeKey` | `direct` or `semantic` | Limit lookup to a single path. |
-| `x-bf-cache-no-store` | `CacheNoStoreKey` | `true` | Skip writing the response (still serves cached hits). |
+| `x-bf-cache-no-store` | `CacheNoStoreKey` | `true` (any casing) | Skip writing the response (still serves cached hits). Any other value leaves writing on. |
 
 <Tabs group="per-request-overrides">
 
@@ -648,7 +648,7 @@ Cache outcomes also surface in **Logs** without inspecting the raw response:
 
 ### Invalidation
 
-Use the `cache_id` from `cache_debug` to invalidate a single entry, or clear a whole cache key. Clearing a key removes the entries of every identity that wrote under it; to remove one identity's entry, clear it by its `cache_id`.
+Use the `cache_id` from `cache_debug` to invalidate a single entry, or clear a whole cache key. Clearing a key removes the entries of every identity that wrote under it; to remove one identity's entry, clear it by its `cache_id`. Clearing a `cache_id` that does not exist, or has already expired, succeeds on every vector store.
 
 <Tabs group="cache-clear">
 
@@ -660,6 +660,9 @@ curl -X DELETE http://localhost:8080/api/cache/clear/550e8500-e29b-41d4-a725-446
 
 # Clear all entries for a cache key
 curl -X DELETE http://localhost:8080/api/cache/clear-by-key/support-session-456
+
+# URL-encode a key that contains spaces, colons or slashes ("tenant a:session/42")
+curl -X DELETE http://localhost:8080/api/cache/clear-by-key/tenant%20a%3Asession%2F42
 ```
 
 </Tab>
@@ -687,7 +690,7 @@ err := plugin.ClearCacheForKey("support-session-456")
 <Warning>
 **Changing `dimension`, `provider`, or `embedding_model`:** a vector store namespace can hold vectors of **one** dimension only, and it is **not** recreated automatically when the dimension changes.
 
-On **Redis** and **Qdrant**, a dimension mismatch is caught at startup: namespace creation fails with `namespace ... already exists with dimension N but config requires M`, and Bifrost does not come up until you resolve it. Qdrant skips the check in two cases — the collection uses named vectors (Bifrost only ever creates unnamed ones, so the collection was not created by Bifrost), or the collection-info lookup fails — and logs that it did. On the other backends, namespace creation is a no-op when the class/collection already exists, so a mismatch surfaces later — subsequent writes fail (size mismatch) and reads silently miss.
+Every vector store catches a dimension mismatch when the plugin loads: namespace creation fails with `namespace ... already exists with dimension N but config requires M`. At startup Bifrost does not come up until you resolve it. Through the plugins API or the UI, the save is refused with a 400, the previous configuration is kept, and the running cache keeps serving. Redis, Qdrant and Pinecone compare against the dimension the index or collection was created with; a Pinecone index has one dimension for all its namespaces, so a config at any other size is refused. Weaviate and the in-process store record no dimension, so they compare against a vector already stored, and an empty namespace accepts any size. Qdrant and Weaviate skip the check, and log that they did, when the lookup itself fails; Qdrant also skips it for collections with named vectors, which Bifrost never creates.
 
 Either way, before saving such a change:
 
@@ -711,6 +714,10 @@ Expected. Entries are scoped to the identity that wrote them, so the same cache 
 
 <Accordion title="The first request is always a miss">
 Expected. The cache is populated *after* the first response is returned (writes are asynchronous). Send the same request again to see a hit.
+</Accordion>
+
+<Accordion title="Semantic hits stop and logs show &quot;semantic search skipped&quot;">
+The embedding provider failed for those requests: an invalid or missing key, a rate limit, or a provider outage. The request itself still succeeds, and its response is still cached, so an exact repeat is served from cache; only similarity matches are lost until embeddings work again. The plugin records the failure as a warning in the request's plugin logs, visible on the log entry. On stores that require a vector per entry, the entry is stored under a fixed placeholder vector that never matches a similarity search.
 </Accordion>
 
 <Accordion title="Semantic mode never hits">
