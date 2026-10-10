@@ -15,15 +15,22 @@ import (
 	"gorm.io/gorm"
 )
 
-func newTestSQLiteLogStore(t *testing.T) logstore.LogStore {
+func newTestSQLiteLogStore(t testing.TB) logstore.LogStore {
+	t.Helper()
+	ls := openTestSQLiteLogStore(t, t.TempDir())
+	t.Cleanup(func() { _ = ls.Close(context.Background()) })
+	return ls
+}
+
+// openTestSQLiteLogStore opens a SQLite logstore in dir; the caller closes it.
+func openTestSQLiteLogStore(t testing.TB, dir string) logstore.LogStore {
 	t.Helper()
 	ls, err := logstore.NewLogStore(context.Background(), &logstore.Config{
 		Enabled: true,
 		Type:    logstore.LogStoreTypeSQLite,
-		Config:  &logstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "logs.db")},
+		Config:  &logstore.SQLiteConfig{Path: filepath.Join(dir, "logs.db")},
 	}, bifrost.NewNoOpLogger())
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = ls.Close(context.Background()) })
 	return ls
 }
 
@@ -117,7 +124,7 @@ func TestLogStoreQueueSharesTheLogstoreDatabase(t *testing.T) {
 
 // logStoreEngineBackend builds the engine contract's stores the production
 // way: through the logstore adapter, over the logstore's own database pool.
-func logStoreEngineBackend(newLogStore func(t *testing.T) logstore.LogStore, deps func(ls logstore.LogStore) Dependencies) engineBackend {
+func logStoreEngineBackend(newLogStore func(t testing.TB) logstore.LogStore, deps func(ls logstore.LogStore) Dependencies) engineBackend {
 	return func(t *testing.T, n int) []Store {
 		ls := newLogStore(t)
 		out := make([]Store, n)
@@ -145,7 +152,7 @@ const pgLogStoreTestDB = "queue_logstore_test"
 // with its own pool, so every call stands for a separate instance. The pool
 // is small and the statement timeout short so queue statements are tested
 // under the limits a production pool imposes.
-func newTestPostgresLogStore(t *testing.T) logstore.LogStore {
+func newTestPostgresLogStore(t testing.TB) logstore.LogStore {
 	t.Helper()
 	admin := openTestPostgres(t)
 	var exists bool
