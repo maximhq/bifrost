@@ -1918,6 +1918,32 @@ const (
 	// ResponsesOutputMessageContentTypeFallback marks a server-side fallback handoff
 	// boundary in the output (Anthropic server-side-fallback-2026-06-01).
 	ResponsesOutputMessageContentTypeFallback ResponsesMessageContentBlockType = "fallback"
+
+	// Mid-conversation tool changes (Anthropic beta mid-conversation-tool-changes /
+	// inline-tools): blocks on a role:"system" input item that add or withdraw one tool
+	// from that point onward without touching the tools array. The block's ToolChange
+	// names or defines the tool.
+	ResponsesInputMessageContentBlockTypeToolAddition ResponsesMessageContentBlockType = "tool_addition"
+	ResponsesInputMessageContentBlockTypeToolRemoval  ResponsesMessageContentBlockType = "tool_removal"
+)
+
+// ResponsesToolChangeTarget is the `tool` of a tool_addition / tool_removal block: a
+// discriminated union on Type. tool_reference names a tools[] entry (Name);
+// mcp_tool_reference names one MCP tool (ServerName, Name); mcp_toolset_reference names a
+// whole MCP server (ServerName); tool_definition carries the tool itself (Definition), the
+// same object a tools[] entry holds. A tool_removal is always a reference.
+type ResponsesToolChangeTarget struct {
+	Type       string         `json:"type"`
+	Name       *string        `json:"name,omitempty"`
+	ServerName *string        `json:"server_name,omitempty"`
+	Definition *ResponsesTool `json:"definition,omitempty"`
+}
+
+const (
+	ResponsesToolChangeTargetTypeToolReference       = "tool_reference"
+	ResponsesToolChangeTargetTypeMCPToolReference    = "mcp_tool_reference"
+	ResponsesToolChangeTargetTypeMCPToolsetReference = "mcp_toolset_reference"
+	ResponsesToolChangeTargetTypeToolDefinition      = "tool_definition"
 )
 
 // ResponsesMessageContentBlock represents different types of content (text, image, file, audio)
@@ -1940,6 +1966,8 @@ type ResponsesMessageContentBlock struct {
 	*ResponsesOutputMessageContentRenderedContent // Rendered content from search entry point
 	*ResponsesOutputMessageContentCompaction      // Compaction content from the model
 	*ResponsesOutputMessageContentFallback        // Server-side fallback handoff boundary (from/to model)
+
+	ToolChange *ResponsesToolChangeTarget `json:"tool,omitempty"` // tool_addition / tool_removal: the tool named or defined
 
 	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
@@ -1971,6 +1999,9 @@ type GuardContent struct {
 
 type ResponsesOutputMessageContentCompaction struct {
 	Summary string `json:"summary,omitempty"` // The compaction summary text
+	// ToolChanges is the server-recorded net tool set of the compacted range: tool_addition /
+	// tool_removal blocks (type + tool), replayed unchanged. Absent when the server did not compute it.
+	ToolChanges []ResponsesMessageContentBlock `json:"tool_changes,omitempty"`
 }
 
 // ResponsesOutputMessageContentFallback carries the model boundary of a server-side
@@ -3272,6 +3303,7 @@ type ResponsesTool struct {
 	AllowedCallers      []string               `json:"allowed_callers,omitempty"`       // Which callers can invoke this tool; see ResponsesToolCaller* for the two vendor vocabularies
 	InputExamples       []ChatToolInputExample `json:"input_examples,omitempty"`        // Anthropic tool-examples-2025-10-29: example inputs for the tool
 	EagerInputStreaming *bool                  `json:"eager_input_streaming,omitempty"` // Anthropic fine-grained-tool-streaming-2025-05-14
+	MaxCharacters       *int                   `json:"max_characters,omitempty"`        // Anthropic text_editor_20250728+: view size limit
 
 	*ResponsesToolFunction
 	*ResponsesToolFileSearch
@@ -3369,6 +3401,11 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 	}
 	if t.EagerInputStreaming != nil {
 		if data, err = sjson.SetBytes(data, "eager_input_streaming", *t.EagerInputStreaming); err != nil {
+			return nil, err
+		}
+	}
+	if t.MaxCharacters != nil {
+		if data, err = sjson.SetBytes(data, "max_characters", *t.MaxCharacters); err != nil {
 			return nil, err
 		}
 	}
@@ -3481,6 +3518,7 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 		"eager_input_streaming", // 7
 		"function",              // 8 — Chat Completions wrapper, lifted below
 		"async",                 // 9
+		"max_characters",        // 10
 	)
 
 	// Extract type field
@@ -3531,6 +3569,9 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 	}
 	if v := fields[7]; v.IsBool() {
 		t.EagerInputStreaming = new(v.Bool())
+	}
+	if v := fields[10]; v.Type == gjson.Number {
+		t.MaxCharacters = new(int(v.Int()))
 	}
 
 	// Anthropic's tool-search meta-tool identifies its variant (regex vs bm25)
@@ -3963,6 +4004,17 @@ type ResponsesToolMCP struct {
 	ServerDescription *string                                      `json:"server_description,omitempty"` // Optional server description
 	ServerURL         *string                                      `json:"server_url,omitempty"`         // The URL for the MCP server
 	TunnelID          *string                                      `json:"tunnel_id,omitempty"`          // Secure MCP Tunnel ID used instead of server_url
+
+	// Anthropic mcp_toolset configuration carried verbatim (default_config / configs). Not an OpenAI field.
+	DefaultConfig *ResponsesToolMCPToolConfig            `json:"default_config,omitempty"`
+	ToolConfigs   map[string]*ResponsesToolMCPToolConfig `json:"tool_configs,omitempty"`
+}
+
+// ResponsesToolMCPToolConfig is one Anthropic mcp_toolset tool config: the default for every
+// tool on the server, or the override for one named tool.
+type ResponsesToolMCPToolConfig struct {
+	Enabled      *bool `json:"enabled,omitempty"`
+	DeferLoading *bool `json:"defer_loading,omitempty"`
 }
 
 // ResponsesToolMCPAllowedTools - List of allowed tool names or a filter object

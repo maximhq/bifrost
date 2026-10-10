@@ -562,7 +562,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			needsRewrite := false
 			for _, block := range message.Content.ContentBlocks {
 				if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction ||
-					block.Type == schemas.ResponsesOutputMessageContentTypeFallback {
+					block.Type == schemas.ResponsesOutputMessageContentTypeFallback ||
+					block.Type == schemas.ResponsesInputMessageContentBlockTypeToolAddition ||
+					block.Type == schemas.ResponsesInputMessageContentBlockTypeToolRemoval {
 					needsRewrite = true
 					break
 				}
@@ -588,6 +590,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 						// Anthropic-only server-side fallback boundary marker. Unlike
 						// compaction it carries no user content (only from/to model
 						// names), so drop it rather than rendering it as text.
+					case schemas.ResponsesInputMessageContentBlockTypeToolAddition,
+						schemas.ResponsesInputMessageContentBlockTypeToolRemoval:
+						// Anthropic-only mid-conversation tool change; OpenAI has no
+						// per-turn tool-set edit and rejects unknown block types.
 					default:
 						// Keep every other block as-is
 						newContentBlocks = append(newContentBlocks, block)
