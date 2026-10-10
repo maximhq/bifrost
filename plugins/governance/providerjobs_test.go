@@ -678,3 +678,146 @@ func TestPreLLMHookRefusesVirtualKeyProviderObjectRequestsWithoutConfigStore(t *
 		})
 	}
 }
+
+// newResourceNameTestPlugin is newProviderJobTestPlugin with the key also allowed on Gemini and
+// Vertex, the providers that address objects by resource name.
+func newResourceNameTestPlugin(t *testing.T) (*GovernancePlugin, configstore.ConfigStore) {
+	t.Helper()
+	configStore := newProviderObjectConfigStore(t)
+	vk := buildVKForMCPStamping(nil)
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("gemini", []string{"*"}), buildProviderConfig("vertex", []string{"*"}))
+	plugin := newAccessTestPlugin(t, vk, nil)
+	plugin.configStore = configStore
+	return plugin, configStore
+}
+
+// resourceRequest builds a request of requestType addressing id on provider, for the request
+// types Gemini and Vertex answer by resource name.
+func resourceRequest(requestType schemas.RequestType, provider schemas.ModelProvider, id string) *schemas.BifrostRequest {
+	req := &schemas.BifrostRequest{RequestType: requestType}
+	switch requestType {
+	case schemas.BatchRetrieveRequest:
+		req.BatchRetrieveRequest = &schemas.BifrostBatchRetrieveRequest{Provider: provider, BatchID: id}
+	case schemas.BatchCancelRequest:
+		req.BatchCancelRequest = &schemas.BifrostBatchCancelRequest{Provider: provider, BatchID: id}
+	case schemas.BatchResultsRequest:
+		req.BatchResultsRequest = &schemas.BifrostBatchResultsRequest{Provider: provider, BatchID: id}
+	case schemas.BatchDeleteRequest:
+		req.BatchDeleteRequest = &schemas.BifrostBatchDeleteRequest{Provider: provider, BatchID: id}
+	case schemas.FileContentRequest:
+		req.FileContentRequest = &schemas.BifrostFileContentRequest{Provider: provider, FileID: id}
+	case schemas.CachedContentRetrieveRequest:
+		req.CachedContentRetrieveRequest = &schemas.BifrostCachedContentRetrieveRequest{Provider: provider, Name: id}
+	case schemas.CachedContentDeleteRequest:
+		req.CachedContentDeleteRequest = &schemas.BifrostCachedContentDeleteRequest{Provider: provider, Name: id}
+	}
+	return req
+}
+
+// Gemini and Vertex address an object by a resource name and accept its short forms: a Gemini
+// batch is "batches/<id>" or "<id>", a Vertex batch is its full resource name or its job number,
+// and files and cached contents follow suit. The row carries the name the create response
+// returned; every form the provider accepts resolves to that row, including the job rows the
+// logging plugin wrote before ownership rows existed.
+func TestPreLLMHookBindsResourceNamesUnderEveryForm(t *testing.T) {
+	plugin, store := newResourceNameTestPlugin(t)
+	own := "vk-mcp-stamp"
+	other := "vk-someone-else"
+	batch := configstoreTables.ProviderObjectKindBatch
+	file := configstoreTables.ProviderObjectKindFile
+	cached := configstoreTables.ProviderObjectKindCachedContent
+	const vertexBatch = "projects/p-1/locations/us-central1/batchPredictionJobs/4242"
+	const vertexCached = "projects/p-1/locations/us-central1/cachedContents/9797"
+	seedProviderObject(t, store, batch, "gemini", "batches/g-other", other)
+	seedProviderObject(t, store, batch, "gemini", "batches/g-own", own)
+	seedProviderObject(t, store, file, "gemini", "files/f-other", other)
+	seedProviderObject(t, store, cached, "gemini", "cachedContents/c-other", other)
+	// A Vertex create records its full name under its short forms as well.
+	for _, id := range []string{vertexBatch, "4242"} {
+		seedProviderObject(t, store, batch, "vertex", id, other)
+	}
+	for _, id := range []string{vertexCached, "cachedContents/9797", "9797"} {
+		seedProviderObject(t, store, cached, "vertex", id, other)
+	}
+	seedProviderJob(t, store, "gemini", "batches/g-job", &other)
+	seedProviderJob(t, store, "vertex", "projects/p-1/locations/us-central1/batchPredictionJobs/5151", &other)
+
+	refused := []struct {
+		name string
+		req  *schemas.BifrostRequest
+		id   string
+	}{
+		{"gemini batch retrieve by bare id", resourceRequest(schemas.BatchRetrieveRequest, schemas.Gemini, "g-other"), "g-other"},
+		{"gemini batch cancel by bare id", resourceRequest(schemas.BatchCancelRequest, schemas.Gemini, "g-other"), "g-other"},
+		{"gemini batch results by bare id", resourceRequest(schemas.BatchResultsRequest, schemas.Gemini, "g-other"), "g-other"},
+		{"gemini batch retrieve by full name", resourceRequest(schemas.BatchRetrieveRequest, schemas.Gemini, "batches/g-other"), "batches/g-other"},
+		{"gemini file content by bare id", resourceRequest(schemas.FileContentRequest, schemas.Gemini, "f-other"), "f-other"},
+		{"gemini cached content retrieve by bare id", resourceRequest(schemas.CachedContentRetrieveRequest, schemas.Gemini, "c-other"), "c-other"},
+		{"vertex batch retrieve by job number", resourceRequest(schemas.BatchRetrieveRequest, schemas.Vertex, "4242"), "4242"},
+		{"vertex batch results by full name", resourceRequest(schemas.BatchResultsRequest, schemas.Vertex, vertexBatch), vertexBatch},
+		{"vertex cached content retrieve by short name", resourceRequest(schemas.CachedContentRetrieveRequest, schemas.Vertex, "cachedContents/9797"), "cachedContents/9797"},
+		{"vertex cached content delete by bare id", resourceRequest(schemas.CachedContentDeleteRequest, schemas.Vertex, "9797"), "9797"},
+		{"gemini batch retrieve by bare id through the job row", resourceRequest(schemas.BatchRetrieveRequest, schemas.Gemini, "g-job"), "g-job"},
+		{"vertex batch retrieve by job number through the job row", resourceRequest(schemas.BatchRetrieveRequest, schemas.Vertex, "5151"), "5151"},
+	}
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), tc.req)
+			require.NoError(t, err)
+			require.NotNil(t, shortCircuit, "another key's object is refused in every form")
+			require.NotNil(t, shortCircuit.Error.StatusCode)
+			assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+			assert.Contains(t, shortCircuit.Error.Error.Message, "'"+tc.id+"'", "the message names the id as the caller wrote it")
+		})
+	}
+
+	for _, id := range []string{"g-own", "batches/g-own"} {
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), resourceRequest(schemas.BatchRetrieveRequest, schemas.Gemini, id))
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit, "the creating key reaches its batch as %q", id)
+	}
+
+	// A job number is matched whole: 5151 is not reached as 151.
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), resourceRequest(schemas.BatchRetrieveRequest, schemas.Vertex, "151"))
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "a job number that is only a suffix of another is not that job")
+}
+
+// A full resource name cannot be rebuilt from its short form without the key's project and
+// region, so a create that returns one is recorded under its short forms too, and a delete in
+// any form forgets them all.
+func TestPostLLMHookRecordsFullResourceNamesUnderTheirShortForms(t *testing.T) {
+	plugin, store := newResourceNameTestPlugin(t)
+	const vertexBatch = "projects/p-1/locations/us-central1/batchPredictionJobs/4242"
+	batch := configstoreTables.ProviderObjectKindBatch
+	rowIDs := []string{
+		configstoreTables.ProviderObjectID(batch, "vertex", vertexBatch),
+		configstoreTables.ProviderObjectID(batch, "vertex", "4242"),
+	}
+
+	ctx := presentCtx(mcpTestVKValue)
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.Vertex}})
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{BatchCreateResponse: &schemas.BifrostBatchCreateResponse{ID: vertexBatch,
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.BatchCreateRequest, Provider: schemas.Vertex}}}, nil)
+	require.NoError(t, err)
+
+	rows, err := store.GetProviderObjectsByIDs(context.Background(), rowIDs)
+	require.NoError(t, err)
+	require.Len(t, rows, 2, "the full name and the job number are both recorded")
+	for _, row := range rows {
+		assert.Equal(t, "vk-mcp-stamp", row.VirtualKeyID)
+	}
+
+	ctx = presentCtx(mcpTestVKValue)
+	_, shortCircuit, err = plugin.PreLLMHook(ctx, resourceRequest(schemas.BatchDeleteRequest, schemas.Vertex, "4242"))
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{BatchDeleteResponse: &schemas.BifrostBatchDeleteResponse{ID: "4242",
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.BatchDeleteRequest, Provider: schemas.Vertex}}}, nil)
+	require.NoError(t, err)
+	rows, err = store.GetProviderObjectsByIDs(context.Background(), rowIDs)
+	require.NoError(t, err)
+	assert.Empty(t, rows, "a delete by job number forgets the full name too")
+}

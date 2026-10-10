@@ -221587,6 +221587,516 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "198. Gemini batches bind to their creator in every id form (batch-id-forms) [SERIAL]",
+      "description": "Two virtual keys share the operator's Gemini key. A batch created under the first is answered with 'batches/<id>', and Gemini accepts the bare '<id>' for the same batch; the native route only ever sends the bare form, since the collection is part of its path. The second key gets a 404 on retrieve and cancel by the bare id, on the native route and on the OpenAI-compatible one, while the first key still retrieves and cancels its batch by the bare id. An inline one-request batch is the probe because it needs no file upload; the same binding covers Gemini files and cached contents, and Vertex batches by their job number.",
+      "item": [
+        {
+          "name": "gemini batch-id-forms setup: create virtual key A (owner)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('idFormOwnVkId');",
+                  "  pm.collectionVariables.unset('idFormOwnVkValue');",
+                  "  pm.collectionVariables.set('idFormOwnVkName', 'harness-batch-id-forms-A (owner)-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleVkId = pm.collectionVariables.get('idFormOwnVkId');",
+                  "if (!staleVkId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleVkId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('batch-id-forms: the retained virtual key A (owner) from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleVkId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleVkId + ' not deleted: ' + response.text()).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.collectionVariables.unset('idFormOwnVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('batch-id-forms: virtual key A (owner) created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('batch-id-forms: virtual key A (owner) has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('idFormOwnVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('idFormOwnVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{idFormOwnVkName}}\",\"provider_configs\":[{\"provider\":\"gemini\",\"allowed_models\":[\"*\"],\"weight\":1}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          },
+          "response": []
+        },
+        {
+          "name": "gemini batch-id-forms setup: create virtual key B (other)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('idFormOtherVkId');",
+                  "  pm.collectionVariables.unset('idFormOtherVkValue');",
+                  "  pm.collectionVariables.set('idFormOtherVkName', 'harness-batch-id-forms-B (other)-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleVkId = pm.collectionVariables.get('idFormOtherVkId');",
+                  "if (!staleVkId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleVkId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('batch-id-forms: the retained virtual key B (other) from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleVkId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleVkId + ' not deleted: ' + response.text()).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.collectionVariables.unset('idFormOtherVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('batch-id-forms: virtual key B (other) created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('batch-id-forms: virtual key B (other) has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('idFormOtherVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('idFormOtherVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{idFormOtherVkName}}\",\"provider_configs\":[{\"provider\":\"gemini\",\"allowed_models\":[\"*\"],\"weight\":1}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          },
+          "response": []
+        },
+        {
+          "name": "gemini batch-id-forms: the owning key creates a batch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('idFormBatchId');",
+                  "if (!pm.collectionVariables.get('idFormOwnVkValue') || !pm.collectionVariables.get('idFormOtherVkValue')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('batch-id-forms: batch create under the owning key is 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.be.below(300);",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('batch-id-forms: the create returns the batch resource name', function () {",
+                  "  pm.expect(j.name, 'no name: ' + txt.slice(0, 400)).to.be.a('string').and.match(/^batches\\/.+/);",
+                  "});",
+                  "// The native route addresses the batch by its id alone; the 'batches/' collection is part of the route path.",
+                  "if (typeof j.name === 'string' && /^batches\\/.+/.test(j.name)) { pm.collectionVariables.set('idFormBatchId', j.name.replace(/^batches\\//, '')); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{idFormOwnVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"batch\":{\"displayName\":\"bifrost-harness-batch-id-forms\",\"inputConfig\":{\"requests\":{\"requests\":[{\"request\":{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Say hello\"}]}],\"generationConfig\":{\"maxOutputTokens\":16}},\"metadata\":{\"key\":\"req-1\"}}]}}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:batchGenerateContent"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-404] gemini batch-id-forms: another key cannot retrieve the batch by its bare id",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the created batch there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('idFormOwnVkValue') || !pm.collectionVariables.get('idFormOtherVkValue') || !pm.collectionVariables.get('idFormBatchId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The batch exists on the shared provider key; the other virtual key must get a 404, never the object",
+                  "// and never a 401/403/500 that would mean the request was refused for a different reason.",
+                  "pm.test('batch-id-forms: retrieve by bare id under another key is 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "});",
+                  "pm.test('batch-id-forms: the 404 names the batch as not found', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{idFormOtherVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/genai/v1beta/batches/{{idFormBatchId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-404] gemini batch-id-forms: another key cannot cancel the batch by its bare id",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the created batch there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('idFormOwnVkValue') || !pm.collectionVariables.get('idFormOtherVkValue') || !pm.collectionVariables.get('idFormBatchId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The batch exists on the shared provider key; the other virtual key must get a 404, never the object",
+                  "// and never a 401/403/500 that would mean the request was refused for a different reason.",
+                  "pm.test('batch-id-forms: cancel by bare id under another key is 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "});",
+                  "pm.test('batch-id-forms: the 404 names the batch as not found', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{idFormOtherVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/genai/v1beta/batches/{{idFormBatchId}}:cancel"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-404] gemini batch-id-forms: another key cannot retrieve the batch by its bare id on the OpenAI-compatible route",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the created batch there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('idFormOwnVkValue') || !pm.collectionVariables.get('idFormOtherVkValue') || !pm.collectionVariables.get('idFormBatchId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The batch exists on the shared provider key; the other virtual key must get a 404, never the object",
+                  "// and never a 401/403/500 that would mean the request was refused for a different reason.",
+                  "pm.test('batch-id-forms: retrieve on the OpenAI-compatible route by bare id under another key is 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "});",
+                  "pm.test('batch-id-forms: the 404 names the batch as not found', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{idFormOtherVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/batches/{{idFormBatchId}}?provider=gemini"
+          },
+          "response": []
+        },
+        {
+          "name": "gemini batch-id-forms: the owning key can retrieve the batch by its bare id",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the created batch there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('idFormOwnVkValue') || !pm.collectionVariables.get('idFormOtherVkValue') || !pm.collectionVariables.get('idFormBatchId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('batch-id-forms: retrieve by bare id under the owning key is 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.be.below(300);",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('batch-id-forms: the owning key gets its own batch back', function () {",
+                  "  pm.expect(j.name, 'wrong batch: ' + txt.slice(0, 400)).to.eql('batches/' + pm.collectionVariables.get('idFormBatchId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{idFormOwnVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/genai/v1beta/batches/{{idFormBatchId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "gemini batch-id-forms: the owning key can cancel the batch by its bare id",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without both keys and the created batch there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('idFormOwnVkValue') || !pm.collectionVariables.get('idFormOtherVkValue') || !pm.collectionVariables.get('idFormBatchId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('batch-id-forms: cancel by bare id under the owning key is 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.be.below(300);",
+                  "});",
+                  "pm.collectionVariables.unset('idFormBatchId');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{idFormOwnVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/genai/v1beta/batches/{{idFormBatchId}}:cancel"
+          },
+          "response": []
+        },
+        {
+          "name": "gemini batch-id-forms cleanup: delete virtual key A (owner)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('idFormOwnVkId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('batch-id-forms: virtual key A (owner) deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('idFormOwnVkId');",
+                  "  pm.collectionVariables.unset('idFormOwnVkValue');",
+                  "  pm.collectionVariables.unset('idFormOwnVkName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{idFormOwnVkId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "gemini batch-id-forms cleanup: delete virtual key B (other)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('idFormOtherVkId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('batch-id-forms: virtual key B (other) deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('idFormOtherVkId');",
+                  "  pm.collectionVariables.unset('idFormOtherVkValue');",
+                  "  pm.collectionVariables.unset('idFormOtherVkName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{idFormOtherVkId}}"
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

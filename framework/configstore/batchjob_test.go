@@ -383,3 +383,40 @@ func TestUpsertProviderJobDefaultsKindToBatch(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, tables.ProviderJobKindBatch, job.Kind)
 }
+
+// A full Vertex resource name is also addressed by its last segment. The suffix lookup finds the
+// job by that segment alone, whole and at a path boundary, with LIKE metacharacters taken
+// literally, among the named kind and provider only.
+func TestGetProviderJobsByJobIDSuffixMatchesTheLastSegmentWhole(t *testing.T) {
+	store := setupBatchJobTestStore(t)
+	ctx := context.Background()
+	const full = "projects/p/locations/l/batchPredictionJobs/123"
+	seedBatchJob(t, store, "vertex", full)
+	seedBatchJob(t, store, "vertex", "projects/p/locations/l/batchPredictionJobs/9123")
+	seedBatchJob(t, store, "vertex", "projects/p/locations/l/batchPredictionJobs/1_3")
+	seedBatchJob(t, store, "vertex", "123")
+	seedBatchJob(t, store, "gemini", "batches/123")
+
+	jobs, err := store.GetProviderJobsByJobIDSuffix(ctx, tables.ProviderJobKindBatch, "vertex", "123")
+	require.NoError(t, err)
+	require.Len(t, jobs, 1, "9123 is not 123, a bare 123 is not a resource name, and a gemini row is not vertex's")
+	assert.Equal(t, full, jobs[0].JobID)
+
+	jobs, err = store.GetProviderJobsByJobIDSuffix(ctx, tables.ProviderJobKindBatch, "vertex", "1_3")
+	require.NoError(t, err)
+	require.Len(t, jobs, 1, "an underscore in the suffix is a literal, not a wildcard")
+	assert.Equal(t, "projects/p/locations/l/batchPredictionJobs/1_3", jobs[0].JobID)
+
+	jobs, err = store.GetProviderJobsByJobIDSuffix(ctx, tables.ProviderJobKindBatch, "gemini", "123")
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+	assert.Equal(t, "batches/123", jobs[0].JobID)
+
+	jobs, err = store.GetProviderJobsByJobIDSuffix(ctx, tables.ProviderJobKindVideo, "vertex", "123")
+	require.NoError(t, err)
+	assert.Empty(t, jobs, "another kind's rows are not consulted")
+
+	jobs, err = store.GetProviderJobsByJobIDSuffix(ctx, tables.ProviderJobKindBatch, "vertex", "")
+	require.NoError(t, err)
+	assert.Nil(t, jobs)
+}

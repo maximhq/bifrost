@@ -111,3 +111,38 @@ func TestGetProviderJobsByFileIDs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, jobs, "no provider, no lookup")
 }
+
+// A delete that names a full resource name by its last segment forgets the row the full name
+// is recorded under: whole, at a path boundary, with LIKE metacharacters literal, among the
+// named kind and provider only.
+func TestDeleteProviderObjectsByObjectIDSuffixForgetsTheFullName(t *testing.T) {
+	store := setupProviderObjectTestStore(t)
+	ctx := context.Background()
+	seed := func(kind, provider, objectID string) string {
+		id := tables.ProviderObjectID(kind, provider, objectID)
+		require.NoError(t, store.UpsertProviderObject(ctx, &tables.TableProviderObject{
+			ID: id, Kind: kind, Provider: provider, ObjectID: objectID, VirtualKeyID: "vk-a",
+		}))
+		return id
+	}
+	gone := seed(tables.ProviderObjectKindBatch, "vertex", "projects/p/locations/l/batchPredictionJobs/123")
+	kept := []string{
+		seed(tables.ProviderObjectKindBatch, "vertex", "projects/p/locations/l/batchPredictionJobs/9123"),
+		seed(tables.ProviderObjectKindBatch, "vertex", "projects/p/locations/l/batchPredictionJobs/1_3"),
+		seed(tables.ProviderObjectKindBatch, "vertex", "123"),
+		seed(tables.ProviderObjectKindCachedContent, "vertex", "projects/p/locations/l/cachedContents/123"),
+		seed(tables.ProviderObjectKindBatch, "gemini", "batches/123"),
+	}
+
+	require.NoError(t, store.DeleteProviderObjectsByObjectIDSuffix(ctx, tables.ProviderObjectKindBatch, "vertex", "123"))
+
+	objects, err := store.GetProviderObjectsByIDs(ctx, append([]string{gone}, kept...))
+	require.NoError(t, err)
+	ids := make([]string, 0, len(objects))
+	for _, object := range objects {
+		ids = append(ids, object.ID)
+	}
+	assert.ElementsMatch(t, kept, ids, "only the vertex batch whose name ends in /123 is forgotten")
+
+	assert.Error(t, store.DeleteProviderObjectsByObjectIDSuffix(ctx, tables.ProviderObjectKindBatch, "vertex", ""), "an empty suffix would forget every full name")
+}
