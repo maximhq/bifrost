@@ -923,12 +923,27 @@ func promoteDeprecatedCalendarAligned(configData *ConfigData) {
 		rl := &configData.Governance.RateLimits[i]
 		rateLimitsByID[rl.ID] = rl
 	}
+	// A governance.budgets row naming a key promotes like an inline one.
+	budgetsOfVirtualKey := map[string][]configstoreTables.TableBudget{}
+	for i := range configData.Governance.Budgets {
+		budget := &configData.Governance.Budgets[i]
+		if budget.VirtualKeyID != nil {
+			budgetsOfVirtualKey[*budget.VirtualKeyID] = append(budgetsOfVirtualKey[*budget.VirtualKeyID], *budget)
+		}
+	}
 	for i := range configData.Governance.VirtualKeys {
 		vk := &configData.Governance.VirtualKeys[i]
 		promoteCalendarAligned(&vk.CalendarAligned, vk.Budgets, vk.RateLimit)
 		for j := range vk.ProviderConfigs {
 			pc := &vk.ProviderConfigs[j]
 			promoteCalendarAligned(&vk.CalendarAligned, pc.Budgets, pc.RateLimit)
+		}
+		promoteCalendarAligned(&vk.CalendarAligned, budgetsOfVirtualKey[vk.ID], nil)
+	}
+	// promoteCalendarAligned only clears the copies it is given.
+	for i := range configData.Governance.Budgets {
+		if configData.Governance.Budgets[i].VirtualKeyID != nil {
+			configData.Governance.Budgets[i].CalendarAlignedInput = nil
 		}
 	}
 	for i := range configData.Governance.Teams {
@@ -4161,6 +4176,64 @@ func fileManagedModelConfigScope(scope string) bool {
 	return scope == "" || scope == configstoreTables.ModelConfigScopeGlobal || scope == configstoreTables.ModelConfigScopeVirtualKey
 }
 
+// virtualKeyLimitModelConfigs names the tiers holding limits config.json declares, which the prune keeps.
+func virtualKeyLimitModelConfigs(existing *configstore.GovernanceConfig, configData *ConfigData, protected map[string]bool) map[string]bool {
+	kept := map[string]bool{}
+	if existing == nil || configData == nil || configData.Governance == nil {
+		return kept
+	}
+	// pc id -> its tier, for a governance.budgets row naming a provider config.
+	tierOfProviderConfig := map[uint]string{}
+	for _, vk := range existing.VirtualKeys {
+		for _, pc := range vk.ProviderConfigs {
+			tierOfProviderConfig[pc.ID] = vk.ID + "\x00" + pc.Provider
+		}
+	}
+	declared := map[string]bool{}
+	for _, vk := range configData.Governance.VirtualKeys {
+		if vk.ID == "" {
+			continue
+		}
+		if len(vk.Budgets) > 0 || vk.RateLimitID != nil {
+			declared[vk.ID+"\x00"] = true
+		}
+		for _, pc := range vk.ProviderConfigs {
+			if len(pc.Budgets) > 0 || pc.RateLimitID != nil {
+				declared[vk.ID+"\x00"+pc.Provider] = true
+			}
+		}
+	}
+	for _, budget := range configData.Governance.Budgets {
+		switch {
+		case budget.VirtualKeyID != nil:
+			declared[*budget.VirtualKeyID+"\x00"] = true
+		case budget.ProviderConfigID != nil:
+			if tier, found := tierOfProviderConfig[*budget.ProviderConfigID]; found {
+				declared[tier] = true
+			}
+		}
+	}
+	for _, mc := range existing.ModelConfigs {
+		if mc.ID == "" || mc.Scope != configstoreTables.ModelConfigScopeVirtualKey ||
+			mc.ModelName != configstoreTables.ModelConfigAllModels || mc.ScopeID == nil {
+			continue
+		}
+		// A guarded key keeps its tiers.
+		if protected[*mc.ScopeID] {
+			kept[mc.ID] = true
+			continue
+		}
+		provider := ""
+		if mc.Provider != nil {
+			provider = *mc.Provider
+		}
+		if declared[*mc.ScopeID+"\x00"+provider] {
+			kept[mc.ID] = true
+		}
+	}
+	return kept
+}
+
 // governanceLimitsToKeep names the budgets and rate limits config.json no longer declares that the
 // prune must still keep, because something the file does not govern through governance.budgets or
 // governance.rate_limits owns them:
@@ -4174,11 +4247,11 @@ func fileManagedModelConfigScope(scope string) bool {
 // Resolved before the prune transaction opens, since the guard reads through the store's own
 // connection. A guard error keeps every candidate this boot: the rows are left for the next boot to
 // prune rather than deleted while something may still use them.
-func governanceLimitsToKeep(ctx context.Context, store configstore.ConfigStore, existing *configstore.GovernanceConfig, configData *ConfigData) (budgets, rateLimits map[string]bool) {
+func governanceLimitsToKeep(ctx context.Context, store configstore.ConfigStore, existing *configstore.GovernanceConfig, configData *ConfigData, protected map[string]bool) (budgets, rateLimits map[string]bool) {
 	budgets, rateLimits = map[string]bool{}, map[string]bool{}
-	ownedByKeptModelConfig := map[string]bool{}
+	ownedByKeptModelConfig := virtualKeyLimitModelConfigs(existing, configData, protected)
 	for _, mc := range existing.ModelConfigs {
-		if fileManagedModelConfigScope(mc.Scope) {
+		if fileManagedModelConfigScope(mc.Scope) && !ownedByKeptModelConfig[mc.ID] {
 			continue
 		}
 		ownedByKeptModelConfig[mc.ID] = true
@@ -4336,7 +4409,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 	logger.Debug("source_of_truth=config.json: pruning governance rows not present in config file")
 	protected := resolveProtectedVirtualKeys(ctx, config.ConfigStore,
 		virtualKeyPruneCandidates(config.GovernanceConfig.VirtualKeys, configData))
-	keepBudgets, keepRateLimits := governanceLimitsToKeep(ctx, config.ConfigStore, config.GovernanceConfig, configData)
+	keepBudgets, keepRateLimits := governanceLimitsToKeep(ctx, config.ConfigStore, config.GovernanceConfig, configData, protected)
 	fileBudgetIDs := declaredBudgetIDs(configData.Governance.Budgets)
 	err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		if configData.governanceSectionPresent("virtual_keys") {
@@ -4349,7 +4422,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 				// mcp_client_name with MCPClientID==0. Resolve before reconciling
 				// to avoid creating/deleting client-id 0 associations.
 				vk.MCPConfigs = resolveMCPConfigClientIDs(ctx, config.ConfigStore, vk.MCPConfigs, vk.ID)
-				if err := reconcileVirtualKeyAssociations(ctx, config.ConfigStore, tx, vk.ID, vk.Budgets, vk.ProviderConfigs, vk.MCPConfigs, fileBudgetIDs); err != nil {
+				if err := reconcileVirtualKeyAssociations(ctx, config.ConfigStore, tx, vk.ID, vk.Budgets, vk.RateLimitID, vk.ProviderConfigs, vk.MCPConfigs, fileBudgetIDs); err != nil {
 					return fmt.Errorf("failed to reconcile associations for virtual key %s: %w", vk.ID, err)
 				}
 			}
@@ -4393,12 +4466,13 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 			for _, row := range configData.Governance.ModelConfigs {
 				keep[row.ID] = true
 			}
+			keyLimits := virtualKeyLimitModelConfigs(config.GovernanceConfig, configData, protected)
 			nextModelConfigs := append([]configstoreTables.TableModelConfig(nil), configData.Governance.ModelConfigs...)
 			for _, existing := range config.GovernanceConfig.ModelConfigs {
 				if existing.ID == "" || keep[existing.ID] {
 					continue
 				}
-				if !fileManagedModelConfigScope(existing.Scope) {
+				if !fileManagedModelConfigScope(existing.Scope) || keyLimits[existing.ID] {
 					nextModelConfigs = append(nextModelConfigs, existing)
 					continue
 				}
@@ -4549,6 +4623,7 @@ func updateGovernanceConfigInStore(
 		pendingVirtualKeyBudgetsToUpdate := make([]configstoreTables.TableBudget, 0)
 		pendingProviderConfigBudgetsToUpdate := make([]configstoreTables.TableBudget, 0)
 		pendingCustomerBudgetsToUpdate := make([]configstoreTables.TableBudget, 0)
+		pendingVKLimits := make([]pendingVKTierLimits, 0)
 
 		// Create budgets
 		for _, budget := range budgetsToAdd {
@@ -4813,17 +4888,34 @@ func updateGovernanceConfigInStore(
 			virtualKey := &virtualKeysToAdd[i]
 			providerConfigs := virtualKey.ProviderConfigs
 			mcpConfigs := virtualKey.MCPConfigs
+			// Written to the key's tier below; left here the save would cascade them as the key's own.
+			inlineBudgets := virtualKey.Budgets
+			rateLimitID := virtualKey.RateLimitID
 			virtualKey.ProviderConfigs = nil
 			virtualKey.MCPConfigs = nil
+			virtualKey.Budgets = nil
+			virtualKey.RateLimitID = nil
 			// Here we wll filter provider / keys that are not available
 			if err := config.ConfigStore.CreateVirtualKey(ctx, virtualKey, tx); err != nil {
 				return fmt.Errorf("failed to create virtual key %s: %w", virtualKey.ID, err)
 			}
+			pendingVKLimits = append(pendingVKLimits, pendingVKTierLimits{
+				vkID: virtualKey.ID, budgets: inlineBudgets, rateLimitID: rateLimitID,
+			})
 			for j := range providerConfigs {
 				providerConfigs[j].VirtualKeyID = virtualKey.ID
+				// As above.
+				pcBudgets := providerConfigs[j].Budgets
+				pcRateLimitID := providerConfigs[j].RateLimitID
+				providerConfigs[j].Budgets = nil
+				providerConfigs[j].RateLimitID = nil
 				if err := config.ConfigStore.CreateVirtualKeyProviderConfig(ctx, &providerConfigs[j], tx); err != nil {
 					return fmt.Errorf("failed to create provider config for virtual key %s: %w", virtualKey.ID, err)
 				}
+				provider := providerConfigs[j].Provider
+				pendingVKLimits = append(pendingVKLimits, pendingVKTierLimits{
+					vkID: virtualKey.ID, provider: &provider, budgets: pcBudgets, rateLimitID: pcRateLimitID,
+				})
 			}
 			for j := range mcpConfigs {
 				mcpConfigs[j].VirtualKeyID = virtualKey.ID
@@ -4838,7 +4930,7 @@ func updateGovernanceConfigInStore(
 
 		// Update virtual keys (config.json changed)
 		for _, virtualKey := range virtualKeysToUpdate {
-			if err := reconcileVirtualKeyAssociations(ctx, config.ConfigStore, tx, virtualKey.ID, virtualKey.Budgets, virtualKey.ProviderConfigs, virtualKey.MCPConfigs, fileBudgetIDs); err != nil {
+			if err := reconcileVirtualKeyAssociations(ctx, config.ConfigStore, tx, virtualKey.ID, virtualKey.Budgets, virtualKey.RateLimitID, virtualKey.ProviderConfigs, virtualKey.MCPConfigs, fileBudgetIDs); err != nil {
 				return fmt.Errorf("failed to reconcile associations for virtual key %s: %w", virtualKey.ID, err)
 			}
 			if err := config.ConfigStore.UpdateVirtualKey(ctx, &virtualKey, tx); err != nil {
@@ -4846,32 +4938,40 @@ func updateGovernanceConfigInStore(
 			}
 		}
 
-		// Create virtual-key-owned budgets after virtual keys exist.
+		// virtual_key_id names the key a budget funds; the key's tier owns the row.
 		for _, budget := range pendingVirtualKeyBudgetsToAdd {
-			if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
-			}
+			pendingVKLimits = append(pendingVKLimits, pendingVKTierLimits{
+				vkID: *budget.VirtualKeyID, budgets: []configstoreTables.TableBudget{budget},
+			})
 		}
 
-		// Update virtual-key-owned budgets after virtual keys exist.
+		// Existing rows take the same path, which moves a directly owned one onto the tier.
 		for _, budget := range pendingVirtualKeyBudgetsToUpdate {
-			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
-				return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
-			}
+			pendingVKLimits = append(pendingVKLimits, pendingVKTierLimits{
+				vkID: *budget.VirtualKeyID, budgets: []configstoreTables.TableBudget{budget},
+			})
 		}
 
-		// Create provider-config-owned budgets after virtual key provider configs exist.
+		// As above, keyed by provider_config_id.
 		for _, budget := range pendingProviderConfigBudgetsToAdd {
-			if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
+			vkID, provider, err := providerConfigLimitOwner(ctx, tx, *budget.ProviderConfigID)
+			if err != nil {
+				return fmt.Errorf("failed to resolve provider config %d of budget %s: %w", *budget.ProviderConfigID, budget.ID, err)
 			}
+			pendingVKLimits = append(pendingVKLimits, pendingVKTierLimits{
+				vkID: vkID, provider: &provider, budgets: []configstoreTables.TableBudget{budget},
+			})
 		}
 
-		// Update provider-config-owned budgets after virtual key provider configs exist.
+		// As above.
 		for _, budget := range pendingProviderConfigBudgetsToUpdate {
-			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
-				return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
+			vkID, provider, err := providerConfigLimitOwner(ctx, tx, *budget.ProviderConfigID)
+			if err != nil {
+				return fmt.Errorf("failed to resolve provider config %d of budget %s: %w", *budget.ProviderConfigID, budget.ID, err)
 			}
+			pendingVKLimits = append(pendingVKLimits, pendingVKTierLimits{
+				vkID: vkID, provider: &provider, budgets: []configstoreTables.TableBudget{budget},
+			})
 		}
 
 		// Delete before the writes below: a replacement rule usually reuses the priority the
@@ -4933,6 +5033,13 @@ func updateGovernanceConfigInStore(
 				if err := linkModelConfigBudgets(tx, modelConfig.ID, modelConfig.BudgetIDs); err != nil {
 					return err
 				}
+			}
+		}
+
+		// Held back until the file's own model configs exist, so find-or-create resolves to them.
+		for _, pending := range pendingVKLimits {
+			if err := writeVirtualKeyTierLimits(ctx, config.ConfigStore, tx, pending.vkID, pending.provider, pending.budgets, pending.rateLimitID); err != nil {
+				return fmt.Errorf("failed to write limits of virtual key %s: %w", pending.vkID, err)
 			}
 		}
 
@@ -6274,6 +6381,165 @@ func resolveMCPConfigClientIDs(
 	return resolvedConfigs
 }
 
+// virtualKeyLimitModelConfigID find-or-creates a key's all-models tier, for a provider or the key itself.
+func virtualKeyLimitModelConfigID(ctx context.Context, store configstore.ConfigStore, tx *gorm.DB, vkID string, provider *string) (string, error) {
+	q := tx.WithContext(ctx).Model(&configstoreTables.TableModelConfig{}).
+		Where("scope = ? AND scope_id = ? AND model_name = ?",
+			configstoreTables.ModelConfigScopeVirtualKey, vkID, configstoreTables.ModelConfigAllModels)
+	if provider == nil {
+		q = q.Where("provider IS NULL")
+	} else {
+		q = q.Where("provider = ?", *provider)
+	}
+	var ids []string
+	if err := q.Limit(1).Pluck("id", &ids).Error; err != nil {
+		return "", fmt.Errorf("failed to look up model config of virtual key %s: %w", vkID, err)
+	}
+	if len(ids) > 0 {
+		return ids[0], nil
+	}
+	// Read from the stored row: the file may not declare this key.
+	var calendarAligned []bool
+	if err := tx.WithContext(ctx).Model(&configstoreTables.TableVirtualKey{}).
+		Where("id = ?", vkID).Limit(1).Pluck("calendar_aligned", &calendarAligned).Error; err != nil {
+		return "", fmt.Errorf("failed to read calendar alignment of virtual key %s: %w", vkID, err)
+	}
+	if len(calendarAligned) == 0 {
+		return "", fmt.Errorf("failed to create model config for virtual key %s: %w", vkID, configstore.ErrNotFound)
+	}
+	now := time.Now()
+	mc := configstoreTables.TableModelConfig{
+		ID:              uuid.NewString(),
+		ModelName:       configstoreTables.ModelConfigAllModels,
+		Provider:        provider,
+		Scope:           configstoreTables.ModelConfigScopeVirtualKey,
+		ScopeID:         &vkID,
+		CalendarAligned: calendarAligned[0],
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := store.CreateModelConfig(ctx, &mc, tx); err != nil {
+		return "", fmt.Errorf("failed to create model config for virtual key %s: %w", vkID, err)
+	}
+	return mc.ID, nil
+}
+
+// pendingVKTierLimits holds one tier's file-declared limits until the file's own model configs exist.
+type pendingVKTierLimits struct {
+	vkID        string
+	provider    *string
+	budgets     []configstoreTables.TableBudget
+	rateLimitID *string
+}
+
+// writeVirtualKeyTierLimits writes one tier's declared budgets and rate limit onto its model config.
+func writeVirtualKeyTierLimits(ctx context.Context, store configstore.ConfigStore, tx *gorm.DB, vkID string, provider *string, budgets []configstoreTables.TableBudget, rateLimitID *string) error {
+	if len(budgets) == 0 && rateLimitID == nil {
+		return nil
+	}
+	mcID, err := virtualKeyLimitModelConfigID(ctx, store, tx, vkID, provider)
+	if err != nil {
+		return err
+	}
+	if rateLimitID != nil {
+		// Only when the tier has none: one it already carries is the one in force.
+		if err := tx.WithContext(ctx).Model(&configstoreTables.TableModelConfig{}).
+			Where("id = ? AND rate_limit_id IS NULL", mcID).
+			UpdateColumn("rate_limit_id", *rateLimitID).Error; err != nil {
+			return fmt.Errorf("failed to attach rate limit %s to model config %s: %w", *rateLimitID, mcID, err)
+		}
+		if err := clearDirectRateLimitReference(ctx, tx, vkID, provider, *rateLimitID); err != nil {
+			return err
+		}
+	}
+	for i := range budgets {
+		budget := budgets[i]
+		if budget.ID == "" {
+			continue
+		}
+		budget.VirtualKeyID = nil
+		budget.ProviderConfigID = nil
+		budget.ModelConfigID = &mcID
+		existing, err := store.GetBudget(ctx, budget.ID, tx)
+		if errors.Is(err, configstore.ErrNotFound) {
+			if err := store.CreateBudget(ctx, &budget, tx); err != nil {
+				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
+			}
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("failed to get budget %s: %w", budget.ID, err)
+		}
+		// A row another owner holds keeps it.
+		switch {
+		case existing.ModelConfigID != nil:
+			budget.ModelConfigID = existing.ModelConfigID
+		case existing.TeamID != nil || existing.CustomerID != nil:
+			budget.ModelConfigID = nil
+			budget.TeamID, budget.CustomerID = existing.TeamID, existing.CustomerID
+		}
+		budget.CreatedAt = existing.CreatedAt
+		if err := store.UpdateBudget(ctx, &budget, tx); err != nil {
+			return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
+		}
+	}
+	return nil
+}
+
+// deleteVirtualKeyTier removes a tier's model config and the limits on it. Deleting a key takes its tiers.
+func deleteVirtualKeyTier(ctx context.Context, store configstore.ConfigStore, tx *gorm.DB, vkID string, provider *string) error {
+	q := tx.WithContext(ctx).Model(&configstoreTables.TableModelConfig{}).
+		Where("scope = ? AND scope_id = ? AND model_name = ?",
+			configstoreTables.ModelConfigScopeVirtualKey, vkID, configstoreTables.ModelConfigAllModels)
+	if provider == nil {
+		q = q.Where("provider IS NULL")
+	} else {
+		q = q.Where("provider = ?", *provider)
+	}
+	var ids []string
+	if err := q.Pluck("id", &ids).Error; err != nil {
+		return fmt.Errorf("failed to look up model config of virtual key %s: %w", vkID, err)
+	}
+	for _, id := range ids {
+		if err := store.DeleteModelConfig(ctx, id, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			return fmt.Errorf("failed to delete model config %s of virtual key %s: %w", id, vkID, err)
+		}
+	}
+	return nil
+}
+
+// clearDirectRateLimitReference drops a key's or provider config's rate_limit_id once its tier holds it.
+func clearDirectRateLimitReference(ctx context.Context, tx *gorm.DB, vkID string, provider *string, rateLimitID string) error {
+	if provider == nil {
+		if err := tx.WithContext(ctx).Model(&configstoreTables.TableVirtualKey{}).
+			Where("id = ? AND rate_limit_id = ?", vkID, rateLimitID).
+			UpdateColumn("rate_limit_id", nil).Error; err != nil {
+			return fmt.Errorf("failed to clear rate limit of virtual key %s: %w", vkID, err)
+		}
+		return nil
+	}
+	if err := tx.WithContext(ctx).Model(&configstoreTables.TableVirtualKeyProviderConfig{}).
+		Where("virtual_key_id = ? AND provider = ? AND rate_limit_id = ?", vkID, *provider, rateLimitID).
+		UpdateColumn("rate_limit_id", nil).Error; err != nil {
+		return fmt.Errorf("failed to clear rate limit of provider config for %s: %w", *provider, err)
+	}
+	return nil
+}
+
+// providerConfigLimitOwner names the virtual key and provider a provider config belongs to.
+func providerConfigLimitOwner(ctx context.Context, tx *gorm.DB, providerConfigID uint) (string, string, error) {
+	var pc configstoreTables.TableVirtualKeyProviderConfig
+	if err := tx.WithContext(ctx).
+		Select("id", "virtual_key_id", "provider").
+		First(&pc, "id = ?", providerConfigID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", "", configstore.ErrNotFound
+		}
+		return "", "", err
+	}
+	return pc.VirtualKeyID, pc.Provider, nil
+}
+
 // reconcileVirtualKeyAssociations reconciles ProviderConfigs and MCPConfigs associations
 // for a virtual key when config.json changes (hash mismatch already detected at VK level).
 //
@@ -6296,6 +6562,7 @@ func reconcileVirtualKeyAssociations(
 	tx *gorm.DB,
 	vkID string,
 	newBudgets []configstoreTables.TableBudget,
+	newRateLimitID *string,
 	newProviderConfigs []configstoreTables.TableVirtualKeyProviderConfig,
 	newMCPConfigs []configstoreTables.TableVirtualKeyMCPConfig,
 	fileBudgetIDs map[string]bool,
@@ -6338,10 +6605,9 @@ func reconcileVirtualKeyAssociations(
 			return fmt.Errorf("failed to delete budgets of provider config for %s: %w", existing.Provider, err)
 		}
 	}
-	if err := upsertInlineBudgets(ctx, store, tx, newBudgets, func(budget *configstoreTables.TableBudget) {
-		budget.VirtualKeyID = &vkID
-	}); err != nil {
-		return fmt.Errorf("failed to write budgets of virtual key %s: %w", vkID, err)
+	// UpdateVirtualKey keeps the key's rate_limit_id while no tier holds one, so move it here too.
+	if err := writeVirtualKeyTierLimits(ctx, store, tx, vkID, nil, newBudgets, newRateLimitID); err != nil {
+		return fmt.Errorf("failed to write limits of virtual key %s: %w", vkID, err)
 	}
 
 	// Process provider configs from config.json
@@ -6355,28 +6621,38 @@ func reconcileVirtualKeyAssociations(
 			existing.AllowedModels = newPC.AllowedModels
 			existing.BlacklistedModels = newPC.BlacklistedModels
 			existing.AllowAllKeys = newPC.AllowAllKeys
-			existing.RateLimitID = newPC.RateLimitID
+			// The provider's tier owns it: cleared here, attached to the tier below.
+			existing.RateLimitID = nil
 			existing.Keys = newPC.Keys
 			if err := store.UpdateVirtualKeyProviderConfig(ctx, &existing, tx); err != nil {
 				return fmt.Errorf("failed to update provider config for %s: %w", newPC.Provider, err)
 			}
-			providerConfigID := existing.ID
-			if err := upsertInlineBudgets(ctx, store, tx, newPC.Budgets, func(budget *configstoreTables.TableBudget) {
-				budget.ProviderConfigID = &providerConfigID
-			}); err != nil {
-				return fmt.Errorf("failed to write budgets of provider config for %s: %w", newPC.Provider, err)
+			provider := newPC.Provider
+			if err := writeVirtualKeyTierLimits(ctx, store, tx, vkID, &provider, newPC.Budgets, newPC.RateLimitID); err != nil {
+				return fmt.Errorf("failed to write limits of provider config for %s: %w", newPC.Provider, err)
 			}
 		} else {
-			// Create new provider config from file
+			// Create new provider config from file; its limits go to the provider's tier.
+			budgets := newPC.Budgets
+			rateLimitID := newPC.RateLimitID
+			newPC.Budgets = nil
+			newPC.RateLimitID = nil
 			if err := store.CreateVirtualKeyProviderConfig(ctx, &newPC, tx); err != nil {
 				return fmt.Errorf("failed to create provider config for %s: %w", newPC.Provider, err)
+			}
+			provider := newPC.Provider
+			if err := writeVirtualKeyTierLimits(ctx, store, tx, vkID, &provider, budgets, rateLimitID); err != nil {
+				return fmt.Errorf("failed to write limits of provider config for %s: %w", newPC.Provider, err)
 			}
 		}
 	}
 
-	// Delete provider configs that exist in DB but not in file
+	// Delete provider configs absent from the file, with the tier holding their limits.
 	for provider, existing := range existingByProvider {
 		if !newProviderSet[provider] {
+			if err := deleteVirtualKeyTier(ctx, store, tx, vkID, &provider); err != nil {
+				return err
+			}
 			if err := store.DeleteVirtualKeyProviderConfig(ctx, existing.ID, tx); err != nil {
 				return fmt.Errorf("failed to delete provider config for %s: %w", provider, err)
 			}
@@ -6450,50 +6726,6 @@ func deleteUndeclaredBudgets(
 	return nil
 }
 
-// upsertInlineBudgets writes the budgets config.json declares inline on one owner, a virtual key or
-// one of its provider configs: a declared id that exists is updated, and a new one is created under
-// the owner through setOwner.
-//
-// Only the configuration is the file's. UpdateBudget carries usage, the last reset, an active override
-// and a model config's ownership forward, so a source_of_truth config.json restart, which comes through
-// here for every key on every boot, applies an edited max_limit without resetting spend.
-func upsertInlineBudgets(
-	ctx context.Context,
-	store configstore.ConfigStore,
-	tx *gorm.DB,
-	declared []configstoreTables.TableBudget,
-	setOwner func(*configstoreTables.TableBudget),
-) error {
-	for i := range declared {
-		budget := declared[i]
-		if budget.ID == "" {
-			continue
-		}
-		existing, err := store.GetBudget(ctx, budget.ID, tx)
-		if errors.Is(err, configstore.ErrNotFound) {
-			setOwner(&budget)
-			if err := store.CreateBudget(ctx, &budget, tx); err != nil {
-				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
-			}
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("failed to get budget %s: %w", budget.ID, err)
-		}
-		// UpdateBudget saves the whole row it is given, so the ownership and creation time the stored
-		// row has are carried onto the file's.
-		budget.TeamID = existing.TeamID
-		budget.CustomerID = existing.CustomerID
-		budget.VirtualKeyID = existing.VirtualKeyID
-		budget.ProviderConfigID = existing.ProviderConfigID
-		budget.ModelConfigID = existing.ModelConfigID
-		budget.CreatedAt = existing.CreatedAt
-		if err := store.UpdateBudget(ctx, &budget, tx); err != nil {
-			return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
-		}
-	}
-	return nil
-}
 
 // declaredBudgetIDs is the set of non-empty ids in budgets.
 func declaredBudgetIDs(budgets []configstoreTables.TableBudget) map[string]bool {
