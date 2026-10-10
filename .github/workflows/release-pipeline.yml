@@ -1707,13 +1707,16 @@ jobs:
           # script does `docker compose up -d` (ALL services) and waits for them
           # to be healthy, so weaviate's gossip to its own advertise address
           # 172.38.0.12:8301 (and 8080) must also be allowed or weaviate never
-          # becomes healthy. Keep the pinned IPs in sync with
-          # .github/workflows/configs/docker-compose.yml.
+          # becomes healthy. The semantic cache suite also reaches Redis Stack
+          # through its published 6379, which DNATs to 172.38.0.13. Keep the
+          # pinned IPs in sync with .github/workflows/configs/docker-compose.yml.
           allowed-endpoints: >
             127.0.0.1:5432
+            127.0.0.1:6379
             172.38.0.11:5432
             172.38.0.12:8080
             172.38.0.12:8301
+            172.38.0.13:6379
             api.tokenfactory.nebius.com:443
             iojs.org:443
             aiplatform.googleapis.com:443
