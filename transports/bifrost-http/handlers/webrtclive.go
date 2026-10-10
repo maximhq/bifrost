@@ -174,6 +174,10 @@ func createLiveWebRTCSession(admission *liveAdmission, body []byte, upstreamOffe
 	}
 	admission.meter.setMinimumSeconds(liveWebRTCMinimumSeconds)
 	admission.meter.setProviderSessionID(created.Session.ID)
+	// The session exists and has incurred its minimum even when its answer is unusable.
+	if created.Transport == nil || created.Transport.SDP == "" {
+		return nil, newRealtimeWireBifrostError(502, "upstream_connection_error", "live session create response has no SDP answer")
+	}
 	return created, nil
 }
 
