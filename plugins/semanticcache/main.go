@@ -488,7 +488,33 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		plugin.setPlaceholderVectorIfRequired(state)
 	}
 
+	plugin.recordCacheLookupMiss(ctx, state, requestID)
 	return req, nil, nil
+}
+
+// recordCacheLookupMiss records a missed lookup on the request context for the
+// x-bifrost-cache-* response headers: the id the entry will be written under
+// and, when a semantic search ran, its embedding usage. A stream's headers are
+// sent before any chunk carries cache_debug, so they are written from this.
+// It holds exactly what PostLLMHook will stamp as cache_debug.
+func (plugin *Plugin) recordCacheLookupMiss(ctx *schemas.BifrostContext, state *cacheState, requestID string) {
+	storageID := requestID
+	if state.DirectCacheID != "" {
+		storageID = state.DirectCacheID
+	}
+	extraFields := &schemas.BifrostResponseExtraFields{}
+	plugin.stampCacheMetadataForMiss(state, extraFields, storageID, false, true)
+	schemas.SetCacheLookupOnContext(ctx, extraFields.CacheDebug)
+}
+
+// recordCacheLookupHit records a cache hit on the request context for the
+// x-bifrost-cache-* response headers, with the same fields cache_debug carries
+// on the served response. On a stream replay cache_debug is stamped on the last
+// chunk, after the headers are sent; this is recorded before the first.
+func (plugin *Plugin) recordCacheLookupHit(ctx *schemas.BifrostContext, state *cacheState, cacheID string, requestedProvider schemas.ModelProvider, requestedModel string, cacheType CacheType, threshold *float64, similarity *float64, inputTokens *int) {
+	extraFields := &schemas.BifrostResponseExtraFields{}
+	plugin.stampCacheMetadataForHit(state, extraFields, cacheID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
+	schemas.SetCacheLookupOnContext(ctx, extraFields.CacheDebug)
 }
 
 // resolveCacheKey returns the per-request cache key (or the configured default)
