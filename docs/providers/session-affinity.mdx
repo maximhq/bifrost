@@ -43,12 +43,14 @@ The binding is keyed by what the caller asked for, so a session that asks for `g
 <Note>
 A request that names its provider (`openai/gpt-4o`) is never reordered and writes no provider binding. The caller asked for that provider, so only the key level applies, even when a fallback served an earlier turn of the same session.
 
-A request that pins one of the routed provider's keys, by ID (`x-bf-api-key-id`) or by name (`x-bf-api-key`), is not reordered either: the pinned key exists only on that provider, so the session keeps the routing decision. A pin on a key of a provider that routing put further down the chain brings that provider to the front before the session is consulted (see [API Key Selection](/providers/request-options#api-key-selection)), so the session keeps that order too. A key a routing rule pinned moves with its route instead, see [How it fits with routing](#how-it-fits-with-routing).
+A request that pins one of the routed provider's keys, by ID (`x-bf-api-key-id`) or by name (`x-bf-api-key`), is not reordered either: the pinned key exists only on that provider, so the session keeps the routing decision. A pin on another provider's key leaves the order to the session, which may be moving the request to that very provider. A key a routing rule pinned moves with its route instead, see [How it fits with routing](#how-it-fits-with-routing).
 </Note>
 
 ### Key level
 
-Within the provider that serves the request, the key that last served the session for that provider and model is used again while it stays in the eligible pool. The pool is what key selection would otherwise choose from: the keys enabled for the provider that allow the model. A provider with a single key has nothing to choose, so the key level is skipped.
+Within the provider that serves the request, the key that last served the session for that provider and model is used again while it stays in the eligible pool. The pool is what key selection would otherwise choose from: the keys enabled for the provider that allow the model.
+
+A provider with a single key has nothing to choose, so its key binding is not read. The first request it serves writes one, and later requests it serves as the primary leave it as it is; a request it serves as a fallback rewrites it and restarts its TTL, as a fallback does on any provider. If a second key is added to the provider, a session bound before that keeps its first key while that key stays eligible, and each request served on it restarts the TTL, so the binding lasts until the session goes quiet for the TTL; new sessions pick between both keys.
 
 A key that leaves the pool, because it was disabled, removed, or stopped allowing the model, loses its binding and a key is picked normally.
 

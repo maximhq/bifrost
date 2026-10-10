@@ -810,7 +810,7 @@ Each attempt is pinned independently, so an unpinned fallback later in the chain
 
 A pin stays with its provider when [session affinity](/providers/session-affinity) reorders the chain. A session that moves the primary to another provider carries the target's pin onto that provider's fallback entry, and a fallback the session promotes brings its own pin to the primary attempt.
 
-A target's `key_id` outranks the caller's own key pins: when a rule pins the key, `x-bf-api-key-id` and `x-bf-api-key` do not apply to the primary attempt, and a caller's pin never moves a fallback the rule pinned. A caller's [direct key](/providers/request-options#direct-api-key) outranks both, since it bypasses the key pool: the attempt on the first provider uses the caller's key, not the pinned one. Fallbacks run on their configured keys, their own pins included.
+A target's `key_id` outranks the caller's own key pins: when a rule pins the key, `x-bf-api-key-id` and `x-bf-api-key` do not apply to the primary attempt. Without a target `key_id`, the caller's pin is tried on the first attempt only: on the rule's target, or on the provider [session affinity](/providers/session-affinity) moved the request to, and that attempt fails key selection when its provider does not hold the key. The pin itself never moves the request to another provider, and a pin on the target's own key keeps the session from moving it (see [API Key Selection](/providers/request-options#api-key-selection)). A caller's [direct key](/providers/request-options#direct-api-key) outranks both, since it bypasses the key pool: the attempt on the first provider uses the caller's key, not the pinned one. Fallbacks run on their configured keys, their own pins included.
 
 ### Time to First Token (TTFT) Cutoff
 
