@@ -361,6 +361,8 @@ A batch created from `input_file_id` or `input_blob` names its models inside the
 - **OpenAI and Azure** run the models named in each input row and ignore the `model` on the batch request, so creating a file- or blob-based batch requires a key that allows every model of that provider. Otherwise the request is refused with `403` (`model_blocked`), even if an allowed `model` is supplied.
 - **Gemini, Vertex, and Bedrock** run the model named on the batch request, so that `model` must be supplied and allowed by the key.
 
+A custom provider is held to the rule of its base provider type, since it runs that provider's batch API. A request that names a file or blob and inline `requests` together is refused with `400`: no provider runs inline requests beside a file, so the batch's work must be named once.
+
 Inline batches (`requests`) are checked per item and are unaffected, as are keys that allow every model of the provider.
 
 ## User Groups

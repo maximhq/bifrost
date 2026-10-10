@@ -673,10 +673,25 @@ func TestPreLLMHookRefusesOpaqueFileBatchesUnderModelRestrictedKeys(t *testing.T
 	unrestricted := buildVirtualKeyWithProviders("vk-batch", "sk-bf-batch", "Batch VK", []configstoreTables.TableVirtualKeyProviderConfig{
 		buildProviderConfig("openai", []string{"*"}),
 	})
+	customRestricted := buildVirtualKeyWithProviders("vk-batch", "sk-bf-batch", "Batch VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("acme-openai", []string{"gpt-4"}),
+		buildProviderConfig("acme-azure", []string{"gpt-4"}),
+		buildProviderConfig("acme-gemini", []string{"gemini-2.5-flash"}),
+	})
+	customProviders := map[schemas.ModelProvider]configstore.ProviderConfig{
+		"acme-openai": {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}},
+		"acme-azure":  {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Azure}},
+		"acme-gemini": {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Gemini}},
+	}
 	fileBatch := func(provider schemas.ModelProvider, model string) *schemas.BifrostRequest {
 		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
 			Provider: provider, Model: schemas.Ptr(model), InputFileID: "file-x",
 		}}
+	}
+	fileBatchWithItems := func(provider schemas.ModelProvider, model string) *schemas.BifrostRequest {
+		req := fileBatch(provider, model)
+		req.BatchCreateRequest.Requests = []schemas.BatchRequestItem{{CustomID: "decoy", Body: map[string]any{"model": model}}}
+		return req
 	}
 	decision := func(sc *schemas.LLMPluginShortCircuit) string {
 		if sc == nil || sc.Error == nil || sc.Error.Type == nil {
@@ -697,15 +712,45 @@ func TestPreLLMHookRefusesOpaqueFileBatchesUnderModelRestrictedKeys(t *testing.T
 		{"gemini file batch, disallowed hint, restricted key", restricted, fileBatch(schemas.Gemini, "gemini-2.5-pro"), DecisionModelBlocked},
 		{"openai file batch, unrestricted key", unrestricted, fileBatch(schemas.OpenAI, "gpt-4"), DecisionAllow},
 		{"openai inline batch, allowed models, restricted key", restricted, &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.OpenAI, Requests: []schemas.BatchRequestItem{{Body: map[string]any{"model": "gpt-4"}}}}}, DecisionAllow},
+		// A file beside inline items is still a file batch: no provider runs the inline items when a
+		// file is named, OpenAI, Azure and Bedrock submit the file, Gemini and Vertex refuse the mix.
+		{"openai file batch beside inline items naming allowed models, restricted key", restricted, fileBatchWithItems(schemas.OpenAI, "gpt-4"), DecisionModelBlocked},
+		{"azure file batch beside inline items naming allowed models, restricted key", restricted, fileBatchWithItems(schemas.Azure, "gpt-4"), DecisionModelBlocked},
+		{"openai file batch beside inline items, unrestricted key", unrestricted, fileBatchWithItems(schemas.OpenAI, "gpt-4"), DecisionAllow},
+		// A custom provider runs its base provider's batch API, so it binds what the base binds.
+		{"custom provider on openai, file batch, allowed hint, restricted key", customRestricted, fileBatch("acme-openai", "gpt-4"), DecisionModelBlocked},
+		{"custom provider on azure, file batch, allowed hint, restricted key", customRestricted, fileBatch("acme-azure", "gpt-4"), DecisionModelBlocked},
+		{"custom provider on openai, inline batch, allowed models, restricted key", customRestricted, &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: "acme-openai", Requests: []schemas.BatchRequestItem{{Body: map[string]any{"model": "gpt-4"}}}}}, DecisionAllow},
+		{"custom provider on gemini, file batch, allowed hint, restricted key", customRestricted, fileBatch("acme-gemini", "gemini-2.5-flash"), DecisionAllow},
+		{"custom provider on gemini, file batch, disallowed hint, restricted key", customRestricted, fileBatch("acme-gemini", "gemini-2.5-pro"), DecisionModelBlocked},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			plugin := newAccessTestPlugin(t, tc.vk, nil)
+			if tc.vk == customRestricted {
+				plugin = newCustomProviderTestPlugin(t, tc.vk, customProviders)
+			}
 			_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-batch"), tc.req)
 			require.NoError(t, err)
 			assert.Equal(t, string(tc.want), decision(shortCircuit))
 		})
 	}
+}
+
+// newCustomProviderTestPlugin is newAccessTestPlugin over a governance plugin whose in-memory
+// store knows the given configured providers, the way the transport's does.
+func newCustomProviderTestPlugin(t *testing.T, vk *configstoreTables.TableVirtualKey, providers map[schemas.ModelProvider]configstore.ProviderConfig) *GovernancePlugin {
+	t.Helper()
+	logger := NewMockLogger()
+	inMemory := &mockInMemoryStore{configuredProviders: providers}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, inMemory)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, inMemory)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	return plugin
 }
 
 // TestBudgetResolver_EvaluateVirtualKey_ActiveNoExpiry verifies that a VK

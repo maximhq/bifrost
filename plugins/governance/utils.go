@@ -67,14 +67,29 @@ func IsModelRequiredForRequest(requestType schemas.RequestType) bool {
 // batchModelBoundByProvider reports whether a provider's batch API runs the model named on the
 // batch create request. Gemini (models/{m}:batchGenerateContent), Vertex (job model) and Bedrock
 // (required modelId) do; OpenAI and Azure take only the uploaded input, whose rows each name their
-// own model, so the request's model is at most a pricing hint there.
-func batchModelBoundByProvider(provider schemas.ModelProvider) bool {
-	switch provider {
+// own model, so the request's model is at most a pricing hint there. A custom provider runs its
+// base provider's batch API under its own name, so it is judged by the base type the configured
+// providers record for it; a provider the store does not know is judged by its name.
+func batchModelBoundByProvider(provider schemas.ModelProvider, configured InMemoryStore) bool {
+	switch batchBaseProvider(provider, configured) {
 	case schemas.OpenAI, schemas.Azure:
 		return false
 	default:
 		return true
 	}
+}
+
+// batchBaseProvider is the provider whose implementation runs provider's requests: the base type
+// of a custom provider, otherwise provider itself.
+func batchBaseProvider(provider schemas.ModelProvider, configured InMemoryStore) schemas.ModelProvider {
+	if configured == nil {
+		return provider
+	}
+	config, ok := configured.GetConfiguredProviders()[provider]
+	if !ok || config.CustomProviderConfig == nil || config.CustomProviderConfig.BaseProviderType == "" {
+		return provider
+	}
+	return config.CustomProviderConfig.BaseProviderType
 }
 
 // IsModelCheckedWhenPresent reports whether a request type whose model is optional

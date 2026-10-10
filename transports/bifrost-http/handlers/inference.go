@@ -3769,6 +3769,14 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "either input_file_id, input_blob, or requests is required")
 		return
 	}
+	// A batch's work is named once. No provider runs inline requests beside a file: OpenAI, Azure
+	// and Bedrock submit the file and drop them, Gemini and Vertex refuse the mix. Refusing it here
+	// keeps a client from losing its inline requests, and keeps the file batch rule in governance
+	// from being judged on items that would never run.
+	if (req.InputFileID != "" || hasInputBlob) && len(req.Requests) > 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "input_file_id or input_blob and requests are exclusive: name the batch's work as a file, a blob, or inline requests, not both")
+		return
+	}
 
 	// Extract extra params
 	extraParams, err := extractExtraParams(ctx.PostBody(), batchCreateParamsKnownFields)
