@@ -221538,6 +221538,84 @@
           }
         }
       ]
+    },
+    {
+      "name": "198. Anthropic Responses Streaming Relative Content Index with Reasoning (#8323 / PR #8329) (anthropic-responses-content-index)",
+      "description": "On streaming /v1/responses for the direct anthropic/* provider, when the turn contains extended thinking, the reasoning item occupies output_index: 0 and the assistant message item occupies output_index: 1. Previously, all message part events forwarded Anthropic global content block index (1) as content_index, even though the message item only contains a single content part (index 0). Clients validating or accumulating events per (output_index, content_index) against the completed item failed with mismatch errors (#8323). This test pins that all message events rebase content_index to 0 relative to their output item.",
+      "item": [
+        {
+          "name": "anthropic/claude-sonnet-4-5 /v1/responses streaming: message events use relative content_index 0 with reasoning - #8323",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"input\": \"A train leaves at 9:47 at 83 km/h, another at 10:12 at 117 km/h from the same station on the same line. When does it catch up? Think carefully, then answer in one line.\",\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"max_output_tokens\": 1024,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "var frames = [];",
+                  "(pm.response.text() || '').split('\\n').forEach(function (line) {",
+                  "  var t = line.replace(/\\r$/, '');",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { frames.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var reasoningFrames = frames.filter(function (f) {",
+                  "  return f && ((f.type === 'response.output_item.added' && f.item && f.item.type === 'reasoning') ||",
+                  "    (typeof f.type === 'string' && f.type.indexOf('response.reasoning') === 0));",
+                  "});",
+                  "pm.test('anthropic: the stream emitted reasoning events', function () {",
+                  "  pm.expect(reasoningFrames, 'no reasoning event was emitted').to.not.be.empty;",
+                  "});",
+                  "var messagePartFrames = frames.filter(function (f) {",
+                  "  return f && (f.type === 'response.content_part.added' ||",
+                  "    f.type === 'response.output_text.delta' ||",
+                  "    f.type === 'response.output_text.done' ||",
+                  "    f.type === 'response.content_part.done' ||",
+                  "    f.type === 'response.output_text.annotation.added');",
+                  "});",
+                  "pm.test('anthropic: message text stream events were emitted', function () {",
+                  "  pm.expect(messagePartFrames, 'no message text events were emitted').to.not.be.empty;",
+                  "});",
+                  "pm.test('anthropic: every message content part event uses relative content_index 0', function () {",
+                  "  messagePartFrames.forEach(function (f) {",
+                  "    pm.expect(f.content_index, f.type + ' must have content_index: 0 relative to its output item (#8323)').to.eql(0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

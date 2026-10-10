@@ -451,6 +451,19 @@ func TestToBifrostResponsesStream_VisibleThinkingPrecedingMessageContentIndexZer
 				Text: schemas.Ptr("answer text"),
 			},
 		},
+		{
+			Type:  AnthropicStreamEventTypeContentBlockDelta,
+			Index: schemas.Ptr(1),
+			Delta: &AnthropicStreamDelta{
+				Type: AnthropicStreamDeltaTypeCitations,
+				Citation: &AnthropicTextCitation{
+					Type:      "web_search_result_location",
+					CitedText: "answer text",
+					URL:       schemas.Ptr("https://example.com"),
+					Title:     schemas.Ptr("Example"),
+				},
+			},
+		},
 		{Type: AnthropicStreamEventTypeContentBlockStop, Index: schemas.Ptr(1)},
 		{
 			Type:  AnthropicStreamEventTypeMessageDelta,
@@ -461,13 +474,23 @@ func TestToBifrostResponsesStream_VisibleThinkingPrecedingMessageContentIndexZer
 
 	responses := driveResponsesStream(t, events)
 
+	seen := map[schemas.ResponsesStreamResponseType]bool{
+		schemas.ResponsesStreamResponseTypeContentPartAdded:          false,
+		schemas.ResponsesStreamResponseTypeOutputTextDelta:           false,
+		schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded: false,
+		schemas.ResponsesStreamResponseTypeOutputTextDone:            false,
+		schemas.ResponsesStreamResponseTypeContentPartDone:           false,
+	}
+
 	for _, r := range responses {
 		if r.OutputIndex != nil && *r.OutputIndex == 1 {
 			switch r.Type {
 			case schemas.ResponsesStreamResponseTypeContentPartAdded,
 				schemas.ResponsesStreamResponseTypeOutputTextDelta,
+				schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
 				schemas.ResponsesStreamResponseTypeOutputTextDone,
 				schemas.ResponsesStreamResponseTypeContentPartDone:
+				seen[r.Type] = true
 				if r.ContentIndex == nil {
 					t.Fatalf("%s output_index=1 has nil ContentIndex", r.Type)
 				}
@@ -475,6 +498,12 @@ func TestToBifrostResponsesStream_VisibleThinkingPrecedingMessageContentIndexZer
 					t.Errorf("%s output_index=1 has ContentIndex = %d, want 0", r.Type, *r.ContentIndex)
 				}
 			}
+		}
+	}
+
+	for eventType, present := range seen {
+		if !present {
+			t.Errorf("output_index=1 is missing %s", eventType)
 		}
 	}
 }

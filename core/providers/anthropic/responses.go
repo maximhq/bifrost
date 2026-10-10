@@ -1949,7 +1949,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						Type:           schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
 						SequenceNumber: sequenceNumber,
 						OutputIndex:    schemas.Ptr(outputIndex),
-						ContentIndex:   chunk.Index,
+						ContentIndex:   state.getContentIndex(outputIndex),
 						Annotation:     &annotation,
 					}
 					if itemID != "" {
