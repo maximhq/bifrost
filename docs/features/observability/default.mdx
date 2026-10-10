@@ -390,6 +390,24 @@ ws.onmessage = (event) => {
 
 ---
 
+## Background jobs
+
+Long operations run in the background so you can keep using the page. Find them in the bell icon in the top bar, on the **Background jobs** tab. The bell always opens on **Notifications**. Each tab has a badge, showing unread notifications on one and running jobs on the other.
+
+| Job | Started by |
+|-----|------------|
+| Recalculating log costs | Recalculate cost on the logs page |
+| Indexing logs for Warp | A Warp log index backfill |
+| Virtual key expiry cleanup | The daily cleanup of [expired virtual keys](/features/governance/virtual-keys#key-expiry) |
+
+Each job shows its status and, if it reports progress, a progress bar. Totals are approximate, so a finished job's count can be slightly off. To stop a running job, click **Cancel** on its row, then **Stop job**. A cancelled job does not resume. Dismiss a finished job from its row, or click **Clear finished** in the panel header to remove them all. On the Notifications tab, that spot holds **Mark all read**.
+
+Only administrators see jobs. Without View on the `BackgroundJobs` [RBAC resource](/enterprise/rbac), the tab is hidden. Cancelling needs Update on the same resource.
+
+`GET /api/sidekiq/jobs` returns all pending and running jobs, plus jobs finished in the last 24 hours. Results are newest first, up to 50.
+
+---
+
 ## Log Store Options
 
 Choose the right storage backend for your scale and requirements.
