@@ -273418,7 +273418,7 @@
       "name": "251. Anthropic streaming message_delta frame integrity and prompt usage (#7896)",
       "item": [
         {
-          "name": "anthropic/claude-sonnet-4-5 /anthropic/v1/messages streaming: message_delta keeps its delta object - #7896",
+          "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages streaming: message_delta keeps its delta object - #7896",
           "event": [
             {
               "listen": "test",
@@ -273455,7 +273455,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\": \"anthropic/claude-sonnet-4-5\", \"max_tokens\": 64, \"messages\": [{\"role\": \"user\", \"content\": \"Say OK.\"}], \"stream\": true}"
+              "raw": "{\"model\": \"anthropic/claude-sonnet-5-5\", \"max_tokens\": 64, \"messages\": [{\"role\": \"user\", \"content\": \"Say OK.\"}], \"stream\": true}"
             },
             "url": {
               "raw": "{{baseUrl}}/anthropic/v1/messages",
@@ -273471,7 +273471,7 @@
           }
         },
         {
-          "name": "anthropic/claude-sonnet-4-5 /anthropic/v1/messages streaming: message_delta invents no prompt counters - #7896",
+          "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages streaming: message_delta invents no prompt counters - #7896",
           "event": [
             {
               "listen": "test",
@@ -273518,7 +273518,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\": \"anthropic/claude-sonnet-4-5\", \"max_tokens\": 64, \"messages\": [{\"role\": \"user\", \"content\": \"Say OK.\"}], \"stream\": true}"
+              "raw": "{\"model\": \"anthropic/claude-sonnet-5-5\", \"max_tokens\": 64, \"messages\": [{\"role\": \"user\", \"content\": \"Say OK.\"}], \"stream\": true}"
             },
             "url": {
               "raw": "{{baseUrl}}/anthropic/v1/messages",
