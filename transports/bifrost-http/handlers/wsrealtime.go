@@ -108,6 +108,7 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		upgrader := h.websocketUpgrader("")
 		upgradeErr := upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 			defer conn.Close()
+			defer recoverWebSocketSession(conn)
 			clientConn := newRealtimeClientConn(conn)
 			clientConn.writeRealtimeError(newRealtimeWireBifrostError(500, "server_error", "failed to create request context"))
 		})
@@ -162,6 +163,7 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		upgrader := h.websocketUpgrader("")
 		upgradeErr := upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 			defer conn.Close()
+			defer recoverWebSocketSession(conn)
 			clientConn := newRealtimeClientConn(conn)
 			clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", err.Error()))
 		})
@@ -202,6 +204,7 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		upgrader := h.websocketUpgrader("")
 		upgradeErr := upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 			defer conn.Close()
+			defer recoverWebSocketSession(conn)
 			clientConn := newRealtimeClientConn(conn)
 			clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", fmt.Sprintf("no provider could be resolved for model %q (set as provider/model or configure the model catalog)", model)))
 		})
@@ -223,6 +226,7 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		upgrader := h.websocketUpgrader("")
 		upgradeErr := upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 			defer conn.Close()
+			defer recoverWebSocketSession(conn)
 			clientConn := newRealtimeClientConn(conn)
 			clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", "provider does not support realtime: "+string(providerKey)))
 		})
@@ -242,6 +246,7 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 	upgrader := h.websocketUpgrader(rtProvider.RealtimeWebSocketSubprotocol())
 	err = upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 		defer conn.Close()
+		defer recoverWebSocketSession(conn)
 		clientConn := newRealtimeClientConn(conn)
 
 		session, sessionErr := h.sessions.Create(conn)
@@ -287,6 +292,10 @@ func (h *WSRealtimeHandler) handleTranscriptionUpgrade(
 	upgrader := h.websocketUpgrader("realtime")
 	err := upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 		defer conn.Close()
+		defer recoverWebSocketSession(conn)
+		// Every exit below cancels the pre-request context itself; this covers the one a
+		// recovered panic takes, which would otherwise leave it open for its lifetime.
+		defer preReqCancel()
 		clientConn := newRealtimeClientConn(conn)
 
 		frames, rawModel, bootstrapErr := bufferRealtimeTranscriptionBootstrap(clientConn)
@@ -533,22 +542,36 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 	}
 	defer h.pool.Discard(upstream)
 
-	errCh := make(chan error, 2)
-	go func() {
-		errCh <- h.relayClientToRealtimeProvider(clientConn, session, upstream, rtProvider, bifrostCtx, providerKey, model, key, intent == "transcription", buffered)
-	}()
-	go func() {
-		errCh <- h.relayRealtimeProviderToClient(clientConn, session, upstream, rtProvider, bifrostCtx, providerKey, model, key, intent == "transcription")
-	}()
-
-	firstErr := <-errCh
-	_ = upstream.Close()
-	_ = clientConn.Close()
-	secondErr := <-errCh
-
-	if logErr := selectRealtimeRelayError(firstErr, secondErr); logErr != nil {
+	logErr := runRealtimeRelays(clientConn.conn,
+		func() error {
+			return h.relayClientToRealtimeProvider(clientConn, session, upstream, rtProvider, bifrostCtx, providerKey, model, key, intent == "transcription", buffered)
+		},
+		func() error {
+			return h.relayRealtimeProviderToClient(clientConn, session, upstream, rtProvider, bifrostCtx, providerKey, model, key, intent == "transcription")
+		},
+		func() {
+			_ = upstream.Close()
+			_ = clientConn.Close()
+		})
+	if logErr != nil {
 		logger.Warn("realtime websocket relay ended for %s/%s on %s: %v", providerKey, model, path, logErr)
 	}
+}
+
+// runRealtimeRelays runs the two relays of a realtime session, each on its own goroutine, and
+// ends the session when the first one returns: closeBoth tears down both connections, which
+// releases the other relay from its blocking read, and its error is collected before returning.
+// A panic inside a relay ends the session the same way (see runWebSocketRelay). The result is
+// the error worth logging, if any (see selectRealtimeRelayError).
+func runRealtimeRelays(conn *ws.Conn, toProvider, toClient func() error, closeBoth func()) error {
+	errCh := make(chan error, 2)
+	go func() { errCh <- runWebSocketRelay(conn, toProvider) }()
+	go func() { errCh <- runWebSocketRelay(conn, toClient) }()
+
+	firstErr := <-errCh
+	closeBoth()
+	secondErr := <-errCh
+	return selectRealtimeRelayError(firstErr, secondErr)
 }
 
 // relayClientToRealtimeProvider forwards client frames through the realtime turn pipeline.

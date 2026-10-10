@@ -684,9 +684,11 @@ func (c *liveSessionController) upstreamEnded() {
 		return
 	default:
 	}
+	// The watcher is released even if billing panics: the session is over either way, and a
+	// watcher left behind would outlive it.
+	defer c.markUpstreamDone()
 	c.meter.setEnding(c.transcript.snapshot())
 	c.meter.finish(c.meter.lastReportedSeconds())
-	c.markUpstreamDone()
 }
 
 // upstreamEndedEarly is upstreamEnded for an upstream that ended without session.closed: a

@@ -15,12 +15,13 @@ import (
 // fakeLiveRunner stands in for the plugin pipeline: it records every unit it admits and every
 // post-hook that closes one, and refuses units once refuse is set.
 type fakeLiveRunner struct {
-	mu       sync.Mutex
-	opens    []fakeLiveOpen
-	posts    []fakeLivePost
-	cleanups int
-	refuse   bool
-	keyIDs   map[string][]string
+	mu          sync.Mutex
+	opens       []fakeLiveOpen
+	posts       []fakeLivePost
+	cleanups    int
+	refuse      bool
+	panicOnPost bool // the post hook panics, the way a billing plugin might
+	keyIDs      map[string][]string
 }
 
 type fakeLiveOpen struct {
@@ -62,6 +63,10 @@ func (f *fakeLiveRunner) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, re
 		PostHookRunner: func(postCtx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
+			if f.panicOnPost {
+				f.panicOnPost = false // once: the next billing pass, which ends the session, goes through
+				panic("billing post-hook exploded")
+			}
 			post := fakeLivePost{model: model, err: bifrostErr}
 			post.continuation, _ = postCtx.Value(schemas.BifrostContextKeySessionContinuation).(bool)
 			post.parentID, _ = postCtx.Value(schemas.BifrostContextKeyParentRequestID).(string)
@@ -83,6 +88,12 @@ func (f *fakeLiveRunner) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, re
 			f.mu.Unlock()
 		},
 	}, nil
+}
+
+func (f *fakeLiveRunner) setPanicOnPost(panicOnPost bool) {
+	f.mu.Lock()
+	f.panicOnPost = panicOnPost
+	f.mu.Unlock()
 }
 
 func (f *fakeLiveRunner) setRefuse(refuse bool) {
@@ -660,4 +671,21 @@ func TestLiveMeterTerminalBackendFailureWithoutErrorDetails(t *testing.T) {
 	require.Len(t, posts, 1)
 	assert.Equal(t, failure.Status, posts[0].resp.Status)
 	assert.Zero(t, posts[0].resp.Usage.TotalTokens)
+}
+
+// BenchmarkLiveMeterSessionRotationAndClose measures one live session's billing lifecycle:
+// admission, five window rotations as usage snapshots arrive, and session close. Rotation and
+// close are where a post-hook panic is now contained per lane.
+func BenchmarkLiveMeterSessionRotationAndClose(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		meter := newTestLiveMeter(&fakeLiveRunner{})
+		if err := meter.admit("gpt-live-1", ""); err != nil {
+			b.Fatal(err)
+		}
+		for seconds := 30.0; seconds <= 150; seconds += 30 {
+			meter.onUsage(seconds)
+		}
+		meter.finish(165)
+	}
 }
