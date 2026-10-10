@@ -260,6 +260,8 @@ func (f *fakeOpenAI) serveAttach(w http.ResponseWriter, r *http.Request, id stri
 	s.readLoop(conn, c)
 }
 
+const invalidWebRTCAnswerMarker = " [invalid-webrtc-answer]"
+
 // serveWebRTCCreate answers Bifrost's SDP offer with a pion peer and waits for its data channel.
 func (f *fakeOpenAI) serveWebRTCCreate(w http.ResponseWriter, r *http.Request) {
 	if status := int(f.refuseStatus.Load()); status != 0 {
@@ -284,6 +286,17 @@ func (f *fakeOpenAI) serveWebRTCCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	s := f.newSession("webrtc", r.Header.Get("Authorization"), gjson.ParseBytes(body.Session))
 	s.recordFrame([]byte(`{"type":"session.start","session":` + string(body.Session) + `}`))
+	// A provider can create a billable session before its answer fails relay setup.
+	if strings.HasSuffix(s.marker, invalidWebRTCAnswerMarker) {
+		_ = pc.Close()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session":   map[string]any{"id": s.id, "model": s.model},
+			"transport": map[string]any{"type": "webrtc", "sdp": "invalid SDP answer"},
+		})
+		return
+	}
 	pc.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		for {
 			if _, _, err := track.ReadRTP(); err != nil {

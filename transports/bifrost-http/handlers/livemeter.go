@@ -156,8 +156,8 @@ func (m *liveMeter) setEnding(transcript []schemas.LiveTranscriptLine) {
 	m.mu.Unlock()
 }
 
-// abort ends an admitted session that never ran, with the error that stopped it, so plugins see
-// the session close and log why.
+// abort ends an admitted session with its setup error. A successful upstream WebRTC create
+// has already incurred the minimum charge, even if the relay never connected.
 func (m *liveMeter) abort(bifrostErr *schemas.BifrostError) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -165,6 +165,7 @@ func (m *liveMeter) abort(bifrostErr *schemas.BifrostError) {
 		return
 	}
 	m.finished = true
+	m.accrueSecondsLocked(m.minimumSeconds)
 	for _, lane := range m.backends {
 		m.closeUnitWithError(liveUnitBackend, lane.current, lane.model, bifrostErr)
 		lane.current = nil
@@ -413,6 +414,10 @@ func (m *liveMeter) closeUnitWithError(kind string, unit *liveBillingUnit, model
 	postCtx := m.unitContext(unit.requestID, false, kind)
 	if kind == liveUnitVoice && m.finished {
 		m.markEndLocked(postCtx)
+		if m.voice.seconds > 0 {
+			postErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{AudioSeconds: new(m.voice.seconds)}
+			m.voice.seconds = 0
+		}
 	}
 	m.runPostHooks(unit, postCtx, nil, &postErr)
 }
