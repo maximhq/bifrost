@@ -222,7 +222,7 @@ func TestOpenAIProviderDecisionGating(t *testing.T) {
 	})
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 
-	provider := NewOpenAIProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL}}, testNoopLogger{})
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL)}}, testNoopLogger{})
 	key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
 	decide := func(model string) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

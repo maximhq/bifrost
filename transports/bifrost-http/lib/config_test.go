@@ -352,6 +352,7 @@ EXPECTED BEHAVIORS SUMMARY
 */
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -386,6 +387,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
@@ -25661,5 +25663,79 @@ func TestPublicURLPolicyAppliesToMCPAndA2A(t *testing.T) {
 		sanitizeMCPExternalOAuthURLs(client)
 		require.Nil(t, client.MCPExternalClientURL)
 		require.Nil(t, client.A2AExternalClientURL)
+	}
+}
+
+// TestChartBaseURLSchemaAcceptsSecretReferences pins what the Helm chart's
+// values.schema.json accepts for network_config.base_url, under format
+// assertions.
+//
+// The assertion mode is the whole point. Helm 3 validates values with
+// xeipuuv/gojsonschema, which asserts format: uri and therefore REJECTS
+// base_url: env.UPSTREAM_URL; Helm 4 switched validators and does not assert
+// formats, so it accepts a reference either way. The chart workflow runs Helm 4,
+// which means ordinary `helm lint` cannot see a regression here at all -- it
+// would pass just as happily with the field back to URI-only, and Helm 3 users
+// would be unable to install again.
+//
+// Both schemas are checked, because the claim is that they AGREE: the chart and
+// transports/config.schema.json describe the same field, and a reference the
+// gateway resolves is useless if the chart refuses to install it (and vice
+// versa). They are pinned together so the pair cannot drift apart silently.
+func TestChartBaseURLSchemaAcceptsSecretReferences(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	require.True(t, ok, "failed to locate the test file")
+	dir := filepath.Dir(testFile)
+
+	for _, target := range []struct {
+		name string
+		path string
+		ptr  string
+	}{
+		{"helm chart", filepath.Join(dir, "..", "..", "..", "helm-charts", "bifrost", "values.schema.json"), "#/$defs/networkConfig/properties/base_url"},
+		{"transports config", filepath.Join(dir, "..", "..", "config.schema.json"), "#/$defs/network_config/properties/base_url"},
+	} {
+		t.Run(target.name, func(t *testing.T) {
+			assertBaseURLSchemaAcceptsReferences(t, target.path, target.ptr)
+		})
+	}
+}
+
+// assertBaseURLSchemaAcceptsReferences compiles one schema's base_url subschema
+// with format assertions on and pins the set it accepts.
+func assertBaseURLSchemaAcceptsReferences(t *testing.T, schemaPath, pointer string) {
+	t.Helper()
+
+	raw, err := os.ReadFile(schemaPath)
+	require.NoError(t, err, "failed to read %s", schemaPath)
+
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+	require.NoError(t, err)
+
+	c := jsonschema.NewCompiler()
+	// Reproduce Helm 3's validator, which asserts format.
+	c.AssertFormat()
+	require.NoError(t, c.AddResource("schema.json", doc))
+	sch, err := c.Compile("schema.json" + pointer)
+	require.NoError(t, err, "failed to compile %s%s", schemaPath, pointer)
+
+	for _, v := range []string{
+		"https://api.example.com",
+		"http://localhost:11434",
+		"env.UPSTREAM_URL",
+		"vault.bifrost/upstream/url",
+	} {
+		assert.NoError(t, sch.Validate(v), "should accept %q", v)
+	}
+	for _, v := range []any{
+		"env.",            // a reference with no name
+		"vault.",          // ditto
+		"env. spaced",     // \S+ forbids whitespace
+		"not a url",       // neither a URI nor a reference
+		"api.example.com", // no scheme, so not a URI
+		42,                // non-string
+		nil,
+	} {
+		assert.Error(t, sch.Validate(v), "should reject %#v", v)
 	}
 }
