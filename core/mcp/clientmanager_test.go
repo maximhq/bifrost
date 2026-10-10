@@ -2,17 +2,23 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -1239,4 +1245,284 @@ func TestBuildTLSHTTPClientUsesGlobalProxy(t *testing.T) {
 	_, err = httpClient.Do(req)
 	require.Error(t, err, "a metadata address must be refused")
 	proxytest.AssertRoute(t, set, proxytest.Direct, "", nil)
+}
+
+// ---------------------------------------------------------------------------
+// OpenAPI connection type: synthesized in-process servers via the factory hook
+// ---------------------------------------------------------------------------
+
+// stubOpenAPIFactory stands in for framework/openapimcp.Factory: it builds one
+// tool per comma-separated name found in openapi_config.spec and records what
+// core handed it. Each tool echoes the headers the resolver produced so the
+// layering core owns (static config headers, credentials, allow-listed extras)
+// is observable from the tool result.
+type stubOpenAPIFactory struct {
+	calls     atomic.Int32
+	sawClient atomic.Bool
+}
+
+func (f *stubOpenAPIFactory) factory() schemas.InProcessServerFactory {
+	return func(_ context.Context, config *schemas.MCPClientConfig, deps schemas.InProcessServerDeps) (*server.MCPServer, error) {
+		f.calls.Add(1)
+		f.sawClient.Store(deps.HTTPClient != nil)
+		if strings.Contains(config.OpenAPIConfig.Spec, "fail") {
+			return nil, fmt.Errorf("%w: stub factory refused spec %q", schemas.ErrMCPOpenAPIConfigInvalid, config.OpenAPIConfig.Spec)
+		}
+		s := server.NewMCPServer("stub-openapi", "1.0.0", server.WithToolCapabilities(false))
+		for _, name := range strings.Split(config.OpenAPIConfig.Spec, ",") {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			s.AddTool(
+				mcpgo.NewToolWithRawSchema(name, "stub "+name, json.RawMessage(`{"type":"object","properties":{}}`)),
+				func(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+					headers, err := deps.Headers(ctx)
+					if err != nil {
+						return mcpgo.NewToolResultError(err.Error()), nil
+					}
+					keys := make([]string, 0, len(headers))
+					for k := range headers {
+						keys = append(keys, k)
+					}
+					sort.Strings(keys)
+					var b strings.Builder
+					for _, k := range keys {
+						fmt.Fprintf(&b, "%s=%s;", k, strings.Join(headers[k], ","))
+					}
+					return mcpgo.NewToolResultText(b.String()), nil
+				},
+			)
+		}
+		return s, nil
+	}
+}
+
+func newOpenAPITestConfig(name, spec string) *schemas.MCPClientConfig {
+	return &schemas.MCPClientConfig{
+		ID:                  name + "-id",
+		Name:                name,
+		ConnectionType:      schemas.MCPConnectionTypeOpenAPI,
+		AuthType:            schemas.MCPAuthTypeHeaders,
+		Headers:             map[string]schemas.SecretVar{"X-Static": *schemas.NewSecretVar("static-value"), "Authorization": *schemas.NewSecretVar("Bearer shared-token")},
+		AllowedExtraHeaders: schemas.WhiteList{"X-Trace"},
+		ToolsToExecute:      schemas.WhiteList{"*"},
+		OpenAPIConfig:       &schemas.MCPOpenAPIConfig{Spec: spec},
+	}
+}
+
+func openAPIToolNames(t *testing.T, m *MCPManager, id string) []string {
+	t.Helper()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	state, ok := m.clientMap[id]
+	require.True(t, ok, "client %s not registered", id)
+	names := make([]string, 0, len(state.ToolMap))
+	for name := range state.ToolMap {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// TestCreateOpenAPIConnection_RequiresFactory: without a registered factory
+// the connect must fail with an error that names the missing hook, so a Go SDK
+// user who declares connection_type openapi learns what to wire rather than
+// seeing a generic connect failure.
+func TestCreateOpenAPIConnection_RequiresFactory(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	_, _, err := m.createOpenAPIConnection(context.Background(), newOpenAPITestConfig("nofactory", "echo"))
+	require.ErrorContains(t, err, "InProcessServerFactory")
+
+	_, _, err = m.createOpenAPIConnection(context.Background(), &schemas.MCPClientConfig{Name: "noconfig", ConnectionType: schemas.MCPConnectionTypeOpenAPI})
+	require.ErrorContains(t, err, "openapi_config")
+}
+
+// TestAddClient_OpenAPI_SynthesizesServerAndLayersHeaders drives the full path
+// an openapi client takes: AddClient -> connectToMCPClient -> factory ->
+// in-process client -> tool discovery with the client-name prefix -> tool
+// execution with the header resolver core built. The factory must receive a
+// guarded HTTP client, and the resolver must layer static config headers, the
+// shared credential and the caller's allow-listed extras (and nothing else).
+func TestAddClient_OpenAPI_SynthesizesServerAndLayersHeaders(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("petstore", "listPets, getPet")
+
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	assert.Equal(t, int32(1), stub.calls.Load(), "factory builds the server exactly once per connect")
+	assert.True(t, stub.sawClient.Load(), "core must hand the factory a configured HTTP client")
+	assert.Equal(t, []string{"petstore-getPet", "petstore-listPets"}, openAPIToolNames(t, m, config.ID))
+
+	m.mu.RLock()
+	state := m.clientMap[config.ID]
+	m.mu.RUnlock()
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, state.State)
+	assert.NotNil(t, state.Conn, "openapi clients hold one sticky in-process connection")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyMCPExtraHeaders, map[string][]string{
+		"X-Trace":  {"trace-123"},
+		"X-Denied": {"must-not-pass"},
+	})
+	name := "petstore-listPets"
+	callID := "call-1"
+	msg, bifrostErr := m.ExecuteChatTool(ctx, &schemas.ChatAssistantMessageToolCall{
+		ID:       &callID,
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name, Arguments: "{}"},
+	})
+	require.Nil(t, bifrostErr, "tool call failed: %+v", bifrostErr)
+	require.NotNil(t, msg)
+	require.NotNil(t, msg.Content)
+	require.NotNil(t, msg.Content.ContentStr)
+	got := *msg.Content.ContentStr
+	assert.Contains(t, got, "X-Static=static-value;", "static config headers reach the upstream")
+	assert.Contains(t, got, "Authorization=Bearer shared-token;", "the shared credential is resolved through the credential store")
+	assert.Contains(t, got, "X-Trace=trace-123;", "allow-listed per-request extras are forwarded")
+	assert.NotContains(t, got, "X-Denied", "extras outside allowed_extra_headers never reach the upstream")
+}
+
+// TestUpdateClient_OpenAPI_SpecChangeRebuildsServer: a changed openapi_config
+// must rebuild the synthesized server (factory called again, connection
+// generation bumped, new tools discovered), while an update that leaves it
+// untouched (or omits it, PATCH-style) must not.
+func TestUpdateClient_OpenAPI_SpecChangeRebuildsServer(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("petstore", "listPets")
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	var toolsChanges atomic.Int32
+	m.SetToolsChangeCallback(func(string, string, map[string]schemas.ChatTool, map[string]string, string) { toolsChanges.Add(1) })
+
+	m.mu.RLock()
+	genBefore := m.clientMap[config.ID].ConnGeneration
+	m.mu.RUnlock()
+
+	// Omitting openapi_config keeps the stored one: no rebuild.
+	unchanged := newOpenAPITestConfig("petstore", "")
+	unchanged.OpenAPIConfig = nil
+	unchanged.ToolExecutionTimeout = 5 * time.Second
+	require.NoError(t, m.UpdateClient(config.ID, unchanged))
+	assert.Equal(t, int32(1), stub.calls.Load(), "an update without openapi_config must not rebuild")
+	m.mu.RLock()
+	assert.Equal(t, "listPets", m.clientMap[config.ID].ExecutionConfig.OpenAPIConfig.Spec, "stored openapi_config carried forward")
+	assert.Equal(t, 5*time.Second, m.clientMap[config.ID].ExecutionConfig.ToolExecutionTimeout)
+	m.mu.RUnlock()
+
+	// Same spec sent again: still no rebuild.
+	require.NoError(t, m.UpdateClient(config.ID, newOpenAPITestConfig("petstore", "listPets")))
+	assert.Equal(t, int32(1), stub.calls.Load(), "an identical openapi_config must not rebuild")
+
+	// Changed spec: rebuild, fresh generation, new tool set.
+	require.NoError(t, m.UpdateClient(config.ID, newOpenAPITestConfig("petstore", "listPets, createPet")))
+	assert.Equal(t, int32(2), stub.calls.Load(), "a changed spec rebuilds the server")
+	assert.Equal(t, []string{"petstore-createPet", "petstore-listPets"}, openAPIToolNames(t, m, config.ID))
+	m.mu.RLock()
+	assert.Greater(t, m.clientMap[config.ID].ConnGeneration, genBefore, "the rebuild is a genuinely new connection")
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, m.clientMap[config.ID].State)
+	m.mu.RUnlock()
+	assert.GreaterOrEqual(t, toolsChanges.Load(), int32(1), "rediscovered tools must be offered for persistence")
+
+	// A rebuild that fails leaves the client Unstable with the new config, and
+	// reports the failure to the caller. The spec error is permanent, so it must
+	// not sit through the connect retry schedule (~31s) before surfacing.
+	start := time.Now()
+	err := m.UpdateClient(config.ID, newOpenAPITestConfig("petstore", "fail"))
+	require.ErrorIs(t, err, ErrMCPSharedConnectFailedAfterUpdate)
+	// The connect plugin gate flattens the dial error into a BifrostError, so the
+	// sentinel is not in the chain here; the message and the timing are the pins.
+	require.ErrorContains(t, err, "cannot produce a server")
+	assert.Less(t, time.Since(start), 5*time.Second, "permanent synthesis errors must fail fast, not retry")
+	m.mu.RLock()
+	assert.Equal(t, schemas.MCPConnectionStateUnstable, m.clientMap[config.ID].State)
+	m.mu.RUnlock()
+}
+
+// TestAcquireClientConn_OpenAPIPerUserHeaders_PreflightsCredential: an openapi
+// client is sticky even with per_user_headers, so AcquireClientConn hands out
+// the shared in-process connection — but only after resolving the caller's
+// credential, so the typed auth error reaches the caller instead of being
+// flattened inside the synthesized handler.
+func TestAcquireClientConn_OpenAPIPerUserHeaders_PreflightsCredential(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("peruser", "listPets")
+	config.AuthType = schemas.MCPAuthTypePerUserHeaders
+	config.PerUserHeaderKeys = []string{"X-User-Token"}
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	m.mu.RLock()
+	state := m.clientMap[config.ID]
+	m.mu.RUnlock()
+	require.Equal(t, schemas.MCPConnectionStateHealthy, state.State, "openapi clients never park in pending_verification")
+	require.NotNil(t, state.Conn)
+
+	// No headers provider is configured on this manager, so the per-user
+	// resolver fails: that failure must surface here, before any CallTool.
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	conn, release, err := m.AcquireClientConn(ctx, state)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "per-user headers")
+	assert.Nil(t, conn)
+	assert.Nil(t, release)
+}
+
+func TestAwaitsAdminVerification_OpenAPINeverWaits(t *testing.T) {
+	cfg := newOpenAPITestConfig("peruser", "listPets")
+	cfg.AuthType = schemas.MCPAuthTypePerUserHeaders
+	cfg.PerUserHeaderKeys = []string{"X-User-Token"}
+	assert.False(t, awaitsAdminVerification(cfg), "nothing upstream to verify for a synthesized server")
+
+	httpCfg := *cfg
+	httpCfg.ConnectionType = schemas.MCPConnectionTypeHTTP
+	assert.True(t, awaitsAdminVerification(&httpCfg), "control: the same auth type over HTTP still awaits verification")
+}
+
+func TestOpenAPIConfigChanged(t *testing.T) {
+	str := func(s string) *string { return &s }
+	base := func() *schemas.MCPOpenAPIConfig {
+		return &schemas.MCPOpenAPIConfig{
+			Spec:    "spec-v1",
+			BaseURL: str("https://api.example.com"),
+			SecurityCredentials: map[string]schemas.MCPOpenAPICredential{
+				"ApiKey": {Value: schemas.NewSecretVar("k1")},
+			},
+			SpecHash: "h1",
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(c *schemas.MCPOpenAPIConfig)
+		want   bool
+	}{
+		{name: "identical", mutate: func(*schemas.MCPOpenAPIConfig) {}},
+		{name: "metadata only", mutate: func(c *schemas.MCPOpenAPIConfig) { c.SpecHash = "h2"; c.OperationCount = 9 }},
+		{name: "spec", mutate: func(c *schemas.MCPOpenAPIConfig) { c.Spec = "spec-v2" }, want: true},
+		{name: "base url", mutate: func(c *schemas.MCPOpenAPIConfig) { c.BaseURL = str("https://other.example.com") }, want: true},
+		{name: "base url cleared", mutate: func(c *schemas.MCPOpenAPIConfig) { c.BaseURL = nil }, want: true},
+		{name: "spec url", mutate: func(c *schemas.MCPOpenAPIConfig) { c.SpecURL = str("https://x/openapi.json") }, want: true},
+		{name: "credential value", mutate: func(c *schemas.MCPOpenAPIConfig) {
+			c.SecurityCredentials["ApiKey"] = schemas.MCPOpenAPICredential{Value: schemas.NewSecretVar("k2")}
+		}, want: true},
+		{name: "credential added", mutate: func(c *schemas.MCPOpenAPIConfig) {
+			c.SecurityCredentials["Basic"] = schemas.MCPOpenAPICredential{Username: schemas.NewSecretVar("u")}
+		}, want: true},
+		{name: "credential removed", mutate: func(c *schemas.MCPOpenAPIConfig) { delete(c.SecurityCredentials, "ApiKey") }, want: true},
+		{name: "include deprecated", mutate: func(c *schemas.MCPOpenAPIConfig) { c.IncludeDeprecated = true }, want: true},
+		{name: "response cap", mutate: func(c *schemas.MCPOpenAPIConfig) { c.MaxResponseBytes = 10 }, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			next := base()
+			tc.mutate(next)
+			assert.Equal(t, tc.want, openAPIConfigChanged(base(), next))
+		})
+	}
+	assert.True(t, openAPIConfigChanged(nil, base()))
+	assert.True(t, openAPIConfigChanged(base(), nil))
+	assert.False(t, openAPIConfigChanged(nil, nil))
 }

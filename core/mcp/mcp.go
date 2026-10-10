@@ -37,18 +37,19 @@ const (
 // It provides a bridge between Bifrost and various MCP servers, supporting
 // both local tool hosting and external MCP server connections.
 type MCPManager struct {
-	ctx                 context.Context
-	logger              schemas.Logger                     // Logger instance for this manager
-	credStore           schemas.MCPCredentialStore         // Resolves credentials per-call for MCP tool execution
-	toolsManager        *ToolsManager                      // Handler for MCP tools
-	server              *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
-	clientMap           map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
-	mu                  sync.RWMutex                       // Read-write mutex for thread-safe operations
-	serverRunning       bool                               // Track whether local MCP server is running
-	checkerManager      *ConnectionCheckerManager          // Manager for per-client periodic connection checkers (liveness + discovery refresh, drives Healthy/Unstable/NeedsReauth)
-	reconnectingClients sync.Map                           // Tracks in-flight exclusive client operations per client ID (map[string]*inflightClientOp); waiters join via AwaitReconnect
-	bootClientConfigs   []*schemas.MCPClientConfig         // Client configs supplied at construction, dialed by ConnectConfiguredClients
-	connectOnce         sync.Once                          // Ensures ConnectConfiguredClients dials the boot configs exactly once
+	ctx                    context.Context
+	logger                 schemas.Logger                     // Logger instance for this manager
+	credStore              schemas.MCPCredentialStore         // Resolves credentials per-call for MCP tool execution
+	toolsManager           *ToolsManager                      // Handler for MCP tools
+	server                 *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
+	clientMap              map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
+	mu                     sync.RWMutex                       // Read-write mutex for thread-safe operations
+	serverRunning          bool                               // Track whether local MCP server is running
+	checkerManager         *ConnectionCheckerManager          // Manager for per-client periodic connection checkers (liveness + discovery refresh, drives Healthy/Unstable/NeedsReauth)
+	reconnectingClients    sync.Map                           // Tracks in-flight exclusive client operations per client ID (map[string]*inflightClientOp); waiters join via AwaitReconnect
+	bootClientConfigs      []*schemas.MCPClientConfig         // Client configs supplied at construction, dialed by ConnectConfiguredClients
+	connectOnce            sync.Once                          // Ensures ConnectConfiguredClients dials the boot configs exactly once
+	inProcessServerFactory schemas.InProcessServerFactory     // Builds synthesized servers (openapi clients); nil = unsupported
 
 	// Plugin pipeline access for connect/ping/list_tools hooks. nil-safe — gates short-circuit
 	// to the underlying op when no pipeline is configured. Also used by ToolsManager for the
@@ -188,11 +189,12 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 	}
 	// Creating new instance
 	manager := &MCPManager{
-		ctx:            ctx,
-		logger:         logger,
-		clientMap:      make(map[string]*schemas.MCPClientState),
-		checkerManager: NewConnectionCheckerManager(config.ToolSyncInterval),
-		credStore:      credStore,
+		ctx:                    ctx,
+		logger:                 logger,
+		clientMap:              make(map[string]*schemas.MCPClientState),
+		checkerManager:         NewConnectionCheckerManager(config.ToolSyncInterval),
+		credStore:              credStore,
+		inProcessServerFactory: config.InProcessServerFactory,
 	}
 	// Convert plugin pipeline provider functions to the interface expected by ToolsManager
 	var pluginPipelineProvider func() PluginPipeline
@@ -231,6 +233,22 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 	manager.bootClientConfigs = config.ClientConfigs
 	manager.logger.Info(MCPLogPrefix + " MCP Manager initialized")
 	return manager
+}
+
+// SetInProcessServerFactory replaces the factory used to synthesize in-process
+// servers for openapi clients. Takes effect on the next connect (reconnect,
+// refresh or a newly added client); live connections are untouched.
+func (m *MCPManager) SetInProcessServerFactory(factory schemas.InProcessServerFactory) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.inProcessServerFactory = factory
+}
+
+// getInProcessServerFactory returns the current factory under the read lock.
+func (m *MCPManager) getInProcessServerFactory() schemas.InProcessServerFactory {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.inProcessServerFactory
 }
 
 // ConnectConfiguredClients dials the MCP clients supplied at construction time

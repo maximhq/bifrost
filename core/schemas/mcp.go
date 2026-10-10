@@ -251,7 +251,36 @@ type MCPConfig struct {
 	// ReleasePluginPipeline releases a plugin pipeline back to the pool.
 	// This should be called after the plugin pipeline is no longer needed.
 	ReleasePluginPipeline func(pipeline interface{}) `json:"-"`
+
+	// InProcessServerFactory builds the in-process MCP server for connection types
+	// that synthesize one instead of dialing a remote (MCPConnectionTypeOpenAPI).
+	// Core invokes it on every connect of such a client and never persists the
+	// result, so reconnects and spec changes always rebuild from the current config.
+	// The transport registers framework/openapimcp.Factory here; Go SDK users opt in
+	// the same way. Nil means openapi clients fail to connect with a clear error.
+	InProcessServerFactory InProcessServerFactory `json:"-"`
 }
+
+// ErrMCPOpenAPIConfigInvalid marks a permanent failure to synthesize an openapi
+// client's server: the spec does not parse, yields no usable operations, or the
+// client is misconfigured (no factory registered, no openapi_config). Factories
+// wrap such errors with it (errors.Is) so the connect path fails fast instead of
+// running its transient-error retry schedule; a failed spec_url fetch is left
+// unwrapped and keeps retrying like any other dial.
+var ErrMCPOpenAPIConfigInvalid = errors.New("openapi client configuration cannot produce a server")
+
+// InProcessServerDeps is what core hands to an InProcessServerFactory so the
+// synthesized server's tool handlers reach the upstream the same way core's own
+// transports would.
+type InProcessServerDeps struct {
+	HTTPClient *http.Client                                   // TLS, proxy and public-target rules of the client already applied
+	Headers    func(ctx context.Context) (http.Header, error) // Static config headers + resolved credentials + allow-listed per-request extras
+	Logger     Logger
+}
+
+// InProcessServerFactory synthesizes an in-process MCP server for config. ctx is
+// the connect context (bounded by the connection-establish timeout).
+type InProcessServerFactory func(ctx context.Context, config *MCPClientConfig, deps InProcessServerDeps) (*server.MCPServer, error)
 
 // VirtualMCPConfig is a Virtual MCP declared in config.json (mcp.virtual_mcps). It reconciles into a
 // Virtual MCP in the config store: a bundle of tools from one or more MCP clients, served at
@@ -591,6 +620,7 @@ type MCPClientConfig struct {
 	ConnectionString  *SecretVar        `json:"connection_string,omitempty"`   // HTTP or SSE URL (required for HTTP or SSE connections)
 	StdioConfig       *MCPStdioConfig   `json:"stdio_config,omitempty"`        // STDIO configuration (required for STDIO connections)
 	TLSConfig         *MCPTLSConfig     `json:"tls_config,omitempty"`          // TLS configuration for HTTP/SSE connections
+	OpenAPIConfig     *MCPOpenAPIConfig `json:"openapi_config,omitempty"`      // Spec source, upstream base URL and credentials (required for OpenAPI connections)
 	AuthType          MCPAuthType       `json:"auth_type"`                     // Authentication type (none, headers, or oauth)
 	OauthConfigID     *string           `json:"oauth_config_id,omitempty"`     // OAuth config ID (references oauth_configs table)
 	OauthClientID     *SecretVar        `json:"oauth_client_id,omitempty"`     // Redacted OAuth client ID (populated on GET, not stored here)
@@ -898,15 +928,17 @@ const (
 	MCPConnectionTypeSTDIO     MCPConnectionType = "stdio"     // STDIO-based connection
 	MCPConnectionTypeSSE       MCPConnectionType = "sse"       // Server-Sent Events connection
 	MCPConnectionTypeInProcess MCPConnectionType = "inprocess" // In-process (in-memory) connection
+	MCPConnectionTypeOpenAPI   MCPConnectionType = "openapi"   // In-process server synthesized from an OpenAPI spec; tools proxy HTTP calls upstream
 )
 
 // OTelNetworkTransport returns the OTel semconv network.transport value: stdio→"pipe",
-// http/sse→"tcp". InProcess has none, so it returns "" and callers omit the attribute.
+// http/sse/openapi→"tcp" (openapi tools reach their upstream over HTTP). InProcess has
+// none, so it returns "" and callers omit the attribute.
 func (c MCPConnectionType) OTelNetworkTransport() string {
 	switch c {
 	case MCPConnectionTypeSTDIO:
 		return "pipe"
-	case MCPConnectionTypeHTTP, MCPConnectionTypeSSE:
+	case MCPConnectionTypeHTTP, MCPConnectionTypeSSE, MCPConnectionTypeOpenAPI:
 		return "tcp"
 	default:
 		return ""
@@ -925,6 +957,54 @@ type MCPStdioConfig struct {
 type MCPTLSConfig struct {
 	InsecureSkipVerify bool       `json:"insecure_skip_verify,omitempty"` // Disable TLS certificate verification (development only)
 	CACertPEM          *SecretVar `json:"ca_cert_pem,omitempty"`          // PEM-encoded CA certificate to trust (supports env.*)
+}
+
+// MCPOpenAPICredential is the secret material for one securitySchemes entry of an
+// OpenAPI-backed MCP client. apiKey and http-bearer schemes use Value; http-basic
+// uses Username and Password.
+type MCPOpenAPICredential struct {
+	Value    *SecretVar `json:"value,omitempty"`    // apiKey value or bearer token
+	Username *SecretVar `json:"username,omitempty"` // http basic user
+	Password *SecretVar `json:"password,omitempty"` // http basic password
+}
+
+// MCPOpenAPIConfig configures an MCP client whose server is synthesized from an
+// OpenAPI/Swagger document (ConnectionType == MCPConnectionTypeOpenAPI).
+//
+// Exactly one of Spec, SpecFile or SpecURL supplies the document. Spec is the inline
+// text (JSON or YAML) and is what the API stores; SpecFile is a config.json-only path
+// resolved relative to the config directory at load time; SpecURL is fetched at every
+// connect when Spec is empty, and otherwise only records where Spec came from.
+//
+// The Spec*, OpenAPIVersion and OperationCount fields are computed by the server at
+// write time from the parsed document and are informational on read.
+type MCPOpenAPIConfig struct {
+	Spec                string                          `json:"spec,omitempty"`                 // Inline spec text (JSON or YAML); omitted from API reads
+	SpecURL             *string                         `json:"spec_url,omitempty"`             // Fetch source when Spec is empty, else provenance
+	SpecFile            *string                         `json:"spec_file,omitempty"`            // config.json only: path resolved into Spec at load
+	BaseURL             *string                         `json:"base_url,omitempty"`             // Upstream base URL; defaults to the spec's first server
+	SecurityCredentials map[string]MCPOpenAPICredential `json:"security_credentials,omitempty"` // Keyed by securitySchemes name
+	IncludeDeprecated   bool                            `json:"include_deprecated,omitempty"`   // Expose operations marked deprecated
+	MaxResponseBytes    int                             `json:"max_response_bytes,omitempty"`   // Upstream body cap returned to the model (0 = default)
+	SpecSize            int                             `json:"spec_size,omitempty"`            // Server-computed: spec byte length
+	SpecHash            string                          `json:"spec_hash,omitempty"`            // Server-computed: sha256 hex of Spec
+	SpecTitle           string                          `json:"spec_title,omitempty"`           // Server-computed: info.title
+	OpenAPIVersion      string                          `json:"openapi_version,omitempty"`      // Server-computed: detected spec version
+	OperationCount      int                             `json:"operation_count,omitempty"`      // Server-computed: synthesized tool count
+}
+
+// HasSpecSource reports whether any of Spec, SpecFile or SpecURL is set.
+func (c *MCPOpenAPIConfig) HasSpecSource() bool {
+	if c == nil {
+		return false
+	}
+	if strings.TrimSpace(c.Spec) != "" {
+		return true
+	}
+	if c.SpecFile != nil && strings.TrimSpace(*c.SpecFile) != "" {
+		return true
+	}
+	return c.SpecURL != nil && strings.TrimSpace(*c.SpecURL) != ""
 }
 
 // MarshalForStorage serializes MCPTLSConfig for DB persistence.
