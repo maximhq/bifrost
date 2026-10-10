@@ -345,6 +345,7 @@ type liveSessionController struct {
 	drainTimeout    time.Duration
 	staleCheckEvery time.Duration
 
+	upstreamMu       sync.Mutex // serializes provider events with finalization
 	upstreamDone     chan struct{}
 	upstreamDoneOnce sync.Once
 	clientGone       atomic.Bool
@@ -353,8 +354,8 @@ type liveSessionController struct {
 	refusalOnce      sync.Once
 	drainMu          sync.Mutex
 	drainTimer       *time.Timer
-	transcript       liveTranscript // written on the upstream pump only
-	startedAt        time.Time      // when session.started arrived: zero of the session timeline
+	transcript       liveTranscript // guarded by upstreamMu
+	startedAt        time.Time      // guarded by upstreamMu; session timeline origin
 
 	delegationMu    sync.Mutex
 	delegations     map[string]*liveDelegationRecord // a delegation's output so far, until its terminal event
@@ -491,9 +492,17 @@ func (c *liveSessionController) fromClient(message []byte) ([]byte, bool) {
 	return message, true
 }
 
-// fromUpstream meters an upstream control event and reports whether it ended the session. The
-// frame itself is forwarded unchanged by the transport.
+// fromUpstream meters an upstream control event and reports whether the session has ended. The
+// frame itself is forwarded unchanged by the transport. WebRTC close callbacks run independently
+// of provider messages, so processing an event and finalizing the session share one lock.
 func (c *liveSessionController) fromUpstream(message []byte) bool {
+	c.upstreamMu.Lock()
+	defer c.upstreamMu.Unlock()
+	select {
+	case <-c.upstreamDone:
+		return true
+	default:
+	}
 	switch schemas.LiveEventTypeOf(message) {
 	case schemas.LiveEventSessionStarted:
 		c.startedAt = time.Now()
@@ -594,6 +603,13 @@ func (c *liveSessionController) clientLeft() {
 
 // upstreamEnded bills what OpenAI last reported when the upstream ended without session.closed.
 func (c *liveSessionController) upstreamEnded() {
+	c.upstreamMu.Lock()
+	defer c.upstreamMu.Unlock()
+	select {
+	case <-c.upstreamDone:
+		return
+	default:
+	}
 	c.meter.setEnding(c.transcript.snapshot())
 	c.meter.finish(c.meter.lastReportedSeconds())
 	c.markUpstreamDone()
