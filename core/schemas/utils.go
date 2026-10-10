@@ -2221,9 +2221,34 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		}
 	}
 	if original.ResponsesOutputMessageContentCompaction != nil {
-		copy.ResponsesOutputMessageContentCompaction = &ResponsesOutputMessageContentCompaction{
+		copyCompaction := &ResponsesOutputMessageContentCompaction{
 			Summary: original.ResponsesOutputMessageContentCompaction.Summary,
 		}
+		// tool_changes are replayed to the provider verbatim, so they must survive the copy.
+		if changes := original.ResponsesOutputMessageContentCompaction.ToolChanges; changes != nil {
+			copyCompaction.ToolChanges = make([]ResponsesMessageContentBlock, len(changes))
+			for i, change := range changes {
+				copyCompaction.ToolChanges[i] = deepCopyResponsesMessageContentBlock(change)
+			}
+		}
+		copy.ResponsesOutputMessageContentCompaction = copyCompaction
+	}
+	// The tool target of a tool_addition / tool_removal block is what the provider acts on;
+	// without it the block is dropped on egress. The definition is copied by value (its nested
+	// schema pointers are shared, as no transform mutates a tool definition in place).
+	if original.ToolChange != nil {
+		copyTarget := &ResponsesToolChangeTarget{Type: original.ToolChange.Type}
+		if original.ToolChange.Name != nil {
+			copyTarget.Name = new(*original.ToolChange.Name)
+		}
+		if original.ToolChange.ServerName != nil {
+			copyTarget.ServerName = new(*original.ToolChange.ServerName)
+		}
+		if original.ToolChange.Definition != nil {
+			copyDefinition := *original.ToolChange.Definition
+			copyTarget.Definition = &copyDefinition
+		}
+		copy.ToolChange = copyTarget
 	}
 	if original.ResponsesOutputMessageContentFallback != nil {
 		copyFallback := &ResponsesOutputMessageContentFallback{

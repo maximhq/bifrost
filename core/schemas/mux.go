@@ -753,6 +753,30 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 
 // ToChatMessages converts a slice of ResponsesMessages back to ChatMessages
 // This handles the aggregation of function_call messages back into assistant messages with tool calls
+// responsesBlocksWithoutToolChanges returns blocks with the Anthropic mid-conversation
+// tool_addition / tool_removal entries removed. It returns the input slice unchanged when
+// there is nothing to drop.
+func responsesBlocksWithoutToolChanges(blocks []ResponsesMessageContentBlock) []ResponsesMessageContentBlock {
+	drop := false
+	for _, block := range blocks {
+		if block.Type == ResponsesInputMessageContentBlockTypeToolAddition || block.Type == ResponsesInputMessageContentBlockTypeToolRemoval {
+			drop = true
+			break
+		}
+	}
+	if !drop {
+		return blocks
+	}
+	kept := make([]ResponsesMessageContentBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type == ResponsesInputMessageContentBlockTypeToolAddition || block.Type == ResponsesInputMessageContentBlockTypeToolRemoval {
+			continue
+		}
+		kept = append(kept, block)
+	}
+	return kept
+}
+
 func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 	if len(rms) == 0 {
 		return []ChatMessage{}
@@ -949,8 +973,15 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					}
 				}
 			} else if rm.Content.ContentBlocks != nil {
-				chatBlocks := make([]ChatContentBlock, len(rm.Content.ContentBlocks))
-				for i, block := range rm.Content.ContentBlocks {
+				// Chat has no tool_addition / tool_removal content part, so the blocks are dropped
+				// here rather than forwarded as an unknown type the OpenAI-shaped wire rejects. A
+				// message left with nothing to say is skipped entirely.
+				contentBlocks := responsesBlocksWithoutToolChanges(rm.Content.ContentBlocks)
+				if len(contentBlocks) == 0 && len(rm.Content.ContentBlocks) > 0 {
+					continue
+				}
+				chatBlocks := make([]ChatContentBlock, len(contentBlocks))
+				for i, block := range contentBlocks {
 					// Map ResponsesMessageContentBlockType to ChatContentBlockType
 					var chatBlockType ChatContentBlockType
 					switch block.Type {

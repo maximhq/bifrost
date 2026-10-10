@@ -592,6 +592,17 @@ Insert into the collection surgically (a script that splices the new object in, 
 
 The narrow exemptions: changes with no wire-visible effect (comments, internal renames, log lines) and behaviour no HTTP request can reach. If a change is exempt, say so explicitly in the PR rather than leaving the omission unexplained.
 
+### Provider-native features are tested on every route that reaches the provider
+
+A provider is reachable through more than its own SDK endpoint, and a fix that only looks at the route named in the issue is incomplete. Before calling a provider-native feature (a content block type, a beta header, a request parameter) fixed or added, enumerate every inbound route that can carry it to that provider and cover each one:
+
+- **The provider's native surface**: `/anthropic/v1/messages`, `/genai/...`, `/bedrock/...` and the matching SDK integration under `transports/bifrost-http/integrations/`.
+- **The neutral OpenAI-shaped surfaces**: `/v1/responses` and `/v1/chat/completions`, routed by the `provider/model` prefix. The payload arrives in neutral shape (for example a Responses `function` tool, not an Anthropic `input_schema` tool), and the client cannot set provider headers such as `anthropic-beta`, so any header the feature needs must be derived from the body by the gateway.
+- **The Go SDK**, which enters at the same neutral types as `/v1/responses`.
+- **Other hosts of the same model family** that reuse the provider's converters: Bedrock, Bedrock Mantle, Vertex, Azure, OpenRouter. Find them with `grep -rl "providers/<provider>\"" core/providers transports/bifrost-http` and check the per-host gates (`ProviderFeatures`, placement gates like `DefaultSupportsMidConversationSystem`) rather than assuming the converter change reaches them.
+
+For each route the change reaches: a unit test that drives that route's ingress type into the provider egress, and a provider-harness case in the same folder with the route in the case name, using the shape and headers a real client on that route would send (so a `/v1/responses` case must not carry `anthropic-beta`). Routes the change does not reach are not silently skipped: the PR states each one and why (no equivalent construct on that wire, gated off by the feature table, dropped by a placement fallback), so the gap is a recorded decision and not an omission. If the fix leaves a host with the beta header on but the body construct dropped, say so explicitly; that mismatch is itself a bug to track.
+
 ### Every non-exempt wire-visible fix ends with unit tests, then a harness command handed to the user
 
 Unit tests and `make test-core` are the finish line for the agent. Run the Go-level red/green loop and the regression reruns, and report what passed and what failed.
