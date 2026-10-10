@@ -23,8 +23,10 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/internal/memtest"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
@@ -726,6 +728,149 @@ func TestConvertResponsesTextConfigToAnthropicOutputFormatPreservesLegacyDefinit
 	if recordSchema["$ref"] != "#/definitions/Document" {
 		t.Fatalf("expected record $ref to be preserved, got %v", recordSchema["$ref"])
 	}
+}
+
+// Anthropic structured outputs accept optional properties, but the Responses API
+// defaults text.format.strict to true, which requires every property to be
+// listed in "required". The converted format must therefore send strict false,
+// or the same request routed to OpenAI fails with a 400 (#8159).
+func TestAnthropicOutputFormatIsNotStrictOnOpenAI(t *testing.T) {
+	schema := `{
+		"type": "json_schema",
+		"schema": {
+			"type": "object",
+			"properties": {
+				"answer": {"type": "string"},
+				"confident": {"type": "boolean"},
+				"note": {"type": "string"}
+			},
+			"required": ["answer", "confident"],
+			"additionalProperties": false
+		}
+	}`
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"output_config.format", `{"model":"openai/gpt-6-luna","max_tokens":1024,"output_config":{"format":` + schema + `},` +
+			`"messages":[{"role":"user","content":"What is the capital of France?"}]}`},
+		{"output_format", `{"model":"openai/gpt-6-luna","max_tokens":1024,"output_format":` + schema + `,` +
+			`"messages":[{"role":"user","content":"What is the capital of France?"}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			strict, required, wire := sentOpenAITextFormat(t, tc.body)
+			require.NotNil(t, strict, "text.format.strict must be sent, it defaults to true upstream: %s", wire)
+			require.False(t, *strict)
+			require.Equal(t, []string{"answer", "confident"}, required)
+		})
+	}
+}
+
+// A schema that already meets OpenAI strict mode must keep strict enforcement, so
+// text.format.strict is left unset and the Responses API applies its default of true.
+func TestAnthropicStrictCompatibleOutputFormatKeepsStrictOnOpenAI(t *testing.T) {
+	schema := `{
+		"type": "json_schema",
+		"schema": {
+			"type": "object",
+			"properties": {
+				"answer": {"type": "string"},
+				"confident": {"type": "boolean"}
+			},
+			"required": ["answer", "confident"],
+			"additionalProperties": false
+		}
+	}`
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"output_config.format", `{"model":"openai/gpt-6-luna","max_tokens":1024,"output_config":{"format":` + schema + `},` +
+			`"messages":[{"role":"user","content":"What is the capital of France?"}]}`},
+		{"output_format", `{"model":"openai/gpt-6-luna","max_tokens":1024,"output_format":` + schema + `,` +
+			`"messages":[{"role":"user","content":"What is the capital of France?"}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			strict, required, wire := sentOpenAITextFormat(t, tc.body)
+			require.Nil(t, strict, "text.format.strict must be left unset for a strict-compatible schema: %s", wire)
+			require.Equal(t, []string{"answer", "confident"}, required)
+		})
+	}
+}
+
+// sentOpenAITextFormat converts an Anthropic Messages request body routed to OpenAI and
+// returns text.format.strict and the schema's required list from the outgoing request.
+func sentOpenAITextFormat(t *testing.T, body string) (*bool, []string, []byte) {
+	t.Helper()
+	var req AnthropicMessageRequest
+	require.NoError(t, json.Unmarshal([]byte(body), &req))
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifrostReq := req.ToBifrostResponsesRequest(ctx)
+	require.NotNil(t, bifrostReq)
+	require.Equal(t, schemas.OpenAI, bifrostReq.Provider)
+
+	wire, err := json.Marshal(openai.ToOpenAIResponsesRequest(ctx, bifrostReq))
+	require.NoError(t, err)
+
+	var sent struct {
+		Text struct {
+			Format struct {
+				Strict *bool `json:"strict"`
+				Schema struct {
+					Required []string `json:"required"`
+				} `json:"schema"`
+			} `json:"format"`
+		} `json:"text"`
+	}
+	require.NoError(t, json.Unmarshal(wire, &sent))
+	return sent.Text.Format.Strict, sent.Text.Format.Schema.Required, wire
+}
+
+func TestIsOpenAIStrictCompatibleSchema(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		schema     string
+		compatible bool
+	}{
+		{"every property required", `{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}`, true},
+		{"nested objects, items, anyOf, nullable type, enum and annotations",
+			`{"type":"object","title":"T","description":"D","properties":{` +
+				`"o":{"type":"object","properties":{"x":{"type":"integer"}},"required":["x"],"additionalProperties":false},` +
+				`"l":{"type":"array","items":{"type":"object","properties":{"y":{"type":"string","enum":["p","q"]}},"required":["y"],"additionalProperties":false}},` +
+				`"n":{"anyOf":[{"type":"string"},{"type":"null"}]},` +
+				`"t":{"type":["string","null"],"const":"c"}},` +
+				`"required":["o","l","n","t"],"additionalProperties":false}`, true},
+		{"local $ref into $defs",
+			`{"type":"object","properties":{"p":{"$ref":"#/$defs/P"}},"required":["p"],"additionalProperties":false,` +
+				`"$defs":{"P":{"type":"object","properties":{"z":{"type":"number"}},"required":["z"],"additionalProperties":false}}}`, true},
+		{"optional property", `{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a"],"additionalProperties":false}`, false},
+		{"no required list", `{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":false}`, false},
+		{"additionalProperties not false", `{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}`, false},
+		{"nested object without additionalProperties false",
+			`{"type":"object","properties":{"o":{"type":"object","properties":{"x":{"type":"integer"}},"required":["x"]}},"required":["o"],"additionalProperties":false}`, false},
+		{"optional property in $defs",
+			`{"type":"object","properties":{"p":{"$ref":"#/$defs/P"}},"required":["p"],"additionalProperties":false,` +
+				`"$defs":{"P":{"type":"object","properties":{"z":{"type":"number"}},"additionalProperties":false}}}`, false},
+		{"keyword outside the allowlist", `{"type":"object","properties":{"a":{"type":"string","minLength":1}},"required":["a"],"additionalProperties":false}`, false},
+		{"allOf", `{"type":"object","properties":{"a":{"allOf":[{"type":"string"}]}},"required":["a"],"additionalProperties":false}`, false},
+		{"boolean subschema", `{"type":"object","properties":{"a":{"type":"array","items":true}},"required":["a"],"additionalProperties":false}`, false},
+		{"non-local $ref", `{"type":"object","properties":{"a":{"$ref":"https://example.com/a.json"}},"required":["a"],"additionalProperties":false}`, false},
+		{"root is not an object", `{"type":"array","items":{"type":"string"}}`, false},
+		{"required is not a list", `{"type":"object","properties":{"a":{"type":"string"}},"required":"a","additionalProperties":false}`, false},
+		{"required lists a missing property", `{"type":"object","properties":{"a":{"type":"string"}},"required":["a","b"],"additionalProperties":false}`, false},
+		{"empty object", `{"type":"object","properties":{},"required":[],"additionalProperties":false}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var schema schemas.OrderedMap
+			require.NoError(t, sonic.Unmarshal([]byte(tc.schema), &schema))
+			require.Equal(t, tc.compatible, isOpenAIStrictCompatibleSchema(&schema))
+		})
+	}
+
+	require.False(t, isOpenAIStrictCompatibleSchema(nil))
 }
 
 func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {

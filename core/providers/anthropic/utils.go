@@ -4688,6 +4688,126 @@ func convertResponsesTextConfigToAnthropicOutputFormat(textConfig *schemas.Respo
 	return json.RawMessage(result)
 }
 
+// openAIStrictSchemaKeywords are the only JSON Schema keywords a schema may use to be
+// treated as OpenAI strict-compatible. Any other keyword makes it count as incompatible,
+// which only means it is sent with strict false, and strict false accepts any schema.
+var openAIStrictSchemaKeywords = map[string]bool{
+	"type": true, "properties": true, "required": true, "additionalProperties": true,
+	"items": true, "anyOf": true, "enum": true, "const": true,
+	"description": true, "title": true, "$ref": true, "$defs": true, "definitions": true,
+}
+
+// isOpenAIStrictCompatibleSchema reports whether an Anthropic output schema already meets
+// OpenAI strict mode: the root is an object, every object sets "additionalProperties": false
+// and lists all of its properties in "required", "$ref"s are local, and only keywords from
+// openAIStrictSchemaKeywords appear.
+func isOpenAIStrictCompatibleSchema(schema interface{}) bool {
+	root, ok := schemas.SafeExtractOrderedMap(schema)
+	if !ok {
+		return false
+	}
+	if rootType, _ := root.Get("type"); rootType != "object" {
+		return false
+	}
+	return isOpenAIStrictCompatibleNode(root)
+}
+
+// isOpenAIStrictCompatibleNode checks one schema object and its subschemas. Boolean
+// schemas and any value that is not a schema object count as incompatible.
+func isOpenAIStrictCompatibleNode(value interface{}) bool {
+	node, ok := schemas.SafeExtractOrderedMap(value)
+	if !ok {
+		return false
+	}
+
+	compatible := true
+	node.Range(func(key string, v interface{}) bool {
+		if !openAIStrictSchemaKeywords[key] {
+			compatible = false
+			return false
+		}
+		switch key {
+		case "properties", "$defs", "definitions":
+			subschemas, ok := schemas.SafeExtractOrderedMap(v)
+			if !ok {
+				compatible = false
+				return false
+			}
+			subschemas.Range(func(_ string, subschema interface{}) bool {
+				compatible = isOpenAIStrictCompatibleNode(subschema)
+				return compatible
+			})
+		case "items":
+			compatible = isOpenAIStrictCompatibleNode(v)
+		case "anyOf":
+			list, ok := v.([]interface{})
+			compatible = ok && len(list) > 0
+			for _, subschema := range list {
+				if !compatible {
+					break
+				}
+				compatible = isOpenAIStrictCompatibleNode(subschema)
+			}
+		case "$ref":
+			ref, ok := v.(string)
+			compatible = ok && (ref == "#" || strings.HasPrefix(ref, "#/$defs/") || strings.HasPrefix(ref, "#/definitions/"))
+		}
+		return compatible
+	})
+	if !compatible {
+		return false
+	}
+
+	properties, hasProperties := node.Get("properties")
+	nodeType, _ := node.Get("type")
+	if !hasProperties && !isJSONSchemaObjectType(nodeType) {
+		return true
+	}
+	if additionalProperties, _ := node.Get("additionalProperties"); additionalProperties != false {
+		return false
+	}
+	required := map[string]bool{}
+	if requiredValue, ok := node.Get("required"); ok {
+		list, ok := requiredValue.([]interface{})
+		if !ok {
+			return false
+		}
+		for _, name := range list {
+			nameStr, ok := name.(string)
+			if !ok {
+				return false
+			}
+			required[nameStr] = true
+		}
+	}
+	// "required" must list exactly the object's properties.
+	propertyCount := 0
+	if hasProperties {
+		props, _ := schemas.SafeExtractOrderedMap(properties)
+		props.Range(func(name string, _ interface{}) bool {
+			propertyCount++
+			compatible = required[name]
+			return compatible
+		})
+	}
+	return compatible && len(required) == propertyCount
+}
+
+// isJSONSchemaObjectType reports whether a JSON Schema "type" value is or includes "object".
+func isJSONSchemaObjectType(value interface{}) bool {
+	switch t := value.(type) {
+	case string:
+		return t == "object"
+	case []interface{}:
+		for _, item := range t {
+			if item == "object" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // convertAnthropicOutputFormatToResponsesTextConfig converts Anthropic's output_format structure
 // to OpenAI Responses API text config.
 //
@@ -4731,6 +4851,14 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 
 	format := &schemas.ResponsesTextConfigFormat{
 		Type: formatType,
+	}
+
+	// The Responses API defaults strict to true when it is omitted, and strict mode
+	// rejects schemas Anthropic accepts, such as ones with optional properties (#8159).
+	// Send strict false only for schemas that are not strict-compatible, so the others
+	// keep strict enforcement, as before.
+	if !isOpenAIStrictCompatibleSchema(formatMap["schema"]) {
+		format.Strict = schemas.Ptr(false)
 	}
 
 	// Extract name if present
