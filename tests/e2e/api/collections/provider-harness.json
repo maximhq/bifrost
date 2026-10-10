@@ -251239,6 +251239,75 @@
           }
         }
       ]
+    },
+    {
+      "name": "201. Virtual key limits declared in config.json are enforced (#8266 / PR #8306)",
+      "description": "Issue #8266 / PR #8306. config.json reconciliation used to store a virtual key budget on the key itself (governance_budgets.virtual_key_id) while the API stored it on a VK-scoped all-models model config. Only the model config form is stamped with the key calendar alignment when the governance store loads, so a budget declared in config.json reset on a rolling window after a restart. Every governance case in this collection creates its key through the API, so nothing covered the config.json path. This row drives a key the harness profile declares in config.json (vk-harness-cfgbudget, budget harness-cfgbudget-daily, max_limit 1e-7) and pins that the declared budget is enforced on inference. The prerequest primes the budget with one call so the assertion does not depend on usage left over from an earlier run. Spends two gpt-4o-mini calls of 3 tokens. Run with FEATURE=cfg-vk-budget.",
+      "item": [
+        {
+          "name": "[EXPECT-402] openai/gpt-4o-mini a config.json-declared virtual key budget is enforced - cfg-vk-budget - #8266",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "sk-bf-harness-cfgbudget"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Prime the budget so the assertion does not depend on usage left from an earlier run.",
+                  "var BASE = pm.variables.get(\"baseUrl\");",
+                  "pm.sendRequest({",
+                  "  url: BASE + \"/v1/chat/completions\",",
+                  "  method: \"POST\",",
+                  "  header: { \"Content-Type\": \"application/json\", \"x-bf-vk\": \"sk-bf-harness-cfgbudget\" },",
+                  "  body: { mode: \"raw\", raw: JSON.stringify({ model: \"openai/gpt-4o-mini\", messages: [{ role: \"user\", content: \"Reply with the single word: ok\" }], max_tokens: 3 }) }",
+                  "}, function () { /* either it spent, or the budget was already over */ });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"a config.json-declared virtual key budget refuses the request\", function () {",
+                  "  pm.expect(pm.response.code, \"expected 402, got: \" + pm.response.text()).to.eql(402);",
+                  "});",
+                  "pm.test(\"the refusal names the budget policy\", function () {",
+                  "  pm.expect(pm.response.text(), pm.response.text()).to.include(\"policy_budget_exceeded\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
