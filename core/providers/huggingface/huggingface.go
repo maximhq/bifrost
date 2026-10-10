@@ -386,6 +386,10 @@ func (provider *HuggingFaceProvider) listModelsByKey(ctx *schemas.BifrostContext
 	var successCount int
 	var firstError *schemas.BifrostError
 	var rawResponses []map[string]interface{}
+	var modelMetadata huggingFaceModelMetadataIndex
+	if len(key.Aliases) > 0 {
+		modelMetadata = make(huggingFaceModelMetadataIndex)
+	}
 
 	for result := range resultsChan {
 		if result.err != nil {
@@ -396,8 +400,11 @@ func (provider *HuggingFaceProvider) listModelsByKey(ctx *schemas.BifrostContext
 		}
 
 		if result.response != nil {
-			providerResponse := result.response.ToBifrostListModelsResponse(providerName, result.provider, key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
+			providerResponse := result.response.toBifrostListModelsResponse(providerName, result.provider, key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered, successCount == 0)
 			if providerResponse != nil {
+				if modelMetadata != nil {
+					modelMetadata.collect(result.response)
+				}
 				aggregatedResponse.Data = append(aggregatedResponse.Data, providerResponse.Data...)
 				totalLatency += result.latency
 				successCount++
@@ -411,6 +418,13 @@ func (provider *HuggingFaceProvider) listModelsByKey(ctx *schemas.BifrostContext
 	// If all requests failed, return the first error
 	if successCount == 0 && firstError != nil {
 		return nil, firstError
+	}
+
+	// Unowned configured aliases belong to the first successful response,
+	// which may be empty. Recover metadata learned by later responses without
+	// changing that ownership or emitting duplicate entries.
+	if modelMetadata != nil {
+		modelMetadata.enrichAliases(aggregatedResponse.Data)
 	}
 
 	// Calculate average latency

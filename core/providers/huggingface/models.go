@@ -14,7 +14,57 @@ const (
 	maxModelFetchLimit     = 1000
 )
 
+type huggingFaceModelMetadata struct {
+	huggingFaceID    string
+	supportedMethods []string
+}
+
+type huggingFaceModelMetadataIndex map[string]huggingFaceModelMetadata
+
+func (index huggingFaceModelMetadataIndex) collect(response *HuggingFaceListModelsResponse) {
+	for _, model := range response.Models {
+		if model.ModelID == "" {
+			continue
+		}
+		key := strings.ToLower(model.ModelID)
+		metadata := index[key]
+		// A later response may know fields omitted by the first one. Preserve
+		// each field independently once a successful response supplies it.
+		if metadata.huggingFaceID == "" {
+			metadata.huggingFaceID = model.ID
+		}
+		if len(metadata.supportedMethods) == 0 {
+			metadata.supportedMethods = deriveSupportedMethods(model.PipelineTag, model.Tags)
+		}
+		index[key] = metadata
+	}
+}
+
+func (index huggingFaceModelMetadataIndex) enrichAliases(models []schemas.Model) {
+	for i := range models {
+		model := &models[i]
+		if model.Alias == nil {
+			continue
+		}
+		// Alias values are exact Hub IDs, even when their organization
+		// happens to have an inference provider's name. Listed IDs and
+		// friendly display names cannot reliably identify the target.
+		metadata := index[strings.ToLower(*model.Alias)]
+		if (model.HuggingFaceID == nil || *model.HuggingFaceID == "") && metadata.huggingFaceID != "" {
+			model.HuggingFaceID = new(metadata.huggingFaceID)
+		}
+		if len(model.SupportedMethods) == 0 && len(metadata.supportedMethods) > 0 {
+			model.SupportedMethods = metadata.supportedMethods
+		}
+	}
+}
+
 func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, inferenceProvider inferenceProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
+	includeUnownedBackfill := len(INFERENCE_PROVIDERS) > 0 && inferenceProvider == INFERENCE_PROVIDERS[0]
+	return response.toBifrostListModelsResponse(providerKey, inferenceProvider, allowedModels, blacklistedModels, aliases, unfiltered, includeUnownedBackfill)
+}
+
+func (response *HuggingFaceListModelsResponse) toBifrostListModelsResponse(providerKey schemas.ModelProvider, inferenceProvider inferenceProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered, includeUnownedBackfill bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -50,9 +100,17 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 		// Aliases apply at the model level (model.ModelID), not at the compound
 		// "{providerKey}/{inferenceProvider}/{modelID}" level.
 		for _, result := range pipeline.FilterModel(model.ModelID) {
+			id := fmt.Sprintf("%s/%s/%s", providerKey, inferenceProvider, result.ResolvedID)
+			if result.AliasValue != "" {
+				var include bool
+				id, include = formatConfiguredModelID(providerKey, inferenceProvider, result.ResolvedID, includeUnownedBackfill)
+				if !include {
+					continue
+				}
+			}
 			newModel := schemas.Model{
-				// inferenceProvider stays in the compound ID; aliases rename only the model segment
-				ID:               fmt.Sprintf("%s/%s/%s", providerKey, inferenceProvider, result.ResolvedID),
+				// Qualified aliases retain their configured inference-provider segment.
+				ID:               id,
 				Name:             new(model.ModelID),
 				SupportedMethods: supported,
 				HuggingFaceID:    new(model.ID),
@@ -86,32 +144,23 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 		// carry an inference-provider segment (e.g. "featherless-ai/org/model")
 		// or the "auto" policy. Prepending another segment here duplicates the
 		// provider in the compound ID and breaks request routing (#4215).
-		if first, modelName, found := strings.Cut(rawID, "/"); found && isKnownInferenceProviderOrPolicy(first) {
+		first, modelName, found := strings.Cut(rawID, "/")
+		// A two-segment Hub ID names organization/model, even if its
+		// organization is also a provider. Keep the configured lookup key and
+		// automatic routing intact; aliases still use their exact namespace.
+		providerNamedHubID := found && isKnownInferenceProviderOrPolicy(first) && !strings.Contains(modelName, "/") && m.Alias == nil
+		if found && isKnownInferenceProviderOrPolicy(first) && !providerNamedHubID {
 			m.Name = &modelName
 			lookupID = modelName
-			switch {
-			case strings.EqualFold(first, string(auto)):
-				// "auto" is owned by no inference-provider pass: the model
-				// listing loop iterates INFERENCE_PROVIDERS, which excludes it.
-				// Emit the entry exactly once, during the canonical first pass,
-				// so a routable auto-policy allowlist entry still surfaces in
-				// the listing instead of being dropped from every pass. Every
-				// other pass skips it to avoid duplicating it once per provider.
-				if len(INFERENCE_PROVIDERS) == 0 || inferenceProvider != INFERENCE_PROVIDERS[0] {
-					continue
-				}
-				m.ID = fmt.Sprintf("%s/%s", providerKey, rawID)
-			case !strings.EqualFold(first, string(inferenceProvider)):
-				// The entry belongs to a different inference provider's listing;
-				// it is emitted in that provider's pass. Skip it here to avoid
-				// duplicating the entry once per inference provider.
-				continue
-			default:
-				m.ID = fmt.Sprintf("%s/%s", providerKey, rawID)
-			}
+		}
+		var include bool
+		if providerNamedHubID {
+			m.ID, include = fmt.Sprintf("%s/%s", providerKey, rawID), includeUnownedBackfill
 		} else {
-			// Re-wrap the backfill ID to include the inferenceProvider segment
-			m.ID = fmt.Sprintf("%s/%s/%s", providerKey, inferenceProvider, rawID)
+			m.ID, include = formatConfiguredModelID(providerKey, inferenceProvider, rawID, includeUnownedBackfill)
+		}
+		if !include {
+			continue
 		}
 
 		// BackfillModels only knows about ID/Name/Alias, so a backfilled entry
@@ -132,10 +181,34 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 	return bifrostResponse
 }
 
+// formatConfiguredModelID wraps allowlist entries and alias keys, preserving an
+// existing inference-provider segment. Raw Hub IDs must not use this helper:
+// their organization can have the same name as an inference provider.
+func formatConfiguredModelID(providerKey schemas.ModelProvider, provider inferenceProvider, modelID string, includeUnownedBackfill bool) (string, bool) {
+	if first, _, found := strings.Cut(modelID, "/"); found && isKnownInferenceProviderOrPolicy(first) {
+		if strings.EqualFold(first, string(auto)) || !strings.EqualFold(first, string(provider)) {
+			// Active providers own their pass. Auto and retired providers have
+			// no active pass, so the aggregate caller assigns them to the first
+			// successful response instead of depending on any specific provider.
+			if isActiveInferenceProvider(first) || !includeUnownedBackfill {
+				return "", false
+			}
+		}
+		return fmt.Sprintf("%s/%s", providerKey, modelID), true
+	}
+	return fmt.Sprintf("%s/%s/%s", providerKey, provider, modelID), true
+}
+
 // isKnownInferenceProviderOrPolicy reports whether segment names one of the
-// supported inference providers or the "auto" policy (case-insensitive).
+// active or legacy inference providers or the "auto" policy (case-insensitive).
 func isKnownInferenceProviderOrPolicy(segment string) bool {
 	return slices.ContainsFunc(PROVIDERS_OR_POLICIES, func(p inferenceProvider) bool {
+		return strings.EqualFold(segment, string(p))
+	})
+}
+
+func isActiveInferenceProvider(segment string) bool {
+	return slices.ContainsFunc(INFERENCE_PROVIDERS, func(p inferenceProvider) bool {
 		return strings.EqualFold(segment, string(p))
 	})
 }
