@@ -5,7 +5,8 @@
 // a real upstream (OpenAI, Anthropic, or Gemini), drives provider/key mutations
 // through the management API, and asserts the catalog read endpoints reflect
 // each mutation. The live-model cache is populated asynchronously by the key
-// hooks, so every post-mutation read polls with exponential backoff. Output is
+// hooks, so every post-mutation catalog read polls with exponential backoff; an
+// inference request is sent once, after a read has seen the catalog ready. Output is
 // machine-generated — edit this script and re-run it; do not hand-edit the JSON.
 //
 //   node build-model-catalog-wiring.mjs [--out path.json]
@@ -20,6 +21,7 @@ import {
   folderPrerequest,
   pollPrerequest,
   pollTest,
+  singleTest,
   mutationTest,
   cleanupTest,
   buildCollection,
@@ -262,8 +264,10 @@ function expandScenario(sc) {
           messages: [{ role: "user", content: "Reply with the single word: ok." }],
           max_tokens: 5,
         };
+        // Sent once: the catalog read before it already waited for the alias to be listed, and a
+        // poll that re-sent the request would only prove the alias resolved once in several tries.
         items.push(item(nextId("assert-inference"), name, request("POST", url(["v1", "chat", "completions"]), body),
-          events(pollPrerequest(step.waitSeconds), pollTest(name, inferenceAssertLines(step.expectResolved), cleanupName))));
+          events(null, singleTest(name, inferenceAssertLines(step.expectResolved), cleanupName))));
         break;
       }
       case "cleanup":
@@ -371,7 +375,7 @@ function scenariosFor(provider) {
       steps: [
         { type: "addProvider", keys: [key({ id: "k1", models: [ALIAS, INFERENCE_MODEL], aliases: { [ALIAS]: INFERENCE_MODEL } })] },
         { type: "assertModels", subset: [INFERENCE_MODEL], waitSeconds: 2, label: "aliased key model present" },
-        { type: "assertInference", requestModel: ALIAS, expectResolved: INFERENCE_MODEL, waitSeconds: 2, label: "alias resolves to underlying model" },
+        { type: "assertInference", requestModel: ALIAS, expectResolved: INFERENCE_MODEL, label: "alias resolves to underlying model" },
         { type: "cleanup" },
       ],
     },
