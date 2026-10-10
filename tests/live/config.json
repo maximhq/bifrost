@@ -15,6 +15,35 @@
         "base_url": "http://127.0.0.1:9411",
         "default_request_timeout_in_seconds": 60
       }
+    },
+    "openai-split": {
+      "keys": [
+        {
+          "name": "split-voice",
+          "value": "sk-fake-split-voice",
+          "weight": 1,
+          "models": ["gpt-live-1"]
+        },
+        {
+          "name": "split-backend",
+          "value": "sk-fake-split-backend",
+          "weight": 1,
+          "models": ["gpt-5.6-luna", "gpt-5.6-terra"]
+        },
+        {
+          "name": "split-all",
+          "value": "sk-fake-split-all",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai"
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:9411",
+        "default_request_timeout_in_seconds": 60
+      }
     }
   },
   "config_store": {
