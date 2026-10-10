@@ -591,6 +591,34 @@ func (c ModelCaps) ReservedToolNamespaces(fallback []string) []string {
 	return fallback
 }
 
+// SupportsRegexLookaround reports whether the model accepts lookaround assertions in
+// tool-schema patterns. A row decides in either direction; absent returns fallback.
+func (c ModelCaps) SupportsRegexLookaround(fallback bool) bool {
+	if c.record != nil && c.record.SupportsRegexLookaround != nil {
+		return *c.record.SupportsRegexLookaround
+	}
+	return fallback
+}
+
+// SupportsRegexNULEscape reports whether the model accepts the `\0` escape in
+// tool-schema patterns. A row decides in either direction; absent returns fallback.
+func (c ModelCaps) SupportsRegexNULEscape(fallback bool) bool {
+	if c.record != nil && c.record.SupportsRegexNULEscape != nil {
+		return *c.record.SupportsRegexNULEscape
+	}
+	return fallback
+}
+
+// SupportedSchemaFormats returns the string `format` values the model accepts in tool
+// schemas. A non-empty row replaces fallback; absent or empty returns it. A nil result
+// means every format is accepted.
+func (c ModelCaps) SupportedSchemaFormats(fallback []string) []string {
+	if c.record != nil && len(c.record.SupportedSchemaFormats) > 0 {
+		return c.record.SupportedSchemaFormats
+	}
+	return fallback
+}
+
 // SupportsAdvisorTool reports whether the model accepts advisor_tool_result blocks.
 func (c ModelCaps) SupportsAdvisorTool(fallback bool) bool {
 	if c.record != nil && c.record.SupportsAdvisorTool != nil {

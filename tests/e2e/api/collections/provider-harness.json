@@ -221918,6 +221918,464 @@
           }
         }
       ]
+    },
+    {
+      "name": "187. Tool-schema format allowlist and Chat-path normalization for kimi-k3 (tool-schema-format)",
+      "description": "moonshotai.kimi-k3 on Bedrock rejects any tool schema whose nested string `format` is outside a 10-value allowlist (date, date-time, time, duration, email, hostname, ipv4, ipv6, uri, uuid): unary Converse answers 400 \"The task request was rejected by the target\", ConverseStream answers HTTP 200 with a 0-byte body, which Bifrost surfaces as 502 \"Bedrock Converse stream ended before messageStop (events: 0)\". Claude Code hit this through the Gmail MCP tools, whose $defs/Attachment.content carries `format: byte`. Separately, the existing `\\0`/lookaround rewrite (folder 110) ran only on the Responses path, so /v1/chat/completions to kimi-k3 still sent `(?!` and got a 400. core/bifrost.go now builds a ToolSchemaPolicy per attempt from the datasheet row (supports_regex_lookaround, supports_regex_nul_escape, supported_schema_formats) with a name-based fallback for Moonshot and DeepSeek, and applies it on both the Chat and Responses dispatch paths. Rows: 187.1 pins the production Claude Code route end to end (streams to message_stop); 187.2 and 187.3 pin the exact outbound schema on Chat and Responses via raw_request; 187.4 is the control that a model without restrictions gets the schema byte-identical. Run: make run-provider-harness-test PROVIDER=bedrock FEATURE=\"tool-schema-format\" 187.5 and 187.6 pin the Codex shapes: a tool declared in an additional_tools input item, and one inside a namespace. Converse has no namespace container, so prepareResponsesRequest hoists both to the top level, and the policy now runs after that so their schemas are normalized too.",
+      "item": [
+        {
+          "name": "187.1 bedrock/us.moonshotai.kimi-k3 /anthropic/v1/messages stream: nested format:byte dropped so the stream answers (was 200 + empty stream upstream, 502) - tool-schema-format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "",
+                  "// The Claude Code route: /anthropic/v1/messages streaming with a Gmail-style tool whose",
+                  "// $defs carries `format: byte`. Before the fix kimi-k3 sent no events at all and the",
+                  "// gateway answered 502; now the format is dropped and the turn streams to the end.",
+                  "pm.test('kimi-k3 streams an answer with a nested format:byte tool', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + raw.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(raw, 'no error event expected: ' + raw.slice(0, 400)).to.not.include('\"type\":\"error\"');",
+                  "  pm.expect(raw, 'stream must carry content: ' + raw.slice(0, 400)).to.include('content_block_delta');",
+                  "  var events = [];",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('event:') === 0) { events.push(t.slice(6).trim()); }",
+                  "  });",
+                  "  pm.expect(events[events.length - 1], 'stream must terminate on message_stop: ' + raw.slice(-300)).to.equal('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.292 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.moonshotai.kimi-k3\",\n  \"max_tokens\": 256,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"send_message\",\n      \"description\": \"Send an email\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"attachments\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"$ref\": \"#/$defs/Attachment\"\n            }\n          },\n          \"send_at\": {\n            \"type\": \"string\",\n            \"format\": \"date-time\"\n          },\n          \"size\": {\n            \"type\": \"integer\",\n            \"format\": \"int64\"\n          },\n          \"path\": {\n            \"type\": \"string\",\n            \"pattern\": \"^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$\"\n          }\n        },\n        \"$defs\": {\n          \"Attachment\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"content\": {\n                \"type\": \"string\",\n                \"format\": \"byte\"\n              }\n            },\n            \"required\": [\n              \"content\"\n            ]\n          }\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "187.2 bedrock/global.moonshotai.kimi-k3 /v1/chat/completions: \\0, lookahead and nested format:byte normalized on the Chat path (was 400) - tool-schema-format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// The outbound tool schema, read back via x-bf-send-back-raw-request. toolSchemaPolicy",
+                  "// (core/bifrost.go) restricts kimi-k3 to its validator's subset: `\\0` -> `\\x00`,",
+                  "// lookaround stripped, and string `format` values outside the 10-value allowlist",
+                  "// dropped. Numeric formats (int64) and allowlisted ones (date-time) must survive.",
+                  "function collect(node, key, out) {",
+                  "  if (!node || typeof node !== 'object') { return out; }",
+                  "  if (Array.isArray(node)) { node.forEach(function (n) { collect(n, key, out); }); return out; }",
+                  "  Object.keys(node).forEach(function (k) {",
+                  "    if (k === key && typeof node[k] === 'string') { out.push(node[k]); } else { collect(node[k], key, out); }",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "var pats = collect(rr, 'pattern', []);",
+                  "var fmts = collect(rr, 'format', []).sort();",
+                  "var SENT = '^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$';",
+                  "var RELAXED = '^[^\\\\x00]{1,200}$';",
+                  "",
+                  "pm.test('request is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('pattern on the wire is exactly the relaxed form', function () {",
+                  "  pm.expect(pats, 'want exactly [' + RELAXED + '], got: ' + JSON.stringify(pats) + ' wire: ' + wire.slice(0, 300)).to.eql([RELAXED]);",
+                  "});",
+                  "pm.test('nested format:byte dropped, date-time and int64 kept', function () {",
+                  "  pm.expect(fmts, 'want exactly [date-time, int64], got: ' + JSON.stringify(fmts) + ' wire: ' + wire.slice(0, 300)).to.eql(['date-time', 'int64']);",
+                  "});",
+                  "pm.test('the model answers', function () {",
+                  "  var u = body.usage || {};",
+                  "  pm.expect(u.completion_tokens, 'model produced no output: ' + txt.slice(0, 300)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.moonshotai.kimi-k3\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"send_message\",\n        \"description\": \"Send an email\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"attachments\": {\n              \"type\": \"array\",\n              \"items\": {\n                \"$ref\": \"#/$defs/Attachment\"\n              }\n            },\n            \"send_at\": {\n              \"type\": \"string\",\n              \"format\": \"date-time\"\n            },\n            \"size\": {\n              \"type\": \"integer\",\n              \"format\": \"int64\"\n            },\n            \"path\": {\n              \"type\": \"string\",\n              \"pattern\": \"^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$\"\n            }\n          },\n          \"$defs\": {\n            \"Attachment\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"content\": {\n                  \"type\": \"string\",\n                  \"format\": \"byte\"\n                }\n              },\n              \"required\": [\n                \"content\"\n              ]\n            }\n          }\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "187.3 bedrock/us.moonshotai.kimi-k3 /v1/responses: nested format:byte dropped, date-time and int64 kept (was rejected) - tool-schema-format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// The outbound tool schema, read back via x-bf-send-back-raw-request. toolSchemaPolicy",
+                  "// (core/bifrost.go) restricts kimi-k3 to its validator's subset: `\\0` -> `\\x00`,",
+                  "// lookaround stripped, and string `format` values outside the 10-value allowlist",
+                  "// dropped. Numeric formats (int64) and allowlisted ones (date-time) must survive.",
+                  "function collect(node, key, out) {",
+                  "  if (!node || typeof node !== 'object') { return out; }",
+                  "  if (Array.isArray(node)) { node.forEach(function (n) { collect(n, key, out); }); return out; }",
+                  "  Object.keys(node).forEach(function (k) {",
+                  "    if (k === key && typeof node[k] === 'string') { out.push(node[k]); } else { collect(node[k], key, out); }",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "var pats = collect(rr, 'pattern', []);",
+                  "var fmts = collect(rr, 'format', []).sort();",
+                  "var SENT = '^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$';",
+                  "var RELAXED = '^[^\\\\x00]{1,200}$';",
+                  "",
+                  "pm.test('request is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('pattern on the wire is exactly the relaxed form', function () {",
+                  "  pm.expect(pats, 'want exactly [' + RELAXED + '], got: ' + JSON.stringify(pats) + ' wire: ' + wire.slice(0, 300)).to.eql([RELAXED]);",
+                  "});",
+                  "pm.test('nested format:byte dropped, date-time and int64 kept', function () {",
+                  "  pm.expect(fmts, 'want exactly [date-time, int64], got: ' + JSON.stringify(fmts) + ' wire: ' + wire.slice(0, 300)).to.eql(['date-time', 'int64']);",
+                  "});",
+                  "pm.test('the model answers', function () {",
+                  "  var u = body.usage || {};",
+                  "  pm.expect(u.output_tokens, 'model produced no output: ' + txt.slice(0, 300)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.moonshotai.kimi-k3\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"send_message\",\n      \"description\": \"Send an email\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"attachments\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"$ref\": \"#/$defs/Attachment\"\n            }\n          },\n          \"send_at\": {\n            \"type\": \"string\",\n            \"format\": \"date-time\"\n          },\n          \"size\": {\n            \"type\": \"integer\",\n            \"format\": \"int64\"\n          },\n          \"path\": {\n            \"type\": \"string\",\n            \"pattern\": \"^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$\"\n          }\n        },\n        \"$defs\": {\n          \"Attachment\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"content\": {\n                \"type\": \"string\",\n                \"format\": \"byte\"\n              }\n            },\n            \"required\": [\n              \"content\"\n            ]\n          }\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "187.4 bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 /v1/chat/completions: same schema reaches the provider byte-identical - tool-schema-format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// The outbound tool schema, read back via x-bf-send-back-raw-request. toolSchemaPolicy",
+                  "// (core/bifrost.go) restricts kimi-k3 to its validator's subset: `\\0` -> `\\x00`,",
+                  "// lookaround stripped, and string `format` values outside the 10-value allowlist",
+                  "// dropped. Numeric formats (int64) and allowlisted ones (date-time) must survive.",
+                  "function collect(node, key, out) {",
+                  "  if (!node || typeof node !== 'object') { return out; }",
+                  "  if (Array.isArray(node)) { node.forEach(function (n) { collect(n, key, out); }); return out; }",
+                  "  Object.keys(node).forEach(function (k) {",
+                  "    if (k === key && typeof node[k] === 'string') { out.push(node[k]); } else { collect(node[k], key, out); }",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "var pats = collect(rr, 'pattern', []);",
+                  "var fmts = collect(rr, 'format', []).sort();",
+                  "var SENT = '^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$';",
+                  "var RELAXED = '^[^\\\\x00]{1,200}$';",
+                  "",
+                  "pm.test('request is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "",
+                  "// No row and no fallback restriction: the policy is zero and the walk is skipped, so",
+                  "// the schema keeps every format and pattern exactly as the client sent it.",
+                  "pm.test('pattern reaches the provider byte-identical', function () {",
+                  "  pm.expect(pats, 'want exactly [' + SENT + '], got: ' + JSON.stringify(pats) + ' wire: ' + wire.slice(0, 300)).to.eql([SENT]);",
+                  "});",
+                  "pm.test('every format reaches the provider, byte included', function () {",
+                  "  pm.expect(fmts, 'want exactly [byte, date-time, int64], got: ' + JSON.stringify(fmts) + ' wire: ' + wire.slice(0, 300)).to.eql(['byte', 'date-time', 'int64']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"send_message\",\n        \"description\": \"Send an email\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"attachments\": {\n              \"type\": \"array\",\n              \"items\": {\n                \"$ref\": \"#/$defs/Attachment\"\n              }\n            },\n            \"send_at\": {\n              \"type\": \"string\",\n              \"format\": \"date-time\"\n            },\n            \"size\": {\n              \"type\": \"integer\",\n              \"format\": \"int64\"\n            },\n            \"path\": {\n              \"type\": \"string\",\n              \"pattern\": \"^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$\"\n            }\n          },\n          \"$defs\": {\n            \"Attachment\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"content\": {\n                  \"type\": \"string\",\n                  \"format\": \"byte\"\n                }\n              },\n              \"required\": [\n                \"content\"\n              ]\n            }\n          }\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "187.5 bedrock/us.moonshotai.kimi-k3 /v1/responses: tool declared in a Codex additional_tools input item is normalized after it is hoisted (was rejected) - tool-schema-format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// The outbound tool schema, read back via x-bf-send-back-raw-request. toolSchemaPolicy",
+                  "// (core/bifrost.go) restricts kimi-k3 to its validator's subset: `\\0` -> `\\x00`,",
+                  "// lookaround stripped, and string `format` values outside the 10-value allowlist",
+                  "// dropped. Numeric formats (int64) and allowlisted ones (date-time) must survive.",
+                  "function collect(node, key, out) {",
+                  "  if (!node || typeof node !== 'object') { return out; }",
+                  "  if (Array.isArray(node)) { node.forEach(function (n) { collect(n, key, out); }); return out; }",
+                  "  Object.keys(node).forEach(function (k) {",
+                  "    if (k === key && typeof node[k] === 'string') { out.push(node[k]); } else { collect(node[k], key, out); }",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "var pats = collect(rr, 'pattern', []);",
+                  "var fmts = collect(rr, 'format', []).sort();",
+                  "var SENT = '^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$';",
+                  "var RELAXED = '^[^\\\\x00]{1,200}$';",
+                  "",
+                  "pm.test('request is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('pattern on the wire is exactly the relaxed form', function () {",
+                  "  pm.expect(pats, 'want exactly [' + RELAXED + '], got: ' + JSON.stringify(pats) + ' wire: ' + wire.slice(0, 300)).to.eql([RELAXED]);",
+                  "});",
+                  "pm.test('nested format:byte dropped, date-time and int64 kept', function () {",
+                  "  pm.expect(fmts, 'want exactly [date-time, int64], got: ' + JSON.stringify(fmts) + ' wire: ' + wire.slice(0, 300)).to.eql(['date-time', 'int64']);",
+                  "});",
+                  "pm.test('the model answers', function () {",
+                  "  var u = body.usage || {};",
+                  "  pm.expect(u.output_tokens, 'model produced no output: ' + txt.slice(0, 300)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.moonshotai.kimi-k3\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"send_message\",\n          \"description\": \"Send an email\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"attachments\": {\n                \"type\": \"array\",\n                \"items\": {\n                  \"$ref\": \"#/$defs/Attachment\"\n                }\n              },\n              \"send_at\": {\n                \"type\": \"string\",\n                \"format\": \"date-time\"\n              },\n              \"size\": {\n                \"type\": \"integer\",\n                \"format\": \"int64\"\n              },\n              \"path\": {\n                \"type\": \"string\",\n                \"pattern\": \"^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$\"\n              }\n            },\n            \"$defs\": {\n              \"Attachment\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"content\": {\n                    \"type\": \"string\",\n                    \"format\": \"byte\"\n                  }\n                },\n                \"required\": [\n                  \"content\"\n                ]\n              }\n            }\n          }\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Say hi\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "187.6 bedrock/global.moonshotai.kimi-k3 /v1/responses: namespace member is normalized after Converse flattens the namespace (was rejected) - tool-schema-format",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// The outbound tool schema, read back via x-bf-send-back-raw-request. toolSchemaPolicy",
+                  "// (core/bifrost.go) restricts kimi-k3 to its validator's subset: `\\0` -> `\\x00`,",
+                  "// lookaround stripped, and string `format` values outside the 10-value allowlist",
+                  "// dropped. Numeric formats (int64) and allowlisted ones (date-time) must survive.",
+                  "function collect(node, key, out) {",
+                  "  if (!node || typeof node !== 'object') { return out; }",
+                  "  if (Array.isArray(node)) { node.forEach(function (n) { collect(n, key, out); }); return out; }",
+                  "  Object.keys(node).forEach(function (k) {",
+                  "    if (k === key && typeof node[k] === 'string') { out.push(node[k]); } else { collect(node[k], key, out); }",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "var pats = collect(rr, 'pattern', []);",
+                  "var fmts = collect(rr, 'format', []).sort();",
+                  "var SENT = '^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$';",
+                  "var RELAXED = '^[^\\\\x00]{1,200}$';",
+                  "",
+                  "pm.test('request is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('pattern on the wire is exactly the relaxed form', function () {",
+                  "  pm.expect(pats, 'want exactly [' + RELAXED + '], got: ' + JSON.stringify(pats) + ' wire: ' + wire.slice(0, 300)).to.eql([RELAXED]);",
+                  "});",
+                  "pm.test('nested format:byte dropped, date-time and int64 kept', function () {",
+                  "  pm.expect(fmts, 'want exactly [date-time, int64], got: ' + JSON.stringify(fmts) + ' wire: ' + wire.slice(0, 300)).to.eql(['date-time', 'int64']);",
+                  "});",
+                  "pm.test('the model answers', function () {",
+                  "  var u = body.usage || {};",
+                  "  pm.expect(u.output_tokens, 'model produced no output: ' + txt.slice(0, 300)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.moonshotai.kimi-k3\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Say hi\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"gmail\",\n      \"description\": \"Gmail tools\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"send_message\",\n          \"description\": \"Send an email\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"attachments\": {\n                \"type\": \"array\",\n                \"items\": {\n                  \"$ref\": \"#/$defs/Attachment\"\n                }\n              },\n              \"send_at\": {\n                \"type\": \"string\",\n                \"format\": \"date-time\"\n              },\n              \"size\": {\n                \"type\": \"integer\",\n                \"format\": \"int64\"\n              },\n              \"path\": {\n                \"type\": \"string\",\n                \"pattern\": \"^(?!\\\\.\\\\.?$)[^\\\\0]{1,200}$\"\n              }\n            },\n            \"$defs\": {\n              \"Attachment\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"content\": {\n                    \"type\": \"string\",\n                    \"format\": \"byte\"\n                  }\n                },\n                \"required\": [\n                  \"content\"\n                ]\n              }\n            }\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

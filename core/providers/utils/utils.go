@@ -5050,7 +5050,7 @@ const jsonSchemaPatternKey = "pattern"
 // Go's own regexp accepts `\0` as a one-digit octal escape, and OpenAI, Anthropic
 // and Gemini accept it unchanged. `\x00` is accepted by every backend tested, so
 // the rewrite is lossless; which models receive it is decided by the caller (see
-// toolSchemaPatternRewriter in core), not here.
+// toolSchemaPolicy in core), not here.
 //
 // Only a `\0` that is not the start of a legacy octal escape is rewritten, so
 // `\012` is left alone, and escape pairs are consumed two at a time so the `0` in
@@ -5080,32 +5080,113 @@ func NormalizeRegexNULEscape(pattern string) string {
 	return b.String()
 }
 
+// jsonSchemaFormatKey is the JSON Schema keyword naming a value's format.
+const jsonSchemaFormatKey = "format"
+
+// ToolSchemaPolicy is the tool-schema subset a model's validator accepts. The zero
+// value accepts everything, and callers skip the walk for it.
+type ToolSchemaPolicy struct {
+	NormalizeNULEscape bool     // rewrite `\0` to `\x00` in patterns
+	StripLookaround    bool     // remove lookaround assertions from patterns
+	StringFormats      []string // formats a non-numeric schema may keep; nil keeps every format
+}
+
+// IsZero reports whether the policy leaves every schema untouched.
+func (p ToolSchemaPolicy) IsZero() bool {
+	return !p.NormalizeNULEscape && !p.StripLookaround && p.StringFormats == nil
+}
+
+// rewritePattern applies the policy's regex rewrites, returning pattern unchanged
+// when none applies.
+func (p ToolSchemaPolicy) rewritePattern(pattern string) string {
+	if p.NormalizeNULEscape {
+		pattern = NormalizeRegexNULEscape(pattern)
+	}
+	if p.StripLookaround {
+		pattern = StripRegexLookaround(pattern)
+	}
+	return pattern
+}
+
+// dropsFormat reports whether a schema of type typ must lose its format. Formats on
+// numeric types pass every validator tested, so only string and untyped schemas are
+// filtered.
+func (p ToolSchemaPolicy) dropsFormat(format string, typ any) bool {
+	return p.StringFormats != nil && !slices.Contains(p.StringFormats, format) && !isNumericSchemaType(typ)
+}
+
+// isNumericSchemaType reports whether a JSON Schema `type` admits only numbers,
+// optionally alongside null.
+func isNumericSchemaType(typ any) bool {
+	switch t := typ.(type) {
+	case string:
+		return t == "integer" || t == "number"
+	case []any:
+		numeric := false
+		for _, v := range t {
+			switch v {
+			case "null":
+			case "integer", "number":
+				numeric = true
+			default:
+				return false
+			}
+		}
+		return numeric
+	}
+	return false
+}
+
+// normalizeSchemaEntry normalizes one member of a schema object. names marks a map
+// keyed by property or definition names rather than keywords, and typ is the
+// enclosing schema's `type`. remove reports that the member must be deleted.
+func normalizeSchemaEntry(key string, value, typ any, p ToolSchemaPolicy, names bool) (normalized any, changed, remove bool) {
+	if !names {
+		switch key {
+		case jsonSchemaPatternKey:
+			if pattern, ok := value.(string); ok {
+				if rewritten := p.rewritePattern(pattern); rewritten != pattern {
+					return rewritten, true, false
+				}
+				return value, false, false
+			}
+		case jsonSchemaFormatKey:
+			if format, ok := value.(string); ok {
+				return value, false, p.dropsFormat(format, typ)
+			}
+		case "enum", "const", "default", "examples":
+			// Instance data, not schema: a "format" key inside is the caller's value.
+			return value, false, false
+		case "properties", "patternProperties", "$defs", "definitions", "dependentSchemas":
+			normalized, changed = normalizeSchemaValue(value, p, true)
+			return normalized, changed, false
+		}
+	}
+	normalized, changed = normalizeSchemaValue(value, p, false)
+	return normalized, changed, false
+}
+
 // normalizeSchemaValue normalizes any nested JSON Schema value. It returns the
 // input untouched, and reports false, when nothing changed -- the common case,
-// which must not allocate.
-func normalizeSchemaValue(value any, rewrite PatternRewriter) (any, bool) {
+// which must not allocate, so no-change paths hand back value itself: re-boxing a
+// slice into any would allocate.
+func normalizeSchemaValue(value any, p ToolSchemaPolicy, names bool) (any, bool) {
 	switch typed := value.(type) {
 	case *schemas.OrderedMap:
-		return normalizeSchemaMap(typed, rewrite)
+		return normalizeSchemaMap(typed, p, names)
 	case map[string]any:
 		// Nested schemas built in code arrive as plain maps (BuildDecisionSchema
 		// stores each question's schema this way inside an OrderedMap), so they
-		// need the same pattern handling. Copy-on-write like the other cases: the
-		// map is duplicated only when a value changes.
+		// need the same handling. Copy-on-write like the other cases: the map is
+		// duplicated only when a value changes.
+		var typ any
+		if !names {
+			typ = typed["type"]
+		}
 		var updated map[string]any
 		for key, nested := range typed {
-			normalized, changed := nested, false
-			if key == jsonSchemaPatternKey {
-				if pattern, ok := nested.(string); ok {
-					if rewritten := rewrite(pattern); rewritten != pattern {
-						normalized, changed = rewritten, true
-					}
-				}
-			}
-			if !changed {
-				normalized, changed = normalizeSchemaValue(nested, rewrite)
-			}
-			if !changed {
+			normalized, changed, remove := normalizeSchemaEntry(key, nested, typ, p, names)
+			if !changed && !remove {
 				continue
 			}
 			if updated == nil {
@@ -5114,16 +5195,20 @@ func normalizeSchemaValue(value any, rewrite PatternRewriter) (any, bool) {
 					updated[k] = v
 				}
 			}
-			updated[key] = normalized
+			if remove {
+				delete(updated, key)
+			} else {
+				updated[key] = normalized
+			}
 		}
 		if updated == nil {
-			return typed, false
+			return value, false
 		}
 		return updated, true
 	case []any:
 		var updated []any
 		for i := range typed {
-			normalized, changed := normalizeSchemaValue(typed[i], rewrite)
+			normalized, changed := normalizeSchemaValue(typed[i], p, false)
 			if !changed {
 				continue
 			}
@@ -5134,7 +5219,7 @@ func normalizeSchemaValue(value any, rewrite PatternRewriter) (any, bool) {
 			updated[i] = normalized
 		}
 		if updated == nil {
-			return typed, false
+			return value, false
 		}
 		return updated, true
 	}
@@ -5143,74 +5228,81 @@ func normalizeSchemaValue(value any, rewrite PatternRewriter) (any, bool) {
 
 // normalizeSchemaMap walks one schema object. OrderedMap.Clone is shallow, so a
 // clone is taken only when this level actually changes and untouched subtrees stay
-// shared with the caller's schema. Set replaces a value without disturbing key
-// order, which the prompt cache depends on.
-func normalizeSchemaMap(schema *schemas.OrderedMap, rewrite PatternRewriter) (*schemas.OrderedMap, bool) {
+// shared with the caller's schema. Set and Delete leave the remaining key order
+// alone, which the prompt cache depends on.
+func normalizeSchemaMap(schema *schemas.OrderedMap, p ToolSchemaPolicy, names bool) (*schemas.OrderedMap, bool) {
 	if schema == nil || schema.Len() == 0 {
 		return schema, false
 	}
+	var typ any
+	if !names {
+		typ, _ = schema.Get("type")
+	}
+	// Range, not Keys: Keys copies the key slice on every visit, and an unchanged
+	// schema must not allocate. Edits go to the clone, never the map being ranged.
 	var updated *schemas.OrderedMap
-	for _, key := range schema.Keys() {
-		value, _ := schema.Get(key)
-
-		normalized, changed := value, false
-		if key == jsonSchemaPatternKey {
-			if pattern, ok := value.(string); ok {
-				if rewritten := rewrite(pattern); rewritten != pattern {
-					normalized, changed = rewritten, true
-				}
-			}
-		}
-		if !changed {
-			normalized, changed = normalizeSchemaValue(value, rewrite)
-		}
-		if !changed {
-			continue
+	schema.Range(func(key string, value any) bool {
+		normalized, changed, remove := normalizeSchemaEntry(key, value, typ, p, names)
+		if !changed && !remove {
+			return true
 		}
 		if updated == nil {
 			updated = schema.Clone()
 		}
-		updated.Set(key, normalized)
-	}
+		if remove {
+			updated.Delete(key)
+		} else {
+			updated.Set(key, normalized)
+		}
+		return true
+	})
 	if updated == nil {
 		return schema, false
 	}
 	return updated, true
 }
 
-// RewriteToolSchemaPatterns applies rewrite to every regex `pattern` in the tool
-// parameter schema, copy-on-write: a schema with nothing to rewrite is returned
-// as-is and allocates nothing.
-func RewriteToolSchemaPatterns(params *schemas.ToolFunctionParameters, rewrite PatternRewriter) (*schemas.ToolFunctionParameters, bool) {
+// ApplyToolSchemaPolicy applies p to a tool parameter schema, copy-on-write: a schema
+// with nothing to change is returned as-is and allocates nothing.
+func ApplyToolSchemaPolicy(params *schemas.ToolFunctionParameters, p ToolSchemaPolicy) (*schemas.ToolFunctionParameters, bool) {
 	if params == nil {
 		return params, false
 	}
 
-	// Struct assignment carries the unexported keyOrder and explicitEmptyObject
-	// fields across, so a rewritten schema still serializes in the client's key
-	// order and an explicit `{}` stays `{}`.
-	updated := *params
-	changed := false
+	// The struct is copied on the first change only, so an unchanged schema does not
+	// allocate. Struct assignment carries the unexported keyOrder and
+	// explicitEmptyObject fields across, so a rewritten schema still serializes in
+	// the client's key order and an explicit `{}` stays `{}`.
+	var updated *schemas.ToolFunctionParameters
+	edit := func() *schemas.ToolFunctionParameters {
+		if updated == nil {
+			cp := *params
+			updated = &cp
+		}
+		return updated
+	}
 
 	if params.Pattern != nil {
-		if rewritten := rewrite(*params.Pattern); rewritten != *params.Pattern {
-			updated.Pattern = &rewritten
-			changed = true
+		if rewritten := p.rewritePattern(*params.Pattern); rewritten != *params.Pattern {
+			edit().Pattern = &rewritten
 		}
+	}
+	if params.Format != nil && p.dropsFormat(*params.Format, params.Type) {
+		edit().Format = nil
 	}
 
 	for _, field := range []struct {
 		value  *schemas.OrderedMap
-		assign func(*schemas.OrderedMap)
+		names  bool
+		assign func(*schemas.ToolFunctionParameters, *schemas.OrderedMap)
 	}{
-		{params.Properties, func(m *schemas.OrderedMap) { updated.Properties = m }},
-		{params.Items, func(m *schemas.OrderedMap) { updated.Items = m }},
-		{params.Defs, func(m *schemas.OrderedMap) { updated.Defs = m }},
-		{params.Definitions, func(m *schemas.OrderedMap) { updated.Definitions = m }},
+		{params.Properties, true, func(d *schemas.ToolFunctionParameters, m *schemas.OrderedMap) { d.Properties = m }},
+		{params.Items, false, func(d *schemas.ToolFunctionParameters, m *schemas.OrderedMap) { d.Items = m }},
+		{params.Defs, true, func(d *schemas.ToolFunctionParameters, m *schemas.OrderedMap) { d.Defs = m }},
+		{params.Definitions, true, func(d *schemas.ToolFunctionParameters, m *schemas.OrderedMap) { d.Definitions = m }},
 	} {
-		if normalized, fieldChanged := normalizeSchemaMap(field.value, rewrite); fieldChanged {
-			field.assign(normalized)
-			changed = true
+		if normalized, fieldChanged := normalizeSchemaMap(field.value, p, field.names); fieldChanged {
+			field.assign(edit(), normalized)
 		}
 	}
 
@@ -5218,25 +5310,24 @@ func RewriteToolSchemaPatterns(params *schemas.ToolFunctionParameters, rewrite P
 	// pattern under it must be rewritten too. The struct is copied only when its
 	// map changes; the boolean variant is carried through untouched.
 	if additional := params.AdditionalProperties; additional != nil && additional.AdditionalPropertiesMap != nil {
-		if normalized, fieldChanged := normalizeSchemaMap(additional.AdditionalPropertiesMap, rewrite); fieldChanged {
+		if normalized, fieldChanged := normalizeSchemaMap(additional.AdditionalPropertiesMap, p, false); fieldChanged {
 			additionalCopy := *additional
 			additionalCopy.AdditionalPropertiesMap = normalized
-			updated.AdditionalProperties = &additionalCopy
-			changed = true
+			edit().AdditionalProperties = &additionalCopy
 		}
 	}
 
 	for _, composition := range []struct {
 		value  []schemas.OrderedMap
-		assign func([]schemas.OrderedMap)
+		assign func(*schemas.ToolFunctionParameters, []schemas.OrderedMap)
 	}{
-		{params.AnyOf, func(s []schemas.OrderedMap) { updated.AnyOf = s }},
-		{params.OneOf, func(s []schemas.OrderedMap) { updated.OneOf = s }},
-		{params.AllOf, func(s []schemas.OrderedMap) { updated.AllOf = s }},
+		{params.AnyOf, func(d *schemas.ToolFunctionParameters, s []schemas.OrderedMap) { d.AnyOf = s }},
+		{params.OneOf, func(d *schemas.ToolFunctionParameters, s []schemas.OrderedMap) { d.OneOf = s }},
+		{params.AllOf, func(d *schemas.ToolFunctionParameters, s []schemas.OrderedMap) { d.AllOf = s }},
 	} {
 		var rewritten []schemas.OrderedMap
 		for i := range composition.value {
-			normalized, elementChanged := normalizeSchemaMap(&composition.value[i], rewrite)
+			normalized, elementChanged := normalizeSchemaMap(&composition.value[i], p, false)
 			if !elementChanged {
 				continue
 			}
@@ -5247,29 +5338,40 @@ func RewriteToolSchemaPatterns(params *schemas.ToolFunctionParameters, rewrite P
 			rewritten[i] = *normalized
 		}
 		if rewritten != nil {
-			composition.assign(rewritten)
-			changed = true
+			composition.assign(edit(), rewritten)
 		}
 	}
 
-	if !changed {
+	if updated == nil {
 		return params, false
 	}
-	return &updated, true
+	return updated, true
 }
 
-// RewriteResponsesToolSchemas applies rewrite to the regex patterns in every
-// Responses tool's parameter schema, copy-on-write. Tools with nothing to rewrite
-// are shared with the caller's slice rather than copied, and ResponsesToolFunction
-// is embedded by pointer, so a rewritten one is replaced rather than written
-// through.
-func RewriteResponsesToolSchemas(tools []schemas.ResponsesTool, rewrite PatternRewriter) ([]schemas.ResponsesTool, bool) {
+// ApplyResponsesToolSchemaPolicy applies p to every Responses tool's parameter
+// schema, including the members of namespace tools, copy-on-write. Tools with
+// nothing to change are shared with the caller's slice rather than copied, and
+// ResponsesToolFunction and ResponsesToolNamespace are embedded by pointer, so a
+// changed one is replaced rather than written through.
+func ApplyResponsesToolSchemaPolicy(tools []schemas.ResponsesTool, p ToolSchemaPolicy) ([]schemas.ResponsesTool, bool) {
 	var updated []schemas.ResponsesTool
 	for i := range tools {
-		if tools[i].ResponsesToolFunction == nil || tools[i].ResponsesToolFunction.Parameters == nil {
-			continue
+		function, namespace := tools[i].ResponsesToolFunction, tools[i].ResponsesToolNamespace
+		changed := false
+		if function != nil && function.Parameters != nil {
+			if normalized, ok := ApplyToolSchemaPolicy(function.Parameters, p); ok {
+				cp := *function
+				cp.Parameters = normalized
+				function, changed = &cp, true
+			}
 		}
-		normalized, changed := RewriteToolSchemaPatterns(tools[i].ResponsesToolFunction.Parameters, rewrite)
+		if namespace != nil {
+			if members, ok := ApplyResponsesToolSchemaPolicy(namespace.Tools, p); ok {
+				cp := *namespace
+				cp.Tools = members
+				namespace, changed = &cp, true
+			}
+		}
 		if !changed {
 			continue
 		}
@@ -5277,9 +5379,7 @@ func RewriteResponsesToolSchemas(tools []schemas.ResponsesTool, rewrite PatternR
 			updated = make([]schemas.ResponsesTool, len(tools))
 			copy(updated, tools)
 		}
-		function := *tools[i].ResponsesToolFunction
-		function.Parameters = normalized
-		updated[i].ResponsesToolFunction = &function
+		updated[i].ResponsesToolFunction, updated[i].ResponsesToolNamespace = function, namespace
 	}
 	if updated == nil {
 		return tools, false
@@ -5287,19 +5387,30 @@ func RewriteResponsesToolSchemas(tools []schemas.ResponsesTool, rewrite PatternR
 	return updated, true
 }
 
-// PatternRewriter rewrites one regex `pattern` value. It must return its input
-// unchanged when it has nothing to do, so callers can detect a no-op by equality
-// and keep the original schema bytes.
-type PatternRewriter func(pattern string) string
-
-// ComposePatternRewriters applies rewriters left to right.
-func ComposePatternRewriters(rewriters ...PatternRewriter) PatternRewriter {
-	return func(pattern string) string {
-		for _, rewrite := range rewriters {
-			pattern = rewrite(pattern)
+// ApplyChatToolSchemaPolicy is the Chat Completions parallel of
+// ApplyResponsesToolSchemaPolicy, with the same copy-on-write guarantee.
+func ApplyChatToolSchemaPolicy(tools []schemas.ChatTool, p ToolSchemaPolicy) ([]schemas.ChatTool, bool) {
+	var updated []schemas.ChatTool
+	for i := range tools {
+		if tools[i].Function == nil || tools[i].Function.Parameters == nil {
+			continue
 		}
-		return pattern
+		normalized, changed := ApplyToolSchemaPolicy(tools[i].Function.Parameters, p)
+		if !changed {
+			continue
+		}
+		if updated == nil {
+			updated = make([]schemas.ChatTool, len(tools))
+			copy(updated, tools)
+		}
+		function := *tools[i].Function
+		function.Parameters = normalized
+		updated[i].Function = &function
 	}
+	if updated == nil {
+		return tools, false
+	}
+	return updated, true
 }
 
 // StripRegexLookaround removes every zero-width lookaround assertion, `(?=...)`,
@@ -5311,7 +5422,7 @@ func ComposePatternRewriters(rewriters ...PatternRewriter) PatternRewriter {
 // stream, and Claude Code's ArtifactData tool ships four such patterns, so every
 // Claude Code request to kimi-k3 died. OpenAI and Anthropic accept lookaround,
 // and for them the assertion is real guidance, so the rewrite is gated to models
-// outside those families (see regexLookaroundSupported in core).
+// outside those families (see toolSchemaPolicy in core).
 //
 // Removing a zero-width assertion can only widen what the pattern matches, never
 // narrow it, so the result is always a valid relaxation of the original: the
