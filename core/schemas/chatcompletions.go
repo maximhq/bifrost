@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -2268,6 +2269,16 @@ func (bc *BifrostCost) UnmarshalJSON(data []byte) error {
 	if err := Unmarshal(data, &costFloat); err == nil {
 		bc.TotalCost = costFloat
 		return nil
+	}
+
+	// Some OpenAI-compatible providers (e.g. ZenMux) emit cost as a JSON string
+	// (e.g. "cost":"0.00132"); accept it as the total cost.
+	var costString string
+	if err := Unmarshal(data, &costString); err == nil {
+		if f, perr := strconv.ParseFloat(costString, 64); perr == nil {
+			bc.TotalCost = f
+			return nil
+		}
 	}
 
 	// Nested shape. Use a type alias to avoid infinite recursion.
