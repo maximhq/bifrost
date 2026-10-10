@@ -4697,20 +4697,43 @@ func TestSDKFidelityDecisionRequestNullStateReachesProvider(t *testing.T) {
 	resp, bifrostErr := client.DecisionRequest(ctx, &schemas.BifrostDecisionRequest{
 		Provider: schemas.Typesafe,
 		Model:    "jev-1.13.0",
-		State:    nil,
-		Questions: map[string]schemas.DecisionQuestion{
-			"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+		Questions: []schemas.DecisionQuestion{
+			{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("q"), Instructions: schemas.NewDecisionText("Evaluate this state.")},
 		},
 	})
 	if bifrostErr != nil {
 		t.Fatalf("null state must reach the provider, got error: %v", bifrostErr)
 	}
-	if resp == nil || resp.Answers["q"].Value != 0.25 {
+	if resp == nil || len(resp.Answers) != 1 || resp.Answers[0].Probability == nil || *resp.Answers[0].Probability != 0.25 {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	if len(bodies) != 1 || !strings.Contains(bodies[0], `"state":null`) {
 		t.Errorf("provider must receive state null, got bodies %v", bodies)
+	}
+}
+
+// An attempt that already ran a provider-injected MCP tool is not retried: a retry would
+// restart the injected loop from the original request and run the tool's side effects,
+// and bill the finished turns, a second time.
+func TestExecuteRequestWithRetries_StopsAfterInjectedToolRan(t *testing.T) {
+	config := createTestConfig(2, time.Millisecond, 10*time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		ctx.SetValue(schemas.BifrostContextKeyInjectedToolsExecuted, true)
+		return "", createBifrostError("service unavailable", Ptr(503), nil, false)
+	}
+	_, err := executeRequestWithRetries(ctx, config, handler, nil, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
+	if err == nil {
+		t.Fatal("expected the 503 to come back")
+	}
+	if callCount != 1 {
+		t.Fatalf("a retryable error after an injected tool ran ends the request: %d attempts", callCount)
 	}
 }

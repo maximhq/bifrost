@@ -76,6 +76,7 @@ export const baseRoutingFields: CELFieldDefinition[] = [
 			{ name: "transcription_stream", label: "Transcription (Streaming)" },
 			{ name: "count_tokens", label: "Count Tokens" },
 			{ name: "rerank", label: "Rerank" },
+			{ name: "decisions", label: "Decisions" },
 			{ name: "video_generation", label: "Video Generation" },
 		],
 		description:

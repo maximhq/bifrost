@@ -313,6 +313,70 @@ func TestUpdateProvider_RejectsBaseURLComponents(t *testing.T) {
 	}
 }
 
+// An injected_tools block the typed payload cannot hold must be rejected, not decoded
+// into an empty config: a typo'd slot or a null web_search would otherwise return 200
+// with no tool configured. Both write paths are covered.
+func TestProviderWrites_RejectMalformedInjectedTools(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	blocks := map[string]struct{ body, reason string }{
+		"unknown slot":                    {`{"websearch": {"mcp_client_name": "tavily", "tool_name": "search"}}`, "unknown slot"},
+		"null web_search":                 {`{"web_search": null}`, "web_search must be an object"},
+		"unknown web_search field":        {`{"web_search": {"mcp_client_name": "tavily", "tool_name": "search", "max_results": 5}}`, "unknown web_search field"},
+		"duplicate block, last null":      {`{"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}}, "injected_tools": {"web_search": null}`, "web_search must be an object"},
+		"duplicate web_search, last null": {`{"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}, "web_search": null}`, "web_search must be an object"},
+	}
+	for name, tc := range blocks {
+		t.Run("add/"+name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+				modelsManager: &mockModelsManager{},
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetBody([]byte(`{"provider": "mock-openai", "custom_provider_config": {"base_provider_type": "openai", "is_key_less": true}, "injected_tools": ` + tc.body + `}`))
+			h.addProvider(ctx)
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), tc.reason) {
+				t.Fatalf("expected injected_tools rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			if len(h.inMemoryStore.Providers) != 0 {
+				t.Fatal("invalid provider was persisted")
+			}
+		})
+		t.Run("update/"+name, func(t *testing.T) {
+			customConfig := &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true}
+			modelsManager := &mockModelsManager{}
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{
+					ClientConfig: &configstore.ClientConfig{},
+					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+						"mock-openai": {
+							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+							CustomProviderConfig:     customConfig,
+						},
+					},
+				},
+				modelsManager: modelsManager,
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+			ctx.Request.SetRequestURI("/api/providers/mock-openai")
+			ctx.Request.SetBody([]byte(`{"concurrency_and_buffer_size": {"concurrency": 2, "buffer_size": 4}, "custom_provider_config": {"base_provider_type": "openai", "is_key_less": true}, "injected_tools": ` + tc.body + `}`))
+			ctx.SetUserValue("provider", "mock-openai")
+			h.updateProvider(ctx)
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), tc.reason) {
+				t.Fatalf("expected injected_tools rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			if got := h.inMemoryStore.Providers["mock-openai"].ConcurrencyAndBufferSize.Concurrency; got != 1 {
+				t.Fatalf("rejected update changed the stored provider: concurrency=%d", got)
+			}
+			if len(modelsManager.reloadCalls) != 0 {
+				t.Fatalf("rejected update reloaded the provider: %v", modelsManager.reloadCalls)
+			}
+		})
+	}
+}
+
 // TestAddProvider_RejectsBaseURLWhenAuthBypassed covers the second route to the same
 // outcome as the Ollama key case: a custom provider's network_config.base_url + explicit
 // allow_private_network:true, which an unauthenticated caller could set together to
@@ -1116,6 +1180,144 @@ func TestListModels_AppliesQueryAndLimitAfterFiltering(t *testing.T) {
 	}
 	if resp.Models[0].Name != "gpt-4o" {
 		t.Fatalf("expected first filtered model to be gpt-4o, got %#v", resp.Models[0])
+	}
+}
+
+// TestListModels_DecisionsKeepsOnlyDecisionModels pins that decisions=true
+// lists only models the provider would serve a decision request for, with the
+// total counted after filtering.
+func TestListModels_DecisionsKeepsOnlyDecisionModels(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	models := []string{"gpt-4o", "gpt-6-luna", "gpt-6-luna-2026-09-01"}
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=openai&decisions=true&limit=10")
+
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	if resp.Total != 2 || !slices.Equal(names, []string{"gpt-6-luna", "gpt-6-luna-2026-09-01"}) {
+		t.Fatalf("expected only the decision models, got total=%d %v", resp.Total, names)
+	}
+}
+
+// TestListModels_DecisionsResolvesKeyAliases pins that decisions=true checks a
+// key alias as the model it points at, its ModelName before its ModelID, as the
+// provider's Decision call does after resolving it, so an alias of a decision
+// model is offered and an alias of a chat model is not.
+func TestListModels_DecisionsResolvesKeyAliases(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	key := schemas.Key{ID: "key-a", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
+		"complexity-judge": {ModelID: "gpt-6-luna"},
+		"named-judge":      {ModelID: "luna-deployment-1", ModelName: schemas.Ptr("gpt-6-luna")},
+		"fast-chat":        {ModelID: "gpt-4o"},
+	}}
+	// The listing names key aliases as models alongside the catalog's.
+	listed := []string{"complexity-judge", "named-judge", "fast-chat", "gpt-4o"}
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{key}, listed, listed)
+	catalog := modelCatalogForPricingJSON(t, []byte(`{"openai/gpt-4o": {"provider":"openai","mode":"chat"}}`))
+	catalog.SetKeyConfigForProvider(schemas.OpenAI, []schemas.Key{key})
+	h.inMemoryStore.ModelCatalog = catalog
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=openai&decisions=true&limit=10")
+
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	if !slices.Equal(names, []string{"complexity-judge", "named-judge"}) {
+		t.Fatalf("expected only the aliases of decision models, got %v", names)
+	}
+}
+
+// TestListModels_DecisionsKeepsTypesafeBasedModels pins that decisions=true
+// lists every model of a Typesafe-based provider, which serves whichever model
+// it is given, without a datasheet row: Typesafe itself and a custom provider
+// on its base (a self-hosted Laya, say).
+func TestListModels_DecisionsKeepsTypesafeBasedModels(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	for _, provider := range []schemas.ModelProvider{schemas.Typesafe, "laya"} {
+		models := []string{"english", "multilingual"}
+		h := providerHandlerForTest(provider, []schemas.Key{{ID: "key-a"}}, models, models)
+		if provider != schemas.Typesafe {
+			config := h.inMemoryStore.Providers[provider]
+			config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Typesafe, IsKeyLess: true}
+			h.inMemoryStore.Providers[provider] = config
+		}
+
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("GET")
+		ctx.Request.SetRequestURI("/api/models?provider=" + string(provider) + "&decisions=true&limit=10")
+		h.listModels(ctx)
+
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", provider, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		}
+		var resp ListModelsResponse
+		if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if resp.Total != 2 {
+			t.Fatalf("%s: expected both models listed, got %#v", provider, resp.Models)
+		}
+	}
+}
+
+// TestListModels_DecisionsSkipsProvidersDenyingDecisions pins that
+// decisions=true lists nothing from a custom provider whose allowed requests
+// exclude decisions, since its Decision call is denied rather than served:
+// one on OpenAI's base with a decisions model, and one on Typesafe's.
+func TestListModels_DecisionsSkipsProvidersDenyingDecisions(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	for provider, base := range map[schemas.ModelProvider]schemas.ModelProvider{"my-openai": schemas.OpenAI, "laya": schemas.Typesafe} {
+		models := []string{"gpt-6-luna", "english"}
+		h := providerHandlerForTest(provider, []schemas.Key{{ID: "key-a"}}, models, models)
+		config := h.inMemoryStore.Providers[provider]
+		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: base, IsKeyLess: true, AllowedRequests: &schemas.AllowedRequests{ListModels: true}}
+		h.inMemoryStore.Providers[provider] = config
+
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("GET")
+		ctx.Request.SetRequestURI("/api/models?provider=" + string(provider) + "&decisions=true&limit=10")
+		h.listModels(ctx)
+
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", provider, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		}
+		var resp ListModelsResponse
+		if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if resp.Total != 0 {
+			t.Fatalf("%s: expected no models listed, got %#v", provider, resp.Models)
+		}
 	}
 }
 

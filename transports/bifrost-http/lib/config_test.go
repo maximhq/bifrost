@@ -22653,3 +22653,67 @@ func TestValidateCustomProvider_BaseProviderTypes(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported base_provider_type")
 }
+
+// TestValidateInjectedTools pins what the management API accepts for injected_tools.
+// A reference to an MCP client that does not exist is rejected up front: at request
+// time it would fail open and the provider would silently serve requests without the
+// web search tool the operator configured.
+func TestValidateInjectedTools(t *testing.T) {
+	clients := map[string]string{"id-1": "tavily"}
+	ref := func(client, tool string) *schemas.InjectedToolsConfig {
+		return &schemas.InjectedToolsConfig{WebSearch: &schemas.InjectedToolRef{MCPClientName: client, ToolName: tool}}
+	}
+
+	assert.NoError(t, ValidateInjectedTools(nil, nil), "no injected_tools block is not a misconfiguration")
+	assert.NoError(t, ValidateInjectedTools(&schemas.InjectedToolsConfig{}, nil), "an empty block injects nothing")
+	assert.NoError(t, ValidateInjectedTools(ref("tavily", "search"), clients))
+
+	for name, cfg := range map[string]*schemas.InjectedToolsConfig{
+		"missing client name": ref("", "search"),
+		"blank client name":   ref("  ", "search"),
+		"missing tool name":   ref("tavily", ""),
+		"unknown client":      ref("exa", "search"),
+	} {
+		assert.Error(t, ValidateInjectedTools(cfg, clients), name)
+	}
+	assert.Error(t, ValidateInjectedTools(ref("tavily", "search"), nil), "no MCP clients configured at all")
+}
+
+// TestUnresolvedInjectedTools pins the load-time check for config.json. The file path
+// has no request to reject, and an MCP client may be added later through the API, so a
+// reference to an unknown client is reported for a warning at boot rather than failing
+// startup; at request time it fails open.
+func TestUnresolvedInjectedTools(t *testing.T) {
+	ref := func(client string) configstore.ProviderConfig {
+		return configstore.ProviderConfig{InjectedTools: &schemas.InjectedToolsConfig{
+			WebSearch: &schemas.InjectedToolRef{MCPClientName: client, ToolName: "search"},
+		}}
+	}
+	providers := map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI:    ref("tavily"),
+		schemas.Anthropic: ref("exa"),
+		schemas.Gemini:    {},
+	}
+	assert.Equal(t, []string{`provider anthropic: injected_tools.web_search references unknown MCP client "exa"`},
+		unresolvedInjectedTools(providers, map[string]string{"id-1": "tavily"}))
+	assert.Len(t, unresolvedInjectedTools(providers, nil), 2, "with no MCP clients every reference is unresolved")
+	assert.Empty(t, unresolvedInjectedTools(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Gemini: {}}, nil))
+}
+
+// TestValidateInjectedToolsBody_AcceptsSchemaValidShapes is the positive control for the
+// handler rejections: a well-formed block, a null block and an absent block all pass, and
+// so does a body whose last injected_tools block is valid.
+func TestValidateInjectedToolsBody_AcceptsSchemaValidShapes(t *testing.T) {
+	for _, body := range []string{
+		`{"injected_tools": {"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}}}`,
+		`{"injected_tools": {}}`,
+		`{"injected_tools": null}`,
+		`{"keys": []}`,
+		// The handler keeps the last of repeated keys, so only the last block is what gets stored.
+		`{"injected_tools": {"web_search": null}, "injected_tools": {"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}}}`,
+	} {
+		if err := ValidateInjectedToolsBody([]byte(body)); err != nil {
+			t.Errorf("%s: unexpected rejection: %v", body, err)
+		}
+	}
+}

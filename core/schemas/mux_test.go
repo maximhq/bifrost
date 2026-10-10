@@ -178,6 +178,51 @@ func TestToChatMessages_AttachesReasoningToToolCallAssistantMessage(t *testing.T
 	}
 }
 
+func TestToChatMessages_MapsOutputTextInMultiPartAssistantMessage(t *testing.T) {
+	messages := []ResponsesMessage{
+		{
+			Role: Ptr(ResponsesInputMessageRoleUser),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("hi")},
+				},
+			},
+		},
+		{
+			Role: Ptr(ResponsesInputMessageRoleAssistant),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesOutputMessageContentTypeText, Text: Ptr("a")},
+					{Type: ResponsesOutputMessageContentTypeText, Text: Ptr("b")},
+				},
+			},
+		},
+	}
+
+	chatMessages := ToChatMessages(messages)
+	if len(chatMessages) != 2 {
+		t.Fatalf("expected 2 chat messages, got %d", len(chatMessages))
+	}
+
+	assistant := chatMessages[1]
+	if assistant.Content == nil || len(assistant.Content.ContentBlocks) != 2 {
+		t.Fatalf("expected 2 content blocks on the assistant turn, got %#v", assistant.Content)
+	}
+	for i, block := range assistant.Content.ContentBlocks {
+		// "output_text" is not a chat-completions content part: a block left with
+		// the Responses spelling is rejected downstream as an unknown variant.
+		if block.Type != ChatContentBlockTypeText {
+			t.Fatalf("block %d: expected type %q, got %q", i, ChatContentBlockTypeText, block.Type)
+		}
+	}
+	if assistant.Content.ContentBlocks[0].Text == nil || *assistant.Content.ContentBlocks[0].Text != "a" {
+		t.Fatalf("expected first block text %q, got %#v", "a", assistant.Content.ContentBlocks[0].Text)
+	}
+	if assistant.Content.ContentBlocks[1].Text == nil || *assistant.Content.ContentBlocks[1].Text != "b" {
+		t.Fatalf("expected second block text %q, got %#v", "b", assistant.Content.ContentBlocks[1].Text)
+	}
+}
+
 func TestToResponsesMessages_EmitsReasoningMessageBeforeToolCalls(t *testing.T) {
 	reasoning := "I should call Bash to list the directory."
 	cm := &ChatMessage{

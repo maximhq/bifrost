@@ -232,3 +232,61 @@ func TestWriterConfigDefaultsAndInitOverrides(t *testing.T) {
 		t.Fatalf("Cleanup() with writer error = %v", err)
 	}
 }
+
+// flushCountingStore records the processing-row Flush calls the cleanup tick
+// issues and lets a test pretend another node holds the migration lock.
+type flushCountingStore struct {
+	logstore.LogStore
+	mu        sync.Mutex
+	flushes   int
+	migrating bool
+}
+
+func (s *flushCountingStore) setMigrating(v bool) { s.mu.Lock(); s.migrating = v; s.mu.Unlock() }
+
+func (s *flushCountingStore) MigrationInProgress(context.Context) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.migrating
+}
+
+func (s *flushCountingStore) count() int { s.mu.Lock(); defer s.mu.Unlock(); return s.flushes }
+
+func (s *flushCountingStore) Flush(context.Context, time.Time) error {
+	s.mu.Lock()
+	s.flushes++
+	s.mu.Unlock()
+	return nil
+}
+func (s *flushCountingStore) FlushMCPToolLogs(context.Context, time.Time) error {
+	s.mu.Lock()
+	s.flushes++
+	s.mu.Unlock()
+	return nil
+}
+func (s *flushCountingStore) FlushAgentLogs(context.Context, time.Time) error {
+	s.mu.Lock()
+	s.flushes++
+	s.mu.Unlock()
+	return nil
+}
+
+// TestCleanupTickSkipsFlushWhileMigrating pins that the periodic
+// processing-row deletes stay off the logs table while another node migrates,
+// and run as usual (all three tables) once the lock is released.
+func TestCleanupTickSkipsFlushWhileMigrating(t *testing.T) {
+	store := &flushCountingStore{LogStore: newTestStore(t)}
+	plugin := &LoggerPlugin{ctx: context.Background(), store: store, logger: testLogger{}}
+
+	store.setMigrating(true)
+	plugin.cleanupOldProcessingLogs()
+	if got := store.count(); got != 0 {
+		t.Fatalf("expected no Flush calls while the migration lock is held, got %d", got)
+	}
+
+	store.setMigrating(false)
+	plugin.cleanupOldProcessingLogs()
+	if got := store.count(); got != 3 {
+		t.Fatalf("expected the LLM, MCP and A2A flushes once the lock cleared, got %d", got)
+	}
+}

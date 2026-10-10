@@ -318,6 +318,8 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | `output_cost_per_token_ultrafast` | Output token cost for ultrafast requests |
 | `input_cost_per_token_flex` | Input token cost for flex requests |
 | `output_cost_per_token_flex` | Output token cost for flex requests |
+| `input_cost_per_token_decisions` | Input token cost for decision requests, flat across the context window (no tiering). Always wins over `input_cost_per_token`, whether it comes from the datasheet or an override; `input_cost_per_token` is only the fallback when no decision rate is set |
+| `output_cost_per_token_decisions` | Output token cost for decision requests, flat across the context window (no tiering). Always wins over `output_cost_per_token`, whether it comes from the datasheet or an override; `output_cost_per_token` is only the fallback when no decision rate is set |
 | `input_cost_per_token_fast` | Input token cost for fast-mode requests (flat across the full context window - no tiering) |
 | `output_cost_per_token_fast` | Output token cost for fast-mode requests (flat across the full context window - no tiering) |
 | `input_cost_per_character` | Input cost per character (character-billed models) |

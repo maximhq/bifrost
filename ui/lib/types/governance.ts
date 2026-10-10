@@ -544,6 +544,8 @@ export interface PricingOverridePatch {
 	output_cost_per_token_ultrafast?: number;
 	input_cost_per_token_flex?: number;
 	output_cost_per_token_flex?: number;
+	input_cost_per_token_decisions?: number;
+	output_cost_per_token_decisions?: number;
 	input_cost_per_character?: number;
 	input_cost_per_token_fast?: number;
 	output_cost_per_token_fast?: number;
