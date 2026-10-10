@@ -1,0 +1,186 @@
+---
+title: "OpenAPI Servers"
+sidebarTitle: "OpenAPI Specs"
+description: "Turn any REST API that has an OpenAPI or Swagger document into MCP tools, without writing an MCP server."
+icon: "file-code"
+---
+
+## Overview
+
+Most APIs you want an agent to use have an OpenAPI (or Swagger) document but no MCP server. With the **OpenAPI** connection type, Bifrost builds the MCP server for you: paste the document, pick the operations, and every one of them becomes a tool. Tool calls are sent to the API as ordinary HTTP requests, with the credentials you configure.
+
+The result is a regular MCP client in Bifrost. Everything that applies to other servers applies here too: tool filtering and auto-execute, pricing, virtual-key access, [code mode](/mcp/code-mode), the hosted `/mcp/<slug>` endpoint, and tool sync.
+
+<Info>
+Supported documents: **Swagger 2.0**, **OpenAPI 3.0**, **3.1** and **3.2**, as JSON or YAML, up to 5 MiB. Newer 3.x minor versions are parsed as 3.2 with a warning.
+</Info>
+
+## How operations become tools
+
+| Document | Tool |
+|---|---|
+| `operationId` | Tool name, sanitized to letters, digits and underscores (`list-pets.v2` → `list_pets_v2`). Operations without one are named `<method>_<path>` (`get_pets_by_petId`). Duplicates get a numeric suffix. The gateway exposes the tool as `<server>-<tool>`. |
+| `summary` and `description` | Tool description, followed by `METHOD /path`. |
+| Path, query, header and cookie parameters | Top-level properties of the tool's input schema, each annotated with its location. |
+| Request body (`application/json`, `application/x-www-form-urlencoded`, `text/plain`) | Object bodies are flattened into top-level properties; array, primitive and `oneOf`/`anyOf` bodies become one `body` property. A parameter that collides with a body property is suffixed `__query`, `__path`, and so on. |
+| HTTP method | MCP annotations: `GET`/`HEAD`/`QUERY` are read-only and idempotent, `PUT` idempotent, `DELETE` destructive, `POST`/`PATCH` destructive and non-idempotent. |
+| Response | Returned to the model as text (JSON and other textual bodies verbatim, capped at 64 KiB by default). Non-2xx responses are returned as tool errors with the status and body. |
+
+Schemas are normalized to the dialect model providers accept: 3.1 `type: [..., "null"]` becomes `nullable`, `allOf` of objects is merged, `readOnly` properties are dropped from inputs, and keywords such as `xml`, `externalDocs`, `discriminator` and examples are removed.
+
+### What is not exposed
+
+These operations are listed in the preview with a reason instead of becoming tools:
+
+- `multipart/form-data`, `application/octet-stream` and other binary request bodies (file uploads).
+- Streaming request bodies (OpenAPI 3.2 `itemSchema`: `text/event-stream`, `application/jsonl`, `application/json-seq`).
+- Operations that reference schemas in other files (external `$ref`).
+- Deprecated operations, unless `include_deprecated` is set.
+
+Security schemes of type `oauth2`, `openIdConnect` and `mutualTLS` cannot be satisfied from the gateway; operations that only accept them are still exposed and are called with the static headers you configure.
+
+## Base URL
+
+The upstream defaults to the first `servers` entry of the document (server variables take their default value; relative URLs are resolved against the document's URL or 3.2 `$self`). Pick another server or type a custom base URL in the preview; a document that declares no absolute server requires one.
+
+## Authentication
+
+Two layers reach the API on every call:
+
+1. **Security schemes from the document.** The preview lists every `securitySchemes` entry. For `apiKey` (header, query or cookie) and `http` `bearer` schemes you enter one value; for `http` `basic` a username and password. Values accept `env.VAR` and `vault.path` references and are stored encrypted. The first security requirement of an operation whose schemes all have a credential is applied.
+2. **The server's own auth type.** `none`, `headers` (static headers sent with every request) and `per_user_headers` (each caller supplies their own values) work as for any other server. OAuth and token exchange do not apply: there is no MCP server to run that handshake against.
+
+## Configuration
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **MCP Gateway** and click **Add MCP Server**.
+2. Choose **OpenAPI (REST API spec)** as the connection type.
+3. Supply the document: **Paste** it, give its **URL**, or **Upload** a file, then click **Parse spec**.
+
+<Frame>
+  <img src="/media/ui-mcp-openapi-source.png" alt="OpenAPI document source in the New MCP Server sheet" />
+</Frame>
+
+4. Review the preview: the document's title and version, the **Base URL**, credential inputs for its security schemes, and the operations. Untick anything the server should not expose. Unsupported operations are shown disabled with the reason.
+
+<Frame>
+  <img src="/media/ui-mcp-openapi-preview.png" alt="Parsed operations, base URL and credentials" />
+</Frame>
+
+5. Set the server's name, auth type, static headers and the other options as for any server, then click **Create**.
+
+To swap the document later, open the server, and on the **General** tab click **Replace spec**. Operations that keep their name stay selected; the server is rebuilt from the new document when you save.
+
+<Frame>
+  <img src="/media/ui-mcp-openapi-edit-summary.png" alt="Stored document summary and Replace spec on the edit sheet" />
+</Frame>
+
+</Tab>
+<Tab title="API">
+
+Preview first to see the tool names the document yields:
+
+```bash
+curl -X POST http://localhost:8080/api/mcp/openapi/preview \
+  -H "Content-Type: application/json" \
+  -d '{
+    "spec_url": "https://petstore3.swagger.io/api/v3/openapi.json"
+  }'
+```
+
+The response lists `tools` (name, method, path, input schema), `unsupported` operations with a reason, `security_schemes`, `servers`, the resolved `base_url`, and echoes the fetched document as `spec`. Then create the server, naming the tools to expose:
+
+```bash
+curl -X POST http://localhost:8080/api/mcp/client \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "petstore",
+    "connection_type": "openapi",
+    "auth_type": "none",
+    "tools_to_execute": ["findPetsByStatus", "getPetById"],
+    "openapi_config": {
+      "spec_url": "https://petstore3.swagger.io/api/v3/openapi.json",
+      "base_url": "https://petstore3.swagger.io/api/v3",
+      "security_credentials": {
+        "api_key": { "value": "env.PETSTORE_API_KEY" }
+      }
+    }
+  }'
+```
+
+`spec` (inline text) can be sent instead of `spec_url`. A `spec_url` is fetched once and stored with the server. Unknown names in `tools_to_execute` are rejected with 400, as are `auth_type` values other than `none`, `headers` and `per_user_headers`.
+
+Replace the document on an existing server with `PUT /api/mcp/client/{id}`; the block is merged onto the stored one (an omitted `spec` keeps the current document, a redacted credential keeps the stored secret):
+
+```bash
+curl -X PUT http://localhost:8080/api/mcp/client/<id> \
+  -H "Content-Type: application/json" \
+  -d '{
+    "openapi_config": { "spec": "<new document text>" },
+    "tools_to_execute": ["*"]
+  }'
+```
+
+`GET /api/mcp/client/{id}/openapi-spec` returns the stored document; `GET /api/mcp/clients` leaves it out and reports `spec_title`, `openapi_version`, `spec_size`, `spec_hash` and `operation_count` instead.
+
+<Note>
+When dashboard authentication is disabled or unconfigured, `spec_url` and `base_url` must resolve to public addresses, the same rule that applies to an HTTP server's `connection_string`.
+</Note>
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "petstore",
+        "connection_type": "openapi",
+        "auth_type": "headers",
+        "headers": { "X-Tenant": "acme" },
+        "tools_to_execute": ["findPetsByStatus", "getPetById"],
+        "openapi_config": {
+          "spec_file": "specs/petstore.yaml",
+          "base_url": "https://petstore3.swagger.io/api/v3",
+          "security_credentials": {
+            "api_key": { "value": "env.PETSTORE_API_KEY" }
+          },
+          "include_deprecated": false
+        }
+      }
+    ]
+  }
+}
+```
+
+`openapi_config` takes exactly one document source: `spec` (inline text), `spec_file` (a path relative to the config directory, read at load) or `spec_url` (fetched at every connect). Editing the document, base URL or credentials in `config.json` is picked up on the next restart like any other client change.
+
+</Tab>
+</Tabs>
+
+## Go SDK
+
+The parser lives in `framework/openapimcp`; core only knows the hook. Register the factory once and declare clients with `connection_type: "openapi"`:
+
+```go
+import "github.com/maximhq/bifrost/framework/openapimcp"
+
+cfg.MCPConfig.InProcessServerFactory = openapimcp.Factory(openapimcp.WithConfigDir("/etc/bifrost"))
+```
+
+Without a factory, an openapi client fails to connect with an error naming the missing hook.
+
+## Limitations
+
+- One tool per operation; very large documents produce many tools. Above 128 tools the preview warns, above 1000 the document is rejected: restrict `tools_to_execute`.
+- File uploads, binary and streaming bodies, OAuth-only APIs and externally referenced schemas are not supported (see above).
+- Tool names depend on the document's `operationId`s; renaming one in a replacement document deselects the tool until you tick it again.
+
+## Next Steps
+
+- [Filtering](/mcp/filtering) to scope which tools each caller sees.
+- [Tool Execution](/mcp/tool-execution) for how calls are run and timed out.
+- [Authentication](/mcp/auth/overview) for static and per-user headers.

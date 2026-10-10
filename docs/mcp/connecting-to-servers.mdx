@@ -1,7 +1,7 @@
 ---
 title: "Connecting to MCP Servers"
 sidebarTitle: "Connecting to Servers"
-description: "Connect Bifrost to external MCP servers via STDIO, HTTP, or SSE protocols."
+description: "Connect Bifrost to external MCP servers via STDIO, HTTP, or SSE, or synthesize one from an OpenAPI document."
 icon: "plug"
 ---
 
@@ -11,13 +11,14 @@ Bifrost can connect to any MCP-compatible server to discover and execute tools. 
 
 ## Connection Types
 
-Bifrost supports three connection protocols:
+Bifrost supports four connection types:
 
 | Type | Description | Best For |
 |------|-------------|----------|
 | **STDIO** | Spawns a subprocess and communicates via stdin/stdout | Local tools, CLI utilities, scripts |
 | **HTTP** | Sends requests to an HTTP endpoint | Remote APIs, microservices, cloud functions |
 | **SSE** | Server-Sent Events for persistent connections | Real-time data, streaming tools |
+| **OpenAPI** | Synthesizes an MCP server from an OpenAPI/Swagger document; each operation becomes a tool | REST APIs that have no MCP server |
 
 <Info>
 Authentication is configured separately from the connection protocol. STDIO inherits its environment from the spawned subprocess and has no per-call auth. HTTP and SSE support five auth modes: `none`, `headers`, `oauth`, `per_user_oauth`, `per_user_headers`. See [Authentication →](./auth/overview).
@@ -148,6 +149,23 @@ Server-Sent Events (SSE) connections provide a persistent transport to MCP serve
 
 ---
 
+### OpenAPI Connections
+
+An OpenAPI connection has no MCP server to dial: Bifrost parses the document and serves one tool per operation, proxying each call to the API. See [OpenAPI Servers](/mcp/openapi-servers) for the full flow, including the preview that lets you pick operations.
+
+```json
+{
+  "name": "petstore",
+  "connection_type": "openapi",
+  "auth_type": "none",
+  "tools_to_execute": ["findPetsByStatus", "getPetById"],
+  "openapi_config": {
+    "spec_file": "specs/petstore.yaml",
+    "base_url": "https://petstore3.swagger.io/api/v3"
+  }
+}
+```
+
 ## Gateway Setup
 
 <Tabs>
@@ -161,7 +179,7 @@ Server-Sent Events (SSE) connections provide a persistent transport to MCP serve
   <img src="/media/ui-mcp-servers-table.png" alt="MCP Servers Table" />
 </Frame>
 
-2. Click **New MCP Server** button to open the creation form
+2. Click **Add MCP Server** to open the creation form
 
 3. Fill in the connection details:
 
@@ -171,9 +189,10 @@ Server-Sent Events (SSE) connections provide a persistent transport to MCP serve
 
 **Fields:**
 - **Name**: Unique identifier (no spaces or hyphens, ASCII only)
-- **Connection Type**: STDIO, HTTP, or SSE
+- **Connection Type**: STDIO, HTTP, SSE, or OpenAPI
 - **For STDIO**: Command, arguments, and environment variables
 - **For HTTP/SSE**: Connection URL
+- **For OpenAPI**: Paste, upload or link the document, click **Parse spec**, then pick the base URL, credentials and operations (see [OpenAPI Servers](/mcp/openapi-servers))
 
 4. Click **Create** to connect
 
