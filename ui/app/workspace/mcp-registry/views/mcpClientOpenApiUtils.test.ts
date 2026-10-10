@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { MCPOpenAPIPreviewResponse, MCPOpenAPISecurityScheme } from "@/lib/types/mcp";
+import type { MCPOpenAPIPreviewResponse, MCPOpenAPIPreviewTool, MCPOpenAPISecurityScheme } from "@/lib/types/mcp";
 import {
 	applyParsedPreview,
 	openAPIBaseUrlRequired,
@@ -14,6 +14,14 @@ import {
 	mergePreviewRows,
 	pruneCredentials,
 	readUploadedSpec,
+	replacePreviewRequest,
+	replacementAutoExecute,
+	replacementToolPricing,
+	replacementSaveHold,
+	openAPIBaseUrlError,
+	isMissingStoredSpec,
+	replacementIsDirty,
+	replacementPreviousTools,
 	reconcileToolSelection,
 	selectableServers,
 	securitySchemeToInputs,
@@ -586,6 +594,110 @@ describe("document and operation servers", () => {
 		expect(buildOpenAPIConfigPayload({ spec: "x", base_url: "https://prod.example.com/" }, "paste", reparsed).base_url).toBe("");
 	});
 });
+
+describe("edit sheet replacement helpers", () => {
+	it("counts an open replacement with a parsed preview or edited credentials as dirty", () => {
+		expect(replacementIsDirty({ open: true, preview, credentialsDirty: false })).toBe(true);
+		expect(replacementIsDirty({ open: true, preview: null, credentialsDirty: true })).toBe(true);
+		expect(replacementIsDirty({ open: true, preview: null, credentialsDirty: false, sourceEdited: true })).toBe(true);
+		expect(replacementIsDirty({ open: false, preview: null, credentialsDirty: false, sourceEdited: true })).toBe(false);
+		expect(replacementIsDirty({ open: true, preview: null, credentialsDirty: false })).toBe(false);
+		expect(replacementIsDirty({ open: false, preview, credentialsDirty: true })).toBe(false);
+	});
+	it("keeps auto-execute entries only for selected tools, and '*' only with a full selection", () => {
+		const supported = ["listPets", "createPet", "getPetById"];
+		expect(replacementAutoExecute(["listPets", "createPet"], supported, ["listPets"])).toEqual(["listPets"]);
+		expect(replacementAutoExecute(["*"], supported, ["listPets"])).toEqual(["listPets"]);
+		expect(replacementAutoExecute(["*"], supported, ["listPets", "gone"])).toEqual(["listPets"]);
+		expect(replacementAutoExecute(["*"], supported, ["*"])).toEqual(["*"]);
+		expect(replacementAutoExecute(["gone"], supported, ["*"])).toEqual([]);
+	});
+	// Two operations whose names dedupe to foo_bar and foo_bar_2; the
+	// replacement drops the first, so the second is renamed foo_bar.
+	const storedTools: MCPOpenAPIPreviewTool[] = [
+		{ name: "foo_bar", method: "GET", path: "/a" },
+		{ name: "foo_bar_2", method: "GET", path: "/b" },
+		{ name: "keep", method: "GET", path: "/k" },
+	];
+	const nextTools: MCPOpenAPIPreviewTool[] = [
+		{ name: "foo_bar", method: "GET", path: "/b" },
+		{ name: "keep", method: "GET", path: "/k" },
+	];
+	it("follows auto-execute entries by operation, so a renamed tool does not inherit another's approval", () => {
+		const supported = ["foo_bar", "keep"];
+		expect(replacementAutoExecute(["foo_bar", "keep"], supported, ["foo_bar", "keep"], storedTools, nextTools)).toEqual(["keep"]);
+		expect(replacementAutoExecute(["foo_bar_2"], supported, ["foo_bar", "keep"], storedTools, nextTools)).toEqual(["foo_bar"]);
+		expect(replacementAutoExecute(["*"], supported, ["*"], storedTools, nextTools)).toEqual(["*"]);
+		// Without the stored document's operations, named approvals are dropped
+		// rather than kept by a name another operation may have taken.
+		expect(replacementAutoExecute(["foo_bar", "keep"], supported, ["foo_bar", "keep"], undefined, nextTools)).toEqual([]);
+		expect(replacementAutoExecute(["*"], supported, ["*"], undefined, nextTools)).toEqual(["*"]);
+	});
+	it("follows tool prices by operation and drops prices of removed operations", () => {
+		expect(replacementToolPricing({ foo_bar: 1, foo_bar_2: 2, keep: 3 }, storedTools, nextTools)).toEqual({ foo_bar: 2, keep: 3 });
+		// Without the stored document's operations a price cannot be matched,
+		// and keeping it by name could hand it to another operation.
+		expect(replacementToolPricing({ foo_bar: 1 }, undefined, nextTools)).toEqual({});
+		expect(replacementToolPricing(undefined, storedTools, nextTools)).toBeUndefined();
+	});
+	it("holds a replacement save while the stored document's preview is loading, and once when it failed", () => {
+		expect(replacementSaveHold({ previewingBaseline: true, baselineFailed: false, acknowledged: false })).toBe("pending");
+		expect(replacementSaveHold({ previewingBaseline: false, baselineFailed: true, acknowledged: false })).toBe("baseline-failed");
+		// Saving again after the warning goes ahead and drops the named settings.
+		expect(replacementSaveHold({ previewingBaseline: false, baselineFailed: true, acknowledged: true })).toBeNull();
+		// A spec_url-only client has no stored document, so nothing failed.
+		expect(replacementSaveHold({ previewingBaseline: false, baselineFailed: false, acknowledged: false })).toBeNull();
+	});
+	it("requires an absolute http(s) base URL when one is entered", () => {
+		const noServers: MCPOpenAPIPreviewResponse = { ...preview, servers: [] };
+		expect(openAPIBaseUrlError("custom", preview, "")).toBe("Base URL is required");
+		expect(openAPIBaseUrlError("custom", preview, "not a url")).toMatch(/http/);
+		expect(openAPIBaseUrlError("custom", preview, "ftp://x")).toMatch(/http/);
+		expect(openAPIBaseUrlError("custom", preview, " https://api.example.com/v1 ")).toBeUndefined();
+		expect(openAPIBaseUrlError("server", noServers, "")).toBe("Base URL is required");
+		expect(openAPIBaseUrlError("server", preview, "")).toBeUndefined();
+	});
+	it("sends the stored include_deprecated with either source", () => {
+		expect(replacePreviewRequest("paste", "doc", "", undefined, true)).toEqual({
+			spec: "doc",
+			base_url: undefined,
+			include_deprecated: true,
+		});
+		expect(replacePreviewRequest("url", "ignored", " https://x/o.json ", "https://b", true)).toEqual({
+			spec_url: "https://x/o.json",
+			base_url: "https://b",
+			include_deprecated: true,
+		});
+		expect(replacePreviewRequest("upload", "doc", "", undefined, undefined)).toEqual({ spec: "doc", base_url: undefined });
+	});
+});
+describe("stored document load", () => {
+	it("treats only a 404 as a client with no stored document", () => {
+		expect(isMissingStoredSpec({ status: 404, data: { error: { message: "This client has no stored spec" } } })).toBe(true);
+		expect(isMissingStoredSpec({ status: 500 })).toBe(false);
+		expect(isMissingStoredSpec({ status: "FETCH_ERROR", error: "TypeError: Failed to fetch" })).toBe(false);
+		expect(isMissingStoredSpec(new Error("boom"))).toBe(false);
+	});
+});
+describe("replacement previous operations", () => {
+	it("uses the last parsed preview, else the stored document's baseline, so the first parse matches by operation", () => {
+		const latest: MCPOpenAPIPreviewResponse = { ...preview, tools: [{ name: "a", method: "GET", path: "/a" }] };
+		const baseline: MCPOpenAPIPreviewResponse = { ...preview, tools: [{ name: "b", method: "GET", path: "/b" }] };
+		expect(replacementPreviousTools(latest, baseline)).toEqual(latest.tools);
+		expect(replacementPreviousTools(null, baseline)).toEqual(baseline.tools);
+		expect(replacementPreviousTools(null, null)).toBeUndefined();
+	});
+});
+describe("replace preview naming", () => {
+	it("sends the client name so replaced tool names match what an update accepts", () => {
+		expect(replacePreviewRequest("paste", "doc", "", undefined, false, "petstore")).toEqual({
+			spec: "doc",
+			base_url: undefined,
+			client_name: "petstore",
+		});
+	});
+});
+
 describe("autoParseStep", () => {
 	it("parses a settled source once, and again after the user leaves it and comes back", () => {
 		let remembered: string | null = null;
