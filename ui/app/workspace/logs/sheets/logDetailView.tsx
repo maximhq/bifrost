@@ -81,6 +81,7 @@ import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
 import {
+	decisionQuestions,
 	extractProviderErrorMessage,
 	findLastPendingClientCallIndex,
 	nextSessionLookupStart,
@@ -629,6 +630,34 @@ function MessageHistoryCollapse({ count, children }: { count: number; children: 
 			</button>
 			{open ? children : null}
 		</>
+	);
+}
+
+// DecisionQuestionsBox shows the questions a decision request asked, with their
+// instructions and criteria, choices or levels. The state and answers sit in the
+// message timeline; without the questions they cannot be read.
+function DecisionQuestionsBox({ value, count }: { value: unknown; count: number }) {
+	const json = JSON.stringify(value, null, 2);
+	return (
+		<div data-testid="log-decision-questions">
+			<CollapsibleBox title={`Questions (${count})`} onCopy={() => json} collapsedHeight={150}>
+				<CodeEditor
+					className="z-0 w-full"
+					shouldAdjustInitialHeight
+					maxHeight={450}
+					wrap
+					code={json}
+					lang="json"
+					readonly
+					options={{
+						collapsibleBlocks: true,
+						scrollBeyondLastLine: false,
+						lineNumbers: "off",
+						alwaysConsumeMouseWheel: false,
+					}}
+				/>
+			</CollapsibleBox>
+		</div>
 	);
 }
 
@@ -2746,6 +2775,13 @@ export function LogDetailView({
 								/>
 							</CollapsibleBox>
 						)}
+
+						{(() => {
+							const questions = decisionQuestions(log.object, log.params);
+							return questions ? (
+								<DecisionQuestionsBox value={applyRedactionMappingToValue(questions.value, activeInputRevealMapping)} count={questions.count} />
+							) : null;
+						})()}
 
 						{!isPassthrough &&
 							!log.live_session &&

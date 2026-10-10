@@ -36,7 +36,7 @@ func (r *decisionRecorder) execute(_ *schemas.BifrostContext, req *schemas.Bifro
 	if r.err != nil {
 		return nil, r.err
 	}
-	state, _ := req.Input.Structured.([]complexity.ConversationMessage)
+	state := conversationWindow(req.Input)
 	tier := "SIMPLE"
 	if len(state) > 0 {
 		if mapped, ok := r.tiers[state[len(state)-1].Content]; ok {
@@ -66,9 +66,19 @@ func (r *decisionRecorder) lastState(t *testing.T) []complexity.ConversationMess
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	require.NotEmpty(t, r.requests)
-	state, ok := r.requests[len(r.requests)-1].Input.Structured.([]complexity.ConversationMessage)
-	require.True(t, ok)
-	return state
+	return conversationWindow(r.requests[len(r.requests)-1].Input)
+}
+
+// conversationWindow reads a decision request's input messages back as the
+// conversation window they were built from.
+func conversationWindow(input schemas.DecisionInput) []complexity.ConversationMessage {
+	window := make([]complexity.ConversationMessage, 0, len(input.Messages))
+	for _, message := range input.Messages {
+		if message.Content.Text != nil {
+			window = append(window, complexity.ConversationMessage{Role: message.Role, Content: *message.Content.Text})
+		}
+	}
+	return window
 }
 
 // decisionAnalyzerTestConfig selects the decision model as the primary classifier.

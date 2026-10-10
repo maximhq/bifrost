@@ -894,6 +894,9 @@ type modelListQuery struct {
 	HideDeprecated bool
 	// IncludeDeprecated is the caller's explicit opt-out of HideDeprecated.
 	IncludeDeprecated bool
+	// Decisions keeps only models that serve decisions natively, by the same
+	// capability rule the provider applies at request time.
+	Decisions bool
 	// VK-based filtering: populated when a virtual key is found in request headers.
 	// HasVKFilter=true restricts providers/models to those allowed by the VK.
 	HasVKFilter bool
@@ -917,6 +920,9 @@ type listedModel struct {
 //   - offset: Number of results to skip (for pagination)
 //   - include_deprecated: If true, list deprecated models even when nothing is searched for.
 //     Without it, deprecated models appear only in a search (`query`), sorted below live ones.
+//   - decisions: If true, list only models that serve decisions natively: every model of a
+//     Typesafe-based provider, Typesafe models on OpenRouter, and models the datasheet (or
+//     built-in default) marks as decision models, such as OpenAI's gpt-6-luna.
 //
 // Request headers:
 //   - x-bf-vk / Authorization: Bearer / x-api-key / x-goog-api-key: Virtual key (sk-bf-…) to scope
@@ -1115,6 +1121,65 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 	}
 }
 
+// supportsDecisions reports whether the listed model serves decisions natively,
+// by the rule the provider's Decision call gates on, so the listing neither
+// offers a model the request would reject nor hides one it would serve: none
+// on a custom provider whose allowed requests exclude decisions, every model
+// of a Typesafe-based provider (Typesafe, or a custom provider on its base
+// serving Laya, Nimble, or Clef), a TypeSafe System One model on OpenRouter,
+// and otherwise a model the datasheet (or, without a row, the name-based
+// fallback) marks supports_decisions. A key alias is checked as the model it
+// points at, as the request path checks it.
+func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, model string) bool {
+	custom := h.customProviderConfig(provider)
+	if !custom.IsOperationAllowed(schemas.DecisionRequest) {
+		return false
+	}
+	if provider == schemas.Typesafe || (custom != nil && custom.BaseProviderType == schemas.Typesafe) {
+		return true
+	}
+	model = h.aliasTarget(provider, model)
+	if provider == schemas.OpenRouter {
+		return schemas.IsTypesafeModel(model)
+	}
+	return schemas.ResolveModelCaps(provider, model).SupportsDecisions(schemas.DefaultSupportsDecisions(model))
+}
+
+// customProviderConfig returns the provider's custom configuration, or nil for
+// a built-in provider or one that is not configured.
+func (h *ProviderHandler) customProviderConfig(provider schemas.ModelProvider) *schemas.CustomProviderConfig {
+	config, err := h.inMemoryStore.GetProviderConfigRaw(provider)
+	if err != nil {
+		return nil
+	}
+	return config.CustomProviderConfig
+}
+
+// aliasTarget returns the model a key alias points at, in the order the
+// request path resolves it (schemas.ResolveCanonicalModel): the alias's
+// ModelName, then its ModelID. A name that is not an alias is returned as is.
+// The listing names key aliases as models, and a capability lookup on the
+// alias itself finds nothing, so it is resolved through the catalog's alias
+// index first, as GetModelCapabilityEntryForModel does for the details listing.
+func (h *ProviderHandler) aliasTarget(provider schemas.ModelProvider, model string) string {
+	catalog := h.inMemoryStore.ModelCatalog
+	if catalog == nil {
+		return model
+	}
+	owner, ok := catalog.ResolveAlias(provider, model)
+	if !ok {
+		return model
+	}
+	if name := owner.Config.ModelName; name != nil && *name != "" {
+		return *name
+	}
+	if owner.Config.ModelID != "" {
+		return owner.Config.ModelID
+	}
+	return model
+}
+
+// isModelDeprecated reports whether the catalog marks the model as deprecated.
 func (h *ProviderHandler) isModelDeprecated(model string, provider schemas.ModelProvider) bool {
 	modelCatalog := h.inMemoryStore.ModelCatalog
 	if modelCatalog == nil {
@@ -1139,6 +1204,7 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, bifrostC
 		Unfiltered: string(queryArgs.Peek("unfiltered")) == "true",
 	}
 	query.IncludeDeprecated = string(queryArgs.Peek("include_deprecated")) == "true"
+	query.Decisions = string(queryArgs.Peek("decisions")) == "true"
 
 	if keysRaw := queryArgs.Peek("keys"); len(keysRaw) > 0 {
 		keyIDs := strings.Split(string(keysRaw), ",")
@@ -1208,6 +1274,10 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 	models := make([]listedModel, 0)
 	for _, provider := range providers {
 		models = append(models, h.listManagementModelsForProvider(provider, query)...)
+	}
+
+	if query.Decisions {
+		models = slices.DeleteFunc(models, func(m listedModel) bool { return !h.supportsDecisions(m.Provider, m.Name) })
 	}
 
 	for i := range models {

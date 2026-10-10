@@ -39,6 +39,8 @@ interface ModelSelectorBaseProps {
 	vks?: string[];
 	/** Bypasses the provider-level model pool, matching the /api/models `unfiltered` flag. */
 	unfiltered?: boolean;
+	/** Lists only models that serve decisions natively, matching the /api/models `decisions` flag. */
+	decisions?: boolean;
 	/**
 	 * Search on the server (default). Set false to pull one page up front and filter it in
 	 * the browser — worth it only for small, fixed pools.
@@ -132,6 +134,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 		keys,
 		vks,
 		unfiltered = false,
+		decisions = false,
 		serverSearch = true,
 		pageSize = DEFAULT_PAGE_SIZE,
 		placeholder = "Select model",
@@ -178,7 +181,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 	const effectiveSearch = serverSearch ? (search === seededSearch ? search : (debouncedSearch as string)) : "";
 	useEffect(() => {
 		setPages(1);
-	}, [effectiveSearch, provider, unfiltered]);
+	}, [effectiveSearch, provider, unfiltered, decisions]);
 
 	// Base models are the same catalog with the provider dimension collapsed, so only one of
 	// the two ever runs; the rest of the component works off whichever answered.
@@ -193,6 +196,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 			vks: vks && vks.length > 0 ? vks : undefined,
 			limit: pageSize * pages,
 			unfiltered,
+			decisions,
 		},
 		{ skip: idle || useBaseModels },
 	);

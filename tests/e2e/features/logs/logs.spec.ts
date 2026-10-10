@@ -1,3 +1,4 @@
+import type { Locator } from '@playwright/test'
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { createLogSearchQuery, SAMPLE_MODELS, SAMPLE_PROVIDERS } from './logs.data'
 
@@ -536,6 +537,155 @@ test.describe('LLM Logs', () => {
       await chainBtn.click()
       await expect(page.getByTestId('log-row-kind-session')).toHaveCount(1)
       await expect(page.getByTestId('log-row-kind-chain')).toHaveCount(2)
+    })
+  })
+
+  test.describe('Decision Logs', () => {
+    // Decision logs keep the state as the user message and the answers as the
+    // assistant message; the questions live in params, as an array in request
+    // order, or, in logs written before decisions were normalized, an object
+    // keyed by question name. Rows are mocked so the test does not depend on
+    // OpenAI Decisions access. The first instruction carries a redaction
+    // placeholder, which must show as stored.
+    const now = Date.now()
+    const mapQuestions = {
+      is_frustrated: { kind: 'noul', instructions: 'Is {{PERSON_1}} frustrated?' },
+      category: {
+        kind: 'choice',
+        instructions: 'Pick the ticket category',
+        criteria: { billing: 'charges and refunds', bug: 'product defects', other: 'anything else' },
+      },
+      urgency: { kind: 'score', instructions: 'How urgent is it?', criteria: ['can wait', 'soon', 'today'] },
+    }
+    const orderedQuestions = [
+      { type: 'predicate', name: 'is_frustrated', instructions: 'Is the customer frustrated?' },
+      { type: 'choice', instructions: 'Refund?', choices: [{ value: true }, { value: false }] },
+      { type: 'score', name: 'urgency', instructions: 'How urgent?', levels: [{ label: 'Low' }, { label: 'High', description: 'today' }] },
+    ]
+    const decisionRow = (id: string, offsetMs: number, params: unknown) => ({
+      id,
+      object: 'decisions',
+      timestamp: new Date(now - offsetMs).toISOString(),
+      created_at: new Date(now - offsetMs).toISOString(),
+      provider: 'openai',
+      model: 'gpt-6-luna',
+      number_of_retries: 0,
+      fallback_index: 0,
+      status: 'success',
+      stream: false,
+      latency: 300,
+      cost: 0.0001,
+      params,
+      input_history: [{ role: 'user', content: 'I was double charged and want a refund today' }],
+      responses_input_history: [],
+      output_message: { role: 'assistant', content: '{"is_frustrated":{"kind":"noul","value":0.9}}' },
+    })
+    // Rows are told apart by model name, so the tests do not depend on row order.
+    const mapRow = { ...decisionRow('dec-map', 20_000, mapQuestions), model: 'luna-map-form' }
+    const orderedRow = { ...decisionRow('dec-ordered', 10_000, orderedQuestions), model: 'luna-ordered-form' }
+    const chatRow = {
+      ...decisionRow('dec-chat', 5_000, undefined),
+      object: 'chat.completion',
+      model: 'chat-not-decision',
+      params: { temperature: 0.2 },
+    }
+
+    test.beforeEach(async ({ page }) => {
+      const rows = [chatRow, orderedRow, mapRow]
+      await page.route(
+        (url) => url.pathname.startsWith('/api/logs'),
+        async (route) => {
+          if (route.request().method() !== 'GET') return route.continue()
+          const { pathname } = new URL(route.request().url())
+          const byId = rows.find((candidate) => pathname === `/api/logs/${candidate.id}`)
+          if (byId) return route.fulfill({ json: byId })
+          if (pathname !== '/api/logs') return route.continue()
+          await route.fulfill({
+            json: {
+              logs: rows,
+              pagination: { limit: 50, offset: 0, sort_by: 'timestamp', order: 'desc' },
+              stats: {
+                total_requests: rows.length,
+                success_rate: 100,
+                user_facing_success_rate: 100,
+                user_facing_total_requests: rows.length,
+                average_latency: 300,
+                total_tokens: 0,
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_cost: 0,
+              },
+              has_logs: true,
+            },
+          })
+        },
+      )
+    })
+
+    // openRow opens the detail sheet of the row carrying the given model name.
+    const openRow = async (logsPage: { tableRows: Locator; logDetailSheet: Locator }, model: string) => {
+      await logsPage.tableRows.filter({ hasText: model }).first().click()
+      await expect(logsPage.logDetailSheet).toBeVisible({ timeout: 5000 })
+    }
+
+    test('should show the questions of an older decision log keyed by name', async ({ logsPage, page }) => {
+      await logsPage.goto()
+      await openRow(logsPage, 'luna-map-form')
+
+      const box = page.getByTestId('log-decision-questions')
+      await expect(box).toBeVisible()
+      await expect(box).toContainText('Questions (3)')
+      // The redaction placeholder shows as stored; no real value is substituted.
+      await expect(box).toContainText('{{PERSON_1}}')
+      // State and answers keep their own rows in the timeline.
+      await expect(page.getByText('State', { exact: true })).toBeVisible()
+      await expect(page.getByText('Decision', { exact: true })).toBeVisible()
+    })
+
+    test('should show the questions of a decision in request order', async ({ logsPage, page }) => {
+      await logsPage.goto()
+      await openRow(logsPage, 'luna-ordered-form')
+
+      const box = page.getByTestId('log-decision-questions')
+      await expect(box).toBeVisible()
+      await expect(box).toContainText('Questions (3)')
+      // The editor shows the questions as sent, so their instructions must
+      // appear in the order the request listed them.
+      const positionsOf = async () => {
+        const text = await box.innerText()
+        return orderedQuestions.map((question) => text.indexOf(question.instructions))
+      }
+      await expect.poll(async () => (await positionsOf()).every((position) => position >= 0)).toBe(true)
+      const positions = await positionsOf()
+      expect([...positions].sort((a, b) => a - b)).toEqual(positions)
+    })
+
+    test('should copy the questions as JSON', async ({ logsPage, page, context }) => {
+      await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+      await logsPage.goto()
+      await openRow(logsPage, 'luna-ordered-form')
+
+      const box = page.getByTestId('log-decision-questions')
+      await expect(box).toBeVisible()
+      await box.getByRole('button').first().click()
+      // The write is asynchronous, so poll until the clipboard holds the JSON.
+      await expect
+        .poll(async () => {
+          const copied = await page.evaluate(() => navigator.clipboard.readText())
+          try {
+            return JSON.parse(copied)
+          } catch {
+            return null
+          }
+        })
+        .toEqual(orderedQuestions)
+    })
+
+    test('should not show a questions box on a chat log', async ({ logsPage, page }) => {
+      await logsPage.goto()
+      await openRow(logsPage, 'chat-not-decision')
+
+      await expect(page.getByTestId('log-decision-questions')).toHaveCount(0)
     })
   })
 

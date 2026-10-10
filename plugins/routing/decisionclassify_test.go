@@ -64,6 +64,16 @@ func choiceDescriptions(question schemas.DecisionQuestion) map[string]interface{
 	return descriptions
 }
 
+// conversationOf reads a captured request's input messages back as the
+// conversation window they were built from.
+func conversationOf(input schemas.DecisionInput) []complexity.ConversationMessage {
+	window := make([]complexity.ConversationMessage, len(input.Messages))
+	for i, message := range input.Messages {
+		window[i] = complexity.ConversationMessage{Role: message.Role, Content: *message.Content.Text}
+	}
+	return window
+}
+
 // decisionTestInput is a multi-turn conversation with assistant replies between user turns.
 func decisionTestInput() complexity.ComplexityInput {
 	return complexity.ComplexityInput{
@@ -113,7 +123,7 @@ func TestClassifyDecisionComplexityRequestShape(t *testing.T) {
 		{Role: "user", Content: "older question"},
 		{Role: "user", Content: "previous question"},
 		{Role: "user", Content: "current question"},
-	}, captured.Input.Structured)
+	}, conversationOf(captured.Input))
 	assert.Greater(t, remaining, time.Duration(0))
 	assert.LessOrEqual(t, remaining, 250*time.Millisecond)
 
@@ -176,10 +186,10 @@ func TestClassifyDecisionComplexityGuidance(t *testing.T) {
 	assert.NotContains(t, complexCriteria, "not_for")
 }
 
-// TestClassifyDecisionComplexityStateSerializesAsRoleContentArray pins the wire
-// shape of the state: Typesafe accepts only a JSON string, object, or array,
-// and reads each message by its lowercase role/content keys.
-func TestClassifyDecisionComplexityStateSerializesAsRoleContentArray(t *testing.T) {
+// TestClassifyDecisionComplexityInputSerializesAsRoleContentArray pins the wire
+// shape of the input: user messages, which OpenAI reads as is and which reach
+// Typesafe as the same role/content array its state has always been.
+func TestClassifyDecisionComplexityInputSerializesAsRoleContentArray(t *testing.T) {
 	var captured *schemas.BifrostDecisionRequest
 	p := decisionTestPlugin(nil, func(_ *schemas.BifrostContext, req *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 		captured = req
@@ -189,7 +199,7 @@ func TestClassifyDecisionComplexityStateSerializesAsRoleContentArray(t *testing.
 	p.classifyDecisionComplexity(decisionTestContext(t), decisionTestInput())
 
 	require.NotNil(t, captured)
-	data, err := json.Marshal(captured.Input.Structured)
+	data, err := json.Marshal(captured.Input)
 	require.NoError(t, err)
 	assert.JSONEq(t, `[{"role":"user","content":"previous question"},{"role":"user","content":"current question"}]`, string(data))
 }
@@ -216,7 +226,7 @@ func TestClassifyDecisionComplexityDefaultsWithoutDecisionBlock(t *testing.T) {
 			p.classifyDecisionComplexity(decisionTestContext(t), decisionTestInput())
 
 			require.NotNil(t, captured)
-			assert.Len(t, captured.Input.Structured, configstore.DefaultComplexityDecisionPreviousMessageCount+1)
+			assert.Len(t, captured.Input.Messages, configstore.DefaultComplexityDecisionPreviousMessageCount+1)
 			assert.Greater(t, remaining, configstore.DefaultComplexityDecisionTimeout-200*time.Millisecond)
 			assert.LessOrEqual(t, remaining, configstore.DefaultComplexityDecisionTimeout)
 		})
@@ -235,7 +245,7 @@ func TestClassifyDecisionComplexityFallsBackToLastUserText(t *testing.T) {
 	proposal := p.classifyDecisionComplexity(decisionTestContext(t), complexity.ComplexityInput{LastUserText: "complete this sentence"})
 
 	require.NotNil(t, captured)
-	assert.Equal(t, []complexity.ConversationMessage{{Role: "user", Content: "complete this sentence"}}, captured.Input.Structured)
+	assert.Equal(t, []complexity.ConversationMessage{{Role: "user", Content: "complete this sentence"}}, conversationOf(captured.Input))
 	require.NotNil(t, proposal.Result)
 }
 
@@ -421,8 +431,8 @@ func TestClassifyDecisionComplexityUsesConfiguredModel(t *testing.T) {
 }
 
 // TestClassifyDecisionComplexityNimbleCriteriaAsText pins that a Nimble model,
-// whose server accepts only string descriptions, receives each tier's guidance as
-// one text description, while other models keep the structured object.
+// whose server accepts only string descriptions, receives each tier's guidance
+// as one text description, while other models keep the structured object.
 func TestClassifyDecisionComplexityNimbleCriteriaAsText(t *testing.T) {
 	capture := func(decision *complexity.DecisionConfig) map[string]interface{} {
 		var captured *schemas.BifrostDecisionRequest
@@ -444,9 +454,12 @@ func TestClassifyDecisionComplexityNimbleCriteriaAsText(t *testing.T) {
 		assert.Contains(t, text, "\nExamples:\n- "+defaults.Examples[0])
 	}
 
-	criteria := capture(nil)
-	_, isObject := criteria[complexity.TierComplex].(map[string]interface{})
-	assert.True(t, isObject, "the default Jev model keeps object criteria")
+	// OpenAI's request conversion renders an object description as text, so an
+	// OpenAI decisions model, like the default Jev model, keeps the object.
+	for _, decision := range []*complexity.DecisionConfig{nil, {Provider: schemas.OpenAI, Model: "gpt-6-luna"}} {
+		_, isObject := capture(decision)[complexity.TierComplex].(map[string]interface{})
+		assert.True(t, isObject, "%v keeps object criteria", decision)
+	}
 }
 
 func TestClassifyDecisionComplexityRecordsUsage(t *testing.T) {

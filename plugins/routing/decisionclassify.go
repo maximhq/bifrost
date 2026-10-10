@@ -78,7 +78,7 @@ func (p *RoutingPlugin) classifyDecisionComplexity(ctx *schemas.BifrostContext, 
 	request := &schemas.BifrostDecisionRequest{
 		Provider: provider,
 		Model:    model,
-		Input:    schemas.DecisionInput{Structured: state},
+		Input:    decisionConversationInput(state),
 		Questions: []schemas.DecisionQuestion{{
 			Type: schemas.DecisionTypeChoice,
 			Name: schemas.Ptr(decisionComplexityQuestion),
@@ -154,12 +154,26 @@ func (p *RoutingPlugin) classifyDecisionComplexity(ctx *schemas.BifrostContext, 
 	return proposal
 }
 
+// decisionConversationInput sends the conversation window as user messages,
+// which OpenAI's Decisions API reads as is, Typesafe-based models receive as
+// the same role/content array they read as state, and emulation renders as
+// text. The window holds user turns only, the one role OpenAI accepts.
+func decisionConversationInput(window []complexity.ConversationMessage) schemas.DecisionInput {
+	messages := make([]schemas.DecisionInputMessage, len(window))
+	for i, message := range window {
+		content := message.Content
+		messages[i] = schemas.DecisionInputMessage{Role: message.Role, Content: schemas.DecisionInputContent{Text: &content}}
+	}
+	return schemas.DecisionInput{Messages: messages}
+}
+
 // decisionChoices builds one choice per tier, in tier order, from the shipped
 // defaults with the administrator's definitions, signals, and examples layered
 // on. It is rebuilt per request so no description is shared with a provider's
 // request conversion. Each tier is described by an object, which System One
-// allows; Nimble's server accepts only string descriptions, so for a Nimble
-// model each tier is rendered as one text description instead.
+// allows and which OpenAI's request conversion renders as text. Nimble's server
+// accepts only string descriptions, so for a Nimble model each tier is
+// rendered as one readable text description instead.
 func decisionChoices(config *complexity.DecisionConfig, model string) []schemas.DecisionChoice {
 	resolved := config.ResolvedCriteria()
 	asText := isNimbleModel(model)
