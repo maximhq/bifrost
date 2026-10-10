@@ -597,6 +597,13 @@ func TestValidateKeyOAuthKeyConfig(t *testing.T) {
 		{name: "missing token url", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar(" ") })}, wantError: "token_url is required"},
 		{name: "relative token url", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("/token") })}, wantError: "must be https"},
 		{name: "plain http on a public host", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://idp.example/token") })}, wantError: "must be https"},
+		{name: "token url with userinfo", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("https://user:pass@idp.example/token")
+		})}, wantError: "must not carry userinfo, a query, or a fragment"},
+		{name: "token url with a query", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("https://idp.example/token?client_secret=x")
+		})}, wantError: "must not carry userinfo, a query, or a fragment"},
+		{name: "token url with a fragment", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("https://idp.example/token#frag") })}, wantError: "must not carry userinfo, a query, or a fragment"},
 		{name: "plain http on loopback is accepted", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://127.0.0.1:9/token") })}},
 		{name: "jwt_bearer negative lifetime names the accepted range", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.AssertionLifetimeSeconds = -1 })}, wantError: "between 0 (default) and 3600"},
 		{name: "missing client id", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.ClientID = schemas.NewSecretVar(" ") })}, wantError: "client_id and oauth_key_config.client_secret are required"},

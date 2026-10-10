@@ -1080,6 +1080,33 @@ type OAuthKeyConfig struct {
 	AssertionLifetimeSeconds int               `json:"assertion_lifetime_seconds,omitempty"` // jwt_bearer: assertion exp - iat (default 300)
 }
 
+// Redacted returns a copy safe to return from a configuration read: the token URL stays
+// readable unless it is secret-backed, the credential fields are masked, and every
+// extra_params value is masked too, since that free-form map may carry a credential such as
+// a client_assertion. The masks are recognised by IsMaskedPlaceholder, so an update that
+// sends them back resolves to the stored values.
+func (c *OAuthKeyConfig) Redacted() *OAuthKeyConfig {
+	if c == nil {
+		return nil
+	}
+	cfg := *c
+	cfg.TokenURL = *cfg.TokenURL.RedactedIfSecret()
+	cfg.ClientID = cfg.ClientID.Redacted()
+	cfg.ClientSecret = cfg.ClientSecret.Redacted()
+	cfg.PrivateKey = cfg.PrivateKey.Redacted()
+	// extra_params values are sent to the token endpoint as the literal strings they are, so
+	// they are masked as strings: parsing them as secret references would resolve an
+	// "env."-looking value (a vault lookup on a GET) and mask an unset one to "", which an
+	// update then saves, overwriting the stored parameter.
+	if len(c.ExtraParams) > 0 {
+		cfg.ExtraParams = make(map[string]string, len(c.ExtraParams))
+		for k, v := range c.ExtraParams {
+			cfg.ExtraParams[k] = (&SecretVar{Val: v}).Redacted().GetValue()
+		}
+	}
+	return &cfg
+}
+
 // isLoopbackHost reports whether a URL hostname can only reach this machine.
 func isLoopbackHost(host string) bool {
 	host = strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"))
@@ -1114,6 +1141,11 @@ func (c *OAuthKeyConfig) Validate() error {
 		u, err := url.Parse(strings.TrimSpace(c.TokenURL.GetValue()))
 		if err != nil || !u.IsAbs() || u.Host == "" || !(u.Scheme == "https" || (u.Scheme == "http" && isLoopbackHost(u.Hostname()))) {
 			return fmt.Errorf("oauth_key_config.token_url must be https (http is allowed for loopback hosts only)")
+		}
+		// The URL is shown in plain text wherever the key is read back, so it may not be a
+		// place to hide a credential. A token endpoint needs neither; parameters go in extra_params.
+		if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("oauth_key_config.token_url must not carry userinfo, a query, or a fragment; send extra parameters through extra_params")
 		}
 	}
 	switch c.GrantType {

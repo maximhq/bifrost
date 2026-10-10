@@ -3691,6 +3691,90 @@ func copilotKeyConfig(keyBody string) string {
 	}`, keyBody)
 }
 
+// TestSchemaOAuthKeyConfig pins that oauth_key_config is accepted on any key (the base key
+// definition carries it) and that the schema enforces the per-grant required fields, so a
+// half-configured block is refused by the schema rather than at boot.
+func TestSchemaOAuthKeyConfig(t *testing.T) {
+	compiled := compileSchema(t)
+
+	customProvider := func(keyBody string) string {
+		return fmt.Sprintf(`{
+		"providers": {
+			"openai": {
+				"keys": [{%s}]
+			},
+			"acme": {
+				"keys": [{%s}],
+				"custom_provider_config": {"base_provider_type": "openai"},
+				"network_config": {"base_url": "https://llm.acme.example/v1"}
+			}
+		}
+	}`, keyBody, keyBody)
+	}
+
+	const cc = `"oauth_key_config": {
+		"grant_type": "client_credentials",
+		"token_url": "https://idp.acme.example/oauth2/token",
+		"client_id": "env.ACME_CLIENT_ID",
+		"client_secret": "env.ACME_CLIENT_SECRET",
+		"scopes": ["inference"],
+		"auth_style": "body"
+	}`
+	const jb = `"oauth_key_config": {
+		"grant_type": "jwt_bearer",
+		"token_url": "https://idp.acme.example/oauth2/token",
+		"private_key": "env.ACME_PRIVATE_KEY",
+		"issuer": "svc-bifrost",
+		"audience": "https://idp.acme.example/oauth2/token",
+		"signing_algorithm": "ES256",
+		"assertion_lifetime_seconds": 120
+	}`
+
+	valid := []struct {
+		name   string
+		config string
+	}{
+		{"client_credentials", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, ` + cc)},
+		{"jwt_bearer", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, ` + jb)},
+		{"alongside a value", customProvider(`"name": "k", "value": "sk", "models": ["*"], "weight": 1.0, ` + cc)},
+		// OAuthKeyConfig.Validate treats 0 as "use the default lifetime", so the schema must too.
+		{"zero assertion lifetime means the default", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": 0}`)},
+	}
+	for _, tt := range valid {
+		t.Run("valid "+tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err != nil {
+				t.Fatalf("config should be valid: %v", err)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name   string
+		config string
+	}{
+		{"client_credentials without secret", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "client_credentials", "token_url": "https://idp/token", "client_id": "id"}`)},
+		{"jwt_bearer without issuer", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "audience": "a"}`)},
+		{"unknown grant", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "password", "token_url": "https://idp/token"}`)},
+		{"symmetric algorithm", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": "a", "signing_algorithm": "HS256"}`)},
+		{"unknown field", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "client_credentials", "token_url": "https://idp/token", "client_id": "id", "client_secret": "s", "refresh_token": "x"}`)},
+		// Validate rejects a blank literal for every per-grant credential, so presence alone is
+		// not enough: an empty string must fail the schema the same way a missing field does.
+		{"blank client_id", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "client_credentials", "token_url": "https://idp/token", "client_id": "", "client_secret": "s"}`)},
+		{"blank client_secret", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "client_credentials", "token_url": "https://idp/token", "client_id": "id", "client_secret": ""}`)},
+		{"blank private_key", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "", "issuer": "i", "audience": "a"}`)},
+		{"blank issuer", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "", "audience": "a"}`)},
+		{"blank audience", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": ""}`)},
+		{"negative assertion lifetime", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": -1}`)},
+	}
+	for _, tt := range invalid {
+		t.Run("invalid "+tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err == nil {
+				t.Fatal("config should be invalid")
+			}
+		})
+	}
+}
+
 // TestSchemaGithubCopilotCredentialRequired pins that the schema demands one of the two
 // credential forms. core/utils.go rejects a key carrying neither, and the schema is the
 // source of truth for config fields, so it has to reject the same shape rather than
