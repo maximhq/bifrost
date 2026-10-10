@@ -143649,7 +143649,7 @@
           }
         },
         {
-          "name": "OpenAI gpt-5.6: cache_control becomes prompt_cache_breakpoint plus explicit mode - #6180",
+          "name": "OpenAI gpt-5.6: cache_control becomes prompt_cache_breakpoint with implicit lookup - #6180",
           "event": [
             {
               "listen": "test",
@@ -143669,11 +143669,8 @@
                   "pm.test('63.7 breakpoint reaches the wire', function () {",
                   "  pm.expect(rawStr, 'raw_request: ' + rawStr.slice(0, 800)).to.include('prompt_cache_breakpoint');",
                   "});",
-                  "// The block marker alone leaves implicit caching on, which anchors the prefix",
-                  "// to the newest message and bills a write every turn. mode=explicit pins it.",
-                  "pm.test('63.7 explicit cache mode is set alongside it (#6180)', function () {",
-                  "  var opts = rr.prompt_cache_options || {};",
-                  "  pm.expect(opts.mode, 'prompt_cache_options: ' + JSON.stringify(opts)).to.eql('explicit');",
+                  "pm.test('63.7 translated marker preserves default implicit lookup', function () {",
+                  "  pm.expect(rr, 'raw_request missing').to.not.have.property('prompt_cache_options');",
                   "});",
                   "pm.test('63.7 cache_control is not forwarded to an OpenAI-shaped endpoint', function () {",
                   "  pm.expect(rawStr.indexOf('cache_control')).to.equal(-1);",
@@ -203453,20 +203450,27 @@
     },
     {
       "name": "142. Tool-result cache marker survives translation to gpt-5.6 function_call_output (tool-result cache breakpoint)",
-      "description": "Claude Code places its per-turn cache_control marker on the last block of the conversation, which is a tool_result after every tool call. The Anthropic converter carries that marker on the function_call_output item; the OpenAI Responses converter used to translate only input_text blocks, so the marker was stripped and the tool body flattened to a plain string: no prompt_cache_breakpoint, no explicit mode, and caching stopped after the first tool turn on gpt-5.6 / gpt-6. The fix marks the function_call_output content part (OpenAI documents prompt_cache_breakpoint there) and keeps the output in array form. Case 1 pins the explicit-mode switch OpenAI echoes back. Case 2 pins the Claude Code shape through the drop-in messages route: system and tool_result both marked, so the cold write must extend past the 2000-token tool result (a write pinned at the system prefix is the pre-fix signature). Case 3 pins the Chat Completions path, where cache_control on text parts is now translated too: the caller asks for explicit mode, so a stripped marker means no breakpoint and no write at all.",
+      "description": "Claude Code places its per-turn cache_control marker on the last block of the conversation, which is a tool_result after every tool call. The Anthropic converter carries that marker on the function_call_output item; the OpenAI Responses converter used to translate only input_text blocks, so the marker was stripped and the tool body flattened to a plain string: no prompt_cache_breakpoint, and caching stopped after the first tool turn on gpt-5.6 / gpt-6. The fix marks the function_call_output content part (OpenAI documents prompt_cache_breakpoint there) and keeps the output in array form. Case 1 pins the tool-output breakpoint on the outbound wire while preserving default implicit lookup. Case 2 pins the Claude Code shape through the drop-in messages route: system and tool_result both marked, so the cold write must extend past the 2000-token tool result (a write pinned at the system prefix is the pre-fix signature). Case 3 pins the Chat Completions path, where cache_control on text parts is now translated too: the caller asks for explicit mode, so a stripped marker means no breakpoint and no write at all.",
       "item": [
         {
-          "name": "openai gpt-5.6-sol native responses: cache_control on function_call_output switches on explicit mode - tool-result cache breakpoint",
+          "name": "openai gpt-5.6-sol native responses: cache_control on function_call_output preserves implicit lookup - tool-result cache breakpoint",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status below 400', function(){ pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
-                  "var j = pm.response.json();",
-                  "pm.test('tool-result marker reached OpenAI as a breakpoint: prompt_cache_options.mode echoed as explicit', function(){ pm.expect(j.prompt_cache_options, 'prompt_cache_options (absent means the marker was stripped and the request stayed implicit): ' + pm.response.text()).to.be.an('object'); pm.expect(j.prompt_cache_options.mode, 'mode').to.eql('explicit'); });",
-                  "pm.test('usage present', function(){ pm.expect(j.usage, 'usage').to.be.an('object'); });"
+                  "pm.test('exact success status', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var j = pm.response.json(); var rr = (j.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('tool-output breakpoint survives without selecting explicit-only mode', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr).to.not.have.property('prompt_cache_options');",
+                  "  var outputs = (rr.input || []).filter(function (x) { return x.type === 'function_call_output'; });",
+                  "  pm.expect(outputs.length).to.eql(1);",
+                  "  pm.expect(outputs[0].output[0].prompt_cache_breakpoint.mode).to.eql('explicit');",
+                  "});",
+                  "pm.test('usage present', function () { pm.expect(j.usage).to.be.an('object'); });"
                 ]
               }
             }
@@ -203477,6 +203481,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
               }
             ],
             "body": {
@@ -222610,6 +222618,308 @@
                 "v1",
                 "chat",
                 "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "190. GPT rolling cache markers preserve implicit lookup (gpt cache mode)",
+      "description": "Claude Code sends two system cache_control markers and a rolling tool_result marker. Inferring prompt_cache_options.mode=explicit disables implicit lookup at earlier eligible message endings and loses conversation reuse. Pin the outbound policy on the Anthropic Bedrock route for both request shapes, on native Responses including streaming, and with caller-selected explicit mode. All default cases fail before the fix because the raw request selects explicit mode. These cases validate translation and policy; provider cache hits remain best effort. Uses the standard harness bedrock_openai_ep provider, whose key enables use_openai_endpoints for runtime frontier models.",
+      "item": [
+        {
+          "name": "Bedrock gpt-5.6-sol anthropic messages first tool turn - gpt cache mode",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact success status', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var j = pm.response.json(); var rr = (j.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('prompt cache request policy', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr).to.not.have.property('prompt_cache_options');",
+                  "  var marked = [];",
+                  "  (rr.input || []).forEach(function (item) { ['content', 'output'].forEach(function (field) {",
+                  "    if (!Array.isArray(item[field])) { return; }",
+                  "    item[field].forEach(function (block) {",
+                  "      pm.expect(block).to.not.have.property('cache_control');",
+                  "      if (block.prompt_cache_breakpoint) { pm.expect(block.prompt_cache_breakpoint.mode).to.eql('explicit'); marked.push(block.text); }",
+                  "    });",
+                  "  }); });",
+                  "  pm.expect(marked).to.eql(['SYSTEM_ONE', 'SYSTEM_TWO', 'LATEST_RESULT']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_openai_ep/global.openai.gpt-5.6-sol\",\n  \"max_tokens\": 128,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"SYSTEM_ONE\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"type\": \"text\",\n      \"text\": \"SYSTEM_TWO\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call echo.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"call_1\",\n          \"name\": \"echo\",\n          \"input\": {\n            \"text\": \"hello\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"call_1\",\n          \"content\": \"LATEST_RESULT\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"echo\",\n      \"description\": \"Echo text.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock gpt-5.6-sol anthropic messages rolling tool turn - gpt cache mode",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact success status', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var j = pm.response.json(); var rr = (j.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('prompt cache request policy', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr).to.not.have.property('prompt_cache_options');",
+                  "  var marked = [];",
+                  "  (rr.input || []).forEach(function (item) { ['content', 'output'].forEach(function (field) {",
+                  "    if (!Array.isArray(item[field])) { return; }",
+                  "    item[field].forEach(function (block) {",
+                  "      pm.expect(block).to.not.have.property('cache_control');",
+                  "      if (block.prompt_cache_breakpoint) { pm.expect(block.prompt_cache_breakpoint.mode).to.eql('explicit'); marked.push(block.text); }",
+                  "    });",
+                  "  }); });",
+                  "  pm.expect(marked).to.eql(['SYSTEM_ONE', 'SYSTEM_TWO', 'LATEST_RESULT']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_openai_ep/global.openai.gpt-5.6-sol\",\n  \"max_tokens\": 128,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"SYSTEM_ONE\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"type\": \"text\",\n      \"text\": \"SYSTEM_TWO\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call echo.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"call_1\",\n          \"name\": \"echo\",\n          \"input\": {\n            \"text\": \"hello\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"call_1\",\n          \"content\": \"OLDER_RESULT\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"call_2\",\n          \"name\": \"echo\",\n          \"input\": {\n            \"text\": \"again\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"call_2\",\n          \"content\": \"LATEST_RESULT\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"echo\",\n      \"description\": \"Echo text.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenAI gpt-5.6-sol native responses default policy - gpt cache mode",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact success status', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var j = pm.response.json(); var rr = (j.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('prompt cache request policy', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr).to.not.have.property('prompt_cache_options');",
+                  "  var marked = [];",
+                  "  (rr.input || []).forEach(function (item) { ['content', 'output'].forEach(function (field) {",
+                  "    if (!Array.isArray(item[field])) { return; }",
+                  "    item[field].forEach(function (block) {",
+                  "      pm.expect(block).to.not.have.property('cache_control');",
+                  "      if (block.prompt_cache_breakpoint) { pm.expect(block.prompt_cache_breakpoint.mode).to.eql('explicit'); marked.push(block.text); }",
+                  "    });",
+                  "  }); });",
+                  "  pm.expect(marked).to.eql(['SYSTEM_ONE', 'SYSTEM_TWO', 'LATEST_RESULT']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 128,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"SYSTEM_ONE\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"SYSTEM_TWO\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Call echo.\"\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_1\",\n      \"name\": \"echo\",\n      \"arguments\": \"{\\\"text\\\":\\\"hello\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_1\",\n      \"output\": \"LATEST_RESULT\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"echo\",\n      \"description\": \"Echo text.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenAI gpt-5.6-sol native responses streaming default policy - gpt cache mode",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact success status', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var txt = pm.response.text(); var rr = null;",
+                  "pm.test('stream completes', function () { pm.expect(txt, txt).to.include('response.completed'); });",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var event; try { event = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  if (event.type === 'response.completed') { rr = (event.extra_fields || {}).raw_request; }",
+                  "});",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('prompt cache request policy', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr).to.not.have.property('prompt_cache_options');",
+                  "  var marked = [];",
+                  "  (rr.input || []).forEach(function (item) { ['content', 'output'].forEach(function (field) {",
+                  "    if (!Array.isArray(item[field])) { return; }",
+                  "    item[field].forEach(function (block) {",
+                  "      pm.expect(block).to.not.have.property('cache_control');",
+                  "      if (block.prompt_cache_breakpoint) { pm.expect(block.prompt_cache_breakpoint.mode).to.eql('explicit'); marked.push(block.text); }",
+                  "    });",
+                  "  }); });",
+                  "  pm.expect(marked).to.eql(['SYSTEM_ONE', 'SYSTEM_TWO', 'LATEST_RESULT']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 128,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"SYSTEM_ONE\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"SYSTEM_TWO\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Call echo.\"\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_1\",\n      \"name\": \"echo\",\n      \"arguments\": \"{\\\"text\\\":\\\"hello\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_1\",\n      \"output\": \"LATEST_RESULT\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"echo\",\n      \"description\": \"Echo text.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenAI gpt-5.6-sol native responses caller explicit policy - gpt cache mode",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact success status', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var j = pm.response.json(); var rr = (j.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('prompt cache request policy', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr.prompt_cache_options.mode).to.eql('explicit');",
+                  "  var marked = [];",
+                  "  (rr.input || []).forEach(function (item) { ['content', 'output'].forEach(function (field) {",
+                  "    if (!Array.isArray(item[field])) { return; }",
+                  "    item[field].forEach(function (block) {",
+                  "      pm.expect(block).to.not.have.property('cache_control');",
+                  "      if (block.prompt_cache_breakpoint) { pm.expect(block.prompt_cache_breakpoint.mode).to.eql('explicit'); marked.push(block.text); }",
+                  "    });",
+                  "  }); });",
+                  "  pm.expect(marked).to.eql(['SYSTEM_ONE', 'SYSTEM_TWO', 'LATEST_RESULT']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 128,\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"SYSTEM_ONE\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"SYSTEM_TWO\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Call echo.\"\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_1\",\n      \"name\": \"echo\",\n      \"arguments\": \"{\\\"text\\\":\\\"hello\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_1\",\n      \"output\": \"LATEST_RESULT\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"echo\",\n      \"description\": \"Echo text.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    }\n  ],\n  \"prompt_cache_options\": {\n    \"mode\": \"explicit\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
               ]
             }
           }

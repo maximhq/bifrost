@@ -108,14 +108,12 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	// part rather than as Anthropic-style cache_control, which the serializer
 	// strips. Same translation as the Responses path (applyResponsesCacheBreakpoints),
 	// resolved on the base provider so a custom provider built on OpenAI is not
-	// sent down the strip-only default.
-	if chatUsesPromptCacheBreakpoints(caps, schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel) {
+	// sent down the strip-only default. Preserve the provider's implicit default:
+	// an explicit block marker does not request explicit-only cache lookup. Claude
+	// Code moves its last marker each turn and relies on earlier message endings
+	// remaining eligible for reuse. Caller-supplied PromptCacheOptions win.
+	if usesOpenAIPromptCacheBreakpoints(caps, schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel) {
 		openaiReq.Messages = applyChatCacheBreakpoints(openaiReq.Messages)
-		if openaiReq.ChatParameters.PromptCacheOptions == nil && chatHasPromptCacheBreakpoint(openaiReq.Messages) {
-			openaiReq.ChatParameters.PromptCacheOptions = &schemas.PromptCacheOptions{
-				Mode: schemas.Ptr(PromptCacheBreakpointModeExplicit),
-			}
-		}
 	}
 
 	switch bifrostReq.Provider {
@@ -401,34 +399,6 @@ func (req *OpenAIChatRequest) applyXAICompatibility(caps schemas.ModelCaps) {
 		caps.FieldUnsupported(schemas.FieldReasoningEffort, effortUnsupported) {
 		req.ChatParameters.Reasoning.Effort = nil
 	}
-}
-
-// chatUsesPromptCacheBreakpoints is the Chat Completions half of the gate behind
-// responsesUsesPromptCacheOptions: the OpenAI family on gpt-5.6 and later. OpenRouter
-// is deliberately absent, since it accepts cache_control verbatim on this path.
-func chatUsesPromptCacheBreakpoints(caps schemas.ModelCaps, provider schemas.ModelProvider, model string) bool {
-	switch provider {
-	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle, schemas.Bedrock:
-		return caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(model))
-	default:
-		return false
-	}
-}
-
-// chatHasPromptCacheBreakpoint reports whether any content part carries a breakpoint,
-// so explicit mode is only switched on when there is a boundary for it to honour.
-func chatHasPromptCacheBreakpoint(messages []OpenAIMessage) bool {
-	for i := range messages {
-		if messages[i].Content == nil {
-			continue
-		}
-		for j := range messages[i].Content.ContentBlocks {
-			if messages[i].Content.ContentBlocks[j].PromptCacheBreakpoint != nil {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // applyChatCacheBreakpoints rewrites ephemeral cache_control markers on text parts
