@@ -258,7 +258,7 @@ func TestDatabricksOAuthTokenGoesThroughProxyConfig(t *testing.T) {
 		ClientID:     schemas.NewSecretVar("sp-client-id"),
 		ClientSecret: schemas.NewSecretVar("sp-client-secret"),
 	}}
-	if _, bErr := provider.authHeader(key); bErr == nil {
+	if _, bErr := provider.authHeader(context.Background(), key); bErr == nil {
 		t.Fatal("expected token minting to fail against the refusing test proxy")
 	}
 
@@ -266,5 +266,38 @@ func TestDatabricksOAuthTokenGoesThroughProxyConfig(t *testing.T) {
 	defer mu.Unlock()
 	if len(connectTargets) != 1 || connectTargets[0] != "dbc-test.cloud.databricks.com:443" {
 		t.Fatalf("proxy saw CONNECT %v, want exactly [dbc-test.cloud.databricks.com:443]", connectTargets)
+	}
+}
+
+// BenchmarkAuthHeaderWarm is the per-request cost of the OAuth M2M path once a token is cached:
+// deriving the common OAuth config, hashing the cache key and the cache lookup. The PAT path
+// is one comparison and the header map.
+func BenchmarkAuthHeaderWarm(b *testing.B) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"minted-token","token_type":"Bearer","expires_in":3600}`))
+	}))
+	defer server.Close()
+	provider, err := NewDatabricksProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10, InsecureSkipVerify: true, AllowPrivateNetwork: true},
+	}, testLogger{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	u, _ := url.Parse(server.URL)
+	key := schemas.Key{DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+		WorkspaceURL: *schemas.NewSecretVar(u.Host),
+		ClientID:     schemas.NewSecretVar("sp-client-id"),
+		ClientSecret: schemas.NewSecretVar("sp-client-secret"),
+	}}
+	if _, bErr := provider.authHeader(context.Background(), key); bErr != nil {
+		b.Fatal(bErr)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, bErr := provider.authHeader(context.Background(), key); bErr != nil {
+			b.Fatal(bErr)
+		}
 	}
 }
