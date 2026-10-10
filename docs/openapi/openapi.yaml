@@ -325,6 +325,10 @@ paths:
   /openai/v1/responses/compact:
     $ref: "./paths/integrations/openai/compaction.yaml#/compact"
 
+  # Decisions
+  /openai/v1/decisions:
+    $ref: "./paths/integrations/openai/decisions.yaml#/decisions"
+
   # Embeddings
   /openai/v1/embeddings:
     $ref: "./paths/integrations/openai/embeddings.yaml#/embeddings"
@@ -1619,6 +1623,12 @@ components:
       $ref: "./schemas/inference/decisions.yaml#/DecisionMapQuestion"
     DecisionMapAnswer:
       $ref: "./schemas/inference/decisions.yaml#/DecisionMapAnswer"
+    OpenAIDecisionRequest:
+      $ref: "./schemas/integrations/openai/decisions.yaml#/OpenAIDecisionRequest"
+    OpenAIDecisionQuestion:
+      $ref: "./schemas/integrations/openai/decisions.yaml#/OpenAIDecisionQuestion"
+    OpenAIDecisionResponse:
+      $ref: "./schemas/integrations/openai/decisions.yaml#/OpenAIDecisionResponse"
 
     # ==================== Embeddings ====================
     EmbeddingRequest:

@@ -152,7 +152,8 @@ func (response *OpenAIDecisionResponse) ToBifrostDecisionResponse(request *schem
 		return nil, fmt.Errorf("OpenAI returned %d decision answers for %d questions", len(response.Answers), len(request.Questions))
 	}
 	answers := make([]schemas.DecisionAnswer, len(response.Answers))
-	for i, answer := range response.Answers {
+	for i, wire := range response.Answers {
+		answer := wire.DecisionAnswer
 		question := request.Questions[i]
 		if answer.Name != nil && question.Name != nil && *answer.Name != *question.Name {
 			return nil, fmt.Errorf("OpenAI decision answer %d is named %q; expected %q", i, *answer.Name, *question.Name)
@@ -175,6 +176,105 @@ func (response *OpenAIDecisionResponse) ToBifrostDecisionResponse(request *schem
 		Answers: answers,
 		Usage:   response.Usage.ToBifrostLLMUsage(),
 	}, nil
+}
+
+// ToBifrostDecisionRequest converts a request received on the
+// /openai/v1/decisions route into the normalized shape. The route takes exactly
+// OpenAI's request, so what OpenAI's Decisions API does not define is rejected
+// by name rather than dropped or interpreted: an input that is null or
+// structured, a top-level "state" (Typesafe's input), and any field a question,
+// choice, or level does not define. OpenAI's questions are a subset of the
+// shared ones, so the rest maps across unchanged. A model without a provider
+// prefix is OpenAI's, since this is OpenAI's route.
+func (r *OpenAIDecisionRequest) ToBifrostDecisionRequest() (*schemas.BifrostDecisionRequest, error) {
+	if r.Input.IsEmpty() {
+		return nil, fmt.Errorf("input is required for decision")
+	}
+	if r.Input.Structured != nil {
+		return nil, fmt.Errorf("input must be a string or a list of messages, as in OpenAI's Decisions request")
+	}
+	if _, ok := r.ExtraParams["state"]; ok {
+		return nil, fmt.Errorf("state is not part of OpenAI's Decisions request; send input")
+	}
+	if len(r.Questions) == 0 {
+		return nil, fmt.Errorf("questions are required for decision")
+	}
+	questions := make([]schemas.DecisionQuestion, len(r.Questions))
+	for i, question := range r.Questions {
+		converted, err := question.toBifrostDecisionQuestion(i)
+		if err != nil {
+			return nil, err
+		}
+		questions[i] = converted
+	}
+	provider, model := schemas.ParseModelString(r.Model, schemas.OpenAI)
+	return &schemas.BifrostDecisionRequest{
+		Provider:         provider,
+		Model:            model,
+		Input:            r.Input,
+		Questions:        questions,
+		SafetyIdentifier: r.SafetyIdentifier,
+		Fallbacks:        schemas.ParseFallbacks(r.Fallbacks),
+		ExtraParams:      r.ExtraParams,
+	}, nil
+}
+
+// toBifrostDecisionQuestion maps one OpenAI question onto the shared question,
+// rejecting by name a field OpenAI's question, choice, or level does not
+// define. index is the question's position, for the error.
+func (q OpenAIDecisionQuestion) toBifrostDecisionQuestion(index int) (schemas.DecisionQuestion, error) {
+	if len(q.unknown) > 0 {
+		return schemas.DecisionQuestion{}, fmt.Errorf("question %d has %q, which is not part of OpenAI's Decisions request", index, q.unknown[0])
+	}
+	converted := schemas.DecisionQuestion{Type: q.Type, Name: q.Name, Instructions: schemas.NewDecisionText(q.Instructions)}
+	for j, choice := range q.Choices {
+		if len(choice.unknown) > 0 {
+			return schemas.DecisionQuestion{}, fmt.Errorf("choice %d of question %d has %q, which is not part of OpenAI's Decisions request", j, index, choice.unknown[0])
+		}
+		converted.Choices = append(converted.Choices, schemas.DecisionChoice{Value: choice.Value, Description: optionalDecisionText(choice.Description)})
+	}
+	for j, level := range q.Levels {
+		if len(level.unknown) > 0 {
+			return schemas.DecisionQuestion{}, fmt.Errorf("level %d of question %d has %q, which is not part of OpenAI's Decisions request", j, index, level.unknown[0])
+		}
+		converted.Levels = append(converted.Levels, schemas.DecisionLevel{Label: level.Label, Description: optionalDecisionText(level.Description)})
+	}
+	return converted, nil
+}
+
+// optionalDecisionText wraps an optional string as decision text, or nil.
+func optionalDecisionText(text *string) *schemas.DecisionText {
+	if text == nil {
+		return nil
+	}
+	return schemas.NewDecisionText(*text)
+}
+
+// ToOpenAIDecisionResponse renders a normalized decision response in OpenAI's
+// shape for the /openai/v1/decisions route, whichever provider answered, so
+// what plugins did to the response is what the client receives. It wraps the
+// response rather than copying it (see OpenAIDecisionRouteResponse): unnamed
+// answers carry name null and usage takes OpenAI's names, while extra_fields
+// and Laya's fields come along as they are, as fields OpenAI clients ignore.
+func ToOpenAIDecisionResponse(response *schemas.BifrostDecisionResponse) *OpenAIDecisionRouteResponse {
+	if response == nil {
+		return nil
+	}
+	answers := make([]OpenAIDecisionAnswer, len(response.Answers))
+	for i, answer := range response.Answers {
+		answers[i] = OpenAIDecisionAnswer{DecisionAnswer: answer}
+	}
+	// A shallow copy, so the response plugins and logging hold keeps its id:
+	// OpenAI's Decision object has none, and the one another provider set
+	// (OpenRouter's, or emulation's internal Responses id) means nothing to an
+	// OpenAI client.
+	shown := *response
+	shown.ID = ""
+	return &OpenAIDecisionRouteResponse{
+		BifrostDecisionResponse: &shown,
+		Answers:                 answers,
+		Usage:                   toOpenAIDecisionUsage(response.Usage),
+	}
 }
 
 // HandleOpenAIDecisionRequest sends a decision request to an OpenAI-compatible

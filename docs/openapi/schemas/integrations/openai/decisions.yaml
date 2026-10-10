@@ -1,0 +1,135 @@
+# OpenAI Integration - Decisions schemas
+
+OpenAIDecisionRequest:
+  type: object
+  description: OpenAI's Decisions request. A field OpenAI's question, choice, or level does not define (such as Typesafe's `criteria`), a top-level `state`, and a structured or null `input` are rejected with a 400; any other top-level field is forwarded to the provider unchanged, so a field a newer SDK sends still reaches it.
+  required:
+    - model
+    - input
+    - questions
+  properties:
+    model:
+      type: string
+      description: Model in provider/model format; a model without a provider prefix is OpenAI's
+      example: gpt-6-luna
+    input:
+      description: A string of text, or user messages with text and image parts
+      oneOf:
+        - type: string
+        - type: array
+          items:
+            $ref: '../../inference/decisions.yaml#/DecisionInputMessage'
+    questions:
+      type: array
+      minItems: 1
+      description: Questions in the order asked. Answers follow the same order.
+      items:
+        $ref: '#/OpenAIDecisionQuestion'
+    safety_identifier:
+      type: [string, 'null']
+      description: Stable end-user identifier, forwarded to OpenAI
+    fallbacks:
+      type: array
+      items:
+        type: string
+      description: Bifrost fallback models in provider/model format; never sent upstream
+
+OpenAIDecisionQuestion:
+  type: object
+  additionalProperties: false
+  required:
+    - type
+    - instructions
+  properties:
+    type:
+      type: string
+      enum: [predicate, choice, score]
+    name:
+      type: string
+    instructions:
+      type: string
+    choices:
+      type: array
+      description: Choice only
+      items:
+        type: object
+        additionalProperties: false
+        required: [value]
+        properties:
+          value:
+            oneOf:
+              - type: string
+              - type: boolean
+          description:
+            type: string
+    levels:
+      type: array
+      description: Score only, in order
+      items:
+        type: object
+        additionalProperties: false
+        required: [label]
+        properties:
+          label:
+            type: string
+          description:
+            type: string
+
+OpenAIDecisionResponse:
+  type: object
+  description: OpenAI's Decision object, plus Bifrost's extra_fields as on the other OpenAI routes. Every model's answers are returned in this shape, and it carries no id. When raw responses are enabled and OpenAI served the request, OpenAI's own response body is returned instead, as on the other OpenAI routes.
+  required:
+    - model
+    - answers
+  properties:
+    model:
+      type: string
+      description: Model that performed the decision
+    answers:
+      type: array
+      description: One answer per question, in question order
+      items:
+        $ref: '../../inference/decisions.yaml#/DecisionAnswer'
+    usage:
+      type: object
+      properties:
+        input_tokens:
+          type: integer
+        input_tokens_details:
+          type: object
+          description: Present when the provider reports it
+          properties:
+            cached_tokens:
+              type: integer
+            cache_write_tokens:
+              type: integer
+        output_tokens:
+          type: integer
+        output_tokens_details:
+          type: object
+          description: Present when the provider reports it
+          properties:
+            reasoning_tokens:
+              type: integer
+        total_tokens:
+          type: integer
+        state_tokens:
+          type: integer
+          description: Laya only
+        state_tokens_dropped:
+          type: integer
+          description: Laya only
+        truncated:
+          type: boolean
+          description: Laya only
+        truncated_questions:
+          type: array
+          items:
+            type: string
+          description: Laya only
+    routing:
+      type: object
+      description: Laya only. The checkpoint that answered and why, passed through untouched
+    extra_fields:
+      $ref: '../../inference/common.yaml#/BifrostResponseExtraFields'
+      description: Bifrost's response metadata (provider, latency, routing info, and the raw provider body when raw responses are on), as on the other OpenAI routes
