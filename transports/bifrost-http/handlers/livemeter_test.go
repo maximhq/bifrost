@@ -557,3 +557,94 @@ func TestLiveMeterRenewalEnforcesPinnedKey(t *testing.T) {
 		})
 	}
 }
+
+func TestLiveMeterTerminalBackendFailure(t *testing.T) {
+	t.Parallel()
+	for _, withUsage := range []bool{true, false} {
+		name := "without usage"
+		if withUsage {
+			name = "with usage"
+		}
+		t.Run(name, func(t *testing.T) {
+			runner := &fakeLiveRunner{}
+			meter := newTestLiveMeter(runner)
+			require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+			failure := &schemas.BifrostResponsesResponse{
+				ID: new("resp_failed"), Model: "gpt-5.6-luna", Status: new(schemas.ResponsesResponseStatusFailed),
+				Error:  &schemas.ResponsesResponseError{Code: "server_error", Message: "backend execution failed"},
+				Output: []schemas.ResponsesMessage{{ID: new("partial"), Type: new(schemas.ResponsesMessageTypeMessage)}},
+			}
+			if withUsage {
+				failure.Usage = &schemas.ResponsesResponseUsage{InputTokens: 8, OutputTokens: 2, TotalTokens: 10}
+			}
+			require.Nil(t, meter.onBackendResponse(failure, "delegation_failed", 100))
+			require.Nil(t, meter.onBackendResponse(failure, "delegation_failed", 100))
+			_, posts, _ := runner.snapshot()
+			require.Len(t, posts, 1, "a failed response closes one unit even without usage; replay closes none")
+			failed := posts[0]
+			require.NotNil(t, failed.resp)
+			assert.Equal(t, failure.Status, failed.resp.Status)
+			assert.Equal(t, failure.Error, failed.resp.Error)
+			assert.Equal(t, failure.Output, failed.resp.Output)
+			assert.Equal(t, "delegation_failed", failed.delegationID)
+			assert.Equal(t, "resp_failed", *failed.resp.ID)
+			wantTokens := 0
+			if withUsage {
+				wantTokens = 10
+			}
+			assert.Equal(t, wantTokens, failed.resp.Usage.TotalTokens)
+			assert.Nil(t, failed.err, "the backend response carries its own error")
+
+			success := &schemas.BifrostResponsesResponse{
+				ID: new("resp_recovered"), Model: "gpt-5.6-luna", Status: new(schemas.ResponsesResponseStatusCompleted),
+				Usage: &schemas.ResponsesResponseUsage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5},
+			}
+			require.Nil(t, meter.onBackendResponse(success, "delegation_recovered", 200))
+			meter.finish(3)
+			opens, posts, cleanups := runner.snapshot()
+			require.Len(t, posts, len(opens))
+			assert.Equal(t, len(opens), cleanups)
+			require.NotNil(t, posts[1].resp)
+			assert.Equal(t, success.Status, posts[1].resp.Status)
+			assert.Nil(t, posts[1].resp.Error, "the next response does not inherit the failure")
+			assert.Equal(t, 5, posts[1].resp.Usage.TotalTokens)
+			assert.Equal(t, "delegation_recovered", posts[1].delegationID)
+			assert.Nil(t, posts[2].resp.Error, "the empty backend unit does not repeat the failure")
+		})
+	}
+}
+
+func TestLiveMeterTerminalBackendFailureSurvivesRenewalRefusal(t *testing.T) {
+	t.Parallel()
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+	runner.setRefuse(true)
+	failure := &schemas.BifrostResponsesResponse{
+		ID: new("resp_failed"), Model: "gpt-5.6-luna", Status: new(schemas.ResponsesResponseStatusFailed),
+		Error: &schemas.ResponsesResponseError{Code: "server_error", Message: "backend execution failed"},
+		Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, TotalTokens: 10},
+	}
+	require.NotNil(t, meter.onBackendResponse(failure, "delegation_failed", 100))
+	meter.finish(3)
+	_, posts, _ := runner.snapshot()
+	require.Len(t, posts, 2)
+	assert.Equal(t, failure.Status, posts[0].resp.Status)
+	assert.Equal(t, failure.Error, posts[0].resp.Error)
+	assert.Equal(t, 10, posts[0].resp.Usage.TotalTokens)
+}
+
+func TestLiveMeterTerminalBackendFailureWithoutErrorDetails(t *testing.T) {
+	t.Parallel()
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+	failure := &schemas.BifrostResponsesResponse{
+		ID: new("resp_failed"), Model: "gpt-5.6-luna", Status: new(schemas.ResponsesResponseStatusFailed),
+	}
+	require.Nil(t, meter.onBackendResponse(failure, "delegation_failed", 100))
+	_, posts, _ := runner.snapshot()
+	require.Len(t, posts, 1)
+	assert.Equal(t, failure.Status, posts[0].resp.Status)
+	assert.Zero(t, posts[0].resp.Usage.TotalTokens)
+}

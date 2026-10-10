@@ -183,6 +183,12 @@ func liveDelegation(ctx *schemas.BifrostContext, result *schemas.BifrostResponse
 		return delegation, liveFlag(ctx, schemas.BifrostContextKeyLiveDelegationFailed)
 	}
 	response := result.ResponsesResponse
+	if delegation.Error == "" && response.Error != nil {
+		delegation.Error = response.Error.Message
+	}
+	if delegation.Error == "" && response.Status != nil && *response.Status == schemas.ResponsesResponseStatusFailed {
+		delegation.Error = "backend response failed"
+	}
 	if response.ID != nil && *response.ID != "" {
 		delegation.ResponseIDs = []string{*response.ID}
 	}
