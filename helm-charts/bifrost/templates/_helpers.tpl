@@ -362,6 +362,9 @@ false
 {{- if hasKey .Values.bifrost.client.compat "forceReasoningOnlyModelsToResponses" }}
 {{- $_ := set $compat "force_reasoning_only_models_to_responses" .Values.bifrost.client.compat.forceReasoningOnlyModelsToResponses }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client.compat "convertDecisionToResponses" }}
+{{- $_ := set $compat "convert_decision_to_responses" .Values.bifrost.client.compat.convertDecisionToResponses }}
+{{- end }}
 {{- $_ := set $client "compat" $compat }}
 {{- end }}
 {{- if .Values.bifrost.client.prometheusLabels }}

@@ -50,6 +50,9 @@ export class ConfigSettingsPage extends BasePage {
   readonly pricingForceSyncBtn: Locator
   readonly pricingSaveBtn: Locator
 
+  // Compatibility Settings
+  readonly compatConvertDecisionToResponsesSwitch: Locator
+
   constructor(page: Page) {
     super(page)
     this.saveBtn = page.getByRole('button', { name: /Save/i })
@@ -91,6 +94,9 @@ export class ConfigSettingsPage extends BasePage {
     this.pricingDatasheetUrlInput = page.getByTestId('pricing-datasheet-url-input')
     this.pricingForceSyncBtn = page.getByTestId('pricing-force-sync-btn')
     this.pricingSaveBtn = page.getByTestId('model-settings-save-btn')
+
+    // Compatibility locators
+    this.compatConvertDecisionToResponsesSwitch = page.getByTestId('compat-convert-decision-to-responses')
   }
 
   async goto(path: string): Promise<void> {

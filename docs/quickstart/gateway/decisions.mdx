@@ -6,14 +6,14 @@ icon: "scale-balanced"
 
 Use decisions to get structured judgments - probabilities, choices, and rubric scores - from judgment models like TypeSafe's jev family. A decision request carries an `input` (what to evaluate) and a list of `questions`; every question produces one typed answer, in the same order.
 
-Any decision model serves the same request: TypeSafe's jev models (and Laya, Nimble, and Clef deployments), OpenAI's decision models such as gpt-6-luna, or any chat model, which answers through structured output.
+Any decision model serves the same request: TypeSafe's jev models (and Laya, Nimble, and Clef deployments), OpenAI's decision models such as gpt-6-luna, or, with the compat setting [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) on, any chat model, which answers through structured output. Without that setting, a chat model returns a `400` with code `unsupported_operation`.
 
 ## Provider Model Examples
 
 - TypeSafe: `typesafe/jev-1.13.0`, `typesafe/jev-latest`, `typesafe/jev-preview`
 - OpenRouter: `openrouter/typesafe/jev-1.13`, `openrouter/~typesafe/jev-latest`
 - OpenAI: `openai/gpt-6-luna` (OpenAI's decisions endpoint)
-- Any chat model, for example `openai/gpt-4o-mini`
+- Any chat model, for example `openai/gpt-4o-mini`, with `convert_decision_to_responses` on, or per request with the header `x-bf-compat: ["convert_decision_to_responses"]`
 
 ## Basic Request
 
