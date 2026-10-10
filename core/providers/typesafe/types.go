@@ -46,7 +46,8 @@ type TypesafeDecisionRequest struct {
 	State       interface{}                 `json:"state"`
 	Model       string                      `json:"model"`
 	Questions   map[string]TypesafeQuestion `json:"questions"`
-	ExtraParams map[string]interface{}      `json:"-"` // native extensions (e.g. images), merged onto the wire by the provider
+	Images      []interface{}               `json:"images,omitempty"` // base64 data URLs or {content_type, base64}; read by vision endpoints such as Clef
+	ExtraParams map[string]interface{}      `json:"-"`                // native extensions, merged onto the wire by the provider
 	stateSet    bool                        // "state" key present on decode; keeps an explicit null distinct from absent
 }
 
@@ -56,6 +57,7 @@ var typesafeDecisionRequestKnownFields = map[string]bool{
 	"state":     true,
 	"model":     true,
 	"questions": true,
+	"images":    true,
 }
 
 // UnmarshalJSON decodes the modelled fields, records whether "state" was

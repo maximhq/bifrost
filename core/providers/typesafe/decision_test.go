@@ -17,6 +17,7 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // fromNative normalizes a native state and questions the way the map-form
@@ -1148,12 +1149,13 @@ func TestSDKFidelityExtensionsForwarded(t *testing.T) {
 		t.Fatalf("round trip: %v", err)
 	}
 	extras := back.GetExtraParams()
-	for _, key := range []string{"images", "trace"} {
-		if _, ok := extras[key]; !ok {
-			t.Errorf("native extension %q lost in round trip; extra params = %v", key, extras)
-		}
+	if _, ok := extras["trace"]; !ok {
+		t.Errorf("native extension \"trace\" lost in round trip; extra params = %v", extras)
 	}
-	for _, key := range []string{"model", "state", "questions"} {
+	if !reflect.DeepEqual(back.Images, []interface{}{"data:image/png;base64,iVBORw0KGgo="}) {
+		t.Errorf("images lost in round trip: images = %v", back.Images)
+	}
+	for _, key := range []string{"model", "state", "questions", "images"} {
 		if _, ok := extras[key]; ok {
 			t.Errorf("known field %q must not be treated as an extension", key)
 		}
@@ -1849,13 +1851,13 @@ func TestToTypesafeDecisionRequestListOnlyDetails(t *testing.T) {
 	}
 }
 
-// TestToTypesafeDecisionRequestRejectsNonTextInput pins that an image, or a
-// part of a type Bifrost does not model such as audio, is a 400 for the
-// Typesafe attempt rather than its encoding sent as state, so a fallback that
-// reads it can serve the request. The audio part is synthetic.
+// TestToTypesafeDecisionRequestRejectsNonTextInput pins that a part of a type
+// Bifrost does not model, such as audio, is a 400 for the Typesafe attempt
+// rather than its encoding sent as state, so a fallback that reads it can serve
+// the request. Images are carried, not rejected (see the image tests below).
+// The audio part is synthetic.
 func TestToTypesafeDecisionRequestRejectsNonTextInput(t *testing.T) {
 	for partType, input := range map[string]string{
-		"input_image": `[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]`,
 		"input_audio": `[{"role":"user","content":[{"type":"input_text","text":"listen"},{"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}]}]`,
 		"untyped":     `[{"role":"user","content":[{"image_url":"data:image/png;base64,AAAA"}]}]`,
 	} {
@@ -1869,6 +1871,178 @@ func TestToTypesafeDecisionRequestRejectsNonTextInput(t *testing.T) {
 		if _, err := ToTypesafeDecisionRequest(req); err == nil || !strings.Contains(err.Error(), partType) {
 			t.Errorf("expected %s rejection, got %v", partType, err)
 		}
+	}
+}
+
+// imageDecisionRequest is a one-question request for Typesafe over the given
+// input, with optional extra params.
+func imageDecisionRequest(t *testing.T, input string, extras map[string]interface{}) *schemas.BifrostDecisionRequest {
+	t.Helper()
+	req := &schemas.BifrostDecisionRequest{
+		Model:       "clef",
+		Questions:   []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("damaged"), Instructions: schemas.NewDecisionText("Is the item damaged?")}},
+		ExtraParams: extras,
+	}
+	if err := sonic.Unmarshal([]byte(input), &req.Input); err != nil {
+		t.Fatalf("decode input: %v", err)
+	}
+	return req
+}
+
+// TestToTypesafeDecisionRequestImages pins that images reach a Typesafe-format
+// endpoint's "images" field, whichever way the caller sent them: as input_image
+// parts, which leave the state with only the text, or as the native "images"
+// extension, which is carried as a typed field so it is sent without the
+// passthrough flag. A text-only endpoint such as Jev rejects the field itself,
+// so a fallback can serve the request.
+func TestToTypesafeDecisionRequestImages(t *testing.T) {
+	const red = "data:image/png;base64,AAAA"
+	const blue = "data:image/png;base64,BBBB"
+	object := map[string]interface{}{"content_type": "image/png", "base64": "CCCC"}
+
+	cases := []struct {
+		name       string
+		input      string
+		extras     map[string]interface{}
+		wantImages []interface{}
+		wantState  string
+		wantExtras map[string]interface{}
+	}{
+		{
+			name:       "image part moves to images, text stays in state",
+			input:      `[{"role":"user","content":[{"type":"input_text","text":"Is this damaged?"},{"type":"input_image","image_url":"` + red + `"}]}]`,
+			wantImages: []interface{}{red},
+			wantState:  `[{"role":"user","content":[{"type":"input_text","text":"Is this damaged?"}]}]`,
+		},
+		{
+			name:       "message holding only an image leaves the state",
+			input:      `[{"role":"user","content":[{"type":"input_image","image_url":"` + red + `"}]},{"role":"user","content":"Is this damaged?"}]`,
+			wantImages: []interface{}{red},
+			wantState:  `[{"role":"user","content":"Is this damaged?"}]`,
+		},
+		{
+			name:       "input of only images sends an empty state",
+			input:      `[{"role":"user","content":[{"type":"input_image","image_url":"` + red + `"}]}]`,
+			wantImages: []interface{}{red},
+			wantState:  `""`,
+		},
+		{
+			name:       "native images extension, both item forms, kept verbatim",
+			input:      `"Is this damaged?"`,
+			extras:     map[string]interface{}{"images": []interface{}{blue, object}, "trace": "t-1"},
+			wantImages: []interface{}{blue, object},
+			wantState:  `"Is this damaged?"`,
+			wantExtras: map[string]interface{}{"trace": "t-1"},
+		},
+		{
+			name:       "native images extension as raw JSON",
+			input:      `"Is this damaged?"`,
+			extras:     map[string]interface{}{"images": json.RawMessage(`["` + blue + `"]`)},
+			wantImages: []interface{}{blue},
+			wantState:  `"Is this damaged?"`,
+		},
+		{
+			name:       "extension images come before part images",
+			input:      `[{"role":"user","content":[{"type":"input_image","image_url":"` + red + `"},{"type":"input_text","text":"Same item?"}]}]`,
+			extras:     map[string]interface{}{"images": []interface{}{blue}},
+			wantImages: []interface{}{blue, red},
+			wantState:  `[{"role":"user","content":[{"type":"input_text","text":"Same item?"}]}]`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := imageDecisionRequest(t, tc.input, tc.extras)
+			native, err := ToTypesafeDecisionRequest(req)
+			if err != nil {
+				t.Fatalf("convert: %v", err)
+			}
+			if !reflect.DeepEqual(native.Images, tc.wantImages) {
+				t.Errorf("images = %#v, want %#v", native.Images, tc.wantImages)
+			}
+			state, err := providerUtils.MarshalSorted(native.State)
+			if err != nil {
+				t.Fatalf("marshal state: %v", err)
+			}
+			if string(state) != tc.wantState {
+				t.Errorf("state = %s, want %s", state, tc.wantState)
+			}
+			if _, ok := native.ExtraParams["images"]; ok {
+				t.Errorf("images left in extra params, where the passthrough flag decides whether they are sent: %v", native.ExtraParams)
+			}
+			if len(tc.wantExtras) > 0 && !reflect.DeepEqual(native.ExtraParams, tc.wantExtras) {
+				t.Errorf("extra params = %v, want %v", native.ExtraParams, tc.wantExtras)
+			}
+			if tc.extras != nil {
+				if _, ok := req.ExtraParams["images"]; !ok {
+					t.Error("the shared request's extra params were mutated; a fallback attempt would lose the images")
+				}
+			}
+		})
+	}
+}
+
+// TestToTypesafeDecisionRequestImageRejections pins the image inputs refused
+// locally with a 400: a remote URL, which Typesafe-format endpoints do not
+// fetch, and an images extension that is not an array.
+func TestToTypesafeDecisionRequestImageRejections(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		extras  map[string]interface{}
+		wantSub string
+	}{
+		{
+			name:    "remote image URL",
+			input:   `[{"role":"user","content":[{"type":"input_image","image_url":"https://example.com/a.png"}]}]`,
+			wantSub: "base64 data URL",
+		},
+		{
+			name:    "image part without a URL",
+			input:   `[{"role":"user","content":[{"type":"input_image"}]}]`,
+			wantSub: "base64 data URL",
+		},
+		{
+			name:    "images extension not an array",
+			input:   `"Is this damaged?"`,
+			extras:  map[string]interface{}{"images": "data:image/png;base64,AAAA"},
+			wantSub: "images must be an array",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ToTypesafeDecisionRequest(imageDecisionRequest(t, tc.input, tc.extras))
+			if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("err = %v, want it to mention %q", err, tc.wantSub)
+			}
+			if _, ok := providerUtils.AsBifrostBadRequestError(err); !ok {
+				t.Errorf("err = %v, want a 400 so a fallback can serve the request", err)
+			}
+		})
+	}
+}
+
+// TestDecisionImagesReachWireWithoutPassthrough pins, against a loopback
+// endpoint, that both image forms are in the body Bifrost sends when the
+// request did not ask for extensions to pass through, which is how
+// /v1/decisions sends a request with no passthrough header.
+func TestDecisionImagesReachWireWithoutPassthrough(t *testing.T) {
+	fixture, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"clef","answers":{"damaged":{"type":"noul","noul":0.9}},"usage":{"input_tokens":5,"output_tokens":0}}`))
+	})
+	for name, req := range map[string]*schemas.BifrostDecisionRequest{
+		"image part":       imageDecisionRequest(t, `[{"role":"user","content":[{"type":"input_text","text":"Damaged?"},{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]`, nil),
+		"images extension": imageDecisionRequest(t, `"Damaged?"`, map[string]interface{}{"images": []interface{}{"data:image/png;base64,AAAA"}}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if _, bifrostErr := provider.Decision(ctx, fixtureKey(), req); bifrostErr != nil {
+				t.Fatalf("decision: %v", bifrostErr.Error)
+			}
+			if got := gjson.Get(fixture.lastBody(), "images").Raw; got != `["data:image/png;base64,AAAA"]` {
+				t.Errorf("images on the wire = %s, want the one image; body = %s", got, fixture.lastBody())
+			}
+		})
 	}
 }
 
