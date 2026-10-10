@@ -367,6 +367,7 @@ import (
 	"testing"
 	"time"
 
+	"bytes"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework"
@@ -382,6 +383,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
@@ -22652,4 +22654,60 @@ func TestValidateCustomProvider_BaseProviderTypes(t *testing.T) {
 	}, "my-vertex")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported base_provider_type")
+}
+
+// TestChartBaseURLSchemaAcceptsSecretReferences pins what the Helm chart's
+// values.schema.json accepts for network_config.base_url, under format
+// assertions.
+//
+// The assertion mode is the whole point. Helm 3 validates values with
+// xeipuuv/gojsonschema, which asserts format: uri and therefore REJECTS
+// base_url: env.UPSTREAM_URL; Helm 4 switched validators and does not assert
+// formats, so it accepts a reference either way. The chart workflow runs Helm 4,
+// which means ordinary `helm lint` cannot see a regression here at all -- it
+// would pass just as happily with the field back to URI-only, and Helm 3 users
+// would be unable to install again.
+//
+// Scoped to the chart on purpose. The matching anyOf in
+// transports/config.schema.json arrives with the core resolver in #6735 and is
+// pinned by that PR's own tests; asserting the two schemas agree from here would
+// make this test fail until that lands, which is the coupling splitting the
+// chart change out was meant to avoid.
+func TestChartBaseURLSchemaAcceptsSecretReferences(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	require.True(t, ok, "failed to locate the test file")
+	schemaPath := filepath.Join(filepath.Dir(testFile), "..", "..", "..", "helm-charts", "bifrost", "values.schema.json")
+
+	raw, err := os.ReadFile(schemaPath)
+	require.NoError(t, err, "failed to read %s", schemaPath)
+
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+	require.NoError(t, err)
+
+	c := jsonschema.NewCompiler()
+	// Reproduce Helm 3's validator, which asserts format.
+	c.AssertFormat()
+	require.NoError(t, c.AddResource("schema.json", doc))
+	sch, err := c.Compile("schema.json#/$defs/networkConfig/properties/base_url")
+	require.NoError(t, err)
+
+	for _, v := range []string{
+		"https://api.example.com",
+		"http://localhost:11434",
+		"env.UPSTREAM_URL",
+		"vault.bifrost/upstream/url",
+	} {
+		assert.NoError(t, sch.Validate(v), "should accept %q", v)
+	}
+	for _, v := range []any{
+		"env.",            // a reference with no name
+		"vault.",          // ditto
+		"env. spaced",     // \S+ forbids whitespace
+		"not a url",       // neither a URI nor a reference
+		"api.example.com", // no scheme, so not a URI
+		42,                // non-string
+		nil,
+	} {
+		assert.Error(t, sch.Validate(v), "should reject %#v", v)
+	}
 }
