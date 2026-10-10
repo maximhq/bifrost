@@ -411,6 +411,24 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, capModel)
 		applyDefaultEagerInputStreaming(reqBody, cfg.Provider, capModel)
 
+		// stripUnsupportedAnthropicFields above rewrites thinking for the whole
+		// adaptive-only family one pass AFTER the conversion, so a
+		// converter-only restore of a caller's own thinking mode would be
+		// silently undone here. Re-assert it -- scoped exactly as the converter
+		// scopes it, to a recorded native Anthropic Messages ingress plus the
+		// model -- and leave that shared strip itself untouched, so every other
+		// caller of it keeps its existing behaviour, including the
+		// OpenAI-shaped chat path that promotes thinking out of ExtraParams.
+		//
+		// This runs BEFORE AddMissingBetaHeadersToContext, which DERIVES beta
+		// headers by reading this very body: deriving them first would describe
+		// a body that is about to be replaced, and would disagree with the raw
+		// path, whose derivation already reads a body the raw-body strip
+		// exemption left alone. Restoring first is what keeps one request's
+		// body and the headers describing it decided from the same bytes on
+		// both paths.
+		restoreNativeAnthropicRequestSurface(ctx, reqBody, request.Params, cfg.Provider, capModel)
+
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
 		mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")

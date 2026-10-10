@@ -660,6 +660,330 @@ func anthropicNativeEffortFrom(ctx *schemas.BifrostContext) (anthropicNativeEffo
 	return native, ok
 }
 
+// anthropicNativeRequestSurface is the part of an inbound Anthropic Messages
+// body that the neutral ResponsesParameters cannot carry to the Anthropic
+// egress intact.
+//
+// ResponsesParametersReasoning carries a thinking.type, an effort scalar and a
+// summary. It has no room for a budget alongside the caller's own choice of
+// thinking.type, so the Anthropic -> Responses converter rewrites the legacy
+// thinking:{"type":"enabled","budget_tokens":N} shape into an effort and the
+// Anthropic egress rebuilds it as adaptive with the budget discarded. It also
+// has no field for thinking.display, which a caller may send beside
+// thinking.type "between_tools" and which the raw/passthrough path forwards.
+//
+// The three sampling scalars survive the neutral shape, but not the trip: a
+// request-normalizing layer between the two conversions may legitimately drop a
+// parameter its own model table does not list (the built-in compat plugin does
+// exactly this from ResponsesParameters.Temperature / .TopP in
+// plugins/compat/dropparams.go), and the Anthropic egress then has nothing left
+// to forward. Reading them back off the neutral parameters at egress is
+// therefore not sound; they are recorded here at ingress instead.
+//
+// The PRESENCE of this witness is itself the signal that the request arrived as
+// a native Anthropic Messages body. Every OpenAI-shaped inbound dialect reaches
+// the same egress converter with no witness at all, and so keeps upstream's
+// behaviour exactly -- which is what makes the preservation below narrow rather
+// than a general change to this provider.
+type anthropicNativeRequestSurface struct {
+	// Thinking is set only for the closed preservable set; nil otherwise.
+	Thinking *AnthropicThinking
+	// MaxTokens is the caller's own max_tokens, kept only so the restore can
+	// tell whether a later pass LOWERED it (clampToModelOutputCeiling) -- the
+	// one case where the caller's budget_tokens has to be refitted rather than
+	// forwarded verbatim. Zero when the caller sent none.
+	MaxTokens int
+	// NeutralReasoning is the reasoning projection the ingress conversion
+	// produced from Thinking -- what the rest of the pipeline was handed.
+	//
+	// It is what lets the egress tell a parameter somebody DROPPED (recover it;
+	// that is the whole point of the witness) from one somebody deliberately
+	// CHANGED (obey it). The two are different instructions, and for the
+	// reasoning half they cannot be told apart by looking at the neutral
+	// request alone: the projection is lossy by construction, so Reasoning
+	// already differs from the caller's own thinking before any plugin runs.
+	// Comparing against what the conversion itself produced is the only reading
+	// that isolates a later edit. The three sampling scalars need no such
+	// record -- they cross the neutral shape unchanged, so a value still
+	// present at egress is current whoever put it there.
+	NeutralReasoning *schemas.ResponsesParametersReasoning
+}
+
+// The key is schemas.BifrostContextKeyAnthropicNativeRequestSurface rather than
+// a package-private one so that core's ClearContextForInternalRequest can shed
+// it: BifrostContext.Value reads through to its parent, so a plugin-owned
+// sub-request built on a context derived from the caller's would otherwise
+// inherit this caller's thinking mode and sampling scalars and be answered with
+// parameters it never carried. Exporting the KEY costs nothing: the value type
+// below is unexported, so no package outside this one can construct a witness,
+// and the type assertion in anthropicNativeRequestSurfaceFrom rejects anything
+// else parked on the key.
+const anthropicNativeRequestSurfaceKey = schemas.BifrostContextKeyAnthropicNativeRequestSurface
+
+// isPreservableAnthropicThinkingType is the ingress half of a set CLOSED at two
+// values, so an unknown or mistyped thinking.type is never carried and keeps
+// resolving exactly as it does today. It is model-independent on purpose: the
+// witness is cheap, and the model gate lives at egress where the capability
+// model is resolved.
+func isPreservableAnthropicThinkingType(thinkingType string) bool {
+	return thinkingType == "between_tools" || thinkingType == "enabled"
+}
+
+// preserveNativeThinking is the egress half of that closed set: it reports
+// whether a recorded caller thinking object must be restored verbatim for this
+// model. "between_tools" rides on the same capability upstream already uses to
+// decide whether the model accepts it at all, so the restore cannot widen past
+// BetweenToolsThinking; "enabled" is gated on PreservesCallerRequestSurface.
+func preserveNativeThinking(caps schemas.ModelCaps, thinkingType string) bool {
+	switch thinkingType {
+	case "between_tools":
+		return caps.SupportsBetweenToolsThinking(DefaultSupportsBetweenToolsThinking(caps.Model()))
+	case "enabled":
+		return PreservesCallerRequestSurface(caps.Model())
+	}
+	return false
+}
+
+// setAnthropicNativeRequestSurface records an inbound Anthropic Messages
+// request's own reasoning and sampling surface so the Anthropic egress can
+// rebuild it verbatim.
+//
+// It is called for EVERY native Anthropic Messages request, including ones with
+// no thinking and no sampling parameters: the witness's presence is what tells
+// the egress that this request came in as a native Anthropic body, and that
+// question has to be answerable when the caller sent sampling parameters only.
+//
+// It rides on the context rather than ExtraParams because ExtraParams is
+// serialized onto the wire when the passthrough header is set: a
+// Bifrost-internal marker there would reach the upstream as an unknown field.
+func setAnthropicNativeRequestSurface(ctx *schemas.BifrostContext, req *AnthropicMessageRequest, neutralReasoning *schemas.ResponsesParametersReasoning) {
+	if ctx == nil || req == nil {
+		return
+	}
+	// Store copies, never the caller's pointers: the inbound request may be
+	// pooled and reused after conversion.
+	surface := anthropicNativeRequestSurface{}
+	if req.Thinking != nil && isPreservableAnthropicThinkingType(req.Thinking.Type) {
+		recorded := *req.Thinking
+		if req.Thinking.BudgetTokens != nil {
+			recorded.BudgetTokens = schemas.Ptr(*req.Thinking.BudgetTokens)
+		}
+		if req.Thinking.Display != nil {
+			recorded.Display = schemas.Ptr(*req.Thinking.Display)
+		}
+		surface.Thinking = &recorded
+	}
+	surface.MaxTokens = req.MaxTokens
+	// Deep copy: the projection's pointer fields alias the inbound request
+	// (MaxTokens is literally req.Thinking.BudgetTokens), which may be pooled
+	// and reused after conversion.
+	surface.NeutralReasoning = copyResponsesReasoning(neutralReasoning)
+	ctx.SetValue(anthropicNativeRequestSurfaceKey, surface)
+}
+
+// copyResponsesReasoning deep-copies a reasoning projection so the recorded
+// witness shares no pointer with the request it was taken from.
+func copyResponsesReasoning(in *schemas.ResponsesParametersReasoning) *schemas.ResponsesParametersReasoning {
+	if in == nil {
+		return nil
+	}
+	out := schemas.ResponsesParametersReasoning{}
+	copyStr := func(p *string) *string {
+		if p == nil {
+			return nil
+		}
+		return schemas.Ptr(*p)
+	}
+	out.Context = copyStr(in.Context)
+	out.Effort = copyStr(in.Effort)
+	out.GenerateSummary = copyStr(in.GenerateSummary)
+	out.Mode = copyStr(in.Mode)
+	out.Summary = copyStr(in.Summary)
+	out.Type = copyStr(in.Type)
+	if in.MaxTokens != nil {
+		out.MaxTokens = schemas.Ptr(*in.MaxTokens)
+	}
+	return &out
+}
+
+// neutralReasoningUnchanged reports whether the neutral request still carries
+// the reasoning configuration the ingress conversion produced -- i.e. whether
+// the restore is recovering what the neutral shape could not express, or would
+// be overwriting a decision some layer in between deliberately made.
+//
+// An ABSENT reasoning is a loss, not a decision: a layer that cleared it (or a
+// shape that never carried it, like the "enabled"+budget rewrite whose whole
+// problem is that it lands somewhere else) leaves the caller's own thinking
+// still the last word on what this request asks for. Anything else present and
+// different is an instruction, and it wins.
+func neutralReasoningUnchanged(recorded, current *schemas.ResponsesParametersReasoning) bool {
+	if current == nil {
+		return true
+	}
+	if recorded == nil {
+		return false
+	}
+	return eqPtr(recorded.Context, current.Context) &&
+		eqPtr(recorded.Effort, current.Effort) &&
+		eqPtr(recorded.GenerateSummary, current.GenerateSummary) &&
+		eqPtr(recorded.Mode, current.Mode) &&
+		eqPtr(recorded.Summary, current.Summary) &&
+		eqPtr(recorded.Type, current.Type) &&
+		eqPtr(recorded.MaxTokens, current.MaxTokens)
+}
+
+// eqPtr compares two optional values: equal when both are absent, or both are
+// present and hold the same value.
+func eqPtr[T comparable](a, b *T) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+
+// anthropicNativeRequestSurfaceFrom recovers a recorded native Anthropic
+// Messages request surface. ok is false for every route that did not come in as
+// an Anthropic Messages request -- every OpenAI-shaped inbound dialect included
+// -- so those keep the existing behaviour exactly.
+func anthropicNativeRequestSurfaceFrom(ctx *schemas.BifrostContext) (anthropicNativeRequestSurface, bool) {
+	if ctx == nil {
+		return anthropicNativeRequestSurface{}, false
+	}
+	surface, ok := ctx.Value(anthropicNativeRequestSurfaceKey).(anthropicNativeRequestSurface)
+	return surface, ok
+}
+
+// restoreNativeAnthropicRequestSurface puts back the parts of the caller's own
+// Anthropic Messages request that the round trip through the neutral shape
+// could not carry. It is a no-op unless this request arrived as a native
+// Anthropic Messages body AND the target model is one whose surface this build
+// forwards rather than guesses at, so it cannot change any other inbound
+// dialect or any other model.
+//
+// It is called from BuildAnthropicResponsesRequestBody rather than from
+// ToAnthropicResponsesRequest, and deliberately AFTER the shared
+// stripUnsupportedAnthropicFields pass: that pass rewrites thinking for the
+// whole adaptive-only family one step later, so a restore inside the converter
+// would be silently undone (the lesson the DeepSeek effort refresh in this same
+// builder already carries). Restoring after it also means the shared strip needs
+// no exemption of its own, so its other caller -- the OpenAI-shaped chat path,
+// which promotes thinking out of ExtraParams -- keeps its behaviour untouched.
+// The builder is the single call site of the converter, so nothing loses the
+// restore by it living here.
+// compatDroppedParams reports which parameters the built-in compat plugin
+// removed because the model catalog did not allowlist them.
+//
+// That distinction is what keeps the restore honest. An absent neutral value can
+// mean two different things: the conversion could not carry it (the loss this
+// witness exists to recover), or a layer removed it ON PURPOSE because the model
+// does not accept it. Restoring the second kind would hand the provider back
+// exactly the parameter the plugin removed to make the request servable. The
+// plugin publishes what it dropped on the context, so the two are separable
+// rather than guessed at.
+func compatDroppedParams(ctx *schemas.BifrostContext) map[string]bool {
+	if ctx == nil {
+		return nil
+	}
+	dropped, ok := ctx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string)
+	if !ok || len(dropped) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(dropped))
+	for _, name := range dropped {
+		set[name] = true
+	}
+	return set
+}
+
+func restoreNativeAnthropicRequestSurface(ctx *schemas.BifrostContext, req *AnthropicMessageRequest, params *schemas.ResponsesParameters, provider schemas.ModelProvider, capModel string) {
+	if req == nil {
+		return
+	}
+	surface, ok := anthropicNativeRequestSurfaceFrom(ctx)
+	if !ok {
+		// Not a native Anthropic Messages ingress: keep upstream's behaviour.
+		return
+	}
+	caps := schemas.ResolveModelCaps(provider, capModel)
+
+	// The neutral request as it stands at egress: what the caller's own values
+	// are checked against below. A request built without parameters at all
+	// reads as one carrying none, so every check below is a plain field read.
+	neutral := params
+	if neutral == nil {
+		neutral = &schemas.ResponsesParameters{}
+	}
+
+	dropped := compatDroppedParams(ctx)
+
+	if surface.Thinking != nil && preserveNativeThinking(caps, surface.Thinking.Type) &&
+		!dropped["reasoning"] &&
+		neutralReasoningUnchanged(surface.NeutralReasoning, neutral.Reasoning) {
+		restored := *surface.Thinking
+		req.Thinking = &restored
+		// An effort the caller did not send is also a substitution. The
+		// "enabled" branch in ToBifrostResponsesRequest derives an effort from
+		// budget_tokens; with the caller's budget restored, that derived effort
+		// is this converter's invention, so it is cleared unless the caller sent
+		// one themselves (anthropicNativeEffort is recorded only when they did).
+		// An effort the caller DID send is left exactly as the conversion
+		// produced it: Anthropic documents effort as independent of thinking.
+		if _, callerSentEffort := anthropicNativeEffortFrom(ctx); !callerSentEffort &&
+			req.OutputConfig != nil && req.OutputConfig.Effort != nil {
+			req.OutputConfig.Effort = nil
+			if req.OutputConfig.Format == nil && req.OutputConfig.TaskBudget == nil {
+				req.OutputConfig = nil
+			}
+		}
+		// The caller's budget_tokens is restored against a max_tokens that may
+		// have been lowered since they sent it -- clampToModelOutputCeiling runs
+		// in the strip pass this restore deliberately follows -- so a budget that
+		// was valid on the way in can exceed the ceiling on the way out. The raw
+		// path refits it (fitRawThinkingBudget); the typed path has to do the same
+		// or it sends a request the provider rejects. Only "enabled" carries a
+		// budget; the adaptive family does not.
+		if restored.Type == "enabled" && restored.BudgetTokens != nil &&
+			surface.MaxTokens > 0 && req.MaxTokens < surface.MaxTokens {
+			// Only a max_tokens that was LOWERED after the caller sent it is
+			// refitted. A budget that never fitted the caller's OWN max_tokens
+			// is their request as written, and forwarding it verbatim -- letting
+			// the provider answer for it -- is exactly what this restore is for;
+			// silently rewriting it would be the substitution being fixed.
+			var effort *string
+			if req.OutputConfig != nil {
+				effort = req.OutputConfig.Effort
+			}
+			if fitted, ok := fitThinkingBudget(restored.BudgetTokens, effort, req.MaxTokens); ok {
+				req.Thinking.BudgetTokens = schemas.Ptr(fitted)
+			} else {
+				// The lowered max_tokens leaves no room for any budget, which is
+				// how the strip pass and the raw path both resolve this.
+				req.Thinking = nil
+			}
+		}
+	}
+
+	// Sampling is deliberately NOT restored, and the reason is worth keeping
+	// here: this family is adaptive-only, and ToAnthropicResponsesRequest skips
+	// temperature/top_p and deletes top_k for exactly that reason -- upstream
+	// records those as a 400 from the provider for the adaptive-only models,
+	// Sonnet 5.5 among them (DefaultAdaptiveOnlyThinking covers IsSonnet5Plus).
+	//
+	// The raw/passthrough path does forward all three, so the two paths answer
+	// the same body differently, and that divergence is real. But restoring the
+	// three here resolves it in the direction that can only ADD provider
+	// rejections to requests which work today, on an assumption about Sonnet
+	// 5.5's surface this change has never verified against a live provider. If
+	// the 400 is real the fix belongs on the passthrough side instead, which is
+	// a behaviour change for byte-faithful forwarding and the maintainers' call.
+	//
+	// thinking and output_config.effort are restored above on a different
+	// footing: between_tools is documented as Sonnet 5.5's lowest accepted
+	// setting, and effort is documented as independent of thinking.
+}
+
+
 // SetResponsesStreamPassthrough marks this request's Anthropic reverse stream
 // conversion as running on the Claude Code passthrough path (raw upstream frames
 // interleaved with converted ones). The converter keeps raw upstream text
@@ -4257,6 +4581,19 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 			Effort: schemas.Ptr(*req.OutputConfig.Effort),
 		}
 	}
+	// Record the caller's own reasoning and sampling surface, so the Anthropic
+	// egress can rebuild it verbatim instead of collapsing thinking into
+	// "disabled", rewriting it to adaptive, or forwarding sampling parameters a
+	// later normalization pass has since dropped. Recorded for EVERY native
+	// Anthropic Messages request: the witness's presence is also what
+	// distinguishes this ingress from an OpenAI-shaped one at egress.
+	//
+	// It runs AFTER the thinking branch above, not before it, because the
+	// witness carries the reasoning projection that branch produces as well as
+	// the caller's own surface. That projection is what lets the egress tell a
+	// parameter a later layer dropped from one it deliberately changed; taken
+	// any earlier it would not exist yet.
+	setAnthropicNativeRequestSurface(ctx, req, params.Reasoning)
 	if include, ok := schemas.SafeExtractStringSlice(req.ExtraParams["include"]); ok {
 		params.Include = include
 	}
