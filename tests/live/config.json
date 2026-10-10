@@ -6,6 +6,11 @@
       "keys": [
         {
           "name": "fake-openai",
+          "aliases": {
+            "live-luna": {"model_id": "gpt-5.6-luna"},
+            "live-terra": {"model_id": "gpt-5.6-terra"},
+            "live-terra-other": {"model_id": "gpt-5.6-terra"}
+          },
           "value": "sk-fake-live-upstream",
           "weight": 1,
           "models": ["*"]

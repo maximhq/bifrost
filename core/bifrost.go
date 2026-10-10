@@ -5430,19 +5430,27 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 
 	return &RealtimeTurnHooks{
 		PostHookRunner: func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			resolvedModel := model
+			// Live admits aliases before selecting its session key; the meter supplies the
+			// pinned key's resolution when the unit settles, as normal inference does.
+			if requestType == schemas.LiveRequest {
+				if alias := schemas.GetResolvedAlias(ctx); alias != nil && alias.Config != nil && alias.Key == model {
+					resolvedModel = alias.Config.ModelID
+				}
+			}
 			if result != nil {
-				result.PopulateExtraFields(requestType, provider, model, model)
+				result.PopulateExtraFields(requestType, provider, model, resolvedModel)
 			}
 			if err != nil {
-				err.PopulateExtraFields(requestType, provider, model, model)
+				err.PopulateExtraFields(requestType, provider, model, resolvedModel)
 			}
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, preCount)
 			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
-				bifrostErr.PopulateExtraFields(requestType, provider, model, model)
+				bifrostErr.PopulateExtraFields(requestType, provider, model, resolvedModel)
 				return resp, bifrostErr
 			} else if resp != nil {
-				resp.PopulateExtraFields(requestType, provider, model, model)
+				resp.PopulateExtraFields(requestType, provider, model, resolvedModel)
 			}
 			return resp, nil
 		},
