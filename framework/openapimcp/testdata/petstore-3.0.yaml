@@ -1,0 +1,173 @@
+openapi: 3.0.3
+info:
+  title: Petstore
+  version: 1.0.0
+  description: A sample pet store API.
+servers:
+  - url: https://petstore.example.com/v1
+  - url: https://{region}.petstore.example.com/v1
+    variables:
+      region:
+        default: eu
+        enum: [eu, us]
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    QueryKey:
+      type: apiKey
+      in: query
+      name: api_key
+    Bearer:
+      type: http
+      scheme: bearer
+    Basic:
+      type: http
+      scheme: basic
+    OAuth:
+      type: oauth2
+      flows:
+        implicit:
+          authorizationUrl: https://auth.example.com/authorize
+          scopes: {}
+  parameters:
+    PetId:
+      name: petId
+      in: path
+      required: true
+      description: The pet id
+      schema:
+        type: string
+  schemas:
+    Pet:
+      type: object
+      required: [name, id]
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+        name:
+          type: string
+          description: Display name
+        tag:
+          type: string
+          nullable: true
+        owner:
+          $ref: '#/components/schemas/Owner'
+      xml:
+        name: pet
+    Owner:
+      type: object
+      properties:
+        name:
+          type: string
+        pets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Pet'
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List all pets
+      description: Returns every pet, newest first.
+      parameters:
+        - name: limit
+          in: query
+          description: Page size
+          schema:
+            type: integer
+            maximum: 100
+        - name: tags
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+        - name: X-Request-Id
+          in: header
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ok
+    post:
+      operationId: createPet
+      summary: Create a pet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Pet'
+      responses:
+        '201':
+          description: created
+  /pets/{petId}:
+    parameters:
+      - $ref: '#/components/parameters/PetId'
+    get:
+      operationId: getPetById
+      description: Info for a specific pet
+      security: []
+      parameters:
+        - name: petId
+          in: query
+          description: Collides with the path parameter on purpose
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ok
+    delete:
+      operationId: deletePet
+      deprecated: true
+      responses:
+        '204':
+          description: deleted
+  /pets/{petId}/photo:
+    post:
+      operationId: uploadPetPhoto
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: ok
+  /search:
+    get:
+      summary: Search without an operationId
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ok
+  /notes:
+    put:
+      operationId: putNote
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              type: string
+      responses:
+        '200':
+          description: ok
