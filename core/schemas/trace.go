@@ -1323,7 +1323,9 @@ func IsSensitiveHeader(name string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(name))
 
 	switch normalized {
-	case "authorization", "proxy-authorization", "cookie", "set-cookie":
+	case "authorization", "proxy-authorization", "cookie", "set-cookie",
+		// Bifrost's own virtual key header: a credential that no generic pattern below names.
+		"x-bf-vk":
 		return true
 	}
 

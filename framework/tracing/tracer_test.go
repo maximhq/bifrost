@@ -1248,3 +1248,52 @@ func TestProcessStreamingChunk_PricesAtRequestStartTime(t *testing.T) {
 	require.NotNil(t, result.Cost)
 	require.InDelta(t, 0.001, *result.Cost, 1e-12)
 }
+
+// headerCapturingObservabilityPlugin opts into request-header capture with the given patterns.
+type headerCapturingObservabilityPlugin struct {
+	testRealtimeObservabilityPlugin
+	patterns []string
+}
+
+func (p *headerCapturingObservabilityPlugin) RequestHeaderPatterns() []string { return p.patterns }
+
+// TestTracer_SetTraceRequestHeadersRedactsVirtualKey pins the single capture point: under a
+// connector's "*" pattern the virtual key header is stored with its value redacted, so no
+// connector reading trace.RequestHeaders can export it, while neutral headers keep their value.
+func TestTracer_SetTraceRequestHeadersRedactsVirtualKey(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	plugin := &headerCapturingObservabilityPlugin{
+		testRealtimeObservabilityPlugin: testRealtimeObservabilityPlugin{injected: make(chan *schemas.Trace, 1)},
+		patterns:                        []string{"*"},
+	}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
+	if !tracer.ShouldCaptureRequestHeaders() {
+		t.Fatal("a '*' pattern must turn header capture on")
+	}
+
+	traceID := tracer.CreateTrace("")
+	tracer.SetTraceRequestHeaders(traceID, map[string]string{
+		"x-bf-vk":       "sk-bf-secret",
+		"authorization": "Bearer sk-bf-secret",
+		"x-app":         "cli",
+	})
+
+	trace := tracer.store.GetTrace(traceID)
+	if trace == nil {
+		t.Fatal("trace not found")
+	}
+	headers := trace.SnapshotForExport().RequestHeaders
+	if got := headers["x-bf-vk"]; got != schemas.RedactedAttrValue {
+		t.Errorf("x-bf-vk = %q, want %q", got, schemas.RedactedAttrValue)
+	}
+	if got := headers["authorization"]; got != schemas.RedactedAttrValue {
+		t.Errorf("authorization = %q, want %q", got, schemas.RedactedAttrValue)
+	}
+	if got := headers["x-app"]; got != "cli" {
+		t.Errorf("x-app = %q, want it preserved", got)
+	}
+}
