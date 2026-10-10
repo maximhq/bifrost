@@ -76,6 +76,7 @@ func (h *WSLiveHandler) upgrade(ctx *fasthttp.RequestCtx, up *liveRequest, serve
 	}
 	err := upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 		defer conn.Close()
+		defer recoverWebSocketSession(conn)
 		defer up.cancel()
 		serve(newRealtimeClientConn(conn))
 	})

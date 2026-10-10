@@ -220876,6 +220876,104 @@
           ]
         }
       ]
+    },
+    {
+      "name": "195. Azure realtime ephemeral token without a mapped key gets a client error (realtime-key-config)",
+      "description": "An ek_ bearer that Bifrost did not mint carries no Azure key config. The Azure realtime entry points answer that with a 400 instead of failing inside the session; the second request pins that the gateway is still serving afterwards.",
+      "item": [
+        {
+          "name": "azure realtime call with an unmapped ephemeral token is answered 400 - realtime-key-config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The ek_ bearer passes the realtime auth gate but has no key mapping, so the Azure",
+                  "// provider receives a key without an endpoint. It must refuse that with a 400 and a",
+                  "// JSON error body; any other status (401/403/500/502) is a failure of this case.",
+                  "pm.test('azure realtime unmapped ek_ (realtime-key-config): status is 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('azure realtime unmapped ek_ (realtime-key-config): the 400 names the missing endpoint', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 400 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('configured endpoint');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/sdp"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer ek_realtime_key_config_probe"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\na=msid-semantic: WMS\r\nm=audio 9 UDP/TLS/RTP/SAVPF 0\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:AAAA\r\na=ice-pwd:AAAAAAAAAAAAAAAAAAAAAA\r\na=fingerprint:sha-256 00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00\r\na=setup:actpass\r\na=mid:0\r\na=sendrecv\r\na=rtpmap:0 PCMU/8000\r\n"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/realtime/calls?model=azure/gpt-realtime",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "realtime",
+                "calls"
+              ],
+              "query": [
+                {
+                  "key": "model",
+                  "value": "azure/gpt-realtime"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "gateway still serving after the azure ephemeral token request - realtime-key-config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('gateway liveness after azure ephemeral token request (realtime-key-config): /health is 200', function () {",
+                  "  pm.expect(pm.response.code, 'gateway did not survive the previous request: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

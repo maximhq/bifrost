@@ -515,6 +515,39 @@ func TestRecoveryMiddleware_DoesNotLogPanicValue(t *testing.T) {
 	}
 }
 
+// TestRecoverWebSocketSession_RecoversAndRedactsPanic pins the helper every WebSocket
+// upgrade callback defers: a panic on the hijacked session goroutine is swallowed (so the
+// process keeps serving), logged once, and never logged with the panic value itself.
+func TestRecoverWebSocketSession_RecoversAndRedactsPanic(t *testing.T) {
+	capLogger := &captureLogger{}
+	SetLogger(capLogger)
+	defer SetLogger(&mockLogger{})
+
+	session := func() {
+		defer recoverWebSocketSession(nil)
+		panic(errors.New("upstream rejected key sk-secret-456"))
+	}
+	session() // must return normally
+
+	if len(capLogger.errors) != 1 {
+		t.Fatalf("error logs = %d, want 1", len(capLogger.errors))
+	}
+	if strings.Contains(capLogger.errors[0], "sk-secret-456") {
+		t.Errorf("websocket recovery log leaked the panic value: %q", capLogger.errors[0])
+	}
+	if !strings.Contains(capLogger.errors[0], "websocket session") || !strings.Contains(capLogger.errors[0], "*errors.errorString") {
+		t.Errorf("websocket recovery log = %q, want the session marker and the panic value type", capLogger.errors[0])
+	}
+
+	quiet := func() {
+		defer recoverWebSocketSession(nil)
+	}
+	quiet()
+	if len(capLogger.errors) != 1 {
+		t.Fatalf("error logs after a non-panicking session = %d, want 1", len(capLogger.errors))
+	}
+}
+
 // TestRecoveryMiddleware_PassesThroughNormalRequests confirms the middleware is
 // a no-op for handlers that don't panic.
 func TestRecoveryMiddleware_PassesThroughNormalRequests(t *testing.T) {

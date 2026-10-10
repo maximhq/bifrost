@@ -87,6 +87,7 @@ func (h *WSResponsesHandler) RegisterRoutes(r *router.Router, middlewares ...sch
 func (h *WSResponsesHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 	err := h.upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 		defer conn.Close()
+		defer recoverWebSocketSession(conn)
 
 		session, sessionErr := h.sessions.Create(conn)
 		if sessionErr != nil {
