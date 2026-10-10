@@ -220902,13 +220902,26 @@
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('modelParamsFixtureReady');",
+                  "pm.collectionVariables.unset('modelParamsFixtureHealthy');"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
-                  "pm.collectionVariables.unset('modelParamsFixtureReady');",
-                  "pm.test('correct local fixture is running', function () { pm.expect(pm.response.json()).to.deep.equal({fixture: 'model-parameters-sync-8073'}); });"
+                  "pm.test('correct local fixture is running', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json()).to.deep.equal({fixture: 'model-parameters-sync-8073'});",
+                  "  pm.collectionVariables.set('modelParamsFixtureHealthy', '1');",
+                  "});"
                 ]
               }
             }
@@ -220941,6 +220954,9 @@
                 "exec": [
                   "pm.test('HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
                   "pm.test('gateway uses the owned local custom Anthropic provider', function () {",
+                  "  pm.collectionVariables.unset('modelParamsFixtureReady');",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.collectionVariables.get('modelParamsFixtureHealthy'), 'local fixture health was not verified').to.equal('1');",
                   "  var row = pm.response.json();",
                   "  pm.expect(row.name, pm.response.text()).to.equal('custom-anthropic-sync');",
                   "  pm.expect(row.network_config.base_url, pm.response.text()).to.equal(pm.variables.get('modelParamsFixtureURL'));",
