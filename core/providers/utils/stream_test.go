@@ -1093,3 +1093,88 @@ func TestCheckFirstStreamChunk_FirstChunkBeforeDeadlineDisarms(t *testing.T) {
 		t.Fatal("the first chunk must disarm the abort")
 	}
 }
+
+// StreamCommit must agree with the startup checks on every sequence: an error it
+// reports as failing the attempt is one the checker returns to the retry loop,
+// and one it lets through is one the checker forwards to the client. Disagreeing
+// the first way would hide from plugins an error the client received.
+func TestStreamCommitAgreesWithStartupChecks(t *testing.T) {
+	failure := &schemas.BifrostStreamChunk{BifrostError: &schemas.BifrostError{
+		Error: &schemas.ErrorField{Message: "rate limit exceeded"},
+	}}
+	startupEvents := func(n int) []*schemas.BifrostStreamChunk {
+		out := make([]*schemas.BifrostStreamChunk, n)
+		for i := range out {
+			out[i] = preambleChunk()
+		}
+		return out
+	}
+	cases := map[string]struct {
+		before        []*schemas.BifrostStreamChunk
+		isPreamble    func(*schemas.BifrostStreamChunk) bool
+		underDeadline bool
+	}{
+		"error as first chunk":                {},
+		"error after first chunk":             {before: []*schemas.BifrostStreamChunk{contentChunk()}},
+		"error after startup event":           {before: []*schemas.BifrostStreamChunk{preambleChunk()}, isPreamble: isTestPreamble},
+		"error after output":                  {before: []*schemas.BifrostStreamChunk{preambleChunk(), contentChunk()}, isPreamble: isTestPreamble},
+		"error after startup byte overflow":   {before: []*schemas.BifrostStreamChunk{bigPreambleChunk(150 * 1024), bigPreambleChunk(150 * 1024)}, isPreamble: isTestPreamble},
+		"error after startup chunk cap":       {before: startupEvents(maxStreamPreambleChunks), isPreamble: isTestPreamble},
+		"error after overflow under deadline": {before: []*schemas.BifrostStreamChunk{bigPreambleChunk(3 * 1024 * 1024), bigPreambleChunk(3 * 1024 * 1024)}, isPreamble: isTestPreamble, underDeadline: true},
+		"error after output under deadline":   {before: []*schemas.BifrostStreamChunk{preambleChunk(), contentChunk()}, isPreamble: isTestPreamble, underDeadline: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.underDeadline {
+				ctx, _ = withAttemptAbort(t, 5*time.Second)
+			}
+			source := make(chan *schemas.BifrostStreamChunk, len(tc.before)+1)
+			for _, chunk := range tc.before {
+				source <- chunk
+			}
+			source <- failure
+			close(source)
+
+			var (
+				wrapped chan *schemas.BifrostStreamChunk
+				done    <-chan struct{}
+				err     *schemas.BifrostError
+			)
+			if tc.isPreamble != nil {
+				wrapped, done, err = CheckStreamPreambleForError(ctx, t.Name(), source, tc.isPreamble)
+			} else {
+				wrapped, done, err = CheckFirstStreamChunkForError(ctx, source)
+			}
+			if wrapped != nil {
+				for range wrapped {
+				}
+			}
+			<-done
+			committed := err == nil
+
+			commit := NewStreamCommit(tc.isPreamble, tc.underDeadline)
+			for _, chunk := range tc.before {
+				commit.ObserveResult(ctx, &schemas.BifrostResponse{ChatResponse: chunk.BifrostChatResponse}, nil)
+			}
+			if fails := commit.FailsAttempt(failure.BifrostError); fails == committed {
+				t.Fatalf("checker committed the stream = %v, but StreamCommit.FailsAttempt = %v", committed, fails)
+			}
+		})
+	}
+}
+
+// Results a plugin drops from the stream never reach the checker, so they must not commit.
+func TestStreamCommitIgnoresSkippedChunks(t *testing.T) {
+	commit := NewStreamCommit(nil, false)
+	skip := &schemas.BifrostError{StreamControl: &schemas.StreamControl{SkipStream: new(true)}}
+	commit.ObserveResult(context.Background(), nil, skip)
+	failure := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "rate limit exceeded"}}
+	if !commit.FailsAttempt(failure) {
+		t.Fatal("a skipped chunk committed the stream")
+	}
+	commit.ObserveResult(context.Background(), &schemas.BifrostResponse{ChatResponse: contentChunk().BifrostChatResponse}, nil)
+	if commit.FailsAttempt(failure) {
+		t.Fatal("output did not commit the stream")
+	}
+}

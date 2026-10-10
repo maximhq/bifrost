@@ -53,6 +53,11 @@ const routes = {
 	"/v1/responses": { responses: true, openai: true },
 };
 
+// preamble-retry fails the first call of each run (route + fixture-run header)
+// with a retryable in-stream rate limit after its startup events, and serves the
+// retry that follows. Bifrost forwards x-bf-eh-fixture-run as fixture-run.
+const retryCalls = new Map();
+
 const server = http.createServer(async (req, res) => {
 	const path = new URL(req.url, "http://localhost").pathname;
 	const route = routes[path];
@@ -66,14 +71,22 @@ const server = http.createServer(async (req, res) => {
 		let body = "";
 		for await (const chunk of req) body += chunk;
 		const { model } = JSON.parse(body);
-		if (model !== "preamble-error" && model !== "preamble-success") {
+		if (model !== "preamble-error" && model !== "preamble-success" && model !== "preamble-retry") {
 			res.writeHead(400).end("unknown fixture model");
 			return;
 		}
-		const failed = model === "preamble-error";
-		const failure = responses
+		let failed = model === "preamble-error";
+		let failure = responses
 			? (openai ? openaiResponsesFailure : responsesFailure)
 			: (openai ? openaiChatFailure : chatFailure);
+		if (model === "preamble-retry") {
+			const run = `${path}|${req.headers["fixture-run"] || ""}`;
+			const calls = (retryCalls.get(run) || 0) + 1;
+			failed = calls % 2 === 1;
+			if (failed) retryCalls.set(run, calls);
+			else retryCalls.delete(run);
+			failure = responses ? responsesFailure : chatFailure;
+		}
 		const events = failed ? failure : (responses ? responsesSuccess : chatSuccess);
 		res.writeHead(200, { "Content-Type": "text/event-stream" });
 		res.flushHeaders();

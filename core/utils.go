@@ -316,19 +316,16 @@ func newBifrostQueueFullError() *schemas.BifrostError {
 // newBifrostMessageChan creates a channel that sends a bifrost response.
 // It is used to send a bifrost response to the client.
 func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.BifrostStreamChunk {
-	ch := make(chan *schemas.BifrostStreamChunk)
-
-	go func() {
-		defer close(ch)
-		ch <- &schemas.BifrostStreamChunk{
-			BifrostTextCompletionResponse:      message.TextCompletionResponse,
-			BifrostChatResponse:                message.ChatResponse,
-			BifrostResponsesStreamResponse:     message.ResponsesStreamResponse,
-			BifrostSpeechStreamResponse:        message.SpeechStreamResponse,
-			BifrostTranscriptionStreamResponse: message.TranscriptionStreamResponse,
-		}
-	}()
-
+	// Filled and closed up front: a stream nobody reads holds no goroutine.
+	ch := make(chan *schemas.BifrostStreamChunk, 1)
+	ch <- &schemas.BifrostStreamChunk{
+		BifrostTextCompletionResponse:      message.TextCompletionResponse,
+		BifrostChatResponse:                message.ChatResponse,
+		BifrostResponsesStreamResponse:     message.ResponsesStreamResponse,
+		BifrostSpeechStreamResponse:        message.SpeechStreamResponse,
+		BifrostTranscriptionStreamResponse: message.TranscriptionStreamResponse,
+	}
+	close(ch)
 	return ch
 }
 
