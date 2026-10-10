@@ -221230,11 +221230,23 @@
                   "  pm.expect(added).to.be.below(firstDelta);",
                   "  pm.expect(events.some(function (e) { return e.type === 'response.output_item.done' && e.output_index === deltas[0].output_index; })).to.equal(true);",
                   "});",
+                  "pm.test('the answer message is single-part, so every delta uses content_index 0', function () {",
+                  "  deltas.forEach(function (d) { pm.expect(d.content_index, JSON.stringify(d)).to.equal(0); });",
+                  "});",
                   "var text = deltas.map(function (d) { return d.delta || ''; }).join('');",
                   "pm.test('assembled text is the schema-valid JSON answer', function () {",
                   "  var parsed = JSON.parse(text);",
                   "  pm.expect(parsed.answer, 'text: ' + text).to.be.a('string');",
                   "  pm.expect(parsed.confident, 'text: ' + text).to.be.a('boolean');",
+                  "});",
+                  "pm.test('response.completed output holds the same message with the full answer', function () {",
+                  "  var completed = events.filter(function (e) { return e.type === 'response.completed'; });",
+                  "  pm.expect(completed.length, 'no response.completed: ' + body.slice(-600)).to.equal(1);",
+                  "  var messages = (completed[0].response.output || []).filter(function (o) { return o.type === 'message'; });",
+                  "  pm.expect(messages.length, 'completed output: ' + JSON.stringify(completed[0].response.output)).to.equal(1);",
+                  "  pm.expect(messages[0].id).to.equal(deltas[0].item_id);",
+                  "  var completedText = (messages[0].content || []).map(function (c) { return c.text || ''; }).join('');",
+                  "  pm.expect(completedText).to.equal(text);",
                   "});"
                 ]
               }

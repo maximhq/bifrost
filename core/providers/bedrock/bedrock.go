@@ -2068,6 +2068,10 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 			structuredOutputToolName = toolName
 		}
 		var isAccumulatingStructuredOutput bool
+		// The structured output becomes a message with one content part. Its events
+		// use content_index 0, not the Bedrock block index the stream state tracks.
+		var structuredOutputBlockIndex *int
+		structuredOutputOutputIndex := -1
 
 		// Process AWS Event Stream format using proper decoder
 		lastChunkTime := startTime
@@ -2096,6 +2100,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					// Converse API: finalize any open items at end of stream.
 					finalResponses := FinalizeBedrockStream(streamState, chunkIndex, usage, streamTrace)
 					for i, finalResponse := range finalResponses {
+						setSingleContentPartIndex(finalResponse, structuredOutputOutputIndex)
 						finalResponse.ExtraFields = schemas.BifrostResponseExtraFields{
 							ChunkIndex: chunkIndex,
 							Latency:    time.Since(lastChunkTime).Milliseconds(),
@@ -2187,6 +2192,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 							// This is the structured output tool - start accumulating, don't forward
 							isAccumulatingStructuredOutput = true
 							streamState.UsedStructuredOutputTool = true
+							structuredOutputBlockIndex = streamEvent.ContentBlockIndex
 							continue
 						}
 					}
@@ -2220,8 +2226,14 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
 				}
+				if structuredOutputBlockIndex != nil && structuredOutputOutputIndex < 0 {
+					if outputIndex, ok := streamState.ContentIndexToOutputIndex[*structuredOutputBlockIndex]; ok {
+						structuredOutputOutputIndex = outputIndex
+					}
+				}
 				for _, response := range responses {
 					if response != nil {
+						setSingleContentPartIndex(response, structuredOutputOutputIndex)
 						response.ExtraFields = schemas.BifrostResponseExtraFields{
 							ChunkIndex: chunkIndex,
 							Latency:    time.Since(lastChunkTime).Milliseconds(),
@@ -4844,5 +4856,14 @@ func (r *invokeEventStreamReader) ReadEvent() (string, []byte, error) {
 		// chunk.Bytes is a fresh base64-decoded slice, so it does not alias
 		// payloadBuf and is safe to hand to the caller before the next Decode.
 		return gjson.GetBytes(chunk.Bytes, "type").String(), chunk.Bytes, nil
+	}
+}
+
+// setSingleContentPartIndex sets content_index 0 on the events of the output item
+// at outputIndex, a message with a single content part. A negative outputIndex
+// means there is no such item.
+func setSingleContentPartIndex(response *schemas.BifrostResponsesStreamResponse, outputIndex int) {
+	if outputIndex >= 0 && response.OutputIndex != nil && *response.OutputIndex == outputIndex && response.ContentIndex != nil {
+		response.ContentIndex = schemas.Ptr(0)
 	}
 }
