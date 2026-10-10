@@ -3215,6 +3215,28 @@ func (gs *LocalGovernanceStore) writeBudgetRows(ctx context.Context, rows []budg
 	return nil
 }
 
+// mergeOwnedBudgets returns attached with every flat budget owned() appended, or
+// replacing the attached copy with the same ID: the flat list holds the current
+// usage and LastReset, so its copy wins.
+func mergeOwnedBudgets(attached []configstoreTables.TableBudget, flat []configstoreTables.TableBudget, owned func(*configstoreTables.TableBudget) bool) []configstoreTables.TableBudget {
+	indexes := make(map[string]int, len(attached))
+	for i := range attached {
+		indexes[attached[i].ID] = i
+	}
+	for i := range flat {
+		if !owned(&flat[i]) {
+			continue
+		}
+		if index, exists := indexes[flat[i].ID]; exists {
+			attached[index] = flat[i]
+			continue
+		}
+		attached = append(attached, flat[i])
+		indexes[flat[i].ID] = len(attached) - 1
+	}
+	return attached
+}
+
 // DATABASE METHODS
 
 // loadFromDatabase loads all governance data from the database into memory
@@ -3406,6 +3428,16 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 	for i := range virtualKeys {
 		vk := &virtualKeys[i]
 
+		vk.Budgets = mergeOwnedBudgets(vk.Budgets, budgets, func(b *configstoreTables.TableBudget) bool {
+			return b.VirtualKeyID != nil && *b.VirtualKeyID == vk.ID
+		})
+		for j := range vk.ProviderConfigs {
+			pc := &vk.ProviderConfigs[j]
+			pc.Budgets = mergeOwnedBudgets(pc.Budgets, budgets, func(b *configstoreTables.TableBudget) bool {
+				return b.ProviderConfigID != nil && *b.ProviderConfigID == pc.ID
+			})
+		}
+
 		for i := range teams {
 			if vk.TeamID != nil && teams[i].ID == *vk.TeamID {
 				vk.Team = &teams[i]
@@ -3490,6 +3522,31 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	for i := range virtualKeys {
 		vk := &virtualKeys[i]
 		gs.storeVirtualKey(vk.Value.GetValue(), vk)
+	}
+
+	// Stamp virtual-key and provider-config budget and rate-limit entries in the
+	// flat caches, as for teams below: the reset path reads only the flat caches,
+	// whose rows never carry IsCalendarAligned, so without this a calendar-aligned
+	// VK falls back to a rolling window after every restart or reload.
+	for i := range virtualKeys {
+		vk := &virtualKeys[i]
+		configstoreTables.StampCalendarAlignment(vk.CalendarAligned, vk.Budgets, vk.RateLimit)
+		for j := range vk.Budgets {
+			gs.storeBudget(vk.Budgets[j].ID, &vk.Budgets[j])
+		}
+		if vk.RateLimit != nil {
+			gs.rateLimits.Store(vk.RateLimit.ID, vk.RateLimit)
+		}
+		for j := range vk.ProviderConfigs {
+			pc := &vk.ProviderConfigs[j]
+			configstoreTables.StampCalendarAlignment(vk.CalendarAligned, pc.Budgets, pc.RateLimit)
+			for k := range pc.Budgets {
+				gs.storeBudget(pc.Budgets[k].ID, &pc.Budgets[k])
+			}
+			if pc.RateLimit != nil {
+				gs.rateLimits.Store(pc.RateLimit.ID, pc.RateLimit)
+			}
+		}
 	}
 
 	// Stamp team-owned budget and rate-limit entries in the flat caches so

@@ -672,6 +672,63 @@ func TestGovernanceStore_TeamCalendarAlignmentSurvivesColdLoad(t *testing.T) {
 	assert.Equal(t, rateLimit.RequestLastReset, loadedRateLimit.RequestLastReset)
 }
 
+func TestGovernanceStore_VirtualKeyCalendarAlignmentSurvivesColdLoad(t *testing.T) {
+	logger := NewMockLogger()
+	now := time.Now().UTC()
+	createdAt := now.Add(-time.Minute)
+	vkID := "vk-calendar-aligned"
+	todayStart := configstoreTables.GetCalendarPeriodStart("1d", now, configstoreTables.QuarterStartNotApplicable)
+	// Opened this week: a rolling window anchored on CreatedAt would reset it right away.
+	weeklyBudget := configstoreTables.TableBudget{
+		ID:            "vk-weekly-calendar-aligned",
+		VirtualKeyID:  &vkID,
+		MaxLimit:      100,
+		CurrentUsage:  42,
+		ResetDuration: "1w",
+		LastReset:     configstoreTables.GetCalendarPeriodStart("1w", now, configstoreTables.QuarterStartNotApplicable),
+		CreatedAt:     createdAt,
+	}
+	// Spent before today's 00:00 UTC: a calendar day resets it, a rolling day from CreatedAt does not.
+	dailyBudget := configstoreTables.TableBudget{
+		ID:            "vk-daily-calendar-aligned",
+		VirtualKeyID:  &vkID,
+		MaxLimit:      5,
+		CurrentUsage:  5,
+		ResetDuration: "1d",
+		LastReset:     todayStart.Add(-time.Hour),
+		CreatedAt:     todayStart.Add(-time.Hour),
+	}
+	rateLimit := buildRateLimit("vk-calendar-aligned-rate-limit", 100, 100)
+	vk := buildVirtualKey(vkID, "sk-bf-calendar-aligned", "Calendar aligned VK", true)
+	vk.CalendarAligned = true
+	vk.RateLimitID = &rateLimit.ID
+	// As config.json declares them: the budgets only in the flat list, owned by virtual_key_id.
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{weeklyBudget, dailyBudget},
+		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	for _, budget := range []configstoreTables.TableBudget{weeklyBudget, dailyBudget} {
+		loadedBudget := store.LoadBudget(context.Background(), budget.ID)
+		require.NotNil(t, loadedBudget)
+		assert.True(t, loadedBudget.IsCalendarAligned, "budget %s", budget.ID)
+		assert.Equal(t, budget.CurrentUsage, loadedBudget.CurrentUsage)
+		assert.Equal(t, budget.LastReset, loadedBudget.LastReset)
+	}
+	assert.Empty(t, store.ResetExpiredBudgetsInMemory(context.Background(), false, weeklyBudget.ID),
+		"cold-loaded calendar budget must not reset on its creation-time rolling window")
+	reset := store.ResetExpiredBudgetsInMemory(context.Background(), false, dailyBudget.ID)
+	require.Len(t, reset, 1, "a calendar day that has passed must reset at 00:00 UTC")
+	assert.Equal(t, todayStart, reset[0].LastReset)
+
+	loadedRateLimit := store.LoadRateLimit(context.Background(), rateLimit.ID)
+	require.NotNil(t, loadedRateLimit)
+	assert.True(t, loadedRateLimit.IsCalendarAligned)
+}
+
 // TestGovernanceStore_MultiBudget_InMemoryCreateAndDelete tests CreateVirtualKeyInMemory and DeleteVirtualKeyInMemory
 // properly store and clean up multi-budget entries
 func TestGovernanceStore_MultiBudget_InMemoryCreateAndDelete(t *testing.T) {
