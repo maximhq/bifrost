@@ -296,6 +296,15 @@ func (c ModelCaps) SupportsAsyncTools(fallback bool) bool {
 	return fallback
 }
 
+// SupportsCustomTools reports whether the model accepts OpenAI custom (freeform)
+// tools. Models that do not are sent each custom tool as a function tool instead.
+func (c ModelCaps) SupportsCustomTools(fallback bool) bool {
+	if c.record != nil && c.record.SupportsCustomTools != nil {
+		return *c.record.SupportsCustomTools
+	}
+	return fallback
+}
+
 // SupportsPromptCaching reports whether the model supports explicit prompt caching
 // at all. It is the base feature that SupportsPromptCachingScope and
 // SupportsExtendedCacheTTL refine, and it is what gates breakpoint injection: a

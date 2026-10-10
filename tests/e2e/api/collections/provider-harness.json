@@ -219195,6 +219195,160 @@
           ]
         }
       ]
+    },
+    {
+      "name": "194. Custom tools on models older than GPT-5 (custom-tools-as-functions)",
+      "description": "OpenAI custom (freeform) tools shipped with GPT-5. Older models such as gpt-4o reject them with 400 \"Invalid value: 'custom'\" on tools. Bifrost now sends each custom tool to those models as a function tool with one string `input` parameter (only when its datasheet row sets supports_custom_tools to false; with no flag custom tools pass through) and turns the model's function call back into a custom_tool_call, so the client sees the same shape it gets from GPT-5. 194.1 pins the non-streaming Responses route, 194.2 the streaming one, where the held-back argument deltas come out as one custom_tool_call_input delta and done. 194.3 pins the Codex shape: exec nested in the functions namespace of an additional_tools input item, plus include reasoning.encrypted_content, which a non-reasoning model rejects.",
+      "item": [
+        {
+          "name": "194.1 openai/gpt-4o-mini responses custom tool is answered with a custom_tool_call (custom tools as functions)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Use the code_exec tool to run: print(\\\"hello\\\")\",\n  \"tools\": [\n    {\n      \"type\": \"custom\",\n      \"name\": \"code_exec\",\n      \"description\": \"Executes arbitrary python code\",\n      \"format\": {\n        \"type\": \"text\"\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"custom\",\n    \"name\": \"code_exec\"\n  },\n  \"max_output_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('custom tool accepted on gpt-4o-mini', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.not.include(\"Invalid value: 'custom'\");",
+                  "});",
+                  "var items = (pm.response.json() || {}).output || [];",
+                  "pm.test('output contains a custom_tool_call for code_exec, not a function_call', function () {",
+                  "  var c = items.filter(function (o) { return o.type === 'custom_tool_call'; })[0];",
+                  "  pm.expect(c, 'no custom_tool_call: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(c.name).to.equal('code_exec');",
+                  "  pm.expect(c.input, 'custom tool input missing').to.be.a('string').and.not.empty;",
+                  "  pm.expect(c.input, 'input still wrapped in function arguments').to.not.match(/^\\s*\\{\\s*\"input\"/);",
+                  "  pm.expect(items.filter(function (o) { return o.type === 'function_call'; }).length, 'leaked function_call').to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "194.2 openai/gpt-4o-mini responses stream custom tool emits custom_tool_call_input events (custom tools as functions)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Use the code_exec tool to run: print(\\\"hello\\\")\",\n  \"tools\": [\n    {\n      \"type\": \"custom\",\n      \"name\": \"code_exec\",\n      \"description\": \"Executes arbitrary python code\",\n      \"format\": {\n        \"type\": \"text\"\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"custom\",\n    \"name\": \"code_exec\"\n  },\n  \"max_output_tokens\": 256,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('custom tool accepted on gpt-4o-mini (stream)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw).to.equal(200);",
+                  "  pm.expect(raw).to.not.include(\"Invalid value: 'custom'\");",
+                  "  pm.expect(raw, 'stream did not complete: ' + raw.slice(-800)).to.include('response.completed');",
+                  "});",
+                  "pm.test('stream carries custom tool events, not function call events', function () {",
+                  "  pm.expect(raw, 'no custom_tool_call_input.done').to.include('response.custom_tool_call_input.done');",
+                  "  var deltaAt = raw.search(/\"type\"\\s*:\\s*\"response\\.custom_tool_call_input\\.delta\"[^\\n]*\"delta\"\\s*:\\s*\"[^\"]/);",
+                  "  pm.expect(deltaAt, 'no non-empty custom_tool_call_input.delta').to.be.above(-1);",
+                  "  pm.expect(deltaAt, 'input delta must come before done').to.be.below(raw.indexOf('response.custom_tool_call_input.done'));",
+                  "  pm.expect(raw, 'no custom_tool_call item').to.match(/\"type\"\\s*:\\s*\"custom_tool_call\"/);",
+                  "  pm.expect(raw, 'function call events leaked').to.not.include('response.function_call_arguments');",
+                  "  pm.expect(raw).to.include('code_exec');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "194.3 openai/gpt-4o-mini responses Codex request with exec in an additional_tools namespace (custom tools as functions)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"include\": [\n    \"reasoning.encrypted_content\"\n  ],\n  \"store\": false,\n  \"tool_choice\": {\n    \"type\": \"custom\",\n    \"name\": \"exec\"\n  },\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"id\": \"at_harness_189_3\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"functions\",\n          \"description\": \"\",\n          \"tools\": [\n            {\n              \"type\": \"custom\",\n              \"name\": \"exec\",\n              \"description\": \"Run JavaScript code\",\n              \"format\": {\n                \"type\": \"grammar\",\n                \"syntax\": \"lark\",\n                \"definition\": \"start: /[\\\\s\\\\S]+/\"\n              }\n            },\n            {\n              \"type\": \"function\",\n              \"name\": \"wait\",\n              \"description\": \"Waits on a running exec cell.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"cell_id\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"cell_id\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        },\n        {\n          \"type\": \"namespace\",\n          \"name\": \"clock\",\n          \"description\": \"Tools for reading and waiting on time.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"sleep\",\n              \"description\": \"Pause execution.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"duration_ms\": {\n                    \"type\": \"number\"\n                  }\n                },\n                \"required\": [\n                  \"duration_ms\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Use exec to run: console.log(1)\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Codex-shaped request accepted on gpt-4o-mini', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.not.include(\"Invalid value: 'custom'\");",
+                  "});",
+                  "var items = (pm.response.json() || {}).output || [];",
+                  "pm.test('exec comes back as a custom_tool_call with raw input', function () {",
+                  "  var c = items.filter(function (o) { return o.type === 'custom_tool_call'; })[0];",
+                  "  pm.expect(c, 'no custom_tool_call: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(c.name).to.equal('exec');",
+                  "  pm.expect(c.input, 'custom tool input missing').to.be.a('string').and.not.empty;",
+                  "  pm.expect(c.input, 'input still wrapped in function arguments').to.not.match(/^\\s*\\{\\s*\"input\"/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
