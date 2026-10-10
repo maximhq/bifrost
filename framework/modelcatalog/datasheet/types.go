@@ -1015,13 +1015,28 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 	return entry
 }
 
-// IsEmptyModelCapabilities reports whether no field on the override struct is
-// set. Compared against the zero value so new fields need no maintenance here.
+// IsEmptyModelCapabilities reports whether a record contains no capability values.
+// Empty slices and maps contribute nothing; non-nil pointers remain meaningful,
+// including explicit false, zero, and empty-string overrides.
 func IsEmptyModelCapabilities(ov *schemas.ModelCapabilities) bool {
 	if ov == nil {
 		return true
 	}
-	return reflect.DeepEqual(*ov, schemas.ModelCapabilities{})
+	value := reflect.ValueOf(ov).Elem()
+	for i := 0; i < value.NumField(); i++ {
+		field := value.Field(i)
+		switch field.Kind() {
+		case reflect.Slice, reflect.Map:
+			if field.Len() > 0 {
+				return false
+			}
+		default:
+			if !field.IsZero() {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // convertTableOverride converts a TablePricingOverride to an Override.

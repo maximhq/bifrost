@@ -263,6 +263,10 @@ func TestModelParametersSyncPreservesCustomProviderMaxTokens(t *testing.T) {
 				_, _ = w.Write([]byte(`{"custom-params-model":{"provider":"anthropic","max_output_tokens":24000},"custom-anthropic/custom-params-model":{"provider":"custom-anthropic","max_output_tokens":"invalid"}}`))
 				return
 			}
+			if feedMode.Load() == 3 {
+				_, _ = w.Write([]byte(`{"custom-params-model":{"provider":"anthropic","max_output_tokens":28000},"custom-anthropic/custom-params-model":{"supported_endpoints":[],"server_tools":{}}}`))
+				return
+			}
 			_, _ = w.Write([]byte(`{"custom-params-model":{"provider":"anthropic","max_output_tokens":16000}}`))
 			return
 		}
@@ -298,8 +302,13 @@ func TestModelParametersSyncPreservesCustomProviderMaxTokens(t *testing.T) {
 			IsKeyLess:        true,
 		},
 	}, logger)
-	for _, phase := range []string{"before sync", "after sync", "after mixed sync", "after unusable sync", "after DB reload"} {
+	for _, phase := range []string{"before sync", "after sync", "after mixed sync", "after unusable sync", "after empty collections sync", "after DB reload"} {
 		switch phase {
+		case "after empty collections sync":
+			feedMode.Store(3)
+			if err := ds.SyncModelParamsFromURL(ctx); err != nil {
+				t.Fatal(err)
+			}
 		case "after mixed sync":
 			feedMode.Store(2)
 			if err := ds.SyncModelParamsFromURL(ctx); err != nil {

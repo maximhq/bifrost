@@ -318,6 +318,10 @@ func TestSyncModelParamsFromURL_UnusableFeedKeepsDBAndIndexes(t *testing.T) {
 		{"empty feed", `{}`},
 		{"null feed", `null`},
 		{"empty record", `{"feed-model":{}}`},
+		{"empty endpoints", `{"feed-model":{"supported_endpoints":[]}}`},
+		{"empty parameters", `{"feed-model":{"model_parameters":[]}}`},
+		{"empty tools", `{"feed-model":{"server_tools":{}}}`},
+		{"empty collections", `{"feed-model":{"supported_endpoints":[],"server_tools":{}}}`},
 		{"provider only", `{"feed-model":{"provider":"anthropic"}}`},
 		{"null record", `{"feed-model":null}`},
 		{"malformed capability", `{"feed-model":{"provider":"anthropic","max_output_tokens":"invalid"}}`},
@@ -374,6 +378,10 @@ func TestSyncModelParamsFromURL_MixedFeedKeepsUnusableRows(t *testing.T) {
 		data string
 	}{
 		{"empty record", `{}`},
+		{"empty endpoints", `{"supported_endpoints":[]}`},
+		{"empty parameters", `{"model_parameters":[]}`},
+		{"empty tools", `{"server_tools":{}}`},
+		{"empty collections", `{"supported_endpoints":[],"server_tools":{}}`},
 		{"provider only", `{"provider":"custom-anthropic"}`},
 		{"null record", `null`},
 		{"malformed capability", `{"provider":"custom-anthropic","max_output_tokens":"invalid"}`},
