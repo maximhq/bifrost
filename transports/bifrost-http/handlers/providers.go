@@ -28,6 +28,19 @@ import (
 // validateProviderBaseURLShape keeps appended operation paths in the URL path.
 // Destination validation follows authentication so anonymous callers cannot
 // trigger DNS lookups while submitting endpoint changes.
+// externalURLErrorForClient keeps a resolved secret out of a destination
+// validation error. ValidateExternalURL reports the hostname it resolved and the
+// DNS error behind it -- the right diagnostic for a literal base_url, which the
+// operator can already see, and a disclosure for one that arrived as an
+// env./vault. reference. A reference is named instead; the detailed error is
+// kept for a literal.
+func externalURLErrorForClient(baseURL *schemas.SecretVar, err error) string {
+	if baseURL != nil && baseURL.IsFromSecret() {
+		return fmt.Sprintf("Invalid base URL resolved from %s", baseURL.GetRawRef())
+	}
+	return fmt.Sprintf("Invalid base URL: %v", err)
+}
+
 func validateProviderBaseURLShape(baseURL *schemas.SecretVar) error {
 	if baseURL == nil {
 		return nil
@@ -411,7 +424,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		}
 		if baseURL := payload.NetworkConfig.BaseURL.GetValue(); baseURL != "" {
 			if err := bifrost.ValidateExternalURL(baseURL, payload.NetworkConfig.AllowPrivateNetwork); err != nil {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid base URL: %v", err))
+				SendError(ctx, fasthttp.StatusBadRequest, externalURLErrorForClient(payload.NetworkConfig.BaseURL, err))
 				return
 			}
 		}
@@ -658,7 +671,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 	if baseURL := nc.BaseURL.GetValue(); baseURL != "" {
 		if err := bifrost.ValidateExternalURL(baseURL, nc.AllowPrivateNetwork); err != nil {
-			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid base URL: %v", err))
+			SendError(ctx, fasthttp.StatusBadRequest, externalURLErrorForClient(nc.BaseURL, err))
 			return
 		}
 	}

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -2982,4 +2983,52 @@ func TestProviderBaseURLShapeFollowsSecretReferences(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestExternalURLErrorKeepsResolvedSecretsOutOfTheResponse covers the third place
+// a resolved base_url can reach the caller: destination validation.
+//
+// ValidateExternalURL reports the hostname it resolved and the DNS error behind
+// it, and both the create and update handlers wrap that into a 400. For a literal
+// base_url that is the right diagnostic -- the operator can already see the value.
+// For one that arrived as an env./vault. reference it is a disclosure, so the
+// reference is named instead.
+func TestExternalURLErrorKeepsResolvedSecretsOutOfTheResponse(t *testing.T) {
+	// .invalid never resolves (RFC 2606), so ValidateExternalURL fails in its DNS
+	// lookup and the error carries the hostname.
+	const secretHost = "resolved-secret-host.invalid"
+	const ref = "env.BIFROST_TEST_EXTERNAL_URL"
+
+	t.Run("a reference is named, not echoed", func(t *testing.T) {
+		t.Setenv("BIFROST_TEST_EXTERNAL_URL", "https://"+secretHost)
+		err := bifrost.ValidateExternalURL("https://"+secretHost, false)
+		if err == nil {
+			t.Skip("the test host unexpectedly resolved; nothing to redact")
+		}
+		got := externalURLErrorForClient(schemas.NewSecretVar(ref), err)
+		if !strings.Contains(got, ref) {
+			t.Errorf("the message does not name the reference: %s", got)
+		}
+		if strings.Contains(got, secretHost) {
+			t.Errorf("the message exposed the resolved host: %s", got)
+		}
+	})
+
+	t.Run("a literal keeps its diagnostic", func(t *testing.T) {
+		err := bifrost.ValidateExternalURL("https://"+secretHost, false)
+		if err == nil {
+			t.Skip("the test host unexpectedly resolved; nothing to diagnose")
+		}
+		got := externalURLErrorForClient(schemas.NewSecretVar("https://"+secretHost), err)
+		if !strings.Contains(got, secretHost) {
+			t.Errorf("a literal base URL should stay readable in the error: %s", got)
+		}
+	})
+
+	t.Run("an absent base URL falls back to the plain error", func(t *testing.T) {
+		got := externalURLErrorForClient(nil, errors.New("boom"))
+		if !strings.Contains(got, "boom") {
+			t.Errorf("expected the underlying error, got: %s", got)
+		}
+	})
 }
