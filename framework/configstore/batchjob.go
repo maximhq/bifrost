@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -100,6 +101,25 @@ func (s *RDBConfigStore) GetProviderJobsByFileIDs(ctx context.Context, provider 
 	var jobs []*tables.TableProviderJob
 	if err := s.DB().WithContext(ctx).
 		Where("provider = ? AND (input_file_id IN ? OR output_file_id IN ? OR error_file_id IN ?)", provider, fileIDs, fileIDs, fileIDs).
+		Find(&jobs).Error; err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
+// GetProviderJobsByJobIDSuffix returns the provider jobs of kind on provider whose
+// provider-side id ends in "/"+suffix, in no particular order: the jobs a full
+// resource name such as "projects/<p>/locations/<l>/batchPredictionJobs/<n>" names
+// by its last segment alone. The suffix matches whole, at a path boundary, with
+// LIKE metacharacters taken literally.
+func (s *RDBConfigStore) GetProviderJobsByJobIDSuffix(ctx context.Context, kind, provider, suffix string) ([]*tables.TableProviderJob, error) {
+	if kind == "" || provider == "" || suffix == "" {
+		return nil, nil
+	}
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(suffix)
+	var jobs []*tables.TableProviderJob
+	if err := s.DB().WithContext(ctx).
+		Where(`kind = ? AND provider = ? AND batch_id LIKE ? ESCAPE '\'`, kind, provider, "%/"+escaped).
 		Find(&jobs).Error; err != nil {
 		return nil, err
 	}

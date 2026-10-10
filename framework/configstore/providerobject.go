@@ -3,6 +3,7 @@ package configstore
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm/clause"
@@ -41,6 +42,21 @@ func (s *RDBConfigStore) GetProviderObjectsByIDs(ctx context.Context, ids []stri
 		return nil, err
 	}
 	return objects, nil
+}
+
+// DeleteProviderObjectsByObjectIDSuffix forgets the provider objects of kind on
+// provider whose provider-side id ends in "/"+suffix: a full resource name such as
+// "projects/<p>/locations/<l>/batchPredictionJobs/<n>" that a delete named by its
+// last segment alone. The suffix matches whole, at a path boundary, with LIKE
+// metacharacters taken literally.
+func (s *RDBConfigStore) DeleteProviderObjectsByObjectIDSuffix(ctx context.Context, kind, provider, suffix string) error {
+	if kind == "" || provider == "" || suffix == "" {
+		return fmt.Errorf("provider object kind, provider and id suffix are required")
+	}
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(suffix)
+	return s.DB().WithContext(ctx).
+		Where(`kind = ? AND provider = ? AND object_id LIKE ? ESCAPE '\'`, kind, provider, "%/"+escaped).
+		Delete(&tables.TableProviderObject{}).Error
 }
 
 // DeleteProviderObject forgets a provider object's creator once the object itself
