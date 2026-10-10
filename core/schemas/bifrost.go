@@ -2035,9 +2035,17 @@ type BifrostResponseExtraFields struct {
 	// request because the target provider/model doesn't support them (e.g.
 	// web_search requested against a non-Nova Bedrock model). Currently populated
 	// only by the Bedrock provider.
-	DroppedUnsupportedTools []string          `json:"dropped_unsupported_tools,omitempty"`
-	ProviderResponseHeaders map[string]string `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
-	PassthroughPath         string            `json:"passthrough_path,omitempty"`          // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
+	DroppedUnsupportedTools []string `json:"dropped_unsupported_tools,omitempty"`
+	// RawResponsesCacheCountersKnown records whether the raw provider response
+	// actually carried an input-token detail object, which
+	// BifrostResponsesResponse.WithDefaults otherwise destroys by materializing an
+	// empty one - turning "the upstream said nothing" into "the upstream observed
+	// zero". Nil means unknown, not false: a stream that ends before its terminal
+	// event never learns the answer. Currently populated only by the OpenAI
+	// Responses raw decoder, and payload-blind - only the boolean is retained.
+	RawResponsesCacheCountersKnown *bool             `json:"raw_responses_cache_counters_known,omitempty"`
+	ProviderResponseHeaders        map[string]string `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
+	PassthroughPath                string            `json:"passthrough_path,omitempty"`          // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
 }
 
 type RoutingInfo struct {
