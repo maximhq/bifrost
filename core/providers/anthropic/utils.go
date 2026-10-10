@@ -4628,8 +4628,11 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMess
 		return nil
 	}
 
+	// Anthropic schemas may have optional properties, which strict mode rejects,
+	// and the Responses API defaults strict to true when it is omitted (#8159).
 	format := &schemas.ResponsesTextConfigFormat{
-		Type: formatType,
+		Type:   formatType,
+		Strict: schemas.Ptr(false),
 	}
 
 	// Extract name if present
