@@ -37,6 +37,7 @@ type fakeLivePost struct {
 	kind         string
 	end          bool
 	delegationID string
+	failed       bool // the provider refused to run the unit's delegation
 	resp         *schemas.BifrostResponsesResponse
 	live         *schemas.LiveSessionLog
 	err          *schemas.BifrostError
@@ -64,6 +65,7 @@ func (f *fakeLiveRunner) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, re
 			post.kind, _ = postCtx.Value(schemas.BifrostContextKeyLiveUnit).(string)
 			post.end, _ = postCtx.Value(schemas.BifrostContextKeyLiveSessionEnd).(bool)
 			post.delegationID, _ = postCtx.Value(schemas.BifrostContextKeyLiveDelegationID).(string)
+			post.failed, _ = postCtx.Value(schemas.BifrostContextKeyLiveDelegationFailed).(bool)
 			if result != nil {
 				post.resp = result.ResponsesResponse
 				post.live = result.LiveSession
@@ -284,6 +286,41 @@ func TestLiveMeterSumsBackendUsageWhileRefused(t *testing.T) {
 	require.NotNil(t, backend)
 	assert.Equal(t, 200, backend.Usage.InputTokens, "both responses bill on the admitted unit")
 	assert.Equal(t, 220, backend.Usage.TotalTokens)
+}
+
+func TestLiveMeterFailedDelegationClosesItsUnitWithTheError(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+
+	refused := newRealtimeWireBifrostError(400, "responses_validation_failed", "The model does not exist")
+	require.Nil(t, meter.failBackend(refused))
+
+	opens, posts, _ := runner.snapshot()
+	require.Len(t, posts, 1, "the refused delegation closes as a backend unit")
+	assert.Equal(t, liveUnitBackend, posts[0].kind)
+	assert.Equal(t, "gpt-5.6-luna", posts[0].model)
+	assert.True(t, posts[0].continuation)
+	require.NotNil(t, posts[0].err)
+	assert.Equal(t, "The model does not exist", posts[0].err.Error.Message)
+	assert.Nil(t, posts[0].resp, "nothing ran")
+	assert.True(t, posts[0].failed, "plugins can tell a refused delegation from a refused session")
+	assert.Len(t, opens, 3, "the next backend unit is admitted before the failed one closes")
+
+	// The session goes on: the next response bills on the new unit.
+	response := &schemas.BifrostResponsesResponse{ID: new("resp_1"), Model: "gpt-5.6-luna", Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}}
+	require.Nil(t, meter.onBackendResponse(response, "item_1", 0))
+	_, posts, _ = runner.snapshot()
+	require.Len(t, posts, 2)
+	assert.Nil(t, posts[1].err)
+	assert.False(t, posts[1].failed)
+	assert.Equal(t, 12, posts[1].resp.Usage.TotalTokens)
+
+	// A next unit governance refuses ends the session instead, as a billed response would.
+	runner.setRefuse(true)
+	assert.NotNil(t, meter.failBackend(refused))
 }
 
 func TestLiveMeterSwitchBackend(t *testing.T) {

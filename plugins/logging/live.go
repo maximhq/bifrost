@@ -122,7 +122,8 @@ func (p *LoggerPlugin) postLiveUnit(ctx *schemas.BifrostContext, kind string, re
 			state.foldDelegation(delegation)
 		}
 	}
-	if bifrostErr != nil {
+	// A delegation the provider refused to run is its own failure, not the session's.
+	if bifrostErr != nil && !liveFlag(ctx, schemas.BifrostContextKeyLiveDelegationFailed) {
 		state.failure = bifrostErr
 	}
 	state.mu.Unlock()
@@ -166,9 +167,10 @@ func liveDelegation(ctx *schemas.BifrostContext, result *schemas.BifrostResponse
 	if bifrostErr != nil && bifrostErr.Error != nil {
 		delegation.Error = bifrostErr.Error.Message
 	}
-	// A unit refused at admission ran nothing; the session's failure records why it ended.
+	// A unit refused at admission ran nothing; the session's failure records why it ended. A
+	// delegation the provider refused to run is the one errored unit that is a delegation.
 	if result == nil || result.ResponsesResponse == nil {
-		return delegation, false
+		return delegation, liveFlag(ctx, schemas.BifrostContextKeyLiveDelegationFailed)
 	}
 	response := result.ResponsesResponse
 	if response.ID != nil && *response.ID != "" {

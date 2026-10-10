@@ -213,3 +213,39 @@ func stringsOf(list gjson.Result) []string {
 	}
 	return out
 }
+
+// delegationRefusedFrame is OpenAI's answer when the backend configuration cannot run: an error
+// frame naming session.delegation, with no delegation ever created.
+const delegationRefusedFrame = `{"type":"error","event_id":"evt_err_1","error":{"type":"invalid_request_error","code":"responses_validation_failed","message":"Responses configuration validation failed: The model gpt-6-does-not-exist does not exist or you do not have access to it.","param":"session.delegation.responses","client_event_id":"evt_start"}}`
+
+func TestDelegation_BackendFailureIsOnTheRow(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	forEachTransport(t, func(t *testing.T, tr transport) {
+		vk := createVirtualKey(t, virtualKeySpec{})
+		c, s := openFakeSession(t, tr, vk, backendModel, nil)
+
+		s.Emit(delegationRefusedFrame)
+		assert.Contains(t, errorMessage(c.WaitFor("error")), "does not exist", "the provider's error still reaches the client")
+		// The voice session goes on: a later delegation runs and bills as usual.
+		s.Play(delegation{ID: "item_later", ResponseID: "resp_later", Model: backendModel, Created: true, Input: 300, Output: 40,
+			Items: []string{messageItem("msg_1", "Still here.")}})
+		c.WaitFor("response.event")
+		settle()
+		s.EmitUsage(12)
+		c.WaitFor("session.usage.updated")
+		c.CloseSession()
+
+		row := findLiveLog(t, s.ID())
+		assert.Equal(t, "success", row.Get("status").Str, "the session itself succeeded")
+		assert.Greater(t, row.Get("token_usage.audio_seconds").Float(), 0.0, "voice is still billed")
+		delegations := row.Get("live_session.delegations").Array()
+		require.Len(t, delegations, 2, "the refused delegation and the one that ran")
+		failed := delegations[0]
+		assert.Equal(t, backendModel, failed.Get("model").Str)
+		assert.Contains(t, failed.Get("error").Str, "does not exist")
+		assert.False(t, failed.Get("usage").Exists(), "nothing ran, nothing to bill")
+		assert.Equal(t, "item_later", delegations[1].Get("delegation_id").Str)
+		assert.Equal(t, 340.0, delegations[1].Get("usage.total_tokens").Float())
+	})
+}

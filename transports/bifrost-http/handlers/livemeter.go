@@ -242,6 +242,31 @@ func (m *liveMeter) onBackendResponse(response *schemas.BifrostResponsesResponse
 	return m.refusal
 }
 
+// failBackend records a delegation the provider refused to run: the open backend unit closes
+// with the error, as the delegation that ran nothing, and the next one is admitted.
+func (m *liveMeter) failBackend(bifrostErr *schemas.BifrostError) *schemas.BifrostError {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lane := m.backends[m.activeBackend]
+	if lane == nil || lane.current == nil || m.finished || m.refusal != nil {
+		return m.refusal
+	}
+	next, openErr := m.openUnit(liveUnitBackend, lane.model, true)
+	if openErr != nil {
+		m.refusal = openErr
+		return m.refusal
+	}
+	postErr := *bifrostErr
+	postErr.ExtraFields.RequestType = schemas.LiveRequest
+	postErr.ExtraFields.Provider = m.provider
+	postErr.ExtraFields.OriginalModelRequested = lane.model
+	postCtx := m.unitContext(lane.current.requestID, true, liveUnitBackend)
+	postCtx.SetValue(schemas.BifrostContextKeyLiveDelegationFailed, true)
+	m.runPostHooks(lane.current, postCtx, nil, &postErr)
+	lane.current = next
+	return m.refusal
+}
+
 // switchBackend admits a backend model changed by session.update. A refusal leaves the current
 // backend in place.
 func (m *liveMeter) switchBackend(model string) *schemas.BifrostError {
