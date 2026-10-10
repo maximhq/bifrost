@@ -1185,6 +1185,34 @@ func TestAnthropicRawTransformsRetainsBillingLikeToolResults(t *testing.T) {
 	}
 }
 
+// Core can take an attempt off raw-body passthrough after the integration chose it
+// (injected tools, unsupported structured output). The response converters must then
+// re-encode Bifrost events instead of treating the reply as raw Anthropic passthrough.
+func TestResponsePassthroughFollowsCoreRawBodyDecision(t *testing.T) {
+	claudeCode := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUserAgent, "claude-cli/2.1.0 (external, cli)")
+		return ctx
+	}
+
+	ctx := claudeCode()
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	if !responsePassthroughActive(ctx, schemas.Anthropic, "claude-sonnet-4-5", "") {
+		t.Error("a passthrough attempt answers in passthrough")
+	}
+
+	ctx = claudeCode()
+	if !responsePassthroughActive(ctx, schemas.Anthropic, "claude-sonnet-4-5", "") {
+		t.Error("unset keeps the integration's own decision")
+	}
+
+	ctx = claudeCode()
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+	if responsePassthroughActive(ctx, schemas.Anthropic, "claude-sonnet-4-5", "") {
+		t.Error("core turned raw-body passthrough off for this attempt, so the reply must be re-encoded")
+	}
+}
+
 // After provider-injected tools ran, the raw upstream reply is only the last of several
 // model turns. The Messages route must answer with the assembled response instead (the
 // router hands converters a copy without the raw bytes), while a single-turn Claude reply
