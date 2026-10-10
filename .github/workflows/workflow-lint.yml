@@ -8,6 +8,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/**"
+      - "Makefile"
 
 permissions:
   contents: read
@@ -49,3 +50,6 @@ jobs:
 
       - name: Check version-format guard
         run: ./.github/workflows/scripts/version-format.test.sh
+
+      - name: Check HTTP transport test failure propagation
+        run: python3 .github/workflows/scripts/test-http-transport-target.py

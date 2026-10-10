@@ -953,23 +953,44 @@ print-test-summary:
 
 test-http-transport: install-gotestsum ## Run HTTP transport tests
 	@$(EXPOSE_ENV); \
+	set -o pipefail; \
 	$(ECHO) "$(GREEN)Running HTTP transport tests...$(NC)"; \
-	mkdir -p $(TEST_REPORTS_DIR); \
-	cd transports/bifrost-http && find . -name "*.go" -path "*/tests/*" -o -name "*_test.go" | head -1 > /dev/null && \
-		for dir in $$(find . -name "*_test.go" -exec dirname {} \; | sort -u); do \
+	mkdir -p "$(TEST_REPORTS_DIR)" || exit 1; \
+	report_dir=$$(cd "$(TEST_REPORTS_DIR)" && pwd) || exit 1; \
+	failed=0; \
+	cd transports/bifrost-http || exit 1; \
+	discovery_file=$$(mktemp "$${TMPDIR:-/tmp}/bifrost-http-transport.XXXXXX") || exit 1; \
+	sorted_file="$$discovery_file.sorted"; \
+	trap 'rm -f "$$discovery_file" "$$sorted_file"' EXIT INT TERM; \
+	discovery_error=0; \
+	if ! find . -name "*_test.go" -exec dirname {} \; >"$$discovery_file"; then \
+		discovery_error=1; \
+		$(ECHO) "$(RED)Failed to discover HTTP transport test directories$(NC)" >&2; \
+	fi; \
+	discovery_input="$$discovery_file"; \
+	if sort -u "$$discovery_file" >"$$sorted_file"; then \
+		discovery_input="$$sorted_file"; \
+	else \
+		discovery_error=1; \
+		$(ECHO) "$(RED)Failed to sort HTTP transport test directories$(NC)" >&2; \
+	fi; \
+	while IFS= read -r dir || [ -n "$$dir" ]; do \
+		[ -n "$$dir" ] || continue; \
 			pkg_name=$$(echo $$dir | sed 's|^\./||' | sed 's|/|-|g'); \
 			$(ECHO) "Testing $$dir..."; \
-			cd $$dir && gotestsum \
+			( cd "$$dir" && gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../../$(TEST_REPORTS_DIR)/http-transport-$$pkg_name.xml \
-				-- -v ./... && cd - > /dev/null; \
+				--junitfile="$$report_dir/http-transport-$$pkg_name.xml" \
+				-- -v ./... ) || failed=1; \
 			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 				if which junit-viewer > /dev/null 2>&1; then \
 					$(ECHO) "$(YELLOW)Generating HTML report for $$pkg_name...$(NC)"; \
-					junit-viewer --results=../../$(TEST_REPORTS_DIR)/http-transport-$$pkg_name.xml --save=../../$(TEST_REPORTS_DIR)/http-transport-$$pkg_name.html 2>/dev/null || true; \
+					junit-viewer --results="$$report_dir/http-transport-$$pkg_name.xml" --save="$$report_dir/http-transport-$$pkg_name.html" 2>/dev/null || true; \
 				fi; \
-			fi; \
-		done || $(ECHO) "No HTTP transport tests found"
+				fi; \
+	done <"$$discovery_input"; \
+	[ "$$discovery_error" -eq 0 ] || failed=1; \
+	exit $$failed
 	@$(ECHO) ""
 	@if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 		$(ECHO) "$(CYAN)HTML reports saved to $(TEST_REPORTS_DIR)/http-transport-*.html$(NC)"; \
