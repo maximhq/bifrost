@@ -13,6 +13,7 @@ The LiteLLM compatibility plugin provides two transformations:
 3. **Drop Unsupported Params** - Automatically drops unsupported parameters if the model doesn't support them
 4. **Unsupported Parameter Conversion** - Automatically converts unsupported parameters to their supported equivalents
 5. **Reasoning-Only Models to Responses** - Routes chat completion requests to the Responses API for models that cannot reason alongside tool calls on chat completions
+6. **Decision-to-Responses Emulation** - Answers decision requests for models without a native decisions endpoint by prompting the model through the Responses API (off by default)
 
 When either transformation is applied, responses include `extra_fields.converted_request_type: <transformed_request_type>`. If request parameters are dropped, the keys are added in `extra_fields.dropped_compat_plugin_params`.
 
@@ -103,6 +104,50 @@ With `force_reasoning_only_models_to_responses` off, the request stays on chat c
 
 Controlled by `force_reasoning_only_models_to_responses` (on by default).
 
+## 4. Decision-to-Responses Emulation
+
+Decision requests (`/v1/decisions`, `/openai/v1/decisions`, `/typesafe/v1/systemone`) are served natively only by decisions models, such as OpenAI's `gpt-6-luna` or Typesafe models. A general chat model like `openai/gpt-4o` has no decisions endpoint.
+
+With `convert_decision_to_responses` on, Bifrost handles a decision request by:
+
+1. Checking whether the model is a native decisions model (using the model catalog): its `supports_decisions` datasheet entry, or without one the decisions models Bifrost recognizes by name (OpenAI's `gpt-6-luna` family and Typesafe's `typesafe/` models)
+2. If it is, calling the provider's decisions endpoint directly, without any conversion
+3. If not, encoding the questions as a forced function tool and sending the input to the model's Responses API
+4. Mapping the function call arguments back to a decision response (typed answers with confidence)
+
+```mermaid
+flowchart LR
+A[Decision Request] --> B{convert_decision_to_responses on?}
+B -->|No| C[Call Decisions API]
+B -->|Yes| D{Native decisions model in the model catalog?}
+D -->|Yes| C
+D -->|No| E[Prompt + forced tool via Responses API]
+C --> G[Decision Response]
+E --> G
+```
+
+<Note>
+**Off by default.** Without it, a decision request on a model with no native decisions endpoint fails with HTTP 400 and code `unsupported_operation`:
+
+```text
+model "gpt-4o" on provider "openai" does not support the decisions API. Use a model that supports the decisions API, or enable the compat setting convert_decision_to_responses to emulate the decision through this model's Responses API.
+```
+
+Decisions models Bifrost recognizes are never emulated, with or without the setting; see the custom-provider caveat below.
+</Note>
+
+<Warning>
+**Custom providers.** The check relies on the model catalog, which has no entries for custom providers. With the setting on, a custom provider serving decisions models, such as one on the Typesafe base format (Laya, Nimble, Clef) or one on the OpenAI base format serving a decisions model under a name Bifrost does not recognize, has its decision requests emulated through its Responses API instead of sent to its decisions endpoint. Leave `convert_decision_to_responses` off when you route decisions to custom providers.
+</Warning>
+
+**Behavior notes:**
+- The check runs on every attempt, so it applies to fallbacks too. A fallback to a native decisions model works without the setting, and a fallback to a chat model is emulated only when the setting is on.
+- An emulated response reports `extra_fields.converted_request_type: "responses"`.
+- The input reaches the model as text, so a request with an image, audio or other non-text input part is rejected rather than answered without it. Passthrough extra params (`x-bf-passthrough-extra-params`) are rejected for the same reason.
+- An emulated decision is billed as the chat call it is.
+
+Controlled by `convert_decision_to_responses` (off by default).
+
 ## Enabling LiteLLM Compatibility
 
 <Tabs group="litellm-compat">
@@ -118,6 +163,7 @@ Controlled by `force_reasoning_only_models_to_responses` (on by default).
    - **Convert Unsupported Params Values** - converts parameter values the model cannot accept, such as a token cap above the model limit, to values it can. See the list of [supported parameters](#supported-parameters) below.
    - **Azure DeepSeek** - converts Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses
    - **Reasoning-only models to Responses** - routes chat completion requests to the Responses API for models that cannot reason with tool calls on chat completions
+   - **Emulate Decisions API on non-decision models** - answers decision requests for models without a native decisions endpoint through the model's Responses API
 4. Save your configuration
 
 ![Compatibility Settings](../media/compatibility-settings.png)
@@ -135,7 +181,8 @@ Controlled by `force_reasoning_only_models_to_responses` (on by default).
       "should_drop_params": true,
       "should_convert_params": true,
       "azure_deepseek": true,
-      "force_reasoning_only_models_to_responses": true
+      "force_reasoning_only_models_to_responses": true,
+      "convert_decision_to_responses": true
     }
   }
 }
@@ -231,7 +278,7 @@ When errors occur on transformed requests:
 
 To enable compat plugins per request, you can use `x-bf-compat` header:
 - When `x-bf-compat: true` or `x-bf-compat: ["*"]`, enables all compat plugins options
-- When `x-bf-compat: ["<setting1>","<setting2>"]`, enables the specified settings (available settings: `convert_text_to_chat`, `convert_chat_to_responses`, `should_drop_params`, `should_convert_params`, `azure_deepseek`, `force_reasoning_only_models_to_responses`)
+- When `x-bf-compat: ["<setting1>","<setting2>"]`, enables the specified settings (available settings: `convert_text_to_chat`, `convert_chat_to_responses`, `should_drop_params`, `should_convert_params`, `azure_deepseek`, `force_reasoning_only_models_to_responses`, `convert_decision_to_responses`)
 
 ## What's Preserved
 

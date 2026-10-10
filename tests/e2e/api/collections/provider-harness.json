@@ -162330,6 +162330,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -162389,6 +162393,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -162451,6 +162459,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -162497,6 +162509,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -162542,6 +162558,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -162621,6 +162641,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -162692,6 +162716,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -162765,6 +162793,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -162836,6 +162868,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -162909,6 +162945,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -162980,6 +163020,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -163053,6 +163097,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -163124,6 +163172,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -163197,6 +163249,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -163268,6 +163324,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -163341,6 +163401,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -163412,6 +163476,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -163485,6 +163553,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -163556,6 +163628,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -163629,6 +163705,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -163700,6 +163780,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -163773,6 +163857,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -163844,6 +163932,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -163917,6 +164009,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -163988,6 +164084,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -164061,6 +164161,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -164132,6 +164236,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -164205,6 +164313,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -164276,6 +164388,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -164349,6 +164465,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -164420,6 +164540,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -164493,6 +164617,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -164564,6 +164692,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -164637,6 +164769,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -164708,6 +164844,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -164781,6 +164921,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -164852,6 +164996,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -164925,6 +165073,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -164996,6 +165148,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -165069,6 +165225,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -165140,6 +165300,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -165213,6 +165377,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -165284,6 +165452,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -165357,6 +165529,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -165428,6 +165604,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -165501,6 +165681,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -165572,6 +165756,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -165645,6 +165833,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -165716,6 +165908,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -165789,6 +165985,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -165860,6 +166060,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -165933,6 +166137,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -166004,6 +166212,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -166077,6 +166289,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -166148,6 +166364,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -166221,6 +166441,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -166292,6 +166516,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -166365,6 +166593,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -166436,6 +166668,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -166509,6 +166745,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -166580,6 +166820,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -166653,6 +166897,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -166725,6 +166973,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -166796,6 +167048,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -217630,6 +217886,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -217748,7 +218008,7 @@
     },
     {
       "name": "185. OpenAI native decisions on /v1/decisions (openai-decisions)",
-      "description": "Pins OpenAI's decisions endpoint behind /v1/decisions (PR #8191): openai/gpt-6-luna, gated by the supports_decisions capability, answers the normalized body and the deprecated map form natively, reads image input, and serves as the fallback for an image a Typesafe model rejects. A chat model on the same provider (gpt-4o-mini) keeps answering through emulation; folder 184 pins that.",
+      "description": "Pins OpenAI's decisions endpoint behind /v1/decisions (PR #8191): openai/gpt-6-luna, gated by the supports_decisions capability, answers the normalized body and the deprecated map form natively, reads image input, and serves as the fallback for an image a Typesafe model rejects. A chat model on the same provider (gpt-4o-mini) answers through emulation once opted in with x-bf-compat: [\"convert_decision_to_responses\"]; folder 184 pins that, and folder 195 pins the opt-in.",
       "item": [
         {
           "name": "/v1/decisions - normalized body, every question type answered in order - openai/gpt-6-luna",
@@ -218163,6 +218423,10 @@
           "request": {
             "method": "POST",
             "header": [
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -220874,6 +221138,405 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "195. Decision emulation is opt-in (decision-emulation-opt-in)",
+      "description": "Pins compat's convert_decision_to_responses (off by default). A model with no native decisions endpoint (openai/gpt-4o-mini) is rejected with unsupported_operation (HTTP 400) and a message naming the setting unless the request opts in with x-bf-compat: [\"convert_decision_to_responses\"]; opted in, it is emulated through the model's Responses API and extra_fields.converted_request_type reads responses. Both on /v1/decisions and the OpenAI-compatible /openai/v1/decisions. A native decisions model (openai/gpt-6-luna) answers without the opt-in, and a rejected chat primary still falls back to it. Opted in, it is still answered natively: compat checks the model catalog and marks only models that are not native decisions models, so no conversion is reported. The default-off cases strip x-bf-compat in a prerequest so a COMPAT=on run, which injects x-bf-compat: true, still pins the default.",
+      "item": [
+        {
+          "name": "[EXPECT-400] /v1/decisions - chat model rejected without the compat opt-in - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Pins the default (emulation off). A COMPAT=on run upserts x-bf-compat: true at",
+                  "// collection level, which would opt this request in, so drop it here.",
+                  "pm.request.headers.remove('x-bf-compat');"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('a chat model is not emulated without the opt-in', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "});",
+                  "var err = (pm.response.json() || {}).error || {};",
+                  "pm.test('the error explains both ways forward', function () {",
+                  "    pm.expect(err.message || '', 'error: ' + pm.response.text()).to.include('does not support the decisions API');",
+                  "    pm.expect(err.message || '', 'error: ' + pm.response.text()).to.include('convert_decision_to_responses');",
+                  "});",
+                  "pm.test('the code stays unsupported_operation', function () {",
+                  "    pm.expect(err.code, 'error: ' + pm.response.text()).to.eql('unsupported_operation');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Customer message: I was double charged last month and nobody replied to my two emails.\"\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - chat model emulated with the compat opt-in - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the opted-in chat model answers through emulation', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});",
+                  "pm.test('the request is reported as converted to responses', function () {",
+                  "    pm.expect((body.extra_fields || {}).converted_request_type, 'extra_fields: ' + JSON.stringify(body.extra_fields)).to.eql('responses');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Customer message: I was double charged last month and nobody replied to my two emails.\"\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /openai/v1/decisions - chat model rejected without the compat opt-in - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Pins the default (emulation off). A COMPAT=on run upserts x-bf-compat: true at",
+                  "// collection level, which would opt this request in, so drop it here.",
+                  "pm.request.headers.remove('x-bf-compat');"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('a chat model is not emulated without the opt-in', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "});",
+                  "var err = (pm.response.json() || {}).error || {};",
+                  "pm.test('the error explains both ways forward', function () {",
+                  "    pm.expect(err.message || '', 'error: ' + pm.response.text()).to.include('does not support the decisions API');",
+                  "    pm.expect(err.message || '', 'error: ' + pm.response.text()).to.include('convert_decision_to_responses');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Customer message: I was double charged last month and nobody replied to my two emails.\"\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/decisions - chat model emulated with the compat opt-in - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the opted-in chat model answers through emulation', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});",
+                  "pm.test('the request is reported as converted to responses', function () {",
+                  "    pm.expect((body.extra_fields || {}).converted_request_type, 'extra_fields: ' + JSON.stringify(body.extra_fields)).to.eql('responses');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Customer message: I was double charged last month and nobody replied to my two emails.\"\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - native decisions model answers without the compat opt-in - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Pins the default (emulation off). A COMPAT=on run upserts x-bf-compat: true at",
+                  "// collection level, which would opt this request in, so drop it here.",
+                  "pm.request.headers.remove('x-bf-compat');"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('a native decisions model needs no opt-in', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "});",
+                  "pm.test('served natively by openai/gpt-6-luna', function () {",
+                  "    var routing = (body.extra_fields || {}).routing_info || {};",
+                  "    pm.expect(routing.provider, 'routing: ' + JSON.stringify(body.extra_fields)).to.eql('openai');",
+                  "    pm.expect(routing.model).to.eql('gpt-6-luna');",
+                  "    pm.expect((body.extra_fields || {}).converted_request_type, 'no emulation ran').to.not.be.ok;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Customer message: I was double charged last month and nobody replied to my two emails.\"\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - rejected chat primary falls back to a decisions model - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Pins the default (emulation off). A COMPAT=on run upserts x-bf-compat: true at",
+                  "// collection level, which would opt this request in, so drop it here.",
+                  "pm.request.headers.remove('x-bf-compat');"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the fallback answers after the chat primary is rejected', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "});",
+                  "pm.test('served natively by openai/gpt-6-luna', function () {",
+                  "    var routing = (body.extra_fields || {}).routing_info || {};",
+                  "    pm.expect(routing.provider, 'routing: ' + JSON.stringify(body.extra_fields)).to.eql('openai');",
+                  "    pm.expect(routing.model).to.eql('gpt-6-luna');",
+                  "    pm.expect((body.extra_fields || {}).converted_request_type, 'no emulation ran').to.not.be.ok;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"fallbacks\": [\n    \"openai/gpt-6-luna\"\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Customer message: I was double charged last month and nobody replied to my two emails.\"\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - native decisions model with the compat opt-in is not reported as converted - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the opted-in native decisions model answers natively', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('served by openai/gpt-6-luna', function () {",
+                  "    var routing = (body.extra_fields || {}).routing_info || {};",
+                  "    pm.expect(routing.provider, 'routing: ' + JSON.stringify(body.extra_fields)).to.eql('openai');",
+                  "    pm.expect(routing.model).to.eql('gpt-6-luna');",
+                  "});",
+                  "pm.test('the opt-in alone is not reported as a conversion', function () {",
+                  "    pm.expect((body.extra_fields || {}).converted_request_type, 'extra_fields: ' + JSON.stringify(body.extra_fields)).to.not.be.ok;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Customer message: I was double charged last month and nobody replied to my two emails.\"\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          }
         }
       ]
     },
