@@ -195,6 +195,45 @@ func TestToAnthropicResponsesRequest_StructuredOutput_Fable51_NoForcedToolChoice
 	}
 }
 
+// TestAnthropicMessages_UnnamedOutputConfigFormat_Sonnet55Vertex drives the
+// /anthropic/v1/messages ingress into the Vertex egress for Sonnet 5.5. An
+// output_config.format without a name is named "output_format" on the way in, so
+// the synthetic tool is bf_so_output_format, and it is sent without a forced
+// tool_choice.
+func TestAnthropicMessages_UnnamedOutputConfigFormat_Sonnet55Vertex(t *testing.T) {
+	var anthropicReq AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(`{"model":"claude-sonnet-5-5","max_tokens":128,`+
+		`"messages":[{"role":"user","content":"Weather in Tokyo, make it up."}],`+
+		`"output_config":{"format":{"type":"json_schema","schema":{"type":"object",`+
+		`"properties":{"city":{"type":"string"},"temp_c":{"type":"number"}},`+
+		`"required":["city","temp_c"],"additionalProperties":false}}}}`), &anthropicReq); err != nil {
+		t.Fatalf("unmarshal ingress request: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	if bifrostReq == nil {
+		t.Fatal("nil bifrost request")
+	}
+	bifrostReq.Provider = schemas.Vertex
+
+	result, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var names []string
+	for _, tool := range result.Tools {
+		names = append(names, tool.Name)
+	}
+	if !slices.Contains(names, "bf_so_output_format") {
+		t.Fatalf("expected synthetic tool bf_so_output_format, got tools %v", names)
+	}
+	if result.ToolChoice != nil {
+		t.Errorf("expected no forced ToolChoice, got %+v", result.ToolChoice)
+	}
+}
+
 // TestToAnthropicResponsesRequest_StructuredOutput_NativeOutputConfig_Anthropic is the
 // negative-case control: Anthropic itself supports output_config.format natively, so no
 // synthetic tool should be added. This is the branch that Azure incorrectly took before
