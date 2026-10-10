@@ -32,6 +32,11 @@
         "a2a_grpc_port": {
           "type": "integer",
           "description": "Advertised (public) port for the Agent Gateway's shared gRPC listener. When a load balancer or port mapping sits in front, the BIFROST_A2A_GRPC_LISTEN_PORT environment variable overrides the local bind port without changing what agent cards advertise. Deploy-time only; gRPC stays disabled while this or a2a_grpc_base_domain is unset."
+        },
+        "a2a_allow_private_push_callbacks": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allows Agent push delivery to loopback and private network destinations. Intended only for controlled development and test environments. Disabled by default; all other outbound SSRF protections are unchanged."
         }
       },
       "required": [
@@ -3202,7 +3207,7 @@
             },
             "write_queue_capacity": {
               "type": "integer",
-              "description": "Buffered queue capacity for pending log writes (default: 10000)",
+              "description": "Buffered queue capacity for pending log writes (default: 10000). This queue is also the buffer while the writer pauses for another node's log store migration, so it bounds how much of that window is absorbed without drops.",
               "minimum": 1,
               "default": 10000
             },
@@ -3665,7 +3670,7 @@
         },
         "object_storage_exclude_fields": {
           "type": "array",
-          "description": "LLM log payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored. MCP logs always offload the full log and keep dashboard/table fields plus a 200-character input preview in the database.",
+          "description": "LLM log payload field DB column names that should NOT be offloaded to object storage and must remain in the database (e.g. output_message, input_history, raw_request, raw_response). Unknown names are ignored. error_details always remains in the database (except on content-hidden logs), since the error type, error code and status code breakdowns query it; any raw provider bodies inside it are offloaded unless error_details is listed here. MCP logs always offload the full log and keep dashboard/table fields plus a 200-character input preview in the database.",
           "items": {
             "type": "string"
           }
@@ -6355,6 +6360,37 @@
       },
       "additionalProperties": false
     },
+    "injected_tools": {
+      "type": "object",
+      "description": "MCP tools Bifrost injects into every chat and responses request served by this provider and executes server side when the model calls them. The client never sees the injected tool call, only the final answer.",
+      "properties": {
+        "web_search": {
+          "$ref": "#/$defs/injected_tool_ref",
+          "description": "MCP tool used as this provider's web search. Replaces any native web search tool or web_search_options the client sends."
+        }
+      },
+      "additionalProperties": false
+    },
+    "injected_tool_ref": {
+      "type": "object",
+      "properties": {
+        "mcp_client_name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name of the configured MCP client that provides the tool"
+        },
+        "tool_name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Tool name as the MCP server exposes it, without the client prefix"
+        }
+      },
+      "required": [
+        "mcp_client_name",
+        "tool_name"
+      ],
+      "additionalProperties": false
+    },
     "concurrency_and_buffer_size": {
       "type": "object",
       "properties": {
@@ -7177,6 +7213,9 @@
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
+        "injected_tools": {
+          "$ref": "#/$defs/injected_tools"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7221,6 +7260,9 @@
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
+        "injected_tools": {
+          "$ref": "#/$defs/injected_tools"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7267,6 +7309,9 @@
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
+        "injected_tools": {
+          "$ref": "#/$defs/injected_tools"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7311,6 +7356,9 @@
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
+        "injected_tools": {
+          "$ref": "#/$defs/injected_tools"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7357,6 +7405,9 @@
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
+        "injected_tools": {
+          "$ref": "#/$defs/injected_tools"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7401,6 +7452,9 @@
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
+        "injected_tools": {
+          "$ref": "#/$defs/injected_tools"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7447,6 +7501,9 @@
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
+        "injected_tools": {
+          "$ref": "#/$defs/injected_tools"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7491,6 +7548,9 @@
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
+        "injected_tools": {
+          "$ref": "#/$defs/injected_tools"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7537,6 +7597,9 @@
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
+        "injected_tools": {
+          "$ref": "#/$defs/injected_tools"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7582,6 +7645,9 @@
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
+        "injected_tools": {
+          "$ref": "#/$defs/injected_tools"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7624,6 +7690,9 @@
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
         },
+        "injected_tools": {
+          "$ref": "#/$defs/injected_tools"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7665,6 +7734,9 @@
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
+        "injected_tools": {
+          "$ref": "#/$defs/injected_tools"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7710,6 +7782,9 @@
         "ignore_provider_cost": {
           "type": "boolean",
           "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
+        "injected_tools": {
+          "$ref": "#/$defs/injected_tools"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"

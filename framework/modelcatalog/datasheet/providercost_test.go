@@ -161,3 +161,26 @@ func TestCalculateCost_IgnoreProviderCostUnpricedModelKeepsRoutingCost(t *testin
 	}
 	assert.InDelta(t, 200*0.00000002, s.CalculateCost(resp, nil), 1e-12)
 }
+
+func TestGetBasePricing_FallsBackToLowercaseModel(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("deepseek-v4.1-flash", "azure", "chat"): chatPricing(0.0000003, 0.0000012),
+	})
+	resp := makeChatResponse(schemas.Azure, "DeepSeek-V4.1-Flash", &schemas.BifrostLLMUsage{
+		PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500,
+	})
+	// 1000*0.0000003 + 500*0.0000012
+	assert.InDelta(t, 0.0009, s.CalculateCost(resp, nil), 1e-12)
+}
+
+func TestGetBasePricing_ExactCaseWinsOverLowercase(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("deepseek-v4.1-flash", "azure", "chat"): chatPricing(0.0000003, 0.0000012),
+		makeKey("DeepSeek-V4.1-Flash", "azure", "chat"): chatPricing(0.000001, 0.000002),
+	})
+	resp := makeChatResponse(schemas.Azure, "DeepSeek-V4.1-Flash", &schemas.BifrostLLMUsage{
+		PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500,
+	})
+	// 1000*0.000001 + 500*0.000002
+	assert.InDelta(t, 0.002, s.CalculateCost(resp, nil), 1e-12)
+}

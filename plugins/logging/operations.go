@@ -388,6 +388,7 @@ func (p *LoggerPlugin) makePostWriteCallback(enrichFn func(*logstore.Log)) func(
 // applyStreamingOutputToEntry applies accumulated streaming data to a log entry.
 // shouldStoreRaw gates whether raw request/response bytes are written to the entry.
 func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamResponse *streaming.ProcessedStreamResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
+	defer applyRefusalLogOutcome(entry)
 	if streamResponse.Data == nil {
 		return
 	}
@@ -569,6 +570,7 @@ func isPassthroughErrorResponse(result *schemas.BifrostResponse) bool {
 // applyNonStreamingOutputToEntry applies non-streaming response data to a log entry.
 // shouldStoreRaw gates whether raw request/response bytes are written to the entry.
 func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
+	defer applyRefusalLogOutcome(entry)
 	if result == nil {
 		return
 	}
@@ -731,6 +733,7 @@ func nonStreamingToolCalls(result *schemas.BifrostResponse) []schemas.ChatAssist
 }
 
 func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
+	defer applyRefusalLogOutcome(entry)
 	if result == nil || result.ResponsesResponse == nil {
 		return
 	}
@@ -2289,5 +2292,23 @@ func pricingScopesForLog(logEntry *logstore.Log) modelcatalog.PricingLookupScope
 		// schedule reprices against the wall clock and the same row yields a
 		// different cost on every run.
 		BilledAt: logEntry.Timestamp,
+	}
+}
+
+// applyRefusalLogOutcome exposes explicit provider refusals as log errors without changing the inference response or retry policy.
+func applyRefusalLogOutcome(entry *logstore.Log) {
+	if entry == nil || entry.StopReason == nil || entry.ErrorDetailsParsed != nil || entry.Status == logStatusCancelled {
+		return
+	}
+	switch *entry.StopReason {
+	case "refusal", "content_filter", "safety":
+		entry.Status = logStatusError
+		entry.ErrorDetailsParsed = &schemas.BifrostError{
+			Error: &schemas.ErrorField{
+				Type:    schemas.Ptr("model_refusal"),
+				Code:    schemas.Ptr(*entry.StopReason),
+				Message: "The provider refused or safety-filtered this response (stop reason: " + *entry.StopReason + ").",
+			},
+		}
 	}
 }

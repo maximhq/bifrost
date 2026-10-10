@@ -74,6 +74,48 @@ The cases are skipped unless `azureStreamPreambleFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Fixed-length response truncation
+
+Folder 196 pins Content-Length validation through both native and OpenAI SDK chat streaming
+routes. The local fixture sends valid SSE with `finish_reason: "stop"`, declares 100 extra
+bytes, then closes without a `Connection: close` header. The gateway must emit a structured
+`unexpected EOF` error. A control case with the exact body length must complete normally.
+The connection-disposal regression is covered by the Go transport tests. These cases make
+no live provider calls and are skipped unless `providerErrorFixture=1`.
+
+Run from the repository root. Check that ports 8790 and 8791 are free before starting:
+
+```bash
+lsof -nP -iTCP:8790 -iTCP:8791 -sTCP:LISTEN
+```
+
+Start the fixture in one terminal:
+
+```bash
+node tests/e2e/api/runners/provider-error-fixture.mjs
+```
+
+Prepare a fresh isolated profile and start the gateway in another terminal:
+
+```bash
+mkdir -p tmp
+TASK_CONTENT_LENGTH_APP_DIR=$(mktemp -d "$PWD/tmp/content-length-truncation.XXXXXX")
+cp tests/e2e/api/provider_config/provider-error-fixture.config.json "$TASK_CONTENT_LENGTH_APP_DIR/config.json"
+printf '%s\n' "$TASK_CONTENT_LENGTH_APP_DIR" > tmp/content-length-truncation-app-dir
+printf '%s\n' '{"values":[{"key":"providerErrorFixture","value":"1","enabled":true}]}' > tmp/content-length-truncation.env.json
+make dev PORT=8790 APP_DIR="$TASK_CONTENT_LENGTH_APP_DIR"
+```
+
+The isolated profile obtains pricing metadata from the fixture and uses dummy provider
+keys. It does not require the backing services used by the normal integration profile.
+After `/health` responds, run the three cases in a third terminal:
+
+```bash
+make run-provider-harness-test PROVIDER=openai FEATURE="content-length truncation" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
+```
+
+Stop the fixture and isolated gateway with Ctrl+C after testing.
+
 ## Provider 5xx failover and 429 retry-hint propagation
 
 These deterministic cases use a local HTTP fixture and an isolated gateway. They make no live
@@ -212,7 +254,7 @@ Stop the fixture and isolated gateway with Ctrl+C after testing.
 
 ## Native Bedrock Converse outputConfig retention
 
-Folder 183 uses a separate local TLS fixture to capture the gateway's outbound Converse and
+Folder 198 uses a separate local TLS fixture to capture the gateway's outbound Converse and
 ConverseStream bodies. It checks that top-level `outputConfig`, the schema string, and nested
 member order survive with extra-parameter passthrough disabled. An absent-field control and an
 invalid `textFormat.type` rejection detect dropped or synthesized configuration. These are

@@ -810,6 +810,8 @@ Each attempt is pinned independently, so an unpinned fallback later in the chain
 
 A pin stays with its provider when [session affinity](/providers/session-affinity) reorders the chain. A session that moves the primary to another provider carries the target's pin onto that provider's fallback entry, and a fallback the session promotes brings its own pin to the primary attempt.
 
+A target's `key_id` outranks the caller's own key pins: when a rule pins the key, `x-bf-api-key-id` and `x-bf-api-key` do not apply to the primary attempt, and a caller's pin never moves a fallback the rule pinned. A caller's [direct key](/providers/request-options#direct-api-key) outranks both, since it bypasses the key pool: the attempt on the first provider uses the caller's key, not the pinned one. Fallbacks run on their configured keys, their own pins included.
+
 ### Time to First Token (TTFT) Cutoff
 
 A provider can accept a streaming request and then stall before it sends any output. Set `ttft_timeout_ms` on a rule to cap that wait. When the rule matches a streaming request, each attempt that still has a fallback after it gets this deadline. If an attempt has not produced its first token in time, Bifrost closes its connection and moves to the next fallback. The client never sees the slow attempt: nothing is streamed to it until the first token arrives.

@@ -1,602 +1,763 @@
-import { randomUUID } from 'node:crypto'
-import { expect, test } from '../../core/fixtures/base.fixture'
-import { createRoutingRuleData } from './routing-rules.data'
+import { randomUUID } from "node:crypto";
+import { expect, test } from "../../core/fixtures/base.fixture";
+import { createRoutingRuleData } from "./routing-rules.data";
 
 // Track created rules for cleanup
-const createdRules: string[] = []
+const createdRules: string[] = [];
 
-test.describe('Routing Rules', () => {
+test.describe("Routing Rules", () => {
   test.beforeEach(async ({ routingRulesPage }) => {
-    await routingRulesPage.goto()
-  })
+    await routingRulesPage.goto();
+  });
 
   test.afterEach(async ({ routingRulesPage }) => {
-    await routingRulesPage.cancelRule()
+    await routingRulesPage.cancelRule();
     // Clean up any rules created during tests
     for (const ruleName of [...createdRules]) {
       try {
-        const exists = await routingRulesPage.ruleExists(ruleName)
+        const exists = await routingRulesPage.ruleExists(ruleName);
         if (exists) {
-          await routingRulesPage.deleteRoutingRule(ruleName)
+          await routingRulesPage.deleteRoutingRule(ruleName);
         }
       } catch {
         // Ignore cleanup errors
       }
     }
-    createdRules.length = 0
-  })
+    createdRules.length = 0;
+  });
 
-  test.describe('Routing Rule Creation', () => {
-    test('should display create routing rule button', async ({ routingRulesPage }) => {
-      await expect(routingRulesPage.createBtn).toBeVisible()
-    })
+  test.describe("Routing Rule Creation", () => {
+    test("should display create routing rule button", async ({
+      routingRulesPage,
+    }) => {
+      await expect(routingRulesPage.createBtn).toBeVisible();
+    });
 
-    test('should open routing rule creation sheet', async ({ routingRulesPage }) => {
-      await routingRulesPage.createBtn.click()
+    test("should open routing rule creation sheet", async ({
+      routingRulesPage,
+    }) => {
+      await routingRulesPage.createBtn.click();
 
-      await expect(routingRulesPage.sheet).toBeVisible({ timeout: 5000 })
-      await expect(routingRulesPage.nameInput).toBeVisible()
-    })
+      await expect(routingRulesPage.sheet).toBeVisible({ timeout: 5000 });
+      await expect(routingRulesPage.nameInput).toBeVisible();
+    });
 
-    test('should create a basic routing rule', async ({ routingRulesPage }) => {
+    test("should create a basic routing rule", async ({ routingRulesPage }) => {
       // Note: CEL expression is auto-generated from the visual Rule Builder
       // An empty builder means the rule applies to all requests
       const ruleData = createRoutingRuleData({
         name: `Basic Rule ${Date.now()}`,
-      })
-      createdRules.push(ruleData.name)
+      });
+      createdRules.push(ruleData.name);
 
-      await routingRulesPage.createRoutingRule(ruleData)
+      await routingRulesPage.createRoutingRule(ruleData);
 
-      const exists = await routingRulesPage.ruleExists(ruleData.name)
-      expect(exists).toBe(true)
-    })
+      const exists = await routingRulesPage.ruleExists(ruleData.name);
+      expect(exists).toBe(true);
+    });
 
-    test('should create routing rule with description', async ({ routingRulesPage }) => {
+    test("should create routing rule with description", async ({
+      routingRulesPage,
+    }) => {
       const ruleData = createRoutingRuleData({
         name: `Described Rule ${Date.now()}`,
-        description: 'A rule with a detailed description for testing',
-      })
-      createdRules.push(ruleData.name)
+        description: "A rule with a detailed description for testing",
+      });
+      createdRules.push(ruleData.name);
 
-      await routingRulesPage.createRoutingRule(ruleData)
+      await routingRulesPage.createRoutingRule(ruleData);
 
-      const exists = await routingRulesPage.ruleExists(ruleData.name)
-      expect(exists).toBe(true)
-    })
+      const exists = await routingRulesPage.ruleExists(ruleData.name);
+      expect(exists).toBe(true);
+    });
 
-    test('should create disabled routing rule', async ({ routingRulesPage }) => {
+    test("should create disabled routing rule", async ({
+      routingRulesPage,
+    }) => {
       const ruleData = createRoutingRuleData({
         name: `Disabled Rule ${Date.now()}`,
         enabled: false,
-      })
-      createdRules.push(ruleData.name)
+      });
+      createdRules.push(ruleData.name);
 
-      await routingRulesPage.createRoutingRule(ruleData)
+      await routingRulesPage.createRoutingRule(ruleData);
 
-      const exists = await routingRulesPage.ruleExists(ruleData.name)
-      expect(exists).toBe(true)
-    })
+      const exists = await routingRulesPage.ruleExists(ruleData.name);
+      expect(exists).toBe(true);
+    });
 
-    test('should cancel routing rule creation', async ({ routingRulesPage }) => {
-      await routingRulesPage.createBtn.click()
-      await expect(routingRulesPage.sheet).toBeVisible()
+    test("should cancel routing rule creation", async ({
+      routingRulesPage,
+    }) => {
+      await routingRulesPage.createBtn.click();
+      await expect(routingRulesPage.sheet).toBeVisible();
 
-      const testName = `Cancelled Rule ${Date.now()}`
-      await routingRulesPage.nameInput.fill(testName)
+      const testName = `Cancelled Rule ${Date.now()}`;
+      await routingRulesPage.nameInput.fill(testName);
 
-      await routingRulesPage.cancelRule()
+      await routingRulesPage.cancelRule();
 
-      const exists = await routingRulesPage.ruleExists(testName)
-      expect(exists).toBe(false)
-    })
-  })
+      const exists = await routingRulesPage.ruleExists(testName);
+      expect(exists).toBe(false);
+    });
+  });
 
-  test.describe('Routing Rule Management', () => {
-    test('should edit routing rule', async ({ routingRulesPage }) => {
+  test.describe("Routing Rule Management", () => {
+    test("should edit routing rule", async ({ routingRulesPage }) => {
       // Create a rule first
       const ruleData = createRoutingRuleData({
         name: `Edit Test Rule ${Date.now()}`,
-      })
-      createdRules.push(ruleData.name)
+      });
+      createdRules.push(ruleData.name);
 
-      await routingRulesPage.createRoutingRule(ruleData)
+      await routingRulesPage.createRoutingRule(ruleData);
 
       // Edit it - change description
       await routingRulesPage.editRoutingRule(ruleData.name, {
-        description: 'Updated description',
-      })
+        description: "Updated description",
+      });
 
       // Verify description was saved and displayed in table
-      const description = await routingRulesPage.getRuleDescription(ruleData.name)
-      expect(description).toContain('Updated description')
-    })
+      const description = await routingRulesPage.getRuleDescription(
+        ruleData.name,
+      );
+      expect(description).toContain("Updated description");
+    });
 
-    test('should delete routing rule', async ({ routingRulesPage }) => {
+    test("should delete routing rule", async ({ routingRulesPage }) => {
       // Create a rule first
       const ruleData = createRoutingRuleData({
         name: `Delete Test Rule ${Date.now()}`,
-      })
+      });
       // Don't add to createdRules since we're testing delete
 
-      await routingRulesPage.createRoutingRule(ruleData)
+      await routingRulesPage.createRoutingRule(ruleData);
 
       // Verify it exists
-      let exists = await routingRulesPage.ruleExists(ruleData.name)
-      expect(exists).toBe(true)
+      let exists = await routingRulesPage.ruleExists(ruleData.name);
+      expect(exists).toBe(true);
 
       // Delete it
-      await routingRulesPage.deleteRoutingRule(ruleData.name)
+      await routingRulesPage.deleteRoutingRule(ruleData.name);
 
       // Verify it's gone
-      exists = await routingRulesPage.ruleExists(ruleData.name)
-      expect(exists).toBe(false)
-    })
+      exists = await routingRulesPage.ruleExists(ruleData.name);
+      expect(exists).toBe(false);
+    });
 
-    test('should toggle rule enabled state', async ({ routingRulesPage }) => {
+    test("should toggle rule enabled state", async ({ routingRulesPage }) => {
       // Create a rule first
       const ruleData = createRoutingRuleData({
         name: `Toggle Test Rule ${Date.now()}`,
         enabled: true,
-      })
-      createdRules.push(ruleData.name)
+      });
+      createdRules.push(ruleData.name);
 
-      await routingRulesPage.createRoutingRule(ruleData)
+      await routingRulesPage.createRoutingRule(ruleData);
 
       // Toggle it
-      await routingRulesPage.toggleRuleEnabled(ruleData.name)
+      await routingRulesPage.toggleRuleEnabled(ruleData.name);
 
       // Verify it still exists
-      const exists = await routingRulesPage.ruleExists(ruleData.name)
-      expect(exists).toBe(true)
-    })
-  })
+      const exists = await routingRulesPage.ruleExists(ruleData.name);
+      expect(exists).toBe(true);
+    });
+  });
 
-  test.describe('Form Validation', () => {
-    test('should require name for routing rule', async ({ routingRulesPage }) => {
-      await routingRulesPage.createBtn.click()
-      await expect(routingRulesPage.sheet).toBeVisible()
+  test.describe("Form Validation", () => {
+    test("should require name for routing rule", async ({
+      routingRulesPage,
+    }) => {
+      await routingRulesPage.createBtn.click();
+      await expect(routingRulesPage.sheet).toBeVisible();
 
       // Try to save without name
-      await routingRulesPage.saveBtn.click()
+      await routingRulesPage.saveBtn.click();
 
       // Form should still be visible (not submitted)
-      await expect(routingRulesPage.sheet).toBeVisible()
+      await expect(routingRulesPage.sheet).toBeVisible();
 
-      await routingRulesPage.cancelRule()
-    })
-  })
+      await routingRulesPage.cancelRule();
+    });
+  });
 
-  test.describe('Table Display', () => {
-    test('should display routing rules table', async ({ routingRulesPage }) => {
+  test.describe("Table Display", () => {
+    test("should display routing rules table", async ({ routingRulesPage }) => {
       // With 0 rules the view shows empty state (no table); with 1+ rules it shows the table
-      const count = await routingRulesPage.getRuleCount()
+      const count = await routingRulesPage.getRuleCount();
       if (count === 0) {
-        await expect(routingRulesPage.emptyState).toBeVisible()
-        await expect(routingRulesPage.table).not.toBeVisible()
+        await expect(routingRulesPage.emptyState).toBeVisible();
+        await expect(routingRulesPage.table).not.toBeVisible();
       } else {
-        await expect(routingRulesPage.table).toBeVisible()
-        await expect(routingRulesPage.emptyState).not.toBeVisible()
+        await expect(routingRulesPage.table).toBeVisible();
+        await expect(routingRulesPage.emptyState).not.toBeVisible();
       }
-    })
+    });
 
-    test('should show empty state when no rules', async ({ routingRulesPage }) => {
-      const count = await routingRulesPage.getRuleCount()
+    test("should show empty state when no rules", async ({
+      routingRulesPage,
+    }) => {
+      const count = await routingRulesPage.getRuleCount();
       if (count === 0) {
-        await expect(routingRulesPage.emptyState).toBeVisible()
+        await expect(routingRulesPage.emptyState).toBeVisible();
       }
       // When rules exist, getRuleCount > 0 is already implied by the condition
-    })
-  })
+    });
+  });
 
-  test.describe('Advanced Rule Features', () => {
-    test('should create rule with provider filter', async ({ routingRulesPage }) => {
+  test.describe("Advanced Rule Features", () => {
+    test("should create rule with provider filter", async ({
+      routingRulesPage,
+    }) => {
       const ruleData = createRoutingRuleData({
         name: `Provider Filter Rule ${Date.now()}`,
-        provider: 'openai', // Set target provider
-      })
-      createdRules.push(ruleData.name)
+        provider: "openai", // Set target provider
+      });
+      createdRules.push(ruleData.name);
 
-      await routingRulesPage.createRoutingRule(ruleData)
+      await routingRulesPage.createRoutingRule(ruleData);
 
-      const exists = await routingRulesPage.ruleExists(ruleData.name)
-      expect(exists).toBe(true)
-    })
+      const exists = await routingRulesPage.ruleExists(ruleData.name);
+      expect(exists).toBe(true);
+    });
 
-    test('should create rule with model filter', async ({ routingRulesPage }) => {
+    test("should create rule with model filter", async ({
+      routingRulesPage,
+    }) => {
       const ruleData = createRoutingRuleData({
         name: `Model Filter Rule ${Date.now()}`,
-        provider: 'openai',
-        model: 'gpt-4',
-      })
-      createdRules.push(ruleData.name)
+        provider: "openai",
+        model: "gpt-4",
+      });
+      createdRules.push(ruleData.name);
 
-      await routingRulesPage.createRoutingRule(ruleData)
+      await routingRulesPage.createRoutingRule(ruleData);
 
-      const exists = await routingRulesPage.ruleExists(ruleData.name)
-      expect(exists).toBe(true)
-    })
+      const exists = await routingRulesPage.ruleExists(ruleData.name);
+      expect(exists).toBe(true);
+    });
 
-    test('should create rule with a fallback', async ({ routingRulesPage }) => {
+    test("should create rule with a fallback", async ({ routingRulesPage }) => {
       const ruleData = createRoutingRuleData({
         name: `Fallback Rule ${Date.now()}`,
         enabled: false,
-        provider: 'openai',
-        fallbacks: [{ provider: 'anthropic' }],
-      })
-      createdRules.push(ruleData.name)
+        provider: "openai",
+        fallbacks: [{ provider: "anthropic" }],
+      });
+      createdRules.push(ruleData.name);
 
-      await routingRulesPage.createRoutingRule(ruleData)
+      await routingRulesPage.createRoutingRule(ruleData);
 
-      expect(await routingRulesPage.ruleExists(ruleData.name)).toBe(true)
+      expect(await routingRulesPage.ruleExists(ruleData.name)).toBe(true);
 
       // The fallback must survive the round-trip through the API's legacy string form.
-      await routingRulesPage.openEditSheet(ruleData.name)
-      expect(await routingRulesPage.getFallbackProvider(0)).toMatch(/anthropic/i)
-      await routingRulesPage.cancelRule()
-    })
+      await routingRulesPage.openEditSheet(ruleData.name);
+      expect(await routingRulesPage.getFallbackProvider(0)).toMatch(
+        /anthropic/i,
+      );
+      await routingRulesPage.cancelRule();
+    });
 
-    test('should pin and clear a provider key on a fallback', async ({ routingRulesPage }) => {
+    test("should pin and clear a provider key on a fallback", async ({
+      routingRulesPage,
+    }) => {
       const ruleData = createRoutingRuleData({
         name: `Pinned Fallback Rule ${Date.now()}`,
         enabled: false,
-        provider: 'openai',
-      })
-      createdRules.push(ruleData.name)
+        provider: "openai",
+      });
+      createdRules.push(ruleData.name);
 
-      await routingRulesPage.createRoutingRule(ruleData)
-      await routingRulesPage.openEditSheet(ruleData.name)
+      await routingRulesPage.createRoutingRule(ruleData);
+      await routingRulesPage.openEditSheet(ruleData.name);
 
-      const index = await routingRulesPage.addFallbackProvider('openai')
-      const pinned = await routingRulesPage.pinFallbackKey(index)
+      const index = await routingRulesPage.addFallbackProvider("openai");
+      const pinned = await routingRulesPage.pinFallbackKey(index);
       // The key select only renders once the chosen provider has keys configured.
-      test.skip(!pinned, 'no provider keys configured in this environment')
+      test.skip(!pinned, "no provider keys configured in this environment");
 
-      const selectedKey = await routingRulesPage.getPinnedFallbackKey(index)
-      expect(selectedKey).toBeTruthy()
-      expect(selectedKey).not.toMatch(/Select key/i)
+      const selectedKey = await routingRulesPage.getPinnedFallbackKey(index);
+      expect(selectedKey).toBeTruthy();
+      expect(selectedKey).not.toMatch(/Select key/i);
 
-      await routingRulesPage.saveBtn.click()
+      await routingRulesPage.saveBtn.click();
       // The rule already exists, so waiting for its row alone can pass while the sheet is
       // still closing, and the reopen below would then act on the sheet that is on its way out.
-      await expect(routingRulesPage.sheet).not.toBeVisible()
-      await routingRulesPage.waitForRuleToAppear(ruleData.name)
+      await expect(routingRulesPage.sheet).not.toBeVisible();
+      await routingRulesPage.waitForRuleToAppear(ruleData.name);
 
       // Reopening must preselect the same key rather than falling back to the placeholder.
-      await routingRulesPage.openEditSheet(ruleData.name)
-      expect(await routingRulesPage.getPinnedFallbackKey(index)).toBe(selectedKey)
+      await routingRulesPage.openEditSheet(ruleData.name);
+      expect(await routingRulesPage.getPinnedFallbackKey(index)).toBe(
+        selectedKey,
+      );
 
       // Clearing returns the fallback to load-balanced key selection.
-      await routingRulesPage.clearFallbackKey(index)
-      expect(await routingRulesPage.getPinnedFallbackKey(index)).toMatch(/Select key/i)
-      await routingRulesPage.saveBtn.click()
-      await expect(routingRulesPage.sheet).not.toBeVisible()
-      await routingRulesPage.openEditSheet(ruleData.name)
-      expect(await routingRulesPage.getPinnedFallbackKey(index)).toMatch(/Select key/i)
-      expect(await routingRulesPage.getFallbackProvider(index)).toMatch(/openai/i)
-      await routingRulesPage.cancelRule()
-    })
+      await routingRulesPage.clearFallbackKey(index);
+      expect(await routingRulesPage.getPinnedFallbackKey(index)).toMatch(
+        /Select key/i,
+      );
+      await routingRulesPage.saveBtn.click();
+      await expect(routingRulesPage.sheet).not.toBeVisible();
+      await routingRulesPage.openEditSheet(ruleData.name);
+      expect(await routingRulesPage.getPinnedFallbackKey(index)).toMatch(
+        /Select key/i,
+      );
+      expect(await routingRulesPage.getFallbackProvider(index)).toMatch(
+        /openai/i,
+      );
+      await routingRulesPage.cancelRule();
+    });
 
-    test('should set, edit and clear the TTFT cutoff', async ({ routingRulesPage }) => {
+    test("should set, edit and clear the TTFT cutoff", async ({
+      routingRulesPage,
+    }) => {
       const ruleData = createRoutingRuleData({
         name: `TTFT Rule ${Date.now()}`,
         enabled: false,
-        provider: 'openai',
-        fallbacks: [{ provider: 'anthropic' }],
+        provider: "openai",
+        fallbacks: [{ provider: "anthropic" }],
         ttftTimeoutMs: 1500,
-      })
-      createdRules.push(ruleData.name)
+      });
+      createdRules.push(ruleData.name);
 
-      await routingRulesPage.createRoutingRule(ruleData)
-      await routingRulesPage.openEditSheet(ruleData.name)
-      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue('1500')
-      await routingRulesPage.cancelRule()
+      await routingRulesPage.createRoutingRule(ruleData);
+      await routingRulesPage.openEditSheet(ruleData.name);
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue("1500");
+      await routingRulesPage.cancelRule();
 
-      await routingRulesPage.editRoutingRule(ruleData.name, { ttftTimeoutMs: 800 })
-      await routingRulesPage.openEditSheet(ruleData.name)
-      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue('800')
-      await routingRulesPage.cancelRule()
+      await routingRulesPage.editRoutingRule(ruleData.name, {
+        ttftTimeoutMs: 800,
+      });
+      await routingRulesPage.openEditSheet(ruleData.name);
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue("800");
+      await routingRulesPage.cancelRule();
 
       // Clearing the input must clear the stored value, not keep the old one.
-      await routingRulesPage.editRoutingRule(ruleData.name, { ttftTimeoutMs: null })
-      await routingRulesPage.openEditSheet(ruleData.name)
-      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue('')
-      await routingRulesPage.cancelRule()
-    })
+      await routingRulesPage.editRoutingRule(ruleData.name, {
+        ttftTimeoutMs: null,
+      });
+      await routingRulesPage.openEditSheet(ruleData.name);
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue("");
+      await routingRulesPage.cancelRule();
+    });
 
-    test('should show a mixed TTFT state and keep per-target deadlines on an unrelated save', async ({ routingRulesPage, request }) => {
+    test("should show a mixed TTFT state and keep per-target deadlines on an unrelated save", async ({
+      routingRulesPage,
+      request,
+    }) => {
       // The form writes one value to every target, so a mixed rule can only come from the API.
-      const name = `TTFT Mixed ${Date.now()}-${randomUUID().slice(0, 8)}`
-      const created = await request.post('/api/routing/rules', {
+      const name = `TTFT Mixed ${Date.now()}-${randomUUID().slice(0, 8)}`;
+      const created = await request.post("/api/routing/rules", {
         data: {
           name,
-          description: '',
-          cel_expression: '',
+          description: "",
+          cel_expression: "",
           targets: [
-            { provider: 'openai', model: 'gpt-4o', weight: 0.5, ttft_timeout_ms: 1500 },
-            { provider: 'anthropic', model: 'claude-sonnet-4-5', weight: 0.5 },
+            {
+              provider: "openai",
+              model: "gpt-4o",
+              weight: 0.5,
+              ttft_timeout_ms: 1500,
+            },
+            { provider: "anthropic", model: "claude-sonnet-4-5", weight: 0.5 },
           ],
           fallbacks: [],
-          scope: 'global',
+          scope: "global",
           priority: 0,
           enabled: false,
         },
-      })
-      expect(created.ok(), await created.text()).toBeTruthy()
-      const ruleId = (await created.json()).rule.id as string
-      createdRules.push(name)
+      });
+      expect(created.ok(), await created.text()).toBeTruthy();
+      const ruleId = (await created.json()).rule.id as string;
+      createdRules.push(name);
 
-      await routingRulesPage.goto()
-      await routingRulesPage.openEditSheet(name)
-      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue('')
-      await expect(routingRulesPage.ttftTimeoutInput).toHaveAttribute('placeholder', 'Mixed')
+      await routingRulesPage.goto();
+      await routingRulesPage.openEditSheet(name);
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue("");
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveAttribute(
+        "placeholder",
+        "Mixed",
+      );
       // No fallbacks and an active deadline on one target: the warning must still show.
-      await expect(routingRulesPage.sheet.getByTestId('routing-rule-ttft-timeout-no-fallback-warning')).toBeVisible()
+      await expect(
+        routingRulesPage.sheet.getByTestId(
+          "routing-rule-ttft-timeout-no-fallback-warning",
+        ),
+      ).toBeVisible();
 
       // An unrelated save must not touch the per-target deadlines.
-      await routingRulesPage.saveBtn.click()
-      await expect(routingRulesPage.sheet).not.toBeVisible()
-      const after = await request.get(`/api/routing/rules/${ruleId}`)
-      expect(after.ok(), await after.text()).toBeTruthy()
-      const targets = (await after.json()).rule.targets as { provider: string; ttft_timeout_ms?: number | null }[]
-      expect(targets.find((t) => t.provider === 'openai')?.ttft_timeout_ms).toBe(1500)
-      expect(targets.find((t) => t.provider === 'anthropic')?.ttft_timeout_ms ?? null).toBeNull()
-    })
+      await routingRulesPage.saveBtn.click();
+      await expect(routingRulesPage.sheet).not.toBeVisible();
+      const after = await request.get(`/api/routing/rules/${ruleId}`);
+      expect(after.ok(), await after.text()).toBeTruthy();
+      const targets = (await after.json()).rule.targets as {
+        provider: string;
+        ttft_timeout_ms?: number | null;
+      }[];
+      expect(
+        targets.find((t) => t.provider === "openai")?.ttft_timeout_ms,
+      ).toBe(1500);
+      expect(
+        targets.find((t) => t.provider === "anthropic")?.ttft_timeout_ms ??
+          null,
+      ).toBeNull();
+    });
 
-    test('should warn about a TTFT cutoff without fallbacks and reject out-of-range values', async ({ routingRulesPage }) => {
-      await routingRulesPage.createBtn.click()
-      await expect(routingRulesPage.sheet).toBeVisible()
-      await routingRulesPage.nameInput.fill(`TTFT Invalid ${Date.now()}`)
+    test("should warn about a TTFT cutoff without fallbacks and reject out-of-range values", async ({
+      routingRulesPage,
+    }) => {
+      await routingRulesPage.createBtn.click();
+      await expect(routingRulesPage.sheet).toBeVisible();
+      await routingRulesPage.nameInput.fill(`TTFT Invalid ${Date.now()}`);
 
-      const warning = routingRulesPage.sheet.getByTestId('routing-rule-ttft-timeout-no-fallback-warning')
-      const error = routingRulesPage.sheet.getByTestId('routing-rule-ttft-timeout-error')
+      const warning = routingRulesPage.sheet.getByTestId(
+        "routing-rule-ttft-timeout-no-fallback-warning",
+      );
+      const error = routingRulesPage.sheet.getByTestId(
+        "routing-rule-ttft-timeout-error",
+      );
 
-      await routingRulesPage.fillTTFTTimeout(1500)
-      await expect(warning).toBeVisible()
+      await routingRulesPage.fillTTFTTimeout(1500);
+      await expect(warning).toBeVisible();
 
-      await routingRulesPage.fillTTFTTimeout(0)
+      await routingRulesPage.fillTTFTTimeout(0);
       // An invalid value is not a cutoff, so it must not warn about one.
-      await expect(warning).toBeHidden()
-      await routingRulesPage.saveBtn.click()
-      await expect(error).toBeVisible()
-      await expect(routingRulesPage.sheet).toBeVisible()
+      await expect(warning).toBeHidden();
+      await routingRulesPage.saveBtn.click();
+      await expect(error).toBeVisible();
+      await expect(routingRulesPage.sheet).toBeVisible();
       // Screen readers must get the error from the input itself.
-      await expect(routingRulesPage.ttftTimeoutInput).toHaveAttribute('aria-invalid', 'true')
-      const errorId = await error.getAttribute('id')
-      expect(errorId, 'the error needs an id for aria-describedby').toBeTruthy()
-      await expect(routingRulesPage.ttftTimeoutInput).toHaveAttribute('aria-describedby', errorId!)
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveAttribute(
+        "aria-invalid",
+        "true",
+      );
+      const errorId = await error.getAttribute("id");
+      expect(
+        errorId,
+        "the error needs an id for aria-describedby",
+      ).toBeTruthy();
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveAttribute(
+        "aria-describedby",
+        errorId!,
+      );
 
-      await routingRulesPage.fillTTFTTimeout(300001)
-      await routingRulesPage.saveBtn.click()
-      await expect(error).toBeVisible()
-      await expect(routingRulesPage.sheet).toBeVisible()
+      await routingRulesPage.fillTTFTTimeout(300001);
+      await routingRulesPage.saveBtn.click();
+      await expect(error).toBeVisible();
+      await expect(routingRulesPage.sheet).toBeVisible();
 
       // Non-numeric text must be rejected, not silently read as "off".
-      await routingRulesPage.ttftTimeoutInput.fill('abc')
-      await routingRulesPage.saveBtn.click()
-      await expect(error).toBeVisible()
-      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue('abc')
-      await expect(routingRulesPage.sheet).toBeVisible()
-    })
+      await routingRulesPage.ttftTimeoutInput.fill("abc");
+      await routingRulesPage.saveBtn.click();
+      await expect(error).toBeVisible();
+      await expect(routingRulesPage.ttftTimeoutInput).toHaveValue("abc");
+      await expect(routingRulesPage.sheet).toBeVisible();
+    });
 
-    test('should reorder rules by changing priority', async ({ routingRulesPage }) => {
+    test("should reorder rules by changing priority", async ({
+      routingRulesPage,
+    }) => {
       // Create two rules with unique priorities (avoid fixed 500/600 so parallel workers don't collide)
-      const rule1 = createRoutingRuleData({ name: `Reorder Test Rule 1 ${Date.now()}` })
-      const rule2 = createRoutingRuleData({ name: `Reorder Test Rule 2 ${Date.now()}` })
-      createdRules.push(rule1.name, rule2.name)
+      const rule1 = createRoutingRuleData({
+        name: `Reorder Test Rule 1 ${Date.now()}`,
+      });
+      const rule2 = createRoutingRuleData({
+        name: `Reorder Test Rule 2 ${Date.now()}`,
+      });
+      createdRules.push(rule1.name, rule2.name);
 
-      await routingRulesPage.createRoutingRule(rule1)
-      await routingRulesPage.createRoutingRule(rule2)
+      await routingRulesPage.createRoutingRule(rule1);
+      await routingRulesPage.createRoutingRule(rule2);
 
       // Change first rule's priority (edit to a new value to test reorder)
-      const newPriority = (rule1.priority! + 100) % 901
-      await routingRulesPage.editRoutingRule(rule1.name, { priority: newPriority })
+      const newPriority = (rule1.priority! + 100) % 901;
+      await routingRulesPage.editRoutingRule(rule1.name, {
+        priority: newPriority,
+      });
 
       // Verify priority was saved and displayed
-      const displayedPriority = await routingRulesPage.getRulePriority(rule1.name)
-      expect(displayedPriority).toBe(newPriority)
-    })
+      const displayedPriority = await routingRulesPage.getRulePriority(
+        rule1.name,
+      );
+      expect(displayedPriority).toBe(newPriority);
+    });
 
-    test('should create rule with virtual key scope', async ({ routingRulesPage }) => {
-      await routingRulesPage.createBtn.click()
-      await expect(routingRulesPage.sheet).toBeVisible()
+    test("should create rule with virtual key scope", async ({
+      routingRulesPage,
+    }) => {
+      await routingRulesPage.createBtn.click();
+      await expect(routingRulesPage.sheet).toBeVisible();
 
-      const ruleName = `VK Scope Rule ${Date.now()}`
-      await routingRulesPage.nameInput.fill(ruleName)
+      const ruleName = `VK Scope Rule ${Date.now()}`;
+      await routingRulesPage.nameInput.fill(ruleName);
 
       // Try to set scope to virtual key
-      const scopeSelect = routingRulesPage.sheet.locator('[role="combobox"]').filter({ hasText: /Global|Scope/i }).first()
-      const scopeVisible = await scopeSelect.isVisible().catch(() => false)
+      const scopeSelect = routingRulesPage.sheet
+        .locator('[role="combobox"]')
+        .filter({ hasText: /Global|Scope/i })
+        .first();
+      const scopeVisible = await scopeSelect.isVisible().catch(() => false);
 
       if (scopeVisible) {
         // Scope selection is available
-        await scopeSelect.click()
-        const vkOption = routingRulesPage.page.getByRole('option', { name: /Virtual Key/i })
-        const vkVisible = await vkOption.isVisible().catch(() => false)
+        await scopeSelect.click();
+        const vkOption = routingRulesPage.page.getByRole("option", {
+          name: /Virtual Key/i,
+        });
+        const vkVisible = await vkOption.isVisible().catch(() => false);
 
         if (vkVisible) {
-          await vkOption.click()
+          await vkOption.click();
           // Note: Would need to select a specific VK - for now just verify the option exists
         }
       }
 
       // Cancel since we're just testing the UI
-      await routingRulesPage.cancelRule()
-    })
-  })
+      await routingRulesPage.cancelRule();
+    });
+  });
 
-  test.describe('Rule Builder and CEL Generation', () => {
-    test('should show CEL preview with "No rules defined" when empty', async ({ routingRulesPage }) => {
-      await routingRulesPage.createBtn.click()
-      await expect(routingRulesPage.sheet).toBeVisible()
-      await routingRulesPage.waitForSheetAnimation()
+  test.describe("Rule Builder and CEL Generation", () => {
+    test('should show CEL preview with "No rules defined" when empty', async ({
+      routingRulesPage,
+    }) => {
+      await routingRulesPage.createBtn.click();
+      await expect(routingRulesPage.sheet).toBeVisible();
+      await routingRulesPage.waitForSheetAnimation();
 
       // Wait for rule builder to fully load
-      await routingRulesPage.waitForRuleBuilder()
+      await routingRulesPage.waitForRuleBuilder();
 
       // Get CEL expression - should show no rules message when empty
-      const celExpression = await routingRulesPage.getCelExpression()
-      expect(celExpression).toContain('No rules defined')
+      const celExpression = await routingRulesPage.getCelExpression();
+      expect(celExpression).toContain("No rules defined");
 
-      await routingRulesPage.cancelRule()
-    })
+      await routingRulesPage.cancelRule();
+    });
 
-    test('should add rule condition and update CEL preview', async ({ routingRulesPage }) => {
-      await routingRulesPage.createBtn.click()
-      await expect(routingRulesPage.sheet).toBeVisible()
-      await routingRulesPage.waitForSheetAnimation()
-      await routingRulesPage.waitForRuleBuilder()
+    test("should add rule condition and update CEL preview", async ({
+      routingRulesPage,
+    }) => {
+      await routingRulesPage.createBtn.click();
+      await expect(routingRulesPage.sheet).toBeVisible();
+      await routingRulesPage.waitForSheetAnimation();
+      await routingRulesPage.waitForRuleBuilder();
 
       // Fill required name
-      const ruleName = `CEL Test ${Date.now()}`
-      await routingRulesPage.nameInput.fill(ruleName)
-      createdRules.push(ruleName)
+      const ruleName = `CEL Test ${Date.now()}`;
+      await routingRulesPage.nameInput.fill(ruleName);
+      createdRules.push(ruleName);
 
       // Verify initial CEL is empty/no rules
-      const initialCel = await routingRulesPage.getCelExpression()
-      expect(initialCel).toContain('No rules defined')
+      const initialCel = await routingRulesPage.getCelExpression();
+      expect(initialCel).toContain("No rules defined");
 
       // Add a rule condition
-      await routingRulesPage.clickAddRule()
-
-      // Wait for rule row to appear and CEL to update
-      await routingRulesPage.page.waitForTimeout(500)
+      await routingRulesPage.clickAddRule();
 
       // After adding a rule, CEL should no longer say "No rules defined"
       // The default rule shows model == "" (empty model condition)
-      const celAfterAdd = await routingRulesPage.getCelExpression()
-      expect(celAfterAdd).not.toContain('No rules defined')
-      expect(celAfterAdd).toContain('model') // Default field is Model
+      await expect
+        .poll(() => routingRulesPage.getCelExpression())
+        .toContain("model"); // Default field is Model
+      expect(await routingRulesPage.getCelExpression()).not.toContain(
+        "No rules defined",
+      );
 
-      await routingRulesPage.cancelRule()
-    })
+      await routingRulesPage.cancelRule();
+    });
 
-    test('should switch between AND and OR combinators', async ({ routingRulesPage }) => {
-      await routingRulesPage.createBtn.click()
-      await expect(routingRulesPage.sheet).toBeVisible()
-      await routingRulesPage.waitForSheetAnimation()
-      await routingRulesPage.waitForRuleBuilder()
+    test("should switch between AND and OR combinators", async ({
+      routingRulesPage,
+    }) => {
+      await routingRulesPage.createBtn.click();
+      await expect(routingRulesPage.sheet).toBeVisible();
+      await routingRulesPage.waitForSheetAnimation();
+      await routingRulesPage.waitForRuleBuilder();
 
       // Fill required name
-      const ruleName = `CEL Combinator Test ${Date.now()}`
-      await routingRulesPage.nameInput.fill(ruleName)
-      createdRules.push(ruleName)
+      const ruleName = `CEL Combinator Test ${Date.now()}`;
+      await routingRulesPage.nameInput.fill(ruleName);
+      createdRules.push(ruleName);
 
       // Add two rule conditions to see the combinator in action
-      await routingRulesPage.clickAddRule()
-      await routingRulesPage.clickAddRule()
+      await routingRulesPage.clickAddRule();
+      await routingRulesPage.clickAddRule();
 
-      // Wait for rules to render
-      await routingRulesPage.page.waitForTimeout(500)
-
-      // Get CEL with default AND combinator
-      const celWithAnd = await routingRulesPage.getCelExpression()
       // Default is AND - should have && operator
-      expect(celWithAnd).toContain('&&')
+      await expect
+        .poll(() => routingRulesPage.getCelExpression())
+        .toContain("&&");
 
       // Switch to OR
-      await routingRulesPage.setCombinator('or')
-      await routingRulesPage.page.waitForTimeout(300)
+      await routingRulesPage.setCombinator("or");
 
       // Verify CEL now contains OR logic
-      const celWithOr = await routingRulesPage.getCelExpression()
-      expect(celWithOr).toContain('||')
+      await expect
+        .poll(() => routingRulesPage.getCelExpression())
+        .toContain("||");
 
-      await routingRulesPage.cancelRule()
-    })
+      await routingRulesPage.cancelRule();
+    });
 
-    test('should author conditions as raw CEL and round-trip through edit', async ({ routingRulesPage }) => {
-      const ruleName = `CEL Mode Test ${Date.now()}`
-      const celExpression = 'model == "claude-sonnet-4-6"'
-      createdRules.push(ruleName)
+    test("should author conditions as raw CEL and round-trip through edit", async ({
+      routingRulesPage,
+    }) => {
+      const ruleName = `CEL Mode Test ${Date.now()}`;
+      const celExpression = 'model == "claude-sonnet-4-6"';
+      createdRules.push(ruleName);
 
       // Create a rule using raw-CEL mode instead of the visual builder
-      await routingRulesPage.createBtn.click()
-      await expect(routingRulesPage.sheet).toBeVisible()
-      await routingRulesPage.waitForSheetAnimation()
-      await routingRulesPage.waitForRuleBuilder()
+      await routingRulesPage.createBtn.click();
+      await expect(routingRulesPage.sheet).toBeVisible();
+      await routingRulesPage.waitForSheetAnimation();
+      await routingRulesPage.waitForRuleBuilder();
 
-      await routingRulesPage.nameInput.fill(ruleName)
-      await routingRulesPage.switchToCelMode()
-      await routingRulesPage.fillCelExpression(celExpression)
+      await routingRulesPage.nameInput.fill(ruleName);
+      await routingRulesPage.switchToCelMode();
+      await routingRulesPage.fillCelExpression(celExpression);
 
-      await routingRulesPage.saveBtn.click()
-      await routingRulesPage.waitForSuccessToast()
-      await expect(routingRulesPage.sheet).not.toBeVisible({ timeout: 10000 })
+      await routingRulesPage.saveBtn.click();
+      await routingRulesPage.waitForSuccessToast();
+      await expect(routingRulesPage.sheet).not.toBeVisible({ timeout: 10000 });
 
-      const exists = await routingRulesPage.ruleExists(ruleName)
-      expect(exists).toBe(true)
+      const exists = await routingRulesPage.ruleExists(ruleName);
+      expect(exists).toBe(true);
 
       // Reopen: a CEL-only rule (no visual query) must open in CEL mode with the
       // expression intact, not an empty builder that would silently clear it.
-      await routingRulesPage.openEditSheet(ruleName)
-      expect(await routingRulesPage.isCelMode()).toBe(true)
-      expect(await routingRulesPage.getCelTextareaValue()).toBe(celExpression)
+      await routingRulesPage.openEditSheet(ruleName);
+      expect(await routingRulesPage.isCelMode()).toBe(true);
+      expect(await routingRulesPage.getCelTextareaValue()).toBe(celExpression);
 
       // Saving without touching anything must preserve the CEL expression.
-      await routingRulesPage.saveBtn.click()
-      await routingRulesPage.waitForSuccessToast()
-      await expect(routingRulesPage.sheet).not.toBeVisible({ timeout: 10000 })
+      await routingRulesPage.saveBtn.click();
+      await routingRulesPage.waitForSuccessToast();
+      await expect(routingRulesPage.sheet).not.toBeVisible({ timeout: 10000 });
 
-      await routingRulesPage.openEditSheet(ruleName)
-      expect(await routingRulesPage.getCelTextareaValue()).toBe(celExpression)
-      await routingRulesPage.cancelRule()
-    })
+      await routingRulesPage.openEditSheet(ruleName);
+      expect(await routingRulesPage.getCelTextareaValue()).toBe(celExpression);
+      await routingRulesPage.cancelRule();
+    });
 
-    test('should reject a malformed CEL expression on save', async ({ routingRulesPage }) => {
-      const ruleName = `CEL Invalid Test ${Date.now()}`
+    test("should reject a malformed CEL expression on save", async ({
+      routingRulesPage,
+    }) => {
+      const ruleName = `CEL Invalid Test ${Date.now()}`;
 
-      await routingRulesPage.createBtn.click()
-      await expect(routingRulesPage.sheet).toBeVisible()
-      await routingRulesPage.waitForSheetAnimation()
-      await routingRulesPage.waitForRuleBuilder()
+      await routingRulesPage.createBtn.click();
+      await expect(routingRulesPage.sheet).toBeVisible();
+      await routingRulesPage.waitForSheetAnimation();
+      await routingRulesPage.waitForRuleBuilder();
 
-      await routingRulesPage.nameInput.fill(ruleName)
-      await routingRulesPage.switchToCelMode()
+      await routingRulesPage.nameInput.fill(ruleName);
+      await routingRulesPage.switchToCelMode();
       // Unbalanced parenthesis — rejected by the backend CEL compiler with a 400.
-      await routingRulesPage.fillCelExpression('model == "gpt-4o" && (provider == "openai"')
+      await routingRulesPage.fillCelExpression(
+        'model == "gpt-4o" && (provider == "openai"',
+      );
 
-      await routingRulesPage.saveBtn.click()
+      await routingRulesPage.saveBtn.click();
 
       // The sheet stays open on error; the rule must not be created.
-      await expect(routingRulesPage.sheet).toBeVisible()
+      await expect(routingRulesPage.sheet).toBeVisible();
       // The compile error is surfaced inline beneath the CEL editor, not in a toast.
-      await expect(routingRulesPage.celError).toBeVisible()
-      await expect(routingRulesPage.celError).toContainText(/cel expression/i)
-      await routingRulesPage.cancelRule()
+      await expect(routingRulesPage.celError).toBeVisible();
+      await expect(routingRulesPage.celError).toContainText(/cel expression/i);
+      await routingRulesPage.cancelRule();
 
-      const exists = await routingRulesPage.ruleExists(ruleName)
-      expect(exists).toBe(false)
-    })
+      const exists = await routingRulesPage.ruleExists(ruleName);
+      expect(exists).toBe(false);
+    });
 
-    test('should save rule with conditions successfully', async ({ routingRulesPage }) => {
-      const ruleName = `CEL Save Test ${Date.now()}`
-      createdRules.push(ruleName)
+    test("should save rule with conditions successfully", async ({
+      routingRulesPage,
+    }) => {
+      const ruleName = `CEL Save Test ${Date.now()}`;
+      createdRules.push(ruleName);
 
-      await routingRulesPage.createBtn.click()
-      await expect(routingRulesPage.sheet).toBeVisible()
-      await routingRulesPage.waitForSheetAnimation()
-      await routingRulesPage.waitForRuleBuilder()
+      await routingRulesPage.createBtn.click();
+      await expect(routingRulesPage.sheet).toBeVisible();
+      await routingRulesPage.waitForSheetAnimation();
+      await routingRulesPage.waitForRuleBuilder();
 
       // Fill name
-      await routingRulesPage.nameInput.fill(ruleName)
+      await routingRulesPage.nameInput.fill(ruleName);
 
       // Add a condition (default Model field with default operator)
-      await routingRulesPage.clickAddRule()
-      await routingRulesPage.page.waitForTimeout(500)
+      await routingRulesPage.clickAddRule();
 
       // Verify CEL was generated before saving
-      const celBeforeSave = await routingRulesPage.getCelExpression()
-      expect(celBeforeSave).not.toContain('No rules defined')
+      await expect
+        .poll(() => routingRulesPage.getCelExpression())
+        .not.toContain("No rules defined");
 
       // Save the rule
-      await routingRulesPage.saveBtn.click()
-      await routingRulesPage.waitForSuccessToast()
-      await expect(routingRulesPage.sheet).not.toBeVisible({ timeout: 10000 })
+      await routingRulesPage.saveBtn.click();
+      await routingRulesPage.waitForSuccessToast();
+      await expect(routingRulesPage.sheet).not.toBeVisible({ timeout: 10000 });
 
       // Verify rule was created
-      const exists = await routingRulesPage.ruleExists(ruleName)
-      expect(exists).toBe(true)
-    })
-  })
-})
+      const exists = await routingRulesPage.ruleExists(ruleName);
+      expect(exists).toBe(true);
+    });
+  });
+
+  test.describe("Routing Tree Visualization", () => {
+    test("should display all rules and accurate count when rule count exceeds 100", async ({
+      page,
+    }) => {
+      // Generate 105 mock rules
+      const mockRules = Array.from({ length: 105 }, (_, i) => {
+        const padded = String(i + 1).padStart(3, "0");
+        return {
+          id: `rule-${padded}`,
+          name: `Test Rule ${padded}`,
+          description: `Test rule ${padded}`,
+          cel_expression: `model == "gpt-${padded}"`,
+          enabled: true,
+          chain_rule: false,
+          priority: i + 1,
+          targets: [{ provider: "openai", model: "gpt-4", weight: 1 }],
+          scope: "global",
+        };
+      });
+
+      // Mock the unbounded GET /api/routing/rules endpoint. Match the pathname: the UI
+      // requests it with a trailing "?", which the '**/api/routing/rules' glob misses.
+      await page.route(
+        (url) => url.pathname === "/api/routing/rules",
+        async (route) => {
+          if (route.request().method() === "GET") {
+            await route.fulfill({
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify({
+                rules: mockRules,
+                count: mockRules.length,
+                total_count: mockRules.length,
+                limit: mockRules.length,
+                offset: 0,
+              }),
+            });
+          } else {
+            await route.continue();
+          }
+        },
+      );
+
+      await page.goto("/workspace/routing-rules/tree");
+
+      // Verify the toolbar badge reflects all 105 rules
+      await expect(page.getByTestId("routing-tree-rule-count")).toHaveText(
+        "105 rules",
+      );
+
+      // Verify that the 105th rule appears in the graph
+      await expect(
+        page.getByTestId("routing-tree-rule-node-rule-105"),
+      ).toBeVisible();
+    });
+  });
+});

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
@@ -22,6 +23,10 @@ const warpSemanticCandidateLimit = 100
 // advertises the same figure as maxLength, so the model can stay inside it
 // instead of learning the bound from a refusal.
 const MaxSemanticQueryChars = 2000
+
+// MaxSemanticQueries bounds how many phrasings one search embeds. Each is an
+// embedding request and a vector search per prefilter, so the bound is spend.
+const MaxSemanticQueries = 5
 
 // SemanticSearcher joins the vector index back to the authoritative log store.
 // Vector metadata is only a coarse prefilter: every candidate is reloaded using
@@ -53,8 +58,8 @@ func NewSemanticSearcher(store configstore.WarpStore, vectors vectorstore.Vector
 }
 
 // Search returns meaning-similar conversations in vector score order.
-func (s *SemanticSearcher) Search(ctx context.Context, query string, filters *logstore.SearchFilters, requestedLimit int) (SemanticSearchResult, error) {
-	return s.SearchVisible(ctx, query, filters, nil, requestedLimit)
+func (s *SemanticSearcher) Search(ctx context.Context, queries []string, filters *logstore.SearchFilters, requestedLimit int) (SemanticSearchResult, error) {
+	return s.SearchVisible(ctx, queries, filters, nil, requestedLimit)
 }
 
 // SearchVisible is Search for a caller whose reads row-level access control
@@ -67,15 +72,10 @@ func (s *SemanticSearcher) Search(ctx context.Context, query string, filters *lo
 // small slice of them nearly all are discarded after hydration - a genuine
 // match of theirs at rank 500 is never reached. A nil visible searches exactly
 // as Search always has.
-func (s *SemanticSearcher) SearchVisible(ctx context.Context, query string, filters *logstore.SearchFilters, visible *LogVisibility, requestedLimit int) (SemanticSearchResult, error) {
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return SemanticSearchResult{}, fmt.Errorf("query is required")
-	}
-	// Refused before the embedding request is paid for. Runes, not bytes, to
-	// match the schema's advertised maxLength.
-	if count := utf8.RuneCountInString(query); count > MaxSemanticQueryChars {
-		return SemanticSearchResult{}, fmt.Errorf("query is %d characters; at most %d are accepted", count, MaxSemanticQueryChars)
+func (s *SemanticSearcher) SearchVisible(ctx context.Context, queries []string, filters *logstore.SearchFilters, visible *LogVisibility, requestedLimit int) (SemanticSearchResult, error) {
+	queries, err := normalizeSemanticQueries(queries)
+	if err != nil {
+		return SemanticSearchResult{}, err
 	}
 	if s == nil || s.store == nil || s.vectors == nil || s.embed == nil || s.logs == nil {
 		return SemanticSearchResult{}, ErrUnavailable
@@ -94,10 +94,11 @@ func (s *SemanticSearcher) SearchVisible(ctx context.Context, query string, filt
 	}
 	limit = min(limit, config.EffectiveSemanticSearchLimit(), warpMaxSemanticLimit())
 	threshold := config.EffectiveSemanticSearchThreshold()
-	embedding, _, err := generateWarpEmbedding(ctx, s.embed, config, query)
+	embeddings, err := s.embedQueries(ctx, config, queries)
 	if err != nil {
-		return SemanticSearchResult{}, fmt.Errorf("embed semantic query: %w", err)
+		return SemanticSearchResult{}, err
 	}
+	certainty := scoresAsCertainty(s.vectors)
 	// The vector store only knows the metadata it was indexed with. Scope,
 	// content-hiding and ContentSearch are decided here, after hydration, so a
 	// single top-K page can be spent entirely on rows this loop discards and
@@ -110,7 +111,7 @@ func (s *SemanticSearcher) SearchVisible(ctx context.Context, query string, filt
 	result := SemanticSearchResult{Rows: make([]SemanticSearchRow, 0, limit), Threshold: threshold}
 	prefilters := semanticPrefilters(filters, visible)
 	for {
-		pages, err := s.nearestPages(ctx, config.EffectiveLogVectorStoreNamespace(), embedding, prefilters, threshold, candidateLimit)
+		pages, err := s.nearestPages(ctx, config.EffectiveLogVectorStoreNamespace(), embeddings, prefilters, storeThreshold(threshold, certainty), certainty, candidateLimit)
 		if err != nil {
 			return SemanticSearchResult{}, fmt.Errorf("search log embeddings: %w", err)
 		}
@@ -163,6 +164,30 @@ func (s *SemanticSearcher) SearchVisible(ctx context.Context, query string, filt
 	}
 	result.Returned = len(result.Rows)
 	return result, nil
+}
+
+// normalizeSemanticQueries trims and de-duplicates the phrasings, and refuses
+// a set that is empty, too long or too many before any embedding is paid for.
+// Runes, not bytes, to match the schema's advertised maxLength.
+func normalizeSemanticQueries(queries []string) ([]string, error) {
+	out := make([]string, 0, len(queries))
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" || slices.Contains(out, query) {
+			continue
+		}
+		if count := utf8.RuneCountInString(query); count > MaxSemanticQueryChars {
+			return nil, fmt.Errorf("query is %d characters; at most %d are accepted", count, MaxSemanticQueryChars)
+		}
+		out = append(out, query)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("at least one query is required")
+	}
+	if len(out) > MaxSemanticQueries {
+		return nil, fmt.Errorf("%d queries given; at most %d are accepted", len(out), MaxSemanticQueries)
+	}
+	return out, nil
 }
 
 // LogVisibility is the row ownership row-level access control grants a
@@ -256,27 +281,32 @@ func filtersWithinVisibility(filters *logstore.SearchFilters, visible *LogVisibi
 		within(filters.CustomerIDs, visible.CustomerIDs)
 }
 
-// nearestPages runs one nearest-neighbour query per prefilter and returns the
-// pages in prefilter order. More than one runs together: they are independent
-// reads, and a restricted caller should not wait five times as long.
-func (s *SemanticSearcher) nearestPages(ctx context.Context, namespace string, embedding []float32, prefilters [][]vectorstore.Query, threshold float64, limit int) ([][]vectorstore.SearchResult, error) {
-	pages := make([][]vectorstore.SearchResult, len(prefilters))
-	errs := make([]error, len(prefilters))
+// nearestPages runs one nearest-neighbour query per phrasing and prefilter and
+// returns the pages phrasing by phrasing, each in prefilter order. They run
+// together: they are independent reads, and neither more phrasings nor a
+// restricted caller should multiply the wait. Scores come back as similarity
+// whatever the store, so the merge compares pages on one scale.
+func (s *SemanticSearcher) nearestPages(ctx context.Context, namespace string, embeddings [][]float32, prefilters [][]vectorstore.Query, threshold float64, certainty bool, limit int) ([][]vectorstore.SearchResult, error) {
+	pages := make([][]vectorstore.SearchResult, len(embeddings)*len(prefilters))
+	errs := make([]error, len(pages))
 	var wg sync.WaitGroup
-	for index, queries := range prefilters {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			pages[index], errs[index] = s.vectors.GetNearest(
-				vectorstore.WithDisableScanFallback(ctx),
-				namespace,
-				embedding,
-				queries,
-				[]string{"log_id"},
-				threshold,
-				int64(limit),
-			)
-		}()
+	for phrasing, embedding := range embeddings {
+		for filter, queries := range prefilters {
+			index := phrasing*len(prefilters) + filter
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				pages[index], errs[index] = s.vectors.GetNearest(
+					vectorstore.WithDisableScanFallback(ctx),
+					namespace,
+					embedding,
+					queries,
+					[]string{"log_id"},
+					threshold,
+					int64(limit),
+				)
+			}()
+		}
 	}
 	wg.Wait()
 	for _, err := range errs {
@@ -284,7 +314,64 @@ func (s *SemanticSearcher) nearestPages(ctx context.Context, namespace string, e
 			return nil, err
 		}
 	}
+	for _, page := range pages {
+		for index := range page {
+			if score := page[index].Score; score != nil {
+				similarity := similarityFromScore(*score, certainty)
+				page[index].Score = &similarity
+			}
+		}
+	}
 	return pages, nil
+}
+
+// embedQueries embeds every phrasing at once, in order. Each is a provider
+// round trip, so they are not made to wait on one another.
+func (s *SemanticSearcher) embedQueries(ctx context.Context, config *schemas.WarpConfig, queries []string) ([][]float32, error) {
+	embeddings := make([][]float32, len(queries))
+	errs := make([]error, len(queries))
+	var wg sync.WaitGroup
+	for index, query := range queries {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			embeddings[index], _, errs[index] = generateWarpEmbedding(ctx, s.embed, config, query)
+		}()
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return nil, fmt.Errorf("embed semantic query: %w", err)
+		}
+	}
+	return embeddings, nil
+}
+
+// The configured threshold and every score Warp reports are a similarity in
+// 0..1, (1 + cosine) / 2, whatever the store. Weaviate already filters and
+// scores on that scale as its certainty; the other stores use raw cosine, so
+// they are converted at the boundary. Kept in Warp rather than the shared
+// vector store: semantic cache and the complexity classifier read thresholds
+// and scores in each store's own terms.
+func scoresAsCertainty(store vectorstore.VectorStore) bool {
+	_, ok := store.(*vectorstore.WeaviateStore)
+	return ok
+}
+
+// storeThreshold is the similarity threshold in the store's own terms.
+func storeThreshold(similarity float64, certainty bool) float64 {
+	if certainty {
+		return similarity
+	}
+	return 2*similarity - 1
+}
+
+// similarityFromScore is a store's score as a similarity.
+func similarityFromScore(score float64, certainty bool) float64 {
+	if certainty {
+		return score
+	}
+	return (1 + score) / 2
 }
 
 // mergeSemanticPages folds the pages into one candidate list, best first,

@@ -1,10 +1,10 @@
-import { finishedSidekiqJobIds, sidekiqJobLabel, sidekiqJobPercent } from "@/components/notificationCenter.utils";
+import { sidekiqJobLabel, sidekiqJobPercent } from "@/components/notificationCenter.utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import type { SidekiqJob, SidekiqJobStatus } from "@/lib/types/sidekiq";
 import { formatDistanceToNow } from "date-fns";
-import { X } from "lucide-react";
+import { Check, X } from "lucide-react";
 import { useState } from "react";
 
 const statusPresentation: Record<
@@ -29,25 +29,25 @@ export default function SidekiqJobsSection({ jobs, cancellingId, onCancel, onDis
 	// Cancelling is final (a cancelled job is not resumable), so it takes a second click.
 	const [confirmId, setConfirmId] = useState<string>();
 
-	if (jobs.length === 0) return null;
-	const finishedIds = finishedSidekiqJobIds(jobs);
+	if (jobs.length === 0) {
+		return (
+			<section
+				data-testid="sidekiq-jobs-section"
+				aria-label="Background jobs"
+				className="flex h-44 flex-col items-center justify-center gap-2 px-6 text-center"
+			>
+				<span className="bg-muted text-muted-foreground flex size-9 items-center justify-center rounded-full">
+					<Check className="size-4" />
+				</span>
+				<p className="text-sm font-medium">No background jobs</p>
+				<p className="text-muted-foreground text-xs">Long-running tasks will show their progress here.</p>
+			</section>
+		);
+	}
 
 	return (
-		<section data-testid="sidekiq-jobs-section" aria-label="Background jobs" className="border-b">
-			<div className="flex items-center justify-between px-4 pt-3 pb-1">
-				<h3 className="text-muted-foreground text-[11px] font-semibold tracking-wide uppercase">Background jobs</h3>
-				{finishedIds.length > 0 && (
-					<button
-						type="button"
-						onClick={() => onDismiss(finishedIds)}
-						className="text-muted-foreground hover:text-foreground cursor-pointer text-xs transition-colors"
-						data-testid="sidekiq-jobs-clear-finished"
-					>
-						Clear finished
-					</button>
-				)}
-			</div>
-			<ul className="max-h-60 divide-y overflow-y-auto">
+		<section data-testid="sidekiq-jobs-section" aria-label="Background jobs">
+			<ul className="max-h-[min(26rem,calc(100vh-8rem))] divide-y overflow-y-auto">
 				{jobs.map((job) => {
 					const presentation = statusPresentation[job.status] ?? statusPresentation.pending;
 					const percent = sidekiqJobPercent(job);
@@ -66,7 +66,7 @@ export default function SidekiqJobsSection({ jobs, cancellingId, onCancel, onDis
 										aria-label={`Dismiss ${sidekiqJobLabel(job.kind)}`}
 										onClick={() => onDismiss([job.id])}
 										data-testid={`sidekiq-job-dismiss-${job.id}`}
-										className="text-muted-foreground hover:bg-muted hover:text-foreground -mr-1 cursor-pointer rounded p-1"
+										className="text-muted-foreground hover:bg-muted hover:text-foreground -ml-2 flex h-5 w-0 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded opacity-0 transition-[width,margin,opacity] group-hover:ml-0 group-hover:w-5 group-hover:opacity-100 focus-visible:ml-0 focus-visible:w-5 focus-visible:opacity-100"
 									>
 										<X className="size-3" />
 									</button>

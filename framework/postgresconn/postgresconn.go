@@ -252,8 +252,44 @@ func Open(dsn string, config *Config, logger gormlogger.Interface) (*gorm.DB, er
 			return nil
 		}))
 	}
-	sqlDB := stdlib.OpenDB(*pgxConfig, options...)
+	connector := stdlib.GetConnector(*pgxConfig, options...)
+	sqlDB := sql.OpenDB(poolConnector{connector})
 	return openGormFromSQLDB(sqlDB, logger)
+}
+
+// poolConnector opens a pool's connections. The driver it reports carries it,
+// so ConnectUnpooled can reach it from the pool.
+type poolConnector struct{ driver.Connector }
+
+func (c poolConnector) Driver() driver.Driver {
+	return poolDriver{Driver: c.Connector.Driver(), connector: c.Connector}
+}
+
+type poolDriver struct {
+	driver.Driver
+	connector driver.Connector
+}
+
+// ConnectUnpooled opens a connection that sqlDB does not manage, the same way
+// sqlDB opens its own: the password command runs again and the session
+// settings apply. The caller closes it. ok is false when sqlDB was not opened
+// that way; its connections then need nothing beyond the settings an existing
+// one was opened with.
+func ConnectUnpooled(ctx context.Context, sqlDB *sql.DB) (conn *pgx.Conn, ok bool, err error) {
+	d, ok := sqlDB.Driver().(poolDriver)
+	if !ok {
+		return nil, false, nil
+	}
+	dc, err := d.connector.Connect(ctx)
+	if err != nil {
+		return nil, true, err
+	}
+	sc, isPgx := dc.(*stdlib.Conn)
+	if !isPgx {
+		_ = dc.Close()
+		return nil, true, fmt.Errorf("postgres driver connection %T", dc)
+	}
+	return sc.Conn(), true, nil
 }
 
 // runtimeSessionSettingsSQL returns the statement that applies the runtime

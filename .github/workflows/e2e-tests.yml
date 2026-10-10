@@ -68,6 +68,8 @@ jobs:
         with:
           name: playwright-report
           path: |
+            tests/e2e/reports/
             tests/e2e/test-results/
             tests/e2e/playwright-report/
+            tmp/e2e/workers/*/bifrost.log
           retention-days: 7

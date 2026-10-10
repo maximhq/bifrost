@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -208,5 +209,67 @@ func TestCheckURLAccessibility_DoesNotFollowRedirects(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("expected a redirecting URL to be reported as not accessible, got nil")
+	}
+}
+
+// TestRequestWorkContext_DetachesFromServerShutdown pins the invariant that makes
+// RequestWorkContext safe: the context it returns must not inherit the RequestCtx's
+// Done(), which is the server-wide fasthttp.Server.done. Deriving from it directly leaves a
+// watcher goroutine that panics with "missing cancel error" once Shutdown resets the field.
+// Request values must still read through for the handler's lifetime.
+func TestRequestWorkContext_DetachesFromServerShutdown(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	type result struct {
+		workCtx context.Context
+		value   any
+		parent  <-chan struct{}
+	}
+	got := make(chan result, 1)
+	served := make(chan struct{})
+
+	srv := &fasthttp.Server{
+		CloseOnShutdown: true,
+		Handler: func(ctx *fasthttp.RequestCtx) {
+			ctx.SetUserValue("tenant", "acme")
+			workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+			t.Cleanup(cancel)
+			got <- result{workCtx: workCtx, value: workCtx.Value("tenant"), parent: ctx.Done()}
+			close(served)
+		},
+	}
+	go func() { _ = srv.Serve(ln) }()
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if _, err := conn.Write([]byte("GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	<-served
+	r := <-got
+	_ = conn.Close()
+
+	if r.value != "acme" {
+		t.Fatalf("request value not readable through work context: got %v, want acme", r.value)
+	}
+	if r.parent == nil {
+		t.Fatal("precondition failed: RequestCtx.Done() was nil, so this test proves nothing")
+	}
+	if r.workCtx.Done() == r.parent {
+		t.Fatal("work context shares the server-wide done channel; it must be detached")
+	}
+
+	if err := srv.Shutdown(); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	// The server channel has now been closed and reset. A context still parented to the
+	// RequestCtx would be cancelled by that; a detached one must survive it.
+	if err := r.workCtx.Err(); err != nil {
+		t.Fatalf("work context was cancelled by server shutdown: %v", err)
 	}
 }

@@ -176,14 +176,13 @@ func (r *VertexEmbeddingRequest) GetExtraParams() map[string]interface{} {
 }
 
 type VertexGeminiEmbeddingRequest struct {
-	Content              *gemini.Content        `json:"content,omitempty"`
-	DocumentOCR          *bool                  `json:"documentOcr,omitempty"`
-	AudioTrackExtraction *bool                  `json:"audioTrackExtraction,omitempty"`
-	TaskType             *string                `json:"taskType,omitempty"`
-	Title                *string                `json:"title,omitempty"`
-	OutputDimensionality *int                   `json:"outputDimensionality,omitempty"`
-	AutoTruncate         *bool                  `json:"autoTruncate,omitempty"`
-	ExtraParams          map[string]interface{} `json:"-"`
+	Content              *gemini.Content                  `json:"content,omitempty"`
+	EmbedContentConfig   *gemini.GeminiEmbedContentConfig `json:"embedContentConfig,omitempty"`
+	TaskType             *string                          `json:"taskType,omitempty"`
+	Title                *string                          `json:"title,omitempty"`
+	OutputDimensionality *int                             `json:"outputDimensionality,omitempty"`
+	AutoTruncate         *bool                            `json:"autoTruncate,omitempty"`
+	ExtraParams          map[string]interface{}           `json:"-"`
 }
 
 func (r *VertexGeminiEmbeddingRequest) GetExtraParams() map[string]interface{} {

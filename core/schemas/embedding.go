@@ -117,10 +117,10 @@ func (in EmbeddingInput) TokenIDs() [][]int {
 // RejectPerItemParams reports the first item carrying its own params. Providers whose
 // wire format has one parameter block per request call this rather than silently
 // dropping an override, which would return a correct-looking but wrong vector.
-func (in EmbeddingInput) RejectPerItemParams(provider string) error {
+func (in EmbeddingInput) RejectPerItemParams() error {
 	for i, item := range in {
 		if item.Params != nil {
-			return fmt.Errorf("%s embedding applies one set of parameters to the whole request; input item %d cannot carry its own params", provider, i)
+			return fmt.Errorf("this provider applies one set of embedding parameters to the whole request; input item %d cannot carry its own params", i)
 		}
 	}
 	return nil

@@ -564,10 +564,17 @@ func offerWebRTCSession(t *testing.T, opts clientOptions) (*liveClient, int, []b
 	answer := gjson.GetBytes(raw, "transport.sdp").Str
 	require.NotEmpty(t, answer, "create response carries the SDP answer: %s", raw)
 	require.NoError(t, pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer}))
+	// ICE to a remote gateway takes longer than a frame; the gateway's candidates tell a
+	// failing create apart from the ones that worked.
+	openWait := frameTimeout
+	if upstreamMode == realUpstream {
+		openWait = realTurnWait
+		t.Logf("gateway ICE candidates: %s", strings.Join(sdpCandidates(answer), " | "))
+	}
 	select {
 	case <-opened:
-	case <-time.After(frameTimeout):
-		t.Fatalf("the oai-events data channel did not open")
+	case <-time.After(openWait):
+		t.Fatalf("the oai-events data channel did not open within %s (peer connection %s, ice %s; gateway candidates: %s)", openWait, pc.ConnectionState(), pc.ICEConnectionState(), strings.Join(sdpCandidates(answer), " | "))
 	}
 	go c.sendSilence(microphone)
 	return c, status, raw
@@ -651,4 +658,21 @@ func errorMessage(frame gjson.Result) string {
 		return m
 	}
 	return frame.Get("message").Str
+}
+
+// sdpCandidates lists the ICE candidates an SDP carries, as "type ip:port" strings.
+func sdpCandidates(sdp string) []string {
+	var out []string
+	for _, line := range strings.Split(sdp, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "a=candidate:") {
+			continue
+		}
+		// a=candidate:<foundation> <component> <proto> <priority> <ip> <port> typ <type> ...
+		fields := strings.Fields(line)
+		if len(fields) >= 8 {
+			out = append(out, fields[7]+" "+fields[4]+":"+fields[5])
+		}
+	}
+	return out
 }
