@@ -4693,3 +4693,105 @@ func TestResponsesToolBareTypesRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestToOpenAIResponsesRequest_ToolChangeBlocksDropped (#8207): Anthropic's mid-conversation
+// tool_addition / tool_removal blocks have no OpenAI equivalent and OpenAI rejects unknown
+// block types, so they are dropped from a system item on the OpenAI-shaped egress. Text
+// siblings survive; an item left with no blocks is skipped entirely.
+func TestToOpenAIResponsesRequest_ToolChangeBlocksDropped(t *testing.T) {
+	t.Parallel()
+	var input []schemas.ResponsesMessage
+	if err := schemas.Unmarshal([]byte(`[
+		{"type":"message","role":"user","content":"hi"},
+		{"type":"message","role":"system","content":[
+			{"type":"tool_removal","tool":{"type":"tool_reference","name":"get_weather"}},
+			{"type":"input_text","text":"Tool set updated."}
+		]},
+		{"type":"message","role":"system","content":[
+			{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"type":"function","name":"get_weather"}}}
+		]}
+	]`), &input); err != nil {
+		t.Fatalf("decode input: %v", err)
+	}
+	out := ToOpenAIResponsesRequest(&schemas.BifrostContext{}, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input:    input,
+	})
+	if out == nil {
+		t.Fatal("ToOpenAIResponsesRequest returned nil")
+	}
+	items := out.Input.OpenAIResponsesRequestInputArray
+	raw, err := sonic.Marshal(items)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	wire := string(raw)
+	if strings.Contains(wire, "tool_addition") || strings.Contains(wire, "tool_removal") {
+		t.Fatalf("tool-change blocks must not reach an OpenAI-shaped wire: %s", wire)
+	}
+	if len(items) != 2 {
+		t.Fatalf("input items = %d, want 2 (user + the text-bearing system item; the tool-only item is skipped): %s", len(items), wire)
+	}
+	if !strings.Contains(wire, "Tool set updated.") {
+		t.Fatalf("text sibling of a dropped tool-change block must survive: %s", wire)
+	}
+}
+
+// TestToOpenAIResponsesRequest_StripsMCPToolsetConfig: the Anthropic mcp_toolset configuration
+// carried on the neutral MCP tool (default_config / tool_configs) is not an OpenAI field and
+// must not reach the OpenAI-shaped wire.
+func TestToOpenAIResponsesRequest_StripsMCPToolsetConfig(t *testing.T) {
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.5",
+		Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+			Type: schemas.ResponsesToolTypeMCP,
+			ResponsesToolMCP: &schemas.ResponsesToolMCP{
+				ServerLabel:   "calendar",
+				ServerURL:     schemas.Ptr("https://mcp.example.com/calendar"),
+				DefaultConfig: &schemas.ResponsesToolMCPToolConfig{Enabled: schemas.Ptr(true)},
+				ToolConfigs:   map[string]*schemas.ResponsesToolMCPToolConfig{"delete_event": {Enabled: schemas.Ptr(false)}},
+			},
+		}}},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	out := ToOpenAIResponsesRequest(ctx, req)
+	data, err := out.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, leaked := range []string{`"default_config"`, `"tool_configs"`} {
+		if strings.Contains(string(data), leaked) {
+			t.Errorf("%s leaked onto the OpenAI wire: %s", leaked, data)
+		}
+	}
+	if !strings.Contains(string(data), `"server_label":"calendar"`) {
+		t.Errorf("mcp tool itself must still be forwarded: %s", data)
+	}
+}
+
+// TestToOpenAIResponsesRequest_StripsTextEditorMaxCharacters: max_characters is an Anthropic
+// text_editor setting and must not reach the OpenAI-shaped wire.
+func TestToOpenAIResponsesRequest_StripsTextEditorMaxCharacters(t *testing.T) {
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.5",
+		Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+			{Type: schemas.ResponsesToolType("text_editor_20250728"), Name: schemas.Ptr("str_replace_based_edit_tool"), MaxCharacters: schemas.Ptr(10000)},
+			{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("echo"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+		}},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	data, err := ToOpenAIResponsesRequest(ctx, req).MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"max_characters"`) {
+		t.Errorf("max_characters leaked onto the OpenAI wire: %s", data)
+	}
+}
