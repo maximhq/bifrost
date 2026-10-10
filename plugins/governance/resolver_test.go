@@ -764,8 +764,145 @@ func newCustomProviderTestPlugin(t *testing.T, vk *configstoreTables.TableVirtua
 	return plugin
 }
 
+// A passthrough body is forwarded as the provider reads it, and a Runware task array names a
+// model per task that the request itself does not carry. Under a key that restricts models on
+// the provider, every model the body names is checked, and a body naming none is refused:
+// nothing visible to governance may stand in for what the provider will run. A key allowing
+// every model of the provider is untouched.
+func TestPreLLMHookChecksEveryModelAPassthroughBodyNames(t *testing.T) {
+	restricted := buildVirtualKeyWithProviders("vk-pt", "sk-bf-pt", "Passthrough VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("runware", []string{"runware:100@1"}),
+	})
+	unrestricted := buildVirtualKeyWithProviders("vk-pt", "sk-bf-pt", "Passthrough VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("runware", []string{"*"}),
+	})
+	passthrough := func(requestType schemas.RequestType, model, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: requestType, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.Runware, Model: model, Method: "POST", Path: "/v1", Body: []byte(body),
+		}}
+	}
+	const allowedOnly = `[{"taskType":"imageInference","model":"runware:100@1"}]`
+	const disallowedOnly = `[{"taskType":"imageInference","model":"runware:101@1"}]`
+	const mixed = `[{"taskType":"imageInference","model":"runware:100@1"},{"taskType":"imageInference","model":"runware:101@1"}]`
+	const modelless = `[{"taskType":"getResponse","taskUUID":"00000000-0000-0000-0000-000000000000"}]`
+
+	cases := []struct {
+		name string
+		vk   *configstoreTables.TableVirtualKey
+		req  *schemas.BifrostRequest
+		want Decision
+	}{
+		// The router hands the array's single model up as the request model.
+		{"array naming the allowed model, restricted key", restricted, passthrough(schemas.PassthroughRequest, "runware:100@1", allowedOnly), DecisionAllow},
+		{"array naming a disallowed model, restricted key", restricted, passthrough(schemas.PassthroughRequest, "runware:101@1", disallowedOnly), DecisionModelBlocked},
+		// Tasks naming different models leave the request model empty; the body is read.
+		{"mixed array with the allowed model first, restricted key", restricted, passthrough(schemas.PassthroughRequest, "", mixed), DecisionModelBlocked},
+		{"mixed array, streaming, restricted key", restricted, passthrough(schemas.PassthroughStreamRequest, "", mixed), DecisionModelBlocked},
+		// Nothing names a model: the restriction cannot be checked, so it is not skipped.
+		{"model-less array, restricted key", restricted, passthrough(schemas.PassthroughRequest, "", modelless), DecisionModelBlocked},
+		{"object body naming no model, restricted key", restricted, passthrough(schemas.PassthroughRequest, "", `{"prompt":"x"}`), DecisionModelBlocked},
+		{"array naming a disallowed model, unrestricted key", unrestricted, passthrough(schemas.PassthroughRequest, "runware:101@1", disallowedOnly), DecisionAllow},
+		{"mixed array, unrestricted key", unrestricted, passthrough(schemas.PassthroughRequest, "", mixed), DecisionAllow},
+		{"model-less array, unrestricted key", unrestricted, passthrough(schemas.PassthroughRequest, "", modelless), DecisionAllow},
+		{"object body naming no model, unrestricted key", unrestricted, passthrough(schemas.PassthroughRequest, "", `{"prompt":"x"}`), DecisionAllow},
+	}
+	// GenAI and Vertex bodies name a model by its resource name ("models/<id>",
+	// "publishers/google/models/<id>"), which the router reduces to the bare id it hands up as the
+	// request model. The body is read the same way, so an allowed model is not refused for being
+	// spelled as a resource, and a resource naming another model is still that other model.
+	geminiKey := buildVirtualKeyWithProviders("vk-pt", "sk-bf-pt", "Passthrough VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("gemini", []string{"gemini-embedding-001"}),
+		buildProviderConfig("vertex", []string{"gemini-embedding-001"}),
+	})
+	genai := func(provider schemas.ModelProvider, model, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: provider, Model: model, Method: "POST", Path: "/v1beta/models/" + model + ":embedContent", Body: []byte(body),
+		}}
+	}
+	cases = append(cases, []struct {
+		name string
+		vk   *configstoreTables.TableVirtualKey
+		req  *schemas.BifrostRequest
+		want Decision
+	}{
+		{"genai body naming the allowed model as a resource", geminiKey, genai(schemas.Gemini, "gemini-embedding-001", `{"model":"models/gemini-embedding-001","content":{"parts":[{"text":"x"}]}}`), DecisionAllow},
+		{"vertex body naming the allowed model as a publisher resource", geminiKey, genai(schemas.Vertex, "gemini-embedding-001", `{"model":"projects/p/locations/l/publishers/google/models/gemini-embedding-001"}`), DecisionAllow},
+		{"genai body naming another model as a resource", geminiKey, genai(schemas.Gemini, "gemini-embedding-001", `{"model":"models/gemini-2.5-pro"}`), DecisionModelBlocked},
+	}...)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin := newAccessTestPlugin(t, tc.vk, nil)
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-pt"), tc.req)
+			require.NoError(t, err)
+			assertShortCircuitDecision(t, tc.want, shortCircuit)
+		})
+	}
+
+	// No virtual key presented: passthrough stays unrestricted, as every request type is.
+	plugin := newAccessTestPlugin(t, restricted, nil)
+	_, shortCircuit, err := plugin.PreLLMHook(emptyCtx(), passthrough(schemas.PassthroughRequest, "", mixed))
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit)
+}
+
 // TestBudgetResolver_EvaluateVirtualKey_ActiveNoExpiry verifies that a VK
 // with no expiry is allowed.
+// A mixed Runware task array leaves the request model empty, so the request is charged against
+// the limits its own empty model settles. A body model with limits of its own (a model config's
+// budget or rate limit) would then be checked but never charged, so such a body is refused and the
+// caller sends one model per request; bodies whose models carry no limits of their own still pass.
+func TestPreLLMHookRefusesMixedPassthroughModelsWithTheirOwnLimits(t *testing.T) {
+	newPlugin := func(t *testing.T, modelConfigs []configstoreTables.TableModelConfig, rateLimits []configstoreTables.TableRateLimit) *GovernancePlugin {
+		t.Helper()
+		vk := buildVirtualKeyWithProviders("vk-pt", "sk-bf-pt", "Passthrough VK", []configstoreTables.TableVirtualKeyProviderConfig{
+			buildProviderConfig("runware", []string{"*"}),
+		})
+		logger := NewMockLogger()
+		store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+			VirtualKeys: []configstoreTables.TableVirtualKey{*vk}, ModelConfigs: modelConfigs, RateLimits: rateLimits,
+		}, nil, nil)
+		require.NoError(t, err)
+		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+		return plugin
+	}
+	passthrough := func(model, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.Runware, Model: model, Method: "POST", Path: "/v1", Body: []byte(body),
+		}}
+	}
+	const mixed = `[{"taskType":"imageInference","model":"runware:100@1"},{"taskType":"imageInference","model":"runware:101@1"}]`
+	const single = `[{"taskType":"imageInference","model":"runware:101@1"}]`
+
+	limited := buildRateLimit("rl-101", 1000, 1000)
+	withModelLimit := newPlugin(t, []configstoreTables.TableModelConfig{*buildModelConfig("mc-101", "runware:101@1", nil, nil, limited)}, []configstoreTables.TableRateLimit{*limited})
+	withoutModelLimit := newPlugin(t, nil, nil)
+
+	_, shortCircuit, err := withModelLimit.PreLLMHook(presentCtx("sk-bf-pt"), passthrough("", mixed))
+	require.NoError(t, err)
+	assertShortCircuitDecision(t, DecisionModelLimitsUnattributable, shortCircuit)
+	assert.Contains(t, shortCircuit.Error.Error.Message, "runware:101@1", "the refusal names the model whose limits could not be charged")
+
+	_, shortCircuit, err = withModelLimit.PreLLMHook(presentCtx("sk-bf-pt"), passthrough("runware:101@1", single))
+	require.NoError(t, err)
+	assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
+
+	_, shortCircuit, err = withoutModelLimit.PreLLMHook(presentCtx("sk-bf-pt"), passthrough("", mixed))
+	require.NoError(t, err)
+	assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
+
+	// A model config scoped to the key itself is the model's own limit just the same.
+	keyLimited := buildRateLimit("rl-101-vk", 1000, 1000)
+	keyScoped := buildModelConfig("mc-101-vk", "runware:101@1", nil, nil, keyLimited)
+	keyScoped.Scope = configstoreTables.ModelConfigScopeVirtualKey
+	keyScoped.ScopeID = bifrost.Ptr("vk-pt")
+	withKeyModelLimit := newPlugin(t, []configstoreTables.TableModelConfig{*keyScoped}, []configstoreTables.TableRateLimit{*keyLimited})
+	_, shortCircuit, err = withKeyModelLimit.PreLLMHook(presentCtx("sk-bf-pt"), passthrough("", mixed))
+	require.NoError(t, err)
+	assertShortCircuitDecision(t, DecisionModelLimitsUnattributable, shortCircuit)
+}
+
 func TestBudgetResolver_EvaluateVirtualKey_ActiveNoExpiry(t *testing.T) {
 	logger := NewMockLogger()
 	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
@@ -1067,6 +1204,10 @@ func TestModelMatcherReadsOnlyTheProviderItChecks(t *testing.T) {
 	// Asking whether a provider is built on Vertex needs that provider's base type only.
 	assert.False(t, plugin.builtOnVertex("openai"))
 	assert.Zero(t, store.wholeMap, "the Vertex check does not read the whole provider map")
+
+	// So does asking whether a passthrough body names models by resource name.
+	assert.True(t, plugin.namesModelsAsResources(schemas.Gemini))
+	assert.Zero(t, store.wholeMap, "the resource-name check does not read the whole provider map")
 }
 
 // A chat request is the common case the provider snapshot must not tax. Through the whole hook
@@ -1125,6 +1266,38 @@ func BenchmarkPreLLMHookBatchCreate(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
 				if _, _, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), tc.build()); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkPreLLMHookPassthroughBodyModels measures the governance pre-hook for passthrough
+// requests whose body names the models the provider runs: a Runware task array with one model,
+// one mixing two models, and a GenAI body naming its model as a resource.
+func BenchmarkPreLLMHookPassthroughBodyModels(b *testing.B) {
+	vk := buildVirtualKeyWithProviders("vk-pt", "sk-bf-pt", "Passthrough VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("runware", []string{"*"}),
+		buildProviderConfig("gemini", []string{"*"}),
+	})
+	plugin := newAccessTestPlugin(b, vk, nil)
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		body     string
+	}{
+		{"runware_single_model", schemas.Runware, "runware:100@1", `[{"taskType":"imageInference","taskUUID":"00000000-0000-0000-0000-000000000001","model":"runware:100@1","positivePrompt":"x","width":512,"height":512}]`},
+		{"runware_mixed_models", schemas.Runware, "", `[{"taskType":"imageInference","model":"runware:100@1","positivePrompt":"x"},{"taskType":"imageInference","model":"runware:101@1","positivePrompt":"y"}]`},
+		{"genai_resource_model", schemas.Gemini, "gemini-embedding-001", `{"model":"models/gemini-embedding-001","content":{"parts":[{"text":"x"}]}}`},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				req := &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: tc.provider, Model: tc.model, Method: "POST", Path: "/v1", Body: []byte(tc.body)}}
+				if _, _, err := plugin.PreLLMHook(presentCtx("sk-bf-pt"), req); err != nil {
 					b.Fatal(err)
 				}
 			}
