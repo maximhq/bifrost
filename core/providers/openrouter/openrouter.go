@@ -484,10 +484,13 @@ func (provider *OpenRouterProvider) Rerank(ctx *schemas.BifrostContext, key sche
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
 }
 
-// Decision sends TypeSafe System One models to OpenRouter's native decisions
-// endpoint. Other models are unsupported so core emulates them via chat.
+// Decision answers a decision request on OpenRouter's native decisions endpoint
+// when the model is served there: the datasheet's supports_decisions row
+// decides, and with no row a TypeSafe System One model does. Any other model is
+// reported as unsupported, so core can emulate it when the compat plugin allows.
 func (provider *OpenRouterProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
-	if !schemas.IsTypesafeModelFamily(ctx, request.Model) {
+	capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+	if !schemas.ResolveModelCaps(request.Provider, capModel).SupportsDecisions(schemas.IsTypesafeModel(capModel)) {
 		return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 	}
 
