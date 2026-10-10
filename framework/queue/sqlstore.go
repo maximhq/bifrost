@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -24,16 +25,25 @@ const sqlChunk = 500
 type sqlDialect interface {
 	// nowMicros writes the current time, in unix microseconds, into b.
 	nowMicros(b *sqlBuilder)
+	// stamp writes a created_at value for a row that retention is measured
+	// from; app is this instance's time, used where it is the clock.
+	stamp(b *sqlBuilder, app time.Time)
+	// clock returns the time a purge measures retention against: the same
+	// clock stamp writes.
+	clock(tx *gorm.DB, app time.Time) (time.Time, error)
 	// claimLock is appended to the claim's candidate subquery.
 	claimLock() string
 	// lockTopics locks topic rows in tx: shared for publishing, exclusive for
 	// registering a group.
 	lockTopics(tx *gorm.DB, topics []string, exclusive bool) error
 	// migrate runs fn under whatever cross-instance lock migrations need.
-	migrate(ctx context.Context, db *gorm.DB, fn func() error) error
+	migrate(ctx context.Context, db *gorm.DB, fn func(db *gorm.DB) error) error
 	// purgeLock takes the janitor lock for the rest of tx and reports whether
 	// this instance got it.
 	purgeLock(tx *gorm.DB) (bool, error)
+	// lockPurgeTopics locks, for the rest of tx, the topics whose messages a
+	// purge may delete, so it cannot race a group backfill reading them.
+	lockPurgeTopics(tx *gorm.DB, cutoff time.Time) error
 	// lockKeys serialises, for the rest of tx, every change to which delivery
 	// heads the given key lanes, so concurrent publishes, acknowledgements and
 	// dead-lettering cannot leave a lane with two heads or none.
@@ -60,13 +70,20 @@ type sqliteDialect struct{}
 func (sqliteDialect) nowMicros(b *sqlBuilder) {
 	b.add("CAST((julianday('now') - 2440587.5) * 86400000000.0 AS INTEGER)")
 }
+func (sqliteDialect) stamp(b *sqlBuilder, app time.Time) { b.add("?", app) }
+func (sqliteDialect) clock(_ *gorm.DB, app time.Time) (time.Time, error) {
+	return app, nil
+}
 func (sqliteDialect) claimLock() string { return "" }
 func (sqliteDialect) lockTopics(*gorm.DB, []string, bool) error {
 	return nil
 }
-func (sqliteDialect) migrate(_ context.Context, _ *gorm.DB, fn func() error) error { return fn() }
-func (sqliteDialect) purgeLock(*gorm.DB) (bool, error)                             { return true, nil }
-func (sqliteDialect) lockGroup(*gorm.DB, string, string) error                     { return nil }
+func (sqliteDialect) migrate(_ context.Context, db *gorm.DB, fn func(*gorm.DB) error) error {
+	return fn(db)
+}
+func (sqliteDialect) lockPurgeTopics(*gorm.DB, time.Time) error { return nil }
+func (sqliteDialect) purgeLock(*gorm.DB) (bool, error)          { return true, nil }
+func (sqliteDialect) lockGroup(*gorm.DB, string, string) error  { return nil }
 func (sqliteDialect) headroom(b *sqlBuilder, max, limit, inFlight func()) {
 	b.add("max(0, min(")
 	max()
@@ -77,6 +94,81 @@ func (sqliteDialect) headroom(b *sqlBuilder, max, limit, inFlight func()) {
 	b.add("))")
 }
 func (sqliteDialect) lockKeys(*gorm.DB, []laneKey) error { return nil }
+
+// postgresDialect: many instances share the database, so time comes from the
+// database clock and the topic rows, claim candidates and janitor are locked.
+type postgresDialect struct{}
+
+// nowMicros uses clock_timestamp(), not now(): now() is frozen at the start of
+// the transaction.
+func (postgresDialect) nowMicros(b *sqlBuilder) {
+	b.add("CAST(EXTRACT(EPOCH FROM clock_timestamp()) * 1000000 AS BIGINT)")
+}
+
+// stamp and clock use the database clock, so retention cannot be cut short
+// by an instance whose clock runs ahead of the one that published.
+func (postgresDialect) stamp(b *sqlBuilder, _ time.Time) {
+	b.add("date_trunc('microseconds', clock_timestamp())")
+}
+
+func (postgresDialect) clock(tx *gorm.DB, _ time.Time) (time.Time, error) {
+	var now time.Time
+	if err := tx.Raw("SELECT clock_timestamp()").Scan(&now).Error; err != nil {
+		return time.Time{}, fmt.Errorf("read clock: %w", err)
+	}
+	return now.UTC(), nil
+}
+
+// claimLock skips candidates another instance is claiming right now instead
+// of queueing behind it.
+func (postgresDialect) claimLock() string { return "FOR UPDATE OF d SKIP LOCKED" }
+
+func (postgresDialect) lockTopics(tx *gorm.DB, topics []string, exclusive bool) error {
+	mode := "FOR SHARE"
+	if exclusive {
+		mode = "FOR UPDATE"
+	}
+	var locked []string
+	return tx.Raw("SELECT topic FROM queue_topics WHERE topic IN ? ORDER BY topic "+mode, topics).Scan(&locked).Error
+}
+
+func (postgresDialect) lockKeys(tx *gorm.DB, keys []laneKey) error { return lockLanes(tx, keys) }
+
+func (postgresDialect) lockGroup(tx *gorm.DB, topic, group string) error {
+	return lockGroupClaims(tx, topic, group)
+}
+
+func (postgresDialect) headroom(b *sqlBuilder, max, limit, inFlight func()) {
+	b.add("GREATEST(0, LEAST(")
+	max()
+	b.add(", ")
+	limit()
+	b.add(" - ")
+	inFlight()
+	b.add("))")
+}
+
+func (postgresDialect) migrate(ctx context.Context, db *gorm.DB, fn func(*gorm.DB) error) error {
+	return withPGSessionLock(ctx, db, pgMigrationLockKey, fn)
+}
+
+// lockPurgeTopics share-locks the topic rows of purgeable messages. A group
+// registration holds its topic FOR UPDATE while it backfills, so the purge
+// waits for it and then sees the deliveries it created; publishers also take
+// the rows FOR SHARE, so they do not wait.
+func (postgresDialect) lockPurgeTopics(tx *gorm.DB, cutoff time.Time) error {
+	var locked []string
+	return tx.Raw("SELECT topic FROM queue_topics WHERE topic IN (SELECT DISTINCT topic FROM queue_messages "+
+		"WHERE created_at < ? AND deliver_at < ?) ORDER BY topic FOR SHARE", cutoff, cutoff.UnixMicro()).Scan(&locked).Error
+}
+
+// purgeLock is transaction-scoped, so it is released with the transaction
+// whatever connection the pool hands out.
+func (postgresDialect) purgeLock(tx *gorm.DB) (bool, error) {
+	var ok bool
+	err := tx.Raw("SELECT pg_try_advisory_xact_lock(?)", pgJanitorLockKey).Scan(&ok).Error
+	return ok, err
+}
 
 // sqlBuilder accumulates SQL text and its positional arguments together, so a
 // fragment like "now" can carry its own bind values.
@@ -100,7 +192,11 @@ type sqlStore struct {
 	dialect sqlDialect
 	now     func() time.Time // stamps created_at; leases use the dialect clock
 	logger  schemas.Logger
+	capped  sync.Map // groupKey of every group this store has claimed under a cap
 }
+
+// groupKey identifies a consumer group of a topic.
+func groupKey(topic, group string) string { return topic + "\x00" + group }
 
 // newSQLStore migrates the queue tables into db and returns a store over it.
 func newSQLStore(ctx context.Context, db *gorm.DB, logger schemas.Logger) (*sqlStore, error) {
@@ -108,11 +204,13 @@ func newSQLStore(ctx context.Context, db *gorm.DB, logger schemas.Logger) (*sqlS
 	switch name := db.Dialector.Name(); name {
 	case "sqlite":
 		d = sqliteDialect{}
+	case "postgres":
+		d = postgresDialect{}
 	default:
 		return nil, fmt.Errorf("%w: sql dialect %q", ErrUnsupported, name)
 	}
 	s := &sqlStore{db: db, dialect: d, now: time.Now, logger: logger}
-	if err := d.migrate(ctx, db, func() error { return runSQLMigrations(ctx, db, logger) }); err != nil {
+	if err := d.migrate(ctx, db, func(mdb *gorm.DB) error { return runSQLMigrations(ctx, mdb, logger) }); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -143,6 +241,10 @@ func (s *sqlStore) EnsureGroup(ctx context.Context, topic, group string, startFr
 	})
 }
 
+// testHookBackfillScanned, when set by a test, runs after each backfill scan
+// and before its deliveries are written. It is nil in production.
+var testHookBackfillScanned func()
+
 // backfill creates group's deliveries for every message retained on topic,
 // in publish order. The caller holds the topic lock, so no publish can slip
 // between the backfill and the group becoming visible.
@@ -157,6 +259,9 @@ func (s *sqlStore) backfill(tx *gorm.DB, topic, group string) error {
 		}
 		if len(msgs) == 0 {
 			return nil
+		}
+		if testHookBackfillScanned != nil {
+			testHookBackfillScanned()
 		}
 		dels := make([]tableQueueDelivery, 0, len(msgs))
 		for _, m := range msgs {
@@ -389,8 +494,10 @@ func (s *sqlStore) insertMessages(tx *gorm.DB, msgs []*Message) (map[string]bool
 			if i > 0 {
 				b.add(", ")
 			}
-			b.add("(?, ?, ?, ?, ?, ?, ?, ?)", m.ID, m.Topic, optionalString(m.Key), m.Payload, headers,
-				m.PublishedAt.UTC().Truncate(time.Microsecond), deliverAtMicros(m.DeliverAt), now)
+			b.add("(?, ?, ?, ?, ?, ?, ?, ", m.ID, m.Topic, optionalString(m.Key), m.Payload, headers,
+				m.PublishedAt.UTC().Truncate(time.Microsecond), deliverAtMicros(m.DeliverAt))
+			s.dialect.stamp(&b, now)
+			b.add(")")
 		}
 		b.add(" ON CONFLICT (id) DO NOTHING RETURNING id")
 		var ids []string
@@ -429,7 +536,7 @@ func (s *sqlStore) Claim(ctx context.Context, req ClaimRequest) ([]*Claimed, err
 	// Each delivery gets its own token: the batch prefix plus the delivery ID.
 	batch := uuid.NewString() + ":"
 	var b sqlBuilder
-	b.add("UPDATE queue_deliveries SET status = 'leased', claimed_by = ?, claim_token = ? || id, claimed_until = ", req.RunnerID, batch)
+	b.add("UPDATE queue_deliveries SET status = 'leased', claimed_by = ?, claim_token = CAST(? AS TEXT) || id, claimed_until = ", req.RunnerID, batch)
 	s.dialect.nowMicros(&b)
 	b.add(" + ?, ", req.Lease.Microseconds())
 	// A lease that expired unfinished means its holder died mid-attempt.
@@ -470,6 +577,7 @@ func (s *sqlStore) Claim(ctx context.Context, req ClaimRequest) ([]*Claimed, err
 	}
 	var err error
 	if req.MaxInFlight > 0 {
+		s.capped.Store(groupKey(topic, group), struct{}{})
 		err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			if err := s.dialect.lockGroup(tx, topic, group); err != nil {
 				return err
@@ -651,7 +759,41 @@ func (s *sqlStore) Kill(ctx context.Context, c *Claimed, lastErr string) (bool, 
 	return held, err
 }
 
+// Extend renews the leases cs still hold. Renewals of a group this store
+// claims under a cap run under the group's claim lock: a renewal still
+// uncommitted when its old deadline passes would otherwise look expired to a
+// capped claim, which would then claim past the cap beside it. The locks are
+// taken in topic and group order, so concurrent renewals cannot deadlock.
 func (s *sqlStore) Extend(ctx context.Context, cs []*Claimed, lease time.Duration) ([]string, error) {
+	var groups [][2]string
+	for _, c := range cs {
+		if c.Message == nil {
+			continue
+		}
+		g := [2]string{c.Message.Topic, c.Group}
+		if _, ok := s.capped.Load(groupKey(g[0], g[1])); ok && !slices.Contains(groups, g) {
+			groups = append(groups, g)
+		}
+	}
+	if len(groups) == 0 {
+		return s.extend(s.db.WithContext(ctx), cs, lease)
+	}
+	slices.SortFunc(groups, func(a, b [2]string) int { return strings.Compare(groupKey(a[0], a[1]), groupKey(b[0], b[1])) })
+	var held []string
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, g := range groups {
+			if err := s.dialect.lockGroup(tx, g[0], g[1]); err != nil {
+				return fmt.Errorf("extend: %w", err)
+			}
+		}
+		var err error
+		held, err = s.extend(tx, cs, lease)
+		return err
+	})
+	return held, err
+}
+
+func (s *sqlStore) extend(db *gorm.DB, cs []*Claimed, lease time.Duration) ([]string, error) {
 	held := make([]string, 0, len(cs))
 	for chunk := range slices.Chunk(cs, sqlChunk) {
 		tokens := make([]string, len(chunk))
@@ -666,7 +808,7 @@ func (s *sqlStore) Extend(ctx context.Context, cs []*Claimed, lease time.Duratio
 		s.dialect.nowMicros(&b)
 		b.add(" RETURNING id")
 		var ids []string
-		if err := s.db.WithContext(ctx).Raw(b.String(), b.args...).Scan(&ids).Error; err != nil {
+		if err := db.Raw(b.String(), b.args...).Scan(&ids).Error; err != nil {
 			return nil, fmt.Errorf("extend: %w", err)
 		}
 		held = append(held, ids...)
@@ -692,12 +834,15 @@ func (s *sqlStore) Release(ctx context.Context, cs []*Claimed) error {
 }
 
 func (s *sqlStore) Purge(ctx context.Context, policy PurgePolicy, batch int) (int64, error) {
-	now := s.stamp()
 	var removed int64
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		ok, err := s.dialect.purgeLock(tx)
 		if err != nil || !ok {
 			return err // another instance is purging
+		}
+		now, err := s.dialect.clock(tx, s.stamp())
+		if err != nil {
+			return err
 		}
 		var dead sqlBuilder
 		dead.add("DELETE FROM queue_deliveries WHERE seq IN (SELECT seq FROM queue_deliveries WHERE status = 'dead' AND dead_at < ")
@@ -714,6 +859,9 @@ func (s *sqlStore) Purge(ctx context.Context, policy PurgePolicy, batch int) (in
 		// AckedRetention past the time it became due, so a late Earliest group
 		// can still replay it.
 		ackedCutoff := now.Add(-policy.AckedRetention)
+		if err := s.dialect.lockPurgeTopics(tx, ackedCutoff); err != nil {
+			return fmt.Errorf("lock purged topics: %w", err)
+		}
 		res = tx.Exec("DELETE FROM queue_messages WHERE seq IN (SELECT m.seq FROM queue_messages m "+
 			"WHERE m.created_at < ? AND m.deliver_at < ? AND NOT EXISTS (SELECT 1 FROM queue_deliveries d "+
 			"WHERE d.message_id = m.id) ORDER BY m.seq LIMIT ?)", ackedCutoff, ackedCutoff.UnixMicro(), batch)

@@ -58,6 +58,8 @@ func newLogStoreBackend(ctx context.Context, deps Dependencies, logger schemas.L
 			logger.Warn("queue: the sqlite logstore queue is single-process only; use postgres or clickhouse to share it between instances")
 		}
 		return newSQLStore(ctx, db, logger)
+	case "postgres":
+		return newSQLStore(ctx, db, logger)
 	default:
 		return nil, fmt.Errorf("%w: logstore dialect %q", ErrUnsupported, name)
 	}
