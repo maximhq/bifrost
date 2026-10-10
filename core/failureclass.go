@@ -402,3 +402,14 @@ func containsAny(lower string, markers []string) bool {
 	}
 	return false
 }
+
+// isCallerFaultRefusal reports whether the provider refused the request itself with a 400
+// or 422. Statuses a provider also uses for the key or the model (a Gemini bad key, an
+// Anthropic empty balance, a Bedrock retired model) classify as something else and are not
+// matched, and neither are 409, 413 or 415, which another provider may accept.
+func isCallerFaultRefusal(err *schemas.BifrostError) bool {
+	if err == nil || err.StatusCode == nil || (*err.StatusCode != 400 && *err.StatusCode != 422) {
+		return false
+	}
+	return ClassifyFailure(err) == schemas.FailureClassCallerFault
+}

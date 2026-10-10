@@ -5518,7 +5518,7 @@ func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) sche
 // CORE INTERNAL LOGIC
 
 // shouldTryFallbacks handles the primary error and returns true if we should proceed with fallbacks, false if we should return immediately
-func (bifrost *Bifrost) shouldTryFallbacks(req *schemas.BifrostRequest, primaryErr *schemas.BifrostError) bool {
+func (bifrost *Bifrost) shouldTryFallbacks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, primaryErr *schemas.BifrostError) bool {
 	// If no primary error, we succeeded
 	if primaryErr == nil {
 		bifrost.logger.Debug("no primary error, we should not try fallbacks")
@@ -5543,6 +5543,15 @@ func (bifrost *Bifrost) shouldTryFallbacks(req *schemas.BifrostRequest, primaryE
 	if len(fallbacks) == 0 {
 		bifrost.logger.Debug("no fallbacks configured, we should not try fallbacks")
 		return false
+	}
+
+	// A 400/422 the provider attributes to the request itself would be refused by every
+	// provider in the chain, so it goes back to the caller instead of being replayed.
+	if isCallerFaultRefusal(primaryErr) {
+		if optIn, _ := ctx.Value(schemas.BifrostContextKeyFallbackOnCallerFault).(bool); !optIn {
+			bifrost.logger.Debug("primary refused the request itself, we should not try fallbacks")
+			return false
+		}
 	}
 
 	// Should proceed with fallbacks
@@ -5805,7 +5814,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	// Check if we should proceed with fallbacks
-	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)
+	shouldTryFallbacks := bifrost.shouldTryFallbacks(ctx, req, primaryErr)
 	if !shouldTryFallbacks {
 		if primaryErr == nil {
 			served = &schemas.Route{Provider: provider, Model: model}
@@ -5985,7 +5994,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	}
 
 	// Check if we should proceed with fallbacks
-	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)
+	shouldTryFallbacks := bifrost.shouldTryFallbacks(ctx, req, primaryErr)
 	if !shouldTryFallbacks {
 		if primaryErr == nil {
 			served = &schemas.Route{Provider: provider, Model: model}
