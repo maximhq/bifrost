@@ -1,0 +1,84 @@
+openapi: 3.2.0
+$self: https://api.example.com/specs/openapi.yaml
+info:
+  title: Petstore 3.2
+  version: 3.2.0
+  summary: Pets, now with query methods
+servers:
+  - url: /v4
+tags:
+  - name: pets
+    summary: Pet operations
+    parent: animals
+    kind: nav
+components:
+  securitySchemes:
+    Bearer:
+      type: http
+      scheme: bearer
+    Device:
+      type: oauth2
+      flows:
+        deviceAuthorization:
+          deviceAuthorizationUrl: https://auth.example.com/device
+          tokenUrl: https://auth.example.com/token
+          scopes: {}
+security:
+  - Bearer: []
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      responses:
+        '200':
+          description: ok
+    query:
+      operationId: queryPets
+      summary: Complex pet query
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                filter:
+                  type: string
+      responses:
+        '200':
+          description: ok
+    additionalOperations:
+      PURGE:
+        operationId: purgePets
+        responses:
+          '204':
+            description: purged
+  /search:
+    get:
+      operationId: searchPets
+      parameters:
+        - name: params
+          in: querystring
+          required: true
+          schema:
+            type: object
+            required: [q]
+            properties:
+              q:
+                type: string
+              page:
+                type: integer
+      responses:
+        '200':
+          description: ok
+  /events:
+    post:
+      operationId: streamEvents
+      requestBody:
+        content:
+          application/jsonl:
+            itemSchema:
+              type: object
+      responses:
+        '200':
+          description: ok
