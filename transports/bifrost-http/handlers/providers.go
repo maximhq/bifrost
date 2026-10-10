@@ -1126,10 +1126,10 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 // offers a model the request would reject nor hides one it would serve: none
 // on a custom provider whose allowed requests exclude decisions, every model
 // of a Typesafe-based provider (Typesafe, or a custom provider on its base
-// serving Laya, Nimble, or Clef), a TypeSafe System One model on OpenRouter,
-// and otherwise a model the datasheet (or, without a row, the name-based
-// fallback) marks supports_decisions. A key alias is checked as the model it
-// points at, as the request path checks it.
+// serving Laya, Nimble, or Clef), and otherwise a model the datasheet marks
+// supports_decisions, or without a row the provider's name-based fallback (a
+// TypeSafe System One model on OpenRouter, the gpt-6-luna family elsewhere). A
+// key alias is checked as the model it points at, as the request path checks it.
 func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, model string) bool {
 	custom := h.customProviderConfig(provider)
 	if !custom.IsOperationAllowed(schemas.DecisionRequest) {
@@ -1139,10 +1139,11 @@ func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, mode
 		return true
 	}
 	model = h.aliasTarget(provider, model)
+	fallback := schemas.DefaultSupportsDecisions(model)
 	if provider == schemas.OpenRouter {
-		return schemas.IsTypesafeModel(model)
+		fallback = schemas.IsTypesafeModel(model)
 	}
-	return schemas.ResolveModelCaps(provider, model).SupportsDecisions(schemas.DefaultSupportsDecisions(model))
+	return schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback)
 }
 
 // customProviderConfig returns the provider's custom configuration, or nil for

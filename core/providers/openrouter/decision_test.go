@@ -130,6 +130,66 @@ func TestDecision_TypesafeModelUsesNativeEndpoint(t *testing.T) {
 	}
 }
 
+// TestDecision_DatasheetRowDecides pins that a supports_decisions datasheet row
+// decides in either direction, so a new decisions model needs only a row: a
+// non-TypeSafe model with a true row reaches the native endpoint, a TypeSafe
+// model with a false row does not, and only a model with no row falls back to
+// the TypeSafe System One name check.
+func TestDecision_DatasheetRowDecides(t *testing.T) {
+	var calls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var wire map[string]any
+		_ = json.Unmarshal(body, &wire)
+		calls = append(calls, fmt.Sprintf("%s %v", r.URL.Path, wire["model"]))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, decisionResponseBody)
+	}))
+	defer server.Close()
+
+	rows := map[string]bool{"microsoft/decision-1": true, "typesafe/jev-router": false}
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if supports, ok := rows[model]; ok {
+			return &schemas.ModelCapabilities{SupportsDecisions: &supports}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	provider := newDecisionTestProvider(server.URL)
+	key := schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}
+	for _, tc := range []struct {
+		model  string
+		native bool
+	}{
+		{model: "microsoft/decision-1", native: true}, // true row, no TypeSafe name
+		{model: "typesafe/jev-router", native: false}, // false row overrides the TypeSafe name
+		{model: "typesafe/jev-1.13", native: true},    // no row: TypeSafe name fallback
+		{model: "openai/gpt-4o", native: false},       // no row, not TypeSafe
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			calls = nil
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.Decision(ctx, key, newDecisionRequest(tc.model))
+			if tc.native {
+				if bifrostErr != nil {
+					t.Fatalf("expected the native endpoint, got %v", bifrostErr.Error.Message)
+				}
+				if len(calls) != 1 || calls[0] != "/alpha/decisions "+tc.model {
+					t.Errorf("expected one native call for %s, got %v", tc.model, calls)
+				}
+				return
+			}
+			if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "unsupported_operation" {
+				t.Fatalf("expected unsupported_operation, got %+v", bifrostErr)
+			}
+			if len(calls) != 0 {
+				t.Errorf("an unsupported model must not reach the endpoint, got %v", calls)
+			}
+		})
+	}
+}
+
 func TestDecision_UpstreamErrorPreserved(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
