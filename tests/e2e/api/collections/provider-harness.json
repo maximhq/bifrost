@@ -221541,7 +221541,7 @@
     },
     {
       "name": "183. Sonnet 5.5 caller request surface (sonnet-5-5-surface)",
-      "description": "Local fixture regression, no live provider. Point an isolated gateway's anthropic base_url at runners/anthropic-request-surface-fixture.mjs with max_retries=0 and set anthropicRequestSurfaceFixture=1 to enable these cases; see tests/e2e/api/README.md, \"Sonnet 5.5 caller request surface\". The fixture stands in for the Anthropic Messages API and inspects the request it receives, so these cases assert WHAT BIFROST FORWARDS. They are not evidence of what the live Claude API accepts, and they need no key, no quota and no subscription entitlement. Each request carries its case name in the user message; the fixture answers 200 only when the reasoning and sampling surface on the wire is the one the caller sent, and otherwise answers 400 naming every field that drifted. Seven cases are red before the request-surface fix and green after: between_tools carrying a sibling thinking.display; enabled+budget on the typed and the claude-cli raw path; a caller-sent effort; and the sampling tuple on unary, stream and count. Seven are invariance controls that must pass on both trees: bare between_tools on unary, stream and count_tokens (already forwarded upstream since PR #7665, and recorded here as controls rather than fixes), the raw path's already-correct sampling tuple, and claude-sonnet-5 keeping its adaptive rewrite, its raw-path asymmetry and its dropped count sampling. count_tokens still deletes temperature for every model, which the count cases pin rather than fix.",
+      "description": "Local fixture regression, no live provider. Point an isolated gateway's anthropic base_url at runners/anthropic-request-surface-fixture.mjs with max_retries=0 and set anthropicRequestSurfaceFixture=1 to enable these cases; see tests/e2e/api/README.md, \"Sonnet 5.5 caller request surface\". The fixture stands in for the Anthropic Messages API and inspects the request it receives, so these cases assert WHAT BIFROST FORWARDS. They are not evidence of what the live Claude API accepts, and they need no key, no quota and no subscription entitlement. Each request carries its case name in the user message; the fixture answers 200 only when the reasoning and sampling surface on the wire is the one the caller sent, and otherwise answers 400 naming every field that drifted. Four cases are red before the request-surface fix and green after: between_tools carrying a sibling thinking.display; enabled+budget on the typed and the claude-cli raw path; and a caller-sent effort. Ten are invariance controls that must pass on both trees: bare between_tools on unary, stream and count_tokens (already forwarded upstream since PR #7665, and recorded here as controls rather than fixes), the three typed sampling cases, the raw path's already-correct sampling tuple, and claude-sonnet-5 keeping its adaptive rewrite, its raw-path asymmetry and its dropped count sampling. The typed sampling cases are controls because this model family is adaptive-only and the typed converter drops temperature/top_p and deletes top_k for it, so the change leaves sampling stripped; the raw path still forwards all three, and that divergence stays visible here rather than being resolved. count_tokens still deletes temperature for every model, which the count cases pin rather than fix.",
       "event": [
         {
           "listen": "prerequest",
@@ -221927,7 +221927,7 @@
           ]
         },
         {
-          "name": "Anthropic /v1/messages - temperature, top_p and top_k all reach the provider (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "name": "Anthropic /v1/messages - temperature, top_p and top_k stay stripped for this adaptive-only model (claude-sonnet-5-5) - sonnet-5-5-surface",
           "request": {
             "method": "POST",
             "header": [
@@ -221977,7 +221977,7 @@
           ]
         },
         {
-          "name": "Anthropic /v1/messages stream - temperature, top_p and top_k all reach the provider (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "name": "Anthropic /v1/messages stream - temperature, top_p and top_k stay stripped for this adaptive-only model (claude-sonnet-5-5) - sonnet-5-5-surface",
           "request": {
             "method": "POST",
             "header": [
@@ -222029,7 +222029,7 @@
           ]
         },
         {
-          "name": "Anthropic /v1/messages/count_tokens - top_p and top_k reach the provider, temperature is still deleted (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "name": "Anthropic /v1/messages/count_tokens - all three sampling parameters stay stripped (claude-sonnet-5-5) - sonnet-5-5-surface",
           "request": {
             "method": "POST",
             "header": [
