@@ -2709,8 +2709,9 @@ func setConverseReasoningEffort(fields *schemas.OrderedMap, caps schemas.ModelCa
 	fields.Set("reasoning", map[string]any{"effort": caps.NormalizeReasoningEffort(effort, levels)})
 }
 
-// clampMaxTokens raises maxTokens to the floor the model enforces on
-// max_output_tokens, leaving it alone when the model has none.
+// clampMaxTokens brings max_output_tokens inside the range the model enforces:
+// below its ceiling (#8060) and above its floor, leaving either alone when the
+// model has none.
 //
 // Bedrock serves the OpenAI family and xAI Grok from an OpenAI-compatible
 // backend that rejects anything below 16, while Claude and Nova happily return a
@@ -2730,10 +2731,40 @@ func clampMaxTokens(ctx *schemas.BifrostContext, maxTokens *int, caps schemas.Mo
 	if schemas.IsOpenAIModelFamily(ctx, caps.Model()) || schemas.IsGrokModel(caps.Model()) {
 		fallback = openai.MinMaxCompletionTokens
 	}
-	if floor := caps.MinOutputTokens(fallback); floor > 0 && *maxTokens < floor {
-		return schemas.Ptr(floor)
+	clamped := *maxTokens
+
+	// Ceiling, added for #8060. #7732 gave the Anthropic-family builders
+	// clampToModelOutputCeiling, but Converse builds its own body, so a routing
+	// rule that retargets a request sized for Opus (max_tokens > 64000) onto
+	// claude-haiku-4-5 forwarded the oversized value and Bedrock answered 400.
+	//
+	// Same precedence as the floor below: the datasheet row wins, and the static
+	// Claude table is the name-based fallback. That table answers 0 for any model
+	// whose canonical name has no "claude" in it, which includes an application
+	// inference profile whose model_id is an opaque resource id.
+	//
+	// A zero ceiling means "not known", and an unknown ceiling is left alone. The
+	// floor can lean on the alias chain because a wrong floor only under-requests
+	// and the model still answers; a ceiling inferred from an alias key would be a
+	// claim about which model the profile actually serves, and guessing high
+	// silently reintroduces the 400 while guessing low truncates a legitimate
+	// request. Resolving that needs the profile's real target, which only a live
+	// Bedrock lookup or an operator-set ModelName can supply.
+	if ceiling := caps.MaxOutputTokens(providerUtils.KnownClaudeMaxOutputTokens(caps.Model())); ceiling > 0 && clamped > ceiling {
+		clamped = ceiling
 	}
-	return maxTokens
+
+	// Floor, unchanged in behaviour. Applied after the ceiling so a row that
+	// publishes both bounds lands inside the range rather than at whichever one
+	// happened to be checked last.
+	if floor := caps.MinOutputTokens(fallback); floor > 0 && clamped < floor {
+		clamped = floor
+	}
+
+	if clamped == *maxTokens {
+		return maxTokens
+	}
+	return schemas.Ptr(clamped)
 }
 
 // convertInferenceConfig converts Bifrost parameters to Bedrock inference config
