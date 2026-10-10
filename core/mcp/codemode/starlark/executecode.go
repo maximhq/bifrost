@@ -338,6 +338,9 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	// PopulateExtraFields), plugin log draining, and short-circuit semantics —
 	// the op closure below only handles the wire CallTool. Keeps Starlark
 	// nested calls observationally identical to gateway-routed calls.
+	//
+	// Declared out here so the post-pipeline diagnostics can name the tool.
+	logToolName := strings.ReplaceAll(originalToolName, "-", "_")
 	finalResp, finalErr := s.clientManager.RunWithPluginPipeline(nestedCtx, mcpRequest, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		// Honor any pre-hook mutation of tool name + arguments before the wire
 		// call. Mirrors ToolsManager.executeToolInternal (toolmanager.go:648–670):
@@ -393,8 +396,10 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		latency := time.Since(startTime).Milliseconds()
 
 		if callErr != nil {
+			// Server-supplied text no post-hook will see: keep it out of the execution
+			// log, which is rendered into the tool message the model receives.
 			s.logger.Debug("%s Tool call failed: %s.%s - %v", codemcp.CodeModeLogPrefix, clientName, effectiveToolName, callErr)
-			appendLog(fmt.Sprintf("[TOOL] %s.%s error: %v", clientName, effectiveToolName, callErr))
+			appendLog(fmt.Sprintf("[TOOL] %s.%s call failed", clientName, effectiveToolName))
 			return nil, fmt.Errorf("tool call failed for %s.%s: %v", clientName, effectiveToolName, callErr)
 		}
 
@@ -402,21 +407,16 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		if err != nil {
 			return nil, err
 		}
-		if after, ok := strings.CutPrefix(rawResult, "Error: "); ok {
-			s.logger.Debug("%s Tool returned error result: %s.%s - %s", codemcp.CodeModeLogPrefix, clientName, effectiveToolName, after)
-			appendLog(fmt.Sprintf("[TOOL] %s.%s error result: %s", clientName, effectiveToolName, after))
-			return nil, fmt.Errorf("%s", after)
+		// An "Error: ..." text result is still a result, so it has to reach the output
+		// guardrails: mark it here and raise after the pipeline, not before it.
+		isErrorResult := strings.HasPrefix(rawResult, "Error: ") || (toolResponse != nil && toolResponse.IsError)
+		if isErrorResult {
+			s.logger.Debug("%s Tool returned error result: %s.%s", codemcp.CodeModeLogPrefix, clientName, effectiveToolName)
 		}
+		logToolName = strings.ReplaceAll(effectiveToolName, "-", "_")
 
-		resultStr := formatResultForLog(rawResult)
-		logToolName := strings.ReplaceAll(effectiveToolName, "-", "_")
-		appendLog(fmt.Sprintf("[TOOL] %s.%s raw response: %s", clientName, logToolName, resultStr))
-
-		// The "Error: " prefix check above catches results a server renders as text;
-		// this carries the protocol-level flag (mcp.CallToolResult.IsError) for
-		// servers that set it instead. Nil-guarded to match extractTextFromMCPResponse.
 		return &schemas.BifrostMCPResponse{
-			ChatMessage: createToolResponseMessage(toolCallReq, rawResult, toolResponse != nil && toolResponse.IsError),
+			ChatMessage: createToolResponseMessage(toolCallReq, rawResult, isErrorResult),
 			ExtraFields: schemas.BifrostMCPResponseExtraFields{
 				ClientName: clientName,
 				ToolName:   effectiveToolName,
@@ -426,6 +426,7 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	})
 
 	if finalErr != nil {
+		// Rejected by the pipeline: its content must not reach the caller via the log.
 		if finalErr.Error != nil {
 			return nil, fmt.Errorf("%s", finalErr.Error.Message)
 		}
@@ -441,6 +442,13 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 			if err := chargeToolResult(ctx, len(*content.ContentStr)); err != nil {
 				return nil, err
 			}
+			// Raised below, so logging it too would duplicate it in the model's context.
+			if after, ok := strings.CutPrefix(*content.ContentStr, "Error: "); ok {
+				return nil, fmt.Errorf("%s", truncateDiagnostic(after))
+			}
+			// Post-pipeline text only: the wire result would put blocked and redacted
+			// content into this log, which the model receives verbatim.
+			appendLog(fmt.Sprintf("[TOOL] %s.%s response: %s", clientName, logToolName, formatResultForLog(*content.ContentStr)))
 		}
 		return extractResultFromChatMessage(finalResp.ChatMessage), nil
 	}
