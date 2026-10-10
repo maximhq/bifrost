@@ -3999,3 +3999,39 @@ func TestValidateConfigSchema_InjectedTools(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateConfigSchema_MCPOpenAPIClient pins the config.schema.json rules
+// for connection_type "openapi": openapi_config is required there and only
+// there, it must name a spec source, and only header-shaped auth types apply.
+func TestValidateConfigSchema_MCPOpenAPIClient(t *testing.T) {
+	schema := loadLocalSchema(t)
+	mcpConfig := func(client string) string {
+		return `{"mcp": {"client_configs": [` + client + `]}}`
+	}
+	for _, tc := range []struct {
+		name    string
+		client  string
+		wantErr bool
+	}{
+		{"inline spec", `{"name":"petstore","connection_type":"openapi","openapi_config":{"spec":"openapi: 3.0.3\npaths: {}"}}`, false},
+		{"spec_file with credentials and options", `{"name":"petstore","connection_type":"openapi","auth_type":"headers","headers":{"X-Tenant":"acme"},"openapi_config":{"spec_file":"specs/petstore.yaml","base_url":"https://api.example.com","security_credentials":{"ApiKeyAuth":{"value":"env.PETSTORE_KEY"},"Basic":{"username":"u","password":"env.P"}},"include_deprecated":true,"max_response_bytes":4096}}`, false},
+		{"spec_url with per-user headers", `{"name":"petstore","connection_type":"openapi","auth_type":"per_user_headers","per_user_header_keys":["X-User-Token"],"openapi_config":{"spec_url":"https://api.example.com/openapi.json"}}`, false},
+		{"missing openapi_config", `{"name":"petstore","connection_type":"openapi"}`, true},
+		{"no spec source", `{"name":"petstore","connection_type":"openapi","openapi_config":{"base_url":"https://api.example.com"}}`, true},
+		{"unknown openapi_config field", `{"name":"petstore","connection_type":"openapi","openapi_config":{"spec":"x","spec_path":"y"}}`, true},
+		{"oauth auth refused", `{"name":"petstore","connection_type":"openapi","auth_type":"oauth","openapi_config":{"spec":"x"}}`, true},
+		{"token exchange refused", `{"name":"petstore","connection_type":"openapi","auth_type":"token_exchange","token_exchange":{"audience":"a"},"openapi_config":{"spec":"x"}}`, true},
+		{"openapi_config on http client", `{"name":"remote","connection_type":"http","connection_string":"https://mcp.example.com","openapi_config":{"spec":"x"}}`, true},
+		{"http client unaffected", `{"name":"remote","connection_type":"http","connection_string":"https://mcp.example.com"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateConfigSchema([]byte(mcpConfig(tc.client)), schema)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected %s to fail schema validation", tc.name)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected %s to pass schema validation, got: %v", tc.name, err)
+			}
+		})
+	}
+}

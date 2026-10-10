@@ -27,6 +27,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/openapimcp"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/temptoken"
@@ -3277,6 +3278,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		}
 	}
 
+	// openapi MCP clients synthesize their server from a spec; the framework
+	// package does that, core only knows the hook. Registered on the config
+	// passed to Init and again on the client below, so a manager created
+	// lazily (no mcp block in config.json) gets it too.
+	openAPIFactory := openapimcp.Factory(openapimcp.WithConfigDir(s.Config.ConfigDir()))
 	tableMCPConfig := s.Config.MCPConfig
 	var mcpConfig *schemas.MCPConfig
 	if tableMCPConfig != nil {
@@ -3285,6 +3291,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			mcpConfig.FetchNewRequestIDFunc = func(ctx *schemas.BifrostContext) string {
 				return uuid.New().String()
 			}
+			mcpConfig.InProcessServerFactory = openAPIFactory
 		}
 	}
 	// Initialize bifrost client
@@ -3308,6 +3315,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)
 	}
+	s.Client.SetMCPInProcessServerFactory(openAPIFactory)
 	logger.Info("bifrost client initialized")
 	// Sync plugin execution order from config to core (defensive — Init receives sorted list,
 	// but this ensures order consistency if the loading path changes in the future)

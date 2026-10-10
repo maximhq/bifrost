@@ -111,6 +111,8 @@ func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bif
 	r.POST("/api/mcp/library", lib.ChainMiddlewares(h.createMCPLibraryEntry, middlewares...))
 	r.DELETE("/api/mcp/library/{id}", lib.ChainMiddlewares(h.deleteMCPLibraryEntry, middlewares...))
 	r.POST("/api/mcp/client", lib.ChainMiddlewares(h.addMCPClient, middlewares...))
+	r.POST("/api/mcp/openapi/preview", lib.ChainMiddlewares(h.previewOpenAPISpec, middlewares...))
+	r.GET("/api/mcp/client/{id}/openapi-spec", lib.ChainMiddlewares(h.getMCPClientOpenAPISpec, middlewares...))
 	r.PUT("/api/mcp/client/{id}", lib.ChainMiddlewares(h.updateMCPClient, middlewares...))
 	r.DELETE("/api/mcp/client/{id}", lib.ChainMiddlewares(h.deleteMCPClient, middlewares...))
 	r.POST("/api/mcp/client/{id}/reconnect", lib.ChainMiddlewares(h.reconnectMCPClient, middlewares...))
@@ -1822,6 +1824,7 @@ type MCPClientUpdateRequest struct {
 	TLSConfig              *schemas.MCPTLSConfig           `json:"tls_config,omitempty"`
 	VKConfigs              *[]MCPVKConfigRequest           `json:"vk_configs,omitempty"`
 	OauthConfig            *OAuthConfigRequest             `json:"oauth_config,omitempty"`
+	OpenAPIConfig          *schemas.MCPOpenAPIConfig       `json:"openapi_config,omitempty"` // openapi clients only; replaces the spec/credentials (PATCH-style inside the block)
 
 	// AllowOnAllVirtualKeys is the earlier name of allow_by_default, still accepted. AllowByDefault
 	// decides when both are sent; see schemas.ResolveAllowByDefault.
@@ -1849,21 +1852,42 @@ func (req *MCPClientUpdateRequest) resolvedAllowByDefault(existing bool) bool {
 // client gate below. Returns true if the request was rejected (the error
 // response has already been written); the caller should return immediately.
 func rejectPrivateMCPTargetIfAuthBypassed(ctx *fasthttp.RequestCtx, connType string, connectionString *schemas.SecretVar) bool {
-	authBypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
-	if !authBypassed {
-		return false
-	}
 	if connType != string(schemas.MCPConnectionTypeHTTP) && connType != string(schemas.MCPConnectionTypeSSE) {
 		return false
 	}
 	if connectionString == nil {
 		return false
 	}
-	parsed, err := url.Parse(connectionString.GetValue())
+	return rejectPrivateURLIfAuthBypassed(ctx, connectionString.GetValue())
+}
+
+// rejectPrivateURLIfAuthBypassed is the URL-shaped form of the gate above,
+// shared with the openapi paths (spec_url and the upstream base_url carry the
+// same SSRF exposure as an MCP connection_string). Returns true if the request
+// was rejected (the error response has already been written).
+func rejectPrivateURLIfAuthBypassed(ctx *fasthttp.RequestCtx, rawURL string) bool {
+	if authBypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); !authBypassed {
+		return false
+	}
+	msg, refused := privateTargetRefusal(rawURL)
+	if !refused {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, msg)
+	return true
+}
+
+// privateTargetRefusal classifies rawURL's host for the unauthenticated-caller
+// rule without writing a response: refused is true, with the message to send,
+// when the host resolves to a non-public address or cannot be resolved at all
+// (fail closed). A malformed URL is not refused here; the connect path reports
+// it.
+func privateTargetRefusal(rawURL string) (string, bool) {
+	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Hostname() == "" {
 		// Malformed/unresolvable target: let the normal connect path surface
 		// its own error rather than duplicating URL validation here.
-		return false
+		return "", false
 	}
 	// A bounded, request-independent context: this lookup is a pre-check, not
 	// a dial, and must not be tied to the request's own (often much longer)
@@ -1875,16 +1899,14 @@ func rejectPrivateMCPTargetIfAuthBypassed(ctx *fasthttp.RequestCtx, connType str
 		// Fail closed: with no addresses to classify there is nothing this
 		// gate can vouch for, and an unresolvable name is also how a caller
 		// would make the check inconclusive on purpose.
-		SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("could not resolve MCP target host %q; unauthenticated callers can only register MCP clients whose target resolves to a public address; set an admin password to allow this", parsed.Hostname()))
-		return true
+		return fmt.Sprintf("could not resolve MCP target host %q; unauthenticated callers can only register MCP clients whose target resolves to a public address; set an admin password to allow this", parsed.Hostname()), true
 	}
 	for _, ip := range ips {
 		if !network.IsPublicIP(ip) {
-			SendError(ctx, fasthttp.StatusForbidden, "unauthenticated callers cannot register MCP clients that connect to loopback, private-network, or link-local addresses; set an admin password to allow this")
-			return true
+			return "unauthenticated callers cannot register MCP clients that connect to loopback, private-network, or link-local addresses; set an admin password to allow this", true
 		}
 	}
-	return false
+	return "", false
 }
 
 // rejectStdioMCPClientIfAuthBypassed refuses to register a stdio MCP client for
@@ -1911,7 +1933,7 @@ func rejectStdioMCPClientIfAuthBypassed(ctx *fasthttp.RequestCtx, connType strin
 // mcpClientSecretReferences lists the credential-bearing fields of an MCP
 // client request whose value is an env./vault. reference rather than a literal.
 // Keys are wire field names so a refusal can name what to change.
-func mcpClientSecretReferences(headers map[string]schemas.SecretVar, connectionString *schemas.SecretVar, oauth *OAuthConfigRequest, tokenExchange *schemas.MCPTokenExchangeConfig, tlsConfig *schemas.MCPTLSConfig) []string {
+func mcpClientSecretReferences(headers map[string]schemas.SecretVar, connectionString *schemas.SecretVar, oauth *OAuthConfigRequest, tokenExchange *schemas.MCPTokenExchangeConfig, tlsConfig *schemas.MCPTLSConfig, openAPI *schemas.MCPOpenAPIConfig) []string {
 	var refs []string
 	isRef := func(v *schemas.SecretVar) bool { return v != nil && v.Type() != schemas.SecretTypePlainText }
 	for name, value := range headers {
@@ -1942,6 +1964,7 @@ func mcpClientSecretReferences(headers map[string]schemas.SecretVar, connectionS
 	if tlsConfig != nil && isRef(tlsConfig.CACertPEM) {
 		refs = append(refs, "tls_config.ca_cert_pem")
 	}
+	refs = append(refs, openAPICredentialSecretReferences(openAPI)...)
 	return refs
 }
 
@@ -1996,11 +2019,12 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	// unknown value would otherwise match neither and reach the connect path
 	// unchecked (every later branch treats non-stdio as HTTP/SSE).
 	switch schemas.MCPConnectionType(req.ConnectionType) {
-	case schemas.MCPConnectionTypeHTTP, schemas.MCPConnectionTypeSSE, schemas.MCPConnectionTypeSTDIO:
+	case schemas.MCPConnectionTypeHTTP, schemas.MCPConnectionTypeSSE, schemas.MCPConnectionTypeSTDIO, schemas.MCPConnectionTypeOpenAPI:
 	default:
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid connection_type %q: must be one of http, sse, stdio", req.ConnectionType))
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid connection_type %q: must be one of http, sse, stdio, openapi", req.ConnectionType))
 		return
 	}
+	isOpenAPIClient := req.ConnectionType == string(schemas.MCPConnectionTypeOpenAPI)
 
 	// Both gates run before anything else: registering a client is what makes
 	// Bifrost spawn the subprocess / dial the target, so a refusal has to land
@@ -2008,7 +2032,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	if rejectStdioMCPClientIfAuthBypassed(ctx, req.ConnectionType) {
 		return
 	}
-	if rejectSecretReferencesIfAuthBypassed(ctx, mcpClientSecretReferences(req.Headers, req.ConnectionString, req.OauthConfig, req.TokenExchange, req.TLSConfig)) {
+	if rejectSecretReferencesIfAuthBypassed(ctx, mcpClientSecretReferences(req.Headers, req.ConnectionString, req.OauthConfig, req.TokenExchange, req.TLSConfig, req.OpenAPIConfig)) {
 		return
 	}
 	if rejectPrivateMCPTargetIfAuthBypassed(ctx, req.ConnectionType, req.ConnectionString) {
@@ -2058,6 +2082,60 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// openapi: the synthesized server has no remote MCP handshake, so only the
+	// header-shaped auth types apply; the spec is validated, inlined and
+	// synthesized now so a bad document or an unknown tool name fails here with
+	// a 400 rather than after the row is written. The upstream base URL is
+	// subject to the same public-target rule as a connection_string.
+	var preparedOpenAPI *preparedOpenAPIClient
+	if isOpenAPIClient {
+		switch req.AuthType {
+		case "", string(schemas.MCPAuthTypeNone), string(schemas.MCPAuthTypeHeaders), string(schemas.MCPAuthTypePerUserHeaders):
+		default:
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth_type %q is not supported for connection_type 'openapi' (use none, headers or per_user_headers)", req.AuthType))
+			return
+		}
+		if req.ConnectionString != nil && strings.TrimSpace(req.ConnectionString.GetValue()) != "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "connection_string must not be set for connection_type 'openapi'; the upstream is openapi_config.base_url")
+			return
+		}
+		req.ConnectionString = nil
+		prepared, status, msg := prepareOpenAPIConfig(ctx, req.Name, req.OpenAPIConfig)
+		if status != 0 {
+			SendError(ctx, status, msg)
+			return
+		}
+		if unknown := unknownOpenAPITools(req.ToolsToExecute, prepared.toolNames); len(unknown) > 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_execute: the spec defines no tool named %s", strings.Join(unknown, ", ")))
+			return
+		}
+		if unknown := unknownOpenAPITools(req.ToolsToAutoExecute, prepared.toolNames); len(unknown) > 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: the spec defines no tool named %s", strings.Join(unknown, ", ")))
+			return
+		}
+		preparedOpenAPI = prepared
+		if req.AuthType == string(schemas.MCPAuthTypePerUserHeaders) {
+			// Same schema checks the per-user-headers branch below applies;
+			// there is no upstream MCP server to verify against, so the
+			// client takes the default create path and connects directly.
+			if len(req.PerUserHeaderKeys) == 0 {
+				SendError(ctx, fasthttp.StatusBadRequest, "per_user_header_keys must be a non-empty list when auth_type is 'per_user_headers'")
+				return
+			}
+			req.PerUserHeaderKeys = mcputils.CanonicalizeHeaderKeys(req.PerUserHeaderKeys)
+			for i, key := range req.PerUserHeaderKeys {
+				if key == "" {
+					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("per_user_header_keys[%d] is empty", i))
+					return
+				}
+			}
+			if lib.HasDuplicates(req.PerUserHeaderKeys) {
+				SendError(ctx, fasthttp.StatusBadRequest, "per_user_header_keys contains duplicate entries")
+				return
+			}
+		}
+	}
+
 	// tool_execution_timeout: 0 (unset) means "use global from
 	// tool_manager_config", matching TableMCPClient's own column semantics —
 	// req.ToolExecutionTimeout is a plain int (embedded from TableMCPClient),
@@ -2089,7 +2167,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	// OAuth flow exactly — the sample values are used once for verification
 	// and discarded (never persisted); each end-user submits their own values
 	// later via the inline-401 flow.
-	if req.AuthType == string(schemas.MCPAuthTypePerUserHeaders) {
+	if req.AuthType == string(schemas.MCPAuthTypePerUserHeaders) && !isOpenAPIClient {
 		if len(req.PerUserHeaderKeys) == 0 {
 			SendError(ctx, fasthttp.StatusBadRequest, "per_user_header_keys must be a non-empty list when auth_type is 'per_user_headers'")
 			return
@@ -2571,6 +2649,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		ToolPricing:            req.ToolPricing,
 		AllowByDefault:         req.AllowByDefault,
 	}
+	if preparedOpenAPI != nil {
+		schemasConfig.OpenAPIConfig = preparedOpenAPI.config
+		schemasConfig.PerUserHeaderKeys = req.PerUserHeaderKeys
+	}
 
 	// Creating MCP client config in config store
 	if h.store.ConfigStore != nil {
@@ -2641,11 +2723,15 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusNotFound, "MCP client not found")
 		return
 	}
-	if rejectSecretReferencesIfAuthBypassed(ctx, mcpClientSecretReferences(req.Headers, nil, req.OauthConfig, req.TokenExchange, req.TLSConfig)) {
+	if rejectSecretReferencesIfAuthBypassed(ctx, mcpClientSecretReferences(req.Headers, nil, req.OauthConfig, req.TokenExchange, req.TLSConfig, req.OpenAPIConfig)) {
 		return
 	}
 	if err := validateNeedsSessionStickiness(req.NeedsSessionStickiness, existingConfig.ConnectionType); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	if req.OpenAPIConfig != nil && existingConfig.ConnectionType != schemas.MCPConnectionTypeOpenAPI {
+		SendError(ctx, fasthttp.StatusBadRequest, "openapi_config can only be updated for MCP clients with connection_type 'openapi'")
 		return
 	}
 	// Snapshot fields we need to diff against the resolved values AFTER UpdateMCPClient
@@ -2791,6 +2877,34 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	if err := mcp.ValidateMCPClientName(name); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
 		return
+	}
+	// openapi: a replaced spec/credential block is merged PATCH-style onto the
+	// stored one, re-synthesized, and the (possibly unchanged) tool allow-lists
+	// are checked against the resulting tool names. nil leaves the stored block
+	// alone (core keeps it too); the resolved block is what gets persisted and
+	// what core rebuilds the server from.
+	var resolvedOpenAPIConfig *schemas.MCPOpenAPIConfig
+	if existingConfig.ConnectionType == schemas.MCPConnectionTypeOpenAPI && (req.OpenAPIConfig != nil || req.ToolsToExecute != nil || req.ToolsToAutoExecute != nil) {
+		candidate := existingConfig.OpenAPIConfig
+		if req.OpenAPIConfig != nil {
+			candidate = mergeOpenAPIConfigUpdate(existingConfig.OpenAPIConfig, req.OpenAPIConfig)
+		}
+		prepared, status, msg := prepareOpenAPIConfig(ctx, name, candidate)
+		if status != 0 {
+			SendError(ctx, status, msg)
+			return
+		}
+		if unknown := unknownOpenAPITools(resolvedToolsToExecute, prepared.toolNames); len(unknown) > 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_execute: the spec defines no tool named %s", strings.Join(unknown, ", ")))
+			return
+		}
+		if unknown := unknownOpenAPITools(resolvedToolsToAutoExecute, prepared.toolNames); len(unknown) > 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: the spec defines no tool named %s", strings.Join(unknown, ", ")))
+			return
+		}
+		if req.OpenAPIConfig != nil {
+			resolvedOpenAPIConfig = prepared.config
+		}
 	}
 	if err := validateAllowedExtraHeaders(allowedExtraHeaders); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid allowed_extra_headers: %v", err))
@@ -3078,6 +3192,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		PerUserHeaderKeys:      perUserHeaderKeys,
 		TokenExchange:          tokenExchange,
 		TLSConfig:              tlsConfig,
+		OpenAPIConfig:          resolvedOpenAPIConfig,
 	}
 	// Rebind persisted discovered tool keys (and inner Function.Name) to the current
 	// client name so a restart restores them under the right prefix.
@@ -3136,6 +3251,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		Disabled:               disabled,
 		PerUserHeaderKeys:      perUserHeaderKeys,
 		TokenExchange:          tokenExchange,
+		OpenAPIConfig:          resolvedOpenAPIConfig,
 	}
 
 	// Compare per-call-ness before/after so the response can tell the admin

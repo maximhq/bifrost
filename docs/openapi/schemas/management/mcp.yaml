@@ -88,8 +88,12 @@ MCPTokenExchangeConfig:
 
 MCPConnectionType:
   type: string
-  enum: [http, stdio, sse, inprocess]
-  description: Connection type for MCP client
+  enum: [http, stdio, sse, inprocess, openapi]
+  description: |
+    Connection type for MCP client. `openapi` synthesizes an in-process MCP
+    server from an OpenAPI/Swagger document (see `openapi_config`): every
+    supported operation becomes a tool whose call is proxied as an HTTP
+    request to the described API.
 
 MCPConnectionState:
   type: string
@@ -160,17 +164,20 @@ MCPClientCreateRequest:
     - $ref: '#/MCPClientCreateRequestHTTP'
     - $ref: '#/MCPClientCreateRequestSSE'
     - $ref: '#/MCPClientCreateRequestSTDIO'
+    - $ref: '#/MCPClientCreateRequestOpenAPI'
   discriminator:
     propertyName: connection_type
     mapping:
       http: '#/MCPClientCreateRequestHTTP'
       sse: '#/MCPClientCreateRequestSSE'
       stdio: '#/MCPClientCreateRequestSTDIO'
+      openapi: '#/MCPClientCreateRequestOpenAPI'
   description: |
     MCP client configuration for creating a new client (tool_pricing not available at creation).
     The schema varies based on connection_type:
     - HTTP/SSE: connection_string is required
     - STDIO: stdio_config is required
+    - OpenAPI: openapi_config is required (spec or spec_url); connection_string must be omitted
     - InProcess: server instance must be provided programmatically (Go package only)
 
 MCPClientCreateRequestBase:
@@ -417,6 +424,241 @@ MCPClientCreateRequestSTDIO:
           $ref: '#/MCPStdioConfig'
           description: STDIO configuration (required for STDIO connection type)
 
+MCPClientCreateRequestOpenAPI:
+  allOf:
+    - $ref: '#/MCPClientCreateRequestBase'
+    - type: object
+      required:
+        - openapi_config
+      properties:
+        connection_type:
+          type: string
+          enum: [openapi]
+        auth_type:
+          type: string
+          enum: [none, headers, per_user_headers]
+          description: |
+            The synthesized server has no remote MCP handshake, so only the
+            header-shaped auth types apply. Static `headers` and per-user
+            headers are forwarded to the upstream API on every call; the
+            document's own security schemes are satisfied from
+            `openapi_config.security_credentials`. OAuth-flavored and
+            token-exchange auth types are rejected with 400.
+        openapi_config:
+          $ref: '#/MCPOpenAPIConfig'
+        tools_to_execute:
+          type: array
+          items:
+            type: string
+          description: |
+            Synthesized tool names to expose (`["*"]` for all). Names come from
+            the preview endpoint; an entry the document does not define is
+            rejected with 400.
+
+MCPOpenAPICredential:
+  type: object
+  description: |
+    Secret material for one `securitySchemes` entry. `apiKey` and `http`
+    bearer schemes use `value`; `http` basic uses `username` and `password`.
+    Values accept `env.VAR` and `vault.path` references. Responses return
+    redacted placeholders; sending a placeholder back on update keeps the
+    stored secret.
+  properties:
+    value:
+      type: string
+    username:
+      type: string
+    password:
+      type: string
+
+MCPOpenAPIConfig:
+  type: object
+  description: |
+    Configuration of an `openapi` connection-type client. Exactly one of
+    `spec` (inline document text, JSON or YAML) or `spec_url` supplies the
+    document on create; a `spec_url` is fetched once and stored inline, with
+    `spec_url` kept as provenance. Supported documents: Swagger 2.0, OpenAPI
+    3.0, 3.1 and 3.2. `spec_size`, `spec_hash`, `spec_title`,
+    `openapi_version` and `operation_count` are computed by Bifrost and
+    informational on read; `spec` itself is omitted from client reads (use
+    GET /api/mcp/client/{id}/openapi-spec).
+  properties:
+    spec:
+      type: string
+      description: Inline OpenAPI/Swagger document (JSON or YAML text). Write-only.
+    spec_url:
+      type: string
+      format: uri
+      description: http(s) URL of the document. Fetched on create when spec is empty.
+    base_url:
+      type: string
+      format: uri
+      description: Upstream API base URL. Defaults to the document's first server; required when the document declares none or only relative ones.
+    security_credentials:
+      type: object
+      additionalProperties:
+        $ref: '#/MCPOpenAPICredential'
+      description: Credentials keyed by the document's securitySchemes name.
+    include_deprecated:
+      type: boolean
+      default: false
+      description: Expose operations the document marks deprecated.
+    max_response_bytes:
+      type: integer
+      minimum: 0
+      description: Cap on the upstream response body returned to the model (0 = default 64 KiB).
+    spec_size:
+      type: integer
+      readOnly: true
+    spec_hash:
+      type: string
+      readOnly: true
+      description: SHA-256 of the stored document.
+    spec_title:
+      type: string
+      readOnly: true
+    openapi_version:
+      type: string
+      readOnly: true
+      description: Detected document version, e.g. "2.0", "3.0.3", "3.1.0", "3.2.0".
+    operation_count:
+      type: integer
+      readOnly: true
+      description: Number of tools synthesized from the document.
+
+MCPOpenAPIPreviewRequest:
+  type: object
+  description: Parse-only request; one of spec or spec_url is required.
+  properties:
+    spec:
+      type: string
+      description: Inline OpenAPI/Swagger document (JSON or YAML text).
+    spec_url:
+      type: string
+      format: uri
+      description: http(s) URL of the document to fetch. Also resolves relative server URLs when given alongside spec.
+    base_url:
+      type: string
+      format: uri
+      description: Optional upstream override to preview with.
+    include_deprecated:
+      type: boolean
+      default: false
+
+MCPOpenAPISecurityScheme:
+  type: object
+  properties:
+    name:
+      type: string
+    type:
+      type: string
+      enum: [apiKey, http, oauth2, openIdConnect, mutualTLS]
+    in:
+      type: string
+      enum: [header, query, cookie]
+      description: apiKey schemes only.
+    param_name:
+      type: string
+      description: apiKey schemes only — the header, query or cookie name.
+    scheme:
+      type: string
+      description: http schemes only — bearer or basic.
+    description:
+      type: string
+    supported:
+      type: boolean
+      description: Whether a credential for this scheme can be configured (apiKey header/query/cookie, http bearer/basic).
+    reason:
+      type: string
+      description: Why the scheme is unsupported.
+
+MCPOpenAPIPreviewTool:
+  type: object
+  properties:
+    name:
+      type: string
+      description: Synthesized tool name (sanitized operationId, or method_path).
+    operation_id:
+      type: string
+    method:
+      type: string
+    path:
+      type: string
+    summary:
+      type: string
+    description:
+      type: string
+    deprecated:
+      type: boolean
+    input_schema:
+      type: object
+      description: JSON Schema of the tool's arguments (parameters and request body flattened).
+    annotations:
+      type: object
+      description: MCP tool annotations derived from the HTTP method (readOnlyHint, destructiveHint, idempotentHint, openWorldHint).
+    warnings:
+      type: array
+      items:
+        type: string
+
+MCPOpenAPIUnsupportedOperation:
+  type: object
+  properties:
+    operation_id:
+      type: string
+    method:
+      type: string
+    path:
+      type: string
+    reason:
+      type: string
+
+MCPOpenAPIPreviewResponse:
+  type: object
+  properties:
+    title:
+      type: string
+    version:
+      type: string
+      description: info.version of the document.
+    openapi_version:
+      type: string
+      description: Detected document version.
+    description:
+      type: string
+    servers:
+      type: array
+      items:
+        type: string
+    base_url:
+      type: string
+      description: Resolved upstream base URL (override, else the first absolute server). Empty when none could be resolved, with a warning.
+    security_schemes:
+      type: array
+      items:
+        $ref: '#/MCPOpenAPISecurityScheme'
+    tools:
+      type: array
+      items:
+        $ref: '#/MCPOpenAPIPreviewTool'
+    unsupported:
+      type: array
+      items:
+        $ref: '#/MCPOpenAPIUnsupportedOperation'
+    warnings:
+      type: array
+      items:
+        type: string
+    tool_count:
+      type: integer
+    spec_size:
+      type: integer
+    spec_hash:
+      type: string
+    spec:
+      type: string
+      description: The fetched document text, present only when the request named a spec_url.
+
 MCPClientUpdateRequest:
   type: object
   description: |
@@ -426,6 +668,15 @@ MCPClientUpdateRequest:
     stdio_config, oauth_config_id) are not accepted here; they cannot be changed
     after creation.
   properties:
+    openapi_config:
+      $ref: '#/MCPOpenAPIConfig'
+      description: |
+        openapi clients only (400 otherwise). Replaces the document and/or
+        credentials: the block is merged onto the stored one (an omitted spec
+        keeps the stored document, a redacted credential placeholder keeps the
+        stored secret), re-synthesized, and the client's server is rebuilt so
+        its tools reflect the new document. tools_to_execute entries are
+        validated against the resulting tool names.
     name:
       type: string
       description: Display name for the MCP client
@@ -631,6 +882,9 @@ MCPClientConfig:
       description: HTTP or SSE URL (required for HTTP or SSE connections)
     stdio_config:
       $ref: '#/MCPStdioConfig'
+    openapi_config:
+      $ref: '#/MCPOpenAPIConfig'
+      description: Present for openapi clients. The document itself is omitted and credentials are redacted; the spec_* metadata describes the stored document.
     tls_config:
       type: object
       description: TLS configuration for HTTP and SSE connections.

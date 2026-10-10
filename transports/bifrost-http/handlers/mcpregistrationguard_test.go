@@ -227,12 +227,13 @@ func TestMCPClientSecretReferences(t *testing.T) {
 		&OAuthConfigRequest{ClientID: &plain, ClientSecret: &vaultSecret},
 		&schemas.MCPTokenExchangeConfig{ClientSecret: &envHeader},
 		&schemas.MCPTLSConfig{CACertPEM: &envHeader},
+		nil,
 	)
 	want := []string{"headers.X-Api-Key", "oauth_config.client_secret", "token_exchange.client_secret", "tls_config.ca_cert_pem"}
 	if strings.Join(refs, ",") != strings.Join(want, ",") {
 		t.Fatalf("expected %v, got %v", want, refs)
 	}
-	if got := mcpClientSecretReferences(map[string]schemas.SecretVar{"X-Plain": plain}, nil, nil, nil, nil); len(got) != 0 {
+	if got := mcpClientSecretReferences(map[string]schemas.SecretVar{"X-Plain": plain}, nil, nil, nil, nil, nil); len(got) != 0 {
 		t.Fatalf("expected no references for literal values, got %v", got)
 	}
 }
