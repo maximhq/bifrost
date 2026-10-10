@@ -873,6 +873,12 @@ const logstoreMigrationLockKey int64 = 1000011
 // dedicated session exactly as the migrator does (pg_try_advisory_lock on its
 // own connection, held for the whole run) and returns that session plus a
 // release func that unlocks and closes it.
+//
+// Advisory locks are scoped per database, not per schema, so the
+// framework/logstore tests (which run the real migrator against the same
+// `bifrost` database) can legitimately hold this key for a few seconds when
+// both packages run at once. Like the migrator, the helper retries instead of
+// treating a held lock as a failure, and only gives up after a deadline.
 func holdMigrationLockLikeMigrator(t *testing.T, sqlDB *sql.DB) (*sql.Conn, func()) {
 	t.Helper()
 	ctx := context.Background()
@@ -880,12 +886,22 @@ func holdMigrationLockLikeMigrator(t *testing.T, sqlDB *sql.DB) (*sql.Conn, func
 	if err != nil {
 		t.Fatalf("Conn() error = %v", err)
 	}
-	var got bool
-	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", logstoreMigrationLockKey).Scan(&got); err != nil {
-		t.Fatalf("pg_try_advisory_lock error = %v", err)
-	}
-	if !got {
-		t.Fatalf("migration lock %d is already held by another session", logstoreMigrationLockKey)
+	const lockWait = 30 * time.Second
+	deadline := time.Now().Add(lockWait)
+	for {
+		var got bool
+		if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", logstoreMigrationLockKey).Scan(&got); err != nil {
+			_ = conn.Close()
+			t.Fatalf("pg_try_advisory_lock error = %v", err)
+		}
+		if got {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = conn.Close()
+			t.Fatalf("migration lock %d still held by another session after %s", logstoreMigrationLockKey, lockWait)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	var once sync.Once
 	release := func() {
@@ -974,6 +990,7 @@ func TestBatchWriterGateUnderSteadyLoadPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginTx error = %v", err)
 	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit; keeps conn.Close from hanging on a failed lock
 	if _, err := tx.ExecContext(ctx, "SET LOCAL lock_timeout = '5s'"); err != nil {
 		t.Fatalf("SET LOCAL lock_timeout error = %v", err)
 	}

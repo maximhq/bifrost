@@ -4443,8 +4443,18 @@ func betaHeaderCorpus() map[string]string {
 		// empty content array and a string-content system message may carry it too.
 		"per-message output_config.effort on an effort-only system message":   `{"model":"claude-opus-5-5","output_config":{"effort":"high"},"messages":[{"role":"user","content":"hi"},{"role":"system","content":[],"output_config":{"effort":"low"}}]}`,
 		"per-message output_config.effort on a string-content system message": `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":"be brief","output_config":{"effort":"low"}}]}`,
-		"per-message output_config without effort (must NOT trigger)":         `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":[],"output_config":{"effort":null}}]}`,
-		"no messages field at all":                                            `{"model":"` + model + `","max_tokens":64}`,
+		// Mid-conversation tool changes (#8207): a by-reference block needs the tool-changes
+		// beta; a by-value tool_definition (on the block, or recorded in a compaction block's
+		// tool_changes) additionally needs inline-tools.
+		"tool_removal by reference on a system message":                 `{"model":"claude-sonnet-5-5","tools":[{"name":"t","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hi"},{"role":"system","content":[{"type":"tool_removal","tool":{"type":"tool_reference","name":"t"}}]}]}`,
+		"tool_addition with an inline tool_definition":                  `{"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"t","input_schema":{"type":"object"}}}}]}]}`,
+		"compaction tool_changes with an inline tool_definition":        `{"model":"claude-sonnet-5-5","messages":[{"role":"assistant","content":[{"type":"compaction","content":"summary","tool_changes":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"t","input_schema":{"type":"object"}}}}]}]},{"role":"user","content":"hi"}]}`,
+		"compaction tool_changes by reference only (no inline beta)":    `{"model":"claude-sonnet-5-5","tools":[{"name":"t","input_schema":{"type":"object"}}],"messages":[{"role":"assistant","content":[{"type":"compaction","content":"summary","tool_changes":[{"type":"tool_removal","tool":{"type":"tool_reference","name":"t"}}]}]},{"role":"user","content":"hi"}]}`,
+		"tool_addition inline definition with strict and defer_loading": `{"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"t","input_schema":{"type":"object"},"strict":true,"defer_loading":true}}}]}]}`,
+		"compaction tool_changes inline definition with strict":         `{"model":"claude-sonnet-5-5","messages":[{"role":"assistant","content":[{"type":"compaction","content":"summary","tool_changes":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"t","input_schema":{"type":"object"},"strict":true}}}]}]},{"role":"user","content":"hi"}]}`,
+		"tool_addition inline mcp_toolset definition":                   `{"model":"claude-sonnet-5-5","mcp_servers":[{"type":"url","url":"https://mcp.example.com","name":"calendar"}],"messages":[{"role":"user","content":"hi"},{"role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"type":"mcp_toolset","mcp_server_name":"calendar"}}}]}]}`,
+		"per-message output_config without effort (must NOT trigger)":   `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":[],"output_config":{"effort":null}}]}`,
+		"no messages field at all":                                      `{"model":"` + model + `","max_tokens":64}`,
 
 		// --- scope found elsewhere; the messages branch must not double-add or mask it ---
 		"scoped cache_control in system": `{"model":"` + model + `","system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral","scope":"organization"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
@@ -5151,10 +5161,9 @@ var notEmittedByRequestGating = map[string]string{
 		"fallback-credit date to the AWS one on Bedrock/Mantle; gating emits only the canonical value",
 	"AnthropicMCPClientBetaHeaderDeprecated": "superseded version constant kept for inbound matching; " +
 		"gating emits AnthropicMCPClientBetaHeader",
-	"AnthropicContext1MBetaHeader":                  "opted into via network config or passthrough headers, not derived from the request body",
-	"AnthropicRedactThinkingBetaHeader":             "opted into via network config or passthrough headers, not derived from the request body",
-	"AnthropicSkillsBetaHeader":                     "opted into via network config or passthrough headers, not derived from the request body",
-	"AnthropicMidConversationToolChangesBetaHeader": "opted into via network config or passthrough headers, not derived from the request body",
+	"AnthropicContext1MBetaHeader":      "opted into via network config or passthrough headers, not derived from the request body",
+	"AnthropicRedactThinkingBetaHeader": "opted into via network config or passthrough headers, not derived from the request body",
+	"AnthropicSkillsBetaHeader":         "opted into via network config or passthrough headers, not derived from the request body",
 }
 
 // TestEveryBetaHeaderIsCoveredByTheCorpus makes a newly added beta header loud.
@@ -5642,6 +5651,66 @@ func TestAddMissingBetaHeaders_PerMessageEffortInjectsMidConversationOutputConfi
 	})
 }
 
+// TestAddMissingBetaHeaders_ToolChangesInjectBetas (#8207): tool_addition / tool_removal
+// blocks derive mid-conversation-tool-changes-2026-07-01 from the body; a by-value
+// tool_definition (on the block or inside a compaction block's tool_changes) additionally
+// derives inline-tools-2026-09-15. Both paths (typed and raw body) must agree, and the
+// headers must not appear for a body without the blocks.
+func TestAddMissingBetaHeaders_ToolChangesInjectBetas(t *testing.T) {
+	corpus := betaHeaderCorpus()
+	cases := []struct {
+		name       string
+		body       string
+		wantChange bool
+		wantInline bool
+	}{
+		{"by-reference removal", corpus["tool_removal by reference on a system message"], true, false},
+		{"inline definition", corpus["tool_addition with an inline tool_definition"], true, true},
+		{"compaction tool_changes inline definition", corpus["compaction tool_changes with an inline tool_definition"], true, true},
+		{"compaction tool_changes by reference", corpus["compaction tool_changes by reference only (no inline beta)"], true, false},
+		{"no tool changes", corpus["bare request"], false, false},
+	}
+	check := func(t *testing.T, merged []string, wantChange, wantInline bool) {
+		t.Helper()
+		if got := slices.Contains(merged, AnthropicMidConversationToolChangesBetaHeader); got != wantChange {
+			t.Errorf("%s present=%v, want %v; got %v", AnthropicMidConversationToolChangesBetaHeader, got, wantChange, merged)
+		}
+		if got := slices.Contains(merged, AnthropicInlineToolsBetaHeader); got != wantInline {
+			t.Errorf("%s present=%v, want %v; got %v", AnthropicInlineToolsBetaHeader, got, wantInline, merged)
+		}
+	}
+	for _, tc := range cases {
+		if tc.body == "" {
+			t.Fatalf("corpus entry for %q missing", tc.name)
+		}
+		t.Run(tc.name+"/typed", func(t *testing.T) {
+			var req AnthropicMessageRequest
+			if err := schemas.Unmarshal([]byte(tc.body), &req); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContext(ctx, &req, schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContext: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic), tc.wantChange, tc.wantInline)
+		})
+		t.Run(tc.name+"/raw", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(tc.body), schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic), tc.wantChange, tc.wantInline)
+		})
+	}
+	t.Run("dropped where the provider lacks the feature", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if err := AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(corpus["tool_addition with an inline tool_definition"]), schemas.Vertex); err != nil {
+			t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+		}
+		check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Vertex), false, false)
+	})
+}
+
 // TestDefaultSupportsMidConversationSystem_ModelList pins the documented model list for
 // mid-conversation system messages: Opus 4.8+, Sonnet 5.5 (not Sonnet 5), Fable/Mythos.
 // Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
@@ -5869,6 +5938,104 @@ func TestAnthropicAllowedCallers(t *testing.T) {
 					t.Fatalf("got %v, want %v", got, tt.want)
 				}
 			}
+		})
+	}
+}
+
+// TestAddMissingBetaHeaders_InlineDefinitionCarriesItsOwnBetas: a tool defined by value inside
+// a tool_addition block needs the same beta headers its tools[] twin would get (strict ->
+// structured outputs, defer_loading -> tool search), on both the typed and the raw path, and
+// inside compaction tool_changes too. An inline mcp_toolset needs the MCP client beta.
+func TestAddMissingBetaHeaders_InlineDefinitionCarriesItsOwnBetas(t *testing.T) {
+	corpus := betaHeaderCorpus()
+	cases := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{"inline strict + defer_loading", corpus["tool_addition inline definition with strict and defer_loading"],
+			[]string{AnthropicStructuredOutputsBetaHeader, AnthropicToolSearchBetaHeader, AnthropicInlineToolsBetaHeader}},
+		{"compaction inline strict", corpus["compaction tool_changes inline definition with strict"],
+			[]string{AnthropicStructuredOutputsBetaHeader, AnthropicInlineToolsBetaHeader}},
+		{"inline mcp_toolset", corpus["tool_addition inline mcp_toolset definition"],
+			[]string{AnthropicMCPClientInlineToolsBetaHeader, AnthropicInlineToolsBetaHeader}},
+	}
+	for _, tc := range cases {
+		if tc.body == "" {
+			t.Fatalf("corpus entry for %q missing", tc.name)
+		}
+		check := func(t *testing.T, merged []string) {
+			t.Helper()
+			for _, want := range tc.want {
+				if !slices.Contains(merged, want) {
+					t.Errorf("beta %s missing; got %v", want, merged)
+				}
+			}
+		}
+		t.Run(tc.name+"/typed", func(t *testing.T) {
+			var req AnthropicMessageRequest
+			if err := schemas.Unmarshal([]byte(tc.body), &req); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContext(ctx, &req, schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContext: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic))
+		})
+		t.Run(tc.name+"/raw", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(tc.body), schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic))
+		})
+	}
+}
+
+// TestAddMissingBetaHeaders_SingleMCPClientDate: mcp_servers and an inline mcp_toolset must
+// not produce two mcp-client-* betas. With an inline toolset present the inline-era date is
+// the one sent; without it the regular one stays.
+func TestAddMissingBetaHeaders_SingleMCPClientDate(t *testing.T) {
+	corpus := betaHeaderCorpus()
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"mcp_servers + inline toolset", corpus["tool_addition inline mcp_toolset definition"], AnthropicMCPClientInlineToolsBetaHeader},
+		{"mcp_servers only", `{"model":"claude-sonnet-5-5","mcp_servers":[{"type":"url","url":"https://mcp.example.com","name":"calendar"}],"messages":[{"role":"user","content":"hi"}]}`, AnthropicMCPClientBetaHeader},
+	}
+	for _, tc := range cases {
+		check := func(t *testing.T, merged []string) {
+			t.Helper()
+			var mcp []string
+			for _, h := range merged {
+				if strings.HasPrefix(h, AnthropicMCPClientBetaHeaderPrefix) {
+					mcp = append(mcp, h)
+				}
+			}
+			if len(mcp) != 1 || mcp[0] != tc.want {
+				t.Errorf("mcp-client betas = %v, want exactly [%s]", mcp, tc.want)
+			}
+		}
+		t.Run(tc.name+"/typed", func(t *testing.T) {
+			var req AnthropicMessageRequest
+			if err := schemas.Unmarshal([]byte(tc.body), &req); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContext(ctx, &req, schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContext: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic))
+		})
+		t.Run(tc.name+"/raw", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(tc.body), schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic))
 		})
 	}
 }

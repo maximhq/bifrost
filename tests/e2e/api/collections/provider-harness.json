@@ -220939,7 +220939,608 @@
       ]
     },
     {
-      "name": "196. Anthropic structured outputs routed to OpenAI send text.format.strict false only for strict-incompatible schemas (#8159 / PR #8262)",
+      "name": "196. Fixed-length streamed response integrity (content-length truncation)",
+      "description": "Local fixture regression, no live provider calls. Start provider-error-fixture.mjs and an isolated gateway using provider-error-fixture.config.json; enable providerErrorFixture=1. Both fixture models emit valid SSE with finish_reason=stop but no upstream [DONE]. upstream-fixed-length-short declares 100 extra body bytes and gracefully closes without Connection: close; the native and OpenAI SDK routes must emit a structured unexpected EOF read error instead of accepting the semantic finish marker as proof of HTTP completeness. upstream-fixed-length-ok declares the exact length and must complete successfully. Connection disposal and the next non-idempotent POST are pinned by TestContextTransport_TruncatedContentLengthStreamReportsUnexpectedEOFAndDiscardsConn. Setup and scoped run commands are in tests/e2e/api/README.md under Fixed-length response truncation.",
+      "item": [
+        {
+          "name": "196.1 openai openai/upstream-fixed-length-short rejects short Content-Length (content-length truncation)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('stream begins successfully with the fixture content', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include('text/event-stream');",
+                  "  pm.expect(raw, 'fixture content missing: ' + raw).to.include('hello');",
+                  "});",
+                  "pm.test('fixed-length truncation reaches the client as a read error despite finish_reason', function () {",
+                  "  pm.expect(raw, 'truncated body was accepted as complete: ' + raw).to.match(/unexpected EOF/i);",
+                  "  pm.expect(raw, 'structured stream error missing: ' + raw).to.match(/\"error\"\\s*:/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-fixed-length-short\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "196.2 openai upstream-fixed-length-short rejects short Content-Length (content-length truncation)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('stream begins successfully with the fixture content', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include('text/event-stream');",
+                  "  pm.expect(raw, 'fixture content missing: ' + raw).to.include('hello');",
+                  "});",
+                  "pm.test('fixed-length truncation reaches the client as a read error despite finish_reason', function () {",
+                  "  pm.expect(raw, 'truncated body was accepted as complete: ' + raw).to.match(/unexpected EOF/i);",
+                  "  pm.expect(raw, 'structured stream error missing: ' + raw).to.match(/\"error\"\\s*:/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"upstream-fixed-length-short\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "196.3 openai openai/upstream-fixed-length-ok accepts exact Content-Length (content-length truncation)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('stream begins successfully with the fixture content', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include('text/event-stream');",
+                  "  pm.expect(raw, 'fixture content missing: ' + raw).to.include('hello');",
+                  "});",
+                  "pm.test('an exact Content-Length body completes successfully', function () {",
+                  "  pm.expect(raw, 'unexpected read failure: ' + raw).to.not.match(/unexpected EOF/i);",
+                  "  pm.expect(raw, 'unexpected stream error: ' + raw).to.not.match(/\"error\"\\s*:/);",
+                  "  pm.expect(raw, 'completion missing: ' + raw).to.include('[DONE]');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-fixed-length-ok\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "197. Anthropic mid-conversation tool changes keep their tool object on every inbound route (#8207)",
+      "description": "Mid-conversation tool changes (beta mid-conversation-tool-changes-2026-07-01; by-value definitions under inline-tools-2026-09-15) add or withdraw tools from a role:system message inside messages[] without touching tools[], so the prompt-cache prefix stays intact. Issue #8207: the tool object on tool_addition / tool_removal blocks was dropped in the Responses conversion, the request still returned 200, and the model never saw the added tool. Covers both routes that reach the Anthropic provider with these blocks: the Anthropic SDK surface (/anthropic/v1/messages, beta header supplied by the client) and the neutral OpenAI-shaped surface (/v1/responses, where the client cannot set anthropic-beta and the gateway must derive both betas from the body). Cases pin the raw request via x-bf-send-back-raw-request and the model behaviour (it calls a tool it was given mid-conversation; it does not call one that was withdrawn). Bedrock, Bedrock Mantle and Vertex are not covered here: their egress inlines mid-conversation system messages as text, which cannot carry a tool.",
+      "item": [
+        {
+          "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages inline tool_addition definition reaches the provider - mid-conversation tool changes - #8207",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('anthropic claude-sonnet-5-5 tool_addition: request accepted (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the block reached Anthropic malformed or the inline-tools beta was stripped, any other status is a real failure: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic claude-sonnet-5-5 tool_addition: the system message with the tool_addition block reaches the provider', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var tools = Array.isArray(rr.tools) ? rr.tools : [];",
+                  "  pm.expect(tools.length, 'tools[] must still hold only echo (the added tool must not be hoisted into tools): ' + wire.slice(0, 600)).to.eql(1);",
+                  "  pm.expect(tools[0] && tools[0].name, 'tools[0] must be echo: ' + wire.slice(0, 600)).to.eql('echo');",
+                  "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+                  "  var sys = msgs.filter(function (m) { return m && m.role === 'system'; });",
+                  "  pm.expect(sys.length, 'the role:system message carrying tool_addition was dropped before the provider (pre-fix: no case for the block type): ' + wire.slice(0, 800)).to.eql(1);",
+                  "  var blocks = Array.isArray(sys[0].content) ? sys[0].content : [];",
+                  "  pm.expect(blocks.length, 'system content must hold exactly the tool_addition block: ' + JSON.stringify(sys[0])).to.eql(1);",
+                  "  pm.expect(blocks[0].type, 'block type: ' + JSON.stringify(blocks[0])).to.eql('tool_addition');",
+                  "  var tool = blocks[0].tool || {};",
+                  "  pm.expect(tool.type, 'tool object dropped (pre-fix: AnthropicContentBlock had no tool field): ' + JSON.stringify(blocks[0])).to.eql('tool_definition');",
+                  "  var def = tool.definition || {};",
+                  "  pm.expect(def.name, 'definition.name: ' + JSON.stringify(tool)).to.eql('get_weather');",
+                  "  pm.expect(def.description, 'definition.description must round-trip: ' + JSON.stringify(tool)).to.eql('Get the current weather for a city.');",
+                  "  var props = (def.input_schema || {}).properties || {};",
+                  "  pm.expect(props.city, 'definition.input_schema.properties.city must round-trip: ' + JSON.stringify(tool)).to.be.an('object');",
+                  "});",
+                  "pm.test('anthropic claude-sonnet-5-5 tool_addition: the response completes normally', function () {",
+                  "  // tool_choice any/tool returns 400 on Sonnet 5.5, so whether the model calls get_weather cannot be forced and is not the pass condition;",
+                  "  // the raw_request assertions above are the deterministic proof that the added tool reached the model.",
+                  "  pm.expect(body.type, 'response type: ' + txt.slice(0, 300)).to.eql('message');",
+                  "  pm.expect(['end_turn', 'tool_use'], 'stop_reason: ' + txt.slice(0, 300)).to.include(body.stop_reason);",
+                  "  var content = Array.isArray(body.content) ? body.content : [];",
+                  "  var bad = content.filter(function (b) { return b && b.type === 'tool_use' && b.name !== 'get_weather' && b.name !== 'echo'; });",
+                  "  pm.expect(bad.length, 'tool_use for a tool that was never offered: ' + JSON.stringify(content).slice(0, 600)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "inline-tools-2026-09-15"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-5-5\",\n  \"max_tokens\": 512,\n  \"tools\": [\n    {\n      \"name\": \"echo\",\n      \"description\": \"Echo text back.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in Paris? Use the weather tool.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"tool_addition\",\n          \"tool\": {\n            \"type\": \"tool_definition\",\n            \"definition\": {\n              \"name\": \"get_weather\",\n              \"description\": \"Get the current weather for a city.\",\n              \"input_schema\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"city\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"city\"\n                ]\n              }\n            }\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages inline tool_addition streaming completes with the added tool in play - mid-conversation tool changes - #8207",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('anthropic claude-sonnet-5-5 tool_addition streaming: 200 SSE that completes with the added tool in play', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the block reached Anthropic malformed or the inline-tools beta was stripped, any other status is a real failure: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(txt, 'expected an SSE message_start event: ' + txt.slice(0, 300)).to.include('message_start');",
+                  "  pm.expect(txt, 'stream carried an error event: ' + txt.slice(0, 400)).to.not.include('\"type\":\"error\"');",
+                  "  // tool_choice any/tool returns 400 on Sonnet 5.5, so a get_weather tool_use cannot be forced; the non-streaming sibling pins the wire shape.",
+                  "  pm.expect(txt, 'expected the stream to close with message_stop: ' + txt.slice(-300)).to.include('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "inline-tools-2026-09-15"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-5-5\",\n  \"max_tokens\": 512,\n  \"tools\": [\n    {\n      \"name\": \"echo\",\n      \"description\": \"Echo text back.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in Paris? Use the weather tool.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"tool_addition\",\n          \"tool\": {\n            \"type\": \"tool_definition\",\n            \"definition\": {\n              \"name\": \"get_weather\",\n              \"description\": \"Get the current weather for a city.\",\n              \"input_schema\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"city\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"city\"\n                ]\n              }\n            }\n          }\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages tool_removal by reference keeps block order and withholds the tool - mid-conversation tool changes - #8207",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('anthropic claude-sonnet-5-5 tool_removal: request accepted (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the block reached Anthropic malformed or the beta header was stripped, any other status is a real failure: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic claude-sonnet-5-5 tool_removal: the removal block and the text block reach the provider in order', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+                  "  var sys = msgs.filter(function (m) { return m && m.role === 'system'; });",
+                  "  pm.expect(sys.length, 'the role:system message must reach the provider: ' + wire.slice(0, 800)).to.eql(1);",
+                  "  var blocks = Array.isArray(sys[0].content) ? sys[0].content : [];",
+                  "  pm.expect(blocks.length, 'tool_removal was dropped and only the text survived (pre-fix): ' + JSON.stringify(sys[0])).to.eql(2);",
+                  "  pm.expect(blocks[0].type, 'content[0] must be the tool_removal (order preserved): ' + JSON.stringify(blocks)).to.eql('tool_removal');",
+                  "  pm.expect((blocks[0].tool || {}).type, 'tool_removal.tool.type: ' + JSON.stringify(blocks[0])).to.eql('tool_reference');",
+                  "  pm.expect((blocks[0].tool || {}).name, 'tool_removal.tool.name: ' + JSON.stringify(blocks[0])).to.eql('get_weather');",
+                  "  pm.expect(blocks[1].type, 'content[1] must be the text block: ' + JSON.stringify(blocks)).to.eql('text');",
+                  "});",
+                  "pm.test('anthropic claude-sonnet-5-5 tool_removal: the withdrawn tool is not called', function () {",
+                  "  var content = Array.isArray(body.content) ? body.content : [];",
+                  "  var calls = content.filter(function (b) { return b && b.type === 'tool_use' && b.name === 'get_weather'; });",
+                  "  pm.expect(calls.length, 'get_weather was still callable after tool_removal: ' + JSON.stringify(content).slice(0, 600)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "mid-conversation-tool-changes-2026-07-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-5-5\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"echo\",\n      \"description\": \"Echo text back.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    },\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in Paris? If you cannot look it up, say so in one sentence.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"tool_removal\",\n          \"tool\": {\n            \"type\": \"tool_reference\",\n            \"name\": \"get_weather\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Weather lookups are disabled for phase 2.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-5-5 /v1/responses inline tool_addition definition reaches the provider without a client beta header - mid-conversation tool changes - #8207",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('anthropic claude-sonnet-5-5 /v1/responses tool_addition: request accepted (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the block reached Anthropic malformed or the gateway did not derive the inline-tools beta from the body (no anthropic-beta header is sent on this route), any other status is a real failure: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic claude-sonnet-5-5 /v1/responses tool_addition: the system message carries the tool_addition block in Anthropic shape', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var tools = Array.isArray(rr.tools) ? rr.tools : [];",
+                  "  pm.expect(tools.length, 'tools[] must still hold only echo (the added tool must not be hoisted into tools): ' + wire.slice(0, 600)).to.eql(1);",
+                  "  pm.expect(tools[0] && tools[0].name, 'tools[0] must be echo: ' + wire.slice(0, 600)).to.eql('echo');",
+                  "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+                  "  var sys = msgs.filter(function (m) { return m && m.role === 'system'; });",
+                  "  pm.expect(sys.length, 'the role:system message carrying tool_addition was dropped before the provider: ' + wire.slice(0, 800)).to.eql(1);",
+                  "  var blocks = Array.isArray(sys[0].content) ? sys[0].content : [];",
+                  "  pm.expect(blocks.length, 'system content must hold exactly the tool_addition block: ' + JSON.stringify(sys[0])).to.eql(1);",
+                  "  pm.expect(blocks[0].type, 'block type: ' + JSON.stringify(blocks[0])).to.eql('tool_addition');",
+                  "  var tool = blocks[0].tool || {};",
+                  "  pm.expect(tool.type, 'tool object dropped: ' + JSON.stringify(blocks[0])).to.eql('tool_definition');",
+                  "  var def = tool.definition || {};",
+                  "  pm.expect(def.name, 'definition.name: ' + JSON.stringify(tool)).to.eql('get_weather');",
+                  "  pm.expect(def.description, 'definition.description must round-trip: ' + JSON.stringify(tool)).to.eql('Get the current weather for a city.');",
+                  "  var props = (def.input_schema || {}).properties || {};",
+                  "  pm.expect(props.city, 'the Responses function parameters must become Anthropic input_schema: ' + JSON.stringify(tool)).to.be.an('object');",
+                  "  pm.expect(def.parameters, 'Responses-shaped parameters must not leak onto the Anthropic wire: ' + JSON.stringify(tool)).to.be.undefined;",
+                  "});",
+                  "pm.test('anthropic claude-sonnet-5-5 /v1/responses tool_addition: the response completes normally', function () {",
+                  "  // tool_choice any/tool returns 400 on Sonnet 5.5, so whether the model calls get_weather cannot be forced and is not the pass condition;",
+                  "  // the raw_request assertions above are the deterministic proof that the added tool reached the model.",
+                  "  pm.expect(body.status, 'response status: ' + txt.slice(0, 300)).to.eql('completed');",
+                  "  var output = Array.isArray(body.output) ? body.output : [];",
+                  "  var bad = output.filter(function (o) { return o && o.type === 'function_call' && o.name !== 'get_weather' && o.name !== 'echo'; });",
+                  "  pm.expect(bad.length, 'function_call for a tool that was never offered: ' + JSON.stringify(output).slice(0, 600)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_output_tokens\": 512,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"echo\",\n      \"description\": \"Echo text back.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in Paris? Use the weather tool.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"tool_addition\",\n          \"tool\": {\n            \"type\": \"tool_definition\",\n            \"definition\": {\n              \"type\": \"function\",\n              \"name\": \"get_weather\",\n              \"description\": \"Get the current weather for a city.\",\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"city\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"city\"\n                ]\n              }\n            }\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-5-5 /v1/responses inline tool_addition streaming completes with the added tool in play - mid-conversation tool changes - #8207",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('anthropic claude-sonnet-5-5 /v1/responses tool_addition streaming: 200 SSE that completes with the added tool in play', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the block reached Anthropic malformed or the inline-tools beta was not derived from the body, any other status is a real failure: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(txt, 'expected a response.created event: ' + txt.slice(0, 300)).to.include('response.created');",
+                  "  pm.expect(txt, 'stream carried an error event: ' + txt.slice(0, 400)).to.not.include('\"type\":\"error\"');",
+                  "  // tool_choice any/tool returns 400 on Sonnet 5.5, so a get_weather function_call cannot be forced; the non-streaming sibling pins the wire shape.",
+                  "  pm.expect(txt, 'expected the stream to close with response.completed: ' + txt.slice(-300)).to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_output_tokens\": 512,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"echo\",\n      \"description\": \"Echo text back.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in Paris? Use the weather tool.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"tool_addition\",\n          \"tool\": {\n            \"type\": \"tool_definition\",\n            \"definition\": {\n              \"type\": \"function\",\n              \"name\": \"get_weather\",\n              \"description\": \"Get the current weather for a city.\",\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"city\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"city\"\n                ]\n              }\n            }\n          }\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-5-5 /v1/responses tool_removal by reference keeps block order and withholds the tool - mid-conversation tool changes - #8207",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('anthropic claude-sonnet-5-5 /v1/responses tool_removal: request accepted (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the block reached Anthropic malformed or the tool-changes beta was not derived from the body, any other status is a real failure: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic claude-sonnet-5-5 /v1/responses tool_removal: the removal block and the text block reach the provider in order', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+                  "  var sys = msgs.filter(function (m) { return m && m.role === 'system'; });",
+                  "  pm.expect(sys.length, 'the role:system message must reach the provider: ' + wire.slice(0, 800)).to.eql(1);",
+                  "  var blocks = Array.isArray(sys[0].content) ? sys[0].content : [];",
+                  "  pm.expect(blocks.length, 'tool_removal was dropped and only the text survived: ' + JSON.stringify(sys[0])).to.eql(2);",
+                  "  pm.expect(blocks[0].type, 'content[0] must be the tool_removal (order preserved): ' + JSON.stringify(blocks)).to.eql('tool_removal');",
+                  "  pm.expect((blocks[0].tool || {}).type, 'tool_removal.tool.type: ' + JSON.stringify(blocks[0])).to.eql('tool_reference');",
+                  "  pm.expect((blocks[0].tool || {}).name, 'tool_removal.tool.name: ' + JSON.stringify(blocks[0])).to.eql('get_weather');",
+                  "  pm.expect(blocks[1].type, 'content[1] must be the text block: ' + JSON.stringify(blocks)).to.eql('text');",
+                  "});",
+                  "pm.test('anthropic claude-sonnet-5-5 /v1/responses tool_removal: the withdrawn tool is not called', function () {",
+                  "  var output = Array.isArray(body.output) ? body.output : [];",
+                  "  var calls = output.filter(function (o) { return o && o.type === 'function_call' && o.name === 'get_weather'; });",
+                  "  pm.expect(calls.length, 'get_weather was still callable after tool_removal: ' + JSON.stringify(output).slice(0, 600)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_output_tokens\": 256,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"echo\",\n      \"description\": \"Echo text back.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in Paris? If you cannot look it up, say so in one sentence.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"tool_removal\",\n          \"tool\": {\n            \"type\": \"tool_reference\",\n            \"name\": \"get_weather\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Weather lookups are disabled for phase 2.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "201. Anthropic structured outputs routed to OpenAI send text.format.strict false only for strict-incompatible schemas (#8159 / PR #8262)",
       "description": "Regression for #8159: an Anthropic Messages request with structured outputs (output_config.format, or the legacy top-level output_format) routed to an openai/<model> is converted to an OpenAI Responses request. The converted text.format omitted strict, the Responses API defaults it to true, and strict mode requires every property to be listed in \"required\" - so a schema with an optional property was rejected with a 400. The fix sends text.format.strict false for schemas that cannot meet strict mode, and leaves it unset for strict-compatible schemas so they keep strict enforcement.\n\nThe first two cases send a schema with an optional property (note) on /anthropic/v1/messages and pin: a 200 with no strict-schema rejection; text.format.strict false and the caller's required list on the wire (raw_request); and a JSON reply that matches the schema.\n\nA third case sends a strict-compatible schema (every property required, additionalProperties false) and pins that text.format.strict is not sent, so the Responses API applies its default of true.",
       "item": [
         {
