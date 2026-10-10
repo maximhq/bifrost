@@ -20,6 +20,7 @@ type fakeLiveRunner struct {
 	posts    []fakeLivePost
 	cleanups int
 	refuse   bool
+	keyIDs   map[string][]string
 }
 
 type fakeLiveOpen struct {
@@ -53,6 +54,9 @@ func (f *fakeLiveRunner) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, re
 	f.opens = append(f.opens, fakeLiveOpen{model: model, continuation: continuation, kind: kind, start: start})
 	if f.refuse {
 		return nil, newRealtimeWireBifrostError(402, "budget_exceeded", "Budget exceeded: virtual key budget spent")
+	}
+	if ids, restricted := f.keyIDs[model]; restricted {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, ids)
 	}
 	return &bifrost.RealtimeTurnHooks{
 		PostHookRunner: func(postCtx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
@@ -451,4 +455,105 @@ func TestLiveMeterMarksSessionBoundariesForPlugins(t *testing.T) {
 	assert.True(t, posts[1].end)
 	require.NotNil(t, posts[1].err)
 	assert.Equal(t, "upstream refused", posts[1].err.Error.Message)
+}
+
+func (f *fakeLiveRunner) restrictKeys(model string, ids []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.keyIDs == nil {
+		f.keyIDs = make(map[string][]string)
+	}
+	f.keyIDs[model] = ids
+}
+
+func TestLiveMeterBackendSwitchEnforcesPinnedKey(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		keys   []string
+		reject bool
+	}{
+		{name: "different key", keys: []string{"key-2"}, reject: true},
+		{name: "no keys", keys: []string{}, reject: true},
+		{name: "pinned key allowed", keys: []string{"key-1", "key-2"}},
+		{name: "unrestricted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeLiveRunner{}
+			keys := map[string][]string{"gpt-live-1": {"key-1", "key-2"}, "gpt-5.6-luna": {"key-1"}}
+			if tc.keys != nil {
+				keys["gpt-5.6-terra"] = tc.keys
+			}
+			runner.keyIDs = keys
+			meter := newLiveMeter(runner, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.OpenAI, schemas.Key{}, "bf-session-1")
+			require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+			meter.setKey(schemas.Key{ID: "key-1", Models: schemas.WhiteList{"*"}})
+			defer meter.finish(0)
+			controller := newTestLiveController(fakeLiveModels{allowed: true}, meter, nil)
+			checked, refusal := controller.admitSessionUpdate([]byte(`{"type":"session.update","session":{"delegation":{"responses":{"model":"gpt-5.6-terra"}}}}`))
+			if tc.reject {
+				require.NotNil(t, refusal, "the update cannot use a different upstream key")
+				assert.Equal(t, 403, *refusal.StatusCode)
+				assert.Nil(t, checked, "a refused update must not be forwarded")
+				assert.Equal(t, "gpt-5.6-luna", meter.activeBackend)
+				assert.NotContains(t, meter.backends, "gpt-5.6-terra")
+				assert.Equal(t, []string{"key-1"}, meter.allowedKeys, "a refused unit must not narrow admitted units' keys")
+				_, posts, cleanups := runner.snapshot()
+				require.Len(t, posts, 1)
+				assert.NotNil(t, posts[0].err)
+				assert.Nil(t, posts[0].resp, "a refused unit bills no usage")
+				assert.True(t, posts[0].continuation)
+				assert.False(t, posts[0].end, "rejecting an update leaves the session open")
+				assert.Equal(t, 1, cleanups)
+				// Retrying with a permitted grant must succeed without stale restrictions or lanes.
+				keys["gpt-5.6-terra"] = []string{"key-1"}
+				require.Nil(t, meter.switchBackend("gpt-5.6-terra"))
+			} else {
+				require.Nil(t, refusal)
+				assert.NotEmpty(t, checked)
+			}
+			assert.Equal(t, "gpt-5.6-terra", meter.activeBackend)
+			require.Nil(t, meter.onUsage(30), "voice renewal must still use its permitted pinned key")
+			meter.finish(30)
+			opens, posts, cleanups := runner.snapshot()
+			assert.Len(t, posts, len(opens), "every admitted pre-hook has a post-hook")
+			assert.Equal(t, len(opens), cleanups, "every admitted unit is cleaned exactly once")
+		})
+	}
+}
+
+func TestLiveMeterRenewalEnforcesPinnedKey(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{liveUnitVoice, liveUnitBackend} {
+		t.Run(kind, func(t *testing.T) {
+			runner := &fakeLiveRunner{}
+			keys := map[string][]string{"gpt-live-1": {"key-1"}, "gpt-5.6-luna": {"key-1"}}
+			runner.keyIDs = keys
+			meter := newLiveMeter(runner, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.OpenAI, schemas.Key{}, "bf-session-1")
+			require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+			meter.setKey(schemas.Key{ID: "key-1"})
+			var refusal *schemas.BifrostError
+			if kind == liveUnitVoice {
+				keys["gpt-live-1"] = []string{"key-2"}
+				refusal = meter.onUsage(30)
+			} else {
+				keys["gpt-5.6-luna"] = []string{"key-2"}
+				refusal = meter.onBackendResponse(&schemas.BifrostResponsesResponse{ID: new("resp-1"), Model: "gpt-5.6-luna", Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}}, "delegation-1", 10)
+			}
+			require.NotNil(t, refusal, "a renewal cannot continue on a key excluded by its grant")
+			assert.Same(t, refusal, meter.refusal)
+			meter.finish(meter.lastReportedSeconds())
+			meter.finish(100)
+			opens, posts, cleanups := runner.snapshot()
+			require.Len(t, posts, 3)
+			assert.Equal(t, len(opens), cleanups)
+			assert.NotNil(t, posts[0].err, "the refused renewal closes with an error")
+			if kind == liveUnitVoice {
+				assert.Equal(t, 30.0, postSeconds(t, posts[2]), "already spent voice usage is settled")
+			} else {
+				require.NotNil(t, posts[1].resp)
+				assert.Equal(t, 15, posts[1].resp.Usage.TotalTokens, "already spent backend usage is settled")
+			}
+		})
+	}
 }
