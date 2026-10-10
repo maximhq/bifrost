@@ -219170,6 +219170,175 @@
           ]
         }
       ]
+    },
+    {
+      "name": "193. Anthropic tool_result is_error keeps status incomplete on the OpenAI Responses wire (#8195 / PR #8209) (tool-result-is-error-status)",
+      "description": "Gateway regression for #8195. On /anthropic/v1/messages against an OpenAI-backed model the route always builds a Bifrost Responses request, so the Anthropic converter's is_error -> status \"incomplete\" marker on the function_call_output item is the only thing that tells the model a tool call failed: the chat path strips is_error on the OpenAI wire by design, and an error field on an input item is rejected outright. ToOpenAIResponsesRequest then began clearing status on every input item (\"OpenAI rejects status on input\"), which left a failed tool result byte-identical to a successful one. Both rows read the outbound body with x-bf-send-back-raw-request, because the loss is invisible in the response: the model simply answers as if the command had worked. Cases: (1) the reporter's shape plus a successful sibling result in the same turn - the failed call_id must carry status \"incomplete\" (absent pre-fix) while the successful one carries no status at all, and neither may gain an error field; (2) a native /v1/responses request whose function_call_output arrives with status \"completed\", which must still be stripped before the wire - the exception is only for \"incomplete\", and widening it would put back the field OpenAI rejects. Run with FEATURE=tool-result-is-error-status.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai/gpt-4o-mini /anthropic/v1/messages tool_result is_error reaches the /v1/responses wire as status incomplete - tool-result-is-error-status - #8195",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 64,\n  \"tools\": [\n    {\n      \"name\": \"run_cmd\",\n      \"description\": \"run a shell command\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"cmd\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Run ls /root and ls /tmp\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_1\",\n          \"name\": \"run_cmd\",\n          \"input\": {\n            \"cmd\": \"ls /root\"\n          }\n        },\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_2\",\n          \"name\": \"run_cmd\",\n          \"input\": {\n            \"cmd\": \"ls /tmp\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_1\",\n          \"content\": \"permission denied\",\n          \"is_error\": true\n        },\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_2\",\n          \"content\": \"ok\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('193.1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('193.1 outbound body captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "var outputs = [];",
+                  "var input = (rr || {}).input || [];",
+                  "for (var i = 0; i < input.length; i++) { if (input[i] && input[i].type === 'function_call_output') { outputs.push(input[i]); } }",
+                  "var byCallId = function (id) { for (var k = 0; k < outputs.length; k++) { if (outputs[k].call_id === id) { return outputs[k]; } } return null; };",
+                  "pm.test('193.1 both tool results reached the provider as function_call_output items', function () {",
+                  "  pm.expect(outputs.length, 'function_call_output items on the wire: ' + wire.slice(0, 700)).to.equal(2);",
+                  "});",
+                  "pm.test('193.1 the is_error tool result keeps status incomplete (pre-fix: status cleared, failure indistinguishable from success) - #8195', function () {",
+                  "  var failed = byCallId('toolu_1');",
+                  "  pm.expect(failed, 'no function_call_output for the failed tool result: ' + wire.slice(0, 700)).to.be.an('object');",
+                  "  pm.expect(failed.status, 'failed tool result on the wire: ' + JSON.stringify(failed)).to.equal('incomplete');",
+                  "});",
+                  "pm.test('193.1 the successful sibling result in the same turn carries no status - #8195', function () {",
+                  "  var ok = byCallId('toolu_2');",
+                  "  pm.expect(ok, 'no function_call_output for the successful tool result: ' + wire.slice(0, 700)).to.be.an('object');",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(ok, 'status'), 'successful tool result gained status=' + JSON.stringify(ok.status) + ': ' + JSON.stringify(ok)).to.equal(false);",
+                  "});",
+                  "pm.test('193.1 no error field rides along on either item (OpenAI rejects it on input) - #8195', function () {",
+                  "  for (var k = 0; k < outputs.length; k++) {",
+                  "    pm.expect(Object.prototype.hasOwnProperty.call(outputs[k], 'error'), 'function_call_output carried an error field: ' + JSON.stringify(outputs[k])).to.equal(false);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai/gpt-4o-mini /v1/responses function_call_output status completed is still stripped before the wire - tool-result-is-error-status - #8195",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"run_cmd\",\n      \"description\": \"run a shell command\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"cmd\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"cmd\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Run ls /tmp, then reply with the single word ok.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_bf_8195_ok\",\n      \"name\": \"run_cmd\",\n      \"arguments\": \"{\\\"cmd\\\":\\\"ls /tmp\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_bf_8195_ok\",\n      \"output\": \"ok\",\n      \"status\": \"completed\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('193.2: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('193.2 outbound body captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "pm.test('193.2 a status other than incomplete is still stripped from the input item - #8195', function () {",
+                  "  var input = (rr || {}).input || [];",
+                  "  var out = null;",
+                  "  for (var i = 0; i < input.length; i++) { if (input[i] && input[i].type === 'function_call_output') { out = input[i]; break; } }",
+                  "  pm.expect(out, 'no function_call_output on the wire: ' + wire.slice(0, 700)).to.be.an('object');",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(out, 'status'), 'status completed reached a surface that rejects status on input: ' + JSON.stringify(out)).to.equal(false);",
+                  "});",
+                  "pm.test('193.2 the model answered', function () {",
+                  "  pm.expect(body.output, 'no output: ' + txt.slice(0, 400)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
