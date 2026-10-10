@@ -13,8 +13,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"net"
-	"net/url"
 	"runtime"
 	"runtime/debug"
 	"slices"
@@ -1369,31 +1367,89 @@ func originExplicitlyAllowed(origin string, allowedOrigins []string) bool {
 	if isLocalhostOrigin(origin) {
 		return true
 	}
-	explicit := slices.DeleteFunc(slices.Clone(allowedOrigins), func(entry string) bool { return entry == "*" })
-	return IsOriginAllowed(origin, explicit)
+	for _, entry := range allowedOrigins {
+		if entry == "*" {
+			continue
+		}
+		if entry == origin || (strings.Contains(entry, "*") && matchesWildcardPattern(origin, entry)) {
+			return true
+		}
+	}
+	return false
 }
 
 // isSameOrigin reports whether origin names the host the request was sent to. Browsers send
 // Origin on same-origin writes too, so the bundled dashboard served from any address carries its
 // own origin on PUT /api/config and similar calls; that is not a cross-origin request. Hosts are
-// compared case-insensitively with default ports (80 for http, 443 for https) made explicit.
+// compared case-insensitively with default ports (80 for http, 443 for https) made explicit. It
+// runs on every dashboard write, so it splits the strings in place rather than parsing a URL.
 func isSameOrigin(origin, host string) bool {
-	parsed, err := url.Parse(origin)
-	if err != nil || parsed.Host == "" || host == "" {
+	scheme, rest, ok := strings.Cut(origin, "://")
+	if !ok || host == "" {
 		return false
 	}
-	defaultPort := map[string]string{"http": "80", "https": "443"}[strings.ToLower(parsed.Scheme)]
-	if defaultPort == "" {
+	var defaultPort string
+	switch {
+	case strings.EqualFold(scheme, "http"):
+		defaultPort = "80"
+	case strings.EqualFold(scheme, "https"):
+		defaultPort = "443"
+	default:
 		return false
 	}
-	withPort := func(hostport string) string {
-		hostport = strings.ToLower(hostport)
-		if _, _, err := net.SplitHostPort(hostport); err == nil {
-			return hostport
+	if end := strings.IndexAny(rest, "/?#"); end >= 0 {
+		rest = rest[:end]
+	}
+	if at := strings.LastIndexByte(rest, '@'); at >= 0 {
+		rest = rest[at+1:]
+	}
+	originHost, originPort, ok := splitOriginHostPort(rest, defaultPort)
+	if !ok {
+		return false
+	}
+	requestHost, requestPort, ok := splitOriginHostPort(host, defaultPort)
+	return ok && originPort == requestPort && strings.EqualFold(originHost, requestHost)
+}
+
+// splitOriginHostPort splits a host[:port] (an IPv6 host in brackets) into the host and its port,
+// defaultPort when none is given. ok is false for an empty host or a port that is not a number.
+func splitOriginHostPort(hostport, defaultPort string) (host, port string, ok bool) {
+	host, port = hostport, defaultPort
+	if strings.HasPrefix(hostport, "[") {
+		end := strings.IndexByte(hostport, ']')
+		if end < 0 {
+			return "", "", false
 		}
-		return net.JoinHostPort(strings.Trim(hostport, "[]"), defaultPort)
+		host, rest := hostport[1:end], hostport[end+1:]
+		switch {
+		case rest == "":
+		case strings.HasPrefix(rest, ":"):
+			port = rest[1:]
+		default:
+			return "", "", false
+		}
+		return host, port, host != "" && isPortNumber(port)
 	}
-	return withPort(parsed.Host) == withPort(host)
+	if colon := strings.LastIndexByte(hostport, ':'); colon >= 0 {
+		host, port = hostport[:colon], hostport[colon+1:]
+		if strings.IndexByte(host, ':') >= 0 {
+			return "", "", false
+		}
+	}
+	return host, port, host != "" && isPortNumber(port)
+}
+
+// isPortNumber reports a non-empty run of ASCII digits.
+func isPortNumber(port string) bool {
+	if port == "" {
+		return false
+	}
+	for i := 0; i < len(port); i++ {
+		if port[i] < '0' || port[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // refuseCrossOriginWhileAuthDisabled closes the one browser path into the open
@@ -1407,15 +1463,22 @@ func isSameOrigin(origin, host string) bool {
 // dashboard navigation) and inference routes are unaffected. Returns true if the
 // request was refused (the error response has already been written).
 func (m *AuthMiddleware) refuseCrossOriginWhileAuthDisabled(ctx *fasthttp.RequestCtx) bool {
-	origin := string(ctx.Request.Header.Peek("Origin"))
-	if origin == "" {
-		return false
-	}
 	var allowed []string
 	if stored := m.allowedOrigins.Load(); stored != nil {
 		allowed = *stored
 	}
-	if originExplicitlyAllowed(origin, allowed) || isSameOrigin(origin, string(ctx.Host())) {
+	return refuseCrossOriginOnOpenAPI(ctx, allowed)
+}
+
+// refuseCrossOriginOnOpenAPI is the rule behind refuseCrossOriginWhileAuthDisabled with the
+// allowed origins passed in, so the no-config-store path, which has no AuthMiddleware to read
+// them from, applies the same one. Returns true if the request was refused.
+func refuseCrossOriginOnOpenAPI(ctx *fasthttp.RequestCtx, allowedOrigins []string) bool {
+	origin := string(ctx.Request.Header.Peek("Origin"))
+	if origin == "" {
+		return false
+	}
+	if originExplicitlyAllowed(origin, allowedOrigins) || isSameOrigin(origin, string(ctx.Host())) {
 		return false
 	}
 	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Cross-origin requests to the management API from %q are refused while dashboard auth is disabled; enable dashboard authentication, or list the origin explicitly in client_config.allowed_origins (localhost origins are always allowed).", origin))
@@ -1553,24 +1616,28 @@ var apiWhitelistedPrefixes = []string{
 // a system route, a system prefix, or an operator-configured whitelisted route. Shared by
 // APIMiddleware and SetupLockMiddleware so both agree on what never needs a credential.
 func (m *AuthMiddleware) isAPIRouteWhitelisted(url string) bool {
+	var configuredRoutes []string
+	if stored := m.whitelistedRoutes.Load(); stored != nil {
+		configuredRoutes = *stored
+	}
+	return isAPIRouteWhitelistedAmong(url, configuredRoutes)
+}
+
+// isAPIRouteWhitelistedAmong is isAPIRouteWhitelisted with the operator-configured routes passed
+// in, for the no-config-store path that has no AuthMiddleware holding them.
+func isAPIRouteWhitelistedAmong(url string, configuredRoutes []string) bool {
 	if slices.Contains(apiSystemWhitelistedRoutes, url) ||
 		slices.IndexFunc(apiWhitelistedPrefixes, func(prefix string) bool {
 			return strings.HasPrefix(url, prefix)
 		}) != -1 {
 		return true
 	}
-	// Check user-configured whitelisted routes
-	if configuredRoutes := m.whitelistedRoutes.Load(); configuredRoutes != nil {
-		if slices.Contains(*configuredRoutes, url) || slices.IndexFunc(*configuredRoutes, func(route string) bool {
-			if before, ok := strings.CutSuffix(route, "*"); ok {
-				return strings.HasPrefix(url, before)
-			}
-			return false
-		}) != -1 {
-			return true
+	return slices.Contains(configuredRoutes, url) || slices.IndexFunc(configuredRoutes, func(route string) bool {
+		if before, ok := strings.CutSuffix(route, "*"); ok {
+			return strings.HasPrefix(url, before)
 		}
-	}
-	return false
+		return false
+	}) != -1
 }
 
 // APIMiddleware is for API requests if authConfig is set, it will verify authentication based on the request type.
@@ -2257,9 +2324,24 @@ func GetObservabilityPlugins(plugins []schemas.BasePlugin) []schemas.Observabili
 // (and so no auth at all), so handlers that require genuine auth for dangerous changes - which
 // key off BifrostContextKeyAuthBypassed - still refuse them in that mode instead of reading an
 // unmarked request as authenticated and failing open.
-func AuthBypassedMiddleware() schemas.BifrostHTTPMiddleware {
+//
+// The management API is as open here as with dashboard auth disabled, so the same browser rule
+// applies: a request carrying an Origin reaches a non-whitelisted route only from a localhost
+// origin, its own origin, or one listed by name in allowedOrigins (see
+// refuseCrossOriginWhileAuthDisabled). Both lists are snapshots: without a config store the
+// configuration only changes with a restart.
+func AuthBypassedMiddleware(allowedOrigins, whitelistedRoutes []string) schemas.BifrostHTTPMiddleware {
+	allowedOrigins = slices.Clone(allowedOrigins)
+	whitelistedRoutes = slices.Clone(whitelistedRoutes)
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
+			// Only a request carrying an Origin can be refused, so CLI and SDK calls, which send
+			// none, skip the route and origin checks entirely.
+			if len(ctx.Request.Header.Peek("Origin")) > 0 &&
+				!isAPIRouteWhitelistedAmong(string(ctx.Request.URI().PathOriginal()), whitelistedRoutes) &&
+				refuseCrossOriginOnOpenAPI(ctx, allowedOrigins) {
+				return
+			}
 			// Mirror the auth-disabled branch of the real middleware: the request
 			// acts as the local admin for ordinary handlers, and the bypass marker
 			// keeps the guards on dangerous changes closed.
