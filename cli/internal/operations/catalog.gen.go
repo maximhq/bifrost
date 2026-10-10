@@ -448,6 +448,7 @@ var Catalog = []Operation{
 	{ID: "logout", Method: "POST", Path: "/api/session/logout", Summary: "Logout", Tags: []string{"Session"}, Deprecated: false},
 	{ID: "mcpServerMessage", Method: "POST", Path: "/mcp", Summary: "MCP protocol message", Tags: []string{"Infrastructure"}, Deprecated: false},
 	{ID: "mcpServerSSE", Method: "GET", Path: "/mcp", Summary: "MCP protocol SSE stream", Tags: []string{"Infrastructure"}, Deprecated: false},
+	{ID: "moveSessionVirtualKey", Method: "POST", Path: "/api/governance/sessions/{session_id}/move-virtual-key", Summary: "Move a session to another virtual key", Tags: []string{"Governance"}, Deprecated: false},
 	{ID: "openaiCancelBatch", Method: "POST", Path: "/openai/v1/batches/{batch_id}/cancel", Summary: "Cancel batch job (OpenAI format)", Tags: []string{"OpenAI Integration"}, Deprecated: false, Destructive: true},
 	{ID: "openaiCancelResponse", Method: "POST", Path: "/openai/v1/responses/{response_id}/cancel", Summary: "Cancel a response (OpenAI format)", Tags: []string{"OpenAI Integration"}, Deprecated: false, Destructive: true},
 	{ID: "openaiCountInputTokens", Method: "POST", Path: "/openai/v1/responses/input_tokens", Summary: "Count input tokens", Tags: []string{"OpenAI Integration"}, Deprecated: false},

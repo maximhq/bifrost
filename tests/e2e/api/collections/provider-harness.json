@@ -221119,6 +221119,183 @@
           }
         }
       ]
+    },
+    {
+      "name": "197. Move a session to another virtual key (move-session-virtual-key)",
+      "description": "PR: POST /api/governance/sessions/{session_id}/move-virtual-key moves a session's logs and spend from one virtual key to another. These cases are provider-free request validation, so they run without a paid call: a real move needs a logged request under a key. The success, dry-run and over-budget (409) paths are pinned by the Go handler and log store tests. Every response here is an error, so none reaches the collection-level success-shape check and no __skipShape entry is needed.",
+      "item": [
+        {
+          "name": "197.1 [EXPECT-400] a move needs both virtual key ids - move-session-virtual-key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('197.1 answers 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('197.1 names the problem', function () {",
+                  "  var msg = (body.error && body.error.message) || '';",
+                  "  pm.expect(msg, 'unexpected error body: ' + pm.response.text()).to.include('source_virtual_key_id and target_virtual_key_id are required');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_virtual_key_id\": \"harness-vk-a\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/sessions/harness-session-move/move-virtual-key",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "sessions",
+                "harness-session-move",
+                "move-virtual-key"
+              ]
+            }
+          }
+        },
+        {
+          "name": "197.2 [EXPECT-400] source and target must differ - move-session-virtual-key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('197.2 answers 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('197.2 names the problem', function () {",
+                  "  var msg = (body.error && body.error.message) || '';",
+                  "  pm.expect(msg, 'unexpected error body: ' + pm.response.text()).to.include('must differ');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_virtual_key_id\": \"harness-vk-a\",\n  \"target_virtual_key_id\": \"harness-vk-a\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/sessions/harness-session-move/move-virtual-key",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "sessions",
+                "harness-session-move",
+                "move-virtual-key"
+              ]
+            }
+          }
+        },
+        {
+          "name": "197.3 [EXPECT-404] an unknown source virtual key is reported by role - move-session-virtual-key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('197.3 answers 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('197.3 names the problem', function () {",
+                  "  var msg = (body.error && body.error.message) || '';",
+                  "  pm.expect(msg, 'unexpected error body: ' + pm.response.text()).to.include('source virtual key not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_virtual_key_id\": \"harness-no-such-vk-a\",\n  \"target_virtual_key_id\": \"harness-no-such-vk-b\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/sessions/harness-session-move/move-virtual-key",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "sessions",
+                "harness-session-move",
+                "move-virtual-key"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

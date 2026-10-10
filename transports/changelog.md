@@ -1,3 +1,4 @@
+[feat]: add POST /api/governance/sessions/{session_id}/move-virtual-key to move a session's logs and spend to another virtual key, with dry run and an over-budget guard (#8320) [@jimseiwert](https://github.com/jimseiwert)
 [fix]: apply saved log retention to the running cleaner without a restart (#8212) [@Constantine3](https://github.com/Constantine3)
 
 ## ✨ Features

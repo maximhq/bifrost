@@ -228,6 +228,9 @@ type GovernanceStore interface {
 	// BumpBudgetUsage increment is never clobbered.
 	LoadBudget(ctx context.Context, budgetID string) *configstoreTables.TableBudget
 	BumpBudgetUsage(ctx context.Context, budgetID string, cost float64) error
+	// BumpBudgetUsageBy adds a signed delta without a window reset, flooring usage at zero.
+	// Used to carry spend from one budget to another, e.g. when a session moves between keys.
+	BumpBudgetUsageBy(ctx context.Context, budgetID string, delta float64) error
 	UpsertBudgetConfig(ctx context.Context, budgetID string, config *configstoreTables.TableBudget)
 	DeleteBudget(ctx context.Context, budgetID string)
 	// Rate limit crud. UpsertRateLimitConfig carries in-memory counter state
@@ -235,6 +238,9 @@ type GovernanceStore interface {
 	// same rationale as UpsertBudgetConfig.
 	LoadRateLimit(ctx context.Context, rateLimitID string) *configstoreTables.TableRateLimit
 	BumpRateLimitUsage(ctx context.Context, rateLimitID string, tokensUsed int64, shouldUpdateTokens, shouldUpdateRequests bool) error
+	// BumpRateLimitUsageBy adds signed token and request deltas without a window reset,
+	// flooring each counter at zero.
+	BumpRateLimitUsageBy(ctx context.Context, rateLimitID string, tokenDelta, requestDelta int64) error
 	UpsertRateLimitConfig(ctx context.Context, rateLimitID string, config *configstoreTables.TableRateLimit)
 	DeleteRateLimit(ctx context.Context, rateLimitID string)
 	// In-memory usage updates (for VK-level)
@@ -741,6 +747,7 @@ func (gs *LocalGovernanceStore) BumpBudgetUsageBy(_ context.Context, budgetID st
 // dimensions — used to fold accumulated usage carried from another rate limit.
 // Same CAS-retry contract: no increment is dropped under concurrent callers.
 // No window-reset side effect, since carried deltas are not request traffic.
+// Each counter is floored at zero so a negative delta can never drive usage negative.
 // No-op when the rate limit is absent or both deltas are zero.
 func (gs *LocalGovernanceStore) BumpRateLimitUsageBy(ctx context.Context, rateLimitID string, tokenDelta, requestDelta int64) error {
 	if tokenDelta == 0 && requestDelta == 0 {
@@ -756,8 +763,8 @@ func (gs *LocalGovernanceStore) BumpRateLimitUsageBy(ctx context.Context, rateLi
 			return nil
 		}
 		clone := *old
-		clone.TokenCurrentUsage += tokenDelta
-		clone.RequestCurrentUsage += requestDelta
+		clone.TokenCurrentUsage = max(clone.TokenCurrentUsage+tokenDelta, 0)
+		clone.RequestCurrentUsage = max(clone.RequestCurrentUsage+requestDelta, 0)
 		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &clone) {
 			return nil
 		}

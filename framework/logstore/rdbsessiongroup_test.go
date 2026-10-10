@@ -260,3 +260,150 @@ func TestSearchLogsSessionGroupingTreatsEmptySessionIDAsNoSession(t *testing.T) 
 		"rows with an empty session_id were collapsed as though they shared a session")
 	require.EqualValues(t, 3, result.Pagination.TotalCount)
 }
+
+// newSessionMoveStore seeds one session split across two virtual keys, plus an
+// unrelated session on the source key.
+func newSessionMoveStore(t *testing.T) (*RDBLogStore, time.Time) {
+	t.Helper()
+
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	require.NoError(t, db.AutoMigrate(&Log{}))
+
+	now := time.Now()
+	strPtr := func(v string) *string { return &v }
+	floatPtr := func(v float64) *float64 { return &v }
+
+	seed := []Log{
+		{ID: "m1", Timestamp: now, Status: "success", Provider: "openai", ParentRequestID: strPtr("sess-move"),
+			VirtualKeyID: strPtr("vk-a"), VirtualKeyName: strPtr("A"), TeamID: strPtr("team-a"), TeamName: strPtr("Team A"),
+			TeamIDs: strPtr(`["team-a"]`), Cost: floatPtr(0.5), TotalTokens: 100,
+			BudgetIDs: strPtr(`["b-vk-a","b-team-a","b-global"]`), RateLimitIDs: strPtr(`["rl-vk-a"]`)},
+		{ID: "m2", Timestamp: now.Add(time.Second), Status: "success", Provider: "openai", ParentRequestID: strPtr("sess-move"),
+			VirtualKeyID: strPtr("vk-a"), VirtualKeyName: strPtr("A"), Cost: floatPtr(0.25), TotalTokens: 40,
+			BudgetIDs: strPtr(`["b-vk-a","b-global"]`)},
+		// Same session, but already on another key: must not move.
+		{ID: "m3", Timestamp: now, Status: "success", Provider: "openai", ParentRequestID: strPtr("sess-move"),
+			VirtualKeyID: strPtr("vk-c"), VirtualKeyName: strPtr("C"), Cost: floatPtr(9)},
+		// Different session on the source key: must not move.
+		{ID: "m4", Timestamp: now, Status: "success", Provider: "openai", ParentRequestID: strPtr("sess-other"),
+			VirtualKeyID: strPtr("vk-a"), VirtualKeyName: strPtr("A"), Cost: floatPtr(7)},
+	}
+	for i := range seed {
+		require.NoError(t, db.Create(&seed[i]).Error)
+	}
+	return &RDBLogStore{db: db, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}, now
+}
+
+// MoveSessionVirtualKey reattributes only the session's rows on the source key,
+// rewrites their owner and budget columns, and reports the rows it changed.
+func TestMoveSessionVirtualKey(t *testing.T) {
+	store, _ := newSessionMoveStore(t)
+	ctx := context.Background()
+	strPtr := func(v string) *string { return &v }
+
+	req := SessionMoveRequest{
+		SessionID:          "sess-move",
+		SourceVirtualKeyID: "vk-a",
+		Target:             SessionMoveTarget{VirtualKeyID: "vk-b", VirtualKeyName: "B", TeamID: strPtr("team-b"), TeamName: strPtr("Team B")},
+		RemoveBudgetIDs:    []string{"b-vk-a", "b-team-a"},
+		AddBudgetIDs:       []string{"b-vk-b"},
+		RemoveRateLimitIDs: []string{"rl-vk-a"},
+		AddRateLimitIDs:    []string{"rl-vk-b"},
+	}
+
+	t.Run("dry run reports without writing", func(t *testing.T) {
+		dry := req
+		dry.DryRun = true
+		res, err := store.MoveSessionVirtualKey(ctx, dry)
+		require.NoError(t, err)
+		require.Equal(t, int64(2), res.MovedCount)
+		require.InDelta(t, 0.75, res.TotalCost, 1e-9)
+		var count int64
+		require.NoError(t, store.db.Model(&Log{}).Where("virtual_key_id = ?", "vk-a").Count(&count).Error)
+		require.Equal(t, int64(3), count, "dry run must not change any row")
+	})
+
+	t.Run("move rewrites rows", func(t *testing.T) {
+		res, err := store.MoveSessionVirtualKey(ctx, req)
+		require.NoError(t, err)
+		require.Equal(t, int64(2), res.MovedCount)
+		require.Equal(t, int64(140), res.Rows[0].TotalTokens+res.Rows[1].TotalTokens)
+
+		var m1, m2, m3, m4 Log
+		require.NoError(t, store.db.First(&m1, "id = ?", "m1").Error)
+		require.NoError(t, store.db.First(&m2, "id = ?", "m2").Error)
+		require.NoError(t, store.db.First(&m3, "id = ?", "m3").Error)
+		require.NoError(t, store.db.First(&m4, "id = ?", "m4").Error)
+
+		require.Equal(t, "vk-b", *m1.VirtualKeyID)
+		require.Equal(t, "B", *m1.VirtualKeyName)
+		require.Equal(t, "team-b", *m1.TeamID)
+		require.Nil(t, m1.TeamIDs, "the old owner's multi-valued column must be cleared")
+		require.JSONEq(t, `["b-global","b-vk-b"]`, *m1.BudgetIDs)
+		require.JSONEq(t, `["rl-vk-b"]`, *m1.RateLimitIDs)
+		require.JSONEq(t, `["b-global","b-vk-b"]`, *m2.BudgetIDs)
+		require.Equal(t, "team-b", *m2.TeamID, "a row with no team takes the target's team")
+
+		require.Equal(t, "vk-c", *m3.VirtualKeyID, "a row already on another key stays")
+		require.Equal(t, "vk-a", *m4.VirtualKeyID, "a different session stays")
+	})
+
+	t.Run("a target with no team clears the team", func(t *testing.T) {
+		res, err := store.MoveSessionVirtualKey(ctx, SessionMoveRequest{
+			SessionID:          "sess-move",
+			SourceVirtualKeyID: "vk-b",
+			Target:             SessionMoveTarget{VirtualKeyID: "vk-d", VirtualKeyName: "D"},
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(2), res.MovedCount)
+		var m1 Log
+		require.NoError(t, store.db.First(&m1, "id = ?", "m1").Error)
+		require.Equal(t, "vk-d", *m1.VirtualKeyID)
+		require.Nil(t, m1.TeamID)
+		require.Nil(t, m1.TeamName)
+		// Put the rows back on vk-b so the remaining subtests see the state they expect.
+		_, err = store.MoveSessionVirtualKey(ctx, SessionMoveRequest{
+			SessionID: "sess-move", SourceVirtualKeyID: "vk-d", Target: SessionMoveTarget{VirtualKeyID: "vk-b", VirtualKeyName: "B"},
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("second move finds nothing", func(t *testing.T) {
+		res, err := store.MoveSessionVirtualKey(ctx, req)
+		require.NoError(t, err)
+		require.Zero(t, res.MovedCount)
+	})
+
+	t.Run("rejects empty ids", func(t *testing.T) {
+		_, err := store.MoveSessionVirtualKey(ctx, SessionMoveRequest{SessionID: " ", SourceVirtualKeyID: "a", Target: SessionMoveTarget{VirtualKeyID: "b"}})
+		require.Error(t, err)
+		_, err = store.MoveSessionVirtualKey(ctx, SessionMoveRequest{SessionID: "s", Target: SessionMoveTarget{VirtualKeyID: "b"}})
+		require.Error(t, err)
+	})
+}
+
+// rewriteIDList drops, appends and de-duplicates ids, and reports only real changes.
+func TestRewriteIDList(t *testing.T) {
+	strPtr := func(v string) *string { return &v }
+	next, changed := rewriteIDList(strPtr(`["a","b"]`), map[string]struct{}{"a": {}}, []string{"c", "b"})
+	require.True(t, changed)
+	require.JSONEq(t, `["b","c"]`, *next)
+
+	same, changed := rewriteIDList(strPtr(`["a"]`), nil, []string{"a"})
+	require.False(t, changed)
+	require.JSONEq(t, `["a"]`, *same)
+
+	cleared, changed := rewriteIDList(strPtr(`["a"]`), map[string]struct{}{"a": {}}, nil)
+	require.True(t, changed)
+	require.Nil(t, cleared)
+
+	none, changed := rewriteIDList(nil, nil, nil)
+	require.False(t, changed)
+	require.Nil(t, none)
+}

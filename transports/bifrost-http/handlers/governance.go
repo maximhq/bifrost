@@ -54,6 +54,11 @@ type GovernanceManager interface {
 	// the current boundary.
 	AdoptCalendarAlignmentInMemory(ctx context.Context, owner BudgetUsageResetOwner, budgetIDs []string, rateLimitIDs []string) error
 	RemoveVirtualKey(ctx context.Context, id string) error
+	// AdjustUsageInMemory adds signed usage deltas to the given budgets and rate limits in
+	// the store that enforces spend, without touching any reset boundary. Used when spend is
+	// carried from one key to another, e.g. a session moved between virtual keys. Enterprise
+	// also propagates the adjustment to cluster peers.
+	AdjustUsageInMemory(ctx context.Context, budgetDeltas map[string]float64, rateLimitDeltas map[string]RateLimitUsageDelta) error
 	ReloadTeam(ctx context.Context, id string) (*configstoreTables.TableTeam, error)
 	RemoveTeam(ctx context.Context, id string) error
 	ReloadCustomer(ctx context.Context, id string) (*configstoreTables.TableCustomer, error)
@@ -77,6 +82,12 @@ type GovernanceManager interface {
 	// cluster peers. An error means nothing was reloaded, and the caller falls
 	// back to ReloadVirtualKey per key.
 	ReloadVirtualKeys(ctx context.Context, ids []string) error
+}
+
+// RateLimitUsageDelta is a signed change to one rate limit's token and request counters.
+type RateLimitUsageDelta struct {
+	Tokens   int64
+	Requests int64
 }
 
 // BudgetUsageResetOwner identifies the entity whose budgets had their usage reset.
@@ -1806,6 +1817,7 @@ func (h *GovernanceHandler) RegisterRoutesWithOverrides(r *router.Router, overri
 	r.GET("/api/governance/virtual-keys", lib.ChainMiddlewares(h.getVirtualKeys, middlewares...))
 	r.POST("/api/governance/virtual-keys", lib.ChainMiddlewares(h.createVirtualKey, middlewares...))
 	r.POST("/api/governance/virtual-keys/rotate", lib.ChainMiddlewares(h.rotateVirtualKeys, middlewares...))
+	r.POST("/api/governance/sessions/{session_id}/move-virtual-key", lib.ChainMiddlewares(h.moveSessionVirtualKey, middlewares...))
 	r.GET("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.getVirtualKey, middlewares...))
 	r.PUT("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.updateVirtualKey, middlewares...))
 	r.POST("/api/governance/virtual-keys/{vk_id}/rotate", lib.ChainMiddlewares(h.rotateVirtualKey, middlewares...))

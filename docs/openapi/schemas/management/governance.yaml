@@ -2921,3 +2921,92 @@ ComplexitySessionConfig:
     enabled:
       type: boolean
       description: Enable monotonic session tier retention; default is false.
+
+MoveSessionVirtualKeyRequest:
+  type: object
+  required:
+    - source_virtual_key_id
+    - target_virtual_key_id
+  properties:
+    source_virtual_key_id:
+      type: string
+      description: Virtual key the session was recorded under
+    target_virtual_key_id:
+      type: string
+      description: Virtual key to move the session to; must differ from the source
+    dry_run:
+      type: boolean
+      description: Report the plan without changing anything
+    force:
+      type: boolean
+      description: Move the session even when a target budget would exceed its limit
+
+SessionMoveBudgetChange:
+  type: object
+  properties:
+    id:
+      type: string
+    delta:
+      type: number
+      description: Signed change to the budget's current usage, in dollars
+    usage_before:
+      type: number
+    usage_after:
+      type: number
+    max_limit:
+      type: number
+    exceeds_limit:
+      type: boolean
+      description: True when the move leaves the budget over its limit
+
+SessionMoveRateLimitChange:
+  type: object
+  properties:
+    id:
+      type: string
+    tokens_delta:
+      type: integer
+      format: int64
+    requests_delta:
+      type: integer
+      format: int64
+    tokens_before:
+      type: integer
+      format: int64
+    tokens_after:
+      type: integer
+      format: int64
+    requests_before:
+      type: integer
+      format: int64
+    requests_after:
+      type: integer
+      format: int64
+
+MoveSessionVirtualKeyResponse:
+  type: object
+  properties:
+    session_id:
+      type: string
+    source_virtual_key_id:
+      type: string
+    target_virtual_key_id:
+      type: string
+    dry_run:
+      type: boolean
+    moved_logs:
+      type: integer
+      format: int64
+    total_cost:
+      type: number
+    total_tokens:
+      type: integer
+      format: int64
+    budgets:
+      type: array
+      items:
+        $ref: "#/SessionMoveBudgetChange"
+    rate_limits:
+      type: array
+      items:
+        $ref: "#/SessionMoveRateLimitChange"

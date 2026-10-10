@@ -104,6 +104,9 @@ type LogStore interface {
 	BulkBackfillBillingPayloads(ctx context.Context, updates map[string]BillingPayloadBackfill) error
 	GetSessionLogs(ctx context.Context, sessionID string, pagination PaginationOptions) (*SessionDetailResult, error)
 	GetSessionSummary(ctx context.Context, sessionID string) (*SessionSummaryResult, error)
+	// MoveSessionVirtualKey re-attributes a session's logs from one virtual key to another.
+	// Stores that cannot rewrite rows in place return ErrSessionMoveUnsupported.
+	MoveSessionVirtualKey(ctx context.Context, req SessionMoveRequest) (*SessionMoveResult, error)
 	GetStats(ctx context.Context, filters SearchFilters) (*SearchStats, error)
 	GetHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*HistogramResult, error)
 	GetTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*TokenHistogramResult, error)

@@ -26,6 +26,9 @@ func (pricingOverrideTestGovernanceManager) GetGovernanceData(ctx context.Contex
 func (pricingOverrideTestGovernanceManager) ResetBudgetUsageInMemory(context.Context, BudgetUsageResetOwner, []string) error {
 	return nil
 }
+func (pricingOverrideTestGovernanceManager) AdjustUsageInMemory(context.Context, map[string]float64, map[string]RateLimitUsageDelta) error {
+	return nil
+}
 func (pricingOverrideTestGovernanceManager) AdoptCalendarAlignmentInMemory(context.Context, BudgetUsageResetOwner, []string, []string) error {
 	return nil
 }

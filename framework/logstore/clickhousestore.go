@@ -1179,3 +1179,9 @@ func (s *ClickHouseLogStore) deleteStrandedWarpMessages(ctx context.Context, ids
 	}
 	return s.chLightweightDelete(ctx, "warp_messages", "conversation_id IN ?", removed)
 }
+
+// MoveSessionVirtualKey is unsupported: ClickHouse replaces a row by re-inserting
+// it at a higher version, which cannot be made atomic across a whole session.
+func (s *ClickHouseLogStore) MoveSessionVirtualKey(context.Context, SessionMoveRequest) (*SessionMoveResult, error) {
+	return nil, ErrSessionMoveUnsupported
+}

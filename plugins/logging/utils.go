@@ -35,6 +35,9 @@ type LogManager interface {
 	// GetSessionSummary returns aggregate totals for a single parent_request_id session.
 	GetSessionSummary(ctx context.Context, sessionID string) (*logstore.SessionSummaryResult, error)
 
+	// MoveSessionVirtualKey re-attributes a session's logs from one virtual key to another.
+	MoveSessionVirtualKey(ctx context.Context, req logstore.SessionMoveRequest) (*logstore.SessionMoveResult, error)
+
 	// GetStats calculates statistics for logs matching the given filters
 	GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error)
 
@@ -225,6 +228,10 @@ func (p *PluginLogManager) GetSessionSummary(ctx context.Context, sessionID stri
 		return nil, fmt.Errorf("sessionID cannot be empty")
 	}
 	return p.plugin.GetSessionSummary(ctx, sessionID)
+}
+
+func (p *PluginLogManager) MoveSessionVirtualKey(ctx context.Context, req logstore.SessionMoveRequest) (*logstore.SessionMoveResult, error) {
+	return p.plugin.MoveSessionVirtualKey(ctx, req)
 }
 
 func (p *PluginLogManager) GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error) {

@@ -773,6 +773,11 @@ func (m *dashboardLogManager) GetSessionSummary(ctx context.Context, sessionID s
 	return nil, nil
 }
 
+// MoveSessionVirtualKey implements the test double used by logging handler tests.
+func (m *dashboardLogManager) MoveSessionVirtualKey(ctx context.Context, req logstore.SessionMoveRequest) (*logstore.SessionMoveResult, error) {
+	return nil, nil
+}
+
 // GetStats implements the test double used by logging handler tests.
 func (m *dashboardLogManager) GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error) {
 	m.lastLLMFilters = *filters

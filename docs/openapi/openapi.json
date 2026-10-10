@@ -47794,6 +47794,120 @@
         }
       }
     },
+    "/api/governance/sessions/{session_id}/move-virtual-key": {
+      "post": {
+        "operationId": "moveSessionVirtualKey",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `VirtualKeys:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Move a session to another virtual key",
+        "description": "Moves a session's logs from a source virtual key to a target virtual key and carries the\nspend with them. Usage leaves the budgets and rate limits only the source key answers to\n(its own, its team's, its customer's) and lands on those only the target answers to.\nBudgets both keys share are left untouched, since the same budget paid either way. Only\nspend inside a budget's current window is moved.\n\nUse `dry_run` to see the plan without changing anything. If the move would leave a target\nbudget over its limit the request is refused with `409` and the same plan; send `force` to\nmove it anyway. Log stores that cannot rewrite rows in place return `501`.\n",
+        "tags": [
+          "Governance"
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "description": "Parent request ID identifying the session",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveSessionVirtualKeyRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session moved (or the plan, when `dry_run` is set)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MoveSessionVirtualKeyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The move would leave a target budget over its limit; the body is the plan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MoveSessionVirtualKeyResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "The configured log store cannot move a session between virtual keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Logging is not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/governance/virtual-keys": {
       "get": {
         "operationId": "listVirtualKeys",
@@ -118868,6 +118982,128 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "MoveSessionVirtualKeyRequest": {
+        "type": "object",
+        "required": [
+          "source_virtual_key_id",
+          "target_virtual_key_id"
+        ],
+        "properties": {
+          "source_virtual_key_id": {
+            "type": "string",
+            "description": "Virtual key the session was recorded under"
+          },
+          "target_virtual_key_id": {
+            "type": "string",
+            "description": "Virtual key to move the session to; must differ from the source"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Report the plan without changing anything"
+          },
+          "force": {
+            "type": "boolean",
+            "description": "Move the session even when a target budget would exceed its limit"
+          }
+        }
+      },
+      "SessionMoveBudgetChange": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "delta": {
+            "type": "number",
+            "description": "Signed change to the budget's current usage, in dollars"
+          },
+          "usage_before": {
+            "type": "number"
+          },
+          "usage_after": {
+            "type": "number"
+          },
+          "max_limit": {
+            "type": "number"
+          },
+          "exceeds_limit": {
+            "type": "boolean",
+            "description": "True when the move leaves the budget over its limit"
+          }
+        }
+      },
+      "SessionMoveRateLimitChange": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "tokens_delta": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "requests_delta": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "tokens_before": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "tokens_after": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "requests_before": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "requests_after": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "MoveSessionVirtualKeyResponse": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "source_virtual_key_id": {
+            "type": "string"
+          },
+          "target_virtual_key_id": {
+            "type": "string"
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "moved_logs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total_cost": {
+            "type": "number"
+          },
+          "total_tokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "budgets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionMoveBudgetChange"
+            }
+          },
+          "rate_limits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionMoveRateLimitChange"
+            }
           }
         }
       },

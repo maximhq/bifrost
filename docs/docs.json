@@ -1407,6 +1407,7 @@
                 "pages": [
                   "GET /api/governance/virtual-keys",
                   "POST /api/governance/virtual-keys",
+                  "POST /api/governance/sessions/{session_id}/move-virtual-key",
                   "GET /api/governance/virtual-keys/quota",
                   "POST /api/governance/virtual-keys/rotate",
                   "GET /api/governance/virtual-keys/{vk_id}",

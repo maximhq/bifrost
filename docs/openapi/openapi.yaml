@@ -873,6 +873,8 @@ paths:
     $ref: "./paths/management/oauth.yaml#/oauth-config-by-id"
 
   # Governance - Virtual Keys
+  /api/governance/sessions/{session_id}/move-virtual-key:
+    $ref: "./paths/management/governance.yaml#/governance-sessions-move-virtual-key"
   /api/governance/virtual-keys:
     $ref: "./paths/management/governance.yaml#/virtual-keys"
   /api/governance/virtual-keys/quota:

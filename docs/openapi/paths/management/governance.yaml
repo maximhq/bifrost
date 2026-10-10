@@ -1759,4 +1759,77 @@ pricing-overrides-by-id:
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
 
+governance-sessions-move-virtual-key:
+  post:
+    operationId: moveSessionVirtualKey
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `VirtualKeys:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Move a session to another virtual key
+    description: |
+      Moves a session's logs from a source virtual key to a target virtual key and carries the
+      spend with them. Usage leaves the budgets and rate limits only the source key answers to
+      (its own, its team's, its customer's) and lands on those only the target answers to.
+      Budgets both keys share are left untouched, since the same budget paid either way. Only
+      spend inside a budget's current window is moved.
+
+      Use `dry_run` to see the plan without changing anything. If the move would leave a target
+      budget over its limit the request is refused with `409` and the same plan; send `force` to
+      move it anyway. Log stores that cannot rewrite rows in place return `501`.
+    tags:
+      - Governance
+    parameters:
+      - name: session_id
+        in: path
+        required: true
+        description: Parent request ID identifying the session
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "../../schemas/management/governance.yaml#/MoveSessionVirtualKeyRequest"
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Session moved (or the plan, when `dry_run` is set)
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/governance.yaml#/MoveSessionVirtualKeyResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "409":
+        description: The move would leave a target budget over its limit; the body is the plan
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/governance.yaml#/MoveSessionVirtualKeyResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+      "501":
+        description: The configured log store cannot move a session between virtual keys
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "503":
+        description: Logging is not enabled
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+
 # Complexity Analyzer Config

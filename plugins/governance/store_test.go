@@ -2324,3 +2324,35 @@ func TestGovernanceStore_CollectModelConfigsForPrecedence(t *testing.T) {
 	assert.NotContains(t, got, "all-openai")
 	assert.Contains(t, got, "all-any")
 }
+
+// TestGovernanceStoreBumpUsageByIsSignedAndFloorsAtZero verifies the carry primitives used when
+// spend moves between keys: deltas apply without a window reset, never drive a counter negative,
+// and leave the reset boundary alone.
+func TestGovernanceStoreBumpUsageByIsSignedAndFloorsAtZero(t *testing.T) {
+	store := newStandaloneStore(t)
+	ctx := context.Background()
+
+	budget := buildBudgetWithUsage("carry-budget", 100, 4, "1h")
+	lastReset := time.Now().Add(-10 * time.Minute)
+	budget.LastReset = lastReset
+	store.budgets.Store(budget.ID, budget)
+
+	require.NoError(t, store.BumpBudgetUsageBy(ctx, budget.ID, 3))
+	assert.Equal(t, 7.0, store.LoadBudget(ctx, budget.ID).CurrentUsage)
+	require.NoError(t, store.BumpBudgetUsageBy(ctx, budget.ID, -50))
+	got := store.LoadBudget(ctx, budget.ID)
+	assert.Equal(t, 0.0, got.CurrentUsage, "usage must floor at zero")
+	assert.True(t, got.LastReset.Equal(lastReset), "a carried delta must not move the reset boundary")
+	require.NoError(t, store.BumpBudgetUsageBy(ctx, "missing-budget", 5), "an unknown budget is a no-op")
+
+	rl := &configstoreTables.TableRateLimit{ID: "carry-rl", TokenCurrentUsage: 10, RequestCurrentUsage: 2}
+	store.rateLimits.Store(rl.ID, rl)
+	require.NoError(t, store.BumpRateLimitUsageBy(ctx, rl.ID, -4, -1))
+	loaded := store.LoadRateLimit(ctx, rl.ID)
+	assert.Equal(t, int64(6), loaded.TokenCurrentUsage)
+	assert.Equal(t, int64(1), loaded.RequestCurrentUsage)
+	require.NoError(t, store.BumpRateLimitUsageBy(ctx, rl.ID, -100, -100))
+	loaded = store.LoadRateLimit(ctx, rl.ID)
+	assert.Equal(t, int64(0), loaded.TokenCurrentUsage, "token usage must floor at zero")
+	assert.Equal(t, int64(0), loaded.RequestCurrentUsage, "request usage must floor at zero")
+}

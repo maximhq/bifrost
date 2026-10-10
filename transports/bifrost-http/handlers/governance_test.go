@@ -5569,3 +5569,221 @@ func TestRunVKExpiryCleanupJob_ClientConfigErrorFailsJob(t *testing.T) {
 	assert.Empty(t, store.deleted)
 	assert.Empty(t, *published)
 }
+
+// sessionMoveLogManager serves the rows a session move touches and records the requests.
+type sessionMoveLogManager struct {
+	logging.LogManager
+	rows  []logstore.SessionMoveRow
+	calls []logstore.SessionMoveRequest
+	err   error
+}
+
+func (m *sessionMoveLogManager) MoveSessionVirtualKey(_ context.Context, req logstore.SessionMoveRequest) (*logstore.SessionMoveResult, error) {
+	m.calls = append(m.calls, req)
+	if m.err != nil {
+		return nil, m.err
+	}
+	res := &logstore.SessionMoveResult{MovedCount: int64(len(m.rows)), Rows: m.rows}
+	for _, r := range m.rows {
+		res.TotalCost += r.Cost
+	}
+	return res, nil
+}
+
+// sessionMoveGovernanceManager serves governance data and records usage adjustments.
+type sessionMoveGovernanceManager struct {
+	GovernanceManager
+	data            *governance.GovernanceData
+	budgetDeltas    map[string]float64
+	rateLimitDeltas map[string]RateLimitUsageDelta
+	adjustCalls     int
+}
+
+func (m *sessionMoveGovernanceManager) GetGovernanceData(context.Context) *governance.GovernanceData {
+	return m.data
+}
+
+func (m *sessionMoveGovernanceManager) AdjustUsageInMemory(_ context.Context, b map[string]float64, r map[string]RateLimitUsageDelta) error {
+	m.adjustCalls++
+	m.budgetDeltas, m.rateLimitDeltas = b, r
+	return nil
+}
+
+// sessionMoveConfigStore serves virtual keys by id.
+type sessionMoveConfigStore struct {
+	configstore.ConfigStore
+	vks map[string]*configstoreTables.TableVirtualKey
+}
+
+func (s *sessionMoveConfigStore) GetVirtualKey(_ context.Context, id string) (*configstoreTables.TableVirtualKey, error) {
+	if vk, ok := s.vks[id]; ok {
+		clone := *vk
+		return &clone, nil
+	}
+	return nil, configstore.ErrNotFound
+}
+
+// newSessionMoveFixture builds two keys that share a customer budget; each has its own
+// budget and rate limit, and the source also sits under a team with a budget.
+func newSessionMoveFixture(rows []logstore.SessionMoveRow, targetUsage float64) (*GovernanceHandler, *sessionMoveLogManager, *sessionMoveGovernanceManager) {
+	strPtr := func(v string) *string { return &v }
+	windowStart := time.Now().Add(-24 * time.Hour)
+	budget := func(id string, usage, limit float64) *configstoreTables.TableBudget {
+		return &configstoreTables.TableBudget{ID: id, CurrentUsage: usage, MaxLimit: limit, LastReset: windowStart}
+	}
+	data := &governance.GovernanceData{
+		Teams: map[string]*configstoreTables.TableTeam{
+			"team-a": {ID: "team-a", Name: "Team A", Budgets: []configstoreTables.TableBudget{{ID: "b-team-a"}}},
+		},
+		Customers: map[string]*configstoreTables.TableCustomer{
+			"cust": {ID: "cust", Name: "Cust", Budgets: []configstoreTables.TableBudget{{ID: "b-cust"}}},
+		},
+		Budgets: map[string]*configstoreTables.TableBudget{
+			"b-vk-a":   budget("b-vk-a", 5, 100),
+			"b-team-a": budget("b-team-a", 5, 100),
+			"b-vk-b":   budget("b-vk-b", targetUsage, 10),
+			"b-cust":   budget("b-cust", 5, 100),
+		},
+		RateLimits: map[string]*configstoreTables.TableRateLimit{
+			"rl-a": {ID: "rl-a", TokenCurrentUsage: 500, RequestCurrentUsage: 5, TokenLastReset: windowStart, RequestLastReset: windowStart},
+			"rl-b": {ID: "rl-b", TokenCurrentUsage: 10, RequestCurrentUsage: 1, TokenLastReset: windowStart, RequestLastReset: windowStart},
+		},
+	}
+	vkA := &configstoreTables.TableVirtualKey{ID: "vk-a", Name: "A", TeamID: strPtr("team-a"), CustomerID: strPtr("cust"),
+		RateLimitID: strPtr("rl-a"), Budgets: []configstoreTables.TableBudget{{ID: "b-vk-a"}}}
+	vkB := &configstoreTables.TableVirtualKey{ID: "vk-b", Name: "B", CustomerID: strPtr("cust"),
+		RateLimitID: strPtr("rl-b"), Budgets: []configstoreTables.TableBudget{{ID: "b-vk-b"}}}
+	logs := &sessionMoveLogManager{rows: rows}
+	gov := &sessionMoveGovernanceManager{data: data}
+	h := &GovernanceHandler{
+		configStore:       &sessionMoveConfigStore{vks: map[string]*configstoreTables.TableVirtualKey{"vk-a": vkA, "vk-b": vkB}},
+		governanceManager: gov,
+		logManager:        logs,
+	}
+	return h, logs, gov
+}
+
+func callMoveSession(h *GovernanceHandler, sessionID, body string) *fasthttp.RequestCtx {
+	SetLogger(&mockLogger{})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("session_id", sessionID)
+	ctx.Request.SetBodyString(body)
+	h.moveSessionVirtualKey(ctx)
+	return ctx
+}
+
+// A move carries spend off the budgets only the source answers to and onto those only the
+// target answers to, and leaves the budget both keys share (the customer's) alone.
+func TestMoveSessionVirtualKey_MovesOnlyUnsharedUsage(t *testing.T) {
+	rows := []logstore.SessionMoveRow{{Timestamp: time.Now(), Cost: 2, TotalTokens: 100,
+		BudgetIDs: []string{"b-vk-a", "b-team-a", "b-cust"}, RateLimitIDs: []string{"rl-a"}}}
+	h, logs, gov := newSessionMoveFixture(rows, 1)
+
+	ctx := callMoveSession(h, "sess-1", `{"source_virtual_key_id":"vk-a","target_virtual_key_id":"vk-b"}`)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	assert.Equal(t, map[string]float64{"b-vk-a": -2, "b-team-a": -2, "b-vk-b": 2}, gov.budgetDeltas)
+	assert.NotContains(t, gov.budgetDeltas, "b-cust", "a budget both keys share must not move")
+	assert.Equal(t, RateLimitUsageDelta{Tokens: -100, Requests: -1}, gov.rateLimitDeltas["rl-a"])
+	assert.Equal(t, RateLimitUsageDelta{Tokens: 100, Requests: 1}, gov.rateLimitDeltas["rl-b"])
+
+	require.Len(t, logs.calls, 2, "one dry-run plan, then the real move")
+	assert.True(t, logs.calls[0].DryRun)
+	assert.False(t, logs.calls[1].DryRun)
+	assert.Equal(t, []string{"b-team-a", "b-vk-a"}, logs.calls[1].RemoveBudgetIDs)
+	assert.Equal(t, []string{"b-vk-b"}, logs.calls[1].AddBudgetIDs)
+	assert.Equal(t, "vk-b", logs.calls[1].Target.VirtualKeyID)
+	assert.Nil(t, logs.calls[1].Target.TeamID, "the target key has no team")
+}
+
+// A dry run reports the plan and changes nothing.
+func TestMoveSessionVirtualKey_DryRunChangesNothing(t *testing.T) {
+	rows := []logstore.SessionMoveRow{{Timestamp: time.Now(), Cost: 2, BudgetIDs: []string{"b-vk-a"}}}
+	h, logs, gov := newSessionMoveFixture(rows, 1)
+
+	ctx := callMoveSession(h, "sess-1", `{"source_virtual_key_id":"vk-a","target_virtual_key_id":"vk-b","dry_run":true}`)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+
+	var resp MoveSessionVirtualKeyResponse
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	assert.True(t, resp.DryRun)
+	assert.Equal(t, int64(1), resp.MovedLogs)
+	assert.Zero(t, gov.adjustCalls)
+	require.Len(t, logs.calls, 1)
+	assert.True(t, logs.calls[0].DryRun)
+}
+
+// A move that would push the target over a budget is refused with the plan, unless forced.
+func TestMoveSessionVirtualKey_RefusesOverBudgetTargetUnlessForced(t *testing.T) {
+	rows := []logstore.SessionMoveRow{{Timestamp: time.Now(), Cost: 5, BudgetIDs: []string{"b-vk-a"}}}
+	body := `{"source_virtual_key_id":"vk-a","target_virtual_key_id":"vk-b"}`
+
+	h, logs, gov := newSessionMoveFixture(rows, 8) // 8 + 5 > 10
+	ctx := callMoveSession(h, "sess-1", body)
+	require.Equal(t, fasthttp.StatusConflict, ctx.Response.StatusCode())
+	var resp MoveSessionVirtualKeyResponse
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	require.Len(t, resp.Budgets, 2)
+	assert.True(t, resp.Budgets[1].ExceedsLimit)
+	assert.Zero(t, gov.adjustCalls, "a refused move must not touch usage")
+	assert.Len(t, logs.calls, 1, "a refused move must not rewrite logs")
+
+	h, logs, gov = newSessionMoveFixture(rows, 8)
+	ctx = callMoveSession(h, "sess-1", `{"source_virtual_key_id":"vk-a","target_virtual_key_id":"vk-b","force":true}`)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Equal(t, 1, gov.adjustCalls)
+	assert.Len(t, logs.calls, 2)
+}
+
+// Spend from before a budget's last reset is already gone from its counter, so it is not
+// subtracted from the source or added to the target.
+func TestMoveSessionVirtualKey_SkipsSpendFromBeforeTheWindow(t *testing.T) {
+	rows := []logstore.SessionMoveRow{
+		{Timestamp: time.Now().Add(-72 * time.Hour), Cost: 3, TotalTokens: 30, BudgetIDs: []string{"b-vk-a"}, RateLimitIDs: []string{"rl-a"}},
+		{Timestamp: time.Now(), Cost: 2, TotalTokens: 20, BudgetIDs: []string{"b-vk-a"}, RateLimitIDs: []string{"rl-a"}},
+	}
+	h, _, gov := newSessionMoveFixture(rows, 1)
+
+	ctx := callMoveSession(h, "sess-1", `{"source_virtual_key_id":"vk-a","target_virtual_key_id":"vk-b"}`)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Equal(t, -2.0, gov.budgetDeltas["b-vk-a"])
+	assert.Equal(t, 2.0, gov.budgetDeltas["b-vk-b"])
+	assert.Equal(t, RateLimitUsageDelta{Tokens: -20, Requests: -1}, gov.rateLimitDeltas["rl-a"])
+}
+
+// Bad input and missing keys are refused before any log is read or written.
+func TestMoveSessionVirtualKey_Validation(t *testing.T) {
+	cases := []struct {
+		name, session, body string
+		status              int
+	}{
+		{"invalid json", "s", `{`, fasthttp.StatusBadRequest},
+		{"missing target", "s", `{"source_virtual_key_id":"vk-a"}`, fasthttp.StatusBadRequest},
+		{"same key", "s", `{"source_virtual_key_id":"vk-a","target_virtual_key_id":"vk-a"}`, fasthttp.StatusBadRequest},
+		{"blank session", " ", `{"source_virtual_key_id":"vk-a","target_virtual_key_id":"vk-b"}`, fasthttp.StatusBadRequest},
+		{"unknown source", "s", `{"source_virtual_key_id":"nope","target_virtual_key_id":"vk-b"}`, fasthttp.StatusNotFound},
+		{"unknown target", "s", `{"source_virtual_key_id":"vk-a","target_virtual_key_id":"nope"}`, fasthttp.StatusNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, logs, _ := newSessionMoveFixture(nil, 0)
+			ctx := callMoveSession(h, tc.session, tc.body)
+			assert.Equal(t, tc.status, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Empty(t, logs.calls)
+		})
+	}
+
+	t.Run("no logs under the source key", func(t *testing.T) {
+		h, _, gov := newSessionMoveFixture(nil, 0)
+		ctx := callMoveSession(h, "s", `{"source_virtual_key_id":"vk-a","target_virtual_key_id":"vk-b"}`)
+		assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode())
+		assert.Zero(t, gov.adjustCalls)
+	})
+
+	t.Run("unsupported log store", func(t *testing.T) {
+		h, logs, _ := newSessionMoveFixture(nil, 0)
+		logs.err = logstore.ErrSessionMoveUnsupported
+		ctx := callMoveSession(h, "s", `{"source_virtual_key_id":"vk-a","target_virtual_key_id":"vk-b"}`)
+		assert.Equal(t, fasthttp.StatusNotImplemented, ctx.Response.StatusCode())
+	})
+}

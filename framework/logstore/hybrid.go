@@ -992,6 +992,12 @@ func (h *HybridLogStore) GetSessionLogs(ctx context.Context, sessionID string, p
 	return h.inner.GetSessionLogs(ctx, sessionID, pagination)
 }
 
+// MoveSessionVirtualKey delegates to the inner store; the columns it rewrites are
+// scalar, so they stay on the row in hybrid mode.
+func (h *HybridLogStore) MoveSessionVirtualKey(ctx context.Context, req SessionMoveRequest) (*SessionMoveResult, error) {
+	return h.inner.MoveSessionVirtualKey(ctx, req)
+}
+
 // GetSessionSummary delegates to the inner store and returns an aggregated
 // summary for the given session.
 func (h *HybridLogStore) GetSessionSummary(ctx context.Context, sessionID string) (*SessionSummaryResult, error) {

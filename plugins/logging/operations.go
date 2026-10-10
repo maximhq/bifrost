@@ -1098,6 +1098,11 @@ func (p *LoggerPlugin) GetSessionLogs(ctx context.Context, sessionID string, pag
 	return p.store.GetSessionLogs(ctx, sessionID, pagination)
 }
 
+// MoveSessionVirtualKey re-attributes a session's logs from one virtual key to another.
+func (p *LoggerPlugin) MoveSessionVirtualKey(ctx context.Context, req logstore.SessionMoveRequest) (*logstore.SessionMoveResult, error) {
+	return p.store.MoveSessionVirtualKey(ctx, req)
+}
+
 // GetSessionSummary returns aggregate totals for a single parent_request_id session.
 func (p *LoggerPlugin) GetSessionSummary(ctx context.Context, sessionID string) (*logstore.SessionSummaryResult, error) {
 	return p.store.GetSessionSummary(ctx, sessionID)

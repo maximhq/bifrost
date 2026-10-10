@@ -125,6 +125,9 @@ type ServerCallbacks interface {
 	// broadcast, exactly as the usage reset above does.
 	AdoptCalendarAlignmentInMemory(ctx context.Context, owner handlers.BudgetUsageResetOwner, budgetIDs []string, rateLimitIDs []string) error
 	RemoveVirtualKey(ctx context.Context, id string) error
+	// AdjustUsageInMemory adds signed usage deltas to budgets and rate limits in the governance
+	// store, leaving every reset boundary untouched. Enterprise also propagates it to peers.
+	AdjustUsageInMemory(ctx context.Context, budgetDeltas map[string]float64, rateLimitDeltas map[string]handlers.RateLimitUsageDelta) error
 	// Provider related callbacks
 	GetModelsForProvider(provider schemas.ModelProvider) []string
 	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
@@ -876,6 +879,34 @@ func (s *BifrostHTTPServer) ResetBudgetUsageInMemory(ctx context.Context, owner 
 	for _, budgetID := range budgetIDs {
 		if _, ok := store.ResetBudgetUsageInMemory(ctx, budgetID); !ok {
 			logger.Debug("budget %s not present in the governance store; skipping usage reset", budgetID)
+		}
+	}
+	return nil
+}
+
+// AdjustUsageInMemory applies signed usage deltas to the enforcing governance store.
+//
+// The in-memory store is what enforcement reads and what the dump tick persists, so
+// adjusting it is enough: the next dump writes the new values to the database. Unknown
+// budgets and rate limits are skipped, since one can have been deleted since the plan
+// was made.
+func (s *BifrostHTTPServer) AdjustUsageInMemory(ctx context.Context, budgetDeltas map[string]float64, rateLimitDeltas map[string]handlers.RateLimitUsageDelta) error {
+	if len(budgetDeltas) == 0 && len(rateLimitDeltas) == 0 {
+		return nil
+	}
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return err
+	}
+	store := governancePlugin.GetGovernanceStore()
+	for id, delta := range budgetDeltas {
+		if err := store.BumpBudgetUsageBy(ctx, id, delta); err != nil {
+			return err
+		}
+	}
+	for id, delta := range rateLimitDeltas {
+		if err := store.BumpRateLimitUsageBy(ctx, id, delta.Tokens, delta.Requests); err != nil {
+			return err
 		}
 	}
 	return nil
