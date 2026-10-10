@@ -435,9 +435,9 @@ func restoreProviderResponseHeaders(ctx *schemas.BifrostContext, headers map[str
 // should stay tied to the caller's trace) and
 // BifrostContextKeySkipPluginPipeline (whether the internal request runs the
 // plugin pipeline is the caller's decision).
-// virtualKeyHeader carries Bifrost's own virtual key. IsSensitiveHeader does not match it
-// (no api-key/authorization/secret substring, no -token suffix), so it would otherwise be
-// exported to traces verbatim.
+// virtualKeyHeader carries Bifrost's own virtual key. IsSensitiveHeader redacts its value
+// wherever captured headers are exported; as an extra-header span attribute it is dropped
+// outright, since even its presence says nothing useful about the request.
 const virtualKeyHeader = "x-bf-vk"
 
 // extraHeaderSpanAttribute returns the span-attribute value for a caller-supplied header and
