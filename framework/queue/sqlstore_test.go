@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -20,7 +21,7 @@ import (
 )
 
 // openTestSQLite opens a file database with the logstore's SQLite settings.
-func openTestSQLite(t *testing.T) *gorm.DB {
+func openTestSQLite(t testing.TB) *gorm.DB {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "queue.db")
 	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=60000&_foreign_keys=1", path)
@@ -34,7 +35,7 @@ func openTestSQLite(t *testing.T) *gorm.DB {
 	return db
 }
 
-func newTestSQLiteStore(t *testing.T) *sqlStore {
+func newTestSQLiteStore(t testing.TB) *sqlStore {
 	t.Helper()
 	s, err := newSQLStore(context.Background(), openTestSQLite(t), nil)
 	require.NoError(t, err)
@@ -260,7 +261,7 @@ const pgTestDSN = "host=localhost user=bifrost password=bifrost_password dbname=
 // openTestPostgres opens a new connection pool to the test schema, or skips
 // the test when Postgres is not running. Each call is a separate pool, which
 // is how separate Bifrost instances look to the database.
-func openTestPostgres(t *testing.T) *gorm.DB {
+func openTestPostgres(t testing.TB) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(postgres.Open(pgTestDSN), &gorm.Config{Logger: gormlogger.Default.LogMode(gormlogger.Silent)})
 	if err != nil {
@@ -276,9 +277,16 @@ func openTestPostgres(t *testing.T) *gorm.DB {
 	return db
 }
 
+// closeTestDB closes db's pool now rather than when the test ends.
+func closeTestDB(db *gorm.DB) {
+	if sqlDB, err := db.DB(); err == nil {
+		_ = sqlDB.Close()
+	}
+}
+
 // resetTestPostgres drops the queue tables and their ledger rows so the next
 // store runs its migrations from scratch.
-func resetTestPostgres(t *testing.T) *gorm.DB {
+func resetTestPostgres(t testing.TB) *gorm.DB {
 	t.Helper()
 	db := openTestPostgres(t)
 	for _, table := range []string{"queue_deliveries", "queue_messages", "queue_groups", "queue_topics"} {
@@ -882,4 +890,58 @@ func TestPostgresPurgeWaitsForEarliestBackfill(t *testing.T) {
 
 	assert.Equal(t, []string{"kept"}, payloads(mustClaim(t, registrar, "backfill", "late", 10, longLease)),
 		"the purge deleted a message the backfill was delivering")
+}
+
+func BenchmarkSQLiteQueue(b *testing.B) {
+	runBenchmarks(b, benchBackend{
+		// Through a real SQLite logstore, so the database runs with the
+		// logstore's DSN settings (WAL, cache size, busy timeout).
+		fresh: func(b *testing.B) (Store, func()) {
+			dir := b.TempDir()
+			ls := openTestSQLiteLogStore(b, dir)
+			s, err := newLogStoreBackend(context.Background(), Dependencies{LogStore: ls}, EngineConfig{}.WithDefaults(), nil)
+			require.NoError(b, err)
+			return s, func() {
+				_ = ls.Close(context.Background())
+				_ = os.RemoveAll(dir)
+			}
+		},
+		footprint: func(b *testing.B, s Store) int64 {
+			// Pages in use after folding the WAL back into the database file.
+			db := s.(*sqlStore).db
+			require.NoError(b, db.Exec("PRAGMA wal_checkpoint(TRUNCATE)").Error)
+			var pages, free, size int64
+			require.NoError(b, db.Raw("PRAGMA page_count").Scan(&pages).Error)
+			require.NoError(b, db.Raw("PRAGMA freelist_count").Scan(&free).Error)
+			require.NoError(b, db.Raw("PRAGMA page_size").Scan(&size).Error)
+			return (pages - free) * size
+		},
+		compact:  func(b *testing.B, s Store) { require.NoError(b, s.(*sqlStore).db.Exec("VACUUM").Error) },
+		backlogs: []int{10_000, 100_000},
+	})
+}
+
+func BenchmarkPostgresQueue(b *testing.B) {
+	runBenchmarks(b, benchBackend{
+		fresh: func(b *testing.B) (Store, func()) {
+			closeTestDB(resetTestPostgres(b))
+			db := openTestPostgres(b)
+			s, err := newSQLStore(context.Background(), db, nil)
+			require.NoError(b, err)
+			return s, func() { closeTestDB(db) }
+		},
+		footprint: func(b *testing.B, s Store) int64 {
+			// Heap, indexes and TOAST of every queue table.
+			var bytes int64
+			require.NoError(b, s.(*sqlStore).db.Raw("SELECT COALESCE(SUM(pg_total_relation_size(format('%I.%I', schemaname, tablename)::regclass)), 0) "+
+				"FROM pg_tables WHERE schemaname = ? AND tablename LIKE 'queue\\_%'", pgTestSchema).Scan(&bytes).Error)
+			return bytes
+		},
+		compact: func(b *testing.B, s Store) {
+			for _, table := range []string{"queue_deliveries", "queue_messages", "queue_groups", "queue_topics"} {
+				require.NoError(b, s.(*sqlStore).db.Exec("VACUUM FULL "+table).Error)
+			}
+		},
+		backlogs: []int{10_000, 100_000},
+	})
 }

@@ -322,6 +322,12 @@ func (p *PluginLogManager) GetDroppedRequests(ctx context.Context) int64 {
 	return p.plugin.droppedRequests.Load()
 }
 
+// GetDroppedDuringMaintenance returns how many of the dropped requests were
+// dropped while the writer was paused for another node's logstore migration.
+func (p *PluginLogManager) GetDroppedDuringMaintenance(ctx context.Context) int64 {
+	return p.plugin.droppedDuringMaintenance.Load()
+}
+
 // GetAvailableModels returns all unique models from logs
 func (p *PluginLogManager) GetAvailableModels(ctx context.Context, limit int, query string) ([]string, error) {
 	return p.plugin.GetAvailableModels(ctx, limit, query)

@@ -84,3 +84,10 @@ type Claimed struct {
 	Attempt    int      // 1-based attempt this claim represents
 	Message    *Message // the delivered message
 }
+
+// ConsumeChecker is implemented by stores that can only consume under some
+// condition, such as having a distributed locker. Subscribe calls it before
+// registering anything, so a misconfigured consumer fails at startup.
+type ConsumeChecker interface {
+	CanConsume() error
+}

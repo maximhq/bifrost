@@ -1531,3 +1531,18 @@ func runMultiInstanceSimulation(t *testing.T, newPod func(t *testing.T, logger s
 		}
 	}
 }
+
+func BenchmarkMemoryQueue(b *testing.B) {
+	runBenchmarks(b, benchBackend{
+		fresh: func(b *testing.B) (Store, func()) { return newMemoryStore(), func() {} },
+		footprint: func(b *testing.B, s Store) int64 {
+			runtime.GC()
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			runtime.KeepAlive(s) // an open queue's store is still reachable
+			return int64(m.HeapAlloc)
+		},
+		compact:  func(b *testing.B, s Store) { runtime.GC() },
+		backlogs: []int{10_000, 100_000},
+	})
+}

@@ -3207,7 +3207,7 @@
             },
             "write_queue_capacity": {
               "type": "integer",
-              "description": "Buffered queue capacity for pending log writes (default: 10000)",
+              "description": "Buffered queue capacity for pending log writes (default: 10000). This queue is also the buffer while the writer pauses for another node's log store migration, so it bounds how much of that window is absorbed without drops.",
               "minimum": 1,
               "default": 10000
             },

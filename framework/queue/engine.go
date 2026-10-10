@@ -60,6 +60,8 @@ type storeQueue struct {
 	janitorCtx       context.Context // parent of janitor store calls; cancelled by Close
 	janitorStopCalls context.CancelFunc
 	janitorDone      chan struct{}
+	stopListen       context.CancelFunc // ends the store's WakeSource, if any
+	listenDone       chan struct{}
 	closeOnce        sync.Once
 	closeErr         error
 }
@@ -84,10 +86,31 @@ func NewStoreQueue(store Store, cfg EngineConfig, logger schemas.Logger) (Queue,
 		subs:        map[*subscription]struct{}{},
 		janitorStop: make(chan struct{}),
 		janitorDone: make(chan struct{}),
+		listenDone:  make(chan struct{}),
 	}
 	q.janitorCtx, q.janitorStopCalls = context.WithCancel(context.Background())
 	go q.runJanitor(janitorEvery)
+	q.startListening()
 	return q, nil
+}
+
+// startListening wakes local subscriptions on publishes other instances
+// make, when the store can report them.
+func (q *storeQueue) startListening() {
+	ws, ok := q.store.(WakeSource)
+	if !ok {
+		close(q.listenDone)
+		q.stopListen = func() {}
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	q.stopListen = cancel
+	go func() {
+		defer close(q.listenDone)
+		if err := ws.Listen(ctx, q.wakeTopic); err != nil && !errors.Is(err, ErrUnsupported) {
+			q.warn("queue: cross-instance wakeups stopped: %v", err)
+		}
+	}()
 }
 
 // newRunnerID identifies this process in claimed_by columns.
@@ -147,6 +170,17 @@ func (q *storeQueue) wakeTopics(msgs []*Message) {
 	}
 }
 
+// wakeTopic nudges local subscriptions of topic.
+func (q *storeQueue) wakeTopic(topic string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for s := range q.subs {
+		if s.topic == topic {
+			s.poke()
+		}
+	}
+}
+
 func (q *storeQueue) Subscribe(ctx context.Context, topic, group string, h Handler, opts ...SubscribeOption) (Subscription, error) {
 	if err := ValidateName("topic", topic); err != nil {
 		return nil, err
@@ -166,6 +200,11 @@ func (q *storeQueue) Subscribe(ctx context.Context, topic, group string, h Handl
 	}
 	if q.isClosed() {
 		return nil, ErrClosed
+	}
+	if c, ok := q.store.(ConsumeChecker); ok {
+		if err := c.CanConsume(); err != nil {
+			return nil, err
+		}
 	}
 	if err := q.withRetry(ctx, func(ctx context.Context) error { return q.store.EnsureGroup(ctx, topic, group, o.StartFrom) }); err != nil {
 		return nil, fmt.Errorf("queue: register group %s on %s: %w", group, topic, err)
@@ -226,6 +265,12 @@ func (q *storeQueue) Close(ctx context.Context) error {
 		q.janitorStopCalls() // an in-flight purge must not hold Close
 		close(q.janitorStop)
 		<-q.janitorDone
+		q.stopListen()
+		select {
+		case <-q.listenDone:
+		case <-ctx.Done():
+			errs = append(errs, fmt.Errorf("queue: wakeup listener did not stop: %w", ctx.Err()))
+		}
 		if err := q.store.Close(ctx); err != nil {
 			errs = append(errs, err)
 		}

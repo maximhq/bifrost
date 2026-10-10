@@ -220878,7 +220878,250 @@
       ]
     },
     {
-      "name": "195. Custom Anthropic DB parameters survive URL sync (#8073) (model-parameters-sync) [SERIAL]",
+      "name": "195. Log writer migration gate surfaces maintenance drops (dropped logs)",
+      "description": "PR: pause the logging plugin's batch writer while another node holds the logstore migration advisory lock. The only wire-visible change is the additive dropped_during_maintenance counter on GET /api/logs/dropped; it must be present, numeric, and never exceed dropped_requests.",
+      "item": [
+        {
+          "name": "195.1: dropped logs endpoint reports the maintenance-window subset",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('195.1: dropped logs endpoint answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('195.1: dropped_requests is still reported as a number', function () {",
+                  "  pm.expect(body.dropped_requests, pm.response.text()).to.be.a('number');",
+                  "});",
+                  "pm.test('195.1: dropped_during_maintenance is reported as a number bounded by dropped_requests', function () {",
+                  "  pm.expect(body.dropped_during_maintenance, 'missing dropped_during_maintenance: ' + pm.response.text()).to.be.a('number');",
+                  "  pm.expect(body.dropped_during_maintenance, pm.response.text()).to.be.at.least(0);",
+                  "  pm.expect(body.dropped_during_maintenance, pm.response.text()).to.be.at.most(body.dropped_requests);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/dropped",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "dropped"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "196. Fixed-length streamed response integrity (content-length truncation)",
+      "description": "Local fixture regression, no live provider calls. Start provider-error-fixture.mjs and an isolated gateway using provider-error-fixture.config.json; enable providerErrorFixture=1. Both fixture models emit valid SSE with finish_reason=stop but no upstream [DONE]. upstream-fixed-length-short declares 100 extra body bytes and gracefully closes without Connection: close; the native and OpenAI SDK routes must emit a structured unexpected EOF read error instead of accepting the semantic finish marker as proof of HTTP completeness. upstream-fixed-length-ok declares the exact length and must complete successfully. Connection disposal and the next non-idempotent POST are pinned by TestContextTransport_TruncatedContentLengthStreamReportsUnexpectedEOFAndDiscardsConn. Setup and scoped run commands are in tests/e2e/api/README.md under Fixed-length response truncation.",
+      "item": [
+        {
+          "name": "196.1 openai openai/upstream-fixed-length-short rejects short Content-Length (content-length truncation)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('stream begins successfully with the fixture content', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include('text/event-stream');",
+                  "  pm.expect(raw, 'fixture content missing: ' + raw).to.include('hello');",
+                  "});",
+                  "pm.test('fixed-length truncation reaches the client as a read error despite finish_reason', function () {",
+                  "  pm.expect(raw, 'truncated body was accepted as complete: ' + raw).to.match(/unexpected EOF/i);",
+                  "  pm.expect(raw, 'structured stream error missing: ' + raw).to.match(/\"error\"\\s*:/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-fixed-length-short\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "196.2 openai upstream-fixed-length-short rejects short Content-Length (content-length truncation)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('stream begins successfully with the fixture content', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include('text/event-stream');",
+                  "  pm.expect(raw, 'fixture content missing: ' + raw).to.include('hello');",
+                  "});",
+                  "pm.test('fixed-length truncation reaches the client as a read error despite finish_reason', function () {",
+                  "  pm.expect(raw, 'truncated body was accepted as complete: ' + raw).to.match(/unexpected EOF/i);",
+                  "  pm.expect(raw, 'structured stream error missing: ' + raw).to.match(/\"error\"\\s*:/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"upstream-fixed-length-short\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "196.3 openai openai/upstream-fixed-length-ok accepts exact Content-Length (content-length truncation)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('stream begins successfully with the fixture content', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include('text/event-stream');",
+                  "  pm.expect(raw, 'fixture content missing: ' + raw).to.include('hello');",
+                  "});",
+                  "pm.test('an exact Content-Length body completes successfully', function () {",
+                  "  pm.expect(raw, 'unexpected read failure: ' + raw).to.not.match(/unexpected EOF/i);",
+                  "  pm.expect(raw, 'unexpected stream error: ' + raw).to.not.match(/\"error\"\\s*:/);",
+                  "  pm.expect(raw, 'completion missing: ' + raw).to.include('[DONE]');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-fixed-length-ok\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "197. Custom Anthropic DB parameters survive URL sync (#8073) (model-parameters-sync) [SERIAL]",
       "description": "Deterministic local-only regression: seed a provider-qualified max_output_tokens=32000 row in a fresh SQLite profile, while the URL feed carries only the same bare model with provider=anthropic and max_output_tokens=16000. Force-sync uses the same path as background startup; before the fix the custom row remains in SQLite but disappears from the candidate index, and the upstream receives 4096. The fixture echoes the actual max_tokens in its response, so the default-limit inference rows fail before the fix and pass after it. Explicit 123 is a control. A second sync then serves an entirely malformed feed targeting the warmed custom row, with other valid rows remaining in SQLite; Responses, Chat and streaming must still use 32000. A third sync serves a mixed feed: the bare Anthropic row updates to 24000 while a malformed custom row must retain its stored 32000 limit across Responses, Chat and streaming. The fixture feed is restored afterwards. Preview-gated because these cases require an isolated gateway and a same-host fixture, never the shared live-provider profile. Node 22.12+ is required; --experimental-sqlite enables node:sqlite on the repository-pinned Node 22.12. No real keys, backing services or LLM calls are needed.\n\nFrom repo root, first check ports 8797 and 3023 with lsof -nP -iTCP:8797 -iTCP:3023 -sTCP:LISTEN; both must be free. In terminal 1: node --experimental-sqlite tests/e2e/api/runners/run-model-parameters-sync-fixture.mjs --app-dir tmp/model-parameters-sync --port 8797 (directory must not exist). In terminal 2: make dev PORT=3023 APP_DIR=\"$PWD/tmp/model-parameters-sync\". After /health answers, run: make run-provider-harness-test PROVIDER=anthropic FEATURE=\"model-parameters-sync\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 ENV_FILE=tmp/model-parameters-sync/fixture.env.json BASE_URL=http://localhost:3023. The provider identity precondition prevents force-sync on another profile. Stop both foreground servers afterwards; the disposable profile is retained for inspection. Use a new directory for each run.",
       "item": [
         {
