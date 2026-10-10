@@ -12,6 +12,7 @@ Any decision model serves the same request: TypeSafe's jev models (and Laya, Nim
 
 - TypeSafe: `typesafe/jev-1.13.0`, `typesafe/jev-latest`, `typesafe/jev-preview`
 - OpenRouter: `openrouter/typesafe/jev-1.13`, `openrouter/~typesafe/jev-latest`
+- OpenAI: `openai/gpt-6-luna` (OpenAI's decisions endpoint)
 - Any chat model, for example `openai/gpt-4o-mini`
 
 ## Basic Request
@@ -55,7 +56,7 @@ curl --location 'http://localhost:8080/v1/decisions' \
 | A string | Text to evaluate |
 | An array | Messages, each `{ "role": "user", "content": ... }` where content is text or parts: `{ "type": "input_text", "text": ... }` and `{ "type": "input_image", "image_url": "data:image/png;base64,...", "detail": "high" }`, where `image_url` is a base64 data URL or an HTTP(S) URL and `detail` (`low`, `high`, `auto`, or `original`) is optional. Images are read only by models that accept them; TypeSafe-based and chat models read text only and reject an image with a `400`, so a fallback can serve it. Parts of other types are rejected with a `400` |
 | An object | Structured data, passed to TypeSafe-based models as their state and rendered as JSON for others |
-| `null` | No input; TypeSafe-based models receive a `null` state |
+| `null` | No input; TypeSafe-based models receive a `null` state, and OpenAI's decision models reject it with a `400`, so a fallback can serve it |
 
 ## Questions
 
@@ -63,8 +64,8 @@ curl --location 'http://localhost:8080/v1/decisions' \
 |-------|---------|
 | `type` | `predicate` (probability that a condition is true), `choice` (one of the choices), or `score` (a level index, which may fall between levels) |
 | `name` | Optional; the answer carries it back |
-| `instructions` | A string, or structured data (object or array) preserved for models that accept it |
-| `criteria` | Predicate only, optional: descriptions of the `true` and `false` outcomes |
+| `instructions` | A string, or structured data (object or array) preserved for TypeSafe-based models and rendered as JSON for others |
+| `criteria` | Predicate only, optional: descriptions of the `true` and `false` outcomes; models without a criteria field receive them appended to the instructions |
 | `choices` | Choice only: each choice's `value` (a string or a boolean) and optional `description` |
 | `levels` | Score only: the ordered levels, each with a `label` and optional `description` |
 

@@ -147,10 +147,11 @@ func probabilitiesSchema(desc string, keys []string) map[string]interface{} {
 	}
 }
 
-// instructionsText renders a question's instructions (string or structured) into
-// a description string for the schema.
-func instructionsText(instructions *schemas.DecisionText) string {
-	return renderStructuredText(instructions.Value())
+// DecisionTextString renders decision text as a plain string, for a provider
+// or prompt that takes only text: text as is, a structured value as sorted
+// JSON, and none as empty.
+func DecisionTextString(text *schemas.DecisionText) string {
+	return renderStructuredText(text.Value())
 }
 
 // renderStructuredText renders a criteria or instructions value for prompt
@@ -209,10 +210,11 @@ func scoreLevels(levels []any) string {
 	return out.String()
 }
 
-// noulCriteriaText renders the optional true/false rubric descriptions for
-// the noul value description, skipping absent keys. Like the choice and score
-// rubrics, these are part of the question and must reach the model.
-func noulCriteriaText(criteria *schemas.DecisionCriteria) string {
+// DecisionCriteriaText renders a predicate's optional true/false outcome
+// descriptions as text to append to its instructions, skipping absent sides,
+// for a provider or prompt that has no criteria field. Like the choice and
+// score rubrics, these are part of the question and must reach the model.
+func DecisionCriteriaText(criteria *schemas.DecisionCriteria) string {
 	if criteria == nil {
 		return ""
 	}
@@ -257,18 +259,6 @@ func choiceOptionsText(opts []string, descs map[string]string) string {
 	return out.String()
 }
 
-// scoreLegend builds the level index -> description legend from a score
-// question's level descriptions, so the emulated answer carries the same legend
-// a native provider would: each level's description echoed verbatim (string,
-// object, or array).
-func scoreLegend(levels []any) map[string]any {
-	legend := make(map[string]any, len(levels))
-	for i, l := range levels {
-		legend[strconv.Itoa(i)] = l
-	}
-	return legend
-}
-
 // BuildDecisionSchema builds the tool parameters: an object with one nested
 // object property per question (value/choice + confidence, plus probabilities
 // for choice and score), in question order. Property names are the
@@ -282,7 +272,7 @@ func BuildDecisionSchema(questions []schemas.DecisionQuestion, names []string) (
 	zero, one := 0.0, 1.0
 	for i, q := range questions {
 		name := names[i]
-		desc := instructionsText(q.Instructions)
+		desc := DecisionTextString(q.Instructions)
 		var nested map[string]interface{}
 		switch q.Type {
 		case schemas.DecisionTypePredicate:
@@ -292,7 +282,7 @@ func BuildDecisionSchema(questions []schemas.DecisionQuestion, names []string) (
 			nested = map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"value":      numberSchema("Probability from 0 to 1. "+desc+noulCriteriaText(q.Criteria), &zero, &one),
+					"value":      numberSchema("Probability from 0 to 1. "+desc+DecisionCriteriaText(q.Criteria), &zero, &one),
 					"confidence": confidenceSchema(),
 				},
 				"required":             []string{"value"},
@@ -616,7 +606,7 @@ func ParseDecisionAnswers(argumentsJSON []byte, questions []schemas.DecisionQues
 				derived += float64(index) * p
 			}
 			answer.Score = &derived
-			answer.Legend = scoreLegend(levels)
+			answer.Legend = DecisionScoreLegend(q)
 			answer.Probabilities = DecisionProbabilitiesFromKeys(q, probabilities)
 		default:
 			return nil, fmt.Errorf("question %q has unsupported type %q", name, q.Type)

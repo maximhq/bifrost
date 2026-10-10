@@ -153,6 +153,57 @@ func (r *OpenAIEmbeddingRequest) SetExtraParams(params map[string]interface{}) {
 	r.EmbeddingParameters.ExtraParams = params
 }
 
+// OpenAIDecisionRequest is the body of OpenAI's POST /v1/decisions. Its input
+// is the shared decision input, whose text and message forms are OpenAI's; its
+// questions are OpenAI's own, which take text only and have no criteria.
+type OpenAIDecisionRequest struct {
+	Model            string                   `json:"model"`
+	Input            schemas.DecisionInput    `json:"input"`
+	Questions        []OpenAIDecisionQuestion `json:"questions"`
+	SafetyIdentifier *string                  `json:"safety_identifier,omitempty"`
+	ExtraParams      map[string]interface{}   `json:"-"` // native extensions, merged onto the wire under the passthrough flag
+}
+
+// OpenAIDecisionQuestion is one question of OpenAI's decisions request: text
+// instructions and, by type, choices or levels described in text. Unlike the
+// shared question it has no criteria and no structured values, so
+// ToOpenAIDecisionRequest renders both as text.
+type OpenAIDecisionQuestion struct {
+	Type         schemas.DecisionType   `json:"type"`
+	Name         *string                `json:"name,omitempty"`
+	Instructions string                 `json:"instructions"`
+	Choices      []OpenAIDecisionChoice `json:"choices,omitempty"`
+	Levels       []OpenAIDecisionLevel  `json:"levels,omitempty"`
+}
+
+// OpenAIDecisionChoice is one option of a choice question: a string or boolean
+// value and an optional text description.
+type OpenAIDecisionChoice struct {
+	Value       schemas.DecisionScalar `json:"value"`
+	Description *string                `json:"description,omitempty"`
+}
+
+// OpenAIDecisionLevel is one ordered level of a score question: a label and an
+// optional text description.
+type OpenAIDecisionLevel struct {
+	Label       string  `json:"label"`
+	Description *string `json:"description,omitempty"`
+}
+
+// GetExtraParams implements providerUtils.RequestBodyWithExtraParams.
+func (r *OpenAIDecisionRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// OpenAIDecisionResponse is the body of a successful POST /v1/decisions
+// response, OpenAI's Decision object: it has no id. Answers are the shared
+// decision answers, whose JSON is OpenAI's.
+type OpenAIDecisionResponse struct {
+	Model   string                          `json:"model"`
+	Answers []schemas.DecisionAnswer        `json:"answers"`
+	Usage   *schemas.ResponsesResponseUsage `json:"usage,omitempty"`
+}
+
 // OpenAIRerankRequest represents an OpenAI-compatible rerank request
 type OpenAIRerankRequest struct {
 	Model           string                   `json:"model"`

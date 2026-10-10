@@ -368,6 +368,19 @@ func (c ModelCaps) SupportsForcedToolChoice(fallback bool) bool {
 	return fallback
 }
 
+// SupportsDecisions reports whether the model is served on its provider's
+// native decisions endpoint, such as OpenAI's POST /v1/decisions. A model
+// without it answers decision requests through emulation on its chat API. A
+// datasheet row decides in either direction, so a new decisions model needs
+// only a row; with no row the caller's fallback (DefaultSupportsDecisions)
+// applies.
+func (c ModelCaps) SupportsDecisions(fallback bool) bool {
+	if c.record != nil && c.record.SupportsDecisions != nil {
+		return *c.record.SupportsDecisions
+	}
+	return fallback
+}
+
 // SupportsPromptCacheBreakpoints reports whether the Responses wire accepts
 // prompt_cache_breakpoint on input_text blocks in place of cache_control.
 func (c ModelCaps) SupportsPromptCacheBreakpoints(fallback bool) bool {

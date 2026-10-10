@@ -66,6 +66,7 @@ type ModelCapabilities struct {
 	SupportsPromptCacheBreakpoints  *bool `json:"supports_prompt_cache_breakpoints,omitempty"` // Responses input_text accepts prompt_cache_breakpoint (Claude via OpenRouter, gpt-5.6+)
 	SupportsAsyncTools              *bool `json:"supports_async_tools,omitempty"`              // accepts OpenAI async on tools and replayed call items
 	SupportsCustomTools             *bool `json:"supports_custom_tools,omitempty"`             // accepts OpenAI custom (freeform) tools; false ⇒ rewritten as function tools
+	SupportsDecisions               *bool `json:"supports_decisions,omitempty"`                // served on the provider's native decisions endpoint (OpenAI POST /v1/decisions); absent ⇒ DefaultSupportsDecisions
 
 	// Baseline request-surface flags. These drive the compat plugin's
 	// parameter allowlist rather than provider request shaping, so they are
