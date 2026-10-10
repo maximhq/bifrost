@@ -178,6 +178,51 @@ func TestToChatMessages_AttachesReasoningToToolCallAssistantMessage(t *testing.T
 	}
 }
 
+func TestToChatMessages_MapsOutputTextInMultiPartAssistantMessage(t *testing.T) {
+	messages := []ResponsesMessage{
+		{
+			Role: Ptr(ResponsesInputMessageRoleUser),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("hi")},
+				},
+			},
+		},
+		{
+			Role: Ptr(ResponsesInputMessageRoleAssistant),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesOutputMessageContentTypeText, Text: Ptr("a")},
+					{Type: ResponsesOutputMessageContentTypeText, Text: Ptr("b")},
+				},
+			},
+		},
+	}
+
+	chatMessages := ToChatMessages(messages)
+	if len(chatMessages) != 2 {
+		t.Fatalf("expected 2 chat messages, got %d", len(chatMessages))
+	}
+
+	assistant := chatMessages[1]
+	if assistant.Content == nil || len(assistant.Content.ContentBlocks) != 2 {
+		t.Fatalf("expected 2 content blocks on the assistant turn, got %#v", assistant.Content)
+	}
+	for i, block := range assistant.Content.ContentBlocks {
+		// "output_text" is not a chat-completions content part: a block left with
+		// the Responses spelling is rejected downstream as an unknown variant.
+		if block.Type != ChatContentBlockTypeText {
+			t.Fatalf("block %d: expected type %q, got %q", i, ChatContentBlockTypeText, block.Type)
+		}
+	}
+	if assistant.Content.ContentBlocks[0].Text == nil || *assistant.Content.ContentBlocks[0].Text != "a" {
+		t.Fatalf("expected first block text %q, got %#v", "a", assistant.Content.ContentBlocks[0].Text)
+	}
+	if assistant.Content.ContentBlocks[1].Text == nil || *assistant.Content.ContentBlocks[1].Text != "b" {
+		t.Fatalf("expected second block text %q, got %#v", "b", assistant.Content.ContentBlocks[1].Text)
+	}
+}
+
 func TestToResponsesMessages_EmitsReasoningMessageBeforeToolCalls(t *testing.T) {
 	reasoning := "I should call Bash to list the directory."
 	cm := &ChatMessage{
@@ -1994,4 +2039,31 @@ func TestReasoningIDIsTakenFromTheEncryptedDetailThatIsEmitted(t *testing.T) {
 			t.Fatalf("expected the first recorded id, got %#v", item.ID)
 		}
 	})
+}
+
+// reasoning.summary sent on a chat request must reach the Responses request the
+// mux builds, including when it is the only reasoning field set.
+func TestReasoningSummarySurvivesChatResponsesConversion(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"reasoning":{"summary":"auto"}}`:                     "auto",
+		`{"reasoning":{"effort":"high","summary":"detailed"}}`: "detailed",
+	} {
+		var params ChatParameters
+		if err := Unmarshal([]byte(body), &params); err != nil {
+			t.Fatalf("decode %s: %v", body, err)
+		}
+		chat := &BifrostChatRequest{Model: "gpt-6-astra", Params: &params}
+		responses := chat.ToResponsesRequest()
+		if responses.Params == nil || responses.Params.Reasoning == nil || responses.Params.Reasoning.Summary == nil {
+			t.Fatalf("%s: chat->responses dropped reasoning.summary: %+v", body, responses.Params)
+		}
+		if *responses.Params.Reasoning.Summary != want {
+			t.Fatalf("%s: summary = %q, want %q", body, *responses.Params.Reasoning.Summary, want)
+		}
+		back := responses.ToChatRequest().ToResponsesRequest()
+		if back.Params == nil || back.Params.Reasoning == nil || back.Params.Reasoning.Summary == nil ||
+			*back.Params.Reasoning.Summary != want {
+			t.Fatalf("%s: responses->chat dropped reasoning.summary: %+v", body, back.Params)
+		}
+	}
 }

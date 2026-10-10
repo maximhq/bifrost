@@ -1161,8 +1161,13 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 	}
 	// The response envelope carrying service_tier can precede a later usage-only
 	// event, so retain the newest non-nil tier across the stream.
+	reasonChunkIndex := -1
 	tierChunkIndex := -1
 	for _, streamChunk := range accumulator.ResponsesStreamChunks {
+		if streamChunk.FinishReason != nil && streamChunk.ChunkIndex > reasonChunkIndex {
+			data.FinishReason = streamChunk.FinishReason
+			reasonChunkIndex = streamChunk.ChunkIndex
+		}
 		if streamChunk.ServiceTier != nil && streamChunk.ChunkIndex > tierChunkIndex {
 			data.ServiceTier = streamChunk.ServiceTier
 			tierChunkIndex = streamChunk.ChunkIndex
@@ -1228,6 +1233,10 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		}
 		// Store a deep copy of the stream response to prevent shared data mutation between plugins
 		chunk.StreamResponse = deepCopyResponsesStreamResponse(result.ResponsesStreamResponse)
+		// Retain the provider stop reason independently of output text and trailing usage.
+		if response := result.ResponsesStreamResponse.Response; response != nil && response.StopReason != nil {
+			chunk.FinishReason = bifrost.Ptr(*response.StopReason)
+		}
 		// Extract token usage from stream response if available
 		if result.ResponsesStreamResponse.Response != nil &&
 			result.ResponsesStreamResponse.Response.Usage != nil {

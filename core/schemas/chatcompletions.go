@@ -344,6 +344,7 @@ type ChatReasoning struct {
 	Display   *string `json:"display,omitempty"`    // Anthropic thinking.display: "summarized" | "omitted" (requires model support for adaptive thinking)
 	Type      *string `json:"type,omitempty"`       // Anthropic thinking.type: "between_tools" (no up-front thinking); independent of effort
 	Mode      *string `json:"mode,omitempty"`       // OpenAI reasoning.mode: "standard" | "pro" (Responses API only; routes OpenAI/Azure chat through Responses)
+	Summary   *string `json:"summary,omitempty"`    // OpenAI reasoning.summary: "auto" | "concise" | "detailed" (sent when chat is served by the Responses API)
 }
 
 // ChatPrediction represents predicted output content for the model to reference (OpenAI only).

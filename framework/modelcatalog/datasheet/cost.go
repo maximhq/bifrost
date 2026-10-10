@@ -2294,6 +2294,15 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		return &pricing, true
 	}
 
+	// Deployment names are case-sensitive on the wire but the feed does not always
+	// carry every casing, so retry with the lowercase name in the same mode.
+	if lower := strings.ToLower(model); lower != model {
+		pricing, ok = s.pricingData[makeKey(lower, provider, mode)]
+		if ok {
+			return &pricing, true
+		}
+	}
+
 	// Lookup in vertex if gemini not found
 	if provider == string(schemas.Gemini) {
 		s.logger.Debug("primary lookup failed, trying vertex provider for the same model")

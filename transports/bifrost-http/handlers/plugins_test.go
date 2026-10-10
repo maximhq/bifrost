@@ -477,3 +477,81 @@ func TestGetLoadedPlugins(t *testing.T) {
 		}
 	}
 }
+
+// A plugin that loaded despite its row saying disabled must surface as enabled=false
+// with the runtime status, not be masked as "disabled". Masking it is what hid the
+// enterprise loader ignoring the row: the API reported disabled while every pod ran it.
+func TestBuildPluginResponseSurfacesRowRuntimeDivergence(t *testing.T) {
+	h := &PluginsHandler{}
+	row := &configstoreTables.TablePlugin{Name: "datadog", Enabled: false}
+
+	t.Run("disabled row with no runtime entry reads as disabled", func(t *testing.T) {
+		got := h.buildPluginResponseWithStatuses(row, map[string]schemas.PluginStatus{})
+		if got.Enabled {
+			t.Errorf("Enabled = true, want false")
+		}
+		if got.Status.Status != schemas.PluginStatusDisabled {
+			t.Errorf("Status = %q, want %q", got.Status.Status, schemas.PluginStatusDisabled)
+		}
+	})
+
+	t.Run("disabled row that is actually loaded reads as active", func(t *testing.T) {
+		got := h.buildPluginResponseWithStatuses(row, map[string]schemas.PluginStatus{
+			"datadog": {Name: "datadog", Status: schemas.PluginStatusActive},
+		})
+		if got.Enabled {
+			t.Errorf("Enabled = true, want false (the row still says disabled)")
+		}
+		if got.Status.Status != schemas.PluginStatusActive {
+			t.Errorf("Status = %q, want %q so the contradiction is visible", got.Status.Status, schemas.PluginStatusActive)
+		}
+	})
+}
+
+// A lone "*" is a legitimate header pattern, but IsRedacted treats an all-asterisk
+// string as a redaction placeholder, so restoring array elements swapped it for the
+// stored pattern and request_headers:["*"] captured nothing.
+func TestRestoreRedactedValueKeepsStringListEntries(t *testing.T) {
+	for _, tc := range []struct {
+		label    string
+		incoming []any
+		existing []any
+		want     []any
+	}{
+		{"lone star survives", []any{"*"}, []any{"x-unused"}, []any{"*"}},
+		{"star alongside another", []any{"x-other-c", "*"}, []any{"x-unused"}, []any{"x-other-c", "*"}},
+		{"short asterisk run survives", []any{"**"}, []any{"x-bench-*"}, []any{"**"}},
+		{"ordinary patterns unchanged", []any{"x-bench-*"}, []any{"x-old"}, []any{"x-bench-*"}},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			got, ok := restoreRedactedValue(tc.incoming, tc.existing).([]any)
+			if !ok {
+				t.Fatalf("got %T, want []any", got)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("element %d = %v, want %v (the stored value must not replace a list entry)", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// Secrets are still restored when they arrive as objects in an array, which is the only
+// shape a credential can take inside a list.
+func TestRestoreRedactedValueStillRestoresObjectElements(t *testing.T) {
+	incoming := []any{map[string]any{"value": "****"}}
+	existing := []any{map[string]any{"value": "real-secret"}}
+
+	got := restoreRedactedValue(incoming, existing).([]any)
+	m, ok := got[0].(map[string]any)
+	if !ok {
+		t.Fatalf("element 0 = %T, want a map", got[0])
+	}
+	if m["value"] != "real-secret" {
+		t.Errorf("value = %v, want the stored secret preserved", m["value"])
+	}
+}

@@ -616,7 +616,7 @@ class TestAnthropicIntegration:
         response2 = anthropic_client.messages.create(
             model=get_model("anthropic", "chat"),
             messages=[{"role": "user", "content": "Tell me a creative story in one sentence."}],
-            temperature=0.9,
+            extra_body={"temperature": 0.9},  # anthropic>=1 removed the temperature kwarg
             max_tokens=100,
         )
 

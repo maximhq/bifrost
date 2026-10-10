@@ -1,10 +1,10 @@
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { useGetLogByIdQuery } from "@/lib/store/apis/logsApi";
 import { useGetPromptQuery } from "@/lib/store/apis/promptsApi";
 import type { LogEntry } from "@/lib/types/logs";
-import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { LogDetailView } from "./logDetailView";
@@ -77,7 +77,7 @@ export function LogDetailSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="border-secondary flex w-full flex-col gap-4 overflow-x-hidden border p-4 sm:max-w-[60%] md:p-8 2xl:max-w-[40%]">
+			<SheetContent className="border-secondary flex w-full flex-col overflow-x-hidden border p-0 sm:max-w-[60%] 2xl:max-w-[40%] gap-2">
 				{!isFullDataReady ? (
 					<div className="flex h-full items-center justify-center">
 						<SheetTitle className="sr-only">Loading log details</SheetTitle>

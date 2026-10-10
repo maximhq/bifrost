@@ -1,6 +1,7 @@
 package tracing
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -1038,5 +1039,120 @@ func TestPopulateErrorAttributes_StatusOnlyError(t *testing.T) {
 func TestPopulateErrorAttributes_NilError(t *testing.T) {
 	if attrs := PopulateErrorAttributes(nil); len(attrs) != 0 {
 		t.Errorf("attrs = %v, want empty for a nil error", attrs)
+	}
+}
+
+// A failed request carries its own raw bodies on BifrostError.ExtraFields. They used to
+// be dropped entirely: ApplyResponse only reached buildResponseSide when resp != nil, and
+// the raw assignment lived only there, so the provider's error body — the most useful
+// thing to see for a failure — never reached a connector.
+func TestRawPayloadsCapturedOnFailedRequest(t *testing.T) {
+	newErr := func() *schemas.BifrostError {
+		e := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "model_not_found"}}
+		e.ExtraFields.RawRequest = map[string]any{"prompt": "failed-request-body"}
+		e.ExtraFields.RawResponse = map[string]any{"error": "failed-response-body"}
+		return e
+	}
+
+	t.Run("captured under demand with no response", func(t *testing.T) {
+		d := BuildLLMSpanData(nil, nil, newErr(), SpanBuildOptions{WantRawPayloads: true})
+		if !strings.Contains(d.RawRequest, "failed-request-body") {
+			t.Errorf("raw request not captured on failure: %q", d.RawRequest)
+		}
+		if !strings.Contains(d.RawResponse, "failed-response-body") {
+			t.Errorf("raw response not captured on failure: %q", d.RawResponse)
+		}
+	})
+
+	t.Run("still gated on demand", func(t *testing.T) {
+		d := BuildLLMSpanData(nil, nil, newErr(), SpanBuildOptions{})
+		if d.RawRequest != "" || d.RawResponse != "" {
+			t.Errorf("raw built without demand: req=%q resp=%q", d.RawRequest, d.RawResponse)
+		}
+	})
+
+	t.Run("via ApplyResponse, the live two-pass path", func(t *testing.T) {
+		d := BuildLLMSpanData(nil, nil, nil, SpanBuildOptions{WantRawPayloads: true})
+		ApplyResponse(d, nil, newErr(), SpanBuildOptions{WantRawPayloads: true})
+		if !strings.Contains(d.RawRequest, "failed-request-body") {
+			t.Errorf("raw request not captured via ApplyResponse: %q", d.RawRequest)
+		}
+		if !strings.Contains(d.RawResponse, "failed-response-body") {
+			t.Errorf("raw response not captured via ApplyResponse: %q", d.RawResponse)
+		}
+	})
+
+	// A cancelled stream arrives with BOTH an accumulated response and an error. The
+	// response side runs first and has the richer bodies; the error side must not
+	// overwrite them with its own.
+	t.Run("does not clobber payloads the response side already set", func(t *testing.T) {
+		resp := &schemas.BifrostResponse{
+			ChatResponse: &schemas.BifrostChatResponse{ID: "c1", Model: "gpt-4o-mini"},
+		}
+		resp.ChatResponse.ExtraFields.RawRequest = map[string]any{"prompt": "accumulated-request"}
+		resp.ChatResponse.ExtraFields.RawResponse = map[string]any{"text": "accumulated-response"}
+
+		d := BuildLLMSpanData(nil, resp, newErr(), SpanBuildOptions{WantRawPayloads: true})
+		if !strings.Contains(d.RawRequest, "accumulated-request") {
+			t.Errorf("response-side raw request was overwritten: %q", d.RawRequest)
+		}
+		if !strings.Contains(d.RawResponse, "accumulated-response") {
+			t.Errorf("response-side raw response was overwritten: %q", d.RawResponse)
+		}
+	})
+}
+
+// A chat request carried every other parameter onto the span but never its tools, so
+// gen_ai.request.tools was absent on chat while Responses emitted it — the connector e2e
+// failed this on kafka, pubsub and otel at once.
+func TestChatRequestExportsTools(t *testing.T) {
+	desc := "Look up the weather"
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Params: &schemas.ChatParameters{
+				Tools: []schemas.ChatTool{
+					{Type: "function", Function: &schemas.ChatToolFunction{Name: "get_weather", Description: &desc}},
+					{Type: "function", Function: &schemas.ChatToolFunction{Name: "get_time"}},
+					{Type: "web_search"}, // built-in: no function, falls back to the type
+				},
+			},
+		},
+	}
+
+	attrs := BuildLLMSpanData(req, nil, nil, SpanBuildOptions{WantContent: true}).Attributes()
+
+	raw, ok := attrs[schemas.AttrTools].(string)
+	if !ok {
+		t.Fatalf("%s missing or not a string: %#v", schemas.AttrTools, attrs[schemas.AttrTools])
+	}
+	var got []schemas.ToolSummary
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("%s is not valid JSON: %v (%s)", schemas.AttrTools, err, raw)
+	}
+	want := []schemas.ToolSummary{
+		{Name: "get_weather", Description: "Look up the weather"},
+		{Name: "get_time"},
+		{Name: "web_search"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d tools, want %d: %s", len(got), len(want), raw)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("tool %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// A chat request without tools must not emit an empty tools attribute.
+func TestChatRequestWithoutToolsOmitsAttribute(t *testing.T) {
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Params: &schemas.ChatParameters{}},
+	}
+	attrs := BuildLLMSpanData(req, nil, nil, SpanBuildOptions{WantContent: true}).Attributes()
+	if _, present := attrs[schemas.AttrTools]; present {
+		t.Errorf("%s present with no tools configured", schemas.AttrTools)
 	}
 }

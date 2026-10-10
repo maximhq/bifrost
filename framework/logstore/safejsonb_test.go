@@ -233,6 +233,104 @@ func TestSearchLogs_MalformedInputHistory_Postgres(t *testing.T) {
 	runMalformedHistorySuite(t, store, db)
 }
 
+// TestSearchLogs_MalformedInputHistory_ClickHouse exercises the ClickHouse
+// branch, which gates JSONExtractRaw on isValidJSON + JSONType + JSONLength.
+// Skipped when ClickHouse is unavailable.
+func TestSearchLogs_MalformedInputHistory_ClickHouse(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	runMalformedHistorySuite(t, store.RDBLogStore, store.db)
+}
+
+// TestSearchLogs_HistoryProjection_ClickHouse pins the projected values the
+// ClickHouse list query returns for input_history and responses_input_history:
+// a valid non-empty array collapses to its last element, realtime.turn rows
+// keep both histories whole, and empty, invalid, or non-array payloads come
+// back byte-for-byte unchanged. The ID-only malformed suite above cannot catch
+// a regression that returns the full history or picks the wrong element.
+func TestSearchLogs_HistoryProjection_ClickHouse(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	var big strings.Builder
+	big.WriteByte('[')
+	for i := 0; i < 1000; i++ {
+		big.WriteString(`{"role":"user","content":"msg"},`)
+	}
+	big.WriteString(`{"role":"assistant","content":"last"}]`)
+
+	multi := `[{"role":"user","content":"hi"},{"role":"assistant","content":"last"}]`
+	multiResp := `[{"type":"message","role":"user"},{"type":"message","role":"assistant"}]`
+
+	cases := []struct {
+		name       string
+		objectType string
+		input      string
+		resp       string
+		wantInput  string
+		wantResp   string
+	}{
+		// last-element extraction on both columns
+		{name: "multi_element_both_columns", input: multi, resp: multiResp,
+			wantInput: `[{"role":"assistant","content":"last"}]`, wantResp: `[{"type":"message","role":"assistant"}]`},
+		{name: "single_element", input: `[{"role":"user","content":"only one"}]`, wantInput: `[{"role":"user","content":"only one"}]`},
+		{name: "array_of_primitives", input: `[1,2,3]`, wantInput: `[3]`},
+		{name: "null_last_element", input: `[{"role":"user","content":"x"},null]`, wantInput: `[null]`},
+		{name: "nested_object", input: `[{"role":"user","content":{"nested":{"deep":{"value":42}}}}]`,
+			wantInput: `[{"role":"user","content":{"nested":{"deep":{"value":42}}}}]`},
+		{name: "unicode_content", input: `[{"role":"user","content":"hello 🎉 world ✨"}]`, wantInput: `[{"role":"user","content":"hello 🎉 world ✨"}]`},
+		{name: "leading_whitespace_array", input: "   [{\"role\":\"user\",\"content\":\"ok\"}]", wantInput: `[{"role":"user","content":"ok"}]`},
+		{name: "large_array_last_only", input: big.String(), wantInput: `[{"role":"assistant","content":"last"}]`},
+
+		// realtime.turn keeps the whole history on both columns
+		{name: "realtime_turn_passthrough", objectType: "realtime.turn", input: multi, resp: multiResp, wantInput: multi, wantResp: multiResp},
+		{name: "realtime_turn_malformed_passthrough", objectType: "realtime.turn", input: `[{"role":"user"`, wantInput: `[{"role":"user"`},
+
+		// empty / non-array / invalid payloads are returned unchanged
+		{name: "empty_string", input: "", wantInput: ""},
+		{name: "empty_array", input: `[]`, wantInput: `[]`},
+		{name: "top_level_object", input: `{"not":"an array"}`, wantInput: `{"not":"an array"}`},
+		{name: "null_literal", input: `null`, wantInput: `null`},
+		{name: "number_literal", input: `42`, wantInput: `42`},
+		{name: "whitespace_only", input: "   \t  ", wantInput: "   \t  "},
+		{name: "unterminated_object", input: `[{"role":"user","content":"hi"`, wantInput: `[{"role":"user","content":"hi"`},
+		{name: "garbage_after_bracket", input: `[abc, not json]`, wantInput: `[abc, not json]`},
+		{name: "trailing_comma", input: `[{"role":"user","content":"hi"},]`, wantInput: `[{"role":"user","content":"hi"},]`},
+		{name: "nan_value", input: `[NaN]`, wantInput: `[NaN]`},
+
+		// mirror column on its own
+		{name: "responses_only_truncated", resp: multiResp, wantResp: `[{"type":"message","role":"assistant"}]`},
+		{name: "responses_only_malformed", resp: `[{"type":"message"`, wantResp: `[{"type":"message"`},
+		{name: "responses_only_empty_array", resp: `[]`, wantResp: `[]`},
+	}
+
+	ids := make(map[string]int, len(cases))
+	for i, c := range cases {
+		id := insertMalformedLog(t, store.db, malformedHistoryCase{
+			name:         c.name,
+			objectType:   c.objectType,
+			inputHistory: c.input,
+			respHistory:  c.resp,
+		}, now.Add(-time.Duration(i)*time.Second))
+		ids[id] = i
+	}
+
+	result, err := store.SearchLogs(ctx, SearchFilters{}, PaginationOptions{Limit: 1000})
+	require.NoError(t, err)
+	require.Len(t, result.Logs, len(cases), "every inserted row must come back")
+
+	seen := make(map[string]bool, len(cases))
+	for _, l := range result.Logs {
+		i, ok := ids[l.ID]
+		require.Truef(t, ok, "unexpected row %s in result", l.ID)
+		c := cases[i]
+		seen[l.ID] = true
+		assert.Equalf(t, c.wantInput, l.InputHistory, "case %q: input_history", c.name)
+		assert.Equalf(t, c.wantResp, l.ResponsesInputHistory, "case %q: responses_input_history", c.name)
+	}
+	assert.Len(t, seen, len(cases), "every case must be asserted exactly once")
+}
+
 // TestBifrostSafeJsonb_DirectInvocation exercises the PL/pgSQL helper in
 // isolation so a regression in the function body shows up here rather than
 // only at the list-query level. Each subtest asserts the exact TEXT the

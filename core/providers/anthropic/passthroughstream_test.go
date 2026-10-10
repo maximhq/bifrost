@@ -673,6 +673,59 @@ func TestAnthropicMessageStartSafeguardResultsRoundTrip(t *testing.T) {
 	}
 }
 
+// TestAnthropicMessageDeltaSafeguardResultsRoundTrip verifies the Bedrock response shape captured from Claude Code.
+func TestAnthropicMessageDeltaSafeguardResultsRoundTrip(t *testing.T) {
+	const results = `[{"type":"dangerous_tool_use","status":{"type":"available","tool_uses":{"toolu_bdrk_0164DesCBAb3iAuYctgEZTnv":{"type":"evaluated","outcome":"not_flagged"}}}}]`
+	frames := []string{
+		`{"type":"message_start","message":{"model":"claude-sonnet-5-5","id":"msg_1","type":"message","role":"assistant","content":[],"stop_reason":null,"usage":{"input_tokens":380,"output_tokens":1}}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"container":null,"safeguard_results":` + results + `},"usage":{"input_tokens":380,"output_tokens":54}}`,
+		`{"type":"message_stop"}`,
+	}
+
+	for _, integration := range []string{"anthropic", ""} {
+		t.Run("integration="+integration, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			if integration != "" {
+				ctx.SetValue(schemas.BifrostContextKeyIntegrationType, integration)
+			}
+			state := safeguardStreamState()
+			var deltas []string
+			for i, frame := range frames {
+				var event AnthropicStreamEvent
+				if err := sonic.Unmarshal([]byte(frame), &event); err != nil {
+					t.Fatalf("unmarshal frame: %v", err)
+				}
+				chunks, bifrostErr, _ := event.ToBifrostResponsesStream(ctx, i, state)
+				if bifrostErr != nil {
+					t.Fatalf("ingress conversion: %+v", bifrostErr)
+				}
+				if state.HasEmittedMessageDelta {
+					ctx.SetValue(schemas.BifrostContextKeyHasEmittedMessageDelta, true)
+				}
+				for _, chunk := range chunks {
+					for _, out := range ToAnthropicResponsesStreamResponse(ctx, chunk) {
+						if out == nil || out.Type != AnthropicStreamEventTypeMessageDelta {
+							continue
+						}
+						raw, err := sonic.Marshal(out)
+						if err != nil {
+							t.Fatalf("marshal rebuilt message_delta: %v", err)
+						}
+						deltas = append(deltas, string(raw))
+					}
+				}
+			}
+			if len(deltas) != 1 {
+				t.Fatalf("want one rebuilt message_delta, got %d: %v", len(deltas), deltas)
+			}
+			if got := gjson.Get(deltas[0], "delta.safeguard_results").Raw; got != results {
+				t.Fatalf("safeguard_results lost from message_delta.delta: %s", deltas[0])
+			}
+		})
+	}
+}
+
 // A chunk-level safeguard_results carry (attached by the provider SSE loop) must
 // be restored top-level on the first rebuilt frame.
 func TestAnthropicStreamChunkSafeguardResultsEgressRestore(t *testing.T) {
