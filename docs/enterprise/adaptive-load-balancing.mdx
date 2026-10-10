@@ -245,6 +245,38 @@ When the provider named a wait shorter than 10 seconds, the first line says so: 
 
 ---
 
+## Listing incidents through the API
+
+`GET /api/adaptive-routing/history/issues` returns the issues in a time window. With no `limit` or `offset` it returns all of them, which is what the dashboard uses. With either one it returns a filtered, sorted page, which is what the Incidents page uses.
+
+| Parameter | Description |
+| --- | --- |
+| `from`, `to` | Window start and end, as RFC 3339 or unix seconds. |
+| `nodes`, `entities` | Comma-separated node IDs and entity keys. Entity keys look like `route:provider:model:key_id`, `direction:provider:model` or `key:provider:key_id`. |
+| `limit` | Page size. Default and fallback `25`, maximum `100`. |
+| `offset` | Issues to skip. Negative returns `400`. Past the end returns the last page. |
+| `ids`, `statuses`, `states`, `scopes`, `reasons`, `providers`, `models` | Comma-separated filters. |
+| `search` | Matches issue ID, provider, models, key IDs and key names. |
+| `sort` | `priority` (default), `newest`, `oldest`, `longest` or `shortest`. `priority` lists issues that need attention first, then newest. Anything else returns `400`. |
+
+`statuses` takes `attention`, `recovering`, `mitigated`, `resolved`, `unobserved` or `waiting`. `unobserved` means the issue is resolved but history lost sight of its nodes. `waiting` means it was recovering when requests stopped arriving. Neither counts toward median time to resolve, since neither is confirmed recovered.
+
+A paged response adds these fields:
+
+| Field | Contents |
+| --- | --- |
+| `total`, `offset` | Number of matching issues, and the offset used. |
+| `matched_summary` | Counts for attention, ongoing and resolved, median resolve time, longest ongoing duration, and the pinned-kept-failed total. Covers every match, not just the page. |
+| `facets` | How many issues each filter value matches across the window. |
+| `key_names` | Key IDs mapped to names, for issues on this page. |
+
+```bash
+curl "https://your-bifrost-gateway/api/adaptive-routing/history/issues?statuses=attention,recovering&sort=longest&limit=25&offset=0" \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+---
+
 ## Configuration
 
 Adaptive load balancing ships **pre-tuned** - the scoring weights, thresholds, recovery timings, and the waits for [held keys](#held-keys) are not user-configurable by design. The operator controls are five switches, plus [releasing held keys](#releasing-held-keys):
