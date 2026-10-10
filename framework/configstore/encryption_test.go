@@ -1553,3 +1553,81 @@ func TestMigrationAddVertexAWSWorkloadIdentityColumn_RollbackRefuses(t *testing.
 	require.NotNil(t, found.VertexKeyConfig)
 	require.NotNil(t, found.VertexKeyConfig.AWSWorkloadIdentity, "the stored federation config must survive the refused rollback")
 }
+
+// ============================================================================
+// Plaintext lookup fallbacks only match rows that are still plaintext
+// ============================================================================
+
+// Once a session is encrypted, only its plaintext token resolves it, through the hash. The
+// value stored in the token column is ciphertext and must not act as the token, for reads or
+// deletes. The legacy plaintext fallback keeps serving rows that are still plaintext.
+func TestGetSession_StoredCiphertextDoesNotResolve(t *testing.T) {
+	store, db := setupEncryptionTestStore(t)
+	ctx := context.Background()
+
+	session := &tables.SessionsTable{Token: "session-plain-token", ExpiresAt: time.Now().Add(time.Hour)}
+	require.NoError(t, db.Create(session).Error)
+	var raw map[string]any
+	db.Table("sessions").Where("id = ?", session.ID).Take(&raw)
+	ciphertext, _ := raw["token"].(string)
+	require.NotEmpty(t, ciphertext)
+	require.NotEqual(t, "session-plain-token", ciphertext, "the row stores ciphertext")
+
+	found, err := store.GetSession(ctx, "session-plain-token")
+	require.NoError(t, err)
+	require.NotNil(t, found, "the plaintext token resolves the session")
+	assert.Equal(t, "session-plain-token", found.Token)
+
+	found, err = store.GetSession(ctx, ciphertext)
+	require.NoError(t, err)
+	assert.Nil(t, found, "the at-rest ciphertext must not resolve the session")
+
+	require.NoError(t, store.DeleteSession(ctx, ciphertext))
+	var remaining int64
+	db.Table("sessions").Where("id = ?", session.ID).Count(&remaining)
+	assert.Equal(t, int64(1), remaining, "deleting by ciphertext removes nothing")
+
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	later := time.Now().UTC().Add(time.Hour).Format("2006-01-02 15:04:05")
+	insertPlaintextRow(t, db,
+		`INSERT INTO sessions (token, expires_at, created_at, updated_at, encryption_status) VALUES (?, ?, ?, ?, 'plain_text')`,
+		"legacy-session-token", later, now, now)
+	found, err = store.GetSession(ctx, "legacy-session-token")
+	require.NoError(t, err)
+	require.NotNil(t, found, "a row still stored in plaintext resolves by token")
+	assert.Equal(t, "legacy-session-token", found.Token)
+
+	require.NoError(t, store.DeleteSession(ctx, "legacy-session-token"))
+	found, err = store.GetSession(ctx, "legacy-session-token")
+	require.NoError(t, err)
+	assert.Nil(t, found, "the plaintext row is deleted by its token")
+}
+
+// The same holds for virtual keys: the stored ciphertext of a key value is not the key.
+func TestFindVirtualKeyByValue_StoredCiphertextDoesNotResolve(t *testing.T) {
+	store, db := setupEncryptionTestStore(t)
+
+	vk := &tables.TableVirtualKey{ID: "vk-cipher", Name: "cipher-vk", Value: *schemas.NewSecretVar("vk-plain-secret"), IsActive: bifrost.Ptr(true)}
+	require.NoError(t, db.Create(vk).Error)
+	var raw map[string]any
+	db.Table("governance_virtual_keys").Where("id = ?", "vk-cipher").Take(&raw)
+	ciphertext, _ := raw["value"].(string)
+	require.NotEmpty(t, ciphertext)
+	require.NotEqual(t, "vk-plain-secret", ciphertext)
+
+	found, err := store.findVirtualKeyByValue(db, "vk-plain-secret")
+	require.NoError(t, err)
+	assert.Equal(t, "vk-cipher", found.ID)
+
+	_, err = store.findVirtualKeyByValue(db, ciphertext)
+	assert.ErrorIs(t, err, ErrNotFound, "the at-rest ciphertext must not resolve the key")
+
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	insertPlaintextRow(t, db,
+		`INSERT INTO governance_virtual_keys (id, name, value, is_active, encryption_status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, 'plain_text', ?, ?)`,
+		"vk-legacy", "legacy-vk", "vk-legacy-secret", true, now, now)
+	found, err = store.findVirtualKeyByValue(db, "vk-legacy-secret")
+	require.NoError(t, err)
+	assert.Equal(t, "vk-legacy", found.ID, "a row still stored in plaintext resolves by value")
+}
