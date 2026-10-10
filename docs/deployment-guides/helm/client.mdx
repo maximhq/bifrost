@@ -214,6 +214,7 @@ Compatibility flags that let Bifrost silently adapt request/response shapes for 
 | `bifrost.client.compat.convertChatToResponses` | Translate chat completions to Responses API format | `false` |
 | `bifrost.client.compat.shouldDropParams` | Silently drop unsupported parameters instead of erroring | `false` |
 | `bifrost.client.compat.shouldConvertParams` | Auto-convert parameter names across provider schemas | `false` |
+| `bifrost.client.compat.forceReasoningOnlyModelsToResponses` | Route chat completions to the Responses API for models that cannot reason with tool calls, so reasoning is kept instead of forced off | `true` |
 
 ```yaml
 bifrost:

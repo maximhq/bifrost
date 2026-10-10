@@ -4,6 +4,7 @@ package governance
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -95,9 +96,15 @@ func IsModelCheckedWhenPresent(requestType schemas.RequestType) bool {
 
 // getWeight safely dereferences a *float64 weight pointer, returning 1.0 as default if nil.
 // This allows distinguishing between "not set" (nil -> 1.0) and "explicitly set to 0" (0.0).
+// A negative or non-finite weight counts as 0: the API rejects one, but config.json and older rows
+// can still carry it, and summed into the draw it would select the first provider whatever the
+// other weights say.
 func getWeight(w *float64) float64 {
 	if w == nil {
 		return 1.0
+	}
+	if *w < 0 || math.IsNaN(*w) || math.IsInf(*w, 0) {
+		return 0
 	}
 	return *w
 }

@@ -314,6 +314,11 @@ var defaultBifrostLabelNames = schemas.MetricSafeEnrichmentDimNames()
 // defaultMCPLabelNames is the label set for bifrost_mcp_* metrics: the MCP semconv
 // dimensions available in the hook plus the governance identity. No network_transport
 // (core stamps it on the span, not context) and no provider/model.
+// perMetricLabelNames are the labels that individual bifrost_* metrics add on top of
+// the default set. A custom label repeating one of these makes Prometheus reject the
+// descriptor, so Init drops them like any other reserved name.
+var perMetricLabelNames = []string{"is_success", "status_code", "error_type", "cache_type"}
+
 var defaultMCPLabelNames = []string{
 	"mcp_client",
 	"mcp_tool_name",
@@ -344,7 +349,13 @@ const (
 	routingEmbeddingPhaseWarmup  = "warmup"
 )
 
-func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (*PrometheusPlugin, error) {
+func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (promPlugin *PrometheusPlugin, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			promPlugin, err = nil, fmt.Errorf("metric registration failed: %v", r)
+		}
+	}()
+
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -384,7 +395,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	var filteredCustomLabels []string
 	if len(config.CustomLabels) > 0 {
 		for _, label := range config.CustomLabels {
-			if !containsLabel(defaultBifrostLabels, label) && !containsLabel(defaultHTTPLabels, label) && !containsLabel(defaultMCPLabelNames, label) {
+			if !containsLabel(defaultBifrostLabels, label) && !containsLabel(defaultHTTPLabels, label) && !containsLabel(defaultMCPLabelNames, label) && !containsLabel(perMetricLabelNames, label) {
 				filteredCustomLabels = append(filteredCustomLabels, label)
 			} else {
 				logger.Info("custom label %s is already a default label, it will be ignored", label)

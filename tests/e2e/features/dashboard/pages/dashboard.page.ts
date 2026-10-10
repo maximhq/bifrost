@@ -132,7 +132,8 @@ export class DashboardPage extends BasePage {
     await this.page.waitForSelector('[data-radix-popper-content-wrapper]', { timeout: 5000 }).catch(() => {})
 
     const label = DashboardPage.PERIOD_LABELS[period]
-    await this.page.getByRole('button', { name: label }).click()
+    // Scope to the popover: the trigger itself is labelled with the current period.
+    await this.page.locator('[data-radix-popper-content-wrapper]').getByRole('button', { name: label, exact: true }).click()
 
     // Wait for dialog to close
     await this.page.locator('[data-radix-popper-content-wrapper]').waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})

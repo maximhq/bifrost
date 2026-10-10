@@ -1252,12 +1252,13 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	// The request is served by key-a, which binds the session to it.
 	bfCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
 	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
-	bifrost.observeSessionOutcome(bfCtx, route, &route, false, nil)
+	bifrost.observeSessionOutcome(bfCtx, route, &route, false, false, nil)
 	if raw, err := kvStore.Get(kvKey); err != nil || raw != "key-a" {
 		t.Errorf("kvstore after the request served: expected key-a, got %v (err=%v)", raw, err)
 	}
 
-	// Second request: the bound key comes back alone, rotation off, selector not consulted.
+	// Second request: the bound key comes first with the rest of the pool behind it, rotation off,
+	// selector not consulted.
 	keys2, canRotate2, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 	if err != nil {
 		t.Fatalf("second selectKeyFromProviderForModelWithPool: %v", err)
@@ -1265,8 +1266,8 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	if canRotate2 {
 		t.Error("second call: canRotate should be false for a session-bound key")
 	}
-	if len(keys2) != 1 || keys2[0].ID != "key-a" {
-		t.Errorf("second call: expected [key-a] (bound), got %v", keys2)
+	if len(keys2) != 2 || keys2[0].ID != "key-a" || keys2[1].ID != "key-b" {
+		t.Errorf("second call: expected [key-a key-b] (bound first), got %v", keys2)
 	}
 	if keySelectorCalls != 0 {
 		t.Errorf("second call: keySelector should not run, got %d calls", keySelectorCalls)
@@ -1360,7 +1361,7 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 	// An earlier request served by key-a bound the session to it.
 	bfCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
 	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
-	bifrost.observeSessionOutcome(bfCtx, route, &route, false, nil)
+	bifrost.observeSessionOutcome(bfCtx, route, &route, false, false, nil)
 
 	config := createTestConfig(3, 0, 0)
 	logger := NewDefaultLogger(schemas.LogLevelError)
@@ -1373,8 +1374,8 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 	if canRotate {
 		t.Fatal("expected canRotate=false for session-sticky request")
 	}
-	if len(pool) != 1 || pool[0].ID != "key-a" {
-		t.Fatalf("expected sticky pool=[key-a], got %v", pool)
+	if len(pool) == 0 || pool[0].ID != "key-a" {
+		t.Fatalf("expected sticky pool led by key-a, got %v", pool)
 	}
 
 	fixedKey := pool[0]
@@ -1422,9 +1423,11 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 	}
 	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
+	// Each key that blacklists the model allows every model otherwise: a key with no models list
+	// allows none, which would exclude it whatever its blacklist said.
 	t.Run("all keys blacklist model", func(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
+			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, Models: []string{"*"}, BlacklistedModels: []string{"gpt-4"}},
 		})
 		_, _, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 		if err == nil {
@@ -1451,7 +1454,7 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 
 	t.Run("second key used when first blacklists", func(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
+			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, Models: []string{"*"}, BlacklistedModels: []string{"gpt-4"}},
 			{ID: "k2", Name: "K2", Value: *schemas.NewSecretVar("sk-2"), Weight: 1, Models: []string{"*"}},
 		})
 		pool, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
@@ -4694,20 +4697,43 @@ func TestSDKFidelityDecisionRequestNullStateReachesProvider(t *testing.T) {
 	resp, bifrostErr := client.DecisionRequest(ctx, &schemas.BifrostDecisionRequest{
 		Provider: schemas.Typesafe,
 		Model:    "jev-1.13.0",
-		State:    nil,
-		Questions: map[string]schemas.DecisionQuestion{
-			"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+		Questions: []schemas.DecisionQuestion{
+			{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("q"), Instructions: schemas.NewDecisionText("Evaluate this state.")},
 		},
 	})
 	if bifrostErr != nil {
 		t.Fatalf("null state must reach the provider, got error: %v", bifrostErr)
 	}
-	if resp == nil || resp.Answers["q"].Value != 0.25 {
+	if resp == nil || len(resp.Answers) != 1 || resp.Answers[0].Probability == nil || *resp.Answers[0].Probability != 0.25 {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	if len(bodies) != 1 || !strings.Contains(bodies[0], `"state":null`) {
 		t.Errorf("provider must receive state null, got bodies %v", bodies)
+	}
+}
+
+// An attempt that already ran a provider-injected MCP tool is not retried: a retry would
+// restart the injected loop from the original request and run the tool's side effects,
+// and bill the finished turns, a second time.
+func TestExecuteRequestWithRetries_StopsAfterInjectedToolRan(t *testing.T) {
+	config := createTestConfig(2, time.Millisecond, 10*time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		ctx.SetValue(schemas.BifrostContextKeyInjectedToolsExecuted, true)
+		return "", createBifrostError("service unavailable", Ptr(503), nil, false)
+	}
+	_, err := executeRequestWithRetries(ctx, config, handler, nil, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
+	if err == nil {
+		t.Fatal("expected the 503 to come back")
+	}
+	if callCount != 1 {
+		t.Fatalf("a retryable error after an injected tool ran ends the request: %d attempts", callCount)
 	}
 }

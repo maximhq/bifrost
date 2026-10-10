@@ -3,21 +3,31 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/agent"
 	"github.com/maximhq/bifrost/core/network"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/prompts"
+	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
@@ -928,7 +938,7 @@ func TestReloadProvider_FailedRefetchKeepsPreviousCatalog(t *testing.T) {
 
 	server := newReloadProviderServer(catalog, "custom-provider", []schemas.Key{{ID: "key-1"}}, false)
 
-	if _, err := server.ReloadProvider(context.Background(), "custom-provider"); err != nil {
+	if _, err := server.ReloadProvider(context.Background(), "custom-provider", false); err != nil {
 		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
 	}
 
@@ -963,7 +973,7 @@ func TestReloadProvider_PrunesRemovedAndDisabledKeys(t *testing.T) {
 	}
 	server := newReloadProviderServer(catalog, "custom-provider", keys, false)
 
-	if _, err := server.ReloadProvider(context.Background(), "custom-provider"); err != nil {
+	if _, err := server.ReloadProvider(context.Background(), "custom-provider", false); err != nil {
 		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
 	}
 
@@ -990,7 +1000,7 @@ func TestReloadProvider_KeylessProviderRetainsSentinelEntry(t *testing.T) {
 
 	server := newReloadProviderServer(catalog, "keyless-provider", nil, true)
 
-	if _, err := server.ReloadProvider(context.Background(), "keyless-provider"); err != nil {
+	if _, err := server.ReloadProvider(context.Background(), "keyless-provider", false); err != nil {
 		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
 	}
 
@@ -1012,7 +1022,7 @@ func TestReloadProvider_NoKeysDropsEverything(t *testing.T) {
 
 	server := newReloadProviderServer(catalog, "custom-provider", nil, false)
 
-	if _, err := server.ReloadProvider(context.Background(), "custom-provider"); err != nil {
+	if _, err := server.ReloadProvider(context.Background(), "custom-provider", false); err != nil {
 		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
 	}
 
@@ -1052,7 +1062,7 @@ func TestReloadProvider_ConcurrentReloadsAndReadsAreRaceFree(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range iterations {
-				if _, err := server.ReloadProvider(context.Background(), "custom-provider"); err != nil {
+				if _, err := server.ReloadProvider(context.Background(), "custom-provider", false); err != nil {
 					t.Errorf("concurrent ReloadProvider returned error: %v", err)
 					return
 				}
@@ -1464,5 +1474,448 @@ func TestReloadProxyConfigAcceptsRemoval(t *testing.T) {
 	}
 	if got := factory.GetProxyConfig(); got != nil {
 		t.Fatalf("factory proxy = %+v, want none after removal", got)
+	}
+}
+
+// ctxSensitivePromptStore fails any read whose context is already cancelled. That is how
+// a test observes the context ReloadPlugin handed the plugin constructor: prompts.Init
+// calls loadCache(ctx) and returns its error.
+type ctxSensitivePromptStore struct {
+	configstore.ConfigStore
+	gotCtx context.Context
+}
+
+// errStopAfterInstantiation ends ReloadPlugin at the constructor, before it needs a live
+// Bifrost client, so the test can inspect the context the constructor was given.
+var errStopAfterInstantiation = errors.New("stop after instantiation")
+
+func (s *ctxSensitivePromptStore) GetPrompts(ctx context.Context, _ *string) ([]configstoreTables.TablePrompt, error) {
+	s.gotCtx = ctx
+	return nil, errStopAfterInstantiation
+}
+
+func (s *ctxSensitivePromptStore) GetAllPromptVersions(ctx context.Context) ([]configstoreTables.TablePromptVersion, error) {
+	return nil, ctx.Err()
+}
+
+// A plugin outlives the request that loaded it, so ReloadPlugin must hand its constructor
+// the server-lifetime context, never the pooled *fasthttp.RequestCtx an admin reload
+// arrives on. Deriving long-lived work from the request context is what produced the
+// "missing cancel error" panic on shutdown.
+func TestReloadPluginGivesTheConstructorTheServerContext(t *testing.T) {
+	SetLogger(bifrost.NewNoOpLogger())
+
+	serverCtx, cancelServer := schemas.NewBifrostContextWithCancel(
+		context.WithValue(context.Background(), schemas.BifrostContextKeyGovernancePluginName, "governance-custom"),
+	)
+	defer cancelServer()
+
+	store := &ctxSensitivePromptStore{}
+	s := &BifrostHTTPServer{Ctx: serverCtx, Config: &lib.Config{ConfigStore: store}}
+
+	// The admin reload request is already over by the time the constructor runs.
+	reloadReqCtx, cancelRequest := context.WithCancel(context.Background())
+	cancelRequest()
+
+	err := s.ReloadPlugin(reloadReqCtx, prompts.PluginName, nil, nil, nil, nil)
+
+	if store.gotCtx == nil {
+		t.Fatal("the plugin constructor never reached the store")
+	}
+	if cerr := store.gotCtx.Err(); cerr != nil {
+		t.Errorf("constructor context was already cancelled (%v); it must be the server context, not the reload request's", cerr)
+	}
+	if !errors.Is(err, errStopAfterInstantiation) {
+		t.Errorf("ReloadPlugin error = %v, want the constructor's own error", err)
+	}
+	if got := governancePluginNameFromContext(store.gotCtx); got != "governance-custom" {
+		t.Errorf("constructor context governance plugin name = %q, want it inherited from the server context", got)
+	}
+}
+
+// The accessor's own contract: it tracks the server, not the request that called it.
+func TestPluginInitContextOutlivesTheReloadRequest(t *testing.T) {
+	serverCtx, cancelServer := schemas.NewBifrostContextWithCancel(
+		context.WithValue(context.Background(), schemas.BifrostContextKeyGovernancePluginName, "governance-custom"),
+	)
+	defer cancelServer()
+	initCtx := (&BifrostHTTPServer{Ctx: serverCtx}).PluginInitContext()
+
+	if got := governancePluginNameFromContext(initCtx); got != "governance-custom" {
+		t.Errorf("governance plugin name = %q, want it inherited from the server context", got)
+	}
+	// Shutdown must still reach the plugin, or nothing releases its long-lived work.
+	cancelServer()
+	select {
+	case <-initCtx.Done():
+	case <-time.After(time.Second):
+		t.Error("plugin init context outlived server shutdown; it must be the server context")
+	}
+}
+
+// A server with no context yet must still yield a usable, never-cancelled context rather
+// than a nil one a constructor would panic on.
+func TestPluginInitContextFallsBackToBackground(t *testing.T) {
+	initCtx := (&BifrostHTTPServer{}).PluginInitContext()
+	if initCtx == nil {
+		t.Fatal("PluginInitContext returned nil")
+	}
+	select {
+	case <-initCtx.Done():
+		t.Error("fallback context is already cancelled")
+	default:
+	}
+}
+
+// issue8212CleanupEvent records when a real deletion ran and which cutoff it used.
+type issue8212CleanupEvent struct {
+	startedAt time.Time
+	cutoff    time.Time
+	deleted   int64
+	err       error
+}
+
+// issue8212RetentionObserver records real SQLite deletions without changing
+// the cutoff, batch size, or result.
+type issue8212RetentionObserver struct {
+	manager logstore.LogRetentionManager
+	events  chan issue8212CleanupEvent
+}
+
+// failingRetentionConfigStore simulates a failed configuration save.
+type failingRetentionConfigStore struct {
+	configstore.ConfigStore
+}
+
+// UpdateClientConfig rejects the save so the test can verify retention stays unchanged.
+func (failingRetentionConfigStore) UpdateClientConfig(context.Context, *configstore.ClientConfig) error {
+	return fmt.Errorf("client config persistence failed")
+}
+
+// DeleteLogsBatch delegates to SQLite and reports the completed deletion.
+func (m *issue8212RetentionObserver) DeleteLogsBatch(ctx context.Context, cutoff time.Time, size int) (int64, error) {
+	startedAt := time.Now()
+	deleted, err := m.manager.DeleteLogsBatch(ctx, cutoff, size)
+	m.events <- issue8212CleanupEvent{startedAt: startedAt, cutoff: cutoff, deleted: deleted, err: err}
+	return deleted, err
+}
+
+// issue8212AwaitCleanup waits for a deletion and fails if it errors or never runs.
+func issue8212AwaitCleanup(t *testing.T, m *issue8212RetentionObserver) issue8212CleanupEvent {
+	t.Helper()
+	select {
+	case event := <-m.events:
+		if event.err != nil {
+			t.Fatalf("real SQLite deletion failed: %v", event.err)
+		}
+		return event
+	case <-time.After(10 * time.Second):
+		t.Fatal("scheduled cleanup did not run")
+		return issue8212CleanupEvent{}
+	}
+}
+
+// TestIssue8212RetentionChange verifies saved retention reaches the next scheduled
+// pass of the same running cleaner, using virtual time and real SQLite stores.
+func TestIssue8212RetentionChange(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		oldDays, newDays     int
+		wantStatus, wantDays int
+		failPersistence      bool
+	}{
+		{"increase_365_to_1000", 365, 1000, 200, 1000, false},
+		{"decrease_1000_to_365", 1000, 365, 200, 365, false},
+		{"reject_zero", 365, 0, 400, 365, false},
+		{"reject_negative", 365, -1, 400, 365, false},
+		{"persistence_failure", 365, 1000, 500, 365, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx := context.Background()
+				logger = noopTestLogger{}
+				handlers.SetLogger(noopTestLogger{})
+				cs, err := configstore.NewConfigStore(ctx, &configstore.Config{
+					Enabled: true, Type: configstore.ConfigStoreTypeSQLite,
+					Config: &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+				}, noopTestLogger{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer cs.Close(ctx)
+				ls, err := logstore.NewLogStore(ctx, &logstore.Config{
+					Enabled: true, Type: logstore.LogStoreTypeSQLite,
+					Config: &logstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "logs.db")},
+				}, noopTestLogger{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer ls.Close(ctx)
+				initial := &configstore.ClientConfig{LogRetentionDays: tc.oldDays}
+				if err := cs.UpdateClientConfig(ctx, initial); err != nil {
+					t.Fatal(err)
+				}
+				initial, err = cs.GetClientConfig(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg := &lib.Config{ConfigStore: cs, LogsStore: ls, ClientConfig: initial}
+				s := &BifrostHTTPServer{Config: cfg}
+				manager, ok := ls.(logstore.LogRetentionManager)
+				if !ok {
+					t.Fatal("SQLite store does not support retention")
+				}
+				observer := &issue8212RetentionObserver{manager: manager, events: make(chan issue8212CleanupEvent, 64)}
+				s.LogsCleaner = logstore.NewLogsCleaner(observer, logstore.CleanerConfig{RetentionDays: initial.LogRetentionDays}, noopTestLogger{})
+				s.LogsCleaner.StartCleanupRoutine()
+				defer func() {
+					s.LogsCleaner.StopCleanupRoutine()
+					synctest.Wait()
+				}()
+				startup := issue8212AwaitCleanup(t, observer)
+				if startup.deleted != 0 {
+					t.Fatalf("expected empty startup pass, got %d deletions", startup.deleted)
+				}
+				// Wait for the initial pass to finish and the daily timer to be armed.
+				// Virtual time stays still while this goroutine seeds and saves.
+				synctest.Wait()
+				if tc.failPersistence {
+					cfg.ConfigStore = failingRetentionConfigStore{ConfigStore: cs}
+				}
+
+				seed := func(id string, ageDays int) {
+					ts := time.Now().UTC().AddDate(0, 0, -ageDays)
+					if err := ls.Create(ctx, &logstore.Log{ID: id, Timestamp: ts, CreatedAt: ts,
+						Object: "chat_completion", Provider: "openai", Model: "test", Status: "success"}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for _, age := range []int{200, 500, 1200} {
+					seed(fmt.Sprintf("age-%d", age), age)
+				}
+				for _, age := range []int{200, 500, 1200} {
+					present, err := ls.IsLogEntryPresent(ctx, fmt.Sprintf("age-%d", age))
+					if err != nil || !present {
+						t.Fatalf("seed age %d missing before save: %v", age, err)
+					}
+				}
+
+				// Exercise the production route and the actual server reload callback.
+				r := router.New()
+				handlers.NewConfigHandler(s, cfg).RegisterRoutes(r)
+				var req fasthttp.Request
+				req.Header.SetMethod("PUT")
+				req.Header.SetContentType("application/json")
+				req.SetRequestURI("/api/config")
+				saveConfig := *initial
+				saveConfig.LogRetentionDays = tc.newDays
+				body, err := providerUtils.MarshalSorted(struct {
+					ClientConfig *configstore.ClientConfig `json:"client_config"`
+				}{ClientConfig: &saveConfig})
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.SetBody(body)
+				var requestCtx fasthttp.RequestCtx
+				requestCtx.Init(&req, nil, nil)
+				r.Handler(&requestCtx)
+				if requestCtx.Response.StatusCode() != tc.wantStatus {
+					t.Fatalf("PUT /api/config returned %d, want %d: %s", requestCtx.Response.StatusCode(), tc.wantStatus, requestCtx.Response.Body())
+				}
+				savedAt := time.Now()
+				persisted, err := cs.GetClientConfig(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if persisted.LogRetentionDays != tc.wantDays || cfg.ClientConfig.LogRetentionDays != tc.wantDays {
+					t.Fatalf("unexpected retention: DB=%d live=%d expected=%d", persisted.LogRetentionDays, cfg.ClientConfig.LogRetentionDays, tc.wantDays)
+				}
+				t.Logf("PUT /api/config status=%d; DB retention=%d; live retention=%d", requestCtx.Response.StatusCode(), persisted.LogRetentionDays, cfg.ClientConfig.LogRetentionDays)
+				// Cross the production interval (24h plus 15-30m jitter) without
+				// restarting the cleaner or changing its scheduler.
+				time.Sleep(25 * time.Hour)
+				synctest.Wait()
+
+				next := issue8212AwaitCleanup(t, observer)
+				if !next.startedAt.After(savedAt) {
+					t.Fatal("expected a cleanup pass that started after the save")
+				}
+				usedDays := int(math.Round(time.Since(next.cutoff).Hours() / 24))
+				t.Logf("next scheduled cleanup: retention=%d days; actual SQLite deletions=%d", usedDays, next.deleted)
+				for _, age := range []int{200, 500, 1200} {
+					present, err := ls.IsLogEntryPresent(ctx, fmt.Sprintf("age-%d", age))
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := age < tc.wantDays
+					t.Logf("log age=%d days: present=%t; expected=%t", age, present, want)
+					if present != want {
+						t.Errorf("log age %d days present=%t, want %t for retention=%d", age, present, want, tc.wantDays)
+					}
+				}
+				if usedDays != tc.wantDays {
+					t.Errorf("scheduled cleaner used the wrong retention: got %d days, want %d", usedDays, tc.wantDays)
+				}
+
+				// A fresh cleaner from persisted settings is the process-restart control.
+				s.LogsCleaner.StopCleanupRoutine()
+				synctest.Wait()
+				func() {
+					seed("restart-age-500", 500)
+					freshObserver := &issue8212RetentionObserver{manager: manager, events: make(chan issue8212CleanupEvent, 64)}
+					fresh := logstore.NewLogsCleaner(freshObserver, logstore.CleanerConfig{RetentionDays: persisted.LogRetentionDays}, noopTestLogger{})
+					fresh.StartCleanupRoutine()
+					defer func() {
+						fresh.StopCleanupRoutine()
+						synctest.Wait()
+					}()
+					event := issue8212AwaitCleanup(t, freshObserver)
+					freshDays := int(math.Round(time.Since(event.cutoff).Hours() / 24))
+					present, err := ls.IsLogEntryPresent(ctx, "restart-age-500")
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Logf("fresh cleaner retention=%d; 500-day log present=%t", freshDays, present)
+					if freshDays != tc.wantDays || present != (500 < tc.wantDays) {
+						t.Fatal("fresh cleaner did not honor saved retention")
+					}
+				}()
+			})
+		})
+  }
+}
+// The telemetry plugin reads config.CustomLabels, but the loader only ever seeded it
+// from client_config.prometheus_labels, so the plugin's own custom_labels were accepted
+// and ignored. Both name extra Prometheus labels, so they union.
+func TestMergeCustomLabels(t *testing.T) {
+	for _, tc := range []struct {
+		label  string
+		client []string
+		plugin []string
+		want   []string
+	}{
+		{"plugin labels alone are honoured", nil, []string{"team"}, []string{"team"}},
+		{"client labels alone still work", []string{"environment"}, nil, []string{"environment"}},
+		{"both sources union, client first", []string{"environment"}, []string{"team"}, []string{"environment", "team"}},
+		{"duplicates collapse", []string{"team"}, []string{"team", "region"}, []string{"team", "region"}},
+		{"blank entries are dropped", []string{""}, []string{"team", ""}, []string{"team"}},
+		{"neither set yields nil", nil, nil, nil},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			got := mergeCustomLabels(tc.client, tc.plugin)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("label %d = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// The merge must not write into either input's spare capacity, which is how the
+// duplicate-label 500s happened before.
+func TestMergeCustomLabelsDoesNotAliasItsInputs(t *testing.T) {
+	client := make([]string, 1, 8) // spare capacity for an append to scribble into
+	client[0] = "environment"
+
+	got := mergeCustomLabels(client, []string{"team"})
+	if len(client) != 1 || client[0] != "environment" {
+		t.Errorf("client slice mutated: %v", client)
+	}
+	got[0] = "clobbered"
+	if client[0] != "environment" {
+		t.Errorf("writing to the result changed the input: %v", client)
+	}
+}
+
+// newTelemetryPluginForTest builds a telemetry plugin with its own registry, so a test
+// can tell which instance recorded a request.
+func newTelemetryPluginForTest(t *testing.T) (*telemetry.PrometheusPlugin, *prometheus.Registry) {
+	t.Helper()
+	reg := prometheus.NewRegistry()
+	p, err := telemetry.Init(&telemetry.Config{Registry: reg}, nil, bifrost.NewNoOpLogger())
+	if err != nil {
+		t.Fatalf("telemetry.Init: %v", err)
+	}
+	return p, reg
+}
+
+func httpRequestsTotal(t *testing.T, reg *prometheus.Registry) float64 {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	var total float64
+	for _, f := range families {
+		if f.GetName() != "http_requests_total" {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			total += m.GetCounter().GetValue()
+		}
+	}
+	return total
+}
+
+// A config reload constructs a fresh telemetry plugin. The middleware is built once at
+// startup, so capturing the plugin pointer there left it recording into the orphaned
+// instance and http_* series stopped appearing on /metrics after any reload. Resolving
+// per request means the live instance gets the writes.
+func TestPrometheusHTTPMiddlewareFollowsAReloadedPlugin(t *testing.T) {
+	SetLogger(bifrost.NewNoOpLogger())
+
+	first, firstReg := newTelemetryPluginForTest(t)
+	second, secondReg := newTelemetryPluginForTest(t)
+
+	cfg := &lib.Config{}
+	cfg.BasePlugins.Store(&[]schemas.BasePlugin{first})
+	s := &BifrostHTTPServer{Config: cfg}
+
+	// Built once, as it is at startup, and reused across the reload below.
+	mw := s.prometheusHTTPMiddleware()
+	handler := mw(func(ctx *fasthttp.RequestCtx) { ctx.Response.SetStatusCode(200) })
+
+	send := func() {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/v1/chat/completions")
+		ctx.Request.Header.SetMethod("POST")
+		handler(ctx)
+	}
+
+	send()
+	if got := httpRequestsTotal(t, firstReg); got != 1 {
+		t.Fatalf("first instance recorded %v requests, want 1", got)
+	}
+
+	// The reload: a freshly constructed plugin replaces the one the middleware saw.
+	cfg.BasePlugins.Store(&[]schemas.BasePlugin{second})
+	send()
+
+	if got := httpRequestsTotal(t, secondReg); got != 1 {
+		t.Errorf("reloaded instance recorded %v requests, want 1; the middleware is still writing to the orphaned plugin", got)
+	}
+	if got := httpRequestsTotal(t, firstReg); got != 1 {
+		t.Errorf("orphaned instance recorded %v requests, want it left at 1", got)
+	}
+}
+
+// With no telemetry plugin loaded the request must still be served.
+func TestPrometheusHTTPMiddlewarePassesThroughWithoutThePlugin(t *testing.T) {
+	SetLogger(bifrost.NewNoOpLogger())
+
+	s := &BifrostHTTPServer{Config: &lib.Config{}}
+	served := false
+	handler := s.prometheusHTTPMiddleware()(func(ctx *fasthttp.RequestCtx) { served = true })
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/v1/chat/completions")
+	handler(ctx)
+
+	if !served {
+		t.Error("request was not served when no telemetry plugin is loaded")
 	}
 }

@@ -92,6 +92,21 @@ func TestAdmission_ProviderPrefixesAreStrippedOnTheWire(t *testing.T) {
 	})
 }
 
+func TestAdmission_DirectKeyGoesUpstream(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	forEachTransport(t, func(t *testing.T, tr transport) {
+		session := sessionFor(t, voiceModel, backendModel, nil)
+		headers := map[string]string{"x-bf-direct-key": "true", "Authorization": "Bearer sk-direct-live"}
+		c := openLive(t, tr, clientOptions{headers: headers, session: session})
+		s := fake.WaitSession(t, session["instructions"].(string))
+		assert.Equal(t, "Bearer sk-direct-live", s.Auth(), "the caller's own key goes upstream, not a registered one")
+		c.CloseSession()
+		row := findLiveLog(t, s.ID())
+		assert.Equal(t, "header-provided", row.Get("selected_key_name").Str, "the log row names the caller's key")
+	})
+}
+
 func TestAdmission_OpenAIIntegrationRouteServesSessions(t *testing.T) {
 	requireFake(t)
 	t.Parallel()

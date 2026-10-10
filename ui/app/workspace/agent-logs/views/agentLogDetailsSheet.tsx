@@ -2,6 +2,7 @@ import { formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
 import BlockHeader from "@/app/workspace/logs/views/blockHeader";
 import LogEntryDetailsView from "@/app/workspace/logs/views/logEntryDetailsView";
 import PluginLogsView from "@/app/workspace/logs/views/pluginLogsView";
+import { OverheadBreakdown } from "@/components/logs/overheadBreakdown";
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import {
 	AlertDialog,
@@ -31,7 +32,6 @@ import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { useGetAgentLogOperationByIdQuery } from "@/lib/store/apis/agentLogsApi";
 import type { AgentLogDetail, AgentLogFilters, AgentLogStatus, AgentLogSummary } from "@/lib/types/agentLogs";
-import { OverheadBreakdown } from "@/components/logs/overheadBreakdown";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { Link } from "@tanstack/react-router";
@@ -39,13 +39,13 @@ import { format, isValid } from "date-fns";
 import { ChevronDown, Download, Loader2, MoreVertical, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
+import { A2APayloadView } from "./a2aPayloadView";
 import {
 	A2AConversationHistory,
 	A2AOperationConversation,
 	isA2AConversationOperation,
 	isA2APushConversationOperation,
 } from "./agentContextDetailsSheet";
-import { A2APayloadView } from "./a2aPayloadView";
 import { CorrelatedLogsContent, useCorrelatedLogCounts } from "./correlatedLogs";
 
 interface AgentLogDetailSheetProps {
@@ -561,8 +561,11 @@ export function AgentLogDetailSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="border-secondary flex w-full flex-col gap-4 overflow-x-hidden border p-4 sm:max-w-[60%] md:p-8">
-				<SheetHeader className="flex flex-row items-center px-0" headerClassName="mb-0">
+			<SheetContent className="border-secondary flex w-full flex-col gap-2 overflow-x-hidden border p-0 sm:max-w-[60%]">
+				<SheetHeader
+					className="flex flex-row items-center px-0"
+					headerClassName="sticky -top-5 z-20 mx-4 mb-0 w-auto bg-card pt-4 pb-2 md:mx-8 md:pt-8"
+				>
 					<div className="flex w-full items-center gap-2">
 						<SheetNavigationButtons
 							hasPrev={hasPrev}
@@ -651,450 +654,452 @@ export function AgentLogDetailSheet({
 						</AlertDialogContent>
 					</AlertDialog>
 				</SheetHeader>
-
-				<div className="border-border rounded-sm border">
-					<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
-						<div className="min-w-0 flex-1">
-							<div className="flex flex-wrap items-center gap-2">
-								<StatusPill status={displayLog.status} />
-								{isPushRelated && (
-									<Badge variant="outline" className="text-muted-foreground rounded-sm px-2 py-0.5 font-normal">
-										push notification
-									</Badge>
-								)}
-							</div>
-							<div className="mt-3">
-								<IdRow
-									label="Agent"
-									value={displayLog.agent_name}
-									filter={{ agent_name: [displayLog.agent_name] }}
-									onFilter={onFilter}
-									testId="a2alogdetails-copy-agent-button"
-								/>
-								<IdRow
-									label="Request"
-									value={displayLog.request_id}
-									filter={{ request_id: displayLog.request_id }}
-									onFilter={onFilter}
-									testId="a2alogdetails-copy-request-id-button"
-								/>
-								{displayLog.push_config_id && (
-									<IdRow
-										label="Push Config"
-										value={displayLog.push_config_id}
-										filter={{ push_config_id: displayLog.push_config_id }}
-										onFilter={onFilter}
-										testId="a2alogdetails-copy-push-config-id-button"
-									/>
-								)}
-								{displayLog.task_id && (
-									<div className="mt-1 flex max-w-full items-center gap-2">
-										<span className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Task</span>
-										<InteractiveValue
-											value={displayLog.task_id}
-											label="Task"
-											filter={{ task_id: displayLog.task_id }}
-											onFilter={onFilter}
-											className="font-mono text-[13px]"
-										/>
-									</div>
-								)}
-								{displayLog.context_id && (
-									<div className="mt-1 flex max-w-full items-center gap-2">
-										<span className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
-											Context
-										</span>
-										<InteractiveValue
-											value={displayLog.context_id}
-											label="Context"
-											filter={{ context_id: displayLog.context_id }}
-											onFilter={onFilter}
-											className="font-mono text-[13px]"
-										/>
-									</div>
-								)}
-								{displayLog.virtual_key_id && (
-									<div className="mt-1 flex items-center gap-2">
-										<span className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
-											Virtual key
-										</span>
-										<Link
-											to="/workspace/governance/virtual-keys"
-											search={{ selected_vk: displayLog.virtual_key_id }}
-											className="truncate font-mono text-[13px] text-blue-600 hover:underline dark:text-blue-400"
-										>
-											{displayLog.virtual_key_name || displayLog.virtual_key_id}
-										</Link>
-									</div>
-								)}
-							</div>
-						</div>
-					</div>
-					<div
-						className={cn(
-							"border-border grid grid-cols-1 border-t sm:grid-cols-2",
-							correlatedRows.length > 0 ? "md:grid-cols-5" : "md:grid-cols-4",
-						)}
-					>
-						<HeroStat
-							label="Latency"
-							valueClass="text-primary"
-							value={hasValidLatency ? formatLatency(displayLog.latency!) : "—"}
-							sub={
-								hasValidTimestamp
-									? `${format(timestampDate!, "HH:mm:ss")} → ${endTimestamp ? format(endTimestamp, "HH:mm:ss") : "—"}`
-									: undefined
-							}
-							hasRightBorder
-						/>
-						<HeroStat label="Downstream" value={displayLog.downstream_transport || "—"} valueClass="font-mono text-[15px]" hasRightBorder />
-						<HeroStat label="Upstream" value={displayLog.upstream_transport || "—"} valueClass="font-mono text-[15px]" hasRightBorder />
-						<HeroStat
-							label="Operation"
-							value={displayLog.operation || "—"}
-							valueClass="whitespace-normal overflow-visible break-all font-mono text-[15px]"
-							hasRightBorder
-						/>
-						{correlatedRows.length > 0 && <HeroStat label="Events" value={String(totalCorrelatedEvents)} />}
-					</div>
-				</div>
-
-				<details className="group bg-card rounded-sm border" open={false}>
-					<summary className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-4 py-2.5 text-sm transition">
-						<span className="text-foreground font-medium">More details</span>
-						<span className="text-muted-foreground flex items-center gap-2 text-xs">
-							<span className="hidden md:inline">
-								{hasTimings ? "timings, identifiers and correlation" : "identifiers and correlation"}
-							</span>
-							<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
-						</span>
-					</summary>
-					<div className="space-y-4 border-t px-4 py-4 md:px-6">
-						{hasTimings && (
-							<>
-								<div className="space-y-4">
-									<BlockHeader title="Timings" />
-									<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
-										{hasValidTimestamp && (
-											<LogEntryDetailsView
-												className="w-full"
-												label="Start Timestamp"
-												value={format(timestampDate!, "yyyy-MM-dd hh:mm:ss aa")}
-											/>
-										)}
-										{endTimestamp && (
-											<LogEntryDetailsView
-												className="w-full"
-												label="End Timestamp"
-												value={format(endTimestamp, "yyyy-MM-dd hh:mm:ss aa")}
-											/>
-										)}
-										{hasValidLatency && (
-											<LogEntryDetailsView
-												className="w-full"
-												label="Latency"
-												tooltip="Total end-to-end request time: upstream plus Bifrost overhead."
-												value={<div>{displayLog.latency!.toFixed(2)}ms</div>}
-											/>
-										)}
-										{displayLog.upstream_latency != null && !isNaN(displayLog.upstream_latency) && (
-											<LogEntryDetailsView
-												className="w-full"
-												label="Upstream Latency"
-												tooltip="Time spent waiting on the upstream agent."
-												value={<div>{displayLog.upstream_latency.toFixed(2)}ms</div>}
-											/>
-										)}
-										{displayLog.overhead_latency != null && !isNaN(displayLog.overhead_latency) && (
-											<LogEntryDetailsView
-												className="w-full"
-												label="Bifrost Overhead"
-												tooltip="Time added by Bifrost itself: routing, plugins, and processing."
-												value={<div>{displayLog.overhead_latency.toFixed(2)}ms</div>}
-											/>
-										)}
-									</div>
-									{displayLog.overhead_breakdown && displayLog.overhead_breakdown.length > 0 ? (
-										<OverheadBreakdown buckets={displayLog.overhead_breakdown} overheadMs={displayLog.overhead_latency} />
-									) : null}
+				<div className="flex flex-col gap-2 px-4 pb-4 md:px-8 md:pb-8">
+					<div className="border-border rounded-sm border">
+						<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
+							<div className="min-w-0 flex-1">
+								<div className="flex flex-wrap items-center gap-2">
+									<StatusPill status={displayLog.status} />
+									{isPushRelated && (
+										<Badge variant="outline" className="text-muted-foreground rounded-sm px-2 py-0.5 font-normal">
+											push notification
+										</Badge>
+									)}
 								</div>
-								<DottedSeparator />
-							</>
-						)}
-						<div className="space-y-4">
-							<BlockHeader title="Request details" />
-							<div className="grid w-full grid-cols-1 items-start gap-4 md:grid-cols-3">
-								<LogEntryDetailsView className="w-full" label="Agent" value={<span className="font-mono">{displayLog.agent_name}</span>} />
-								<LogEntryDetailsView
-									className="w-full"
-									label="Operation"
-									value={<span className="font-mono">{displayLog.operation}</span>}
-								/>
-								<LogEntryDetailsView className="w-full" label="Status" value={displayLog.status} />
-								{displayLog.content_type && <LogEntryDetailsView className="w-full" label="Content type" value={displayLog.content_type} />}
-								{displayLog.virtual_key_id && (
-									<LogEntryDetailsView
-										className="w-full"
-										label="Virtual key"
-										value={
+								<div className="mt-3">
+									<IdRow
+										label="Agent"
+										value={displayLog.agent_name}
+										filter={{ agent_name: [displayLog.agent_name] }}
+										onFilter={onFilter}
+										testId="a2alogdetails-copy-agent-button"
+									/>
+									<IdRow
+										label="Request"
+										value={displayLog.request_id}
+										filter={{ request_id: displayLog.request_id }}
+										onFilter={onFilter}
+										testId="a2alogdetails-copy-request-id-button"
+									/>
+									{displayLog.push_config_id && (
+										<IdRow
+											label="Push Config"
+											value={displayLog.push_config_id}
+											filter={{ push_config_id: displayLog.push_config_id }}
+											onFilter={onFilter}
+											testId="a2alogdetails-copy-push-config-id-button"
+										/>
+									)}
+									{displayLog.task_id && (
+										<div className="mt-1 flex max-w-full items-center gap-2">
+											<span className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Task</span>
+											<InteractiveValue
+												value={displayLog.task_id}
+												label="Task"
+												filter={{ task_id: displayLog.task_id }}
+												onFilter={onFilter}
+												className="font-mono text-[13px]"
+											/>
+										</div>
+									)}
+									{displayLog.context_id && (
+										<div className="mt-1 flex max-w-full items-center gap-2">
+											<span className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
+												Context
+											</span>
+											<InteractiveValue
+												value={displayLog.context_id}
+												label="Context"
+												filter={{ context_id: displayLog.context_id }}
+												onFilter={onFilter}
+												className="font-mono text-[13px]"
+											/>
+										</div>
+									)}
+									{displayLog.virtual_key_id && (
+										<div className="mt-1 flex items-center gap-2">
+											<span className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
+												Virtual key
+											</span>
 											<Link
 												to="/workspace/governance/virtual-keys"
 												search={{ selected_vk: displayLog.virtual_key_id }}
-												className="text-sm text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+												className="truncate font-mono text-[13px] text-blue-600 hover:underline dark:text-blue-400"
 											>
 												{displayLog.virtual_key_name || displayLog.virtual_key_id}
 											</Link>
-										}
-									/>
-								)}
-								{governanceLinks.map(({ label, pluralLabel, route, searchKey, items }) => (
-									<LogEntryDetailsView
-										key={label}
-										className="w-full"
-										label={items.length > 1 ? pluralLabel : label}
-										value={
-											<span className="inline-flex flex-wrap gap-x-1">
-												{items.map((item, index) => (
-													<Tooltip key={item.id}>
-														<TooltipTrigger asChild>
-															<Link
-																to={route}
-																search={{ [searchKey]: item.id }}
-																className="text-sm text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
-															>
-																{item.name}
-																{index < items.length - 1 ? "," : ""}
-															</Link>
-														</TooltipTrigger>
-														<TooltipContent sideOffset={6}>{item.id}</TooltipContent>
-													</Tooltip>
-												))}
-											</span>
-										}
-									/>
-								))}
+										</div>
+									)}
+								</div>
 							</div>
 						</div>
-						{diagnosticSections
-							.filter(({ fields }) => fields.length > 0)
-							.map(({ title, fields }) => (
-								<div key={title} className="space-y-4">
-									<DottedSeparator />
-									<BlockHeader title={title} />
-									<div className="grid w-full grid-cols-1 items-start gap-4 md:grid-cols-3">
-										{fields.map(([label, value, filter]) => (
-											<LogEntryDetailsView
-												key={label}
-												className="w-full"
-												label={label}
-												value={
-													<span className="inline-flex max-w-full items-center gap-1">
-														{typeof value === "string" ? (
-															<InteractiveValue
-																value={value}
-																label={label}
-																filter={filter}
-																onFilter={onFilter}
-																className="font-mono text-xs"
-															/>
-														) : (
-															<span className="truncate font-mono text-xs">{String(value)}</span>
-														)}
-													</span>
-												}
-											/>
-										))}
-									</div>
-								</div>
-							))}
-					</div>
-				</details>
-
-				<Tabs
-					key={`${displayLog.id}:${defaultTab}`}
-					defaultValue={defaultTab}
-					onValueChange={(value) => setActiveTab({ correlationKey, value })}
-					className="gap-2"
-				>
-					<TabsList className="bg-muted/60 h-10 w-fit">
-						{hasConversation && (
-							<TabsTrigger value="conversation" className="px-3">
-								Conversation
-							</TabsTrigger>
-						)}
-						{!isConversationOperation && !isPushConversationOperation && hasPayload && (
-							<TabsTrigger value="payload" className="px-3">
-								Payload
-							</TabsTrigger>
-						)}
-						{correlatedRows.length > 0 && (
-							<TabsTrigger value="events" className="px-3">
-								Events
-								{correlatedRows.length > 0 ? (
-									<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-										{totalCorrelatedEvents}
-									</span>
-								) : null}
-							</TabsTrigger>
-						)}
-						{pluginLogCount > 0 && (
-							<TabsTrigger value="plugins" className="px-3">
-								Plugin Logs
-								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-									{pluginLogCount}
-								</span>
-							</TabsTrigger>
-						)}
-						{logCorrelation && llmCount > 0 ? (
-							<TabsTrigger value="llm-logs" className="px-3">
-								LLM Logs{" "}
-								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-									{llmCount}
-								</span>
-							</TabsTrigger>
-						) : null}
-						{logCorrelation && mcpCount > 0 ? (
-							<TabsTrigger value="mcp-logs" className="px-3">
-								MCP Logs{" "}
-								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-									{mcpCount}
-								</span>
-							</TabsTrigger>
-						) : null}
-						<TabsTrigger value="raw" className="px-3">
-							Raw JSON
-						</TabsTrigger>
-					</TabsList>
-
-					{hasConversation && conversationLog && (
-						<TabsContent value="conversation" className="space-y-4 px-1 py-2">
-							<A2AOperationConversation log={conversationLog} allowPushConversation={isPushConversationOperation} />
-							<A2AConversationHistory responseBody={conversationLog.response_body} />
-						</TabsContent>
-					)}
-
-					{!isConversationOperation && !isPushConversationOperation && hasPayload && detail && (
-						<TabsContent value="payload" className="px-1 py-2">
-							<A2APayloadView
-								operation={detail.operation}
-								status={detail.status}
-								requestBody={detail.request_body}
-								responseBody={detail.response_body}
-								errorDetails={detail.error_details}
+						<div
+							className={cn(
+								"border-border grid grid-cols-1 border-t sm:grid-cols-2",
+								correlatedRows.length > 0 ? "md:grid-cols-5" : "md:grid-cols-4",
+							)}
+						>
+							<HeroStat
+								label="Latency"
+								valueClass="text-primary"
+								value={hasValidLatency ? formatLatency(displayLog.latency!) : "—"}
+								sub={
+									hasValidTimestamp
+										? `${format(timestampDate!, "HH:mm:ss")} → ${endTimestamp ? format(endTimestamp, "HH:mm:ss") : "—"}`
+										: undefined
+								}
+								hasRightBorder
 							/>
-						</TabsContent>
-					)}
+							<HeroStat
+								label="Downstream"
+								value={displayLog.downstream_transport || "—"}
+								valueClass="font-mono text-[15px]"
+								hasRightBorder
+							/>
+							<HeroStat label="Upstream" value={displayLog.upstream_transport || "—"} valueClass="font-mono text-[15px]" hasRightBorder />
+							<HeroStat
+								label="Operation"
+								value={displayLog.operation || "—"}
+								valueClass="whitespace-normal overflow-visible break-all font-mono text-[15px]"
+								hasRightBorder
+							/>
+							{correlatedRows.length > 0 && <HeroStat label="Events" value={String(totalCorrelatedEvents)} />}
+						</div>
+					</div>
 
-					{correlatedRows.length > 0 && (
-						<TabsContent value="events" className="space-y-3">
-							<div className="text-muted-foreground text-sm">
-								Events show the ordered updates returned by the agent during this operation. Expand an event to inspect its data.
-							</div>
-							<div className="space-y-2">
-								{correlatedRows.map((row) => {
-									const rowDate = row.timestamp ? new Date(row.timestamp) : null;
-									const isExpanded = expandedEventIds.has(row.id);
-									const showRaw = rawEventIds.has(row.id);
-									const eventDetail: AgentLogDetail = row;
-									return (
-										<div key={row.id} className={cn("rounded-sm border", isExpanded && "border-primary/50 bg-muted/20")}>
-											<div className="hover:bg-muted/50 flex w-full items-start gap-3 px-3 py-3">
-												<button
-													type="button"
-													onClick={() => void toggleEvent(row)}
-													className="flex min-w-0 flex-1 cursor-pointer items-start gap-3 text-left"
-													data-testid={`a2alogdetails-event-row-${row.id}`}
-												>
-													<span className="bg-muted text-muted-foreground mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full font-mono text-[10px]">
-														{row.event_sequence ?? "·"}
-													</span>
-													<div className="min-w-0 flex-1">
-														<div className="flex flex-wrap items-center gap-2">
-															<span className="text-sm font-medium capitalize">{eventLabel(row)}</span>
-															{row.task_state && (
-																<Badge variant="outline" className="rounded-sm text-[10px]">
-																	{row.task_state}
-																</Badge>
-															)}
-														</div>
-														<div className="text-muted-foreground mt-0.5 text-xs">{eventExplanation(row)}</div>
-													</div>
-												</button>
-												<div className="flex shrink-0 flex-col items-end gap-2">
-													<span className="text-muted-foreground font-mono text-[11px] tabular-nums">
-														{rowDate && isValid(rowDate) ? format(rowDate, "HH:mm:ss.SSS") : ""}
-													</span>
-													{isExpanded && eventDetail && (
-														<div className="bg-muted/60 inline-flex rounded-sm border p-0.5">
-															<Button
-																type="button"
-																variant="ghost"
-																className={cn(
-																	"h-7 rounded-sm px-2.5 text-xs",
-																	!showRaw && "bg-background text-foreground shadow-sm hover:bg-background",
-																)}
-																onClick={() => showRaw && toggleEventRaw(row.id)}
-															>
-																Formatted
-															</Button>
-															<Button
-																type="button"
-																variant="ghost"
-																className={cn(
-																	"h-7 rounded-sm px-2.5 text-xs",
-																	showRaw && "bg-background text-foreground shadow-sm hover:bg-background",
-																)}
-																onClick={() => !showRaw && toggleEventRaw(row.id)}
-															>
-																Raw JSON
-															</Button>
-														</div>
-													)}
-												</div>
-											</div>
-											{isExpanded && (
-												<div className="border-t p-3">
-													{showRaw ? (
-														<PayloadBlock title="Raw event record" code={rawEventRecord(eventDetail)} />
-													) : (
-														<FormattedEventDetail detail={eventDetail} onFilter={onFilter} />
-													)}
-												</div>
+					<details className="group bg-card rounded-sm border" open={false}>
+						<summary className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-4 py-2.5 text-sm transition">
+							<span className="text-foreground font-medium">More details</span>
+							<span className="text-muted-foreground flex items-center gap-2 text-xs">
+								<span className="hidden md:inline">
+									{hasTimings ? "timings, identifiers and correlation" : "identifiers and correlation"}
+								</span>
+								<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+							</span>
+						</summary>
+						<div className="space-y-4 border-t px-4 py-4 md:px-6">
+							{hasTimings && (
+								<>
+									<div className="space-y-4">
+										<BlockHeader title="Timings" />
+										<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
+											{hasValidTimestamp && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Start Timestamp"
+													value={format(timestampDate!, "yyyy-MM-dd hh:mm:ss aa")}
+												/>
+											)}
+											{endTimestamp && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="End Timestamp"
+													value={format(endTimestamp, "yyyy-MM-dd hh:mm:ss aa")}
+												/>
+											)}
+											{hasValidLatency && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Latency"
+													tooltip="Total end-to-end request time: upstream plus Bifrost overhead."
+													value={<div>{displayLog.latency!.toFixed(2)}ms</div>}
+												/>
+											)}
+											{displayLog.upstream_latency != null && !isNaN(displayLog.upstream_latency) && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Upstream Latency"
+													tooltip="Time spent waiting on the upstream agent."
+													value={<div>{displayLog.upstream_latency.toFixed(2)}ms</div>}
+												/>
+											)}
+											{displayLog.overhead_latency != null && !isNaN(displayLog.overhead_latency) && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Bifrost Overhead"
+													tooltip="Time added by Bifrost itself: routing, plugins, and processing."
+													value={<div>{displayLog.overhead_latency.toFixed(2)}ms</div>}
+												/>
 											)}
 										</div>
-									);
-								})}
+										{displayLog.overhead_breakdown && displayLog.overhead_breakdown.length > 0 ? (
+											<OverheadBreakdown buckets={displayLog.overhead_breakdown} overheadMs={displayLog.overhead_latency} />
+										) : null}
+									</div>
+									<DottedSeparator />
+								</>
+							)}
+							<div className="space-y-4">
+								<BlockHeader title="Request details" />
+								<div className="grid w-full grid-cols-1 items-start gap-4 md:grid-cols-3">
+									<LogEntryDetailsView
+										className="w-full"
+										label="Agent"
+										value={<span className="font-mono">{displayLog.agent_name}</span>}
+									/>
+									<LogEntryDetailsView
+										className="w-full"
+										label="Operation"
+										value={<span className="font-mono">{displayLog.operation}</span>}
+									/>
+									<LogEntryDetailsView className="w-full" label="Status" value={displayLog.status} />
+									{displayLog.content_type && (
+										<LogEntryDetailsView className="w-full" label="Content type" value={displayLog.content_type} />
+									)}
+									{displayLog.virtual_key_id && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Virtual key"
+											value={
+												<Link
+													to="/workspace/governance/virtual-keys"
+													search={{ selected_vk: displayLog.virtual_key_id }}
+													className="text-sm text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+												>
+													{displayLog.virtual_key_name || displayLog.virtual_key_id}
+												</Link>
+											}
+										/>
+									)}
+									{governanceLinks.map(({ label, pluralLabel, route, searchKey, items }) => (
+										<LogEntryDetailsView
+											key={label}
+											className="w-full"
+											label={items.length > 1 ? pluralLabel : label}
+											value={
+												<span className="inline-flex flex-wrap gap-x-1">
+													{items.map((item, index) => (
+														<Tooltip key={item.id}>
+															<TooltipTrigger asChild>
+																<Link
+																	to={route}
+																	search={{ [searchKey]: item.id }}
+																	className="text-sm text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+																>
+																	{item.name}
+																	{index < items.length - 1 ? "," : ""}
+																</Link>
+															</TooltipTrigger>
+															<TooltipContent sideOffset={6}>{item.id}</TooltipContent>
+														</Tooltip>
+													))}
+												</span>
+											}
+										/>
+									))}
+								</div>
 							</div>
+							{diagnosticSections
+								.filter(({ fields }) => fields.length > 0)
+								.map(({ title, fields }) => (
+									<div key={title} className="space-y-4">
+										<DottedSeparator />
+										<BlockHeader title={title} />
+										<div className="grid w-full grid-cols-1 items-start gap-4 md:grid-cols-3">
+											{fields.map(([label, value, filter]) => (
+												<LogEntryDetailsView
+													key={label}
+													className="w-full"
+													label={label}
+													value={
+														<span className="inline-flex max-w-full items-center gap-1">
+															{typeof value === "string" ? (
+																<InteractiveValue
+																	value={value}
+																	label={label}
+																	filter={filter}
+																	onFilter={onFilter}
+																	className="font-mono text-xs"
+																/>
+															) : (
+																<span className="truncate font-mono text-xs">{String(value)}</span>
+															)}
+														</span>
+													}
+												/>
+											))}
+										</div>
+									</div>
+								))}
+						</div>
+					</details>
+
+					<Tabs
+						key={`${displayLog.id}:${defaultTab}`}
+						defaultValue={defaultTab}
+						onValueChange={(value) => setActiveTab({ correlationKey, value })}
+						className="gap-2"
+					>
+						<TabsList className="bg-muted/60 h-10 w-fit">
+							{hasConversation && (
+								<TabsTrigger value="conversation" className="px-3">
+									Conversation
+								</TabsTrigger>
+							)}
+							{!isConversationOperation && !isPushConversationOperation && hasPayload && (
+								<TabsTrigger value="payload" className="px-3">
+									Payload
+								</TabsTrigger>
+							)}
+							{correlatedRows.length > 0 && (
+								<TabsTrigger value="events" className="px-3">
+									Events
+									{correlatedRows.length > 0 ? (
+										<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+											{totalCorrelatedEvents}
+										</span>
+									) : null}
+								</TabsTrigger>
+							)}
+							{pluginLogCount > 0 && (
+								<TabsTrigger value="plugins" className="px-3">
+									Plugin Logs
+									<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+										{pluginLogCount}
+									</span>
+								</TabsTrigger>
+							)}
+							{logCorrelation && llmCount > 0 ? (
+								<TabsTrigger value="llm-logs" className="px-3">
+									LLM Logs{" "}
+									<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+										{llmCount}
+									</span>
+								</TabsTrigger>
+							) : null}
+							{logCorrelation && mcpCount > 0 ? (
+								<TabsTrigger value="mcp-logs" className="px-3">
+									MCP Logs{" "}
+									<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+										{mcpCount}
+									</span>
+								</TabsTrigger>
+							) : null}
+							<TabsTrigger value="raw" className="px-3">
+								Raw JSON
+							</TabsTrigger>
+						</TabsList>
+
+						{hasConversation && conversationLog && (
+							<TabsContent value="conversation" className="space-y-4 px-1 py-2">
+								<A2AOperationConversation log={conversationLog} allowPushConversation={isPushConversationOperation} />
+								<A2AConversationHistory responseBody={conversationLog.response_body} />
+							</TabsContent>
+						)}
+
+						{!isConversationOperation && !isPushConversationOperation && hasPayload && detail && (
+							<TabsContent value="payload" className="px-1 py-2">
+								<A2APayloadView
+									operation={detail.operation}
+									status={detail.status}
+									requestBody={detail.request_body}
+									responseBody={detail.response_body}
+									errorDetails={detail.error_details}
+								/>
+							</TabsContent>
+						)}
+
+						{correlatedRows.length > 0 && (
+							<TabsContent value="events" className="space-y-3">
+								<div className="text-muted-foreground text-sm">
+									Events show the ordered updates returned by the agent during this operation. Expand an event to inspect its data.
+								</div>
+								<div className="space-y-2">
+									{correlatedRows.map((row) => {
+										const rowDate = row.timestamp ? new Date(row.timestamp) : null;
+										const isExpanded = expandedEventIds.has(row.id);
+										const showRaw = rawEventIds.has(row.id);
+										const eventDetail: AgentLogDetail = row;
+										return (
+											<div key={row.id} className={cn("rounded-sm border", isExpanded && "border-primary/50 bg-muted/20")}>
+												<div className="hover:bg-muted/50 flex w-full items-start gap-3 px-3 py-3">
+													<button
+														type="button"
+														onClick={() => void toggleEvent(row)}
+														className="flex min-w-0 flex-1 cursor-pointer items-start gap-3 text-left"
+														data-testid={`a2alogdetails-event-row-${row.id}`}
+													>
+														<span className="bg-muted text-muted-foreground mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full font-mono text-[10px]">
+															{row.event_sequence ?? "·"}
+														</span>
+														<div className="min-w-0 flex-1">
+															<div className="flex flex-wrap items-center gap-2">
+																<span className="text-sm font-medium capitalize">{eventLabel(row)}</span>
+																{row.task_state && (
+																	<Badge variant="outline" className="rounded-sm text-[10px]">
+																		{row.task_state}
+																	</Badge>
+																)}
+															</div>
+															<div className="text-muted-foreground mt-0.5 text-xs">{eventExplanation(row)}</div>
+														</div>
+													</button>
+													<div className="flex shrink-0 flex-col items-end gap-2">
+														<span className="text-muted-foreground font-mono text-[11px] tabular-nums">
+															{rowDate && isValid(rowDate) ? format(rowDate, "HH:mm:ss.SSS") : ""}
+														</span>
+														{isExpanded && eventDetail && (
+															<Tabs
+																value={showRaw ? "raw" : "formatted"}
+																onValueChange={(next) => (next === "raw") !== showRaw && toggleEventRaw(row.id)}
+																className="shrink-0"
+															>
+																<TabsList aria-label="Event view" className="h-6 rounded-sm p-0.5">
+																	<TabsTrigger value="formatted" className="rounded-[3px] px-2 text-[11px] leading-5">
+																		Formatted
+																	</TabsTrigger>
+																	<TabsTrigger value="raw" className="rounded-[3px] px-2 text-[11px] leading-5">
+																		Raw JSON
+																	</TabsTrigger>
+																</TabsList>
+															</Tabs>
+														)}
+													</div>
+												</div>
+												{isExpanded && (
+													<div className="border-t p-3">
+														{showRaw ? (
+															<PayloadBlock title="Raw event record" code={rawEventRecord(eventDetail)} />
+														) : (
+															<FormattedEventDetail detail={eventDetail} onFilter={onFilter} />
+														)}
+													</div>
+												)}
+											</div>
+										);
+									})}
+								</div>
+							</TabsContent>
+						)}
+
+						{logCorrelation && llmCount > 0 ? (
+							<CorrelatedLogsContent
+								key={`llm:${correlationKey}`}
+								kind="llm"
+								correlation={logCorrelation}
+								active={activeTab.correlationKey === correlationKey && activeTab.value === "llm-logs"}
+							/>
+						) : null}
+						{logCorrelation && mcpCount > 0 ? (
+							<CorrelatedLogsContent
+								key={`mcp:${correlationKey}`}
+								kind="mcp"
+								correlation={logCorrelation}
+								active={activeTab.correlationKey === correlationKey && activeTab.value === "mcp-logs"}
+							/>
+						) : null}
+
+						<TabsContent value="raw" className="space-y-4">
+							<PayloadBlock title="Raw record" code={JSON.stringify(displayLog, null, 2)} />
 						</TabsContent>
-					)}
 
-					{logCorrelation && llmCount > 0 ? (
-						<CorrelatedLogsContent
-							key={`llm:${correlationKey}`}
-							kind="llm"
-							correlation={logCorrelation}
-							active={activeTab.correlationKey === correlationKey && activeTab.value === "llm-logs"}
-						/>
-					) : null}
-					{logCorrelation && mcpCount > 0 ? (
-						<CorrelatedLogsContent
-							key={`mcp:${correlationKey}`}
-							kind="mcp"
-							correlation={logCorrelation}
-							active={activeTab.correlationKey === correlationKey && activeTab.value === "mcp-logs"}
-						/>
-					) : null}
-
-					<TabsContent value="raw" className="space-y-4">
-						<PayloadBlock title="Raw record" code={JSON.stringify(displayLog, null, 2)} />
-					</TabsContent>
-
-					{pluginLogCount > 0 && detail?.plugin_logs && (
-						<TabsContent value="plugins" className="space-y-3">
-							<PluginLogsView pluginLogs={detail.plugin_logs} />
-						</TabsContent>
-					)}
-				</Tabs>
+						{pluginLogCount > 0 && detail?.plugin_logs && (
+							<TabsContent value="plugins" className="space-y-3">
+								<PluginLogsView pluginLogs={detail.plugin_logs} />
+							</TabsContent>
+						)}
+					</Tabs>
+				</div>
 			</SheetContent>
 		</Sheet>
 	);

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -34,6 +35,12 @@ func apiCall(method, path string, body any, headers map[string]string) (int, []b
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	// OSS setup lock: /api needs the setup token while dashboard auth is not active; a deployed
+	// gateway with dashboard auth needs the admin's Authorization header instead.
+	req.Header.Set("X-Bifrost-Setup-Token", setupToken())
+	if auth := os.Getenv("BIFROST_ADMIN_AUTH"); auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -44,6 +51,15 @@ func apiCall(method, path string, body any, headers map[string]string) (int, []b
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	return resp.StatusCode, raw, err
+}
+
+// setupToken returns the setup token the live test gateway is configured with
+// (tests/live/config.json setup_token), overridable through the environment.
+func setupToken() string {
+	if v := os.Getenv("BIFROST_SETUP_TOKEN"); v != "" {
+		return v
+	}
+	return "bifrost-live-setup-token"
 }
 
 func mustAPI(t *testing.T, method, path string, body any) gjson.Result {

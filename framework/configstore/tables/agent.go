@@ -139,6 +139,7 @@ type TableAgentPushConfig struct {
 	ConfigID  string `gorm:"primaryKey;type:varchar(255);not null"`
 
 	URL             string             `gorm:"type:text;not null"`
+	Tenant          string             `gorm:"type:varchar(255)"`
 	Token           *schemas.SecretVar `gorm:"type:text"`
 	AuthScheme      string             `gorm:"type:varchar(64)"`
 	AuthCredentials *schemas.SecretVar `gorm:"type:text"`

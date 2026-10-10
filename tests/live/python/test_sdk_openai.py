@@ -3,6 +3,7 @@
 import asyncio
 import fractions
 import json
+import time
 
 import openai
 import pytest
@@ -103,6 +104,9 @@ def test_download_recording_streams(client, marker):
     with client.live.connect() as connection, microphone(connection):
         connection.session.start(session=session_config(marker, store=True))
         provider_session_id = wait_for(connection, "session.started").session.id
+        if UPSTREAM == "real":
+            # A session closed at once records an empty WAV; let the microphone's silence land first.
+            time.sleep(4)
         connection.session.close()
         wait_for(connection, "session.closed")
 
@@ -183,19 +187,37 @@ def silence_track():
     return aiortc, Silence()
 
 
-async def next_event(events: asyncio.Queue, type_: str, timeout: float = FRAME_TIMEOUT) -> dict:
+async def next_event(events: asyncio.Queue, type_: str, timeout: float = FRAME_TIMEOUT, pc=None, answer_sdp: str = "") -> dict:
     deadline = asyncio.get_event_loop().time() + timeout
     seen = []
     while True:
         remaining = deadline - asyncio.get_event_loop().time()
         if remaining <= 0:
-            pytest.fail(f"no {type_} on the data channel within {timeout}s; saw {seen}")
-        event = await asyncio.wait_for(events.get(), remaining)
+            break
+        try:
+            event = await asyncio.wait_for(events.get(), remaining)
+        except TimeoutError:
+            break
         seen.append(event.get("type"))
         if event.get("type") == type_:
             return event
         if event.get("type") == "error":
             pytest.fail(f"waiting for {type_}, got error: {error_message(event)}")
+    # ICE to a remote gateway fails more often than the session does: name the connection state
+    # and the gateway's candidates, as the Go client does.
+    state = f"; peer connection {pc.connectionState}, ice {pc.iceConnectionState}" if pc is not None else ""
+    candidates = " | ".join(sdp_candidates(answer_sdp))
+    pytest.fail(f"no {type_} on the data channel within {timeout}s; saw {seen}{state}; gateway candidates: {candidates}")
+
+
+def sdp_candidates(sdp: str) -> list[str]:
+    """The ICE candidates an SDP carries, as "type ip:port" strings."""
+    out = []
+    for line in sdp.splitlines():
+        fields = line.strip().split()
+        if fields and fields[0].startswith("a=candidate:") and len(fields) >= 8:
+            out.append(f"{fields[7]} {fields[4]}:{fields[5]}")
+    return out
 
 
 async def test_sideband_steers_a_webrtc_session(async_client, marker):
@@ -211,13 +233,13 @@ async def test_sideband_steers_a_webrtc_session(async_client, marker):
         created = await async_client.live.create(session=session_config(marker, transport="webrtc"), transport={"type": "webrtc", "sdp": pc.localDescription.sdp})
         assert created.transport.type == "webrtc"
         await pc.setRemoteDescription(aiortc.RTCSessionDescription(sdp=created.transport.sdp, type="answer"))
-        started = await next_event(events, "session.started")
+        started = await next_event(events, "session.started", pc=pc, answer_sdp=created.transport.sdp)
         assert started["session"]["id"] == created.session.id, "the create response names the session the channel joins"
 
         async with async_client.live.sideband.connect(session_id=created.session.id) as sideband:
-            joined = await await_for(sideband, "session.started")
-            assert joined.session.id == created.session.id, "a sideband is told which session it joined"
-
+            # OpenAI tells only the connections present at the start about session.started; a
+            # sideband that joins moments later is not replayed it. The ack of its first command
+            # proves it joined the right session, since the primary sees the same ack.
             # An instruction from the sideband is acknowledged on both connections.
             await sideband.send({"type": "session.instructions.append", "event_id": "steer_1", "delegation_id": None, "content": "be brief"})
             assert (await await_for(sideband, "session.instructions.appended")).client_event_id == "steer_1"

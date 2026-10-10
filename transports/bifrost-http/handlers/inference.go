@@ -23,24 +23,18 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/tidwall/gjson"
 
+	"github.com/maximhq/bifrost/core/providers/typesafe"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
-// forwardProviderHeaders forwards provider response headers to the HTTP response.
-func forwardProviderHeaders(ctx *fasthttp.RequestCtx, headers map[string]string) {
-	for key, value := range headers {
-		ctx.Response.Header.Set(key, value)
-	}
-}
-
 // forwardProviderHeadersFromContext extracts provider response headers from the bifrost context
 // and forwards them to the HTTP response. This ensures error responses also include provider headers.
 func forwardProviderHeadersFromContext(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) {
 	if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-		forwardProviderHeaders(ctx, headers)
+		lib.ForwardProviderResponseHeaders(ctx, headers)
 	}
 }
 
@@ -226,6 +220,18 @@ var rerankParamsKnownFields = map[string]bool{
 }
 
 var decisionParamsKnownFields = map[string]bool{
+	"model":             true,
+	"input":             true,
+	"questions":         true,
+	"safety_identifier": true,
+	"fallbacks":         true,
+	// The deprecated map form's input. Next to "input" it is dropped, not
+	// forwarded as a provider extension that could override the real state.
+	"state": true,
+}
+
+// Known fields for DecisionMapFormRequest, the deprecated /v1/decisions body.
+var decisionMapFormKnownFields = map[string]bool{
 	"model":     true,
 	"state":     true,
 	"questions": true,
@@ -651,8 +657,21 @@ type RerankRequest struct {
 
 // DecisionHandlerRequest is a bifrost decision request
 type DecisionHandlerRequest struct {
-	State     interface{}                         `json:"state"`
-	Questions map[string]schemas.DecisionQuestion `json:"questions"`
+	Input            schemas.DecisionInput      `json:"input"`
+	Questions        []schemas.DecisionQuestion `json:"questions"`
+	SafetyIdentifier *string                    `json:"safety_identifier,omitempty"`
+	BifrostParams
+}
+
+// DecisionMapFormRequest is a /v1/decisions request in the deprecated map
+// form: a state plus questions keyed by name, answered by answers keyed by the
+// same names. Its questions are Typesafe's System One questions (written with
+// "kind" for "type"), so it is decoded and converted through the Typesafe
+// package. It stays served for callers written against it; new callers send
+// DecisionHandlerRequest.
+type DecisionMapFormRequest struct {
+	State     interface{}                          `json:"state"`
+	Questions map[string]typesafe.TypesafeQuestion `json:"questions"`
 	BifrostParams
 }
 
@@ -1457,33 +1476,70 @@ func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
-// prepareDecisionRequest prepares a BifrostDecisionRequest from the HTTP request body
-func prepareDecisionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*DecisionHandlerRequest, *schemas.BifrostDecisionRequest, error) {
-	req, base, err := prepareRequest[DecisionHandlerRequest](ctx, config, decisionParamsKnownFields)
+// prepareDecisionRequest prepares a BifrostDecisionRequest from the HTTP
+// request body. The body is read as the normalized request first; one that does
+// not decode as it is read as the deprecated map form, whose questions are an
+// object keyed by name rather than a list. mapForm reports which, so the
+// response is rendered in the same form.
+func prepareDecisionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (req *schemas.BifrostDecisionRequest, mapForm bool, err error) {
+	handlerReq, base, decodeErr := prepareRequest[DecisionHandlerRequest](ctx, config, decisionParamsKnownFields)
+	if decodeErr != nil {
+		req, err := prepareDecisionMapFormRequest(ctx, config)
+		return req, true, err
+	}
+	// Decoding reads an absent input and an explicit null the same way. A null
+	// input is forwarded as a null state, so only an absent key is rejected.
+	if !gjson.GetBytes(ctx.PostBody(), "input").Exists() {
+		return nil, false, fmt.Errorf("input is required for decision")
+	}
+	if len(handlerReq.Questions) == 0 {
+		return nil, false, fmt.Errorf("questions are required for decision")
+	}
+	return &schemas.BifrostDecisionRequest{
+		Provider:         base.Provider,
+		Model:            base.ModelName,
+		Input:            handlerReq.Input,
+		Questions:        handlerReq.Questions,
+		SafetyIdentifier: handlerReq.SafetyIdentifier,
+		Fallbacks:        base.Fallbacks,
+		ExtraParams:      base.ExtraParams,
+	}, false, nil
+}
+
+// prepareDecisionMapFormRequest prepares a BifrostDecisionRequest from a
+// map-form body: the state becomes the input and the questions are normalized
+// through the Typesafe converter.
+func prepareDecisionMapFormRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schemas.BifrostDecisionRequest, error) {
+	req, base, err := prepareRequest[DecisionMapFormRequest](ctx, config, decisionMapFormKnownFields)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	// An explicit null state is SDK-valid and forwarded; only an absent key is
 	// rejected here.
 	if req.State == nil && !gjson.GetBytes(ctx.PostBody(), "state").Exists() {
-		return nil, nil, fmt.Errorf("state is required for decision")
+		return nil, fmt.Errorf("state is required for decision")
 	}
 	if len(req.Questions) == 0 {
-		return nil, nil, fmt.Errorf("questions are required for decision")
+		return nil, fmt.Errorf("questions are required for decision")
 	}
-	return req, &schemas.BifrostDecisionRequest{
+	questions, err := typesafe.ToBifrostDecisionQuestions(req.Questions)
+	if err != nil {
+		return nil, err
+	}
+	return &schemas.BifrostDecisionRequest{
 		Provider:    base.Provider,
 		Model:       base.ModelName,
-		State:       req.State,
-		Questions:   req.Questions,
+		Input:       typesafe.ToBifrostDecisionInput(req.State),
+		Questions:   questions,
 		Fallbacks:   base.Fallbacks,
 		ExtraParams: base.ExtraParams,
 	}, nil
 }
 
-// evaluation handles POST /v1/decisions - Process decision requests
+// evaluation handles POST /v1/decisions - Process decision requests. A
+// deprecated map-form request is answered in the map form.
 func (h *CompletionHandler) evaluation(ctx *fasthttp.RequestCtx) {
-	_, bifrostDecisionReq, err := prepareDecisionRequest(ctx, h.config)
+	bifrostDecisionReq, mapForm, err := prepareDecisionRequest(ctx, h.config)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -1512,7 +1568,81 @@ func (h *CompletionHandler) evaluation(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Send successful response
+	if mapForm {
+		SendJSON(ctx, toDecisionMapFormResponse(resp))
+		return
+	}
 	SendJSON(ctx, resp)
+}
+
+// DecisionMapFormResponse is the response to a map-form request: answers keyed
+// by question name.
+type DecisionMapFormResponse struct {
+	ID          string                             `json:"id,omitempty"`
+	Model       string                             `json:"model"`
+	Answers     map[string]DecisionMapAnswer       `json:"answers"`
+	Usage       *schemas.BifrostLLMUsage           `json:"usage,omitempty"`
+	ExtraFields schemas.BifrostResponseExtraFields `json:"extra_fields"`
+
+	// Laya-specific fields
+	Routing json.RawMessage `json:"routing,omitempty"`
+}
+
+// DecisionMapAnswer is one answer of a map-form response. Value is the noul
+// probability, the chosen option, or the score; a refusal has no value.
+type DecisionMapAnswer struct {
+	Kind          string             `json:"kind"`
+	Value         interface{}        `json:"value"`
+	Confidence    *float64           `json:"confidence,omitempty"`
+	Probabilities map[string]float64 `json:"probabilities,omitempty"`
+	Legend        map[string]any     `json:"legend,omitempty"`
+
+	// Laya-specific fields
+	AnswerConfidence    *float64        `json:"answer_confidence,omitempty"`
+	Action              json.RawMessage `json:"action,omitempty"`
+	Abstention          *string         `json:"abstention,omitempty"`
+	AbstentionThreshold *float64        `json:"abstention_threshold,omitempty"`
+	LowConfidence       *bool           `json:"low_confidence,omitempty"`
+}
+
+// toDecisionMapFormResponse renders a normalized response in the map form,
+// through Typesafe's answer shape: each answer's noul, choice, or score
+// becomes its value.
+func toDecisionMapFormResponse(resp *schemas.BifrostDecisionResponse) *DecisionMapFormResponse {
+	if resp == nil {
+		return nil
+	}
+	answers := make(map[string]DecisionMapAnswer, len(resp.Answers))
+	for name, native := range typesafe.ToTypesafeAnswers(resp.Answers) {
+		answer := DecisionMapAnswer{
+			Kind:                native.Type,
+			Confidence:          native.Confidence,
+			Probabilities:       native.Probabilities,
+			Legend:              native.Legend,
+			AnswerConfidence:    native.AnswerConfidence,
+			Action:              native.Action,
+			Abstention:          native.Abstention,
+			AbstentionThreshold: native.AbstentionThreshold,
+			LowConfidence:       native.LowConfidence,
+		}
+		switch {
+		case native.Noul != nil:
+			answer.Value = *native.Noul
+		case native.Choice != nil:
+			answer.Value = *native.Choice
+		case native.Score != nil:
+			answer.Value = *native.Score
+		}
+		answers[name] = answer
+	}
+	return &DecisionMapFormResponse{
+		ID:          resp.ID,
+		Model:       resp.Model,
+		Answers:     answers,
+		Usage:       resp.Usage,
+		ExtraFields: resp.ExtraFields,
+		Routing:     resp.Routing,
+	}
 }
 
 // prepareOCRRequest prepares a BifrostOCRRequest from the HTTP request body
@@ -2199,7 +2329,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 
 	// Forward provider response headers stored in context by streaming handlers
 	if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-		forwardProviderHeaders(ctx, headers)
+		lib.ForwardProviderResponseHeaders(ctx, headers)
 	}
 
 	// Routed-identity headers from the context snapshot — routing is final once

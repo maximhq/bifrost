@@ -2401,3 +2401,26 @@ func TestToOpenAIChatRequest_GPT56CacheBreakpoint(t *testing.T) {
 		require.Falsef(t, present, "the earliest marker (system) must be the one dropped; raw=%s", raw)
 	})
 }
+
+// The /openai integration keeps OpenAI's chat shape, which has no reasoning.summary:
+// it must not reach the Responses request unless sent via passthrough extra_params.
+func TestOpenAIInbound_ReasoningSummaryIsNotForwarded(t *testing.T) {
+	body := `{"model":"openai/gpt-6-astra","reasoning":{"effort":"high","summary":"auto"},"messages":[{"role":"user","content":"hi"}]}`
+
+	var req OpenAIChatRequest
+	if err := sonic.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	responses := req.ToBifrostChatRequest(ctx).ToResponsesRequest()
+	if responses.Params == nil || responses.Params.Reasoning == nil {
+		t.Fatalf("reasoning.effort should still be forwarded: %+v", responses.Params)
+	}
+	if responses.Params.Reasoning.Effort == nil || *responses.Params.Reasoning.Effort != "high" {
+		t.Fatalf("reasoning.effort = %v, want high", responses.Params.Reasoning.Effort)
+	}
+	if responses.Params.Reasoning.Summary != nil {
+		t.Fatalf("reasoning.summary leaked through the openai integration: %q", *responses.Params.Reasoning.Summary)
+	}
+}

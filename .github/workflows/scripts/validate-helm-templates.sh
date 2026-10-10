@@ -54,7 +54,7 @@ test_template() {
 
 # 1. Storage Combinations (9 tests)
 echo ""
-echo -e "${CYAN}📦 1/7 - Testing Storage Combinations (9 tests)...${NC}"
+echo -e "${CYAN}📦 1/9 - Testing Storage Combinations (9 tests)...${NC}"
 echo "---------------------------------------------------"
 
 # config=no, logs=no
@@ -126,7 +126,7 @@ test_template "config=postgres, logs=postgres" \
 
 # 2. Vector Store Combinations (6 tests)
 echo ""
-echo -e "${CYAN}🗄️  2/7 - Testing Vector Store Combinations (6 tests)...${NC}"
+echo -e "${CYAN}🗄️  2/9 - Testing Vector Store Combinations (6 tests)...${NC}"
 echo "--------------------------------------------------------"
 
 # Weaviate
@@ -175,7 +175,7 @@ test_template "sqlite + qdrant" \
 
 # 3. Special Configurations (7 tests)
 echo ""
-echo -e "${CYAN}⚙️  3/7 - Testing Special Configurations (7 tests)...${NC}"
+echo -e "${CYAN}⚙️  3/9 - Testing Special Configurations (7 tests)...${NC}"
 echo "-----------------------------------------------------"
 
 # semantic cache: direct mode (dimension: 1, no provider/keys)
@@ -251,7 +251,7 @@ test_template "production-like config" \
 
 # 4. New Property Rendering (Gap 1-8 tests)
 echo ""
-echo -e "${CYAN}🆕 4/7 - Testing New Property Rendering (Gap 1-8)...${NC}"
+echo -e "${CYAN}🆕 4/9 - Testing New Property Rendering (Gap 1-8)...${NC}"
 echo "-----------------------------------------------------"
 
 # Gap 1+2: Client new properties
@@ -337,7 +337,7 @@ test_template "combined: all new Gap 1-9 fields" \
 
 # 5. Plugin Name Validation
 echo ""
-echo -e "${CYAN}🔌 5/7 - Validating Plugin Names Match Go Registry...${NC}"
+echo -e "${CYAN}🔌 5/9 - Validating Plugin Names Match Go Registry...${NC}"
 echo "------------------------------------------------------"
 
 # Verify semantic cache plugin renders with correct name ("semantic_cache", not "semantic_cache")
@@ -366,7 +366,7 @@ fi
 
 # 6. Custom Plugin Placement and Order Rendering
 echo ""
-echo -e "${CYAN}🔧 6/7 - Validating Custom Plugin placement and order Rendering...${NC}"
+echo -e "${CYAN}🔧 6/9 - Validating Custom Plugin placement and order Rendering...${NC}"
 echo "-------------------------------------------------------------------"
 
 # Test custom plugin renders successfully with placement and order
@@ -423,7 +423,7 @@ fi
 
 # 7. Security Context Rendering
 echo ""
-echo -e "${CYAN}🔒 7/7 - Validating OpenShift-compatible Security Contexts...${NC}"
+echo -e "${CYAN}🔒 7/9 - Validating OpenShift-compatible Security Contexts...${NC}"
 echo "----------------------------------------------------------------"
 
 # Images before v1.6.4 use a non-numeric `USER appuser`, so kubelet can only
@@ -489,6 +489,221 @@ else
   echo -e "${YELLOW}  Error output:${NC}"
   head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
 fi
+
+# 8. Pod Scheduling: topologySpreadConstraints
+echo ""
+echo -e "${CYAN}🗺️  8/9 - Validating topologySpreadConstraints Rendering...${NC}"
+echo "----------------------------------------------------------------"
+
+# Values files for the sections below live in a private directory (not fixed /tmp paths,
+# which another user on a shared host could pre-create as symlinks).
+VALUES_DIR=$(mktemp -d)
+trap 'rm -rf "$VALUES_DIR"' EXIT
+
+# check_workload renders the chart and runs a python assertion against the Bifrost
+# server workload (Deployment or StatefulSet). The assertion sees `w` (the workload
+# document); it prints nothing on success and a reason on failure.
+check_workload() {
+  local test_name=$1
+  local assertion=$2
+  shift 2
+  if ! helm template bifrost ./helm-charts/bifrost --set image.tag=v1.0.0 "$@" \
+    > /tmp/helm-template-output.yaml 2>&1; then
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  Error output:${NC}"
+    head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+    return
+  fi
+  local reason
+  reason=$(ASSERTION="$assertion" python3 -c '
+import os, yaml
+docs = [d for d in yaml.safe_load_all(open("/tmp/helm-template-output.yaml")) if d]
+ws = [d for d in docs if d.get("kind") in ("Deployment", "StatefulSet") and d["metadata"]["name"] == "bifrost"]
+if len(ws) != 1:
+    print("expected exactly one bifrost Deployment/StatefulSet, got %d" % len(ws))
+else:
+    w = ws[0]
+    try:
+        exec(os.environ["ASSERTION"])
+    except AssertionError as e:
+        print(e or "assertion failed")
+    except Exception as e:
+        print("%s: %s" % (type(e).__name__, e))
+' 2>&1 || true)
+  if [ -z "$reason" ]; then
+    report_result "$test_name" 0
+  else
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  $reason${NC}"
+  fi
+}
+
+# expect_render_failure asserts the chart refuses the values (schema or template guard).
+expect_render_failure() {
+  local test_name=$1
+  local expected=$2
+  shift 2
+  if helm template bifrost ./helm-charts/bifrost --set image.tag=v1.0.0 "$@" \
+    > /tmp/helm-template-output.yaml 2>&1; then
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  render succeeded; expected it to fail with: $expected${NC}"
+  elif grep -q -- "$expected" /tmp/helm-template-output.yaml; then
+    report_result "$test_name" 0
+  else
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  render failed for another reason:${NC}"
+    head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+  fi
+}
+
+cat > "$VALUES_DIR/tsc-values.yaml" << 'VALS'
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+  - maxSkew: 2
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: DoNotSchedule
+    minDomains: 2
+    matchLabelKeys: ["pod-template-hash"]
+    nodeAffinityPolicy: Honor
+    nodeTaintsPolicy: Ignore
+    labelSelector:
+      matchLabels:
+        team: platform
+VALS
+
+check_workload "topologySpreadConstraints: omitted by default" \
+  'assert "topologySpreadConstraints" not in w["spec"]["template"]["spec"], "rendered without being configured"'
+
+check_workload "topologySpreadConstraints: Deployment fills labelSelector with the pod selector" \
+  'tsc = w["spec"]["template"]["spec"]["topologySpreadConstraints"]
+assert w["kind"] == "Deployment", "expected a Deployment in postgres mode, got %s" % w["kind"]
+assert tsc[0]["labelSelector"] == {"matchLabels": w["spec"]["selector"]["matchLabels"]}, "default labelSelector %r does not match the workload selector %r" % (tsc[0]["labelSelector"], w["spec"]["selector"]["matchLabels"])
+assert (tsc[0]["maxSkew"], tsc[0]["topologyKey"], tsc[0]["whenUnsatisfiable"]) == (1, "topology.kubernetes.io/zone", "ScheduleAnyway"), "constraint fields changed: %r" % tsc[0]' \
+  -f "$VALUES_DIR/tsc-values.yaml" \
+  --set storage.mode=postgres \
+  --set postgresql.enabled=true \
+  --set postgresql.auth.password=testpass
+
+check_workload "topologySpreadConstraints: StatefulSet fills labelSelector with the pod selector" \
+  'tsc = w["spec"]["template"]["spec"]["topologySpreadConstraints"]
+assert w["kind"] == "StatefulSet", "expected a StatefulSet in sqlite+persistence mode, got %s" % w["kind"]
+assert tsc[0]["labelSelector"] == {"matchLabels": w["spec"]["selector"]["matchLabels"]}, "default labelSelector %r does not match the workload selector %r" % (tsc[0]["labelSelector"], w["spec"]["selector"]["matchLabels"])' \
+  -f "$VALUES_DIR/tsc-values.yaml"
+
+check_workload "topologySpreadConstraints: explicit labelSelector and optional fields pass through" \
+  'tsc = w["spec"]["template"]["spec"]["topologySpreadConstraints"]
+assert len(tsc) == 2, "expected 2 constraints, got %d" % len(tsc)
+assert tsc[1] == {"maxSkew": 2, "topologyKey": "kubernetes.io/hostname", "whenUnsatisfiable": "DoNotSchedule", "minDomains": 2, "matchLabelKeys": ["pod-template-hash"], "nodeAffinityPolicy": "Honor", "nodeTaintsPolicy": "Ignore", "labelSelector": {"matchLabels": {"team": "platform"}}}, "second constraint was altered: %r" % tsc[1]' \
+  -f "$VALUES_DIR/tsc-values.yaml"
+
+expect_render_failure "topologySpreadConstraints: schema rejects an unknown whenUnsatisfiable" \
+  "whenUnsatisfiable" \
+  --set 'topologySpreadConstraints[0].maxSkew=1' \
+  --set 'topologySpreadConstraints[0].topologyKey=kubernetes.io/hostname' \
+  --set 'topologySpreadConstraints[0].whenUnsatisfiable=Sometimes'
+
+expect_render_failure "topologySpreadConstraints: schema requires topologyKey" \
+  "topologyKey" \
+  --set 'topologySpreadConstraints[0].maxSkew=1' \
+  --set 'topologySpreadConstraints[0].whenUnsatisfiable=DoNotSchedule'
+
+# Kubernetes rejects minDomains unless whenUnsatisfiable is DoNotSchedule.
+expect_render_failure "topologySpreadConstraints: schema rejects minDomains with ScheduleAnyway" \
+  "DoNotSchedule" \
+  --set 'topologySpreadConstraints[0].maxSkew=1' \
+  --set 'topologySpreadConstraints[0].topologyKey=topology.kubernetes.io/zone' \
+  --set 'topologySpreadConstraints[0].whenUnsatisfiable=ScheduleAnyway' \
+  --set 'topologySpreadConstraints[0].minDomains=2'
+
+# An explicit empty selector matches every pod in the namespace; only an absent one is defaulted.
+cat > "$VALUES_DIR/tsc-empty-selector.yaml" << 'VALS'
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector: {}
+VALS
+check_workload "topologySpreadConstraints: explicit empty labelSelector is kept" \
+  'tsc = w["spec"]["template"]["spec"]["topologySpreadConstraints"]
+assert tsc[0]["labelSelector"] == {}, "explicit {} selector was replaced with %r" % tsc[0]["labelSelector"]' \
+  -f "$VALUES_DIR/tsc-empty-selector.yaml"
+rm -f "$VALUES_DIR/tsc-empty-selector.yaml"
+
+rm -f "$VALUES_DIR/tsc-values.yaml"
+
+# 9. Sidecars: native (initContainers entry with restartPolicy: Always) and regular (extraContainers)
+echo ""
+echo -e "${CYAN}🛵 9/9 - Validating Sidecar Container Rendering...${NC}"
+echo "----------------------------------------------------------------"
+
+# Native sidecars need Kubernetes 1.29+, and Helm's default .Capabilities.KubeVersion varies by
+# Helm release (v4.0.0, used in CI, reports v1.20.0), so every render of these values pins it.
+cat > "$VALUES_DIR/sidecar-values.yaml" << 'VALS'
+initContainers:
+  - name: native-proxy
+    image: busybox:1.36
+    restartPolicy: Always
+    command: ["sh", "-c", "sleep infinity"]
+  - name: setup
+    image: busybox:1.36
+    command: ["true"]
+extraContainers:
+  - name: classic-shipper
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep infinity"]
+VALS
+
+check_workload "sidecars: no extra or init containers by default" \
+  's = w["spec"]["template"]["spec"]
+assert "initContainers" not in s, "initContainers rendered without being configured: %r" % s.get("initContainers")
+assert [c["name"] for c in s["containers"]] == ["bifrost"], "unexpected containers: %r" % [c["name"] for c in s["containers"]]'
+
+check_workload "sidecars: Deployment keeps the native sidecar init container as given and appends extraContainers" \
+  's = w["spec"]["template"]["spec"]
+assert w["kind"] == "Deployment", "expected a Deployment in postgres mode, got %s" % w["kind"]
+assert [(c["name"], c.get("restartPolicy")) for c in s["initContainers"]] == [("native-proxy", "Always"), ("setup", None)], "init containers: %r" % [(c["name"], c.get("restartPolicy")) for c in s["initContainers"]]
+assert [c["name"] for c in s["containers"]] == ["bifrost", "classic-shipper"], "containers: %r" % [c["name"] for c in s["containers"]]
+assert s["containers"][1]["command"] == ["sh", "-c", "sleep infinity"], "extraContainers entry was altered: %r" % s["containers"][1]' \
+  --kube-version 1.29.0 \
+  -f "$VALUES_DIR/sidecar-values.yaml" \
+  --set storage.mode=postgres \
+  --set postgresql.enabled=true \
+  --set postgresql.auth.password=testpass
+
+check_workload "sidecars: StatefulSet keeps the native sidecar init container as given and appends extraContainers" \
+  's = w["spec"]["template"]["spec"]
+assert w["kind"] == "StatefulSet", "expected a StatefulSet in sqlite+persistence mode, got %s" % w["kind"]
+assert [c["name"] for c in s["containers"]] == ["bifrost", "classic-shipper"], "containers: %r" % [c["name"] for c in s["containers"]]
+assert s["containers"][1]["command"] == ["sh", "-c", "sleep infinity"], "extraContainers entry was altered: %r" % s["containers"][1]
+assert [(c["name"], c.get("restartPolicy")) for c in s["initContainers"]] == [("native-proxy", "Always"), ("setup", None)], "init containers: %r" % [(c["name"], c.get("restartPolicy")) for c in s["initContainers"]]' \
+  --kube-version 1.29.0 \
+  -f "$VALUES_DIR/sidecar-values.yaml"
+
+check_workload "sidecars: native sidecar renders on Kubernetes 1.29" \
+  's = w["spec"]["template"]["spec"]
+assert [(c["name"], c.get("restartPolicy")) for c in s["initContainers"]] == [("native-proxy", "Always"), ("setup", None)], "init containers: %r" % [(c["name"], c.get("restartPolicy")) for c in s["initContainers"]]' \
+  --kube-version 1.29.0 \
+  -f "$VALUES_DIR/sidecar-values.yaml"
+
+check_workload "sidecars: regular initContainers still render on Kubernetes 1.28" \
+  's = w["spec"]["template"]["spec"]
+assert [c["name"] for c in s["initContainers"]] == ["setup"], "init containers: %r" % [c["name"] for c in s["initContainers"]]' \
+  --kube-version 1.28.0 \
+  --set 'initContainers[0].name=setup' \
+  --set 'initContainers[0].image=busybox:1.36'
+
+expect_render_failure "sidecars: native sidecar refused on Kubernetes 1.28" \
+  "needs Kubernetes 1.29 or newer" \
+  --kube-version 1.28.0 \
+  -f "$VALUES_DIR/sidecar-values.yaml"
+
+expect_render_failure "sidecars: schema requires an image on extraContainers" \
+  "image" \
+  --set 'extraContainers[0].name=no-image'
+
+rm -f "$VALUES_DIR/sidecar-values.yaml"
 
 # Cleanup
 rm -f /tmp/helm-template-output.yaml

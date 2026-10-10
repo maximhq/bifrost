@@ -1965,7 +1965,7 @@
       "post": {
         "operationId": "createDecision",
         "summary": "Evaluate a decision",
-        "description": "Evaluates state against a map of named questions and returns one typed\nanswer per question, with per-answer confidence, probabilities, and\nlegend metadata. Served by decision providers such as Typesafe's jev models.\n",
+        "description": "Asks a list of questions about some input and returns one typed answer\nper question, in order, with per-answer confidence and probabilities.\nServed by any decision model: Typesafe's jev models (and Laya, Nimble,\nand Clef), or any chat model through structured output.\n\nThe map form (a `state` plus questions keyed by name) is deprecated but\nstill served; a map-form request is answered in the map form.\n",
         "tags": [
           "Decisions"
         ],
@@ -1974,7 +1974,14 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/DecisionRequest"
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/DecisionRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/DecisionMapFormRequest"
+                  }
+                ]
               }
             }
           }
@@ -1985,7 +1992,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DecisionResponse"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/DecisionResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DecisionMapFormResponse"
+                    }
+                  ]
                 }
               }
             }
@@ -17519,6 +17533,69 @@
                       "$ref": "#/components/schemas/BifrostResponseExtraFields"
                     }
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/openai/v1/decisions": {
+      "post": {
+        "operationId": "openaiCreateDecision",
+        "summary": "Evaluate a decision (OpenAI format)",
+        "description": "OpenAI's Decisions API: asks an ordered list of questions about an input\nand returns one answer per question, in order. Any decision model can\nanswer: OpenAI's decisions models such as `gpt-6-luna`, Typesafe's jev\nmodels, or any chat model through structured output. The request is\nOpenAI's: a top-level `state` and a field a question, choice, or level\ndoes not define (such as `criteria`) are rejected rather than\ntranslated, while other top-level fields are forwarded unchanged.\nAnswers come back in OpenAI's response shape, with `name: null` for a\nquestion sent without a name, plus Bifrost's `extra_fields` as on the\nother OpenAI routes; when raw responses are enabled and OpenAI served\nthe request, OpenAI's own response body is returned instead.\n\n**Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/decisions`).\n",
+        "tags": [
+          "OpenAI Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenAIDecisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIDecisionResponse"
                 }
               }
             }
@@ -102372,6 +102449,15 @@
                   "standard",
                   "pro"
                 ]
+              },
+              "summary": {
+                "type": "string",
+                "description": "OpenAI reasoning summary, sent as reasoning.summary when the chat request is served through the Responses API; other providers drop it. Not accepted on the /openai integration routes, where it must go under extra_params with x-bf-passthrough-extra-params.",
+                "enum": [
+                  "auto",
+                  "concise",
+                  "detailed"
+                ]
               }
             }
           },
@@ -106151,6 +106237,386 @@
         "type": "object",
         "required": [
           "model",
+          "input",
+          "questions"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Model in provider/model format",
+            "example": "typesafe/jev-1.13.0"
+          },
+          "input": {
+            "description": "The evidence. A string of text; an array of messages, each with text and\nimage parts (images are read only by providers that accept them);\nan object of structured data (passed to Typesafe-based models as their\nstate); or null.\n",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DecisionInputMessage"
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "questions": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Questions in the order asked. Answers follow the same order.",
+            "items": {
+              "$ref": "#/components/schemas/DecisionQuestion"
+            }
+          },
+          "safety_identifier": {
+            "type": "string",
+            "description": "Stable end-user identifier, forwarded to providers that accept one (OpenAI)"
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Fallback models in provider/model format"
+          }
+        }
+      },
+      "DecisionResponse": {
+        "type": "object",
+        "required": [
+          "model",
+          "answers"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique identifier for the decision response"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model that performed the decision"
+          },
+          "answers": {
+            "type": "array",
+            "description": "One answer per question, in question order",
+            "items": {
+              "$ref": "#/components/schemas/DecisionAnswer"
+            }
+          },
+          "usage": {
+            "$ref": "#/components/schemas/BifrostLLMUsage"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostResponseExtraFields"
+          },
+          "routing": {
+            "type": "object",
+            "description": "Laya only. The checkpoint that answered and why, passed through untouched"
+          }
+        }
+      },
+      "DecisionQuestion": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "predicate",
+              "choice",
+              "score"
+            ],
+            "description": "How the question is decided. `predicate` yields the probability a condition is true (Typesafe's `noul`), `choice` one of the choices, `score` a probability-weighted level index that may fall between levels."
+          },
+          "name": {
+            "type": "string",
+            "description": "Optional name; the answer carries it back"
+          },
+          "instructions": {
+            "description": "Instructions for this question. A string, or structured data preserved losslessly for providers that accept it.",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "additionalProperties": true
+              },
+              {
+                "type": "array",
+                "items": {}
+              }
+            ]
+          },
+          "criteria": {
+            "type": "object",
+            "description": "Predicate only, read by Typesafe-based models. Optional descriptions of the `true` and `false` outcomes.",
+            "additionalProperties": false,
+            "properties": {
+              "true": {
+                "description": "A string, or structured data"
+              },
+              "false": {
+                "description": "A string, or structured data"
+              }
+            }
+          },
+          "choices": {
+            "type": "array",
+            "description": "Choice only. The selectable values.",
+            "items": {
+              "type": "object",
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "value": {
+                  "description": "A string or a boolean",
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                "description": {
+                  "description": "A string, or structured data"
+                }
+              }
+            }
+          },
+          "levels": {
+            "type": "array",
+            "description": "Score only. The ordered levels.",
+            "items": {
+              "type": "object",
+              "required": [
+                "label"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "description": {
+                  "description": "A string, or structured data"
+                }
+              }
+            }
+          }
+        }
+      },
+      "DecisionAnswer": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "The question's type, or `refusal` when the model declined to answer",
+            "example": "choice"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The question's name, when it had one. OpenAI sends null for an unnamed question"
+          },
+          "probability": {
+            "type": "number",
+            "description": "Predicate answers. Probability in [0,1] that the condition is true"
+          },
+          "choice": {
+            "description": "Choice answers. The chosen value",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "score": {
+            "type": "number",
+            "description": "Score answers. Probability-weighted level index"
+          },
+          "probabilities": {
+            "type": "array",
+            "description": "Distribution over choices or levels, in question order, when supplied",
+            "items": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "description": "The choice value, or the level index",
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ]
+                },
+                "label": {
+                  "type": "string",
+                  "description": "Score answers. The level's label"
+                },
+                "probability": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "confidence": {
+            "type": "number",
+            "description": "Model confidence for this answer, when supplied"
+          },
+          "legend": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Score answers. Level index to description, when supplied"
+          },
+          "answer_confidence": {
+            "type": "number",
+            "description": "Laya only. Calibrated probability of the reported answer"
+          },
+          "action": {
+            "type": "object",
+            "description": "Laya only. Action head output, passed through untouched"
+          },
+          "abstention": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "abstained",
+              "unevaluated"
+            ],
+            "description": "Laya only, when `min_confidence` is set"
+          },
+          "abstention_threshold": {
+            "type": "number",
+            "description": "Laya only, when `min_confidence` is set"
+          },
+          "low_confidence": {
+            "type": "boolean",
+            "description": "Laya only, when `min_confidence` is set"
+          }
+        }
+      },
+      "DecisionInputMessage": {
+        "type": "object",
+        "required": [
+          "role",
+          "content"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "message"
+            ],
+            "description": "Optional item type, as OpenAI's SDKs send it"
+          },
+          "role": {
+            "type": "string",
+            "example": "user"
+          },
+          "content": {
+            "description": "Text, or an array of parts",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DecisionInputPart"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "DecisionInputPart": {
+        "description": "One part of a message's content",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/DecisionInputText"
+          },
+          {
+            "$ref": "#/components/schemas/DecisionInputImage"
+          }
+        ]
+      },
+      "DecisionInputText": {
+        "type": "object",
+        "required": [
+          "type",
+          "text"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "input_text"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "DecisionInputImage": {
+        "type": "object",
+        "required": [
+          "type",
+          "image_url"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "input_image"
+            ]
+          },
+          "image_url": {
+            "type": "string",
+            "description": "A base64 data URL or an HTTP(S) URL"
+          },
+          "detail": {
+            "type": "string",
+            "enum": [
+              "low",
+              "high",
+              "auto",
+              "original"
+            ],
+            "description": "Image detail level, forwarded to models that read images (OpenAI's defaults to `auto`)"
+          }
+        }
+      },
+      "DecisionMapFormRequest": {
+        "type": "object",
+        "deprecated": true,
+        "description": "Deprecated map form of the request, kept for existing callers. Answered with DecisionMapFormResponse.",
+        "required": [
+          "model",
           "state",
           "questions"
         ],
@@ -106181,7 +106647,7 @@
             "minProperties": 1,
             "description": "Map of named questions. Question identifiers become answer field names.",
             "additionalProperties": {
-              "$ref": "#/components/schemas/DecisionQuestion"
+              "$ref": "#/components/schemas/DecisionMapQuestion"
             }
           },
           "fallbacks": {
@@ -106193,8 +106659,10 @@
           }
         }
       },
-      "DecisionResponse": {
+      "DecisionMapFormResponse": {
         "type": "object",
+        "deprecated": true,
+        "description": "Response to a map-form request, with answers keyed by question name.",
         "required": [
           "model",
           "answers"
@@ -106212,7 +106680,7 @@
             "type": "object",
             "description": "Map matching question identifiers to answers. Every requested question produces an answer.",
             "additionalProperties": {
-              "$ref": "#/components/schemas/DecisionAnswer"
+              "$ref": "#/components/schemas/DecisionMapAnswer"
             }
           },
           "usage": {
@@ -106227,7 +106695,7 @@
           }
         }
       },
-      "DecisionQuestion": {
+      "DecisionMapQuestion": {
         "type": "object",
         "required": [
           "kind",
@@ -106278,7 +106746,7 @@
           }
         }
       },
-      "DecisionAnswer": {
+      "DecisionMapAnswer": {
         "type": "object",
         "required": [
           "kind",
@@ -106349,6 +106817,210 @@
           "low_confidence": {
             "type": "boolean",
             "description": "Laya only, when `min_confidence` is set. True when the answer fell below the threshold"
+          }
+        }
+      },
+      "OpenAIDecisionRequest": {
+        "type": "object",
+        "description": "OpenAI's Decisions request. A field OpenAI's question, choice, or level does not define (such as Typesafe's `criteria`), a top-level `state`, and a structured or null `input` are rejected with a 400; any other top-level field is forwarded to the provider unchanged, so a field a newer SDK sends still reaches it.",
+        "required": [
+          "model",
+          "input",
+          "questions"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Model in provider/model format; a model without a provider prefix is OpenAI's",
+            "example": "gpt-6-luna"
+          },
+          "input": {
+            "description": "A string of text, or user messages with text and image parts",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DecisionInputMessage"
+                }
+              }
+            ]
+          },
+          "questions": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Questions in the order asked. Answers follow the same order.",
+            "items": {
+              "$ref": "#/components/schemas/OpenAIDecisionQuestion"
+            }
+          },
+          "safety_identifier": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Stable end-user identifier, forwarded to OpenAI"
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Bifrost fallback models in provider/model format; never sent upstream"
+          }
+        }
+      },
+      "OpenAIDecisionQuestion": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "instructions"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "predicate",
+              "choice",
+              "score"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "instructions": {
+            "type": "string"
+          },
+          "choices": {
+            "type": "array",
+            "description": "Choice only",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "value": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                "description": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "levels": {
+            "type": "array",
+            "description": "Score only, in order",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "label"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "OpenAIDecisionResponse": {
+        "type": "object",
+        "description": "OpenAI's Decision object, plus Bifrost's extra_fields as on the other OpenAI routes. Every model's answers are returned in this shape, and it carries no id. When raw responses are enabled and OpenAI served the request, OpenAI's own response body is returned instead, as on the other OpenAI routes.",
+        "required": [
+          "model",
+          "answers"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Model that performed the decision"
+          },
+          "answers": {
+            "type": "array",
+            "description": "One answer per question, in question order",
+            "items": {
+              "$ref": "#/components/schemas/DecisionAnswer"
+            }
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "input_tokens": {
+                "type": "integer"
+              },
+              "input_tokens_details": {
+                "type": "object",
+                "description": "Present when the provider reports it",
+                "properties": {
+                  "cached_tokens": {
+                    "type": "integer"
+                  },
+                  "cache_write_tokens": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "output_tokens": {
+                "type": "integer"
+              },
+              "output_tokens_details": {
+                "type": "object",
+                "description": "Present when the provider reports it",
+                "properties": {
+                  "reasoning_tokens": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "total_tokens": {
+                "type": "integer"
+              },
+              "state_tokens": {
+                "type": "integer",
+                "description": "Laya only"
+              },
+              "state_tokens_dropped": {
+                "type": "integer",
+                "description": "Laya only"
+              },
+              "truncated": {
+                "type": "boolean",
+                "description": "Laya only"
+              },
+              "truncated_questions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Laya only"
+              }
+            }
+          },
+          "routing": {
+            "type": "object",
+            "description": "Laya only. The checkpoint that answered and why, passed through untouched"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostResponseExtraFields",
+            "description": "Bifrost's response metadata (provider, latency, routing info, and the raw provider body when raw responses are on), as on the other OpenAI routes"
           }
         }
       },
@@ -115457,6 +116129,31 @@
               }
             }
           },
+          "injected_tools": {
+            "additionalProperties": false,
+            "type": "object",
+            "description": "MCP tools injected into every chat and responses request served by this provider and executed server side when the model calls them. The client never sees the injected tool call, only the final answer.",
+            "properties": {
+              "web_search": {
+                "type": "object",
+                "description": "MCP tool used as the provider's web search. Replaces any native web search tool or web_search_options the client sends.",
+                "required": ["mcp_client_name", "tool_name"],
+                "additionalProperties": false,
+                "properties": {
+                  "mcp_client_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Name of the configured MCP client that provides the tool."
+                  },
+                  "tool_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Tool name as the MCP server exposes it, without the client prefix."
+                  }
+                }
+              }
+            }
+          },
           "provider_status": {
             "type": "string",
             "enum": [
@@ -115699,6 +116396,31 @@
                 }
               }
             }
+          },
+          "injected_tools": {
+            "additionalProperties": false,
+            "type": "object",
+            "description": "MCP tools injected into every chat and responses request served by this provider and executed server side when the model calls them. The client never sees the injected tool call, only the final answer.",
+            "properties": {
+              "web_search": {
+                "type": "object",
+                "description": "MCP tool used as the provider's web search. Replaces any native web search tool or web_search_options the client sends.",
+                "required": ["mcp_client_name", "tool_name"],
+                "additionalProperties": false,
+                "properties": {
+                  "mcp_client_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Name of the configured MCP client that provides the tool."
+                  },
+                  "tool_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Tool name as the MCP server exposes it, without the client prefix."
+                  }
+                }
+              }
+            }
           }
         }
       },
@@ -115900,6 +116622,39 @@
                 }
               }
             }
+          },
+          "injected_tools": {
+            "description": "Send null to remove the provider's injected tools.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "type": "object",
+                "description": "MCP tools injected into every chat and responses request served by this provider and executed server side when the model calls them. The client never sees the injected tool call, only the final answer.",
+                "properties": {
+                  "web_search": {
+                    "type": "object",
+                    "description": "MCP tool used as the provider's web search. Replaces any native web search tool or web_search_options the client sends.",
+                    "required": ["mcp_client_name", "tool_name"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "mcp_client_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Name of the configured MCP client that provides the tool."
+                      },
+                      "tool_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Tool name as the MCP server exposes it, without the client prefix."
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -121001,6 +121756,16 @@
             "type": "number",
             "minimum": 0
           },
+          "input_cost_per_token_decisions": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Input token cost for decision requests. A decision rate always wins over input_cost_per_token, whether it comes from the datasheet or an override; input_cost_per_token is only the fallback when no decision rate is set."
+          },
+          "output_cost_per_token_decisions": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Output token cost for decision requests. A decision rate always wins over output_cost_per_token, whether it comes from the datasheet or an override; output_cost_per_token is only the fallback when no decision rate is set."
+          },
           "input_cost_per_token_fast": {
             "type": "number",
             "minimum": 0,
@@ -121032,6 +121797,14 @@
             "minimum": 0
           },
           "output_cost_per_token_above_128k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "input_cost_per_token_above_100k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_token_above_100k_tokens": {
             "type": "number",
             "minimum": 0
           },
@@ -121108,6 +121881,18 @@
             "minimum": 0
           },
           "cache_creation_input_token_cost_above_1hr_above_200k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_above_100k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_read_input_token_cost_above_100k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_above_1hr_above_100k_tokens": {
             "type": "number",
             "minimum": 0
           },
@@ -125262,7 +126047,8 @@
             "type": "number",
             "exclusiveMinimum": 0,
             "maximum": 1,
-            "default": 0.8
+            "default": 0.5,
+            "description": "Minimum similarity for semantic log search, in 0..1 as (1 + cosine) / 2:\n0.5 is cosine 0 and 1 is cosine 1. The mapping holds for cosine-scored\nindexes only. A Pinecone score is read as cosine without checking the\nindex metric, so a Pinecone index must use the cosine metric.\n"
           },
           "semantic_search_limit": {
             "type": "integer",
@@ -125406,8 +126192,8 @@
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "default": 0.8,
-            "description": "Zero means \"use the default\". ValidateConfigInput resolves an explicit\nzero before validating, so the write is accepted; the resolved value on\nWarpConfig keeps the positive bound.\n"
+            "default": 0.5,
+            "description": "Minimum similarity for semantic log search, in 0..1 as (1 + cosine) / 2:\n0.5 is cosine 0 and 1 is cosine 1. The mapping holds for cosine-scored\nindexes only. A Pinecone score is read as cosine without checking the\nindex metric, so a Pinecone index must use the cosine metric.\nZero means \"use the default\". ValidateConfigInput resolves an explicit\nzero before validating, so the write is accepted; the resolved value on\nWarpConfig keeps the positive bound.\n"
           },
           "semantic_search_limit": {
             "type": "integer",
@@ -125651,6 +126437,9 @@
                 "enum": [
                   "upstream_error",
                   "access_denied",
+                  "budget_exceeded",
+                  "rate_limited",
+                  "model_blocked",
                   "max_iterations",
                   "timeout",
                   "cancelled"
@@ -125810,6 +126599,10 @@
           },
           "error": {
             "type": "string"
+          },
+          "error_code": {
+            "type": "string",
+            "description": "The failed turn's error code, as on the chat error frame (budget_exceeded, access_denied, ...). Absent on turns filed before codes were kept."
           },
           "finish_reason": {
             "type": "string",

@@ -556,7 +556,11 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_compat_force_reasoning_only_models_to_responses_column"}, run: migrationAddCompatForceReasoningOnlyModelsToResponsesColumn},
 	{IDs: []string{"backfill_compat_force_reasoning_only_models_to_responses"}, run: migrationBackfillCompatForceReasoningOnlyModelsToResponses},
 	{IDs: []string{"add_agent_gateway_tables"}, run: migrationAddAgentGatewayTables},
+	{IDs: []string{"add_agent_push_config_tenant_column"}, run: migrationAddAgentPushConfigTenantColumn},
 	{IDs: []string{"add_ignore_provider_cost_column"}, run: migrationAddIgnoreProviderCostColumn},
+	{IDs: []string{"add_100k_token_pricing_columns"}, run: migrationAdd100kTokenPricingColumns},
+	{IDs: []string{"add_decisions_pricing_columns"}, run: migrationAddDecisionsPricingColumns},
+	{IDs: []string{"add_injected_tools_json_column"}, run: migrationAddInjectedToolsJSONColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1023,6 +1027,21 @@ func migrationAddAgentGatewayTables(ctx context.Context, db *gorm.DB, logger sch
 			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "A2AExternalClientURL")
 		},
 		Rollback: rollbackAgentGatewayTables,
+	})
+}
+
+// migrationAddAgentPushConfigTenantColumn preserves the downstream interface
+// tenant independently of the tenant selected for the upstream Agent interface.
+func migrationAddAgentPushConfigTenantColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_agent_push_config_tenant_column"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableAgentPushConfig{}, "tenant")
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the tenant column would permanently delete the only stored copy of each push configuration's tenant", migrationName)
+		},
 	})
 }
 
@@ -7790,6 +7809,29 @@ func migrationAddPromptCacheJSONColumn(ctx context.Context, db *gorm.DB, logger 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running add_prompt_cache_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddInjectedToolsJSONColumn adds the injected_tools_json column to the
+// provider table, backing ProviderConfig.InjectedTools.
+func migrationAddInjectedToolsJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_injected_tools_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "InjectedToolsJSON")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableProvider{}, "injected_tools_json")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
 }
@@ -15311,4 +15353,82 @@ func migrationAddIgnoreProviderCostColumn(ctx context.Context, db *gorm.DB, logg
 // rollbackIgnoreProviderCostColumn refuses to undo add_ignore_provider_cost_column.
 func rollbackIgnoreProviderCostColumn(*gorm.DB, schemas.Logger) error {
 	return fmt.Errorf("add_ignore_provider_cost_column is non-rollbackable: dropping ignore_provider_cost would discard every operator's per-provider setting and silently send those providers back to trusting their reported usage.cost; the column is additive and older binaries safely ignore it")
+}
+
+// migrationAdd100kTokenPricingColumns adds the rates for prompts above 100k
+// tokens (Claude Haiku 5.5). Nullable so models without them keep base rates.
+func migrationAdd100kTokenPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_100k_token_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"input_cost_per_token_above_100k_tokens",
+		"output_cost_per_token_above_100k_tokens",
+		"cache_creation_input_token_cost_above_100k_tokens",
+		"cache_read_input_token_cost_above_100k_tokens",
+		"cache_creation_input_token_cost_above_1hr_above_100k_tokens",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddDecisionsPricingColumns adds the rates for decision requests on a
+// row of another mode (OpenAI gpt-6-luna, a chat row served on /v1/decisions).
+// Nullable so models without them keep pricing decisions at their normal rates.
+func migrationAddDecisionsPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_decisions_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"input_cost_per_token_decisions",
+		"output_cost_per_token_decisions",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
 }

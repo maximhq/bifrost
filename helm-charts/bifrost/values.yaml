@@ -173,6 +173,21 @@ tolerations: []
 
 affinity: {}
 
+# Spread Bifrost pods across failure domains (nodes, zones), to reduce the chance that
+# one node or zone going down takes every replica with it. Spreading is not a guarantee:
+# ScheduleAnyway only prefers it, and DoNotSchedule without minDomains can still place
+# every replica in the only eligible domain. Rendered into the pod spec's
+# topologySpreadConstraints on both the Deployment and the StatefulSet. A constraint
+# without a labelSelector gets this release's server pod labels filled in, so it
+# spreads only Bifrost's own replicas.
+topologySpreadConstraints: []
+  # - maxSkew: 1
+  #   topologyKey: topology.kubernetes.io/zone
+  #   whenUnsatisfiable: ScheduleAnyway     # prefer spreading across zones, never block scheduling
+  # - maxSkew: 1
+  #   topologyKey: kubernetes.io/hostname
+  #   whenUnsatisfiable: DoNotSchedule      # hard rule: at most 1 replica of difference per node
+
 # Deployment rolling update strategy. Applies to the Deployment only (not the
 # StatefulSet used for sqlite-with-persistence). Rendered verbatim into spec.strategy.
 # Empty ({}) uses the Kubernetes default (RollingUpdate, maxSurge 25%, maxUnavailable 25%).
@@ -306,6 +321,7 @@ bifrost:
       shouldDropParams: false
       shouldConvertParams: false
       azureDeepseek: false
+      # forceReasoningOnlyModelsToResponses: true  # Route chat requests to responses for models that cannot reason with tool calls, so reasoning is kept (default true)
     prometheusLabels: []
     # Header filtering configuration for x-bf-eh-* headers forwarded to LLM providers
     headerFilterConfig:
@@ -316,6 +332,7 @@ bifrost:
     # loggingHeaders: []                     # Headers to capture in log metadata
     # allowedHeaders: []                     # Additional allowed headers for CORS and WebSocket
     # hideDeletedVirtualKeysInFilters: false # Omit deleted virtual keys from logs/MCP filter data
+    # deleteExpiredVirtualKeys: false        # Daily job deletes virtual keys past expires_at (per-key delete_after_expire overrides)
     # whitelistedRoutes: []                  # Routes that bypass auth middleware
     # routingChainMaxDepth: 10               # Maximum depth for routing rule chain evaluation
     # allowDirectKeys: false                 # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
@@ -331,6 +348,7 @@ bifrost:
     #   authCodeTtl: 300          # Authorization code lifetime in seconds (default 300, max 900)
     #   accessTokenTtl: 600       # Issued JWT lifetime in seconds (default 600)
     #   disableVkIdentity: false  # Only valid when mcpServerAuthMode is "oauth"
+    #   allowedRedirectUris: []   # Exact remote OAuth client callback URIs to allow (loopback and Cursor callbacks need no entry)
 
   # Server configuration
   server:
@@ -343,6 +361,8 @@ bifrost:
     # Served agent cards advertise <agent-name>.<a2aGrpcBaseDomain>:<a2aGrpcPort>.
     # a2aGrpcBaseDomain: "a2a.example.com"
     # a2aGrpcPort: 9095
+    # Lets A2A push delivery reach loopback/private callback targets. Only for controlled dev/test environments; keep unset in production.
+    # a2aAllowPrivatePushCallbacks: true
 
   # Framework configuration
   framework:
@@ -413,6 +433,7 @@ bifrost:
   #     ca_cert_pem: ""               # PEM-encoded CA cert for SSL-intercepting proxies
   #   send_back_raw_response: false      # Include raw response in BifrostResponse
   #   store_raw_request_response: false  # Capture raw payloads for plugins only; not returned to client
+  #   ignore_provider_cost: false        # Ignore provider-reported usage.cost; price from Bifrost's model pricing and overrides
   #
   # anthropic:
   #   keys:
@@ -534,6 +555,9 @@ bifrost:
       #   # or a bare integer treated as seconds. Overrides toolManagerConfig.toolExecutionTimeout
       #   # for this server only. Omit or set to 0 to use the global default.
       #   toolExecutionTimeout: "30s"
+      #   # Require every connection to resolve to a public address (set automatically for
+      #   # clients registered without an admin credential check; once true it is never cleared).
+      #   requirePublicTarget: false
       #   # TLS configuration for HTTP and SSE connection types.
       #   # Use when the MCP server presents a self-signed or private CA certificate.
       #   tlsConfig:
@@ -705,6 +729,7 @@ bifrost:
         cache_by_model: true
         cache_by_provider: true
         exclude_system_prompt: false
+        # cache_tool_call_responses: false  # Cache responses that carry tool calls (off: a replayed tool call runs in another caller's agent loop)
         vector_store_namespace: ""
 
     otel:
@@ -988,10 +1013,13 @@ bifrost:
       #   value: "sk-bf-..."           # Optional - auto-generated if omitted
       #   is_active: true
       #   expires_at: "2026-12-31T23:59:59Z"  # Optional RFC3339 expiry; requests rejected once passed. Omit for no expiry
+      #   delete_after_expire: true  # Delete the key once expires_at passes; omit to follow client.deleteExpiredVirtualKeys
+      #   disable_content_logging: true  # Per-key override of client.disableContentLogging; omit to inherit
       #   calendar_aligned: false  # Snap all budget resets for this key to calendar boundaries
       #   allow_all_providers: false  # Grant access to every provider (incl. ones added later); provider_configs still apply per-provider limits
-      #   team_id: "team-1"        # Mutually exclusive with customer_id
-      #   customer_id: ""          # Mutually exclusive with team_id
+      #   team_id: "team-1"        # Mutually exclusive with customer_id and business_unit_id
+      #   customer_id: ""          # Mutually exclusive with team_id and business_unit_id
+      #   business_unit_id: ""     # Mutually exclusive with team_id and customer_id
       #   rate_limit_id: "rate-limit-1"
       #   # Provider-specific configurations (empty means no providers allowed unless allow_all_providers is true)
       #   provider_configs:
@@ -1070,7 +1098,8 @@ bifrost:
       #       provider_key_name: ""  # Optional provider key name (resolved to internal key_id at load time)
       #       weight: 1.0
       #       ttft_timeout_ms: 5000  # Optional: cut off a streaming attempt with no first token in 5s and run the next fallback
-      #   fallbacks: ["openai"]
+      #   fallbacks: ["openai"]     # "provider/model" strings, or objects that pin a key:
+      #   # fallbacks: [{ provider: "azure", model: "gpt-4o", provider_key_name: "azure-eu" }]
       #   scope: "global"           # Options: global, team, customer, virtual_key
       #   scope_id: ""              # Required for non-global scopes
       #   priority: 0               # Lower = evaluated first
@@ -1392,6 +1421,7 @@ bifrost:
       # teamIdsField: "groups"                      # JWT claim for team/group IDs (default: "groups")
       # rolesField: "roles"                         # JWT claim for role names (optional)
       # scopes: []                                  # override the default OIDC scopes requested during login
+      # displayName: "Acme SSO"                     # login button label ("Sign in with <displayName>"); defaults to "SSO"
       # attributeRoleMappings: []
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
@@ -1696,6 +1726,8 @@ storage:
     # maxIdleConns: 5
     # maxOpenConns: 50
     # connMaxIdleTime: "5m"  # How long an idle connection is kept (config and logs stores use separate pools).
+    # statementTimeout: "120s"                  # Server-side statement_timeout per pool connection ("0" keeps the server default)
+    # idleInTransactionSessionTimeout: "120s"   # Ends sessions idle inside an open transaction ("0" keeps the server default)
 
     # Vault store for external secret management (enterprise).
     # Resolves "vault.<path>" references in config fields at load time.
@@ -1740,6 +1772,8 @@ storage:
     # maxIdleConns: 5
     # maxOpenConns: 50
     # connMaxIdleTime: "5m"  # How long an idle connection is kept (config and logs stores use separate pools).
+    # statementTimeout: "120s"                  # Server-side statement_timeout per pool connection ("0" keeps the server default)
+    # idleInTransactionSessionTimeout: "120s"   # Ends sessions idle inside an open transaction ("0" keeps the server default)
     # Point the logs store at a SEPARATE external PostgreSQL than the config store (only when the
     # logs store resolves to postgres). When disabled (default), it shares the top-level `postgresql`
     # connection. Fields mirror `postgresql.external`.
@@ -2085,6 +2119,34 @@ envFrom: []
   # - configMapRef:
   #     name: my-configmap
 
-# Init containers to run before the main application container.
+# Regular sidecar containers, appended to the pod's containers after Bifrost. They run
+# alongside Bifrost with no start or stop ordering and share its network namespace, so
+# they can reach Bifrost on localhost:8080. For a container that must be up before Bifrost
+# starts and outlive it on shutdown, use a native sidecar under initContainers instead.
+extraContainers: []
+  # - name: port-forwarder               # serves all of Bifrost's routes (not only /metrics) on pod port 9090
+  #   image: alpine/socat:1.8.0.0
+  #   args: ["TCP-LISTEN:9090,fork,reuseaddr", "TCP:localhost:8080"]
+  #   ports:
+  #     - containerPort: 9090
+  #       name: http-alt
+
+# Init containers to run before the main application container, in order.
 # Provide a list of init containers using standard Kubernetes container spec.
+#
+# Native sidecars (Kubernetes 1.29+) follow the Kubernetes convention: an init container with
+# restartPolicy: Always starts before the containers after it and Bifrost, keeps running beside
+# Bifrost, is restarted if it exits, and is stopped after Bifrost on shutdown. Kubernetes waits
+# only for a sidecar to start, not to be ready: give one that Bifrost or a later init container
+# depends on a startupProbe. The chart refuses to render a native sidecar on older clusters.
 initContainers: []
+  # - name: cloud-sql-proxy             # with storage.mode: postgres and postgresql.external.host: "127.0.0.1"
+  #   image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+  #   restartPolicy: Always             # makes this init container a native sidecar
+  #   args: ["--port=5432", "--health-check", "--http-address=0.0.0.0", "--http-port=9801", "my-project:us-central1:bifrost-db"]
+  #   startupProbe:                     # probes hit the pod IP, so probe the health listener, not 127.0.0.1:5432
+  #     httpGet:
+  #       path: /startup
+  #       port: 9801
+  #     periodSeconds: 1
+  #     failureThreshold: 30

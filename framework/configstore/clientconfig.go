@@ -574,6 +574,7 @@ type ProviderConfig struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`                // Prompt-cache breakpoint injection
+	InjectedTools            *schemas.InjectedToolsConfig      `json:"injected_tools,omitempty"`              // MCP tools injected and auto-executed server side
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -596,6 +597,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
 		PromptCache:              p.PromptCache,
+		InjectedTools:            p.InjectedTools,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,
@@ -879,6 +881,15 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash PromptCache
 	if p.PromptCache != nil {
 		data, err := sonic.Marshal(p.PromptCache)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash InjectedTools
+	if p.InjectedTools != nil {
+		data, err := sonic.Marshal(p.InjectedTools)
 		if err != nil {
 			return "", err
 		}

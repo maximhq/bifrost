@@ -30,7 +30,7 @@ func ToHuggingFaceEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) 
 		hfReq = &HuggingFaceEmbeddingRequest{}
 	}
 
-	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams("huggingface"); err != nil {
+	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams(); err != nil {
 		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 

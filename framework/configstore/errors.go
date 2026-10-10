@@ -9,6 +9,12 @@ import (
 var ErrNotFound = errors.New("not found")
 var ErrAlreadyExists = errors.New("already exists")
 
+// ErrRoutingRulePriorityTaken is returned when a routing rule's priority is already used by another
+// rule in the same scope and scope ID. It wraps ErrAlreadyExists and reads the same, so callers that
+// only ask whether something already exists are unaffected; callers that advise changing the
+// priority check for it, since a duplicate name surfaces as ErrAlreadyExists too.
+var ErrRoutingRulePriorityTaken = fmt.Errorf("%w", ErrAlreadyExists)
+
 // ErrInvalidAgentGrant marks malformed Agent grant input supplied by a caller.
 var ErrInvalidAgentGrant = errors.New("invalid agent grant")
 
