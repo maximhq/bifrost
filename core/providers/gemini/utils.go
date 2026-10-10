@@ -2395,13 +2395,13 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 					// Decode thought signature if extracted from ID
 					if thoughtSig != "" {
 						decoded, err := base64.RawURLEncoding.DecodeString(thoughtSig)
-						if err == nil {
+						if err == nil && len(decoded) > 0 {
 							part.ThoughtSignature = decoded
 						}
 					}
 
 					// Also check in reasoning details array for thought signature (fallback)
-					if part.ThoughtSignature == nil && len(message.ChatAssistantMessage.ReasoningDetails) > 0 {
+					if len(part.ThoughtSignature) == 0 && len(message.ChatAssistantMessage.ReasoningDetails) > 0 {
 						// Extract base ID for lookup (strip signature if present)
 						baseCallID := callID
 						if strings.Contains(callID, thoughtSignatureSeparator) {
@@ -2417,7 +2417,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 								reasoningDetail.Signature != nil {
 								// Decode the base64 string to raw bytes
 								decoded, err := base64.StdEncoding.DecodeString(*reasoningDetail.Signature)
-								if err == nil {
+								if err == nil && len(decoded) > 0 {
 									part.ThoughtSignature = decoded
 								}
 								break
@@ -2425,7 +2425,11 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 						}
 					}
 
-					if part.ThoughtSignature == nil {
+					if len(part.ThoughtSignature) == 0 {
+						part.ThoughtSignature = thoughtSignatureFromExtraContent(toolCall.ExtraContent)
+					}
+
+					if len(part.ThoughtSignature) == 0 {
 						part.ThoughtSignature = []byte(skipThoughtSignatureValidator)
 					}
 
@@ -3109,6 +3113,23 @@ func extractFunctionResponseOutput(funcResp *FunctionResponse) string {
 
 	// If no "output" key or unmarshal failed, return raw JSON
 	return string(funcResp.Response)
+}
+
+// thoughtSignatureFromExtraContent decodes the Google signature carried by
+// OpenAI-compatible clients, without retaining or mutating their raw metadata.
+func thoughtSignatureFromExtraContent(extra json.RawMessage) []byte {
+	if !gjson.ValidBytes(extra) {
+		return nil
+	}
+	signature := providerUtils.GetJSONField(extra, "google.thought_signature")
+	if signature.Type != gjson.String || signature.Str == "" {
+		return nil
+	}
+	decoded, err := decodeBase64StringToBytes(signature.Str)
+	if err != nil || len(decoded) == 0 {
+		return nil
+	}
+	return decoded
 }
 
 // decodeBase64StringToBytes decodes a base64-encoded string into raw bytes.

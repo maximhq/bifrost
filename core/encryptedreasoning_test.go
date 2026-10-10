@@ -3036,3 +3036,177 @@ func TestStripUnverifiableReasoning_ChatShape_GeminiToolCallIDSignature(t *testi
 		t.Error("expected no change once the ids are bare")
 	}
 }
+
+func newGeminiClientThoughtSignatureRequest(provider schemas.ModelProvider, signedID bool) *schemas.BifrostRequest {
+	callID := "call_154438"
+	if signedID {
+		callID = geminiSignedCallID
+	}
+	return &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    "gemini-3.7-flash",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What time is it?")}},
+				{
+					Role: schemas.ChatMessageRoleAssistant,
+					ChatAssistantMessage: &schemas.ChatAssistantMessage{
+						ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+							ID:           schemas.Ptr(callID),
+							Function:     schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("get_time"), Arguments: `{}`},
+							ExtraContent: []byte(`{"google":{"thought_signature":"cmVqZWN0ZWQ=","sibling":"keep"},"other":{"value":3}}`),
+						}},
+					},
+				},
+				{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(callID)}, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("noon")}},
+			},
+		},
+	}
+}
+
+func TestStripUnverifiableReasoning_ChatClientThoughtSignature(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		signedID bool
+		noID     bool
+		extra    []byte
+	}{
+		{name: "metadata only"},
+		{name: "ID and metadata", signedID: true},
+		{name: "metadata without ID", noID: true},
+		{name: "duplicate signatures", extra: []byte(`{"google":{"thought_signature":"AQID","thought_signature":"BAUG","sibling":"keep"},"other":{"value":3}}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := newGeminiClientThoughtSignatureRequest(schemas.Gemini, tc.signedID)
+			call := &req.ChatRequest.Input[1].ToolCalls[0]
+			if tc.noID {
+				call.ID = nil
+			}
+			if tc.extra != nil {
+				call.ExtraContent = tc.extra
+			}
+			original := req.ChatRequest.Input
+			before, marshalErr := schemas.Marshal(original)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if !stripUnverifiableReasoning(nil, req) {
+				t.Fatal("expected client metadata signature removal to report a change")
+			}
+			extra := req.ChatRequest.Input[1].ToolCalls[0].ExtraContent
+			if gjson.GetBytes(extra, "google.thought_signature").Exists() {
+				t.Errorf("rejected signature survived strip: %s", extra)
+			}
+			if gjson.GetBytes(extra, "google.sibling").String() != "keep" || gjson.GetBytes(extra, "other.value").Int() != 3 {
+				t.Errorf("unrelated metadata was lost: %s", extra)
+			}
+			after, marshalErr := schemas.Marshal(original)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if !bytes.Equal(before, after) {
+				t.Error("the caller's messages and raw metadata were mutated")
+			}
+			if tc.signedID && (*req.ChatRequest.Input[1].ToolCalls[0].ID != "call_154438" || *req.ChatRequest.Input[2].ToolCallID != "call_154438") {
+				t.Error("the stripped call and its tool result lost correlation")
+			}
+			if stripUnverifiableReasoning(nil, req) {
+				t.Error("a second strip must report no change")
+			}
+		})
+	}
+}
+
+func TestStripUnverifiableReasoning_ChatClientThoughtSignatureNoChange(t *testing.T) {
+	for _, extra := range [][]byte{
+		nil, []byte(`null`), []byte(`{}`), []byte(`{"google":{"sibling":"keep"}}`),
+		[]byte(`{"other":{"thought_signature":"AQID"}}`), []byte(`{"google":{"thought_signature":"AQID"}`),
+	} {
+		req := newGeminiClientThoughtSignatureRequest(schemas.Gemini, false)
+		req.ChatRequest.Input[1].ToolCalls[0].ExtraContent = extra
+		if stripUnverifiableReasoning(nil, req) {
+			t.Errorf("absent or malformed metadata must not trigger a retry: %s", extra)
+		}
+		if !bytes.Equal(extra, req.ChatRequest.Input[1].ToolCalls[0].ExtraContent) {
+			t.Error("unchanged metadata was rewritten")
+		}
+	}
+	for _, key := range []schemas.BifrostContextKey{schemas.BifrostContextKeyLargePayloadMode, schemas.BifrostContextKeyUseRawRequestBody} {
+		req := newGeminiClientThoughtSignatureRequest(schemas.Gemini, false)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(key, true)
+		if stripUnverifiableReasoning(ctx, req) {
+			t.Errorf("context %s must retain the existing raw-body exclusion", key)
+		}
+	}
+}
+
+// The callback models an upstream refusal to exercise the retry transition;
+// the client signature is not validated against a live Gemini model.
+func TestExecuteRequestWithRetries_ChatClientThoughtSignature(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.Gemini, schemas.Vertex} {
+		for _, requestType := range []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest} {
+			for _, signedID := range []bool{false, true} {
+				name := string(provider) + "/" + string(requestType) + "/metadata"
+				if signedID {
+					name += "-and-ID"
+				}
+				t.Run(name, func(t *testing.T) {
+					req := newGeminiClientThoughtSignatureRequest(provider, signedID)
+					req.RequestType = requestType
+					original := req.ChatRequest.Input
+					before, marshalErr := schemas.Marshal(original)
+					if marshalErr != nil {
+						t.Fatal(marshalErr)
+					}
+					ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+					config := createTestConfig(0, time.Millisecond, time.Millisecond)
+					attempts := 0
+					handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+						attempts++
+						call := req.ChatRequest.Input[1].ToolCalls[0]
+						if gjson.GetBytes(call.ExtraContent, "google.thought_signature").Exists() {
+							return "", corruptedThoughtSignatureError()
+						}
+						if *call.ID != "call_154438" || *req.ChatRequest.Input[2].ToolCallID != "call_154438" {
+							t.Error("retry must retain bare call/result correlation")
+						}
+						if gjson.GetBytes(call.ExtraContent, "google.sibling").String() != "keep" || gjson.GetBytes(call.ExtraContent, "other.value").Int() != 3 {
+							t.Error("retry must preserve unrelated metadata")
+						}
+						return "OK", nil
+					}
+					result, err := executeRequestWithRetries(ctx, config, handler, nil, requestType, provider, req.ChatRequest.Model, req, NewDefaultLogger(schemas.LogLevelError))
+					if err != nil || result != "OK" || attempts != 2 {
+						t.Errorf("expected one strip and successful retry, got attempts=%d result=%q error=%v", attempts, result, err)
+					}
+					after, marshalErr := schemas.Marshal(original)
+					if marshalErr != nil {
+						t.Fatal(marshalErr)
+					}
+					if !bytes.Equal(before, after) {
+						t.Error("retry mutated the caller's original input")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestExecuteRequestWithRetries_ChatClientThoughtSignatureRetryBound(t *testing.T) {
+	req := newGeminiClientThoughtSignatureRequest(schemas.Gemini, false)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	attempts := 0
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		attempts++
+		return "", corruptedThoughtSignatureError()
+	}
+	_, err := executeRequestWithRetries(ctx, config, handler, nil, req.RequestType, schemas.Gemini, req.ChatRequest.Model, req, NewDefaultLogger(schemas.LogLevelError))
+	if err == nil || attempts != 2 {
+		t.Errorf("a refused stripped retry must stop after 2 attempts, got attempts=%d error=%v", attempts, err)
+	}
+}

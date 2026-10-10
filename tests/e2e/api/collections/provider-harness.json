@@ -221119,6 +221119,298 @@
           }
         }
       ]
+    },
+    {
+      "name": "197. Gemini client-supplied tool thought signature retention (#8149) (client-thought-signature-fixture)",
+      "description": "Local wire-recorder regression for #8149 P1 only. Run runners/gemini-client-signature-fixture.mjs with an isolated gateway/profile and its environment (clientThoughtSignatureFixture=1); rows skip otherwise. The fixture answers independently of signatures, so passing Chat text/status is only a fixture-health check. Each row reads the captured upstream POST and asserts the functionCall part keeps the reporter-supplied opaque base64 bytes instead of skip_thought_signature_validator. This does not claim the sample is a Google-valid signature or exercise live model inference. Native Chat unary/stream cover Gemini and Vertex shared conversion; encoded-ID and unsigned controls retain the existing fallback behavior. Rows reset one recorder and must run sequentially. Existing /genai server-side signature replay (folder 49) and Responses reasoning replay (folder 43) are different paths. See runners/gemini-client-signature-fixture.md. Folder-level scripts are inherited by every row; provider, operation and expected signature are derived from that row's explicit request body.",
+      "item": [
+        {
+          "name": "gemini/gemini-2.5-flash native Chat unary extra_content signature - client-thought-signature-fixture - #8149",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "false"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "false"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_tokens\": 50,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          }\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"weather in Paris?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          },\n          \"extra_content\": {\n            \"google\": {\n              \"thought_signature\": \"AQJyZWFsLXNpZ25hdHVyZS1ieXRlcwM=\"\n            }\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_1\",\n      \"content\": \"sunny\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-2.5-flash native Chat stream extra_content signature - client-thought-signature-fixture - #8149",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "false"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "false"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_tokens\": 50,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          }\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"weather in Paris?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          },\n          \"extra_content\": {\n            \"google\": {\n              \"thought_signature\": \"AQJyZWFsLXNpZ25hdHVyZS1ieXRlcwM=\"\n            }\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_1\",\n      \"content\": \"sunny\"\n    }\n  ],\n  \"stream\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-2.5-flash native Chat unary extra_content signature - client-thought-signature-fixture - #8149",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "false"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "false"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_tokens\": 50,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          }\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"weather in Paris?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          },\n          \"extra_content\": {\n            \"google\": {\n              \"thought_signature\": \"AQJyZWFsLXNpZ25hdHVyZS1ieXRlcwM=\"\n            }\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_1\",\n      \"content\": \"sunny\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-2.5-flash native Chat stream extra_content signature - client-thought-signature-fixture - #8149",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "false"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "false"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_tokens\": 50,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          }\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"weather in Paris?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          },\n          \"extra_content\": {\n            \"google\": {\n              \"thought_signature\": \"AQJyZWFsLXNpZ25hdHVyZS1ieXRlcwM=\"\n            }\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_1\",\n      \"content\": \"sunny\"\n    }\n  ],\n  \"stream\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-2.5-flash native Chat unary encoded call ID signature control - client-thought-signature-fixture - #8149",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "false"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "false"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_tokens\": 50,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          }\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"weather in Paris?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_1_ts_AQJyZWFsLXNpZ25hdHVyZS1ieXRlcwM\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_1_ts_AQJyZWFsLXNpZ25hdHVyZS1ieXRlcwM\",\n      \"content\": \"sunny\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-2.5-flash native Chat unary unsigned replay sentinel control - client-thought-signature-fixture - #8149",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "false"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "false"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_tokens\": 50,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          }\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"weather in Paris?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_1\",\n      \"content\": \"sunny\"\n    }\n  ]\n}"
+            }
+          }
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('clientThoughtSignatureFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var control = pm.variables.get('clientThoughtSignatureControlUrl') || '';",
+              "  var base = pm.variables.get('baseUrl') || '';",
+              "  var local = /^http:\\/\\/127\\.0\\.0\\.1:\\d+$/.test(control) && /^http:\\/\\/127\\.0\\.0\\.1:\\d+$/.test(base);",
+              "  pm.test('signature fixture uses explicit loopback recorder and gateway URLs', function () { pm.expect(local, 'use the isolated fixture environment and gateway').to.eql(true); });",
+              "  if (!local) { pm.execution.skipRequest(); } else {",
+              "    pm.sendRequest({ url: control + '/__reset', method: 'POST' }, function (err, res) {",
+              "      var ready = false;",
+              "      try { ready = !err && !!res && res.code === 200 && res.json().data[0].reset === true; } catch (e) { ready = false; }",
+              "      pm.test('signature fixture recorder reset succeeded', function () {",
+              "        pm.expect(err, String(err)).to.equal(null);",
+              "        pm.expect(res && res.code, res ? res.text() : 'no recorder response').to.equal(200);",
+              "        pm.expect(ready, 'recorder did not confirm its reset').to.equal(true);",
+              "      });",
+              "      if (!ready) { pm.execution.skipRequest(); }",
+              "    });",
+              "  }",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the isolated fixture answered the Chat request', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.text(), 'fixture response missing: ' + pm.response.text()).to.include('fixture completion');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('clientThoughtSignatureControlUrl') + '/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('the signature wire recorder is reachable', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res && res.code, res ? res.text() : 'no recorder response').to.equal(200);",
+              "  });",
+              "  var incoming = JSON.parse(pm.request.body.raw);",
+              "  var replayed = incoming.messages[1].tool_calls[0];",
+              "  var vertex = incoming.model.indexOf('vertex/') === 0;",
+              "  var expectedHost = vertex ? 'us-central1-aiplatform.googleapis.com' : 'generativelanguage.googleapis.com';",
+              "  var expectedPath = (vertex ? '/v1/projects/fixture-project/locations/us-central1/publishers/google/models/' : '/v1beta/models/') + 'gemini-2.5-flash:' + (incoming.stream ? 'streamGenerateContent' : 'generateContent');",
+              "  var expectedSignature = replayed.extra_content ? replayed.extra_content.google.thought_signature : replayed.id.indexOf('_ts_') !== -1 ? 'AQJyZWFsLXNpZ25hdHVyZS1ieXRlcwM=' : 'skip_thought_signature_validator';",
+              "  var requests = res.json().data[0].requests;",
+              "  var calls = requests.filter(function (q) { return q.method === 'POST'; });",
+              "  pm.test('exactly one converted request reached the local provider fixture', function () { pm.expect(calls.length, JSON.stringify(requests)).to.equal(1); });",
+              "  var call = calls[0] || { body: '{}', headers: {} };",
+              "  pm.test('the converted request used the selected provider and operation', function () {",
+              "    pm.expect(call.host, JSON.stringify(call)).to.equal(expectedHost);",
+              "    pm.expect((call.path || '').split('?')[0], JSON.stringify(call)).to.equal(expectedPath);",
+              "  });",
+              "  var wire = JSON.parse(call.body);",
+              "  var toolParts = [];",
+              "  (wire.contents || []).forEach(function (content) { (content.parts || []).forEach(function (part) { if (part.functionCall) { toolParts.push({ role: content.role, part: part }); } }); });",
+              "  pm.test('the converted model turn has exactly the replayed function call', function () {",
+              "    pm.expect(toolParts.length, call.body).to.equal(1);",
+              "    pm.expect(toolParts[0].role, call.body).to.equal('model');",
+              "    pm.expect(toolParts[0].part.functionCall.id, call.body).to.equal(replayed.id);",
+              "    pm.expect(toolParts[0].part.functionCall.name, call.body).to.equal('get_weather');",
+              "    pm.expect(toolParts[0].part.functionCall.args, call.body).to.eql({ city: 'Paris' });",
+              "  });",
+              "  var part = toolParts.length ? toolParts[0].part : {};",
+              "  pm.test('replayed function call retains the expected signature bytes on the provider wire', function () { pm.expect(part.thoughtSignature, call.body).to.equal(expectedSignature); });",
+              "  if (expectedSignature !== 'skip_thought_signature_validator') { pm.test('a reusable signature does not become the validator sentinel', function () { pm.expect(part.thoughtSignature, call.body).to.not.equal('skip_thought_signature_validator'); }); }",
+              "  if (incoming.stream) { pm.test('streaming completed with the Chat done marker', function () { pm.expect(pm.response.text(), pm.response.text()).to.include('data: [DONE]'); }); }",
+              "});"
+            ]
+          }
+        }
+      ]
     }
   ]
 }
