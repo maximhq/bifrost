@@ -74,7 +74,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	const headers = watch("headers");
 
 	const headersValidationError =
-		connectionType === "http" || connectionType === "sse" ? getHeadersValidationError(headers) : null;
+		connectionType === "http" || connectionType === "sse" || connectionType === "openapi" ? getHeadersValidationError(headers) : null;
 
 	// Reset form state when the sheet opens
 	const { reset: resetSatellites } = satellites;
