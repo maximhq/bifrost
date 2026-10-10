@@ -35,6 +35,18 @@ const (
 	batchWriteBackoff = 250 * time.Millisecond
 )
 
+var (
+	// maintenancePollInterval is how often a paused batchWriter re-checks the
+	// logstore migration lock (see awaitMigrationWindow). A var so tests can
+	// shrink it.
+	maintenancePollInterval = time.Second
+	// maintenanceMaxPause caps one pause. A lock that outlives it (a very long
+	// backfill step, or a crashed migrator whose session a proxy keeps alive)
+	// must not stall log writes forever, so after the cap the writer flushes
+	// anyway, which is exactly what it did before the gate existed.
+	maintenanceMaxPause = 2 * time.Minute
+)
+
 // PendingLogData holds PreLLMHook input data until PostLLMHook fires.
 // Stored in pendingLogs sync.Map keyed by requestID.
 type PendingLogData struct {
@@ -121,6 +133,15 @@ func (p *LoggerPlugin) batchWriter() {
 			}
 			timerRunning = false
 		}
+		// Hold the batch while another node runs schema migrations. The queue
+		// keeps buffering behind us (and drops when full, as always); nothing is
+		// written until the lock clears, the pause cap passes, or Cleanup cancels.
+		p.awaitMigrationWindow(p.batchCtx)
+		if p.batchCtx.Err() != nil {
+			// Cancelled during the pause: leave the batch intact so the caller's
+			// handoff hands it to Cleanup's drain instead of writing it here.
+			return
+		}
 		carry = append(carry, p.safeProcessBatch(p.batchCtx, batch)...)
 		clear(batch)
 		batch = batch[:0]
@@ -177,6 +198,73 @@ func (p *LoggerPlugin) batchWriter() {
 			handoff()
 			return
 		}
+	}
+}
+
+// migrationInProgress reports whether the store says another node holds the
+// logstore migration lock. A store without a MaintenanceGate never pauses.
+func (p *LoggerPlugin) migrationInProgress(ctx context.Context) bool {
+	return logstore.MigrationInProgressFor(ctx, p.store)
+}
+
+// awaitMigrationWindow blocks the batchWriter while a migration is in progress.
+// Every statement this process sends to the logs table during that window queues
+// behind the migrator's pending ALTER TABLE, and once the ALTER is queued every
+// later statement from every node queues behind it: the migration takes longer
+// and the pool drains. Holding the batch keeps this node out of that queue so the
+// DDL completes in milliseconds. It polls every maintenancePollInterval, gives up
+// after maintenanceMaxPause (and then stays given up, via maintenanceCapSpent,
+// until the lock is seen released), and returns at once when ctx ends so
+// Cleanup's handoff is never delayed. While paused, writerPaused is set so the enqueue
+// paths can attribute their drops to the migration window.
+func (p *LoggerPlugin) awaitMigrationWindow(ctx context.Context) {
+	if !p.migrationInProgress(ctx) {
+		if p.maintenanceCapSpent.Swap(false) {
+			p.logger.Info("logstore migration lock released; log writes are no longer being forced past the pause cap")
+		}
+		return
+	}
+	if p.maintenanceCapSpent.Load() {
+		// This migration window already cost its maximum pause. Pausing again for
+		// every batch would throttle the writer to one batch per cap while the
+		// lock stays held, so keep writing until the lock is seen released.
+		return
+	}
+	p.writerPaused.Store(true)
+	defer p.writerPaused.Store(false)
+	started := time.Now()
+	dropsBefore := p.droppedDuringMaintenance.Load()
+	p.logger.Warn("logstore migration lock is held by another node; pausing log writes (queue capacity %d, max pause %s)",
+		p.writerConfig.WriteQueueCapacity, maintenanceMaxPause)
+	timer := time.NewTimer(maintenancePollInterval)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		if !p.migrationInProgress(ctx) {
+			p.logger.Info("logstore migration lock released; resuming log writes after %s (%d entries dropped during the pause)",
+				time.Since(started).Round(time.Millisecond), p.droppedDuringMaintenance.Load()-dropsBefore)
+			return
+		}
+		if time.Since(started) >= maintenanceMaxPause {
+			p.maintenanceCapSpent.Store(true)
+			p.logger.Warn("logstore migration lock still held after %s; resuming log writes anyway until it clears (%d entries dropped during the pause)",
+				maintenanceMaxPause, p.droppedDuringMaintenance.Load()-dropsBefore)
+			return
+		}
+		timer.Reset(maintenancePollInterval)
+	}
+}
+
+// countDrop records one entry dropped at enqueue time, attributing it to the
+// migration window as well when the writer is paused for one.
+func (p *LoggerPlugin) countDrop() {
+	p.droppedRequests.Add(1)
+	if p.writerPaused.Load() {
+		p.droppedDuringMaintenance.Add(1)
 	}
 }
 
@@ -557,7 +645,7 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 	case p.writeQueue <- &writeQueueEntry{log: entry, callback: callback}:
 		// enqueued successfully
 	default:
-		p.droppedRequests.Add(1)
+		p.countDrop()
 		p.logger.Warn("log write queue full, dropping log entry %s", entry.ID)
 	}
 }
@@ -591,7 +679,7 @@ func (p *LoggerPlugin) enqueueMCPToolLogEntry(entry *logstore.MCPToolLog, callba
 	select {
 	case p.writeQueue <- &writeQueueEntry{mcpLog: entry, mcpCallback: callback}:
 	default:
-		p.droppedRequests.Add(1)
+		p.countDrop()
 		p.logger.Warn("log write queue full, dropping MCP tool log entry %s", entry.ID)
 	}
 }
@@ -608,7 +696,7 @@ func (p *LoggerPlugin) enqueueAgentLogEntry(entry *logstore.AgentLog) {
 	select {
 	case p.writeQueue <- &writeQueueEntry{agentLog: entry}:
 	default:
-		p.droppedRequests.Add(1)
+		p.countDrop()
 		p.logger.Warn("log write queue full, dropping A2A log entry %s", entry.ID)
 	}
 }

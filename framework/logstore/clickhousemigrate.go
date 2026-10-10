@@ -166,6 +166,32 @@ func (s *ClickHouseLogStore) EnsureClickHouseTable(ctx context.Context, model an
 	return clickhouseReconcileColumns(ctx, s.db, model, opts.table, s.cluster, s.logger)
 }
 
+// ReconcileClickHouseTTL sets an extension-owned table's TTL to ttl when the
+// table was created with a different one, because CREATE TABLE IF NOT EXISTS
+// never changes an existing table. ttl must be written the way ClickHouse
+// stores it in system.tables.engine_full (for example `+ toIntervalHour(24)`),
+// or the metadata-only ALTER is repeated on every call.
+func (s *ClickHouseLogStore) ReconcileClickHouseTTL(ctx context.Context, table, ttl string) error {
+	var engineFull string
+	if err := s.db.WithContext(ctx).
+		Raw("SELECT engine_full FROM system.tables WHERE database = currentDatabase() AND name = ?", table).
+		Scan(&engineFull).Error; err != nil {
+		return fmt.Errorf("clickhouse: read %s engine definition: %w", table, err)
+	}
+	if clause := "TTL " + ttl; strings.Contains(engineFull, clause+" SETTINGS") || strings.HasSuffix(engineFull, clause) {
+		return nil
+	}
+	onCluster := ""
+	if s.cluster != "" {
+		onCluster = fmt.Sprintf(" ON CLUSTER `%s`", chEscapeIdentifier(s.cluster))
+	}
+	stmt := fmt.Sprintf("ALTER TABLE `%s`%s MODIFY TTL %s SETTINGS materialize_ttl_after_modify = 0", table, onCluster, ttl)
+	if err := s.db.WithContext(ctx).Exec(stmt).Error; err != nil {
+		return fmt.Errorf("clickhouse: modify %s TTL: %w", table, err)
+	}
+	return nil
+}
+
 // EnsureClickHouseTable delegates extension-table schema management to the
 // ClickHouse logstore wrapped by hybrid object storage.
 func (h *HybridLogStore) EnsureClickHouseTable(ctx context.Context, model any, table, partitionBy, orderBy, ttl string, skipIndexes []string) error {
@@ -174,6 +200,18 @@ func (h *HybridLogStore) EnsureClickHouseTable(ctx context.Context, model any, t
 		return fmt.Errorf("logstore does not support ClickHouse extension tables")
 	}
 	return schemaStore.EnsureClickHouseTable(ctx, model, table, partitionBy, orderBy, ttl, skipIndexes)
+}
+
+// ReconcileClickHouseTTL delegates to the ClickHouse logstore wrapped by
+// hybrid object storage.
+func (h *HybridLogStore) ReconcileClickHouseTTL(ctx context.Context, table, ttl string) error {
+	schemaStore, ok := h.inner.(interface {
+		ReconcileClickHouseTTL(ctx context.Context, table, ttl string) error
+	})
+	if !ok {
+		return fmt.Errorf("logstore does not support ClickHouse extension tables")
+	}
+	return schemaStore.ReconcileClickHouseTTL(ctx, table, ttl)
 }
 
 // clickhouseExistingColumns returns the set of column names already present on a
