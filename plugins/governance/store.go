@@ -3215,24 +3215,21 @@ func (gs *LocalGovernanceStore) writeBudgetRows(ctx context.Context, rows []budg
 	return nil
 }
 
-// mergeOwnedBudgets returns attached with every flat budget owned() appended, or
-// replacing the attached copy with the same ID: the flat list holds the current
-// usage and LastReset, so its copy wins.
-func mergeOwnedBudgets(attached []configstoreTables.TableBudget, flat []configstoreTables.TableBudget, owned func(*configstoreTables.TableBudget) bool) []configstoreTables.TableBudget {
+// mergeOwnedBudgets returns attached with each of the owner's flat budget rows
+// appended, or replacing the attached copy with the same ID: the flat rows hold
+// the current usage and LastReset, so their copy wins.
+func mergeOwnedBudgets(attached []configstoreTables.TableBudget, owned []configstoreTables.TableBudget) []configstoreTables.TableBudget {
 	indexes := make(map[string]int, len(attached))
 	for i := range attached {
 		indexes[attached[i].ID] = i
 	}
-	for i := range flat {
-		if !owned(&flat[i]) {
+	for i := range owned {
+		if index, exists := indexes[owned[i].ID]; exists {
+			attached[index] = owned[i]
 			continue
 		}
-		if index, exists := indexes[flat[i].ID]; exists {
-			attached[index] = flat[i]
-			continue
-		}
-		attached = append(attached, flat[i])
-		indexes[flat[i].ID] = len(attached) - 1
+		attached = append(attached, owned[i])
+		indexes[owned[i].ID] = len(attached) - 1
 	}
 	return attached
 }
@@ -3537,11 +3534,19 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	for i := range rateLimits {
 		rateLimitsByID[rateLimits[i].ID] = &rateLimits[i]
 	}
+	budgetsByVirtualKey := make(map[string][]configstoreTables.TableBudget)
+	budgetsByProviderConfig := make(map[uint][]configstoreTables.TableBudget)
+	for i := range budgets {
+		if budgets[i].VirtualKeyID != nil {
+			budgetsByVirtualKey[*budgets[i].VirtualKeyID] = append(budgetsByVirtualKey[*budgets[i].VirtualKeyID], budgets[i])
+		}
+		if budgets[i].ProviderConfigID != nil {
+			budgetsByProviderConfig[*budgets[i].ProviderConfigID] = append(budgetsByProviderConfig[*budgets[i].ProviderConfigID], budgets[i])
+		}
+	}
 	for i := range virtualKeys {
 		vk := &virtualKeys[i]
-		vk.Budgets = mergeOwnedBudgets(vk.Budgets, budgets, func(b *configstoreTables.TableBudget) bool {
-			return b.VirtualKeyID != nil && *b.VirtualKeyID == vk.ID
-		})
+		vk.Budgets = mergeOwnedBudgets(vk.Budgets, budgetsByVirtualKey[vk.ID])
 		vk.RateLimit = flatRateLimit(vk.RateLimit, rateLimitsByID)
 		configstoreTables.StampCalendarAlignment(vk.CalendarAligned, vk.Budgets, vk.RateLimit)
 		for j := range vk.Budgets {
@@ -3552,9 +3557,7 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 		}
 		for j := range vk.ProviderConfigs {
 			pc := &vk.ProviderConfigs[j]
-			pc.Budgets = mergeOwnedBudgets(pc.Budgets, budgets, func(b *configstoreTables.TableBudget) bool {
-				return b.ProviderConfigID != nil && *b.ProviderConfigID == pc.ID
-			})
+			pc.Budgets = mergeOwnedBudgets(pc.Budgets, budgetsByProviderConfig[pc.ID])
 			pc.RateLimit = flatRateLimit(pc.RateLimit, rateLimitsByID)
 			configstoreTables.StampCalendarAlignment(vk.CalendarAligned, pc.Budgets, pc.RateLimit)
 			for k := range pc.Budgets {
