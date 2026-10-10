@@ -229,5 +229,8 @@ func (m *liveWebRTCMessages) closed() {
 	if m.relay.closedDuringSetup() {
 		return
 	}
-	m.upstreamEnded()
+	if m.upstreamEndedEarly() {
+		// Let the frame reach the browser before the relay closes the channel.
+		time.Sleep(100 * time.Millisecond)
+	}
 }
