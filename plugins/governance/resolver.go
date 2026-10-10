@@ -128,9 +128,10 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 	// (Gemini, Vertex, Bedrock), that model has to be present, and the allowlist below checks it;
 	// where the batch API ignores the request's model and runs whatever the rows name (OpenAI,
 	// Azure), no hint can stand in for the rows, so the access has to permit every model of the
-	// provider. Inline batches are not opaque: PreLLMHook evaluates each item's model first.
+	// provider. A custom provider is held to what its base provider binds. Inline batches are not
+	// opaque: PreLLMHook evaluates each item's model first.
 	if requestType == schemas.BatchCreateRequest && evaluationRequest.OpaqueBatchInput && !skipModelCheck && !providerUnconfigured && !access.AllowsEveryModel(string(provider)) {
-		if !batchModelBoundByProvider(provider) {
+		if !batchModelBoundByProvider(provider, r.governanceInMemoryStore) {
 			return &EvaluationResult{
 				Decision: DecisionModelBlocked,
 				Reason:   denialReason(fmt.Sprintf("File-based batch creation on provider '%s' requires an access that allows every model of the provider: its batch API runs the models named inside the uploaded input, not the model on the request", provider), access.DeniedPermitsForModel(string(provider), "")),

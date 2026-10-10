@@ -221119,6 +221119,342 @@
           }
         }
       ]
+    },
+    {
+      "name": "197. File batches keep their model rule under custom providers and decoy inline items (batch-input-classification) [SERIAL]",
+      "description": "A virtual key allowed one model on openai_pc_auto, the profile's custom provider built on OpenAI, uploads the sample batch file. A file batch naming that model as the hint is refused with 403 model_blocked, as it already is on provider openai: the custom provider runs OpenAI's batch API, which runs the models named inside the file, so the file rule follows the base provider. A request naming the file together with inline requests is refused with 400 at the gateway, since no provider runs inline requests beside a file and the items would otherwise only stand in for the file's models in the model check. The file and the key are deleted at the end.",
+      "item": [
+        {
+          "name": "openai_pc_auto batch-input-classification setup: create a virtual key allowed one model on the custom provider",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('bicVkId');",
+                  "  pm.collectionVariables.unset('bicVkValue');",
+                  "  pm.collectionVariables.set('bicVkName', 'harness-batch-input-classification-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleVkId = pm.collectionVariables.get('bicVkId');",
+                  "if (!staleVkId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleVkId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('batch-input-classification: the retained virtual key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleVkId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleVkId + ' not deleted: ' + response.text()).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.collectionVariables.unset('bicVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('batch-input-classification: virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('batch-input-classification: virtual key has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('bicVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('bicVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{bicVkName}}\",\"provider_configs\":[{\"provider\":\"openai_pc_auto\",\"allowed_models\":[\"gpt-4o-mini\"],\"key_ids\":[\"*\"],\"weight\":1}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          },
+          "response": []
+        },
+        {
+          "name": "openai_pc_auto batch-input-classification: the key uploads a batch input file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('bicFileId');",
+                  "if (!pm.collectionVariables.get('bicVkValue')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('batch-input-classification: upload under the key is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('batch-input-classification: the upload has a file id', function () {",
+                  "  pm.expect(j.id, 'no id: ' + txt.slice(0, 400)).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (j.id) { pm.collectionVariables.set('bicFileId', j.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{bicVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.jsonl",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "openai_pc_auto",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/v1/files"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-403] openai_pc_auto batch-input-classification: a file batch on a custom provider built on OpenAI is held to the file rule",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without the key and the uploaded file there is nothing to submit; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('bicVkValue') || !pm.collectionVariables.get('bicFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The custom provider runs OpenAI's batch API, which ignores the model on the request and runs the",
+                  "// models named inside the file. A key restricted to one model must be refused as model_blocked, the",
+                  "// same answer it gets on provider openai, never a 200 that would mean the batch was created.",
+                  "pm.test('batch-input-classification: file batch with an allowed model hint on the custom provider is 403', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(403);",
+                  "});",
+                  "pm.test('batch-input-classification: the refusal is model_blocked', function () {",
+                  "  pm.expect(txt, 'unexpected body: ' + txt.slice(0, 400)).to.include('model_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{bicVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai_pc_auto/gpt-4o-mini\",\"input_file_id\":\"{{bicFileId}}\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/batches"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] openai_pc_auto batch-input-classification: a file beside inline requests is refused at the gateway",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without the key and the uploaded file there is nothing to submit; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('bicVkValue') || !pm.collectionVariables.get('bicFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// No provider runs inline requests beside a file, so the gateway refuses the mix before any plugin or",
+                  "// provider runs: a 400 naming both inputs, never a 200 that would mean a batch was created from the file",
+                  "// with the inline requests silently dropped, and never a 403 that would mean the mix reached governance.",
+                  "pm.test('batch-input-classification: file beside inline requests is 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('batch-input-classification: the refusal says the inputs are exclusive', function () {",
+                  "  pm.expect(txt, 'unexpected body: ' + txt.slice(0, 400)).to.include('not both');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{bicVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai_pc_auto/gpt-4o-mini\",\"input_file_id\":\"{{bicFileId}}\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\",\"requests\":[{\"custom_id\":\"inline-1\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hello\"}]}}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/batches"
+          },
+          "response": []
+        },
+        {
+          "name": "openai_pc_auto batch-input-classification cleanup: the key deletes its file",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without the key and the uploaded file there is nothing to submit; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('bicVkValue') || !pm.collectionVariables.get('bicFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('batch-input-classification: file deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code === 200 || pm.response.code === 404) { pm.collectionVariables.unset('bicFileId'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{bicVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/files/{{bicFileId}}?provider=openai_pc_auto"
+          },
+          "response": []
+        },
+        {
+          "name": "openai_pc_auto batch-input-classification cleanup: delete the virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('bicVkId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('batch-input-classification: virtual key deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('bicVkId');",
+                  "  pm.collectionVariables.unset('bicVkValue');",
+                  "  pm.collectionVariables.unset('bicVkName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{bicVkId}}"
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

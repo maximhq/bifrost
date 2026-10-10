@@ -1171,10 +1171,13 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	return req, nil, nil
 }
 
-// isOpaqueBatchInput reports whether a batch create's work is an uploaded file or blob rather than
-// inline requests, so the models it will run are not visible on the request.
+// isOpaqueBatchInput reports whether a batch create's work is an uploaded file or blob, so the
+// models it will run are not visible on the request. Inline items beside a file do not make the
+// batch inline: no provider runs them then. OpenAI, Azure and Bedrock submit the file and drop
+// the items, Gemini and Vertex refuse the mix, so the items are at most a decoy for the model
+// check and the file rule has to hold.
 func isOpaqueBatchInput(req *schemas.BifrostRequest) bool {
-	if req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil || len(req.BatchCreateRequest.Requests) > 0 {
+	if req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil {
 		return false
 	}
 	batch := req.BatchCreateRequest
