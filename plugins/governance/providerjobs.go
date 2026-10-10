@@ -1026,13 +1026,7 @@ func resourceNameSuffix(kind, id string) (string, bool) {
 // builtOnVertex reports whether a provider name reaches Vertex: Vertex itself, or a custom
 // provider built on it.
 func (p *GovernancePlugin) builtOnVertex(provider string) bool {
-	base := schemas.ModelProvider(provider)
-	if p.inMemoryStore != nil {
-		if configured := p.inMemoryStore.GetConfiguredProviders(); len(configured) > 0 {
-			base = baseProviderOf(base, configured)
-		}
-	}
-	return base == schemas.Vertex
+	return configuredBaseProvider(p.inMemoryStore, schemas.ModelProvider(provider)) == schemas.Vertex
 }
 
 // enforceProviderObjectOwnership refuses a request for a provider object whose recorded creator

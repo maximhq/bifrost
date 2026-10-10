@@ -2586,6 +2586,20 @@ func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *sch
 			},
 		}
 	}
+	// A batch's work is named once. No provider runs inline requests beside a file: OpenAI, Azure
+	// and Bedrock submit the file and drop them, Gemini and Vertex refuse the mix. Refusing it here
+	// covers every route that creates a batch, the HTTP handler, the SDK integration routes and the
+	// Go SDK alike, and keeps governance's file batch rule from being judged on items that would
+	// never run.
+	if (req.InputFileID != "" || hasInputBlob) && len(req.Requests) > 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     schemas.Ptr(400),
+			Error: &schemas.ErrorField{
+				Message: "input_file_id or input_blob and requests are exclusive: name the batch's work as a file, a blob, or inline requests, not both",
+			},
+		}
+	}
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}

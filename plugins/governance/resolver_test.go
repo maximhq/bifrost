@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -673,18 +674,26 @@ func TestPreLLMHookRefusesOpaqueFileBatchesUnderModelRestrictedKeys(t *testing.T
 	unrestricted := buildVirtualKeyWithProviders("vk-batch", "sk-bf-batch", "Batch VK", []configstoreTables.TableVirtualKeyProviderConfig{
 		buildProviderConfig("openai", []string{"*"}),
 	})
+	customRestricted := buildVirtualKeyWithProviders("vk-batch", "sk-bf-batch", "Batch VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("acme-openai", []string{"gpt-4"}),
+		buildProviderConfig("acme-azure", []string{"gpt-4"}),
+		buildProviderConfig("acme-gemini", []string{"gemini-2.5-flash"}),
+	})
+	customProviders := map[schemas.ModelProvider]configstore.ProviderConfig{
+		"acme-openai": {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}},
+		"acme-azure":  {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Azure}},
+		"acme-gemini": {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Gemini}},
+	}
 	fileBatch := func(provider schemas.ModelProvider, model string) *schemas.BifrostRequest {
 		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
 			Provider: provider, Model: schemas.Ptr(model), InputFileID: "file-x",
 		}}
 	}
-	decision := func(sc *schemas.LLMPluginShortCircuit) string {
-		if sc == nil || sc.Error == nil || sc.Error.Type == nil {
-			return string(DecisionAllow)
-		}
-		return *sc.Error.Type
+	fileBatchWithItems := func(provider schemas.ModelProvider, model string) *schemas.BifrostRequest {
+		req := fileBatch(provider, model)
+		req.BatchCreateRequest.Requests = []schemas.BatchRequestItem{{CustomID: "decoy", Body: map[string]any{"model": model}}}
+		return req
 	}
-
 	cases := []struct {
 		name string
 		vk   *configstoreTables.TableVirtualKey
@@ -697,15 +706,62 @@ func TestPreLLMHookRefusesOpaqueFileBatchesUnderModelRestrictedKeys(t *testing.T
 		{"gemini file batch, disallowed hint, restricted key", restricted, fileBatch(schemas.Gemini, "gemini-2.5-pro"), DecisionModelBlocked},
 		{"openai file batch, unrestricted key", unrestricted, fileBatch(schemas.OpenAI, "gpt-4"), DecisionAllow},
 		{"openai inline batch, allowed models, restricted key", restricted, &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.OpenAI, Requests: []schemas.BatchRequestItem{{Body: map[string]any{"model": "gpt-4"}}}}}, DecisionAllow},
+		// A file beside inline items is still a file batch: no provider runs the inline items when a
+		// file is named, OpenAI, Azure and Bedrock submit the file, Gemini and Vertex refuse the mix.
+		{"openai file batch beside inline items naming allowed models, restricted key", restricted, fileBatchWithItems(schemas.OpenAI, "gpt-4"), DecisionModelBlocked},
+		{"azure file batch beside inline items naming allowed models, restricted key", restricted, fileBatchWithItems(schemas.Azure, "gpt-4"), DecisionModelBlocked},
+		{"openai file batch beside inline items, unrestricted key", unrestricted, fileBatchWithItems(schemas.OpenAI, "gpt-4"), DecisionAllow},
+		// A custom provider runs its base provider's batch API, so it binds what the base binds.
+		{"custom provider on openai, file batch, allowed hint, restricted key", customRestricted, fileBatch("acme-openai", "gpt-4"), DecisionModelBlocked},
+		{"custom provider on azure, file batch, allowed hint, restricted key", customRestricted, fileBatch("acme-azure", "gpt-4"), DecisionModelBlocked},
+		{"custom provider on openai, inline batch, allowed models, restricted key", customRestricted, &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: "acme-openai", Requests: []schemas.BatchRequestItem{{Body: map[string]any{"model": "gpt-4"}}}}}, DecisionAllow},
+		{"custom provider on gemini, file batch, allowed hint, restricted key", customRestricted, fileBatch("acme-gemini", "gemini-2.5-flash"), DecisionAllow},
+		{"custom provider on gemini, file batch, disallowed hint, restricted key", customRestricted, fileBatch("acme-gemini", "gemini-2.5-pro"), DecisionModelBlocked},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			plugin := newAccessTestPlugin(t, tc.vk, nil)
+			if tc.vk == customRestricted {
+				plugin = newCustomProviderTestPlugin(t, tc.vk, customProviders)
+			}
 			_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-batch"), tc.req)
 			require.NoError(t, err)
-			assert.Equal(t, string(tc.want), decision(shortCircuit))
+			assertShortCircuitDecision(t, tc.want, shortCircuit)
 		})
 	}
+}
+
+// assertShortCircuitDecision checks a PreLLMHook outcome against the decision a case expects: an
+// allow is no short circuit at all, and a refusal carries an error typed with the decision, so a
+// short circuit that lost its type cannot pass as an allow.
+func assertShortCircuitDecision(t *testing.T, want Decision, sc *schemas.LLMPluginShortCircuit) {
+	t.Helper()
+	if want == DecisionAllow {
+		if sc != nil {
+			t.Fatalf("want an allow, got a short circuit: %+v", sc.Error)
+		}
+		return
+	}
+	require.NotNil(t, sc, "want %s, got an allow", want)
+	require.NotNil(t, sc.Error, "want %s, the short circuit carries no error", want)
+	require.NotNil(t, sc.Error.Type, "want %s, the short circuit's error has no type: %s", want, sc.Error.Error)
+	assert.Equal(t, string(want), *sc.Error.Type)
+}
+
+// newCustomProviderTestPlugin is newAccessTestPlugin over a governance plugin whose in-memory
+// store knows the given configured providers, the way the transport's does.
+func newCustomProviderTestPlugin(t *testing.T, vk *configstoreTables.TableVirtualKey, providers map[schemas.ModelProvider]configstore.ProviderConfig) *GovernancePlugin {
+	t.Helper()
+	logger := NewMockLogger()
+	inMemory := &mockInMemoryStore{configuredProviders: providers}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, inMemory)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, inMemory)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	return plugin
 }
 
 // TestBudgetResolver_EvaluateVirtualKey_ActiveNoExpiry verifies that a VK
@@ -970,4 +1026,108 @@ func TestEvaluateLimitsEnforcesTheSettledLimitsWhicheverCredentialProducedThem(t
 		assert.Equal(t, DecisionAllow, result.Decision)
 		assert.Contains(t, result.Reason, "spending checks skipped")
 	})
+}
+
+// BenchmarkPreLLMHookBatchCreate measures the governance pre-hook for batch creates under a
+// virtual key: a file-based batch, whose models are not visible on the request, and an inline
+// batch whose items are each evaluated.
+// providerLookupCountingStore counts how a model check reads the configured providers: the whole
+// map, or the one provider it needs.
+type providerLookupCountingStore struct {
+	mockInMemoryStore
+	wholeMap, single int
+}
+
+func (s *providerLookupCountingStore) GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig {
+	s.wholeMap++
+	return s.mockInMemoryStore.GetConfiguredProviders()
+}
+
+func (s *providerLookupCountingStore) GetConfiguredProvider(provider schemas.ModelProvider) (configstore.ProviderConfig, bool) {
+	s.single++
+	config, ok := s.configuredProviders[provider]
+	return config, ok
+}
+
+// A model check runs on every request a virtual key with an allowed-models list makes, and needs
+// one provider's configuration. A store that can hand back that one provider is asked for it, so
+// the check never copies the whole provider map.
+func TestModelMatcherReadsOnlyTheProviderItChecks(t *testing.T) {
+	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {}, schemas.Anthropic: {}, schemas.Gemini: {},
+	}}}
+	plugin := &GovernancePlugin{modelCatalog: modelcatalog.NewTestCatalog(nil), inMemoryStore: store}
+
+	matcher := plugin.modelMatcher()
+	require.NotNil(t, matcher)
+	assert.True(t, matcher("openai", "gpt-4o", []string{"gpt-4o"}))
+	assert.Zero(t, store.wholeMap, "a model check does not read the whole provider map")
+	assert.Equal(t, 1, store.single, "a model check reads the one provider it checks")
+
+	// Asking whether a provider is built on Vertex needs that provider's base type only.
+	assert.False(t, plugin.builtOnVertex("openai"))
+	assert.Zero(t, store.wholeMap, "the Vertex check does not read the whole provider map")
+}
+
+// A chat request is the common case the provider snapshot must not tax. Through the whole hook
+// chain, with a model catalog and a key whose allowed-models list makes the model check run, the
+// configured providers are read one at a time and the whole map is never copied.
+func TestChatRequestNeverCopiesTheProviderMap(t *testing.T) {
+	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {}, schemas.Anthropic: {}, schemas.Gemini: {},
+	}}}
+	vk := buildVirtualKeyWithProviders("vk-chat", mcpTestVKValue, "chat-vk", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"gpt-4o"}),
+	})
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, store)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	ctx := presentCtx(mcpTestVKValue)
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
+	require.NoError(t, plugin.PreRequestHook(ctx, req))
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit, "an allowed model is admitted")
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI},
+	}}, nil)
+	require.NoError(t, err)
+
+	assert.Positive(t, store.single, "the model check read the provider it checks")
+	assert.Zero(t, store.wholeMap, "a chat request never copies the whole provider map")
+}
+
+func BenchmarkPreLLMHookBatchCreate(b *testing.B) {
+	plugin := newAccessTestPlugin(b, buildVKForMCPStamping(nil), nil)
+	model := "gpt-4o"
+	cases := []struct {
+		name  string
+		build func() *schemas.BifrostRequest
+	}{
+		{"file_batch", func() *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.OpenAI, Model: &model, InputFileID: "file-bench"}}
+		}},
+		{"inline_batch", func() *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.OpenAI, Model: &model, Requests: []schemas.BatchRequestItem{
+				{CustomID: "a", Body: map[string]any{"model": "gpt-4o"}},
+				{CustomID: "b", Body: map[string]any{"model": "gpt-4o-mini"}},
+			}}}
+		}},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if _, _, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), tc.build()); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }

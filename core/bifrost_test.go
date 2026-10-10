@@ -7450,3 +7450,30 @@ func TestScenarioKeyBindingsArePerModel(t *testing.T) {
 	requireSessionState(t, kv, "s", SessionStateKindKey, provA, "m", "a1")
 	requireSessionState(t, kv, "s", SessionStateKindKey, provA, "m2", "a2")
 }
+
+// A batch names its work once: an input file (or blob) or inline requests. No provider runs inline
+// requests beside a file, so the mix is refused at the core entrypoint, which every route reaches
+// (the /v1/batches handler, the OpenAI, Azure and GenAI SDK batch routes, and the Go SDK), before
+// a provider is looked up. Each input on its own still passes this check.
+func TestBatchCreateRequest_RejectsFileAndInlineRequestsTogether(t *testing.T) {
+	blob := "eyJjdXN0b21faWQiOiAiYSJ9"
+	inline := []schemas.BatchRequestItem{{CustomID: "a", Body: map[string]interface{}{"model": "gpt-4o-mini"}}}
+	b := &Bifrost{}
+	for name, req := range map[string]*schemas.BifrostBatchCreateRequest{
+		"file and requests": {Provider: schemas.OpenAI, InputFileID: "file-abc", Requests: inline},
+		"blob and requests": {Provider: schemas.OpenAI, InputBlob: &blob, Requests: inline},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, bifrostErr := b.BatchCreateRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+			if resp != nil || bifrostErr == nil {
+				t.Fatalf("a batch naming a file and inline requests must be refused, got resp=%v err=%v", resp, bifrostErr)
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+				t.Fatalf("the refusal must carry status 400, got %v (%s)", bifrostErr.StatusCode, bifrostErr.Error.Message)
+			}
+			if !strings.Contains(bifrostErr.Error.Message, "exclusive") {
+				t.Fatalf("the refusal must say the inputs are exclusive, got %q", bifrostErr.Error.Message)
+			}
+		})
+	}
+}
