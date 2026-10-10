@@ -44278,6 +44278,76 @@
               }
             }
           ]
+        },
+        {
+          "name": "[EXPECT-400] deepseek/deepseek-v4-flash-anthropic rejects document content before egress (#6741)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarise the attached document in one sentence.\"\n        },\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"base64\",\n            \"media_type\": \"application/pdf\",\n            \"data\": \"JVBERi0xLjQKJcOkw7zDtsOfCjIgMCBvYmoKPDwvTGVuZ3RoIDMgMCBSL0ZpbHRlci9GbGF0ZURlY29kZT4+\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// DeepSeek documents document blocks as unsupported on its Anthropic-compatible",
+                  "// endpoint, but accepts the request and silently drops them: the upstream returns",
+                  "// success, so no fallback can ever trigger and the caller gets a confident answer",
+                  "// computed without the document they supplied. Bifrost refuses before egress instead.",
+                  "// The collection-level [EXPECT-400] tag already asserts the status; these rows pin",
+                  "// that the refusal is typed (so a fallback can act on it) and that it is local.",
+                  "pm.test('the refusal is typed invalid_request_error so a fallback can act on it', function () {",
+                  "  var err = body.error || {};",
+                  "  pm.expect(err.type, 'error.type: ' + txt.slice(0, 400)).to.eql('invalid_request_error');",
+                  "  pm.expect(err.message, 'error.message: ' + txt.slice(0, 400)).to.be.a('string').and.not.empty;",
+                  "});",
+                  "",
+                  "pm.test('the refusal names document content, not some unrelated validation error', function () {",
+                  "  var msg = ((body.error || {}).message) || '';",
+                  "  pm.expect(/document/i.test(msg), 'message does not mention document content: ' + txt.slice(0, 400)).to.be.true;",
+                  "});",
+                  "",
+                  "// The row asks for raw_request capture, so an upstream rejection would carry the",
+              "// attempted payload here. Its absence is therefore evidence of a local refusal",
+              "// rather than an artefact of capture being switched off.",
+              "pm.test('nothing was sent upstream (no raw_request recorded for a pre-egress refusal)', function () {",
+                  "  var rr = (body.extra_fields || {}).raw_request;",
+                  "  var shown = rr === undefined ? 'undefined' : JSON.stringify(rr).slice(0, 300);",
+                  "  pm.expect(!rr, 'raw_request present, so the request reached DeepSeek: ' + shown).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
