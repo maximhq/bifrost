@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -80,6 +81,9 @@ type RDBLogStore struct {
 	// matViewRefreshTimeout bounds a self-heal refresh the same way a periodic
 	// tick is bounded. Zero means unbounded (maintenance not configured).
 	matViewRefreshTimeout time.Duration
+	// Lazily built shared probe behind MigrationInProgress (see maintenancegate.go).
+	migrationProbeOnce sync.Once
+	migrationProbeInst *migrationLockProbe
 }
 
 // generateBucketTimestamps generates all bucket timestamps for a time range.

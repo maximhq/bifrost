@@ -203,6 +203,13 @@ func (c *LogsCleaner) drainExpired(ctx context.Context, label string, cutoff tim
 		default:
 		}
 
+		// A DELETE queued ahead of another node's pending ALTER TABLE stalls that
+		// node's migration; hold off between batches until the lock is released.
+		if !c.waitForMigrationWindow(ctx) {
+			c.logger.Warn("%s cleanup stopped after %d rows in %d batches: %v", label, totalDeleted, batchCount, ctx.Err())
+			return false
+		}
+
 		deleted, err := deleteBatch(ctx, cutoff, batchSize)
 		if err != nil {
 			c.logger.Error("failed to delete old %s: %v", label, err)
@@ -236,6 +243,35 @@ func (c *LogsCleaner) drainExpired(ctx context.Context, label string, cutoff tim
 		c.logger.Debug("%s cleanup completed: nothing older than the cutoff", label)
 	}
 	return true
+}
+
+// cleanupMigrationPollInterval is how often a paused retention pass re-checks
+// the migration lock.
+var cleanupMigrationPollInterval = time.Second
+
+// waitForMigrationWindow blocks while the manager reports a migration in
+// progress, polling every cleanupMigrationPollInterval. It returns false only
+// when ctx ends first, so the pass deadline still bounds the wait. A manager
+// without a MaintenanceGate never pauses.
+func (c *LogsCleaner) waitForMigrationWindow(ctx context.Context) bool {
+	if !MigrationInProgressFor(ctx, c.manager) {
+		return true
+	}
+	c.logger.Info("log cleanup paused: migration lock is held by another node")
+	timer := time.NewTimer(cleanupMigrationPollInterval)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+		}
+		if !MigrationInProgressFor(ctx, c.manager) {
+			c.logger.Info("log cleanup resumed: migration lock released")
+			return true
+		}
+		timer.Reset(cleanupMigrationPollInterval)
+	}
 }
 
 // calculateNextRunDuration returns 24 hours plus a random jitter between 15-30 minutes

@@ -220876,6 +220876,67 @@
           ]
         }
       ]
+    },
+    {
+      "name": "195. Log writer migration gate surfaces maintenance drops (dropped logs)",
+      "description": "PR: pause the logging plugin's batch writer while another node holds the logstore migration advisory lock. The only wire-visible change is the additive dropped_during_maintenance counter on GET /api/logs/dropped; it must be present, numeric, and never exceed dropped_requests.",
+      "item": [
+        {
+          "name": "195.1: dropped logs endpoint reports the maintenance-window subset",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('195.1: dropped logs endpoint answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('195.1: dropped_requests is still reported as a number', function () {",
+                  "  pm.expect(body.dropped_requests, pm.response.text()).to.be.a('number');",
+                  "});",
+                  "pm.test('195.1: dropped_during_maintenance is reported as a number bounded by dropped_requests', function () {",
+                  "  pm.expect(body.dropped_during_maintenance, 'missing dropped_during_maintenance: ' + pm.response.text()).to.be.a('number');",
+                  "  pm.expect(body.dropped_during_maintenance, pm.response.text()).to.be.at.least(0);",
+                  "  pm.expect(body.dropped_during_maintenance, pm.response.text()).to.be.at.most(body.dropped_requests);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/dropped",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "dropped"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

@@ -429,10 +429,14 @@ const (
 	// deferredUsageRetries / deferredUsageBackoff control how long we wait for the
 	// batch writer to land the row before giving up. Backoff doubles per attempt:
 	// 250ms, 500ms, 1s.
-	deferredUsageRetries   = 3
-	deferredUsageBackoff   = 250 * time.Millisecond
-	deferredUsageDBTimeout = 10 * time.Second
+	deferredUsageRetries = 3
+	deferredUsageBackoff = 250 * time.Millisecond
 )
+
+// deferredUsageDBTimeout is the single budget covering a deferred usage update's
+// wait for the migration window, the presence lookups and the UPDATE. A var so
+// tests can shrink it.
+var deferredUsageDBTimeout = 10 * time.Second
 
 // sleepCtx sleeps for d, returning false if the plugin context is cancelled first.
 // Cleanup waits on p.wg, so an uncancellable sleep here delays shutdown.
@@ -1037,6 +1041,21 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 		// store hold a slot for ~30s and drop everything arriving in that window.
 		retryCtx, cancelRetry := context.WithTimeout(p.ctx, deferredUsageDBTimeout)
 		defer cancelRetry()
+		// Wait out another node's logstore migration inside the same budget: the
+		// lookup and UPDATE below would otherwise queue behind its ALTER TABLE.
+		// Then also wait for our own batch writer to leave its pause: it polls the
+		// same lock on its own cadence, so it can notice the release up to a poll
+		// interval after this goroutine does, and the row looked up below is still
+		// in its held batch until then. If either outlives the budget the update
+		// is dropped and counted as today.
+		for p.migrationInProgress(retryCtx) || p.writerPaused.Load() {
+			budgetLeft := retryCtx.Err() == nil && p.sleepCtx(maintenancePollInterval) && retryCtx.Err() == nil
+			if !budgetLeft {
+				p.droppedDeferredUsage.Add(1)
+				p.logger.Warn("deferred usage update dropped for request %s: logstore migration pause outlived the whole %s budget", requestID, deferredUsageDBTimeout)
+				return
+			}
+		}
 		var found bool
 		for attempt := range deferredUsageRetries {
 			presentResult, findErr := p.store.IsLogEntryPresent(retryCtx, requestID)
@@ -1225,6 +1244,9 @@ type LoggerPlugin struct {
 	settlementTracer             schemas.Tracer     // tracer for settled batch/video cost spans; nil disables the bridge
 	mcpToolLogCallback           MCPToolLogCallback // Callback for MCP tool log entries
 	droppedRequests              atomic.Int64
+	droppedDuringMaintenance     atomic.Int64          // Subset of droppedRequests dropped while the writer was paused for a logstore migration
+	writerPaused                 atomic.Bool           // Set by batchWriter while it waits out another node's logstore migration
+	maintenanceCapSpent          atomic.Bool           // batchWriter already paused maintenanceMaxPause for the current migration window
 	cleanupTicker                *time.Ticker          // Ticker for cleaning up old processing logs
 	logMsgPool                   sync.Pool             // Pool for reusing LogMessage structs
 	updateDataPool               sync.Pool             // Pool for reusing UpdateLogData structs
@@ -1410,6 +1432,23 @@ func (p *LoggerPlugin) cleanupWorker() {
 // cleanupOldProcessingLogs removes processing logs older than 30 minutes
 // and stale pending log entries from the in-memory map
 func (p *LoggerPlugin) cleanupOldProcessingLogs() {
+	// The DB deletes are skipped while another node runs a logstore migration:
+	// a DELETE queued ahead of its pending ALTER TABLE stalls the migration, and
+	// the rows are already 30 minutes stale, so the next tick losing a minute is
+	// harmless. The in-memory sweep below never touches the DB and always runs.
+	if p.migrationInProgress(p.ctx) {
+		p.logger.Debug("skipping processing-log cleanup tick: logstore migration lock is held by another node")
+	} else {
+		p.flushStaleProcessingLogs()
+	}
+
+	// Clean up stale pending log entries (requests where a post-hook never fired)
+	p.cleanupStalePendingLogs()
+}
+
+// flushStaleProcessingLogs deletes LLM, MCP and A2A rows still marked
+// processing after 30 minutes.
+func (p *LoggerPlugin) flushStaleProcessingLogs() {
 	// Calculate timestamp for 30 minutes ago in UTC to match log entry timestamps
 	thirtyMinutesAgo := time.Now().UTC().Add(-1 * 30 * time.Minute)
 
@@ -1427,9 +1466,6 @@ func (p *LoggerPlugin) cleanupOldProcessingLogs() {
 	if err := p.store.FlushAgentLogs(p.ctx, thirtyMinutesAgo); err != nil {
 		p.logger.Warn("failed to cleanup old processing A2A logs: %v", err)
 	}
-
-	// Clean up stale pending log entries (requests where a post-hook never fired)
-	p.cleanupStalePendingLogs()
 }
 
 // SetLogCallback sets a callback function that will be called for each log entry
