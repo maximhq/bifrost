@@ -901,7 +901,9 @@ func (provider *MiniMaxProvider) streamMiniMaxSSE(ctx *schemas.BifrostContext, p
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, rawRequest, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		return nil, providerUtils.EnrichError(ctx, parseMiniMaxError(resp), rawRequest, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
