@@ -1,0 +1,30 @@
+name: bifrost-e2e
+
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
+    environment:
+      POSTGRES_USER: bifrost
+      POSTGRES_PASSWORD: bifrost_password
+      POSTGRES_DB: postgres
+    command:
+      [
+        "postgres",
+        "-c",
+        "max_connections=500",
+        "-c",
+        "fsync=off",
+        "-c",
+        "synchronous_commit=off",
+        "-c",
+        "full_page_writes=off",
+      ]
+    ports:
+      - "127.0.0.1:${BIFROST_E2E_PG_PORT:-55432}:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U bifrost -d postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

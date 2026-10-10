@@ -21,6 +21,10 @@ export const REQUEST_TYPE_GROUPS = [
 		types: ["rerank"],
 	},
 	{
+		label: "Decisions",
+		types: ["decisions"],
+	},
+	{
 		label: "Audio",
 		types: ["speech", "transcription", "live"],
 	},
@@ -105,6 +109,18 @@ export const PRICING_FIELDS = [
 		label: "Output / token (flex)",
 		group: "chat",
 		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "input_cost_per_token_decisions",
+		label: "Input / token (decisions)",
+		group: "chat",
+		requestTypeGroups: ["decisions"],
+	},
+	{
+		key: "output_cost_per_token_decisions",
+		label: "Output / token (decisions)",
+		group: "chat",
+		requestTypeGroups: ["decisions"],
 	},
 	{
 		key: "input_cost_per_token_fast",

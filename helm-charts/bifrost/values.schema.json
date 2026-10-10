@@ -6728,6 +6728,23 @@
             }
           }
         },
+        "injected_tools": {
+          "type": "object",
+          "description": "MCP tools injected into every chat and responses request for this provider and executed server side when the model calls them",
+          "properties": {
+            "web_search": {
+              "type": "object",
+              "description": "MCP tool used as web search; replaces any native web search the client sends",
+              "properties": {
+                "mcp_client_name": { "type": "string", "minLength": 1 },
+                "tool_name": { "type": "string", "minLength": 1, "description": "Tool name without the client prefix" }
+              },
+              "required": ["mcp_client_name", "tool_name"],
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
         "custom_provider_config": {
           "type": "object",
           "description": "Custom provider configuration",

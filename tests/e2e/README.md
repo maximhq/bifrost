@@ -2,65 +2,77 @@
 
 End-to-end tests for the Bifrost UI using Playwright.
 
-## Setup
-
-```bash
-# Install dependencies
-npm install
-
-# Install Playwright browsers
-npx playwright install
-```
-
 ## Running Tests
 
 ```bash
-# Run all E2E tests
-make run-e2e
-
-# Run specific feature tests
-make run-e2e FLOW=providers
-make run-e2e FLOW=virtual-keys
-make run-e2e FLOW=dashboard
-make run-e2e FLOW=logs
-make run-e2e FLOW=mcp-logs
-make run-e2e FLOW=mcp-registry
-make run-e2e FLOW=routing-rules
-make run-e2e FLOW=observability
-make run-e2e FLOW=config
-make run-e2e FLOW=plugins
-
-# Run tests in headed mode (visible browser)
-make run-e2e-headed
-
-# Run tests with Playwright UI
-make run-e2e-ui
-
-# Run specific feature tests via npm
-npm run test:providers
-npm run test:virtual-keys
-npm run test:dashboard
-npm run test:logs
-npm run test:mcp-logs
-npm run test:mcp-registry
-npm run test:routing-rules
-npm run test:observability
-npm run test:config
-npm run test:plugins
-
-# View test report
-npm run report
+make run-e2e-ui                                   # whole suite on 4 workers
+make run-e2e-ui WORKERS=6                         # more parallelism
+make run-e2e-ui FLOW=providers,virtual-keys       # only these feature folders
+make run-e2e-ui RERUN=tests/e2e/reports/e2e-results.json   # only what failed last time
+make run-e2e-ui SKIP_BUILD=1                      # reuse tmp/e2e/bifrost-http (no UI/Go rebuild)
+make run-e2e-ui KEEP=1                            # leave the servers running afterwards to poke at
+make run-e2e-ui INTERACTIVE=1                     # Playwright UI mode against fresh servers
+make run-e2e-headed FLOW=config                   # visible browsers
+make e2e-ui-down                                  # stop KEEP=1 servers and the e2e Postgres
 ```
 
-### Parallel flows on CI
+`run-e2e` is an alias of `run-e2e-ui`. Secrets (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) come from `.env` or Infisical, same as the other targets.
 
-The GitHub Actions workflow **E2E Tests** (`.github/workflows/e2e-tests.yml`) runs each flow in a **separate job in parallel**, since flows are independent. It triggers on push/PR when `ui/`, `tests/e2e/`, or the workflow file change. You can also run it manually (Actions → E2E Tests → Run workflow) and optionally pass a comma-separated list of flows (e.g. `providers,config,plugins`) to run only those.
+### How a run works
+
+`scripts/run-e2e.mjs` does everything; Playwright never starts servers itself.
+
+1. Builds the UI and `tmp/e2e/bifrost-http` from the working tree.
+2. Starts a **dedicated Postgres** (`env/docker-compose.yml`, compose project `bifrost-e2e`, `127.0.0.1:55432`, tmpfs). Your local Postgres on 5432 is never touched. Override the port with `BIFROST_E2E_PG_PORT`.
+3. **Schedules** the selected spec files onto `WORKERS` workers: longest file first, each to the currently lightest worker. Weights are the per-file durations the last full run wrote to `reports/e2e-timings.json`; files without a timing are estimated from their test count. The plan is printed and saved to `tmp/e2e/plan.json`.
+4. Boots one Bifrost per worker (ports from 18181, override with `BIFROST_E2E_BASE_PORT`), each on its own freshly created database seeded from **`env/config.json`**: providers, the `TestClient001` MCP client, dashboard auth (`admin` / `bifrost-e2e-password`).
+5. Seeds LLM logs into workers that got dashboard/logs specs (needs `OPENAI_API_KEY`).
+6. Runs Playwright with one browser per worker. Each worker runs its files one at a time against its own server, so specs never share state across workers and there is nothing to group by hand.
+7. Writes `reports/e2e-results.json` and prints the re-run command. The previous artifact is kept as `reports/e2e-results.prev.json`.
+
+Server logs: `tmp/e2e/workers/<w>/bifrost.log`.
+
+### Seed state
+
+Put fixed preconditions in `env/config.json` (validated against `transports/config.schema.json`) instead of creating them through the API in setup code. Values can reference env vars with `env.NAME`. Specs should still create the entities they are *testing* through the UI.
+
+### Failure artifact
+
+`reports/e2e-results.json`:
+
+```json
+{
+  "status": "failed",
+  "totals": { "passed": 310, "failed": 2, "flaky": 1, "skipped": 12 },
+  "rerun": {
+    "command": "make run-e2e-ui RERUN=tests/e2e/reports/e2e-results.json",
+    "targets": ["features/governance/governance.spec.ts:46"]
+  },
+  "failed": [{ "worker": "w2", "file": "...", "line": 46, "title": "...", "error": "...", "attachments": ["test-results/.../trace.zip"] }],
+  "flaky": [],
+  "errors": []
+}
+```
+
+`errors` holds failures outside any test (a spec that fails to load, global setup). A failed run with no test targets cannot be replayed with `RERUN`, and neither can a failed login setup (`core/auth.setup.ts`), since the tests behind it were skipped rather than failed; the runner refuses both and asks for a full run. Only one run can use `tmp/e2e` at a time; a second one exits while the first is in progress.
+
+### Against a server you started yourself
+
+```bash
+cd tests/e2e && E2E_BASE_URL=http://localhost:8080 BIFROST_ADMIN_USERNAME=... BIFROST_ADMIN_PASSWORD=... npx playwright test features/providers
+```
+
+Without a runner plan, everything runs on a single worker against that server.
 
 ## Folder Structure
 
 ```text
 tests/e2e/
-├── playwright.config.ts           # Playwright configuration
+├── playwright.config.ts           # Playwright configuration (one project per scheduled worker)
+├── plan.ts                        # Reads the runner's worker plan
+├── env/                           # docker-compose.yml (Postgres :55432) + seed config.json
+├── scripts/run-e2e.mjs            # Orchestrator behind `make run-e2e-ui`
+├── reporters/failures.ts          # Writes reports/e2e-results.json
 ├── core/                          # Shared utilities & fixtures
 │   ├── fixtures/                 # Custom test fixtures
 │   ├── pages/                    # Base page objects
@@ -106,16 +118,19 @@ const keyData = createProviderKeyData({ name: 'My Key' })
 ## Configuration
 
 Environment variables:
-- `BASE_URL` - Base URL of the application (default: http://localhost:3000)
-- `CI` - Set to true in CI environments
+- `E2E_BASE_URL` - Run everything against one existing server instead of runner-started workers
+- `WORKERS` - Number of isolated Bifrost+browser workers (default: 4)
+- `BIFROST_E2E_PG_PORT` - Port for the dedicated Postgres (default: 55432)
+- `SEED_MODEL` - Model used to seed logs (default: openai/gpt-4o-mini)
+- `CI` - Set to true in CI environments (enables retries)
 
 ## Debugging
 
 ```bash
-# Run with Playwright Inspector
-npm run test:debug
+# Run with Playwright Inspector (anything after -- goes to playwright)
+node scripts/run-e2e.mjs --features providers -- --debug
 
-# Generate code with Codegen
+# Generate code with Codegen against a worker left up by KEEP=1 (w1 = :18181)
 npm run codegen
 ```
 

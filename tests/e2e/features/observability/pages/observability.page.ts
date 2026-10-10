@@ -1,4 +1,4 @@
-import { Page, Locator } from '@playwright/test'
+import { Page, Locator, expect } from '@playwright/test'
 import { BasePage } from '../../../core/pages/base.page'
 import { waitForNetworkIdle } from '../../../core/utils/test-helpers'
 
@@ -30,7 +30,8 @@ export class ObservabilityPage extends BasePage {
   /** Map of connector -> data-testid for enable toggle (otel/prometheus have specific testids) */
   private static readonly CONNECTOR_TOGGLE_TESTIDS: Partial<Record<ObservabilityConnector, string>> = {
     otel: 'otel-connector-enable-toggle',
-    prometheus: 'prometheus-connector-enable-toggle',
+    // Prometheus has no connector-wide switch; pull-based scraping is its primary toggle.
+    prometheus: 'prometheus-metrics-enable-toggle',
   }
 
   /** Map of connector -> data-testid for delete button (otel/prometheus have specific testids) */
@@ -70,6 +71,16 @@ export class ObservabilityPage extends BasePage {
   /**
    * Select a connector tab
    */
+  /** OTel profiles render collapsed; open one so its tabs are reachable. */
+  async expandOtelProfile(index: number): Promise<void> {
+    const profile = this.page.getByTestId(`otel-profile-${index}`)
+    await profile.waitFor()
+    if ((await profile.getAttribute('data-state')) !== 'open') {
+      await profile.getByRole('button').first().click()
+    }
+    await expect(profile).toHaveAttribute('data-state', 'open')
+  }
+
   async selectConnector(connector: ObservabilityConnector): Promise<void> {
     const tab = this.getConnectorTab(connector)
 
@@ -181,8 +192,8 @@ export class ObservabilityPage extends BasePage {
     await this.selectConnector('otel')
     // The metrics-export toggle lives in the profile's Metrics tab, which is not the
     // default active tab, so select it before interacting with the toggle.
+    await this.expandOtelProfile(0)
     const metricsTab = this.page.getByTestId('otel-profile-0-tab-metrics')
-    await metricsTab.waitFor({ state: 'visible', timeout: 5000 })
     await metricsTab.click()
     const switch_ = this.page.getByTestId('otel-metrics-export-toggle')
     await switch_.waitFor({ state: 'visible', timeout: 5000 })
@@ -297,8 +308,8 @@ export class ObservabilityPage extends BasePage {
   async isMetricsEndpointVisible(): Promise<boolean> {
     // The metrics subsection lives in the profile's Metrics tab, which is not active by
     // default; select it first so its content is mounted before checking visibility.
+    await this.expandOtelProfile(0)
     const metricsTab = this.page.getByTestId('otel-profile-0-tab-metrics')
-    await metricsTab.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
     await metricsTab.click().catch(() => {})
 
     // Metrics endpoint input (only visible when Enable Metrics Export is on)

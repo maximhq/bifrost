@@ -218,3 +218,16 @@ export function pickNextSessionLog<T extends { id: string; timestamp: string }>(
 		return !!at && isLaterTimestamp(at, after);
 	});
 }
+/**
+ * The questions a decision request asked, as stored in the log's params.
+ *
+ * Logs store the questions as an array in request order; logs written before
+ * decisions were normalized store an object keyed by question name. Returns
+ * null when the log is not a decision log or carries none, so the caller
+ * renders nothing.
+ */
+export function decisionQuestions(object: string | undefined, params: unknown): { value: unknown; count: number } | null {
+	if (object !== "decisions" || params === null || typeof params !== "object") return null;
+	const count = Array.isArray(params) ? params.length : Object.keys(params).length;
+	return count > 0 ? { value: params, count } : null;
+}

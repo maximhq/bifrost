@@ -76,6 +76,10 @@
           "    if (j.answers && typeof j.answers === 'object' && !Array.isArray(j.answers)) {",
           "        shape = 'decisions';",
           "        hasContent = Object.keys(j.answers).length > 0;",
+          "    } else if (Array.isArray(j.answers) && j.answers.length > 0 && j.answers[0] && typeof j.answers[0].type === 'string') {",
+          "        // The normalized and OpenAI-compatible decisions bodies answer as an ordered list of typed answers.",
+          "        shape = 'decisions-ordered';",
+          "        hasContent = true;",
           "    } else if (j.message && typeof j.message === 'object' && (j.message.content !== undefined || Array.isArray(j.message.tool_calls))) {",
           "        shape = 'cohere-v2-chat';",
           "        var cohereContent = j.message.content;",
@@ -162036,7 +162040,7 @@
           "response": []
         },
         {
-          "name": "/v1/decisions - unsupported kind rejected with 400 - typesafe/jev-1.13.0",
+          "name": "[EXPECT-400] /v1/decisions - unsupported kind rejected with 400 - typesafe/jev-1.13.0",
           "event": [
             {
               "listen": "test",
@@ -162783,78 +162787,6 @@
           "response": []
         },
         {
-          "name": "/v1/decisions - matches jev anchors - openai/gpt-5.6-luna",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "pm.test('emulated decision succeeds', function () {",
-                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
-                  "});",
-                  "var body = pm.response.json();",
-                  "var expected = 30;",
-                  "// Native noul answers carry no confidence ({kind, value} only - docs/quickstart/gateway/decisions.mdx), so the",
-                  "// emulation schema leaves it optional there and strict-schema providers may omit it; choice/score require it.",
-                  "pm.test('every question answered (confidence on choice/score)', function () {",
-                  "    pm.expect(Object.keys(body.answers).length).to.eql(expected);",
-                  "    Object.keys(body.answers).forEach(function (k) {",
-                  "        var a = body.answers[k];",
-                  "        if (a.kind === 'noul') {",
-                  "            pm.expect(a.value, k + ' noul value').to.be.a('number').and.to.be.within(0, 1);",
-                  "            if (a.confidence !== undefined) { pm.expect(a.confidence, k + ' confidence').to.be.a('number'); }",
-                  "        } else {",
-                  "            pm.expect(a.confidence, k + ' confidence').to.be.a('number');",
-                  "        }",
-                  "    });",
-                  "});",
-                  "pm.test('anchor verdicts match jev', function () {",
-                  "    pm.expect(Math.round(body.answers['is_frustrated'].value), 'is_frustrated').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['is_angry'].value), 'is_angry').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['mentions_refund'].value), 'mentions_refund').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['threatens_chargeback'].value), 'threatens_chargeback').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['threatens_cancellation'].value), 'threatens_cancellation').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['mentions_competitor'].value), 'mentions_competitor').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['is_satisfied'].value), 'is_satisfied').to.eql(0);",
-                  "    pm.expect(body.answers['category'].value, 'category').to.eql(\"billing\");",
-                  "    pm.expect(body.answers['sentiment'].value, 'sentiment').to.eql(\"negative\");",
-                  "    pm.expect(body.answers['customer_tier'].value, 'customer_tier').to.eql(\"pro\");",
-                  "});",
-                  "pm.test('resolved by the LLM provider with usage', function () {",
-                  "    pm.expect(body.extra_fields.provider).to.eql('openai');",
-                  "    pm.expect(body.usage.prompt_tokens).to.be.above(0);",
-                  "});"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/v1/decisions",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "decisions"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.6-luna\",\n  \"state\": \"Customer support ticket #88231. Customer is on the Pro plan and has been a paying subscriber for 3 years. They write: 'This is my FIFTH email in two weeks and NOBODY has replied. You charged my card THREE times for a single order (#A-4021) at $149 each, so $447 total instead of $149. I have screenshots of all three charges. I have asked for a refund every single time and been completely ignored. If the two extra charges are not refunded TODAY I am filing a chargeback with my bank, cancelling my Pro subscription immediately, posting the screenshots on Twitter, and reporting you to the Better Business Bureau. Your competitor Acme offers the same features for less and I am seriously considering switching. This is completely unacceptable and I want a real person to fix this now.'\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"is_angry\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer angry?\"\n    },\n    \"is_satisfied\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer satisfied with the service?\"\n    },\n    \"is_polite\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the message written in a calm, polite tone?\"\n    },\n    \"mentions_refund\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer ask for a refund?\"\n    },\n    \"threatens_chargeback\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten a bank chargeback?\"\n    },\n    \"threatens_cancellation\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to cancel their subscription?\"\n    },\n    \"threatens_public_complaint\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to complain publicly (social media, review sites, or a regulator)?\"\n    },\n    \"mentions_competitor\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer mention a competitor?\"\n    },\n    \"is_billing_related\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the issue about billing or charges?\"\n    },\n    \"is_repeat_contact\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Has the customer contacted support about this before?\"\n    },\n    \"has_attached_evidence\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer say they have evidence such as screenshots?\"\n    },\n    \"mentions_specific_amount\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer cite a specific dollar amount?\"\n    },\n    \"is_long_time_customer\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this a long-time customer (multiple years)?\"\n    },\n    \"requests_human_response\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer explicitly ask to speak to a real person?\"\n    },\n    \"is_first_time_issue\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this the first time the customer is raising this issue?\"\n    },\n    \"willing_to_wait\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer willing to wait patiently for a resolution?\"\n    },\n    \"expresses_urgency\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer express that this is urgent?\"\n    },\n    \"mentions_data_loss\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report lost data?\"\n    },\n    \"reports_product_crash\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report the product crashing or a software defect?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges, refunds, invoices\",\n        \"bug\": \"product defects or crashes\",\n        \"account\": \"login or account access\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"sentiment\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Overall sentiment of the message\",\n      \"criteria\": {\n        \"positive\": \"happy\",\n        \"neutral\": \"matter of fact\",\n        \"negative\": \"unhappy or hostile\"\n      }\n    },\n    \"primary_emotion\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The dominant emotion\",\n      \"criteria\": {\n        \"anger\": \"angry or hostile\",\n        \"confusion\": \"confused\",\n        \"sadness\": \"sad or disappointed\",\n        \"joy\": \"happy\"\n      }\n    },\n    \"customer_tier\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which plan is the customer on?\",\n      \"criteria\": {\n        \"free\": \"free plan\",\n        \"pro\": \"pro plan\",\n        \"enterprise\": \"enterprise plan\"\n      }\n    },\n    \"recommended_action\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The single best next action\",\n      \"criteria\": {\n        \"issue_refund\": \"refund the extra charges\",\n        \"request_more_info\": \"ask for more details\",\n        \"close_ticket\": \"close with no action\",\n        \"ignore\": \"take no action\"\n      }\n    },\n    \"contact_channel\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which channel did the customer use?\",\n      \"criteria\": {\n        \"email\": \"email or support ticket\",\n        \"phone\": \"phone call\",\n        \"chat\": \"live chat\",\n        \"social\": \"social media\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered this week\",\n        \"should be answered today\",\n        \"needs an immediate reply\"\n      ]\n    },\n    \"severity\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How severe is the customer's problem?\",\n      \"criteria\": [\n        \"minor\",\n        \"moderate\",\n        \"major\",\n        \"severe\"\n      ]\n    },\n    \"churn_risk\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How likely is this customer to cancel?\",\n      \"criteria\": [\n        \"not at all likely\",\n        \"somewhat likely\",\n        \"very likely\",\n        \"almost certain\"\n      ]\n    },\n    \"customer_satisfaction\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How satisfied is the customer right now?\",\n      \"criteria\": [\n        \"very unsatisfied\",\n        \"unsatisfied\",\n        \"neutral\",\n        \"satisfied\",\n        \"very satisfied\"\n      ]\n    }\n  }\n}"
-            }
-          },
-          "response": []
-        },
-        {
           "name": "/v1/decisions - matches jev anchors - openai/gpt-5.6-terra",
           "event": [
             {
@@ -162922,78 +162854,6 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"openai/gpt-5.6-terra\",\n  \"state\": \"Customer support ticket #88231. Customer is on the Pro plan and has been a paying subscriber for 3 years. They write: 'This is my FIFTH email in two weeks and NOBODY has replied. You charged my card THREE times for a single order (#A-4021) at $149 each, so $447 total instead of $149. I have screenshots of all three charges. I have asked for a refund every single time and been completely ignored. If the two extra charges are not refunded TODAY I am filing a chargeback with my bank, cancelling my Pro subscription immediately, posting the screenshots on Twitter, and reporting you to the Better Business Bureau. Your competitor Acme offers the same features for less and I am seriously considering switching. This is completely unacceptable and I want a real person to fix this now.'\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"is_angry\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer angry?\"\n    },\n    \"is_satisfied\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer satisfied with the service?\"\n    },\n    \"is_polite\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the message written in a calm, polite tone?\"\n    },\n    \"mentions_refund\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer ask for a refund?\"\n    },\n    \"threatens_chargeback\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten a bank chargeback?\"\n    },\n    \"threatens_cancellation\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to cancel their subscription?\"\n    },\n    \"threatens_public_complaint\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to complain publicly (social media, review sites, or a regulator)?\"\n    },\n    \"mentions_competitor\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer mention a competitor?\"\n    },\n    \"is_billing_related\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the issue about billing or charges?\"\n    },\n    \"is_repeat_contact\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Has the customer contacted support about this before?\"\n    },\n    \"has_attached_evidence\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer say they have evidence such as screenshots?\"\n    },\n    \"mentions_specific_amount\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer cite a specific dollar amount?\"\n    },\n    \"is_long_time_customer\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this a long-time customer (multiple years)?\"\n    },\n    \"requests_human_response\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer explicitly ask to speak to a real person?\"\n    },\n    \"is_first_time_issue\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this the first time the customer is raising this issue?\"\n    },\n    \"willing_to_wait\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer willing to wait patiently for a resolution?\"\n    },\n    \"expresses_urgency\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer express that this is urgent?\"\n    },\n    \"mentions_data_loss\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report lost data?\"\n    },\n    \"reports_product_crash\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report the product crashing or a software defect?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges, refunds, invoices\",\n        \"bug\": \"product defects or crashes\",\n        \"account\": \"login or account access\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"sentiment\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Overall sentiment of the message\",\n      \"criteria\": {\n        \"positive\": \"happy\",\n        \"neutral\": \"matter of fact\",\n        \"negative\": \"unhappy or hostile\"\n      }\n    },\n    \"primary_emotion\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The dominant emotion\",\n      \"criteria\": {\n        \"anger\": \"angry or hostile\",\n        \"confusion\": \"confused\",\n        \"sadness\": \"sad or disappointed\",\n        \"joy\": \"happy\"\n      }\n    },\n    \"customer_tier\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which plan is the customer on?\",\n      \"criteria\": {\n        \"free\": \"free plan\",\n        \"pro\": \"pro plan\",\n        \"enterprise\": \"enterprise plan\"\n      }\n    },\n    \"recommended_action\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The single best next action\",\n      \"criteria\": {\n        \"issue_refund\": \"refund the extra charges\",\n        \"request_more_info\": \"ask for more details\",\n        \"close_ticket\": \"close with no action\",\n        \"ignore\": \"take no action\"\n      }\n    },\n    \"contact_channel\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which channel did the customer use?\",\n      \"criteria\": {\n        \"email\": \"email or support ticket\",\n        \"phone\": \"phone call\",\n        \"chat\": \"live chat\",\n        \"social\": \"social media\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered this week\",\n        \"should be answered today\",\n        \"needs an immediate reply\"\n      ]\n    },\n    \"severity\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How severe is the customer's problem?\",\n      \"criteria\": [\n        \"minor\",\n        \"moderate\",\n        \"major\",\n        \"severe\"\n      ]\n    },\n    \"churn_risk\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How likely is this customer to cancel?\",\n      \"criteria\": [\n        \"not at all likely\",\n        \"somewhat likely\",\n        \"very likely\",\n        \"almost certain\"\n      ]\n    },\n    \"customer_satisfaction\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How satisfied is the customer right now?\",\n      \"criteria\": [\n        \"very unsatisfied\",\n        \"unsatisfied\",\n        \"neutral\",\n        \"satisfied\",\n        \"very satisfied\"\n      ]\n    }\n  }\n}"
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "/v1/decisions - matches jev anchors - openai/gpt-5.4-nano",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "pm.test('emulated decision succeeds', function () {",
-                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
-                  "});",
-                  "var body = pm.response.json();",
-                  "var expected = 30;",
-                  "// Native noul answers carry no confidence ({kind, value} only - docs/quickstart/gateway/decisions.mdx), so the",
-                  "// emulation schema leaves it optional there and strict-schema providers may omit it; choice/score require it.",
-                  "pm.test('every question answered (confidence on choice/score)', function () {",
-                  "    pm.expect(Object.keys(body.answers).length).to.eql(expected);",
-                  "    Object.keys(body.answers).forEach(function (k) {",
-                  "        var a = body.answers[k];",
-                  "        if (a.kind === 'noul') {",
-                  "            pm.expect(a.value, k + ' noul value').to.be.a('number').and.to.be.within(0, 1);",
-                  "            if (a.confidence !== undefined) { pm.expect(a.confidence, k + ' confidence').to.be.a('number'); }",
-                  "        } else {",
-                  "            pm.expect(a.confidence, k + ' confidence').to.be.a('number');",
-                  "        }",
-                  "    });",
-                  "});",
-                  "pm.test('anchor verdicts match jev', function () {",
-                  "    pm.expect(Math.round(body.answers['is_frustrated'].value), 'is_frustrated').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['is_angry'].value), 'is_angry').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['mentions_refund'].value), 'mentions_refund').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['threatens_chargeback'].value), 'threatens_chargeback').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['threatens_cancellation'].value), 'threatens_cancellation').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['mentions_competitor'].value), 'mentions_competitor').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['is_satisfied'].value), 'is_satisfied').to.eql(0);",
-                  "    pm.expect(body.answers['category'].value, 'category').to.eql(\"billing\");",
-                  "    pm.expect(body.answers['sentiment'].value, 'sentiment').to.eql(\"negative\");",
-                  "    pm.expect(body.answers['customer_tier'].value, 'customer_tier').to.eql(\"pro\");",
-                  "});",
-                  "pm.test('resolved by the LLM provider with usage', function () {",
-                  "    pm.expect(body.extra_fields.provider).to.eql('openai');",
-                  "    pm.expect(body.usage.prompt_tokens).to.be.above(0);",
-                  "});"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/v1/decisions",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "decisions"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.4-nano\",\n  \"state\": \"Customer support ticket #88231. Customer is on the Pro plan and has been a paying subscriber for 3 years. They write: 'This is my FIFTH email in two weeks and NOBODY has replied. You charged my card THREE times for a single order (#A-4021) at $149 each, so $447 total instead of $149. I have screenshots of all three charges. I have asked for a refund every single time and been completely ignored. If the two extra charges are not refunded TODAY I am filing a chargeback with my bank, cancelling my Pro subscription immediately, posting the screenshots on Twitter, and reporting you to the Better Business Bureau. Your competitor Acme offers the same features for less and I am seriously considering switching. This is completely unacceptable and I want a real person to fix this now.'\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"is_angry\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer angry?\"\n    },\n    \"is_satisfied\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer satisfied with the service?\"\n    },\n    \"is_polite\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the message written in a calm, polite tone?\"\n    },\n    \"mentions_refund\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer ask for a refund?\"\n    },\n    \"threatens_chargeback\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten a bank chargeback?\"\n    },\n    \"threatens_cancellation\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to cancel their subscription?\"\n    },\n    \"threatens_public_complaint\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to complain publicly (social media, review sites, or a regulator)?\"\n    },\n    \"mentions_competitor\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer mention a competitor?\"\n    },\n    \"is_billing_related\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the issue about billing or charges?\"\n    },\n    \"is_repeat_contact\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Has the customer contacted support about this before?\"\n    },\n    \"has_attached_evidence\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer say they have evidence such as screenshots?\"\n    },\n    \"mentions_specific_amount\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer cite a specific dollar amount?\"\n    },\n    \"is_long_time_customer\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this a long-time customer (multiple years)?\"\n    },\n    \"requests_human_response\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer explicitly ask to speak to a real person?\"\n    },\n    \"is_first_time_issue\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this the first time the customer is raising this issue?\"\n    },\n    \"willing_to_wait\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer willing to wait patiently for a resolution?\"\n    },\n    \"expresses_urgency\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer express that this is urgent?\"\n    },\n    \"mentions_data_loss\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report lost data?\"\n    },\n    \"reports_product_crash\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report the product crashing or a software defect?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges, refunds, invoices\",\n        \"bug\": \"product defects or crashes\",\n        \"account\": \"login or account access\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"sentiment\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Overall sentiment of the message\",\n      \"criteria\": {\n        \"positive\": \"happy\",\n        \"neutral\": \"matter of fact\",\n        \"negative\": \"unhappy or hostile\"\n      }\n    },\n    \"primary_emotion\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The dominant emotion\",\n      \"criteria\": {\n        \"anger\": \"angry or hostile\",\n        \"confusion\": \"confused\",\n        \"sadness\": \"sad or disappointed\",\n        \"joy\": \"happy\"\n      }\n    },\n    \"customer_tier\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which plan is the customer on?\",\n      \"criteria\": {\n        \"free\": \"free plan\",\n        \"pro\": \"pro plan\",\n        \"enterprise\": \"enterprise plan\"\n      }\n    },\n    \"recommended_action\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The single best next action\",\n      \"criteria\": {\n        \"issue_refund\": \"refund the extra charges\",\n        \"request_more_info\": \"ask for more details\",\n        \"close_ticket\": \"close with no action\",\n        \"ignore\": \"take no action\"\n      }\n    },\n    \"contact_channel\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which channel did the customer use?\",\n      \"criteria\": {\n        \"email\": \"email or support ticket\",\n        \"phone\": \"phone call\",\n        \"chat\": \"live chat\",\n        \"social\": \"social media\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered this week\",\n        \"should be answered today\",\n        \"needs an immediate reply\"\n      ]\n    },\n    \"severity\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How severe is the customer's problem?\",\n      \"criteria\": [\n        \"minor\",\n        \"moderate\",\n        \"major\",\n        \"severe\"\n      ]\n    },\n    \"churn_risk\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How likely is this customer to cancel?\",\n      \"criteria\": [\n        \"not at all likely\",\n        \"somewhat likely\",\n        \"very likely\",\n        \"almost certain\"\n      ]\n    },\n    \"customer_satisfaction\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How satisfied is the customer right now?\",\n      \"criteria\": [\n        \"very unsatisfied\",\n        \"unsatisfied\",\n        \"neutral\",\n        \"satisfied\",\n        \"very satisfied\"\n      ]\n    }\n  }\n}"
             }
           },
           "response": []
@@ -217562,6 +217422,1529 @@
       ]
     },
     {
+      "name": "184. Normalized decision request on /v1/decisions (decisions-normalized)",
+      "description": "Pins the normalized /v1/decisions body (PR #8181): input plus an ordered list of typed questions (predicate, choice, score), answered as an ordered list. Covers every question type including boolean choices and an unnamed question, text, structured and message inputs, the same body served by chat emulation, a stray state next to input being ignored (Typesafe receives the input as its state), and the rejection of an image sent to a Typesafe model, which cannot read it. The deprecated map form stays covered by folders 106-108.",
+      "item": [
+        {
+          "name": "/v1/decisions - normalized body, every question type answered in order - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('normalized decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('one typed answer per question, in question order', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(6);",
+                  "    var a = body.answers;",
+                  "    ['is_frustrated', 'wants_refund', 'category', 'escalate', 'urgency'].forEach(function (name, i) {",
+                  "        pm.expect(a[i].name, 'answer ' + i).to.eql(name);",
+                  "    });",
+                  "    pm.expect(a[0].type).to.eql('predicate');",
+                  "    pm.expect(a[0].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[1].type).to.eql('predicate');",
+                  "    pm.expect(a[1].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[2].type).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(a[2].choice);",
+                  "    pm.expect(a[3].type).to.eql('choice');",
+                  "    pm.expect([true, false]).to.include(a[3].choice);",
+                  "    pm.expect(a[4].type).to.eql('score');",
+                  "    pm.expect(a[4].score).to.be.within(0, 2);",
+                  "    pm.expect(a[5].type).to.eql('predicate');",
+                  "    pm.expect(a[5].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[5], 'unnamed answer carries a name').to.not.have.property('name');",
+                  "});",
+                  "pm.test('served by typesafe/jev-1.13.0', function () {",
+                  "    var routing = (body.extra_fields || {}).routing_info || {};",
+                  "    pm.expect(routing.provider, 'routing: ' + JSON.stringify(body.extra_fields)).to.eql('typesafe');",
+                  "    pm.expect(routing.model).to.eql('jev-1.13.0');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Does the customer want a refund?\",\n      \"criteria\": {\n        \"true\": \"asks for money back\",\n        \"false\": \"no refund mentioned\"\n      }\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges and refunds\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\"\n        }\n      ]\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"escalate\",\n      \"instructions\": \"Should this be escalated to a manager?\",\n      \"choices\": [\n        {\n          \"value\": true,\n          \"description\": \"yes\"\n        },\n        {\n          \"value\": false,\n          \"description\": \"no\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"levels\": [\n        {\n          \"label\": \"low\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"medium\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"high\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    },\n    {\n      \"type\": \"predicate\",\n      \"instructions\": \"Is the message written in English?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - structured input becomes the state - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('structured input accepted', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].name).to.eql('is_frustrated');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": {\n    \"ticket\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n    \"channel\": \"email\",\n    \"previous_contacts\": 2\n  },\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - message input - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('message input accepted', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].name).to.eql('is_frustrated');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\"\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - normalized body through chat emulation - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('emulated decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('one typed answer per question, in question order', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(6);",
+                  "    var a = body.answers;",
+                  "    ['is_frustrated', 'wants_refund', 'category', 'escalate', 'urgency'].forEach(function (name, i) {",
+                  "        pm.expect(a[i].name, 'answer ' + i).to.eql(name);",
+                  "    });",
+                  "    pm.expect(a[0].type).to.eql('predicate');",
+                  "    pm.expect(a[0].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[1].type).to.eql('predicate');",
+                  "    pm.expect(a[1].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[2].type).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(a[2].choice);",
+                  "    pm.expect(a[3].type).to.eql('choice');",
+                  "    pm.expect([true, false]).to.include(a[3].choice);",
+                  "    pm.expect(a[4].type).to.eql('score');",
+                  "    pm.expect(a[4].score).to.be.within(0, 2);",
+                  "    pm.expect(a[5].type).to.eql('predicate');",
+                  "    pm.expect(a[5].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[5], 'unnamed answer carries a name').to.not.have.property('name');",
+                  "});",
+                  "pm.test('served by openai/gpt-4o-mini', function () {",
+                  "    var routing = (body.extra_fields || {}).routing_info || {};",
+                  "    pm.expect(routing.provider, 'routing: ' + JSON.stringify(body.extra_fields)).to.eql('openai');",
+                  "    pm.expect(routing.model).to.eql('gpt-4o-mini');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Does the customer want a refund?\",\n      \"criteria\": {\n        \"true\": \"asks for money back\",\n        \"false\": \"no refund mentioned\"\n      }\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges and refunds\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\"\n        }\n      ]\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"escalate\",\n      \"instructions\": \"Should this be escalated to a manager?\",\n      \"choices\": [\n        {\n          \"value\": true,\n          \"description\": \"yes\"\n        },\n        {\n          \"value\": false,\n          \"description\": \"no\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"levels\": [\n        {\n          \"label\": \"low\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"medium\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"high\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    },\n    {\n      \"type\": \"predicate\",\n      \"instructions\": \"Is the message written in English?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - a state sent next to input is ignored - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the normalized body is served', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('answered as an ordered list, not the map form', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});",
+                  "pm.test('Typesafe receives the input as its state, never the stray state', function () {",
+                  "    var rr = (body.extra_fields || {}).raw_request;",
+                  "    if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    pm.expect(rr, 'raw request: ' + JSON.stringify(body.extra_fields)).to.be.an('object');",
+                  "    pm.expect(rr.state).to.eql(JSON.parse(pm.request.body.raw).input);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"state\": \"A stale state that must not be sent.\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] /v1/decisions - image input rejected by a Typesafe model - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('an image is rejected rather than dropped', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "    pm.expect(pm.response.text()).to.include(\"image\");",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is a screenshot of my bill.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "185. OpenAI native decisions on /v1/decisions (openai-decisions)",
+      "description": "Pins OpenAI's decisions endpoint behind /v1/decisions (PR #8191): openai/gpt-6-luna, gated by the supports_decisions capability, answers the normalized body and the deprecated map form natively, reads image input, and serves as the fallback for an image a Typesafe model rejects. A chat model on the same provider (gpt-4o-mini) keeps answering through emulation; folder 184 pins that.",
+      "item": [
+        {
+          "name": "/v1/decisions - normalized body, every question type answered in order - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('native decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('one typed answer per question, in question order', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(6);",
+                  "    var a = body.answers;",
+                  "    ['is_frustrated', 'wants_refund', 'category', 'escalate', 'urgency'].forEach(function (name, i) {",
+                  "        pm.expect(a[i].name, 'answer ' + i).to.eql(name);",
+                  "    });",
+                  "    pm.expect(a[0].type).to.eql('predicate');",
+                  "    pm.expect(a[0].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[1].type).to.eql('predicate');",
+                  "    pm.expect(a[1].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[2].type).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(a[2].choice);",
+                  "    pm.expect(a[3].type).to.eql('choice');",
+                  "    pm.expect([true, false]).to.include(a[3].choice);",
+                  "    pm.expect(a[4].type).to.eql('score');",
+                  "    pm.expect(a[4].score).to.be.within(0, 2);",
+                  "    pm.expect(a[5].type).to.eql('predicate');",
+                  "    pm.expect(a[5].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[5], 'unnamed answer carries a name').to.not.have.property('name');",
+                  "});",
+                  "pm.test('served by openai/gpt-6-luna', function () {",
+                  "    var routing = (body.extra_fields || {}).routing_info || {};",
+                  "    pm.expect(routing.provider, 'routing: ' + JSON.stringify(body.extra_fields)).to.eql('openai');",
+                  "    pm.expect(routing.model).to.eql('gpt-6-luna');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Does the customer want a refund?\",\n      \"criteria\": {\n        \"true\": \"asks for money back\",\n        \"false\": \"no refund mentioned\"\n      }\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges and refunds\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\"\n        }\n      ]\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"escalate\",\n      \"instructions\": \"Should this be escalated to a manager?\",\n      \"choices\": [\n        {\n          \"value\": true,\n          \"description\": \"yes\"\n        },\n        {\n          \"value\": false,\n          \"description\": \"no\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"levels\": [\n        {\n          \"label\": \"low\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"medium\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"high\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    },\n    {\n      \"type\": \"predicate\",\n      \"instructions\": \"Is the message written in English?\"\n    }\n  ],\n  \"safety_identifier\": \"harness-user-1\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - deprecated map form answered keyed by name - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('map form served by OpenAI', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('answers keyed by question name with kind and value', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('object').and.not.an('array');",
+                  "    pm.expect(body.answers.is_frustrated.kind).to.eql('noul');",
+                  "    pm.expect(body.answers.is_frustrated.value).to.be.within(0, 1);",
+                  "    pm.expect(body.answers.category.kind).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(body.answers.category.value);",
+                  "    pm.expect(body.answers.urgency.kind).to.eql('score');",
+                  "    pm.expect(body.answers.urgency.value).to.be.within(0, 2);",
+                  "    pm.expect(body.answers.urgency.legend, 'score legend rebuilt from the criteria: ' + JSON.stringify(body.answers.urgency)).to.eql({ '0': 'can wait a week', '1': 'should be answered soon', '2': 'needs a reply today' });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"state\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges and refunds\",\n        \"bug\": \"product defects\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered soon\",\n        \"needs a reply today\"\n      ]\n    }\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - image input read natively - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('image input accepted', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].name).to.eql('is_frustrated');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is a screenshot of my bill.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - image rejected by Typesafe falls back to openai/gpt-6-luna - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the fallback serves the image', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].name).to.eql('is_frustrated');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});",
+                  "pm.test('served by openai/gpt-6-luna', function () {",
+                  "    var routing = (body.extra_fields || {}).routing_info || {};",
+                  "    pm.expect(routing.provider, 'routing: ' + JSON.stringify(body.extra_fields)).to.eql('openai');",
+                  "    pm.expect(routing.model).to.eql('gpt-6-luna');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"fallbacks\": [\n    \"openai/gpt-6-luna\"\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is a screenshot of my bill.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "186. OpenAI-compatible /openai/v1/decisions (openai-compat-decisions)",
+      "description": "Pins the OpenAI SDK route /openai/v1/decisions (PR #8192): the OpenAI request body reaches every decision model. Every model, gpt-6-luna (a bare name defaults to openai), a Typesafe Jev model and a chat model alike, is answered in OpenAI's response shape rendered from the normalized response (ordered answers, name null for an unnamed question, input/output token usage, and Bifrost's extra_fields as on the other OpenAI routes). The route takes exactly OpenAI's request: Typesafe's criteria and a stray state are rejected by name rather than translated or forwarded. When OpenAI answers with raw responses on (as the harness config sets), its own body is relayed instead, as on the chat route. Fallbacks apply, and the map form and a missing input are rejected.",
+      "item": [
+        {
+          "name": "/openai/v1/decisions - every question type in the OpenAI shape - gpt-6-luna",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('OpenAI decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('one typed answer per question, in question order', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(6);",
+                  "    var a = body.answers;",
+                  "    ['is_frustrated', 'wants_refund', 'category', 'escalate', 'urgency'].forEach(function (name, i) {",
+                  "        pm.expect(a[i].name, 'answer ' + i).to.eql(name);",
+                  "    });",
+                  "    pm.expect(a[0].type).to.eql('predicate');",
+                  "    pm.expect(a[0].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[1].type).to.eql('predicate');",
+                  "    pm.expect(a[1].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[2].type).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(a[2].choice);",
+                  "    pm.expect(a[3].type).to.eql('choice');",
+                  "    pm.expect([true, false]).to.include(a[3].choice);",
+                  "    pm.expect(a[4].type).to.eql('score');",
+                  "    pm.expect(a[4].score).to.be.within(0, 2);",
+                  "    pm.expect(a[5].type).to.eql('predicate');",
+                  "    pm.expect(a[5].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[5], 'unnamed answer has name null, as OpenAI sends it: ' + JSON.stringify(a[5])).to.have.property('name', null);",
+                  "});",
+                  "pm.test('OpenAI-compatible envelope, with Bifrost extra fields as on the other OpenAI routes', function () {",
+                  "    pm.expect(body.extra_fields, 'body: ' + pm.response.text()).to.be.an('object').that.has.property('provider');",
+                  "    pm.expect(body.model).to.be.a('string');",
+                  "    pm.expect(body.usage.input_tokens, 'usage: ' + JSON.stringify(body.usage)).to.be.a('number');",
+                  "    pm.expect(body.usage).to.not.have.property('prompt_tokens');",
+                  "    pm.expect(body.usage.input_tokens).to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-6-luna\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Does the customer want a refund (asks for money back)?\"\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges and refunds\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\"\n        }\n      ]\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"escalate\",\n      \"instructions\": \"Should this be escalated to a manager?\",\n      \"choices\": [\n        {\n          \"value\": true,\n          \"description\": \"yes\"\n        },\n        {\n          \"value\": false,\n          \"description\": \"no\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"levels\": [\n        {\n          \"label\": \"low\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"medium\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"high\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    },\n    {\n      \"type\": \"predicate\",\n      \"instructions\": \"Is the message written in English?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/openai/v1/decisions - Typesafe answers in the OpenAI shape - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Jev decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('one typed answer per question, in question order', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(6);",
+                  "    var a = body.answers;",
+                  "    ['is_frustrated', 'wants_refund', 'category', 'escalate', 'urgency'].forEach(function (name, i) {",
+                  "        pm.expect(a[i].name, 'answer ' + i).to.eql(name);",
+                  "    });",
+                  "    pm.expect(a[0].type).to.eql('predicate');",
+                  "    pm.expect(a[0].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[1].type).to.eql('predicate');",
+                  "    pm.expect(a[1].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[2].type).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(a[2].choice);",
+                  "    pm.expect(a[3].type).to.eql('choice');",
+                  "    pm.expect([true, false]).to.include(a[3].choice);",
+                  "    pm.expect(a[4].type).to.eql('score');",
+                  "    pm.expect(a[4].score).to.be.within(0, 2);",
+                  "    pm.expect(a[5].type).to.eql('predicate');",
+                  "    pm.expect(a[5].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[5], 'unnamed answer has name null, as OpenAI sends it: ' + JSON.stringify(a[5])).to.have.property('name', null);",
+                  "});",
+                  "pm.test('OpenAI-compatible envelope, with Bifrost extra fields as on the other OpenAI routes', function () {",
+                  "    pm.expect(body.extra_fields, 'body: ' + pm.response.text()).to.be.an('object').that.has.property('provider');",
+                  "    pm.expect(body.extra_fields.raw_response, 'raw responses are on in the harness config, so the Typesafe body comes back: ' + pm.response.text()).to.exist;",
+                  "    pm.expect(body.model).to.be.a('string');",
+                  "    pm.expect(body.usage.input_tokens, 'usage: ' + JSON.stringify(body.usage)).to.be.a('number');",
+                  "    pm.expect(body.usage).to.not.have.property('prompt_tokens');",
+                  "    pm.expect(body.usage.input_tokens).to.be.above(0);",
+                  "});",
+                  "pm.test('no id key, as in the OpenAI Decision object', function () {",
+                  "    pm.expect(body, 'body: ' + pm.response.text()).to.not.have.property('id');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Does the customer want a refund (asks for money back)?\"\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges and refunds\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\"\n        }\n      ]\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"escalate\",\n      \"instructions\": \"Should this be escalated to a manager?\",\n      \"choices\": [\n        {\n          \"value\": true,\n          \"description\": \"yes\"\n        },\n        {\n          \"value\": false,\n          \"description\": \"no\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"levels\": [\n        {\n          \"label\": \"low\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"medium\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"high\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    },\n    {\n      \"type\": \"predicate\",\n      \"instructions\": \"Is the message written in English?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/openai/v1/decisions - chat emulation in the OpenAI shape - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('emulated decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('one typed answer per question, in question order', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(6);",
+                  "    var a = body.answers;",
+                  "    ['is_frustrated', 'wants_refund', 'category', 'escalate', 'urgency'].forEach(function (name, i) {",
+                  "        pm.expect(a[i].name, 'answer ' + i).to.eql(name);",
+                  "    });",
+                  "    pm.expect(a[0].type).to.eql('predicate');",
+                  "    pm.expect(a[0].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[1].type).to.eql('predicate');",
+                  "    pm.expect(a[1].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[2].type).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(a[2].choice);",
+                  "    pm.expect(a[3].type).to.eql('choice');",
+                  "    pm.expect([true, false]).to.include(a[3].choice);",
+                  "    pm.expect(a[4].type).to.eql('score');",
+                  "    pm.expect(a[4].score).to.be.within(0, 2);",
+                  "    pm.expect(a[5].type).to.eql('predicate');",
+                  "    pm.expect(a[5].probability).to.be.within(0, 1);",
+                  "    pm.expect(a[5], 'unnamed answer has name null, as OpenAI sends it: ' + JSON.stringify(a[5])).to.have.property('name', null);",
+                  "});",
+                  "pm.test('OpenAI-compatible envelope, with Bifrost extra fields as on the other OpenAI routes', function () {",
+                  "    pm.expect(body.extra_fields, 'body: ' + pm.response.text()).to.be.an('object').that.has.property('provider');",
+                  "    pm.expect(body.model).to.be.a('string');",
+                  "    pm.expect(body.usage.input_tokens, 'usage: ' + JSON.stringify(body.usage)).to.be.a('number');",
+                  "    pm.expect(body.usage).to.not.have.property('prompt_tokens');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\"\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Does the customer want a refund (asks for money back)?\"\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges and refunds\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\"\n        }\n      ]\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"escalate\",\n      \"instructions\": \"Should this be escalated to a manager?\",\n      \"choices\": [\n        {\n          \"value\": true,\n          \"description\": \"yes\"\n        },\n        {\n          \"value\": false,\n          \"description\": \"no\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"levels\": [\n        {\n          \"label\": \"low\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"medium\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"high\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    },\n    {\n      \"type\": \"predicate\",\n      \"instructions\": \"Is the message written in English?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/openai/v1/decisions - failed Typesafe model falls back to openai/gpt-6-luna - typesafe/jev-does-not-exist",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the fallback answers', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].name).to.eql('is_frustrated');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});",
+                  "pm.test('OpenAI answered with raw responses on (the harness config), so its own body is relayed as on the chat route', function () {",
+                  "    pm.expect(body, 'body: ' + pm.response.text()).to.not.have.property('extra_fields');",
+                  "    pm.expect(body.model).to.be.a('string');",
+                  "    pm.expect(body.usage.input_tokens, 'usage: ' + JSON.stringify(body.usage)).to.be.a('number');",
+                  "    pm.expect(body.usage).to.not.have.property('prompt_tokens');",
+                  "    pm.expect(body.usage.input_tokens).to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-does-not-exist\",\n  \"fallbacks\": [\n    \"openai/gpt-6-luna\"\n  ],\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] /openai/v1/decisions - deprecated map form rejected - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the map form is not accepted on the OpenAI route', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges and refunds\",\n        \"bug\": \"product defects\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered soon\",\n        \"needs a reply today\"\n      ]\n    }\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] /openai/v1/decisions - missing input rejected - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('a request without input is rejected', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/openai/decisions - the alias without /v1 answers in the OpenAI shape - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('alias decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered in the OpenAI shape', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].name).to.eql('is_frustrated');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "    pm.expect(body.extra_fields, 'body: ' + pm.response.text()).to.be.an('object').that.has.property('provider');",
+                  "    pm.expect(body).to.not.have.property('id');",
+                  "    pm.expect(body.usage.input_tokens).to.be.a('number');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] /openai/v1/decisions - Typesafe criteria rejected - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('a field OpenAI does not define is rejected by name', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "    pm.expect(pm.response.text()).to.include('criteria');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"wants_refund\",\n      \"instructions\": \"Does the customer want a refund?\",\n      \"criteria\": {\n        \"true\": \"asks for money back\"\n      }\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] /openai/v1/decisions - state next to input rejected - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('a stray state is rejected, never sent to Typesafe as its state', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "    pm.expect(pm.response.text()).to.include('state is not part of');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"state\": \"A stale state that must not be sent.\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "187. OpenAI decision pricing from decision rates and overrides (openai-decision-pricing) [SERIAL]",
+      "description": "Pins how a decision on openai/gpt-6-luna is priced (PR #8249). gpt-6-luna is a chat row in the datasheet with no decisions-mode row, so a decision used to be recorded with no cost; it is now priced from the model's own row. Case 1-2 pin that a plain decision is recorded with a cost. Cases 3-8 pin that an override on the decision rate fields (input_cost_per_token_decisions / output_cost_per_token_decisions), which the pricing override API accepts, prices a decision at those rates. The override is scoped to a throwaway virtual key on purpose: a global or provider-scoped override would reprice every other gpt-6-luna request in flight and trip the suite's cost-accuracy checks.",
+      "item": [
+        {
+          "name": "/v1/decisions - decision on a chat row is sent for pricing - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var reqId = 'e2e-luna-decision-price-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);",
+                  "pm.collectionVariables.set('lunaDecisionPriceRequestId', reqId);",
+                  "pm.collectionVariables.unset('lunaDecisionPriceRetry');"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('decision on openai/gpt-6-luna succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].name).to.eql('is_refund_request');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{lunaDecisionPriceRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"input\": \"I was charged twice for my subscription this month and I would like a refund.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_refund_request\",\n      \"instructions\": \"Does the customer ask for a refund?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "logs - the decision is recorded with a cost from the datasheet - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var retry = Number(pm.collectionVariables.get('lunaDecisionPriceRetry') || 0);",
+                  "if (retry > 0) {",
+                  "  // The async log writer flushes in 1s batches. Newman drains pending timers before it sends.",
+                  "  var until = Date.now() + 1000;",
+                  "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.collectionVariables.get('lunaDecisionPriceRequestId');",
+                  "pm.test('logs query responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('lunaDecisionPriceRetry'); return; }",
+                  "var logs = (pm.response.json().logs || []);",
+                  "// The log row id is the request id, so an identity check turns a wrong row into no row.",
+                  "var row = null;",
+                  "logs.forEach(function (l) { if (l.id === reqId) { row = l; } });",
+                  "var retry = Number(pm.collectionVariables.get('lunaDecisionPriceRetry') || 0);",
+                  "if ((!row || !(row.cost > 0)) && retry < 10) {",
+                  "  pm.collectionVariables.set('lunaDecisionPriceRetry', retry + 1);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('lunaDecisionPriceRetry');",
+                  "pm.test('the decision was logged under its request id', function () {",
+                  "  pm.expect(row, 'no log row for ' + reqId + ': ' + pm.response.text()).to.not.equal(null);",
+                  "  pm.expect(row.object).to.eql('decisions');",
+                  "});",
+                  "if (!row) { return; }",
+                  "var prompt = row.token_usage && row.token_usage.prompt_tokens;",
+                  "pm.test('the decision recorded its input tokens', function () {",
+                  "  pm.expect(prompt, 'token_usage: ' + JSON.stringify(row.token_usage)).to.be.above(0);",
+                  "});",
+                  "",
+                  "pm.test('the decision was priced', function () {",
+                  "  pm.expect(row.cost, 'cost: ' + JSON.stringify([row.cost, row.token_usage])).to.be.above(0);",
+                  "});",
+                  ""
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs?request_id={{lunaDecisionPriceRequestId}}&limit=1"
+          },
+          "response": []
+        },
+        {
+          "name": "Setup - Create VK for decision pricing - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.unset('lunaPricingVkId');",
+                  "pm.collectionVariables.unset('lunaPricingVkValue');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'Decision Pricing VK ' + Date.now(),",
+                  "  provider_configs: [{ provider: 'openai', weight: 1.0, allowed_models: ['*'], key_ids: ['*'] }]",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Create VK returns 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var vk = body && (body.virtual_key || body);",
+                  "pm.test('Created VK exposes usable credentials', function () {",
+                  "  pm.expect(vk && vk.id, 'id in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(vk && vk.value, 'value in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "if (vk && vk.id && vk.value) {",
+                  "  pm.collectionVariables.set('lunaPricingVkId', vk.id);",
+                  "  pm.collectionVariables.set('lunaPricingVkValue', vk.value);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Setup - Decisions override on the decision rate fields, VK scoped [EXPECT-201] - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var missing = ['lunaPricingVkId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "pm.collectionVariables.unset('lunaPricingOverrideId');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'e2e-luna-decision-rates-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),",
+                  "  // Virtual-key scoped on purpose: a global or provider-scoped override would reprice every other",
+                  "  // gpt-6-luna request in flight and trip the cost-accuracy checks elsewhere in the suite.",
+                  "  scope_kind: 'virtual_key',",
+                  "  virtual_key_id: pm.collectionVariables.get('lunaPricingVkId'),",
+                  "  match_type: 'exact',",
+                  "  pattern: 'gpt-6-luna',",
+                  "  request_types: ['decisions'],",
+                  "  patch: { input_cost_per_token_decisions: 0.001, output_cost_per_token_decisions: 0 }",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Override on the decision rate fields is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var ov = body && (body.pricing_override || body);",
+                  "pm.test('Override exposes an id', function () {",
+                  "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "if (ov && ov.id) { pm.collectionVariables.set('lunaPricingOverrideId', ov.id); }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - decision through the VK with the decision rate override - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var missing = ['lunaPricingVkValue', 'lunaPricingOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var reqId = 'e2e-luna-decision-override-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);",
+                  "pm.collectionVariables.set('lunaDecisionOverrideRequestId', reqId);",
+                  "pm.collectionVariables.unset('lunaDecisionOverrideRetry');"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('decision on openai/gpt-6-luna succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the predicate is answered', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].name).to.eql('is_refund_request');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{lunaPricingVkValue}}"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{lunaDecisionOverrideRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"input\": \"I was charged twice for my subscription this month and I would like a refund.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_refund_request\",\n      \"instructions\": \"Does the customer ask for a refund?\"\n    }\n  ]\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "logs - the decision is priced at the overridden decision rate - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var retry = Number(pm.collectionVariables.get('lunaDecisionOverrideRetry') || 0);",
+                  "if (retry > 0) {",
+                  "  // The async log writer flushes in 1s batches. Newman drains pending timers before it sends.",
+                  "  var until = Date.now() + 1000;",
+                  "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.collectionVariables.get('lunaDecisionOverrideRequestId');",
+                  "pm.test('logs query responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('lunaDecisionOverrideRetry'); return; }",
+                  "var logs = (pm.response.json().logs || []);",
+                  "// The log row id is the request id, so an identity check turns a wrong row into no row.",
+                  "var row = null;",
+                  "logs.forEach(function (l) { if (l.id === reqId) { row = l; } });",
+                  "var retry = Number(pm.collectionVariables.get('lunaDecisionOverrideRetry') || 0);",
+                  "if ((!row || !(row.cost > 0)) && retry < 10) {",
+                  "  pm.collectionVariables.set('lunaDecisionOverrideRetry', retry + 1);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('lunaDecisionOverrideRetry');",
+                  "pm.test('the decision was logged under its request id', function () {",
+                  "  pm.expect(row, 'no log row for ' + reqId + ': ' + pm.response.text()).to.not.equal(null);",
+                  "  pm.expect(row.object).to.eql('decisions');",
+                  "});",
+                  "if (!row) { return; }",
+                  "var prompt = row.token_usage && row.token_usage.prompt_tokens;",
+                  "pm.test('the decision recorded its input tokens', function () {",
+                  "  pm.expect(prompt, 'token_usage: ' + JSON.stringify(row.token_usage)).to.be.above(0);",
+                  "});",
+                  "",
+                  "// 0.001 per input token, and a decision has no output tokens to bill.",
+                  "var expected = prompt * 0.001;",
+                  "pm.test('the decision cost is the overridden decision rate times the input tokens', function () {",
+                  "  pm.expect(Math.abs(row.cost - expected), 'cost ' + row.cost + ' vs expected ' + expected + ' for ' + prompt + ' input tokens').to.be.at.most(Math.max(1e-9, expected * 1e-6));",
+                  "});",
+                  ""
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs?request_id={{lunaDecisionOverrideRequestId}}&limit=1"
+          },
+          "response": []
+        },
+        {
+          "name": "Teardown - Delete the decision rate override - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var missing = ['lunaPricingOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Override deleted', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "pm.collectionVariables.unset('lunaPricingOverrideId');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{lunaPricingOverrideId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides",
+                "{{lunaPricingOverrideId}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Teardown - Delete VK - openai/gpt-6-luna",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var missing = ['lunaPricingVkId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('VK deleted', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "pm.collectionVariables.unset('lunaPricingVkId');",
+                  "pm.collectionVariables.unset('lunaPricingVkValue');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{lunaPricingVkId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{lunaPricingVkId}}"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
       "name": "182. GenAI embedding params reach non-Gemini providers (genai-embedding-params)",
       "description": "GenAI :embedContent / :batchEmbedContents converters put taskType / title / outputDimensionality on each input item. Providers with one parameter block per request (openai, vertex, bedrock, cohere) reject per-item params with a 400 (\"applies one set of parameters to the whole request\"). google-genai always uses batchEmbedContents and repeats the same params on every entry, so identical entry params must be hoisted to request level. Entries with differing params stay per item (Gemini honours them) and non-Gemini targets reject them with a 400. Cases send outputDimensionality: 8 and assert 8-dim vectors come back.",
       "item": [
@@ -218930,6 +220313,628 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "192. Responses multi-part assistant output_text maps to chat text (#8196 / PR #8208) (responses-multipart-output-text)",
+      "description": "Gateway regression for #8196. A Responses-API client (Zed's agent in the report) replays an assistant turn whose text is split across more than one output_text part. ToChatMessages in core/schemas/mux.go maps output_text to text only in its single-part short-circuit; the multi-part switch had no case for it, so the block fell through default: and carried the Responses-only output_text spelling into the chat messages[] Bifrost builds for a chat-only provider. Chat completions defines exactly four content parts (text, image_url, input_audio, file), so the request died with HTTP 422 \"unknown variant output_text\" naming an index in Bifrost's internal array rather than the client's input[]. The route is /v1/responses against deepseek, whose Responses handler falls back to ChatCompletion via ToChatRequest() - the reporter's own repro, and provider-independent per the issue. The rows read the outbound body with x-bf-send-back-raw-request so they pin the translated spelling rather than one provider's choice of error code. Cases: (1) two output_text parts, the reporter's exact body, red pre-fix; (2) a mixed output_text + input_text turn, also 422 pre-fix, pinning that the mapping is per-part and not a whole-turn special case; (3) a single output_text part, which the short-circuit already handled and which must keep working - a guard against fixing the multi-part path by breaking the collapse. Run with FEATURE=responses-multipart-output-text.",
+      "item": [
+        {
+          "name": "[EXPECT-200] deepseek/deepseek-v4-flash /v1/responses two output_text parts in one assistant turn translate to chat text - responses-multipart-output-text - #8196",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"hi\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"a\"\n        },\n        {\n          \"type\": \"output_text\",\n          \"text\": \"b\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"say ok\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('187.1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('187.1 outbound body captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "pm.test('187.1 the assistant turn reached the provider as chat text parts (pre-fix: HTTP 422 unknown variant output_text) - #8196', function () {",
+                  "  pm.expect(wire.indexOf('output_text'), 'the Responses-only spelling survived into the chat body: ' + wire.slice(0, 600)).to.equal(-1);",
+                  "  var msgs = (rr || {}).messages || [];",
+                  "  var asst = null;",
+                  "  for (var i = 0; i < msgs.length; i++) { if (msgs[i] && msgs[i].role === 'assistant') { asst = msgs[i]; break; } }",
+                  "  pm.expect(asst, 'no assistant message in the translated chat body: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(asst.content, 'assistant content must stay a 2-part array: ' + JSON.stringify(asst.content)).to.be.an('array').with.lengthOf(2);",
+                  "  var want = [\"a\",\"b\"];",
+                  "  for (var p = 0; p < want.length; p++) {",
+                  "    pm.expect(asst.content[p].type, 'part ' + p + ': ' + JSON.stringify(asst.content[p])).to.equal('text');",
+                  "    pm.expect(asst.content[p].text, 'part ' + p + ' text').to.equal(want[p]);",
+                  "  }",
+                  "});",
+                  "pm.test('187.1 no deserialization error naming the unknown variant - #8196', function () {",
+                  "  pm.expect(txt.indexOf('unknown variant'), 'gateway rejected its own translated body: ' + txt.slice(0, 600)).to.equal(-1);",
+                  "});",
+                  "pm.test('187.1 the model answered', function () {",
+                  "  pm.expect(body.output, 'no output: ' + txt.slice(0, 400)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] deepseek/deepseek-v4-flash /v1/responses mixed output_text and input_text parts in one assistant turn - responses-multipart-output-text - #8196",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"hi\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"a\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"b\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"say ok\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('187.2: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('187.2 outbound body captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "pm.test('187.2 the assistant turn reached the provider as chat text parts (pre-fix: HTTP 422 unknown variant output_text) - #8196', function () {",
+                  "  pm.expect(wire.indexOf('output_text'), 'the Responses-only spelling survived into the chat body: ' + wire.slice(0, 600)).to.equal(-1);",
+                  "  var msgs = (rr || {}).messages || [];",
+                  "  var asst = null;",
+                  "  for (var i = 0; i < msgs.length; i++) { if (msgs[i] && msgs[i].role === 'assistant') { asst = msgs[i]; break; } }",
+                  "  pm.expect(asst, 'no assistant message in the translated chat body: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(asst.content, 'assistant content must stay a 2-part array: ' + JSON.stringify(asst.content)).to.be.an('array').with.lengthOf(2);",
+                  "  var want = [\"a\",\"b\"];",
+                  "  for (var p = 0; p < want.length; p++) {",
+                  "    pm.expect(asst.content[p].type, 'part ' + p + ': ' + JSON.stringify(asst.content[p])).to.equal('text');",
+                  "    pm.expect(asst.content[p].text, 'part ' + p + ' text').to.equal(want[p]);",
+                  "  }",
+                  "});",
+                  "pm.test('187.2 no deserialization error naming the unknown variant - #8196', function () {",
+                  "  pm.expect(txt.indexOf('unknown variant'), 'gateway rejected its own translated body: ' + txt.slice(0, 600)).to.equal(-1);",
+                  "});",
+                  "pm.test('187.2 the model answered', function () {",
+                  "  pm.expect(body.output, 'no output: ' + txt.slice(0, 400)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] deepseek/deepseek-v4-flash /v1/responses single output_text assistant part still collapses - responses-multipart-output-text - #8196",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"hi\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"a\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"say ok\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('187.3: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('187.3 outbound body captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "pm.test('187.3 the single-part short-circuit still collapses the turn to plain text - #8196', function () {",
+                  "  pm.expect(wire.indexOf('output_text'), 'the Responses-only spelling survived into the chat body: ' + wire.slice(0, 600)).to.equal(-1);",
+                  "  var msgs = (rr || {}).messages || [];",
+                  "  var asst = null;",
+                  "  for (var i = 0; i < msgs.length; i++) { if (msgs[i] && msgs[i].role === 'assistant') { asst = msgs[i]; break; } }",
+                  "  pm.expect(asst, 'no assistant message in the translated chat body: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(asst.content, 'single-part assistant content: ' + JSON.stringify(asst.content)).to.equal('a');",
+                  "});",
+                  "pm.test('187.3 the model answered', function () {",
+                  "  pm.expect(body.output, 'no output: ' + txt.slice(0, 400)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "193. Anthropic tool_result is_error keeps status incomplete on the OpenAI Responses wire (#8195 / PR #8209) (tool-result-is-error-status)",
+      "description": "Gateway regression for #8195. On /anthropic/v1/messages against an OpenAI-backed model the route always builds a Bifrost Responses request, so the Anthropic converter's is_error -> status \"incomplete\" marker on the function_call_output item is the only thing that tells the model a tool call failed: the chat path strips is_error on the OpenAI wire by design, and an error field on an input item is rejected outright. ToOpenAIResponsesRequest then began clearing status on every input item (\"OpenAI rejects status on input\"), which left a failed tool result byte-identical to a successful one. Both rows read the outbound body with x-bf-send-back-raw-request, because the loss is invisible in the response: the model simply answers as if the command had worked. Cases: (1) the reporter's shape plus a successful sibling result in the same turn - the failed call_id must carry status \"incomplete\" (absent pre-fix) while the successful one carries no status at all, and neither may gain an error field; (2) a native /v1/responses request whose function_call_output arrives with status \"completed\", which must still be stripped before the wire - the exception is only for \"incomplete\", and widening it would put back the field OpenAI rejects. Run with FEATURE=tool-result-is-error-status.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai/gpt-4o-mini /anthropic/v1/messages tool_result is_error reaches the /v1/responses wire as status incomplete - tool-result-is-error-status - #8195",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 64,\n  \"tools\": [\n    {\n      \"name\": \"run_cmd\",\n      \"description\": \"run a shell command\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"cmd\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Run ls /root and ls /tmp\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_1\",\n          \"name\": \"run_cmd\",\n          \"input\": {\n            \"cmd\": \"ls /root\"\n          }\n        },\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_2\",\n          \"name\": \"run_cmd\",\n          \"input\": {\n            \"cmd\": \"ls /tmp\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_1\",\n          \"content\": \"permission denied\",\n          \"is_error\": true\n        },\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_2\",\n          \"content\": \"ok\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('193.1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('193.1 outbound body captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "var outputs = [];",
+                  "var input = (rr || {}).input || [];",
+                  "for (var i = 0; i < input.length; i++) { if (input[i] && input[i].type === 'function_call_output') { outputs.push(input[i]); } }",
+                  "var byCallId = function (id) { for (var k = 0; k < outputs.length; k++) { if (outputs[k].call_id === id) { return outputs[k]; } } return null; };",
+                  "pm.test('193.1 both tool results reached the provider as function_call_output items', function () {",
+                  "  pm.expect(outputs.length, 'function_call_output items on the wire: ' + wire.slice(0, 700)).to.equal(2);",
+                  "});",
+                  "pm.test('193.1 the is_error tool result keeps status incomplete (pre-fix: status cleared, failure indistinguishable from success) - #8195', function () {",
+                  "  var failed = byCallId('toolu_1');",
+                  "  pm.expect(failed, 'no function_call_output for the failed tool result: ' + wire.slice(0, 700)).to.be.an('object');",
+                  "  pm.expect(failed.status, 'failed tool result on the wire: ' + JSON.stringify(failed)).to.equal('incomplete');",
+                  "});",
+                  "pm.test('193.1 the successful sibling result in the same turn carries no status - #8195', function () {",
+                  "  var ok = byCallId('toolu_2');",
+                  "  pm.expect(ok, 'no function_call_output for the successful tool result: ' + wire.slice(0, 700)).to.be.an('object');",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(ok, 'status'), 'successful tool result gained status=' + JSON.stringify(ok.status) + ': ' + JSON.stringify(ok)).to.equal(false);",
+                  "});",
+                  "pm.test('193.1 no error field rides along on either item (OpenAI rejects it on input) - #8195', function () {",
+                  "  for (var k = 0; k < outputs.length; k++) {",
+                  "    pm.expect(Object.prototype.hasOwnProperty.call(outputs[k], 'error'), 'function_call_output carried an error field: ' + JSON.stringify(outputs[k])).to.equal(false);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai/gpt-4o-mini /v1/responses function_call_output status completed is still stripped before the wire - tool-result-is-error-status - #8195",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"run_cmd\",\n      \"description\": \"run a shell command\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"cmd\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"cmd\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Run ls /tmp, then reply with the single word ok.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_bf_8195_ok\",\n      \"name\": \"run_cmd\",\n      \"arguments\": \"{\\\"cmd\\\":\\\"ls /tmp\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_bf_8195_ok\",\n      \"output\": \"ok\",\n      \"status\": \"completed\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('193.2: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('193.2 outbound body captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "pm.test('193.2 a status other than incomplete is still stripped from the input item - #8195', function () {",
+                  "  var input = (rr || {}).input || [];",
+                  "  var out = null;",
+                  "  for (var i = 0; i < input.length; i++) { if (input[i] && input[i].type === 'function_call_output') { out = input[i]; break; } }",
+                  "  pm.expect(out, 'no function_call_output on the wire: ' + wire.slice(0, 700)).to.be.an('object');",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(out, 'status'), 'status completed reached a surface that rejects status on input: ' + JSON.stringify(out)).to.equal(false);",
+                  "});",
+                  "pm.test('193.2 the model answered', function () {",
+                  "  pm.expect(body.output, 'no output: ' + txt.slice(0, 400)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "194. Custom tools on models older than GPT-5 (custom-tools-as-functions)",
+      "description": "OpenAI custom (freeform) tools shipped with GPT-5. Older models such as gpt-4o reject them with 400 \"Invalid value: 'custom'\" on tools. Bifrost now sends each custom tool to those models as a function tool with one string `input` parameter (only when its datasheet row sets supports_custom_tools to false; with no flag custom tools pass through) and turns the model's function call back into a custom_tool_call, so the client sees the same shape it gets from GPT-5. 194.1 pins the non-streaming Responses route, 194.2 the streaming one, where the held-back argument deltas come out as one custom_tool_call_input delta and done. 194.3 pins the Codex shape: exec nested in the functions namespace of an additional_tools input item, plus include reasoning.encrypted_content, which a non-reasoning model rejects.",
+      "item": [
+        {
+          "name": "194.1 openai/gpt-4o-mini responses custom tool is answered with a custom_tool_call (custom tools as functions)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Use the code_exec tool to run: print(\\\"hello\\\")\",\n  \"tools\": [\n    {\n      \"type\": \"custom\",\n      \"name\": \"code_exec\",\n      \"description\": \"Executes arbitrary python code\",\n      \"format\": {\n        \"type\": \"text\"\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"custom\",\n    \"name\": \"code_exec\"\n  },\n  \"max_output_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('custom tool accepted on gpt-4o-mini', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.not.include(\"Invalid value: 'custom'\");",
+                  "});",
+                  "var items = (pm.response.json() || {}).output || [];",
+                  "pm.test('output contains a custom_tool_call for code_exec, not a function_call', function () {",
+                  "  var c = items.filter(function (o) { return o.type === 'custom_tool_call'; })[0];",
+                  "  pm.expect(c, 'no custom_tool_call: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(c.name).to.equal('code_exec');",
+                  "  pm.expect(c.input, 'custom tool input missing').to.be.a('string').and.not.empty;",
+                  "  pm.expect(c.input, 'input still wrapped in function arguments').to.not.match(/^\\s*\\{\\s*\"input\"/);",
+                  "  pm.expect(items.filter(function (o) { return o.type === 'function_call'; }).length, 'leaked function_call').to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "194.2 openai/gpt-4o-mini responses stream custom tool emits custom_tool_call_input events (custom tools as functions)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Use the code_exec tool to run: print(\\\"hello\\\")\",\n  \"tools\": [\n    {\n      \"type\": \"custom\",\n      \"name\": \"code_exec\",\n      \"description\": \"Executes arbitrary python code\",\n      \"format\": {\n        \"type\": \"text\"\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"custom\",\n    \"name\": \"code_exec\"\n  },\n  \"max_output_tokens\": 256,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('custom tool accepted on gpt-4o-mini (stream)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw).to.equal(200);",
+                  "  pm.expect(raw).to.not.include(\"Invalid value: 'custom'\");",
+                  "  pm.expect(raw, 'stream did not complete: ' + raw.slice(-800)).to.include('response.completed');",
+                  "});",
+                  "pm.test('stream carries custom tool events, not function call events', function () {",
+                  "  pm.expect(raw, 'no custom_tool_call_input.done').to.include('response.custom_tool_call_input.done');",
+                  "  var deltaAt = raw.search(/\"type\"\\s*:\\s*\"response\\.custom_tool_call_input\\.delta\"[^\\n]*\"delta\"\\s*:\\s*\"[^\"]/);",
+                  "  pm.expect(deltaAt, 'no non-empty custom_tool_call_input.delta').to.be.above(-1);",
+                  "  pm.expect(deltaAt, 'input delta must come before done').to.be.below(raw.indexOf('response.custom_tool_call_input.done'));",
+                  "  pm.expect(raw, 'no custom_tool_call item').to.match(/\"type\"\\s*:\\s*\"custom_tool_call\"/);",
+                  "  pm.expect(raw, 'function call events leaked').to.not.include('response.function_call_arguments');",
+                  "  pm.expect(raw).to.include('code_exec');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "194.3 openai/gpt-4o-mini responses Codex request with exec in an additional_tools namespace (custom tools as functions)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"include\": [\n    \"reasoning.encrypted_content\"\n  ],\n  \"store\": false,\n  \"tool_choice\": {\n    \"type\": \"custom\",\n    \"name\": \"exec\"\n  },\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"id\": \"at_harness_189_3\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"functions\",\n          \"description\": \"\",\n          \"tools\": [\n            {\n              \"type\": \"custom\",\n              \"name\": \"exec\",\n              \"description\": \"Run JavaScript code\",\n              \"format\": {\n                \"type\": \"grammar\",\n                \"syntax\": \"lark\",\n                \"definition\": \"start: /[\\\\s\\\\S]+/\"\n              }\n            },\n            {\n              \"type\": \"function\",\n              \"name\": \"wait\",\n              \"description\": \"Waits on a running exec cell.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"cell_id\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"cell_id\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        },\n        {\n          \"type\": \"namespace\",\n          \"name\": \"clock\",\n          \"description\": \"Tools for reading and waiting on time.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"sleep\",\n              \"description\": \"Pause execution.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"duration_ms\": {\n                    \"type\": \"number\"\n                  }\n                },\n                \"required\": [\n                  \"duration_ms\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Use exec to run: console.log(1)\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Codex-shaped request accepted on gpt-4o-mini', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.text()).to.not.include(\"Invalid value: 'custom'\");",
+                  "});",
+                  "var items = (pm.response.json() || {}).output || [];",
+                  "pm.test('exec comes back as a custom_tool_call with raw input', function () {",
+                  "  var c = items.filter(function (o) { return o.type === 'custom_tool_call'; })[0];",
+                  "  pm.expect(c, 'no custom_tool_call: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(c.name).to.equal('exec');",
+                  "  pm.expect(c.input, 'custom tool input missing').to.be.a('string').and.not.empty;",
+                  "  pm.expect(c.input, 'input still wrapped in function arguments').to.not.match(/^\\s*\\{\\s*\"input\"/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "195. Log writer migration gate surfaces maintenance drops (dropped logs)",
+      "description": "PR: pause the logging plugin's batch writer while another node holds the logstore migration advisory lock. The only wire-visible change is the additive dropped_during_maintenance counter on GET /api/logs/dropped; it must be present, numeric, and never exceed dropped_requests.",
+      "item": [
+        {
+          "name": "195.1: dropped logs endpoint reports the maintenance-window subset",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('195.1: dropped logs endpoint answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('195.1: dropped_requests is still reported as a number', function () {",
+                  "  pm.expect(body.dropped_requests, pm.response.text()).to.be.a('number');",
+                  "});",
+                  "pm.test('195.1: dropped_during_maintenance is reported as a number bounded by dropped_requests', function () {",
+                  "  pm.expect(body.dropped_during_maintenance, 'missing dropped_during_maintenance: ' + pm.response.text()).to.be.a('number');",
+                  "  pm.expect(body.dropped_during_maintenance, pm.response.text()).to.be.at.least(0);",
+                  "  pm.expect(body.dropped_during_maintenance, pm.response.text()).to.be.at.most(body.dropped_requests);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/dropped",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "dropped"
+              ]
+            }
+          }
         }
       ]
     }

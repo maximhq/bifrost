@@ -36,6 +36,10 @@ type TableModelPricing struct {
 	InputCostPerTokenFast  *float64 `gorm:"default:null;column:input_cost_per_token_fast" json:"input_cost_per_token_fast,omitempty"`
 	OutputCostPerTokenFast *float64 `gorm:"default:null;column:output_cost_per_token_fast" json:"output_cost_per_token_fast,omitempty"`
 	InputCostPerCharacter  *float64 `gorm:"default:null;column:input_cost_per_character" json:"input_cost_per_character,omitempty"`
+	// Costs - Decisions. Rates for decision requests on a row of another mode
+	// (e.g. a chat row served natively on /v1/decisions); see decisionRates.
+	InputCostPerTokenDecisions  *float64 `gorm:"default:null;column:input_cost_per_token_decisions" json:"input_cost_per_token_decisions,omitempty"`
+	OutputCostPerTokenDecisions *float64 `gorm:"default:null;column:output_cost_per_token_decisions" json:"output_cost_per_token_decisions,omitempty"`
 	// Costs - 128k Tier
 	InputCostPerTokenAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_token_above_128k_tokens" json:"input_cost_per_token_above_128k_tokens,omitempty"`
 	InputCostPerImageAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_image_above_128k_tokens" json:"input_cost_per_image_above_128k_tokens,omitempty"`
