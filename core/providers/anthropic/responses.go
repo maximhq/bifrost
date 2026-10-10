@@ -90,6 +90,7 @@ type AnthropicResponsesStreamState struct {
 	StructuredOutputIndex     *int                              // Output index of the structured output tool call
 	UsedStructuredOutputTool  bool                              // True when the SO tool block was actually consumed into text content
 	SeenRealToolCall          bool                              // True when any non-SO tool_use/server_tool_use/mcp_tool_use content block was started
+	StartUsage                *AnthropicUsage                   // Usage from message_start, to complete the input side of an output-only message_delta
 }
 
 type anthropicInputJSONBufferKind string
@@ -763,6 +764,7 @@ func AcquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
 	state.HasEmittedMessageDelta = false
+	state.StartUsage = nil
 	state.StructuredOutputToolName = ""
 	state.StructuredOutputIndex = nil
 	state.UsedStructuredOutputTool = false
@@ -829,6 +831,7 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
 	state.HasEmittedMessageDelta = false
+	state.StartUsage = nil
 	state.StructuredOutputToolName = ""
 	state.StructuredOutputIndex = nil
 	state.UsedStructuredOutputTool = false
@@ -916,6 +919,9 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				}
 				// Forward input usage from message_start so clients see cache metrics early
 				if chunk.Message.Usage != nil {
+					// Also keep it: Anthropic's counters are per-request totals, and
+					// an output-only message_delta omits the input side entirely.
+					state.StartUsage = chunk.Message.Usage
 					response.Usage = &schemas.ResponsesResponseUsage{
 						InputTokens:  chunk.Message.Usage.InputTokens,
 						OutputTokens: chunk.Message.Usage.OutputTokens,
@@ -2756,8 +2762,16 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		}
 		// Check if integration type in ctx is anthropic
 		if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
-			// Convert usage from Anthropic format to Bifrost
-			bifrostUsage := ConvertAnthropicUsageToBifrostUsage(chunk.Usage)
+			// Convert usage from Anthropic format to Bifrost. Anthropic's usage
+			// counters are per-request totals rather than per-event increments, so
+			// a message_delta that reports only output_tokens still describes a
+			// request whose input tokens were stated on message_start. Converting
+			// the delta alone would send input_tokens: 0 to a native client, and a
+			// client that applies delta fields whenever present (the Anthropic SDK
+			// accumulator does) would overwrite the real count with zero. Fill the
+			// input side back in, keeping everything this event actually carried.
+			usageForConversion := usageWithStartInputTokens(chunk.Usage, state.StartUsage)
+			bifrostUsage := ConvertAnthropicUsageToBifrostUsage(usageForConversion)
 
 			// Use the already-remapped stop reason so SO overrides are preserved.
 			var stopReason *string
@@ -4892,6 +4906,49 @@ func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schema
 	}
 
 	return bifrostUsage
+}
+
+// usageWithStartInputTokens returns delta usage with its *absent* input-side
+// counters completed from message_start.
+//
+// Anthropic reports usage as per-request totals, and the final message_delta may
+// carry only output_tokens. Because AnthropicUsage holds these counters as plain
+// ints, an omitted field is indistinguishable from zero after unmarshalling and
+// would be re-emitted as an explicit `input_tokens: 0`.
+//
+// Only a zero counter is filled, never a larger one. A bigger number is not a
+// more complete one: when the delta carries compaction `usage.iterations`, its
+// top-level input counter describes just that message pass, and
+// billableAnthropicUsage adds the iteration totals on top of it. Overwriting a
+// small top-level value with message_start's full count would then be counted
+// twice -- 2 + 100 would bill as 100 + 100 rather than 102.
+//
+// The output side is never touched: the delta is authoritative for it. Everything
+// else the event carried (iterations, service tier, thinking breakdown) is
+// preserved, so this cannot drop a field the upstream sent. Returns delta
+// unchanged when there is nothing to complete.
+func usageWithStartInputTokens(delta, start *AnthropicUsage) *AnthropicUsage {
+	if delta == nil || start == nil {
+		return delta
+	}
+
+	completed := *delta
+	if completed.InputTokens == 0 {
+		completed.InputTokens = start.InputTokens
+	}
+	if completed.CacheReadInputTokens == 0 {
+		completed.CacheReadInputTokens = start.CacheReadInputTokens
+	}
+	if completed.CacheCreationInputTokens == 0 {
+		completed.CacheCreationInputTokens = start.CacheCreationInputTokens
+	}
+	if completed.CacheCreation.Ephemeral5mInputTokens == 0 {
+		completed.CacheCreation.Ephemeral5mInputTokens = start.CacheCreation.Ephemeral5mInputTokens
+	}
+	if completed.CacheCreation.Ephemeral1hInputTokens == 0 {
+		completed.CacheCreation.Ephemeral1hInputTokens = start.CacheCreation.Ephemeral1hInputTokens
+	}
+	return &completed
 }
 
 // ConvertBifrostUsageToAnthropicUsage converts Bifrost usage format to Anthropic usage format
