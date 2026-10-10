@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1712,14 +1713,37 @@ func (h *SkillsServingHandler) resolveBaseURL(ctx *fasthttp.RequestCtx) string {
 	return scheme + "://" + host
 }
 
+// forwardedPort returns the first X-Forwarded-Port value when it is a decimal
+// port from 1 to 65535. An empty, malformed, or out-of-range value is ignored.
 func forwardedPort(ctx *fasthttp.RequestCtx) string {
 	raw := string(ctx.Request.Header.Peek("X-Forwarded-Port"))
 	if raw == "" {
 		return ""
 	}
-	return strings.TrimSpace(strings.Split(raw, ",")[0])
+	port := strings.TrimSpace(strings.Split(raw, ",")[0])
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 || !decimalPort(port) {
+		return ""
+	}
+	return port
 }
 
+// decimalPort reports whether port is made only of digits, so values such as
+// "+8443" are not treated as a port.
+func decimalPort(port string) bool {
+	if port == "" {
+		return false
+	}
+	for _, c := range port {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// hostHasPort reports whether host already includes a port. An IPv6 host counts
+// only when the port follows the closing bracket.
 func hostHasPort(host string) bool {
 	if strings.HasPrefix(host, "[") {
 		return strings.Contains(host, "]:")
@@ -1727,6 +1751,8 @@ func hostHasPort(host string) bool {
 	return strings.Contains(host, ":")
 }
 
+// isDefaultForwardedPort reports whether port is the scheme's default, so it
+// stays off the marketplace URL.
 func isDefaultForwardedPort(scheme, port string) bool {
 	switch strings.ToLower(scheme) {
 	case "http", "ws":
