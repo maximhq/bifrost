@@ -363,6 +363,10 @@ A batch created from `input_file_id` or `input_blob` names its models inside the
 
 Inline batches (`requests`) are checked per item and are unaffected, as are keys that allow every model of the provider.
 
+#### Passthrough requests
+
+A passthrough route forwards the request body as the provider reads it. When a key restricts models on the provider, every model the body names is checked: the `model` of a JSON object body, or the `model` of each task in a task array (Runware). A passthrough request that names no model anywhere, neither in its path nor in its body, is refused with `403` (`model_blocked`) under such a key, since the provider would still run a model the key never allowed. Keys that allow every model of the provider forward every passthrough body as before.
+
 ## User Groups
 
 ### Teams

@@ -3475,12 +3475,52 @@ func parsePassthroughBody(contentType string, body []byte) (model string, isStre
 		return
 	}
 	root := gjson.ParseBytes(body)
+	if root.IsArray() {
+		// A task array (Runware) names a model per task. One agreed model is the request's, so key
+		// selection sees it; tasks naming different models leave it empty, and governance reads the
+		// models from the body instead.
+		var taskErr error
+		root.ForEach(func(_, task gjson.Result) bool {
+			if !task.IsObject() {
+				return true
+			}
+			taskModel, err := passthroughObjectModel(task)
+			if err != nil {
+				taskErr = err
+				return false
+			}
+			switch {
+			case taskModel == "":
+			case model == "":
+				model = taskModel
+			case model != taskModel:
+				model = ""
+				return false
+			}
+			return true
+		})
+		if taskErr != nil {
+			return "", false, taskErr
+		}
+		return model, false, nil
+	}
 	if !root.IsObject() {
 		return
 	}
+	model, err = passthroughObjectModel(root)
+	if err != nil {
+		return "", false, err
+	}
+	isStream = root.Get("stream").Type == gjson.True
+	return
+}
+
+// passthroughObjectModel reads the model a JSON object names, strictly: the key spelled "model",
+// once, with a string value. A missing key is no model, not an error.
+func passthroughObjectModel(object gjson.Result) (string, error) {
 	var modelKeys int
 	var modelValue gjson.Result
-	root.ForEach(func(key, value gjson.Result) bool {
+	object.ForEach(func(key, value gjson.Result) bool {
 		if strings.EqualFold(key.Str, "model") {
 			modelKeys++
 			if key.Str == "model" {
@@ -3491,16 +3531,15 @@ func parsePassthroughBody(contentType string, body []byte) (model string, isStre
 	})
 	switch {
 	case modelKeys > 1:
-		return "", false, errors.New("passthrough request body must carry the model key at most once")
+		return "", errors.New("passthrough request body must carry the model key at most once")
 	case modelKeys == 1 && !modelValue.Exists():
-		return "", false, errors.New("passthrough request body model key must be spelled \"model\"")
+		return "", errors.New("passthrough request body model key must be spelled \"model\"")
 	case modelKeys == 1 && modelValue.Type != gjson.String:
-		return "", false, errors.New("passthrough request body model must be a string")
+		return "", errors.New("passthrough request body model must be a string")
 	case modelKeys == 1:
-		model = strings.TrimSpace(modelValue.Str)
+		return strings.TrimSpace(modelValue.Str), nil
 	}
-	isStream = root.Get("stream").Type == gjson.True
-	return
+	return "", nil
 }
 
 // isJSONMediaType reports whether a parsed media type declares a JSON body.

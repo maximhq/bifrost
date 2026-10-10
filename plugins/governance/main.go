@@ -8,6 +8,8 @@ import (
 	"math/rand/v2"
 	"sort"
 	"strings"
+
+	"github.com/tidwall/gjson"
 	"sync"
 	"time"
 
@@ -1137,6 +1139,27 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		Model:            model,
 		OpaqueBatchInput: isOpaqueBatchInput(req),
 	}
+	// A passthrough body is forwarded as the provider reads it, and a task array (Runware) names a
+	// model per task that the request itself may not carry. Every model the body names is
+	// evaluated the way inline batch items are, before the request's own pass; a request naming
+	// no model anywhere is marked so the model gate can refuse it under a restricted access.
+	if req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest {
+		bodyModels := passthroughBodyModels(req)
+		evaluationRequest.ModelUnseen = model == "" && len(bodyModels) == 0
+		for _, bodyModel := range bodyModels {
+			if bodyModel == model {
+				continue
+			}
+			bodyEvaluationRequest := *evaluationRequest
+			bodyEvaluationRequest.Model = bodyModel
+			_, bifrostError := p.Evaluate(ctx, &bodyEvaluationRequest)
+			if bifrostError != nil {
+				return req, &schemas.LLMPluginShortCircuit{
+					Error: bifrostError,
+				}, nil
+			}
+		}
+	}
 	// A batch create fans out to many completions, each naming its own model, so
 	// every model it will run is evaluated before the request itself. Each pass
 	// settles that model's limits on the access and checks them; the request's own
@@ -1169,6 +1192,41 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	return req, nil, nil
+}
+
+// passthroughBodyModels returns every distinct model a passthrough body names: the "model" of a
+// JSON object body, or of each task in a JSON array body (Runware). The router has already
+// refused malformed model keys, so a model that is not a string is simply not one here.
+func passthroughBodyModels(req *schemas.BifrostRequest) []string {
+	if req.PassthroughRequest == nil || len(req.PassthroughRequest.Body) == 0 || !gjson.ValidBytes(req.PassthroughRequest.Body) {
+		return nil
+	}
+	root := gjson.ParseBytes(req.PassthroughRequest.Body)
+	seen := make(map[string]struct{})
+	var models []string
+	add := func(object gjson.Result) bool {
+		if value := object.Get("model"); value.Type == gjson.String {
+			if m := strings.TrimSpace(value.Str); m != "" {
+				if _, ok := seen[m]; !ok {
+					seen[m] = struct{}{}
+					models = append(models, m)
+				}
+			}
+		}
+		return true
+	}
+	switch {
+	case root.IsObject():
+		add(root)
+	case root.IsArray():
+		root.ForEach(func(_, task gjson.Result) bool {
+			if task.IsObject() {
+				add(task)
+			}
+			return true
+		})
+	}
+	return models
 }
 
 // isOpaqueBatchInput reports whether a batch create's work is an uploaded file or blob rather than
