@@ -560,6 +560,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_ignore_provider_cost_column"}, run: migrationAddIgnoreProviderCostColumn},
 	{IDs: []string{"add_100k_token_pricing_columns"}, run: migrationAdd100kTokenPricingColumns},
 	{IDs: []string{"add_injected_tools_json_column"}, run: migrationAddInjectedToolsJSONColumn},
+	{IDs: []string{"move_config_json_vk_limits_to_model_configs"}, run: migrationMoveConfigJSONVKLimitsToModelConfigs},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -14256,6 +14257,168 @@ func migrationMigrateVKStandaloneLimitsToModelConfigs(ctx context.Context, db *g
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
+}
+
+// migrationMoveConfigJSONVKLimitsToModelConfigs moves directly owned virtual key budgets and rate limits onto the key's model config tiers.
+func migrationMoveConfigJSONVKLimitsToModelConfigs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "move_config_json_vk_limits_to_model_configs"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Not a union: a typed NULL for the key tier's absent provider makes Postgres pad real values.
+			type tier struct {
+				VirtualKeyID string
+				Provider     *string
+			}
+			var keyTiers []string
+			if err := tx.Raw(`
+				SELECT DISTINCT vk.id
+				FROM governance_virtual_keys vk
+				WHERE vk.rate_limit_id IS NOT NULL
+				   OR EXISTS (
+					SELECT 1 FROM governance_budgets b
+					WHERE b.virtual_key_id = vk.id AND b.model_config_id IS NULL
+				   )
+			`).Scan(&keyTiers).Error; err != nil {
+				return fmt.Errorf("failed to query virtual keys holding limits directly: %w", err)
+			}
+			var providerTiers []tier
+			if err := tx.Raw(`
+				SELECT DISTINCT pc.virtual_key_id AS virtual_key_id, pc.provider AS provider
+				FROM governance_virtual_key_provider_configs pc
+				JOIN governance_virtual_keys vk ON vk.id = pc.virtual_key_id
+				WHERE pc.rate_limit_id IS NOT NULL
+				   OR EXISTS (
+					SELECT 1 FROM governance_budgets b
+					WHERE b.provider_config_id = pc.id AND b.model_config_id IS NULL
+				   )
+			`).Scan(&providerTiers).Error; err != nil {
+				return fmt.Errorf("failed to query provider configs holding limits directly: %w", err)
+			}
+
+			tiers := make([]tier, 0, len(keyTiers)+len(providerTiers))
+			for _, vkID := range keyTiers {
+				tiers = append(tiers, tier{VirtualKeyID: vkID})
+			}
+			tiers = append(tiers, providerTiers...)
+			if len(tiers) == 0 {
+				return nil
+			}
+
+			movedBudgets, movedRateLimits := 0, 0
+			for _, t := range tiers {
+				mcID, err := ensureVKLimitModelConfig(tx, t.VirtualKeyID, t.Provider)
+				if err != nil {
+					return err
+				}
+				if mcID == "" {
+					// The key disappeared between the scan and here.
+					continue
+				}
+
+				// Only the owning FK moves. Raw SQL skips BeforeSave, so clear the direct column here.
+				var res *gorm.DB
+				if t.Provider == nil {
+					res = tx.Exec(`
+						UPDATE governance_budgets SET model_config_id = ?, virtual_key_id = NULL
+						WHERE virtual_key_id = ? AND model_config_id IS NULL
+					`, mcID, t.VirtualKeyID)
+				} else {
+					res = tx.Exec(`
+						UPDATE governance_budgets SET model_config_id = ?, provider_config_id = NULL
+						WHERE model_config_id IS NULL AND provider_config_id IN (
+							SELECT id FROM governance_virtual_key_provider_configs
+							WHERE virtual_key_id = ? AND provider = ?
+						)
+					`, mcID, t.VirtualKeyID, *t.Provider)
+				}
+				if res.Error != nil {
+					return fmt.Errorf("failed to move budgets of virtual key %s onto model config %s: %w", t.VirtualKeyID, mcID, res.Error)
+				}
+				movedBudgets += int(res.RowsAffected)
+
+				moved, err := moveVKTierRateLimit(tx, t.VirtualKeyID, t.Provider, mcID)
+				if err != nil {
+					return err
+				}
+				movedRateLimits += moved
+			}
+			logger.Info("[configstore] %s: moved %d budget(s) and %d rate limit(s) onto %d virtual key model config tier(s)",
+				migrationName, movedBudgets, movedRateLimits, len(tiers))
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// ensureVKLimitModelConfig find-or-creates a key's all-models tier. "" when the key is gone.
+func ensureVKLimitModelConfig(tx *gorm.DB, vkID string, provider *string) (string, error) {
+	q := tx.Table("governance_model_configs").
+		Where("scope = ? AND scope_id = ? AND model_name = ?",
+			tables.ModelConfigScopeVirtualKey, vkID, tables.ModelConfigAllModels)
+	if provider == nil {
+		q = q.Where("provider IS NULL")
+	} else {
+		q = q.Where("provider = ?", *provider)
+	}
+	var ids []string
+	if err := q.Limit(1).Pluck("id", &ids).Error; err != nil {
+		return "", fmt.Errorf("failed to query model config of virtual key %s: %w", vkID, err)
+	}
+	if len(ids) > 0 {
+		return ids[0], nil
+	}
+	mcID := uuid.NewString()
+	now := time.Now()
+	res := tx.Exec(`
+		INSERT INTO governance_model_configs (id, model_name, scope, scope_id, provider, calendar_aligned, created_at, updated_at)
+		SELECT ?, ?, ?, vk.id, ?, vk.calendar_aligned, ?, ?
+		FROM governance_virtual_keys vk WHERE vk.id = ?
+	`, mcID, tables.ModelConfigAllModels, tables.ModelConfigScopeVirtualKey, provider, now, now, vkID)
+	if res.Error != nil {
+		return "", fmt.Errorf("failed to create model config for virtual key %s: %w", vkID, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return "", nil
+	}
+	return mcID, nil
+}
+
+// moveVKTierRateLimit moves a directly referenced rate limit onto the tier. A tier that has one keeps it.
+func moveVKTierRateLimit(tx *gorm.DB, vkID string, provider *string, mcID string) (int, error) {
+	ownerTable, ownerWhere := "governance_virtual_keys", "id = ?"
+	ownerArgs := []any{vkID}
+	if provider != nil {
+		ownerTable, ownerWhere = "governance_virtual_key_provider_configs", "virtual_key_id = ? AND provider = ?"
+		ownerArgs = []any{vkID, *provider}
+	}
+	var rateLimitIDs []string
+	if err := tx.Table(ownerTable).Where(ownerWhere, ownerArgs...).
+		Where("rate_limit_id IS NOT NULL").Limit(1).Pluck("rate_limit_id", &rateLimitIDs).Error; err != nil {
+		return 0, fmt.Errorf("failed to read rate limit of virtual key %s: %w", vkID, err)
+	}
+	if len(rateLimitIDs) == 0 {
+		return 0, nil
+	}
+	res := tx.Exec(`
+		UPDATE governance_model_configs SET rate_limit_id = ? WHERE id = ? AND rate_limit_id IS NULL
+	`, rateLimitIDs[0], mcID)
+	if res.Error != nil {
+		return 0, fmt.Errorf("failed to attach rate limit %s to model config %s: %w", rateLimitIDs[0], mcID, res.Error)
+	}
+	if err := tx.Table(ownerTable).Where(ownerWhere, ownerArgs...).
+		Update("rate_limit_id", nil).Error; err != nil {
+		return 0, fmt.Errorf("failed to clear rate limit reference of virtual key %s: %w", vkID, err)
+	}
+	return int(res.RowsAffected), nil
 }
 
 // migrationAddVirtualKeyBusinessUnitColumn adds business_unit_id to governance_virtual_keys, the
