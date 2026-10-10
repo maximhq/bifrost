@@ -71,7 +71,14 @@ func TestParsePassthroughBody_JSONModelIsStrict(t *testing.T) {
 		{name: "invalid JSON declared as JSON", contentType: "application/json; charset=utf-8", body: `{"model":"gpt-4o",`, wantErr: "not valid JSON"},
 		{name: "invalid JSON with another content type is ignored", contentType: "text/plain", body: `model=gpt-4o`},
 		{name: "valid JSON with no content type is still read", contentType: "", body: `{"model":"gpt-4o"}`, wantModel: "gpt-4o"},
-		{name: "array body has no model", contentType: "application/json", body: `[{"model":"gpt-4o"}]`},
+		// A task array (Runware) names a model per task. One agreed model is the request's; tasks
+		// naming different models leave it empty, and governance reads them from the body instead.
+		{name: "single-task array names its model", contentType: "application/json", body: `[{"taskType":"imageInference","model":"runware:101@1"}]`, wantModel: "runware:101@1"},
+		{name: "array agreeing on one model names it", contentType: "application/json", body: `[{"model":"runware:101@1"},{"taskType":"getResponse"},{"model":" runware:101@1 "}]`, wantModel: "runware:101@1"},
+		{name: "array naming different models has no single model", contentType: "application/json", body: `[{"model":"runware:100@1"},{"model":"runware:101@1"}]`},
+		{name: "array task with a non-string model", contentType: "application/json", body: `[{"model":["runware:101@1"]}]`, wantErr: "must be a string"},
+		{name: "array task with duplicate model keys", contentType: "application/json", body: `[{"model":"blocked","model":"allowed"}]`, wantErr: "at most once"},
+		{name: "array of non-objects has no model", contentType: "application/json", body: `["runware:101@1"]`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

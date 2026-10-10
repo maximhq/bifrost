@@ -42,6 +42,9 @@ type EvaluationRequest struct {
 	// OpaqueBatchInput marks a batch create whose work is an uploaded file or blob rather than
 	// inline requests, so the models it will run are not visible to governance.
 	OpaqueBatchInput bool `json:"opaque_batch_input,omitempty"`
+	// ModelUnseen marks a passthrough request that names no model anywhere governance can read:
+	// not on the request and not in its body.
+	ModelUnseen bool `json:"model_unseen,omitempty"`
 }
 
 // EvaluationResult is a governance verdict: whether the request may proceed, and why not when it
@@ -141,6 +144,17 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 				Decision: DecisionModelBlocked,
 				Reason:   denialReason(fmt.Sprintf("Batch creation on provider '%s' requires a model: this access restricts models, and a file-based batch names none on the request", provider), access.DeniedPermitsForModel(string(provider), "")),
 			}
+		}
+	}
+	// A passthrough body is forwarded as the provider reads it. The models it names are evaluated
+	// one by one before this pass (PreLLMHook reads them from the body), so a request that names
+	// none anywhere leaves a model restriction with nothing to check. It is refused rather than
+	// skipped, since the provider will still run some model: its default, or one named in a shape
+	// governance does not read.
+	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && evaluationRequest.ModelUnseen && !skipModelCheck && !providerUnconfigured && !access.AllowsEveryModel(string(provider)) {
+		return &EvaluationResult{
+			Decision: DecisionModelBlocked,
+			Reason:   denialReason(fmt.Sprintf("Passthrough on provider '%s' requires a model: this access restricts models, and the request names none that can be checked", provider), access.DeniedPermitsForModel(string(provider), "")),
 		}
 	}
 	if !skipModelCheck && !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (checkModelIfPresent && model != "")) && !access.IsModelAllowed(string(provider), model) {

@@ -7,6 +7,7 @@ require (
 	github.com/maximhq/bifrost/core v1.11.2
 	github.com/maximhq/bifrost/framework v1.8.1
 	github.com/stretchr/testify v1.12.1
+	github.com/tidwall/gjson v1.18.0
 	github.com/valyala/fasthttp v1.74.0
 	gorm.io/gorm v1.31.1
 )
@@ -129,7 +130,6 @@ require (
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.7.0 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
-	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect

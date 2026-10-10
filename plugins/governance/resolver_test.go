@@ -708,6 +708,70 @@ func TestPreLLMHookRefusesOpaqueFileBatchesUnderModelRestrictedKeys(t *testing.T
 	}
 }
 
+// A passthrough body is forwarded as the provider reads it, and a Runware task array names a
+// model per task that the request itself does not carry. Under a key that restricts models on
+// the provider, every model the body names is checked, and a body naming none is refused:
+// nothing visible to governance may stand in for what the provider will run. A key allowing
+// every model of the provider is untouched.
+func TestPreLLMHookChecksEveryModelAPassthroughBodyNames(t *testing.T) {
+	restricted := buildVirtualKeyWithProviders("vk-pt", "sk-bf-pt", "Passthrough VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("runware", []string{"runware:100@1"}),
+	})
+	unrestricted := buildVirtualKeyWithProviders("vk-pt", "sk-bf-pt", "Passthrough VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("runware", []string{"*"}),
+	})
+	passthrough := func(requestType schemas.RequestType, model, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: requestType, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.Runware, Model: model, Method: "POST", Path: "/v1", Body: []byte(body),
+		}}
+	}
+	decision := func(sc *schemas.LLMPluginShortCircuit) string {
+		if sc == nil || sc.Error == nil || sc.Error.Type == nil {
+			return string(DecisionAllow)
+		}
+		return *sc.Error.Type
+	}
+	const allowedOnly = `[{"taskType":"imageInference","model":"runware:100@1"}]`
+	const disallowedOnly = `[{"taskType":"imageInference","model":"runware:101@1"}]`
+	const mixed = `[{"taskType":"imageInference","model":"runware:100@1"},{"taskType":"imageInference","model":"runware:101@1"}]`
+	const modelless = `[{"taskType":"getResponse","taskUUID":"00000000-0000-0000-0000-000000000000"}]`
+
+	cases := []struct {
+		name string
+		vk   *configstoreTables.TableVirtualKey
+		req  *schemas.BifrostRequest
+		want Decision
+	}{
+		// The router hands the array's single model up as the request model.
+		{"array naming the allowed model, restricted key", restricted, passthrough(schemas.PassthroughRequest, "runware:100@1", allowedOnly), DecisionAllow},
+		{"array naming a disallowed model, restricted key", restricted, passthrough(schemas.PassthroughRequest, "runware:101@1", disallowedOnly), DecisionModelBlocked},
+		// Tasks naming different models leave the request model empty; the body is read.
+		{"mixed array with the allowed model first, restricted key", restricted, passthrough(schemas.PassthroughRequest, "", mixed), DecisionModelBlocked},
+		{"mixed array, streaming, restricted key", restricted, passthrough(schemas.PassthroughStreamRequest, "", mixed), DecisionModelBlocked},
+		// Nothing names a model: the restriction cannot be checked, so it is not skipped.
+		{"model-less array, restricted key", restricted, passthrough(schemas.PassthroughRequest, "", modelless), DecisionModelBlocked},
+		{"object body naming no model, restricted key", restricted, passthrough(schemas.PassthroughRequest, "", `{"prompt":"x"}`), DecisionModelBlocked},
+		{"array naming a disallowed model, unrestricted key", unrestricted, passthrough(schemas.PassthroughRequest, "runware:101@1", disallowedOnly), DecisionAllow},
+		{"mixed array, unrestricted key", unrestricted, passthrough(schemas.PassthroughRequest, "", mixed), DecisionAllow},
+		{"model-less array, unrestricted key", unrestricted, passthrough(schemas.PassthroughRequest, "", modelless), DecisionAllow},
+		{"object body naming no model, unrestricted key", unrestricted, passthrough(schemas.PassthroughRequest, "", `{"prompt":"x"}`), DecisionAllow},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin := newAccessTestPlugin(t, tc.vk, nil)
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-pt"), tc.req)
+			require.NoError(t, err)
+			assert.Equal(t, string(tc.want), decision(shortCircuit))
+		})
+	}
+
+	// No virtual key presented: passthrough stays unrestricted, as every request type is.
+	plugin := newAccessTestPlugin(t, restricted, nil)
+	_, shortCircuit, err := plugin.PreLLMHook(emptyCtx(), passthrough(schemas.PassthroughRequest, "", mixed))
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit)
+}
+
 // TestBudgetResolver_EvaluateVirtualKey_ActiveNoExpiry verifies that a VK
 // with no expiry is allowed.
 func TestBudgetResolver_EvaluateVirtualKey_ActiveNoExpiry(t *testing.T) {
