@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/maximhq/bifrost/core/internal/memtest"
@@ -388,6 +389,67 @@ func TestCalculateBackoff_MaxBackoffCap(t *testing.T) {
 				backoff, config.NetworkConfig.RetryBackoffMax, attempt)
 		}
 	}
+}
+
+func TestCalculateBackoff_OverflowBounds(t *testing.T) {
+	const maxDuration = time.Duration(1<<63 - 1)
+	for _, tc := range []struct {
+		name    string
+		initial time.Duration
+		cap     time.Duration
+		attempt int
+	}{
+		{"default multiplication overflow", 500 * time.Millisecond, 5 * time.Second, 35},
+		{"HTTP duration multiplication overflow", 1000 * time.Second, 1000 * time.Second, 24},
+		{"negative product at small cap", 100 * time.Millisecond, 100 * time.Millisecond, 37},
+		{"zero product at small cap", 100 * time.Millisecond, 100 * time.Millisecond, 56},
+		{"signed shift boundary", time.Nanosecond, 5 * time.Second, 63},
+		{"shift beyond duration width", time.Nanosecond, 5 * time.Second, 64},
+		{"very large attempt", time.Nanosecond, 5 * time.Second, int(^uint(0) >> 1)},
+		{"jitter conversion at duration limit", maxDuration, maxDuration, 0},
+		{"product near duration limit", maxDuration / 2, maxDuration, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := createTestConfig(3, tc.initial, tc.cap)
+			lower := time.Duration(float64(tc.cap) * 0.8)
+			for sample := 0; sample < 128; sample++ {
+				got := calculateBackoff(tc.attempt, config)
+				if got < lower || got > tc.cap {
+					t.Fatalf("sample %d: backoff %v outside capped jitter range [%v, %v] for attempt %d", sample, got, lower, tc.cap, tc.attempt)
+				}
+			}
+		})
+	}
+}
+
+func TestExecuteRequestWithRetries_HighRetryBackoff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		config := createTestConfig(65, 100*time.Millisecond, 100*time.Millisecond)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+		calls := 0
+		var previous time.Time
+		result, bifrostErr := executeRequestWithRetries(ctx, config, func(_ schemas.Key) (string, *schemas.BifrostError) {
+			calls++
+			now := time.Now()
+			if calls > 1 {
+				if delay := now.Sub(previous); delay < 80*time.Millisecond || delay > 100*time.Millisecond {
+					t.Errorf("call %d: retry delay %v outside [80ms, 100ms]", calls, delay)
+				}
+			}
+			previous = now
+			if calls < 66 {
+				return "", createBifrostError("temporarily unavailable", Ptr(503), nil, false)
+			}
+			return "success", nil
+		}, nil, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o-mini", nil, NewDefaultLogger(schemas.LogLevelError))
+		if bifrostErr != nil || result != "success" || calls != 66 {
+			t.Fatalf("got result=%q, error=%v, calls=%d; want success after 65 retries", result, bifrostErr, calls)
+		}
+		if got := ctx.Value(schemas.BifrostContextKeyNumberOfRetries); got != 65 {
+			t.Fatalf("got retry count %v; want 65", got)
+		}
+	})
 }
 
 // Test IsRateLimitErrorMessage - all patterns

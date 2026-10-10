@@ -89,13 +89,18 @@ func isKeySkippingAllowed(baseProvider schemas.ModelProvider) bool {
 
 // calculateBackoff implements exponential backoff with jitter for retry attempts.
 func calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration {
-	// Calculate an exponential backoff: initial * 2^attempt
-	backoff := min(config.NetworkConfig.RetryBackoffInitial*time.Duration(1<<uint(attempt)), config.NetworkConfig.RetryBackoffMax)
+	// Saturate before shifting so initial * 2^attempt cannot overflow a duration.
+	backoff := config.NetworkConfig.RetryBackoffMax
+	if attempt < 63 && config.NetworkConfig.RetryBackoffInitial <= backoff>>uint(attempt) {
+		backoff = config.NetworkConfig.RetryBackoffInitial << uint(attempt)
+	}
 	// Add jitter (20%)
 	jitter := float64(backoff) * (0.8 + 0.4*rand.Float64())
-	result := time.Duration(jitter)
-	// Ensure we never exceed the configured maximum
-	return min(result, config.NetworkConfig.RetryBackoffMax)
+	// Clamp before conversion, which can overflow for jitter near the duration limit.
+	if jitter >= float64(config.NetworkConfig.RetryBackoffMax) {
+		return config.NetworkConfig.RetryBackoffMax
+	}
+	return time.Duration(jitter)
 }
 
 // waitRetryBackoff sleeps for backoff unless ctx ends first. It reports true when
