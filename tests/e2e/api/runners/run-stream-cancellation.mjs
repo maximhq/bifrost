@@ -73,6 +73,37 @@ const pricingUrl =
 // OpenAI family — the fix still bills Bedrock whenever metadata arrives before failure.
 const EARLY_USAGE_PROVIDERS = new Set(["anthropic"]);
 
+// An early-usage cancel carries the message_start usage that logs and governance bill;
+// /metrics must count it too, not only the error.
+const BILLED_CANCEL_COUNTERS = ["bifrost_error_requests_total", "bifrost_input_tokens_total", "bifrost_cost_total"];
+
+// Sums each BILLED_CANCEL_COUNTERS family across every series labelled with provider.
+async function scrapeProviderCounters(provider) {
+  const res = await fetch(`${baseUrl}/metrics`);
+  const text = await res.text();
+  if (!res.ok) throw new Error(`GET /metrics returned HTTP ${res.status}: ${text.slice(0, 300)}`);
+  const sums = Object.fromEntries(BILLED_CANCEL_COUNTERS.map((n) => [n, 0]));
+  const providerLabel = new RegExp(`(^|,)provider="${provider}"(,|$)`);
+  for (const line of text.split("\n")) {
+    const m = /^(\w+)\{([^}]*)\}\s+(\S+)/.exec(line);
+    if (m && m[1] in sums && providerLabel.test(m[2])) sums[m[1]] += Number(m[3]);
+  }
+  return sums;
+}
+
+// Polls /metrics until the cancel's input tokens and cost land (the telemetry
+// post-hook records asynchronously). Returns an error string, or undefined on success.
+async function verifyCancelMetrics(provider, before) {
+  let delta = {};
+  for (const ms of [300, 700, 1200, 2000]) {
+    await new Promise((r) => setTimeout(r, ms));
+    const after = await scrapeProviderCounters(provider);
+    delta = Object.fromEntries(BILLED_CANCEL_COUNTERS.map((n) => [n, after[n] - before[n]]));
+    if (delta.bifrost_input_tokens_total > 0 && delta.bifrost_cost_total > 0) return undefined;
+  }
+  return `cancelled ${provider} stream billed usage missing from /metrics: ${BILLED_CANCEL_COUNTERS.map((n) => `${n} +${delta[n]}`).join(", ")}`;
+}
+
 // ─── logs DB + datasheet helpers (cost verification) ──────────────────────────
 function resolveLogsDbUrl() {
   return logsDbUrlArg || readLogsDbUrl(configPathArg, serverWorkingDir);
@@ -297,6 +328,9 @@ async function runCase(testCase) {
   const requestId = `stream-cancel-${testCase.provider}-${crypto.randomUUID()}`;
 
   try {
+    const metricsBefore = EARLY_USAGE_PROVIDERS.has(testCase.provider)
+      ? await scrapeProviderCounters(testCase.provider)
+      : null;
     const response = await fetch(`${baseUrl}${testCase.path}`, {
       method: "POST",
       headers: {
@@ -348,15 +382,17 @@ async function runCase(testCase) {
     controller.abort(new Error("intentional downstream abort after first stream bytes"));
     await reader.cancel("intentional downstream abort").catch(() => {});
 
+    const metricsError =
+      bytesRead > 0 && metricsBefore ? await verifyCancelMetrics(testCase.provider, metricsBefore) : undefined;
     return {
       ...testCase,
       requestId,
-      ok: bytesRead > 0,
+      ok: bytesRead > 0 && !metricsError,
       status: response.status,
       contentType,
       bytesRead,
       aborted: true,
-      error: bytesRead > 0 ? undefined : "stream ended before any bytes were read",
+      error: bytesRead > 0 ? metricsError : "stream ended before any bytes were read",
     };
   } catch (err) {
     return {
