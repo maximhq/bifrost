@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	ws "github.com/fasthttp/websocket"
 	"github.com/google/uuid"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -118,6 +119,21 @@ func restoreCorrelationHeaders(ctx *fasthttp.RequestCtx) {
 	ctx.Response.Header.SetBytesV(lib.HeaderBifrostRequestID, requestID)
 	ctx.Response.Header.SetBytesV(lib.HeaderRequestID, requestID)
 	ctx.Response.Header.Set(lib.HeaderBifrostTraceID, exportTraceID)
+}
+
+// recoverWebSocketSession is deferred first inside every WebSocket upgrade callback.
+// A hijacked connection is served on its own goroutine after the HTTP handler, and
+// therefore after RecoveryMiddleware, has returned, so a panic there would otherwise
+// end the whole process. The panic is logged the same way and only this connection is
+// dropped (the callback's own deferred conn.Close runs after this recover).
+func recoverWebSocketSession(conn *ws.Conn) {
+	if r := recover(); r != nil {
+		remote := ""
+		if conn != nil && conn.RemoteAddr() != nil {
+			remote = conn.RemoteAddr().String()
+		}
+		logger.Error(fmt.Sprintf("recovered from panic in websocket session (%s): %s\n%s", remote, panicSummary(r), debug.Stack()))
+	}
 }
 
 // panicSummary describes a recovered panic value without echoing arbitrary content.
