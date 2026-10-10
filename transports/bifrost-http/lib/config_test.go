@@ -22717,3 +22717,42 @@ func TestValidateInjectedToolsBody_AcceptsSchemaValidShapes(t *testing.T) {
 		}
 	}
 }
+
+// TestPrepareOpenAPIClientFromFile covers how an openapi client declared in
+// config.json is normalized at load: spec_file is read relative to the config
+// directory and inlined, the server-computed metadata is filled from a parse,
+// a spec_url-only entry is left for connect time, and the auth types the
+// synthesized server cannot honor are refused.
+func TestPrepareOpenAPIClientFromFile(t *testing.T) {
+	dir := t.TempDir()
+	spec := "openapi: 3.0.3\ninfo:\n  title: Petstore\n  version: 1.0.0\nservers:\n  - url: https://petstore.example.com/v1\npaths:\n  /pets:\n    get:\n      operationId: listPets\n      responses:\n        '200':\n          description: ok\n"
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "specs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "specs", "petstore.yaml"), []byte(spec), 0o644))
+	str := func(s string) *string { return &s }
+
+	fromFile := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecFile: str("specs/petstore.yaml")}}
+	require.NoError(t, prepareOpenAPIClientFromFile(fromFile, dir))
+	assert.Equal(t, spec, fromFile.OpenAPIConfig.Spec, "spec_file is inlined so the persisted row carries the document")
+	assert.Equal(t, "Petstore", fromFile.OpenAPIConfig.SpecTitle)
+	assert.Equal(t, "3.0.3", fromFile.OpenAPIConfig.OpenAPIVersion)
+	assert.Equal(t, 1, fromFile.OpenAPIConfig.OperationCount)
+	assert.NotEmpty(t, fromFile.OpenAPIConfig.SpecHash)
+
+	urlOnly := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeHeaders, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecURL: str("https://api.example.com/openapi.json")}}
+	require.NoError(t, prepareOpenAPIClientFromFile(urlOnly, dir))
+	assert.Empty(t, urlOnly.OpenAPIConfig.Spec, "a spec_url is fetched at connect time, not at load")
+
+	for name, cfg := range map[string]*schemas.MCPClientConfig{
+		"missing block":  {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI},
+		"no source":      {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{}},
+		"oauth":          {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeOauth, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: spec}},
+		"token exchange": {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeTokenExchange, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: spec}},
+		"missing file":   {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecFile: str("specs/nope.yaml")}},
+		"escaping file":  {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecFile: str("../../etc/passwd")}},
+		"unparseable":    {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "not: openapi"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Error(t, prepareOpenAPIClientFromFile(cfg, dir))
+		})
+	}
+}

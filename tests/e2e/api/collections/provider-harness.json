@@ -221119,6 +221119,508 @@
           }
         }
       ]
+    },
+    {
+      "name": "197. MCP server from OpenAPI spec (mcp-openapi-spec)",
+      "description": "Management-plane regression for connection_type \"openapi\": POST /api/mcp/openapi/preview parses Swagger 2.0 and OpenAPI 3.0/3.1/3.2 documents into the same tool set, POST /api/mcp/client registers a client whose MCP server is synthesized from the document (tools carry the <client>-<tool> prefix, the stored document is not echoed by GET /api/mcp/clients), and the create path refuses auth types the synthesized server cannot honor and tool names the document does not define. The upstream is the public Swagger Petstore because the harness profile has no admin auth configured, which confines registrations to public targets; no tool is called. The openai keyword in case names is only a harness filter label.",
+      "item": [
+        {
+          "name": "openai mcp-openapi-spec preview of an OpenAPI 3.0 petstore yields listPets/createPet/getPetById",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi preview is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('detected version is 3.0.3', function () {",
+                  "  pm.expect(body.openapi_version, pm.response.text()).to.eql('3.0.3');",
+                  "});",
+                  "pm.test('operations become tools named after their operationId', function () {",
+                  "  var names = (body.tools || []).map(function (t) { return t.name; });",
+                  "  pm.expect(names, pm.response.text()).to.have.members([\"listPets\", \"createPet\", \"getPetById\"]);",
+                  "});",
+                  "pm.test('multipart upload is reported unsupported, not dropped silently', function () {",
+                  "  var ids = (body.unsupported || []).map(function (u) { return u.operation_id; });",
+                  "  pm.expect(ids, pm.response.text()).to.include('uploadPetPhoto');",
+                  "});",
+                  "pm.test('the api_key header scheme is supported and the base url resolves from servers', function () {",
+                  "  pm.expect(body.security_schemes[0].supported, pm.response.text()).to.eql(true);",
+                  "  pm.expect(body.base_url).to.eql('https://petstore3.swagger.io/api/v3');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"spec\": \"{\\n  \\\"openapi\\\": \\\"3.0.3\\\",\\n  \\\"info\\\": {\\n    \\\"title\\\": \\\"Harness Petstore\\\",\\n    \\\"version\\\": \\\"1.0.0\\\",\\n    \\\"x-harness-marker\\\": \\\"spec-body-must-not-be-returned\\\"\\n  },\\n  \\\"servers\\\": [\\n    {\\n      \\\"url\\\": \\\"https://petstore3.swagger.io/api/v3\\\"\\n    }\\n  ],\\n  \\\"components\\\": {\\n    \\\"securitySchemes\\\": {\\n      \\\"ApiKeyAuth\\\": {\\n        \\\"type\\\": \\\"apiKey\\\",\\n        \\\"in\\\": \\\"header\\\",\\n        \\\"name\\\": \\\"api_key\\\"\\n      }\\n    }\\n  },\\n  \\\"paths\\\": {\\n    \\\"/pet/findByStatus\\\": {\\n      \\\"get\\\": {\\n        \\\"operationId\\\": \\\"listPets\\\",\\n        \\\"summary\\\": \\\"Find pets by status\\\",\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"status\\\",\\n            \\\"in\\\": \\\"query\\\",\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"string\\\",\\n              \\\"enum\\\": [\\n                \\\"available\\\",\\n                \\\"pending\\\",\\n                \\\"sold\\\"\\n              ]\\n            }\\n          }\\n        ],\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    },\\n    \\\"/pet\\\": {\\n      \\\"post\\\": {\\n        \\\"operationId\\\": \\\"createPet\\\",\\n        \\\"requestBody\\\": {\\n          \\\"required\\\": true,\\n          \\\"content\\\": {\\n            \\\"application/json\\\": {\\n              \\\"schema\\\": {\\n                \\\"type\\\": \\\"object\\\",\\n                \\\"required\\\": [\\n                  \\\"name\\\"\\n                ],\\n                \\\"properties\\\": {\\n                  \\\"name\\\": {\\n                    \\\"type\\\": \\\"string\\\"\\n                  },\\n                  \\\"status\\\": {\\n                    \\\"type\\\": \\\"string\\\"\\n                  }\\n                }\\n              }\\n            }\\n          }\\n        },\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    },\\n    \\\"/pet/{petId}\\\": {\\n      \\\"get\\\": {\\n        \\\"operationId\\\": \\\"getPetById\\\",\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"petId\\\",\\n            \\\"in\\\": \\\"path\\\",\\n            \\\"required\\\": true,\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"integer\\\"\\n            }\\n          }\\n        ],\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    },\\n    \\\"/pet/{petId}/uploadImage\\\": {\\n      \\\"post\\\": {\\n        \\\"operationId\\\": \\\"uploadPetPhoto\\\",\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"petId\\\",\\n            \\\"in\\\": \\\"path\\\",\\n            \\\"required\\\": true,\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"integer\\\"\\n            }\\n          }\\n        ],\\n        \\\"requestBody\\\": {\\n          \\\"content\\\": {\\n            \\\"multipart/form-data\\\": {\\n              \\\"schema\\\": {\\n                \\\"type\\\": \\\"object\\\"\\n              }\\n            }\\n          }\\n        },\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    }\\n  }\\n}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai mcp-openapi-spec preview of a Swagger 2.0 petstore yields the same tools",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi preview is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('detected version is 2.0', function () {",
+                  "  pm.expect(body.openapi_version, pm.response.text()).to.eql('2.0');",
+                  "});",
+                  "pm.test('operations become tools named after their operationId', function () {",
+                  "  var names = (body.tools || []).map(function (t) { return t.name; });",
+                  "  pm.expect(names, pm.response.text()).to.have.members([\"listPets\", \"createPet\", \"getPetById\"]);",
+                  "});",
+                  "pm.test('host, basePath and schemes form the server url', function () {",
+                  "  pm.expect(body.base_url, pm.response.text()).to.eql('https://petstore3.swagger.io/api/v3');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"spec\": \"{\\n  \\\"swagger\\\": \\\"2.0\\\",\\n  \\\"info\\\": {\\n    \\\"title\\\": \\\"Harness Petstore (Swagger 2)\\\",\\n    \\\"version\\\": \\\"2.0.0\\\"\\n  },\\n  \\\"host\\\": \\\"petstore3.swagger.io\\\",\\n  \\\"basePath\\\": \\\"/api/v3\\\",\\n  \\\"schemes\\\": [\\n    \\\"https\\\"\\n  ],\\n  \\\"paths\\\": {\\n    \\\"/pet/findByStatus\\\": {\\n      \\\"get\\\": {\\n        \\\"operationId\\\": \\\"listPets\\\",\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"status\\\",\\n            \\\"in\\\": \\\"query\\\",\\n            \\\"type\\\": \\\"string\\\"\\n          }\\n        ],\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    },\\n    \\\"/pet\\\": {\\n      \\\"post\\\": {\\n        \\\"operationId\\\": \\\"createPet\\\",\\n        \\\"consumes\\\": [\\n          \\\"application/json\\\"\\n        ],\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"body\\\",\\n            \\\"in\\\": \\\"body\\\",\\n            \\\"required\\\": true,\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"object\\\",\\n              \\\"properties\\\": {\\n                \\\"name\\\": {\\n                  \\\"type\\\": \\\"string\\\"\\n                }\\n              }\\n            }\\n          }\\n        ],\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    },\\n    \\\"/pet/{petId}\\\": {\\n      \\\"get\\\": {\\n        \\\"operationId\\\": \\\"getPetById\\\",\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"petId\\\",\\n            \\\"in\\\": \\\"path\\\",\\n            \\\"required\\\": true,\\n            \\\"type\\\": \\\"integer\\\"\\n          }\\n        ],\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    }\\n  }\\n}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai mcp-openapi-spec preview of an OpenAPI 3.1 petstore normalizes null type arrays",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi preview is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('detected version is 3.1.0', function () {",
+                  "  pm.expect(body.openapi_version, pm.response.text()).to.eql('3.1.0');",
+                  "});",
+                  "pm.test('operations become tools named after their operationId', function () {",
+                  "  var names = (body.tools || []).map(function (t) { return t.name; });",
+                  "  pm.expect(names, pm.response.text()).to.have.members([\"listPets\", \"createPet\", \"getPetById\"]);",
+                  "});",
+                  "pm.test('type: [string, null] becomes a nullable string', function () {",
+                  "  var listPets = body.tools.filter(function (t) { return t.name === 'listPets'; })[0];",
+                  "  var status = listPets.input_schema.properties.status;",
+                  "  pm.expect(status.type, pm.response.text()).to.eql('string');",
+                  "  pm.expect(status.nullable).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"spec\": \"{\\n  \\\"openapi\\\": \\\"3.1.0\\\",\\n  \\\"info\\\": {\\n    \\\"title\\\": \\\"Harness Petstore 3.1\\\",\\n    \\\"version\\\": \\\"3.1.0\\\"\\n  },\\n  \\\"servers\\\": [\\n    {\\n      \\\"url\\\": \\\"https://petstore3.swagger.io/api/v3\\\"\\n    }\\n  ],\\n  \\\"paths\\\": {\\n    \\\"/pet/findByStatus\\\": {\\n      \\\"get\\\": {\\n        \\\"operationId\\\": \\\"listPets\\\",\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"status\\\",\\n            \\\"in\\\": \\\"query\\\",\\n            \\\"schema\\\": {\\n              \\\"type\\\": [\\n                \\\"string\\\",\\n                \\\"null\\\"\\n              ]\\n            }\\n          }\\n        ],\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    },\\n    \\\"/pet\\\": {\\n      \\\"post\\\": {\\n        \\\"operationId\\\": \\\"createPet\\\",\\n        \\\"requestBody\\\": {\\n          \\\"required\\\": true,\\n          \\\"content\\\": {\\n            \\\"application/json\\\": {\\n              \\\"schema\\\": {\\n                \\\"type\\\": \\\"object\\\",\\n                \\\"properties\\\": {\\n                  \\\"name\\\": {\\n                    \\\"type\\\": [\\n                      \\\"string\\\",\\n                      \\\"null\\\"\\n                    ]\\n                  }\\n                }\\n              }\\n            }\\n          }\\n        },\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    },\\n    \\\"/pet/{petId}\\\": {\\n      \\\"get\\\": {\\n        \\\"operationId\\\": \\\"getPetById\\\",\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"petId\\\",\\n            \\\"in\\\": \\\"path\\\",\\n            \\\"required\\\": true,\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"integer\\\"\\n            }\\n          }\\n        ],\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    }\\n  }\\n}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai mcp-openapi-spec preview of an OpenAPI 3.2 petstore resolves $self and the query method",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi preview is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('detected version is 3.2.0', function () {",
+                  "  pm.expect(body.openapi_version, pm.response.text()).to.eql('3.2.0');",
+                  "});",
+                  "pm.test('operations become tools named after their operationId', function () {",
+                  "  var names = (body.tools || []).map(function (t) { return t.name; });",
+                  "  pm.expect(names, pm.response.text()).to.have.members([\"listPets\", \"createPet\", \"getPetById\"]);",
+                  "});",
+                  "pm.test('a relative server resolves against $self', function () {",
+                  "  pm.expect(body.base_url, pm.response.text()).to.eql('https://petstore3.swagger.io/api/v3');",
+                  "});",
+                  "pm.test('the QUERY method is read-only', function () {",
+                  "  var getPet = body.tools.filter(function (t) { return t.name === 'getPetById'; })[0];",
+                  "  pm.expect(getPet.method, pm.response.text()).to.eql('QUERY');",
+                  "  pm.expect(getPet.annotations.readOnlyHint).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"spec\": \"openapi: 3.2.0\\n$self: https://petstore3.swagger.io/api/v3/openapi.yaml\\ninfo:\\n  title: Harness Petstore 3.2\\n  version: 3.2.0\\nservers:\\n  - url: /api/v3\\npaths:\\n  /pet/findByStatus:\\n    get:\\n      operationId: listPets\\n      responses:\\n        '200':\\n          description: ok\\n  /pet:\\n    post:\\n      operationId: createPet\\n      requestBody:\\n        required: true\\n        content:\\n          application/json:\\n            schema:\\n              type: object\\n    query:\\n      operationId: getPetById\\n      responses:\\n        '200':\\n          description: ok\\n\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai mcp-openapi-spec preview of a non-OpenAPI document is a 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a document without openapi/swagger is a 400', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('not an OpenAPI document');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"spec\": \"{\\\"title\\\": \\\"not a spec\\\", \\\"paths\\\": {}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai mcp-openapi-spec create registers a client synthesized from the document",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi client is created', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_id\": \"harness-openapi-petstore\",\n  \"name\": \"harness_openapi_petstore\",\n  \"connection_type\": \"openapi\",\n  \"auth_type\": \"none\",\n  \"tools_to_execute\": [\n    \"listPets\",\n    \"getPetById\"\n  ],\n  \"openapi_config\": {\n    \"spec\": \"{\\n  \\\"openapi\\\": \\\"3.0.3\\\",\\n  \\\"info\\\": {\\n    \\\"title\\\": \\\"Harness Petstore\\\",\\n    \\\"version\\\": \\\"1.0.0\\\",\\n    \\\"x-harness-marker\\\": \\\"spec-body-must-not-be-returned\\\"\\n  },\\n  \\\"servers\\\": [\\n    {\\n      \\\"url\\\": \\\"https://petstore3.swagger.io/api/v3\\\"\\n    }\\n  ],\\n  \\\"components\\\": {\\n    \\\"securitySchemes\\\": {\\n      \\\"ApiKeyAuth\\\": {\\n        \\\"type\\\": \\\"apiKey\\\",\\n        \\\"in\\\": \\\"header\\\",\\n        \\\"name\\\": \\\"api_key\\\"\\n      }\\n    }\\n  },\\n  \\\"paths\\\": {\\n    \\\"/pet/findByStatus\\\": {\\n      \\\"get\\\": {\\n        \\\"operationId\\\": \\\"listPets\\\",\\n        \\\"summary\\\": \\\"Find pets by status\\\",\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"status\\\",\\n            \\\"in\\\": \\\"query\\\",\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"string\\\",\\n              \\\"enum\\\": [\\n                \\\"available\\\",\\n                \\\"pending\\\",\\n                \\\"sold\\\"\\n              ]\\n            }\\n          }\\n        ],\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    },\\n    \\\"/pet\\\": {\\n      \\\"post\\\": {\\n        \\\"operationId\\\": \\\"createPet\\\",\\n        \\\"requestBody\\\": {\\n          \\\"required\\\": true,\\n          \\\"content\\\": {\\n            \\\"application/json\\\": {\\n              \\\"schema\\\": {\\n                \\\"type\\\": \\\"object\\\",\\n                \\\"required\\\": [\\n                  \\\"name\\\"\\n                ],\\n                \\\"properties\\\": {\\n                  \\\"name\\\": {\\n                    \\\"type\\\": \\\"string\\\"\\n                  },\\n                  \\\"status\\\": {\\n                    \\\"type\\\": \\\"string\\\"\\n                  }\\n                }\\n              }\\n            }\\n          }\\n        },\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    },\\n    \\\"/pet/{petId}\\\": {\\n      \\\"get\\\": {\\n        \\\"operationId\\\": \\\"getPetById\\\",\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"petId\\\",\\n            \\\"in\\\": \\\"path\\\",\\n            \\\"required\\\": true,\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"integer\\\"\\n            }\\n          }\\n        ],\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    },\\n    \\\"/pet/{petId}/uploadImage\\\": {\\n      \\\"post\\\": {\\n        \\\"operationId\\\": \\\"uploadPetPhoto\\\",\\n        \\\"parameters\\\": [\\n          {\\n            \\\"name\\\": \\\"petId\\\",\\n            \\\"in\\\": \\\"path\\\",\\n            \\\"required\\\": true,\\n            \\\"schema\\\": {\\n              \\\"type\\\": \\\"integer\\\"\\n            }\\n          }\\n        ],\\n        \\\"requestBody\\\": {\\n          \\\"content\\\": {\\n            \\\"multipart/form-data\\\": {\\n              \\\"schema\\\": {\\n                \\\"type\\\": \\\"object\\\"\\n              }\\n            }\\n          }\\n        },\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    }\\n  }\\n}\",\n    \"base_url\": \"https://petstore3.swagger.io/api/v3\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai mcp-openapi-spec list shows the prefixed tools and omits the document",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('clients list is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var clients = (pm.response.json() || {}).clients || [];",
+                  "var client = clients.filter(function (c) { return c.config && c.config.name === 'harness_openapi_petstore'; })[0];",
+                  "pm.test('the openapi client is listed with only the ticked operations as tools', function () {",
+                  "  pm.expect(client, 'client missing from ' + text.slice(0, 500)).to.be.an('object');",
+                  "  var names = (client.tools || []).map(function (t) { return t.name; });",
+                  "  pm.expect(names, JSON.stringify(names)).to.have.members(['listPets', 'getPetById']);",
+                  "  pm.expect(client.config.connection_type).to.eql('openapi');",
+                  "});",
+                  "pm.test('the stored document is not returned by the list, its metadata is', function () {",
+                  "  pm.expect(text).to.not.include('spec-body-must-not-be-returned');",
+                  "  pm.expect(text).to.include('\"spec_title\":\"Harness Petstore\"');",
+                  "  pm.expect(text).to.include('\"operation_count\":3');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai mcp-openapi-spec stored document is served on demand",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stored spec is a 200 with the document', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.text()).to.include('spec-body-must-not-be-returned');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/harness-openapi-petstore/openapi-spec",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "harness-openapi-petstore",
+                "openapi-spec"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai mcp-openapi-spec cleanup deletes the client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi client is deleted', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/harness-openapi-petstore",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "harness-openapi-petstore"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai mcp-openapi-spec create with auth_type oauth is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('oauth on an openapi client is a 400', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"not supported for connection_type 'openapi'\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_openapi_oauth_probe\",\n  \"connection_type\": \"openapi\",\n  \"auth_type\": \"oauth\",\n  \"tools_to_execute\": [\n    \"*\"\n  ],\n  \"openapi_config\": {\n    \"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"Harness Petstore\\\", \\\"version\\\": \\\"1.0.0\\\", \\\"x-harness-marker\\\": \\\"spec-body-must-not-be-returned\\\"}, \\\"servers\\\": [{\\\"url\\\": \\\"https://petstore3.swagger.io/api/v3\\\"}], \\\"components\\\": {\\\"securitySchemes\\\": {\\\"ApiKeyAuth\\\": {\\\"type\\\": \\\"apiKey\\\", \\\"in\\\": \\\"header\\\", \\\"name\\\": \\\"api_key\\\"}}}, \\\"paths\\\": {\\\"/pet/findByStatus\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"listPets\\\", \\\"summary\\\": \\\"Find pets by status\\\", \\\"parameters\\\": [{\\\"name\\\": \\\"status\\\", \\\"in\\\": \\\"query\\\", \\\"schema\\\": {\\\"type\\\": \\\"string\\\", \\\"enum\\\": [\\\"available\\\", \\\"pending\\\", \\\"sold\\\"]}}], \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}, \\\"/pet\\\": {\\\"post\\\": {\\\"operationId\\\": \\\"createPet\\\", \\\"requestBody\\\": {\\\"required\\\": true, \\\"content\\\": {\\\"application/json\\\": {\\\"schema\\\": {\\\"type\\\": \\\"object\\\", \\\"required\\\": [\\\"name\\\"], \\\"properties\\\": {\\\"name\\\": {\\\"type\\\": \\\"string\\\"}, \\\"status\\\": {\\\"type\\\": \\\"string\\\"}}}}}}, \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}, \\\"/pet/{petId}\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getPetById\\\", \\\"parameters\\\": [{\\\"name\\\": \\\"petId\\\", \\\"in\\\": \\\"path\\\", \\\"required\\\": true, \\\"schema\\\": {\\\"type\\\": \\\"integer\\\"}}], \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}, \\\"/pet/{petId}/uploadImage\\\": {\\\"post\\\": {\\\"operationId\\\": \\\"uploadPetPhoto\\\", \\\"parameters\\\": [{\\\"name\\\": \\\"petId\\\", \\\"in\\\": \\\"path\\\", \\\"required\\\": true, \\\"schema\\\": {\\\"type\\\": \\\"integer\\\"}}], \\\"requestBody\\\": {\\\"content\\\": {\\\"multipart/form-data\\\": {\\\"schema\\\": {\\\"type\\\": \\\"object\\\"}}}}, \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\",\n    \"base_url\": \"https://petstore3.swagger.io/api/v3\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai mcp-openapi-spec create with a tool the document does not define is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an unknown tools_to_execute entry is a 400 that names it', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('fetchPets');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_openapi_tool_probe\",\n  \"connection_type\": \"openapi\",\n  \"auth_type\": \"none\",\n  \"tools_to_execute\": [\n    \"listPets\",\n    \"fetchPets\"\n  ],\n  \"openapi_config\": {\n    \"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"Harness Petstore\\\", \\\"version\\\": \\\"1.0.0\\\", \\\"x-harness-marker\\\": \\\"spec-body-must-not-be-returned\\\"}, \\\"servers\\\": [{\\\"url\\\": \\\"https://petstore3.swagger.io/api/v3\\\"}], \\\"components\\\": {\\\"securitySchemes\\\": {\\\"ApiKeyAuth\\\": {\\\"type\\\": \\\"apiKey\\\", \\\"in\\\": \\\"header\\\", \\\"name\\\": \\\"api_key\\\"}}}, \\\"paths\\\": {\\\"/pet/findByStatus\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"listPets\\\", \\\"summary\\\": \\\"Find pets by status\\\", \\\"parameters\\\": [{\\\"name\\\": \\\"status\\\", \\\"in\\\": \\\"query\\\", \\\"schema\\\": {\\\"type\\\": \\\"string\\\", \\\"enum\\\": [\\\"available\\\", \\\"pending\\\", \\\"sold\\\"]}}], \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}, \\\"/pet\\\": {\\\"post\\\": {\\\"operationId\\\": \\\"createPet\\\", \\\"requestBody\\\": {\\\"required\\\": true, \\\"content\\\": {\\\"application/json\\\": {\\\"schema\\\": {\\\"type\\\": \\\"object\\\", \\\"required\\\": [\\\"name\\\"], \\\"properties\\\": {\\\"name\\\": {\\\"type\\\": \\\"string\\\"}, \\\"status\\\": {\\\"type\\\": \\\"string\\\"}}}}}}, \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}, \\\"/pet/{petId}\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getPetById\\\", \\\"parameters\\\": [{\\\"name\\\": \\\"petId\\\", \\\"in\\\": \\\"path\\\", \\\"required\\\": true, \\\"schema\\\": {\\\"type\\\": \\\"integer\\\"}}], \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}, \\\"/pet/{petId}/uploadImage\\\": {\\\"post\\\": {\\\"operationId\\\": \\\"uploadPetPhoto\\\", \\\"parameters\\\": [{\\\"name\\\": \\\"petId\\\", \\\"in\\\": \\\"path\\\", \\\"required\\\": true, \\\"schema\\\": {\\\"type\\\": \\\"integer\\\"}}], \\\"requestBody\\\": {\\\"content\\\": {\\\"multipart/form-data\\\": {\\\"schema\\\": {\\\"type\\\": \\\"object\\\"}}}}, \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\",\n    \"base_url\": \"https://petstore3.swagger.io/api/v3\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

@@ -82,3 +82,45 @@ func TestRedactMCPClientConfig_MasksSecretBackedConnectionString(t *testing.T) {
 	assert.Equal(t, "env.MCP_REDACTION_TEST_URL", redacted.ConnectionString.GetRawRef(),
 		"secret ref must be preserved so the UI can show it")
 }
+
+// TestRedactMCPClientConfig_OpenAPIConfig: the upstream API credentials inside
+// openapi_config are masked and the (large) spec document is left out of reads,
+// while the server-computed metadata that describes the spec survives and the
+// live config is untouched.
+func TestRedactMCPClientConfig_OpenAPIConfig(t *testing.T) {
+	c := &Config{}
+	base := "https://petstore.example.com/v1"
+	config := &schemas.MCPClientConfig{
+		ID:             "oa-1",
+		Name:           "petstore",
+		ConnectionType: schemas.MCPConnectionTypeOpenAPI,
+		OpenAPIConfig: &schemas.MCPOpenAPIConfig{
+			Spec:    "openapi: 3.0.3\npaths: {}",
+			BaseURL: &base,
+			SecurityCredentials: map[string]schemas.MCPOpenAPICredential{
+				"ApiKeyAuth": {Value: schemas.NewSecretVar("super-secret-api-key")},
+				"BasicAuth":  {Username: schemas.NewSecretVar("service-user"), Password: schemas.NewSecretVar("service-password")},
+			},
+			SpecTitle:      "Petstore",
+			OpenAPIVersion: "3.0.3",
+			OperationCount: 4,
+			SpecSize:       25,
+			SpecHash:       "abc",
+		},
+	}
+
+	redacted := c.RedactMCPClientConfig(config)
+	require.NotNil(t, redacted.OpenAPIConfig)
+	assert.Empty(t, redacted.OpenAPIConfig.Spec, "the document is not part of a client read")
+	assert.Equal(t, base, *redacted.OpenAPIConfig.BaseURL, "the upstream address is not a credential")
+	assert.True(t, redacted.OpenAPIConfig.SecurityCredentials["ApiKeyAuth"].Value.IsRedacted(), "api key leaked")
+	assert.True(t, redacted.OpenAPIConfig.SecurityCredentials["BasicAuth"].Username.IsRedacted(), "basic username leaked")
+	assert.True(t, redacted.OpenAPIConfig.SecurityCredentials["BasicAuth"].Password.IsRedacted(), "basic password leaked")
+	assert.Equal(t, "Petstore", redacted.OpenAPIConfig.SpecTitle)
+	assert.Equal(t, 4, redacted.OpenAPIConfig.OperationCount)
+	assert.Equal(t, "abc", redacted.OpenAPIConfig.SpecHash)
+
+	assert.Equal(t, "openapi: 3.0.3\npaths: {}", config.OpenAPIConfig.Spec, "live config keeps the spec")
+	assert.Equal(t, "super-secret-api-key", config.OpenAPIConfig.SecurityCredentials["ApiKeyAuth"].Value.GetValue(), "live config keeps the credential")
+	assert.NotSame(t, config.OpenAPIConfig, redacted.OpenAPIConfig)
+}

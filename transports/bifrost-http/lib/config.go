@@ -41,6 +41,7 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/framework/objectstore"
+	"github.com/maximhq/bifrost/framework/openapimcp"
 	plugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/compat"
@@ -1021,6 +1022,16 @@ func registerFeatureFlags(_ context.Context) error {
 //   - Case conversion for provider names (e.g., "OpenAI" -> "openai")
 //   - In-memory storage for ultra-fast access during request processing
 //   - Graceful handling of missing config files
+//
+// ConfigDir returns the directory config.json was loaded from. Relative paths in
+// the file (openapi_config.spec_file) resolve against it.
+func (c *Config) ConfigDir() string {
+	if c == nil || c.configPath == "" {
+		return ""
+	}
+	return filepath.Dir(c.configPath)
+}
+
 func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	configFilePath := filepath.Join(configDirPath, "config.json")
 	configDBPath := filepath.Join(configDirPath, "config.db")
@@ -2043,6 +2054,45 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 }
 
 // loadMCPConfig loads and merges MCP config from file
+// prepareOpenAPIClientFromFile normalizes an openapi client declared in
+// config.json: the auth type must be one the synthesized server can honor, a
+// spec_file is read now (relative to the config directory) so the persisted
+// row carries the document and never depends on the file staying in place, and
+// the server-computed metadata is filled from a parse so the stored row matches
+// an API-created one. A spec_url is left to be fetched at connect time.
+func prepareOpenAPIClientFromFile(c *schemas.MCPClientConfig, configDir string) error {
+	if c.OpenAPIConfig == nil {
+		return fmt.Errorf("connection_type 'openapi' requires openapi_config")
+	}
+	switch c.AuthType {
+	case "", schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypePerUserHeaders:
+	default:
+		return fmt.Errorf("auth_type %q is not supported for connection_type 'openapi' (use none, headers or per_user_headers)", c.AuthType)
+	}
+	oc := c.OpenAPIConfig
+	if strings.TrimSpace(oc.Spec) == "" && oc.SpecFile != nil && strings.TrimSpace(*oc.SpecFile) != "" {
+		data, err := openapimcp.LoadFile(*oc.SpecFile, configDir)
+		if err != nil {
+			return fmt.Errorf("openapi_config.spec_file: %w", err)
+		}
+		oc.Spec = string(data)
+	}
+	if strings.TrimSpace(oc.Spec) != "" {
+		specURL := ""
+		if oc.SpecURL != nil {
+			specURL = *oc.SpecURL
+		}
+		_, syn, err := openapimcp.Preview([]byte(oc.Spec), openapimcp.ParseOptions{SpecURL: specURL}, openapimcp.SynthesizeOptions{ClientName: c.Name, IncludeDeprecated: oc.IncludeDeprecated}, oc.BaseURL)
+		if err != nil {
+			return fmt.Errorf("openapi_config.spec: %w", err)
+		}
+		openapimcp.ApplyMetadata(oc, []byte(oc.Spec), syn.Document, syn)
+	} else if !oc.HasSpecSource() {
+		return fmt.Errorf("openapi_config requires one of spec, spec_file or spec_url")
+	}
+	return nil
+}
+
 func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) {
 	if config.ConfigStore == nil {
 		if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
@@ -2088,6 +2138,12 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 			if (c.AuthType == schemas.MCPAuthTypeOauth || c.AuthType == schemas.MCPAuthTypePerUserOauth) &&
 				c.PendingOAuthConfig == nil {
 				c.PendingOAuthConfig = &schemas.OAuth2Config{}
+			}
+			if c.ConnectionType == schemas.MCPConnectionTypeOpenAPI {
+				if err := prepareOpenAPIClientFromFile(c, config.ConfigDir()); err != nil {
+					logger.Error("skipping MCP client config %q from config file: %v", c.Name, err)
+					continue
+				}
 			}
 			valid = append(valid, c)
 		}
@@ -2718,6 +2774,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		PerUserHeaderKeys:         mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys),
 		TokenExchange:             clientConfig.TokenExchange,
 		PendingOAuthConfig:        clientConfig.PendingOAuthConfig,
+		OpenAPIConfig:             clientConfig.OpenAPIConfig,
 		ConfigHash:                clientConfig.ConfigHash,
 	}, nil
 }
@@ -6063,22 +6120,22 @@ func ResolveFrameworkPricingConfig(
 	}
 
 	return &configstoreTables.TableFrameworkConfig{
-			ID:                     configID,
-			PricingURL:             resolvedPricingURL,
-			PricingSyncInterval:    resolvedSyncSeconds,
-			ModelParametersURL:     resolvedModelParametersURL,
-			MCPLibraryURL:          resolvedMCPLibraryURL,
-			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
-			LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
-			ConfigHash:             persistedHash,
-		}, &modelcatalog.Config{
-			PricingURL:             resolvedPricingURL,
-			PricingSyncInterval:    resolvedSyncSeconds,
-			ModelParametersURL:     resolvedModelParametersURL,
-			MCPLibraryURL:          resolvedMCPLibraryURL,
-			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
-			LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
-		}, needsDBUpdate
+		ID:                     configID,
+		PricingURL:             resolvedPricingURL,
+		PricingSyncInterval:    resolvedSyncSeconds,
+		ModelParametersURL:     resolvedModelParametersURL,
+		MCPLibraryURL:          resolvedMCPLibraryURL,
+		MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
+		LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
+		ConfigHash:             persistedHash,
+	}, &modelcatalog.Config{
+		PricingURL:             resolvedPricingURL,
+		PricingSyncInterval:    resolvedSyncSeconds,
+		ModelParametersURL:     resolvedModelParametersURL,
+		MCPLibraryURL:          resolvedMCPLibraryURL,
+		MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
+		LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
+	}, needsDBUpdate
 }
 
 // initFrameworkConfig initializes framework config and pricing manager from file
@@ -8170,6 +8227,10 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	c.MCPConfig.ClientConfigs[configIndex].Disabled = updatedConfig.Disabled
 	c.MCPConfig.ClientConfigs[configIndex].PerUserHeaderKeys = updatedConfig.PerUserHeaderKeys
 	c.MCPConfig.ClientConfigs[configIndex].TokenExchange = updatedConfig.TokenExchange
+	// openapi_config is PATCH-style: nil keeps the stored block.
+	if updatedConfig.OpenAPIConfig != nil {
+		c.MCPConfig.ClientConfigs[configIndex].OpenAPIConfig = updatedConfig.OpenAPIConfig
+	}
 
 	// Handle disable/enable lifecycle when the Disabled flag toggles and the client
 	// is registered at runtime. We call the core bifrost methods directly (not the
@@ -8431,6 +8492,26 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 			tlsCopy.CACertPEM = config.TLSConfig.CACertPEM.Redacted()
 		}
 		configCopy.TLSConfig = &tlsCopy
+	}
+
+	// openapi_config: the upstream credentials are masked and the spec
+	// document is dropped from reads (it is large, and GET
+	// /api/mcp/client/{id}/openapi-spec serves it on demand); the
+	// server-computed metadata describing the spec is kept.
+	if config.OpenAPIConfig != nil {
+		openAPICopy := *config.OpenAPIConfig
+		openAPICopy.Spec = ""
+		if len(config.OpenAPIConfig.SecurityCredentials) > 0 {
+			openAPICopy.SecurityCredentials = make(map[string]schemas.MCPOpenAPICredential, len(config.OpenAPIConfig.SecurityCredentials))
+			for name, cred := range config.OpenAPIConfig.SecurityCredentials {
+				openAPICopy.SecurityCredentials[name] = schemas.MCPOpenAPICredential{
+					Value:    cred.Value.Redacted(),
+					Username: cred.Username.Redacted(),
+					Password: cred.Password.Redacted(),
+				}
+			}
+		}
+		configCopy.OpenAPIConfig = &openAPICopy
 	}
 
 	return &configCopy

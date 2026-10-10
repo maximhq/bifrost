@@ -7958,9 +7958,81 @@
             "stdio",
             "http",
             "sse",
-            "inprocess"
+            "inprocess",
+            "openapi"
           ],
-          "description": "Connection type for MCP client"
+          "description": "Connection type for MCP client. 'openapi' synthesizes an in-process MCP server from an OpenAPI/Swagger document (see openapi_config); its tools proxy HTTP calls to the described API."
+        },
+        "openapi_config": {
+          "type": "object",
+          "description": "Configuration for connection_type 'openapi'. Exactly one of spec (inline JSON/YAML text), spec_file (path relative to the config directory, read at load) or spec_url (fetched at every connect) supplies the document. Supported documents: Swagger 2.0, OpenAPI 3.0, 3.1 and 3.2.",
+          "properties": {
+            "spec": {
+              "type": "string",
+              "description": "Inline OpenAPI/Swagger document (JSON or YAML text)."
+            },
+            "spec_file": {
+              "type": "string",
+              "description": "Path to the document, relative to the config.json directory (or absolute). Read once at load; the content is what gets persisted."
+            },
+            "spec_url": {
+              "type": "string",
+              "format": "uri",
+              "description": "http(s) URL of the document. Fetched at connect time when spec is not given."
+            },
+            "base_url": {
+              "type": "string",
+              "format": "uri",
+              "description": "Upstream API base URL. Defaults to the document's first server entry; required when the document declares none or only relative ones."
+            },
+            "security_credentials": {
+              "type": "object",
+              "description": "Credentials keyed by the document's securitySchemes name. apiKey and http-bearer schemes take value; http-basic takes username and password. Values support env.VAR and vault.path references.",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "include_deprecated": {
+              "type": "boolean",
+              "default": false,
+              "description": "Expose operations the document marks deprecated."
+            },
+            "max_response_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Cap on the upstream response body returned to the model (0 = default 64 KiB)."
+            }
+          },
+          "anyOf": [
+            {
+              "required": [
+                "spec"
+              ]
+            },
+            {
+              "required": [
+                "spec_file"
+              ]
+            },
+            {
+              "required": [
+                "spec_url"
+              ]
+            }
+          ],
+          "additionalProperties": false
         },
         "connection_string": {
           "type": "string",
@@ -8324,6 +8396,52 @@
               ]
             }
           }
+        },
+        {
+          "$comment": "openapi_config only applies to connection_type 'openapi'; forbid it elsewhere so a misplaced block fails validation instead of being silently ignored.",
+          "if": {
+            "not": {
+              "properties": {
+                "connection_type": {
+                  "const": "openapi"
+                }
+              },
+              "required": [
+                "connection_type"
+              ]
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "openapi_config"
+              ]
+            }
+          }
+        },
+        {
+          "$comment": "A synthesized OpenAPI server has no remote MCP handshake to authenticate: only none, headers and per_user_headers apply. OAuth-flavored and token-exchange auth types are refused.",
+          "if": {
+            "properties": {
+              "connection_type": {
+                "const": "openapi"
+              }
+            },
+            "required": [
+              "connection_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "auth_type": {
+                "enum": [
+                  "none",
+                  "headers",
+                  "per_user_headers"
+                ]
+              }
+            }
+          }
         }
       ],
       "oneOf": [
@@ -8335,6 +8453,16 @@
           },
           "required": [
             "stdio_config"
+          ]
+        },
+        {
+          "properties": {
+            "connection_type": {
+              "const": "openapi"
+            }
+          },
+          "required": [
+            "openapi_config"
           ]
         },
         {
