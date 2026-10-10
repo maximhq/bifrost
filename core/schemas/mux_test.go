@@ -84,6 +84,42 @@ func TestToChatMessages_LeavesExistingSupportedRolesUnchanged(t *testing.T) {
 	}
 }
 
+func TestToChatMessages_InlinesMidConversationSystem(t *testing.T) {
+	reminder := "Answer in German."
+	alreadyWrapped := "<system-reminder>\nAlready wrapped.\n</system-reminder>\n"
+	messages := []ResponsesMessage{
+		{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentStr: Ptr("You are concise.")}},
+		{Role: Ptr(ResponsesInputMessageRoleDeveloper), Content: &ResponsesMessageContent{ContentStr: Ptr("Leading developer note.")}},
+		{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("Say hello.")}},
+		{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentStr: Ptr(reminder)}},
+		{Role: Ptr(ResponsesInputMessageRoleDeveloper), Content: &ResponsesMessageContent{ContentStr: Ptr(alreadyWrapped)}},
+	}
+
+	chatMessages := ToChatMessages(messages)
+	if len(chatMessages) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(chatMessages))
+	}
+	if chatMessages[0].Role != ChatMessageRoleSystem || chatMessages[1].Role != ChatMessageRoleDeveloper {
+		t.Fatalf("leading instructions changed: %q %q", chatMessages[0].Role, chatMessages[1].Role)
+	}
+	if chatMessages[3].Role != ChatMessageRoleUser {
+		t.Fatalf("mid-conversation system stayed %q", chatMessages[3].Role)
+	}
+	if chatMessages[3].Content == nil || chatMessages[3].Content.ContentStr == nil {
+		t.Fatal("expected text content on the inlined system message")
+	}
+	want := "<system-reminder>\n" + reminder + "\n</system-reminder>\n"
+	if got := *chatMessages[3].Content.ContentStr; got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+	if chatMessages[4].Role != ChatMessageRoleUser {
+		t.Fatalf("mid-conversation developer stayed %q", chatMessages[4].Role)
+	}
+	if chatMessages[4].Content == nil || chatMessages[4].Content.ContentStr == nil || *chatMessages[4].Content.ContentStr != alreadyWrapped {
+		t.Fatalf("already wrapped reminder was rewritten: %+v", chatMessages[4].Content)
+	}
+}
+
 func TestToChatMessages_AttachesReasoningToNextAssistantMessage(t *testing.T) {
 	reasoningText := "Let me think about this step by step."
 	signature := "sig_abc"
