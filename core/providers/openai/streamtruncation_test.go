@@ -1823,3 +1823,108 @@ func TestChatStreamRawCaptureIsBoundedByBytes(t *testing.T) {
 		t.Errorf("captured raw response is %d bytes, above the %d byte ceiling; an upstream streaming non-forwarding frames can grow this without bound", capturedBytes, limit)
 	}
 }
+
+// Response headers can arrive before any error body or gzip header. A terminal
+// SSE error also does not mean the HTTP body has ended: deferred drain still
+// needs the same socket protection after the provider's helper watches stop.
+func TestChatStreamBodyLifecycle(t *testing.T) {
+	const upstreamErrorFrame = `data: {"error":{"message":"fixture cleanup error","type":"server_error","code":"fixture_error"}}` + "\n\n"
+	// Compile the request/response codecs before measuring network timeouts.
+	// A cold sonic JIT under -race can otherwise consume the entire test budget
+	// or fire the helper timer before cleanup is reached, masking the drain bug.
+	warmServer := completeSSEServer(t, chatChunk("hello", nil)+upstreamErrorFrame)
+	warmProvider := newStreamTestProvider(warmServer.URL)
+	warmCtx := newStreamTestContext()
+	defer warmCtx.Cancel()
+	warmStream, warmErr := warmProvider.ChatCompletionStream(warmCtx, passthroughPostHook, nil, testKey(), basicChatRequest())
+	if warmErr != nil {
+		t.Fatalf("warmup failed: %v", warmErr)
+	}
+	collectChunks(t, warmStream)
+	warmProvider.streamingClient.CloseIdleConnections()
+	warmServer.Close()
+	for _, path := range []string{"error_body", "gzip_initialization", "cleanup_drain"} {
+		t.Run(path, func(t *testing.T) {
+			release := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				if path == "gzip_initialization" {
+					w.Header().Set("Content-Encoding", "gzip")
+				}
+				if path == "error_body" {
+					w.WriteHeader(http.StatusBadRequest)
+				} else {
+					w.WriteHeader(http.StatusOK)
+				}
+				w.(http.Flusher).Flush()
+				if path == "cleanup_drain" {
+					_, _ = io.WriteString(w, chatChunk("hello", nil)+upstreamErrorFrame)
+					w.(http.Flusher).Flush()
+				}
+				<-release
+			}))
+			t.Cleanup(func() { close(release); server.Close() })
+			provider := newStreamTestProvider(server.URL)
+			t.Cleanup(provider.streamingClient.CloseIdleConnections)
+			ctx := newStreamTestContext()
+			idleTimeout := 100 * time.Millisecond
+			if path == "cleanup_drain" {
+				idleTimeout = 500 * time.Millisecond // allow cold sonic compilation before helpers stop
+			}
+			ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, idleTimeout)
+			t.Cleanup(ctx.Cancel)
+			type result struct {
+				err    *schemas.BifrostError
+				chunks []*schemas.BifrostStreamChunk
+			}
+			done := make(chan result, 1)
+			go func() {
+				stream, err := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), basicChatRequest())
+				out := result{err: err}
+				if stream != nil {
+					for chunk := range stream {
+						out.chunks = append(out.chunks, chunk)
+					}
+				}
+				done <- out
+			}()
+			var out result
+			select {
+			case out = <-done:
+			case <-time.After(time.Second):
+				t.Fatal("provider stayed blocked after the body idle timeout")
+			}
+			if path == "cleanup_drain" {
+				if out.err != nil || len(out.chunks) < 2 {
+					t.Fatalf("partial SSE response failed: %+v", out)
+				}
+				sawError := false
+				for _, chunk := range out.chunks {
+					if chunk.BifrostError != nil {
+						sawError = true
+						if chunk.BifrostError.Error.Message != "fixture cleanup error" {
+							t.Fatalf("cleanup overwrote the upstream SSE error: %v", chunk.BifrostError)
+						}
+					}
+				}
+				if !sawError {
+					t.Fatal("upstream SSE error was lost")
+				}
+				return
+			}
+			wantStatus := http.StatusGatewayTimeout
+			if path == "gzip_initialization" {
+				wantStatus = http.StatusInternalServerError // existing generic SSE read-error mapping
+				if out.err == nil && len(out.chunks) == 1 {
+					out.err = out.chunks[0].BifrostError
+				}
+			}
+			if out.err == nil || out.err.Error == nil || !errors.Is(out.err.Error.Error, providerUtils.ErrStreamIdleTimeout) {
+				t.Fatalf("provider lost the body idle error: %+v", out)
+			}
+			if out.err.EffectiveHTTPStatus() != wantStatus {
+				t.Fatalf("status = %d, want %d: %v", out.err.EffectiveHTTPStatus(), wantStatus, out.err)
+			}
+		})
+	}
+}

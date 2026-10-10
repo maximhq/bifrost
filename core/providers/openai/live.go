@@ -72,7 +72,10 @@ func (provider *OpenAIProvider) CreateLiveWebRTCSession(ctx *schemas.BifrostCont
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() < fasthttp.StatusOK || resp.StatusCode() >= fasthttp.StatusMultipleChoices {
-		upstreamErr := ParseOpenAIError(resp)
+		upstreamErr := providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if upstreamErr == nil {
+			upstreamErr = ParseOpenAIError(resp)
+		}
 		upstreamErr.ExtraFields.RequestType = schemas.LiveRequest
 		upstreamErr.ExtraFields.RoutingInfo.Provider = provider.GetProviderKey()
 		upstreamErr.ExtraFields.Provider = provider.GetProviderKey()
@@ -129,8 +132,10 @@ func (provider *OpenAIProvider) LiveSessionContent(ctx *schemas.BifrostContext, 
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		upstreamErr := ParseOpenAIError(resp)
+		upstreamErr := providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if upstreamErr == nil {
+			upstreamErr = ParseOpenAIError(resp)
+		}
 		upstreamErr.ExtraFields.RequestType = schemas.LiveRequest
 		upstreamErr.ExtraFields.RoutingInfo.Provider = provider.GetProviderKey()
 		upstreamErr.ExtraFields.Provider = provider.GetProviderKey()

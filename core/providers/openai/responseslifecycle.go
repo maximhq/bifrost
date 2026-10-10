@@ -120,7 +120,9 @@ func (provider *OpenAIProvider) executeResponsesLifecycleUnary(
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, 0, providerResponseHeaders, providerUtils.EnrichError(ctx, readErr, effectiveBody, nil, sendBackRawRequest, sendBackRawResponse)
+		}
 		return nil, 0, providerResponseHeaders, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), effectiveBody, resp.Body(), sendBackRawRequest, sendBackRawResponse)
 	}
 
@@ -246,7 +248,9 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, nil, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 

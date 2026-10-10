@@ -1,4 +1,5 @@
 import http from "node:http";
+import { gzipSync } from "node:zlib";
 
 const port = Number(process.env.PROVIDER_ERROR_FIXTURE_PORT || "8791");
 
@@ -6,7 +7,18 @@ const port = Number(process.env.PROVIDER_ERROR_FIXTURE_PORT || "8791");
 // body selects the response, so one fixture serves every case.
 const errorBody = (message, type, code) => JSON.stringify({ error: { message, type, code } });
 
+// An in-band error after content exits the SSE parser while deferred response
+// cleanup still has network I/O to do, without the terminating HTTP chunk.
+const lifecycleSSE = 'data: ' + JSON.stringify({
+	id: "chatcmpl-body-lifecycle", object: "chat.completion.chunk", created: 1,
+	model: "body-lifecycle-drain", choices: [{ index: 0, delta: { content: "hello" }, finish_reason: null }],
+	usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+}) + "\n\ndata: " + JSON.stringify({ error: { message: "fixture cleanup error", type: "server_error", code: "fixture_error" } }) + "\n\n";
+
 const behaviours = {
+	"body-lifecycle-error": () => ({ status: 400, headers: {}, body: errorBody("late error body", "invalid_request_error", "late_body"), stall: true }),
+	"body-lifecycle-gzip": () => ({ status: 200, headers: { "Content-Type": "text/event-stream", "Content-Encoding": "gzip" }, body: gzipSync(lifecycleSSE), stall: true }),
+	"body-lifecycle-drain": () => ({ status: 200, headers: { "Content-Type": "text/event-stream" }, prefix: lifecycleSSE, body: "", stall: true }),
 	"upstream-503": () => ({ status: 503, headers: {}, body: errorBody("service unavailable", "server_error", "service_unavailable") }),
 	"upstream-429": () => ({ status: 429, headers: { "Retry-After": "7" }, body: errorBody("rate limit exceeded", "rate_limit_error", "rate_limit_exceeded") }),
 	"upstream-429-ms": () => ({ status: 429, headers: { "retry-after-ms": "2500" }, body: errorBody("rate limit exceeded", "rate_limit_error", "rate_limit_exceeded") }),
@@ -130,6 +142,17 @@ const server = http.createServer((req, res) => {
 			return send(404, {}, errorBody(`unknown fixture model ${model}`, "invalid_request_error", "model_not_found"));
 		}
 		const r = behaviour();
+		if (r.stall) {
+			res.writeHead(r.status, { "Content-Type": "application/json", ...r.headers });
+			res.flushHeaders();
+			if (r.prefix) res.write(r.prefix);
+			// Pre-fix readers unblock only when this timer finishes. Post-fix the
+			// one-second body idle timeout closes the socket first. Also release
+			// the fixture timer immediately when the gateway cancels/disconnects.
+			const timer = setTimeout(() => res.end(r.body), 5000);
+			res.on("close", () => clearTimeout(timer));
+			return;
+		}
 		send(r.status, r.headers, r.body);
 	});
 });

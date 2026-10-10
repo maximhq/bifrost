@@ -164,7 +164,9 @@ func (provider *GeminiProvider) completeRequest(ctx *schemas.BifrostContext, mod
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(readErr, latency)
+		}
 		return nil, nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
@@ -874,8 +876,10 @@ func (provider *GeminiProvider) responsesWithLargeResponseDetection(
 
 	// Handle error response — materialize stream body for error parsing
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		bifrostErr := parseGeminiError(resp)
+		bifrostErr := providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if bifrostErr == nil {
+			bifrostErr = parseGeminiError(resp)
+		}
 		wait()
 		fasthttp.ReleaseResponse(resp)
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -1380,9 +1384,12 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		parsedErr := providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if parsedErr == nil {
+			parsedErr = parseGeminiError(resp)
+		}
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: status %d", providerName, resp.StatusCode()))
-		parsedErr := providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		parsedErr = providerUtils.EnrichError(ctx, parsedErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		wait()
 		fasthttp.ReleaseResponse(resp)
 		return nil, parsedErr
@@ -2156,7 +2163,9 @@ func (provider *GeminiProvider) handleImagenImageGeneration(ctx *schemas.Bifrost
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
 		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
@@ -2244,7 +2253,9 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		}
 
 		if resp.StatusCode() != fasthttp.StatusOK {
-			providerUtils.MaterializeStreamErrorBody(ctx, resp)
+			if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+				return nil, providerUtils.EnrichError(ctx, readErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+			}
 			return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
