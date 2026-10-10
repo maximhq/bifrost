@@ -1179,8 +1179,7 @@ func IsSonnet5Plus(model string) bool {
 // IsSonnet55Plus returns true for Claude Sonnet 5.5, matching the
 // Bedrock/Vertex/date-suffixed forms.
 func IsSonnet55Plus(model string) bool {
-	m := strings.ToLower(model)
-	return strings.Contains(m, "sonnet-5-5") || strings.Contains(m, "sonnet-5.5")
+	return schemas.IsSonnet55Plus(model)
 }
 
 // IsFableFamily returns true for Claude Fable / Mythos models (Fable 5,

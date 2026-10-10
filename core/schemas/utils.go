@@ -2549,6 +2549,13 @@ func IsOpus55Plus(model string) bool {
 	return strings.Contains(m, "5-5") || strings.Contains(m, "5.5")
 }
 
+// IsSonnet55Plus returns true for Claude Sonnet 5.5, matching the
+// Bedrock/Vertex/date-suffixed forms.
+func IsSonnet55Plus(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "sonnet-5-5") || strings.Contains(m, "sonnet-5.5")
+}
+
 // openAIDecisionModelPrefixes are the model families OpenAI serves on its
 // POST /v1/decisions endpoint. They back DefaultSupportsDecisions for
 // deployments without the datasheet; with it, the supports_decisions row
@@ -2571,8 +2578,11 @@ func DefaultSupportsDecisions(model string) bool {
 
 // DefaultSupportsForcedToolChoice is the name-based fallback for
 // ModelCaps.SupportsForcedToolChoice, used when the datasheet says nothing.
+// Opus 5.5, Sonnet 5.5 and Fable/Mythos 5.1 reject tool_choice "any"/"tool".
+//
+// Source: https://platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools
 func DefaultSupportsForcedToolChoice(model string) bool {
-	return !IsFable51(model) && !IsOpus55Plus(model)
+	return !IsFable51(model) && !IsOpus55Plus(model) && !IsSonnet55Plus(model)
 }
 
 // IsLlamaModel checks if the model is a Meta Llama model.

@@ -414,10 +414,17 @@ func forcedToolChoiceChatRequest(model string, tc *schemas.ChatToolChoice) *sche
 func TestForcedToolChoice_DroppedWhenUnsupported(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 
-	for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5-5"} {
+	for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5-5", "claude-sonnet-5-5"} {
 		t.Run(model+" responses any", func(t *testing.T) {
 			req, err := ToAnthropicResponsesRequest(ctx, forcedToolChoiceResponsesRequest(model,
 				&schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("any")}))
+			require.NoError(t, err)
+			assert.Nil(t, req.ToolChoice, "forced tool choice must be dropped on %s", model)
+		})
+
+		t.Run(model+" responses required", func(t *testing.T) {
+			req, err := ToAnthropicResponsesRequest(ctx, forcedToolChoiceResponsesRequest(model,
+				&schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("required")}))
 			require.NoError(t, err)
 			assert.Nil(t, req.ToolChoice, "forced tool choice must be dropped on %s", model)
 		})
@@ -467,6 +474,13 @@ func TestForcedToolChoice_KeptOnFable5(t *testing.T) {
 
 	req, err = ToAnthropicResponsesRequest(ctx, forcedToolChoiceResponsesRequest("claude-opus-5",
 		&schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("required")}))
+	require.NoError(t, err)
+	require.NotNil(t, req.ToolChoice)
+	assert.Equal(t, "any", req.ToolChoice.Type)
+
+	// Only Sonnet 5.5 dropped forced tool use; Sonnet 5 keeps it.
+	req, err = ToAnthropicResponsesRequest(ctx, forcedToolChoiceResponsesRequest("claude-sonnet-5",
+		&schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("any")}))
 	require.NoError(t, err)
 	require.NotNil(t, req.ToolChoice)
 	assert.Equal(t, "any", req.ToolChoice.Type)

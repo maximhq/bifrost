@@ -1379,13 +1379,13 @@ func TestToAnthropicChatRequest_StructuredOutput_ToolConversion_NoThinking(t *te
 }
 
 // TestToAnthropicChatRequest_StructuredOutput_Fable51_NoForcedToolChoice mirrors the
-// thinking-enabled case for Fable 5.1 / Mythos 5.1: the synthetic tool is still
+// thinking-enabled case for Fable 5.1 / Mythos 5.1 / Sonnet 5.5: the synthetic tool is still
 // added, but the pin is not, because those models reject tool_choice "tool" and
 // "any" with a 400. With only the bf_so_* tool bound the model reaches it under
 // the default "auto".
 func TestToAnthropicChatRequest_StructuredOutput_Fable51_NoForcedToolChoice(t *testing.T) {
 	for _, provider := range toolConversionProviders {
-		for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1"} {
+		for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1", "claude-sonnet-5-5"} {
 			t.Run(string(provider)+"/"+model, func(t *testing.T) {
 				rf := makeSOResponseFormat("my_schema")
 				bifrostReq := &schemas.BifrostChatRequest{
@@ -1657,6 +1657,54 @@ func TestToBifrostChatResponse_StructuredOutput_MixedWithRealTools(t *testing.T)
 	}
 	if *choice.FinishReason != string(schemas.BifrostFinishReasonToolCalls) {
 		t.Errorf("expected FinishReason=%q, got %q", schemas.BifrostFinishReasonToolCalls, *choice.FinishReason)
+	}
+}
+
+// TestToBifrostChatResponse_StructuredOutput_TextOnlyUnderAuto covers models that
+// reject a forced tool_choice (Fable/Mythos 5.1, Opus 5.5, Sonnet 5.5): the
+// synthetic tool is bound under "auto", so the model may answer in plain text
+// without calling it. That text must reach the caller unchanged as a normal
+// completion, not as an empty message or a tool call.
+func TestToBifrostChatResponse_StructuredOutput_TextOnlyUnderAuto(t *testing.T) {
+	text := "It is sunny in Tokyo."
+	response := &AnthropicMessageResponse{
+		ID:         "msg_so_text_only",
+		Type:       "message",
+		Role:       "assistant",
+		Model:      "claude-sonnet-5-5",
+		Content:    []AnthropicContentBlock{{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr(text)}},
+		StopReason: AnthropicStopReasonEndTurn,
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, "bf_so_weather")
+
+	result := response.ToBifrostChatResponse(ctx)
+	if result == nil || len(result.Choices) == 0 {
+		t.Fatal("expected a choice")
+	}
+	choice := result.Choices[0]
+	msg := choice.ChatNonStreamResponseChoice.Message
+
+	var got string
+	if msg.Content != nil && msg.Content.ContentStr != nil {
+		got = *msg.Content.ContentStr
+	} else if msg.Content != nil {
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Text != nil {
+				got += *block.Text
+			}
+		}
+	}
+	if got != text {
+		t.Errorf("expected the text answer %q to pass through, got %q", text, got)
+	}
+	if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ToolCalls) > 0 {
+		t.Errorf("expected no tool calls, got %d", len(msg.ChatAssistantMessage.ToolCalls))
+	}
+	if choice.FinishReason == nil || *choice.FinishReason != string(schemas.BifrostFinishReasonStop) {
+		t.Errorf("expected FinishReason=%q, got %v", schemas.BifrostFinishReasonStop, choice.FinishReason)
 	}
 }
 

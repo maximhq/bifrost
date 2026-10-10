@@ -152,12 +152,12 @@ func TestToAnthropicResponsesRequest_StructuredOutput_ToolConversion(t *testing.
 
 // TestToAnthropicResponsesRequest_StructuredOutput_Fable51_NoForcedToolChoice is the
 // Fable 5.1 counterpart: the synthetic tool is still added, but the pin is not,
-// because Fable 5.1 / Mythos 5.1 reject tool_choice "tool" and "any" with a 400.
+// because Fable 5.1 / Mythos 5.1 / Sonnet 5.5 reject tool_choice "tool" and "any" with a 400.
 // The model reaches the tool under the default "auto" — with only the bf_so_*
 // tool bound there is nothing else it can call.
 func TestToAnthropicResponsesRequest_StructuredOutput_Fable51_NoForcedToolChoice(t *testing.T) {
 	for _, provider := range toolConversionProviders {
-		for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1"} {
+		for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1", "claude-sonnet-5-5"} {
 			t.Run(string(provider)+"/"+model, func(t *testing.T) {
 				req := &schemas.BifrostResponsesRequest{
 					Provider: provider,
@@ -669,6 +669,51 @@ func TestAnthropicSafeguardResultsUnaryRoundTrip(t *testing.T) {
 	}
 	if want := `"safeguard_results":[{"id":"sg_1","verdict":"allow"}]`; !strings.Contains(string(body), want) {
 		t.Fatalf("safeguard_results dropped on typed unary round trip: %s", string(body))
+	}
+}
+
+// Models that reject a forced tool_choice (Fable/Mythos 5.1, Opus 5.5, Sonnet
+// 5.5) get the synthetic structured-output tool under "auto", so the model may
+// answer in plain text without calling it. That text must come back as a normal
+// completed message, not as an empty output or a function call.
+func TestToBifrostResponsesResponse_StructuredOutput_TextOnlyUnderAuto(t *testing.T) {
+	text := "It is sunny in Tokyo."
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, "bf_so_weather")
+
+	resp := (&AnthropicMessageResponse{
+		ID:         "msg_so_text_only",
+		Model:      "claude-sonnet-5-5",
+		Content:    []AnthropicContentBlock{{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr(text)}},
+		StopReason: AnthropicStopReasonEndTurn,
+		Usage:      &AnthropicUsage{InputTokens: 10, OutputTokens: 8},
+	}).ToBifrostResponsesResponse(ctx)
+	if resp == nil {
+		t.Fatal("nil bifrost response")
+	}
+	if resp.Status == nil || *resp.Status != schemas.ResponsesResponseStatusCompleted {
+		t.Errorf("expected status %q, got %v", schemas.ResponsesResponseStatusCompleted, resp.Status)
+	}
+
+	var got string
+	for _, item := range resp.Output {
+		if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeFunctionCall {
+			t.Errorf("expected no function call, got %+v", item)
+		}
+		if item.Content == nil {
+			continue
+		}
+		if item.Content.ContentStr != nil {
+			got += *item.Content.ContentStr
+		}
+		for _, block := range item.Content.ContentBlocks {
+			if block.Text != nil {
+				got += *block.Text
+			}
+		}
+	}
+	if got != text {
+		t.Errorf("expected the text answer %q to pass through, got %q", text, got)
 	}
 }
 
