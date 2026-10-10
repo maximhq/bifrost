@@ -116,7 +116,7 @@ func createPrediction(
 	jsonBody []byte,
 	key schemas.Key,
 	url string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	stripPrefer bool,
 	logger schemas.Logger,
 	sendBackRawRequest bool,
