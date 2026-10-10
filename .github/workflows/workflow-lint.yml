@@ -8,6 +8,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/**"
+      - "Makefile"
 
 permissions:
   contents: read
@@ -46,6 +47,9 @@ jobs:
 
       - name: Check egress allowlists
         run: ./.github/workflows/scripts/check-egress-allowlist.sh
+
+      - name: Check generated test report filenames
+        run: python3 .github/workflows/scripts/test-make-report-filenames.py
 
       - name: Check version-format guard
         run: ./.github/workflows/scripts/version-format.test.sh
