@@ -348,6 +348,7 @@ type liveSessionController struct {
 	upstreamDone     chan struct{}
 	upstreamDoneOnce sync.Once
 	clientGone       atomic.Bool
+	sessionClosed    atomic.Bool // the provider sent session.closed
 	closeOnce        sync.Once
 	refusalOnce      sync.Once
 	drainMu          sync.Mutex
@@ -548,6 +549,7 @@ func (c *liveSessionController) fromUpstream(message []byte) bool {
 			}
 		}
 	case schemas.LiveEventSessionClosed:
+		c.sessionClosed.Store(true)
 		c.meter.setEnding(c.transcript.snapshot())
 		c.meter.finish(providerUtils.GetJSONField(message, "usage.seconds").Float())
 		c.markUpstreamDone()
@@ -595,6 +597,17 @@ func (c *liveSessionController) upstreamEnded() {
 	c.meter.setEnding(c.transcript.snapshot())
 	c.meter.finish(c.meter.lastReportedSeconds())
 	c.markUpstreamDone()
+}
+
+// upstreamEndedEarly is upstreamEnded for an upstream that ended without session.closed: a
+// client still connected is told, since nothing else will tell it. Reports whether it was.
+func (c *liveSessionController) upstreamEndedEarly() bool {
+	c.upstreamEnded()
+	if c.clientGone.Load() || c.sessionClosed.Load() {
+		return false
+	}
+	c.sendError(newRealtimeWireBifrostError(502, "server_error", "the live session's upstream connection ended before session.closed"))
+	return true
 }
 
 func (c *liveSessionController) markUpstreamDone() {

@@ -170,11 +170,31 @@ func TestBilling_UpstreamDropBillsLastReportedUsage(t *testing.T) {
 		s.EmitUsage(45)
 		c.WaitFor("session.usage.updated")
 		s.Drop()
+		assert.Contains(t, errorMessage(c.WaitFor("error")), "before session.closed", "the client is told the session ended")
 		c.WaitGone()
 
 		row := findLiveLog(t, s.ID())
 		assert.Equal(t, 45.0, row.Get("token_usage.audio_seconds").Float(), "what OpenAI last reported: no session.closed arrived")
 		assert.Equal(t, "success", row.Get("status").Str, "an upstream drop is not the session's fault")
+	})
+}
+
+func TestBilling_UpstreamHangUpWithoutSessionClosedTellsTheClient(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	forEachTransport(t, func(t *testing.T, tr transport) {
+		vk := createVirtualKey(t, virtualKeySpec{})
+		c, s := openFakeSession(t, tr, vk, backendModel, nil)
+
+		s.EmitUsage(30)
+		c.WaitFor("session.usage.updated")
+		s.HangUp()
+		assert.Contains(t, errorMessage(c.WaitFor("error")), "before session.closed", "an orderly close without session.closed is still the session ending")
+		c.WaitGone()
+
+		row := findLiveLog(t, s.ID())
+		assert.Equal(t, 30.0, row.Get("token_usage.audio_seconds").Float())
+		assert.Equal(t, "success", row.Get("status").Str)
 	})
 }
 
