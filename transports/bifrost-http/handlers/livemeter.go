@@ -48,6 +48,8 @@ type liveLane struct {
 	seconds     float64                         // voice: accrued, unbilled seconds
 	usage       *schemas.ResponsesResponseUsage // backend: accrued, unbilled tokens
 	serviceTier *schemas.BifrostServiceTier
+	status      *string
+	responseErr *schemas.ResponsesResponseError
 	outputs     []schemas.ResponsesMessage // backend: what the responses billed on the current unit produced
 	responseID  string                     // backend: the last response billed on the current unit
 	delegation  string                     // backend: the delegation the last response ran
@@ -213,10 +215,14 @@ func (m *liveMeter) checkStale(now time.Time) *schemas.BifrostError {
 	return m.refusal
 }
 
-// onBackendResponse bills one terminal backend Responses event, once per response id, for the
-// delegation it ran.
+// onBackendResponse settles one terminal backend Responses event per response id, keeping
+// its outcome even when it reports no usage.
 func (m *liveMeter) onBackendResponse(response *schemas.BifrostResponsesResponse, delegationID string, delegatedMs int64) *schemas.BifrostError {
-	if response == nil || response.Usage == nil {
+	if response == nil {
+		return nil
+	}
+	failed := response.Error != nil || (response.Status != nil && *response.Status == schemas.ResponsesResponseStatusFailed)
+	if response.Usage == nil && !failed {
 		return nil
 	}
 	m.mu.Lock()
@@ -231,7 +237,10 @@ func (m *liveMeter) onBackendResponse(response *schemas.BifrostResponsesResponse
 	if lane == nil {
 		return m.refusal
 	}
-	lane.usage = addResponsesUsage(lane.usage, response.Usage)
+	if response.Usage != nil {
+		lane.usage = addResponsesUsage(lane.usage, response.Usage)
+	}
+	lane.status, lane.responseErr = response.Status, response.Error
 	lane.outputs = append(lane.outputs, response.Output...)
 	if response.ID != nil {
 		lane.responseID = *response.ID
@@ -374,6 +383,7 @@ func (m *liveMeter) closeLaneLocked(lane *liveLane) {
 		kind = liveUnitBackend
 		resp.ExtraFields.PricingRequestType = schemas.ResponsesRequest
 		resp.ServiceTier = lane.serviceTier
+		resp.Status, resp.Error = lane.status, lane.responseErr
 		resp.Usage = lane.usage
 		if resp.Usage == nil {
 			resp.Usage = &schemas.ResponsesResponseUsage{}
@@ -391,6 +401,7 @@ func (m *liveMeter) closeLaneLocked(lane *liveLane) {
 			postCtx.SetValue(schemas.BifrostContextKeyLiveDelegationStartMs, lane.delegatedMs)
 		}
 		lane.usage, lane.outputs, lane.responseID, lane.delegation, lane.delegatedMs = nil, nil, "", "", 0
+		lane.status, lane.responseErr = nil, nil
 	} else {
 		seconds := lane.seconds
 		resp.Usage = &schemas.ResponsesResponseUsage{AudioSeconds: &seconds}
