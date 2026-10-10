@@ -974,6 +974,51 @@ func TestAuthMiddleware_DisabledAuthConfig_CrossOrigin(t *testing.T) {
 		called, _ = run(am, api, "/api/public/status", "https://evil.example")
 		assert.True(t, called)
 	})
+
+	// Without a config store there is no auth middleware at all; the bypass middleware the server
+	// installs instead applies the same rule, since the API is just as open there.
+	t.Run("no config store, auth bypassed", func(t *testing.T) {
+		am := &AuthMiddleware{}
+		bypassed := AuthBypassedMiddleware([]string{"*"}, nil)
+
+		called, _ := run(am, bypassed, "/api/logs", "")
+		assert.True(t, called, "no Origin header: CLI/SDK callers are unaffected")
+		called, _ = run(am, bypassed, "/api/logs", "http://localhost:3000")
+		assert.True(t, called, "localhost origins are always allowed")
+		called, status := run(am, bypassed, "/api/logs", "https://evil.example")
+		assert.False(t, called, "an unlisted origin must not reach the open management API without a config store either")
+		assert.Equal(t, fasthttp.StatusForbidden, status)
+		called, _ = run(am, bypassed, "/health", "https://evil.example")
+		assert.True(t, called, "whitelisted routes keep today's behaviour")
+
+		listed := AuthBypassedMiddleware([]string{"https://app.example.com", "https://*.corp.example"}, []string{"/api/public/*"})
+		called, _ = run(am, listed, "/api/logs", "https://app.example.com")
+		assert.True(t, called, "an explicitly listed origin passes")
+		called, _ = run(am, listed, "/api/logs", "https://tools.corp.example")
+		assert.True(t, called, "a domain pattern names the origin")
+		called, status = run(am, listed, "/api/logs", "https://app.example.com.evil.example")
+		assert.False(t, called)
+		assert.Equal(t, fasthttp.StatusForbidden, status)
+		called, _ = run(am, listed, "/api/public/status", "https://evil.example")
+		assert.True(t, called, "operator-configured whitelisted routes are exempt")
+
+		sameOrigin := &fasthttp.RequestCtx{}
+		sameOrigin.Request.SetRequestURI("/api/config")
+		sameOrigin.Request.Header.SetMethod(fasthttp.MethodPut)
+		sameOrigin.Request.Header.SetHost("10.0.0.5:8080")
+		sameOrigin.Request.Header.Set("Origin", "http://10.0.0.5:8080")
+		sameOriginCalled := false
+		bypassed(func(*fasthttp.RequestCtx) { sameOriginCalled = true })(sameOrigin)
+		assert.True(t, sameOriginCalled, "the dashboard's own same-origin write must not be refused (status %d)", sameOrigin.Response.StatusCode())
+
+		// A refused request is never marked as the local admin.
+		refused := &fasthttp.RequestCtx{}
+		refused.Request.SetRequestURI("/api/logs")
+		refused.Request.Header.Set("Origin", "https://evil.example")
+		bypassed(func(*fasthttp.RequestCtx) {})(refused)
+		assert.Nil(t, refused.UserValue(schemas.IsLocalAdminContextKey))
+		assert.Nil(t, refused.UserValue(schemas.BifrostContextKeyAuthBypassed))
+	})
 }
 
 // TestAuthMiddleware_EnabledAuthConfig_NoAuth tests that auth middleware blocks unauthenticated requests
@@ -4092,7 +4137,7 @@ func TestAuthBypassedMiddleware_MarksRequest(t *testing.T) {
 	handler := lib.ChainMiddlewares(func(ctx *fasthttp.RequestCtx) {
 		sawBypassed, _ = ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
 		sawLocalAdmin, _ = ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
-	}, AuthBypassedMiddleware())
+	}, AuthBypassedMiddleware([]string{"*"}, nil))
 
 	handler(&fasthttp.RequestCtx{})
 
