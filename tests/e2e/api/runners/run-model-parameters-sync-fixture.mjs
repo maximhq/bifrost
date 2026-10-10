@@ -37,6 +37,12 @@ const server = http.createServer(async (req, res) => {
       // its capabilities just because other valid rows remain in SQLite.
       return json(200, { [`${provider}/${model}`]: { provider, max_output_tokens: "invalid" } });
     }
+    if (feedMode === "mixed") {
+      return json(200, {
+        [model]: { provider: "anthropic", max_output_tokens: 24000 },
+        [`${provider}/${model}`]: { provider, max_output_tokens: "invalid" },
+      });
+    }
     // Same bare model, a different provider: it cannot answer the custom
     // provider's lookup. The qualified custom row exists only in SQLite.
     return json(200, { [model]: { provider: "anthropic", max_output_tokens: 16000 } });
@@ -56,7 +62,7 @@ const server = http.createServer(async (req, res) => {
     }
     const body = JSON.parse(raw);
     if (route === "/api/params-feed") {
-      if (body.mode !== "valid" && body.mode !== "invalid") return json(400, { error: { message: "invalid feed mode" } });
+      if (!["valid", "invalid", "mixed"].includes(body.mode)) return json(400, { error: { message: "invalid feed mode" } });
       feedMode = body.mode;
       return json(200, { mode: feedMode });
     }

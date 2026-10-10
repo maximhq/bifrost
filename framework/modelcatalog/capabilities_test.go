@@ -251,12 +251,16 @@ func TestModelParametersSyncPreservesCustomProviderMaxTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	witness := make(chan int, 4)
-	var unusableFeed atomic.Bool
+	var feedMode atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodGet && r.URL.Path == "/params.json" {
-			if unusableFeed.Load() {
+			if feedMode.Load() == 1 {
 				_, _ = w.Write([]byte(`{"custom-anthropic/custom-params-model":{"provider":"custom-anthropic","max_output_tokens":"invalid"}}`))
+				return
+			}
+			if feedMode.Load() == 2 {
+				_, _ = w.Write([]byte(`{"custom-params-model":{"provider":"anthropic","max_output_tokens":24000},"custom-anthropic/custom-params-model":{"provider":"custom-anthropic","max_output_tokens":"invalid"}}`))
 				return
 			}
 			_, _ = w.Write([]byte(`{"custom-params-model":{"provider":"anthropic","max_output_tokens":16000}}`))
@@ -294,10 +298,15 @@ func TestModelParametersSyncPreservesCustomProviderMaxTokens(t *testing.T) {
 			IsKeyLess:        true,
 		},
 	}, logger)
-	for _, phase := range []string{"before sync", "after sync", "after unusable sync", "after DB reload"} {
+	for _, phase := range []string{"before sync", "after sync", "after mixed sync", "after unusable sync", "after DB reload"} {
 		switch phase {
+		case "after mixed sync":
+			feedMode.Store(2)
+			if err := ds.SyncModelParamsFromURL(ctx); err != nil {
+				t.Fatal(err)
+			}
 		case "after unusable sync":
-			unusableFeed.Store(true)
+			feedMode.Store(1)
 			fallthrough
 		case "after sync":
 			if err := ds.SyncModelParamsFromURL(ctx); err != nil {

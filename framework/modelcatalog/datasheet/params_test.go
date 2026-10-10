@@ -367,6 +367,72 @@ func TestSyncModelParamsFromURL_UnusableFeedKeepsDBAndIndexes(t *testing.T) {
 	}
 }
 
+// A mixed feed updates usable records without replacing existing rows with unusable data.
+func TestSyncModelParamsFromURL_MixedFeedKeepsUnusableRows(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data string
+	}{
+		{"empty record", `{}`},
+		{"provider only", `{"provider":"custom-anthropic"}`},
+		{"null record", `null`},
+		{"malformed capability", `{"provider":"custom-anthropic","max_output_tokens":"invalid"}`},
+		{"array record", `[]`},
+		{"boolean record", `false`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			cs, err := configstore.NewConfigStore(ctx, &configstore.Config{
+				Enabled: true,
+				Type:    configstore.ConfigStoreTypeSQLite,
+				Config:  &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+			}, bifrost.NewNoOpLogger())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cs.Close(context.Background()) })
+			const model = "custom-params-model"
+			const customData = `{"provider":"custom-anthropic","max_output_tokens":32000,"supported_endpoints":["/v1/responses"],"supports_function_calling":true}`
+			if err := cs.UpsertModelParametersBatch(ctx, []configstoreTables.TableModelParameters{
+				{Model: "custom-anthropic/" + model, Data: customData},
+				{Model: model, Data: `{"provider":"anthropic","max_output_tokens":8000}`},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			feedPath := filepath.Join(t.TempDir(), "params.json")
+			feed := `{"custom-anthropic/custom-params-model":` + tc.data + `,"custom-params-model":{"provider":"anthropic","max_output_tokens":16000}}`
+			if err := os.WriteFile(feedPath, []byte(feed), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			s := New(cs, nil, Config{ModelParametersURL: "file://" + feedPath})
+			if _, err := s.LoadModelParamsFromDB(ctx); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				if err := s.SyncModelParamsFromURL(ctx); err != nil {
+					t.Fatal(err)
+				}
+				row, err := cs.GetModelParametersByModel(ctx, "custom-anthropic/"+model)
+				if err != nil || row == nil || row.Data != customData {
+					t.Errorf("mixed feed overwrote the good custom row: %+v, %v", row, err)
+				}
+				for _, want := range []struct {
+					provider schemas.ModelProvider
+					limit    int
+				}{{"custom-anthropic", 32000}, {schemas.Anthropic, 16000}} {
+					caps, err := s.LoadModelCapabilities(ctx, want.provider, model)
+					if err != nil || caps == nil || caps.MaxOutputTokens == nil || *caps.MaxOutputTokens != want.limit {
+						t.Errorf("capabilities for %s = %+v, %v; want max_output_tokens %d", want.provider, caps, err, want.limit)
+					}
+				}
+				if !slices.Contains(s.GetSupportedParameters("custom-anthropic/"+model), "tools") || !s.IsRequestTypeSupported("custom-anthropic/"+model, schemas.ResponsesRequest) {
+					t.Error("mixed feed removed the existing parameter or response-type index")
+				}
+			}
+		})
+	}
+}
+
 func (s *modelParamsReloadErrorStore) UpsertModelParametersBatch(context.Context, []configstoreTables.TableModelParameters, ...*gorm.DB) error {
 	s.upserted = true
 	return nil

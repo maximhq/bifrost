@@ -104,6 +104,11 @@ func (s *Store) SyncModelParamsFromURL(ctx context.Context) error {
 	if s.configStore != nil {
 		records := make([]configstoreTables.TableModelParameters, 0, len(paramsData))
 		for model, data := range paramsData {
+			// A usable sibling must not let this row erase stored capabilities.
+			var caps schemas.ModelCapabilities
+			if json.Unmarshal(data, &caps) != nil || IsEmptyModelCapabilities(&caps) {
+				continue
+			}
 			records = append(records, configstoreTables.TableModelParameters{
 				Model: model,
 				Data:  string(data),
