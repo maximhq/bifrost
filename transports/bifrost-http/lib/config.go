@@ -1152,6 +1152,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 	// 6. MCP config
 	loadMCPConfig(ctx, config, &configData)
+	for _, problem := range unresolvedInjectedTools(config.Providers, config.GetMCPClientNames()) {
+		logger.Warn("%s; requests to this provider are sent without it until the client exists", problem)
+	}
 	// 7. Webhook endpoints
 	loadWebhooksConfig(ctx, config, &configData)
 	// 8. Governance config
@@ -8696,6 +8699,87 @@ func ValidatePromptCache(cfg *schemas.PromptCacheConfig) error {
 	// and a point carrying neither role nor index, which matchMessageIndices documents
 	// as matching nothing on purpose rather than as a misconfiguration to reject.
 	return nil
+}
+
+// ValidateInjectedTools validates the injected_tools block arriving over the management
+// API. mcpClientNames is the configured MCP clients keyed by ID (GetMCPClientNames).
+//
+// The referenced client must exist now. At request time a missing client fails open,
+// so a typo here would otherwise leave the provider serving requests without the tool
+// the operator configured and with no error anywhere. The tool itself is not checked:
+// a client's tool list is only known once it connects, and that is a runtime concern.
+func ValidateInjectedTools(cfg *schemas.InjectedToolsConfig, mcpClientNames map[string]string) error {
+	if cfg == nil || cfg.WebSearch == nil {
+		return nil
+	}
+	ref := cfg.WebSearch
+	if strings.TrimSpace(ref.MCPClientName) == "" {
+		return fmt.Errorf("injected tools validation failed: web_search.mcp_client_name is required")
+	}
+	if strings.TrimSpace(ref.ToolName) == "" {
+		return fmt.Errorf("injected tools validation failed: web_search.tool_name is required")
+	}
+	for _, name := range mcpClientNames {
+		if name == ref.MCPClientName {
+			return nil
+		}
+	}
+	return fmt.Errorf("injected tools validation failed: web_search references unknown MCP client %q", ref.MCPClientName)
+}
+
+// ValidateInjectedToolsBody checks the raw injected_tools block of a provider write body
+// against config.schema.json. It runs on the raw bytes because typed decoding keeps only
+// web_search and its two fields: a misspelled slot, a null web_search or an extra field
+// would be dropped silently, and the write would succeed with a config the schema
+// rejects. A null or absent block is fine.
+//
+// It decodes with sonic, like the handler, so a repeated key resolves the same way here
+// as in the stored config: the last one wins. A first-match reader such as gjson would
+// check a valid first block and let the handler store a later null one. Bodies that fail
+// to decode are left to the handler, which rejects them itself.
+func ValidateInjectedToolsBody(body []byte) error {
+	var payload struct {
+		InjectedTools json.RawMessage `json:"injected_tools"`
+	}
+	if sonic.Unmarshal(body, &payload) != nil || len(payload.InjectedTools) == 0 || string(payload.InjectedTools) == "null" {
+		return nil
+	}
+	var slots map[string]json.RawMessage
+	if sonic.Unmarshal(payload.InjectedTools, &slots) != nil {
+		return nil
+	}
+	for _, slot := range slices.Sorted(maps.Keys(slots)) {
+		if slot != "web_search" {
+			return fmt.Errorf("injected tools validation failed: unknown slot %q", slot)
+		}
+		var fields map[string]json.RawMessage
+		if string(slots[slot]) == "null" || sonic.Unmarshal(slots[slot], &fields) != nil {
+			return fmt.Errorf("injected tools validation failed: web_search must be an object")
+		}
+		for _, field := range slices.Sorted(maps.Keys(fields)) {
+			if field != "mcp_client_name" && field != "tool_name" {
+				return fmt.Errorf("injected tools validation failed: unknown web_search field %q", field)
+			}
+		}
+	}
+	return nil
+}
+
+// unresolvedInjectedTools lists providers whose injected_tools name an MCP client that
+// is not configured. config.json is checked only against the schema, which cannot know
+// the client list, so LoadConfig reports these as boot warnings. They are warnings, not
+// errors: a client can be added later through the API, and at request time an
+// unresolved tool fails open.
+func unresolvedInjectedTools(providers map[schemas.ModelProvider]configstore.ProviderConfig, mcpClientNames map[string]string) []string {
+	var problems []string
+	for provider, config := range providers {
+		if err := ValidateInjectedTools(config.InjectedTools, mcpClientNames); err != nil {
+			ref := config.InjectedTools.WebSearch
+			problems = append(problems, fmt.Sprintf("provider %s: injected_tools.web_search references unknown MCP client %q", provider, ref.MCPClientName))
+		}
+	}
+	sort.Strings(problems)
+	return problems
 }
 
 // ValidateCustomProviderUpdate validates that immutable fields in CustomProviderConfig are not changed during updates

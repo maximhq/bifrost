@@ -67,7 +67,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: test-memory all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-a11y-audit run-e2e-ui run-e2e-headed run-e2e-api run-mcp-codemode-test run-warp-test format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
+.PHONY: test-memory all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-a11y-audit run-e2e-ui run-e2e-headed e2e-ui-down run-e2e-api run-mcp-codemode-test run-warp-test format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
 
 all: help
 
@@ -1744,22 +1744,7 @@ build-test-plugin: ## Build test plugin for E2E tests (copies to tmp/bifrost-tes
 	@cp examples/plugins/hello-world/build/hello-world.so tmp/bifrost-test-plugin.so
 	@$(ECHO) "$(GREEN)✓ Test plugin ready at tmp/bifrost-test-plugin.so$(NC)"
 
-run-e2e: install-playwright ## Run E2E tests (Usage: make run-e2e [FLOW=providers|virtual-keys|config])
-	@$(ECHO) "$(GREEN)Running Playwright E2E tests...$(NC)"
-	@if [ -n "$(FLOW)" ]; then \
-		$(ECHO) "$(CYAN)Running $(FLOW) tests...$(NC)"; \
-		if [ "$(FLOW)" = "config" ]; then \
-			cd tests/e2e && npx playwright test --project=chromium-config; \
-		else \
-			cd tests/e2e && npx playwright test features/$(FLOW); \
-		fi; \
-	else \
-		$(ECHO) "$(CYAN)Running all E2E tests...$(NC)"; \
-		cd tests/e2e && npx playwright test; \
-	fi
-	@$(ECHO) ""
-	@$(ECHO) "$(GREEN)E2E tests complete$(NC)"
-	@$(ECHO) "$(CYAN)View HTML report: cd tests/e2e && npx playwright show-report$(NC)"
+run-e2e: run-e2e-ui ## Alias of run-e2e-ui
 
 run-a11y-audit: install-playwright ## Scan every UI route with axe-core and report accessibility coverage (Usage: make run-a11y-audit [ROUTES=logs,providers] [MIN_SCORE=80])
 	@$(ECHO) "$(GREEN)Running accessibility audit...$(NC)"
@@ -1767,24 +1752,21 @@ run-a11y-audit: install-playwright ## Scan every UI route with axe-core and repo
 	@$(ECHO) "$(CYAN)Report: tests/e2e/a11y-report/summary.md$(NC)"
 	@$(ECHO) "$(CYAN)Static JSX checks: cd ui && npm run lint:a11y$(NC)"
 
-run-e2e-ui: install-playwright ## Run E2E tests in interactive UI mode
-	@$(EXPOSE_ENV); \
-	$(ECHO) "$(GREEN)Opening Playwright UI...$(NC)"; \
-	cd tests/e2e && npx playwright test --ui
+# Flags for tests/e2e/scripts/run-e2e.mjs, built from the make variables below.
+E2E_RUNNER_ARGS = $(if $(WORKERS),--workers $(WORKERS)) $(if $(FLOW),--features $(FLOW)) $(if $(RERUN),--rerun $(RERUN)) $(if $(SKIP_BUILD),--skip-build) $(if $(KEEP),--keep) $(if $(INTERACTIVE),--ui)
 
-run-e2e-headed: install-playwright ## Run E2E tests in headed browser mode
-	@$(ECHO) "$(GREEN)Running E2E tests in headed mode...$(NC)"
-	@if [ -n "$(FLOW)" ]; then \
-		$(ECHO) "$(CYAN)Running $(FLOW) tests (headed)...$(NC)"; \
-		if [ "$(FLOW)" = "config" ]; then \
-			cd tests/e2e && npx playwright test --project=chromium-config --headed; \
-		else \
-			cd tests/e2e && npx playwright test features/$(FLOW) --headed; \
-		fi; \
-	else \
-		$(ECHO) "$(CYAN)Running all E2E tests (headed)...$(NC)"; \
-		cd tests/e2e && npx playwright test --headed; \
-	fi
+run-e2e-ui: install-playwright ## Run the UI E2E suite on isolated Bifrost workers (Usage: make run-e2e-ui [WORKERS=4] [FLOW=providers,logs] [RERUN=tests/e2e/reports/e2e-results.json] [SKIP_BUILD=1] [KEEP=1] [INTERACTIVE=1])
+	@$(USE_NODE); $(EXPOSE_ENV); \
+	. .github/workflows/scripts/setup-go-workspace.sh; \
+	node tests/e2e/scripts/run-e2e.mjs $(E2E_RUNNER_ARGS)
+
+run-e2e-headed: install-playwright ## Run the UI E2E suite with visible browsers (same variables as run-e2e-ui)
+	@$(USE_NODE); $(EXPOSE_ENV); \
+	. .github/workflows/scripts/setup-go-workspace.sh; \
+	node tests/e2e/scripts/run-e2e.mjs $(E2E_RUNNER_ARGS) --headed
+
+e2e-ui-down: ## Stop servers left running by run-e2e-ui KEEP=1 and remove the e2e Postgres
+	@$(USE_NODE); node tests/e2e/scripts/run-e2e.mjs --down
 
 run-e2e-api: install-newman ## Run E2E API management tests (/api/* and /health)
 	@$(ECHO) "$(GREEN)Running E2E API management tests...$(NC)"

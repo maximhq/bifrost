@@ -482,6 +482,8 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.OutputCostPerTokenUltrafast, src: override.OutputCostPerTokenUltrafast},
 		{dst: &patched.InputCostPerTokenFlex, src: override.InputCostPerTokenFlex},
 		{dst: &patched.OutputCostPerTokenFlex, src: override.OutputCostPerTokenFlex},
+		{dst: &patched.InputCostPerTokenDecisions, src: override.InputCostPerTokenDecisions},
+		{dst: &patched.OutputCostPerTokenDecisions, src: override.OutputCostPerTokenDecisions},
 		{dst: &patched.InputCostPerTokenFast, src: override.InputCostPerTokenFast},
 		{dst: &patched.OutputCostPerTokenFast, src: override.OutputCostPerTokenFast},
 		{dst: &patched.InputCostPerVideoPerSecond, src: override.InputCostPerVideoPerSecond},

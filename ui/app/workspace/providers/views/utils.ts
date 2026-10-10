@@ -16,5 +16,7 @@ export const buildProviderUpdatePayload = (provider: ModelProvider, updates: Par
 		custom_provider_config: updates.custom_provider_config ?? provider.custom_provider_config,
 		openai_config: updates.openai_config ?? provider.openai_config,
 		prompt_cache: updates.prompt_cache ?? provider.prompt_cache,
+		// null is how the web search tab clears the block, so presence decides, not ??.
+		injected_tools: "injected_tools" in updates ? updates.injected_tools : provider.injected_tools,
 	};
 };

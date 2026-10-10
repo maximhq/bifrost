@@ -31,6 +31,9 @@ func savedConfig() configstore.ProviderConfig {
 		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic},
 		OpenAIConfig:         &schemas.OpenAIConfig{DisableStore: true},
 		PromptCache:          &schemas.PromptCacheConfig{AutoInject: true, TTL: schemas.Ptr("1h")},
+		InjectedTools: &schemas.InjectedToolsConfig{
+			WebSearch: &schemas.InjectedToolRef{MCPClientName: "tavily", ToolName: "search"},
+		},
 	}
 }
 
@@ -48,11 +51,13 @@ func TestApplyProviderConfigUpdates_OmittedBlocksArePreserved(t *testing.T) {
 	assert.True(t, config.PromptCache.AutoInject)
 	require.NotNil(t, config.PromptCache.TTL)
 	assert.Equal(t, "1h", *config.PromptCache.TTL)
+	require.NotNil(t, config.InjectedTools, "an omitted injected_tools must survive")
+	assert.Equal(t, "tavily", config.InjectedTools.WebSearch.MCPClientName)
 }
 
 func TestApplyProviderConfigUpdates_ExplicitNullClears(t *testing.T) {
 	config := savedConfig()
-	payload, fields := decodeUpdate(t, `{"proxy_config":null,"custom_provider_config":null,"openai_config":null,"prompt_cache":null}`)
+	payload, fields := decodeUpdate(t, `{"proxy_config":null,"custom_provider_config":null,"openai_config":null,"prompt_cache":null,"injected_tools":null}`)
 
 	applyProviderConfigUpdates(&config, payload, fields)
 
@@ -60,6 +65,7 @@ func TestApplyProviderConfigUpdates_ExplicitNullClears(t *testing.T) {
 	assert.Nil(t, config.CustomProviderConfig)
 	assert.Nil(t, config.OpenAIConfig)
 	assert.Nil(t, config.PromptCache)
+	assert.Nil(t, config.InjectedTools)
 }
 
 func TestApplyProviderConfigUpdates_PresentBlocksAreReplaced(t *testing.T) {
@@ -72,4 +78,16 @@ func TestApplyProviderConfigUpdates_PresentBlocksAreReplaced(t *testing.T) {
 	assert.False(t, config.PromptCache.AutoInject, "a supplied block replaces the saved one wholesale")
 	assert.Nil(t, config.PromptCache.TTL, "replacement is not a field-level merge")
 	assert.NotNil(t, config.ProxyConfig, "the blocks this request did not mention are untouched")
+}
+
+func TestApplyProviderConfigUpdates_InjectedToolsReplaced(t *testing.T) {
+	config := savedConfig()
+	payload, fields := decodeUpdate(t, `{"injected_tools":{"web_search":{"mcp_client_name":"exa","tool_name":"web_search_exa"}}}`)
+
+	applyProviderConfigUpdates(&config, payload, fields)
+
+	require.NotNil(t, config.InjectedTools)
+	require.NotNil(t, config.InjectedTools.WebSearch)
+	assert.Equal(t, schemas.InjectedToolRef{MCPClientName: "exa", ToolName: "web_search_exa"}, *config.InjectedTools.WebSearch)
+	assert.NotNil(t, config.PromptCache, "the blocks this request did not mention are untouched")
 }
