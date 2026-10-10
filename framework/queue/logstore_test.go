@@ -122,7 +122,7 @@ func logStoreEngineBackend(newLogStore func(t *testing.T) logstore.LogStore, dep
 		ls := newLogStore(t)
 		out := make([]Store, n)
 		for i := range out {
-			s, err := newLogStoreBackend(context.Background(), deps(ls), nil)
+			s, err := newLogStoreBackend(context.Background(), deps(ls), EngineConfig{}.WithDefaults(), nil)
 			require.NoError(t, err)
 			out[i] = s
 		}
@@ -227,7 +227,7 @@ func TestPostgresEngineContract(t *testing.T) {
 		out := make([]Store, n)
 		for i := range out {
 			// A logstore per instance: separate pools, as separate pods have.
-			s, err := newLogStoreBackend(context.Background(), Dependencies{LogStore: newTestPostgresLogStore(t)}, nil)
+			s, err := newLogStoreBackend(context.Background(), Dependencies{LogStore: newTestPostgresLogStore(t)}, EngineConfig{}.WithDefaults(), nil)
 			require.NoError(t, err)
 			out[i] = s
 		}
