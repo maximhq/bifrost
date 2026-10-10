@@ -1,5 +1,12 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
-import { aliasConfigSchema, githubCopilotKeyConfigComplete, githubCopilotKeyConfigSchema, secretVarSchema } from "@/lib/types/schemas";
+import {
+	aliasConfigSchema,
+	githubCopilotKeyConfigComplete,
+	githubCopilotKeyConfigSchema,
+	oauthKeyConfigComplete,
+	oauthKeyConfigSchema,
+	secretVarSchema,
+} from "@/lib/types/schemas";
 import { isValidAliases, isValidVertexAuthCredentials } from "@/lib/utils/validation";
 import { z } from "zod";
 
@@ -226,6 +233,7 @@ const KeySchema = z.object({
 	bedrock_mantle_key_config: BedrockMantleKeyConfigSchema.optional(),
 	replicate_key_config: ReplicateKeyConfigSchema.optional(),
 	github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
+	oauth_key_config: oauthKeyConfigSchema.optional(),
 	use_for_batch_api: z.boolean().optional(),
 });
 
@@ -330,7 +338,12 @@ export const ProviderFormSchema = z
 							path: ["keys", index, "value"],
 						});
 					}
-				} else if (effectiveProviderType !== "vertex" && effectiveProviderType !== "bedrock" && !key.value.trim()) {
+				} else if (
+					effectiveProviderType !== "vertex" &&
+					effectiveProviderType !== "bedrock" &&
+					!key.value.trim() &&
+					!oauthKeyConfigComplete(key.oauth_key_config)
+				) {
 					ctx.addIssue({
 						code: z.ZodIssueCode.custom,
 						message: "API key value cannot be empty",

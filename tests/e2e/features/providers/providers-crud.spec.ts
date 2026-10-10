@@ -339,6 +339,44 @@ test.describe("Providers", () => {
       expect(saved.custom_provider_config?.allowed_requests?.chat_completion).toBe(false);
     });
 
+    test("should add an OAuth client-credentials key to a custom OpenAI-compatible provider", async ({
+      providersPage,
+      request,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-oauth-${Date.now()}`,
+        baseProviderType: "openai",
+        baseUrl: "https://llm.example.com/v1",
+      });
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await providersPage.selectProvider(providerData.name);
+
+      const keyName = `oauth-key-${Date.now()}`;
+      await providersPage.addOAuthClientCredentialsKey({
+        name: keyName,
+        tokenUrl: "https://idp.example.com/oauth2/token",
+        clientId: "e2e-client-id",
+        clientSecret: "e2e-client-secret",
+        scopes: ["inference"],
+      });
+      await expect(providersPage.getKeyRow(keyName)).toBeVisible();
+
+      // The API stores the block and returns it with the secret redacted.
+      const response = await request.get(`/api/providers/${encodeURIComponent(providerData.name)}/keys`);
+      expect(response.ok()).toBeTruthy();
+      const body = await response.json();
+      const saved = (body.keys as Array<{ name: string; oauth_key_config?: { grant_type: string; token_url?: { value?: string }; client_secret?: { value?: string }; scopes?: string[] } }>).find(
+        (k) => k.name === keyName,
+      );
+      expect(saved?.oauth_key_config?.grant_type).toBe("client_credentials");
+      expect(saved?.oauth_key_config?.token_url?.value).toBe("https://idp.example.com/oauth2/token");
+      expect(saved?.oauth_key_config?.scopes).toEqual(["inference"]);
+      expect(saved?.oauth_key_config?.client_secret?.value).not.toBe("e2e-client-secret");
+    });
+
     test("should cancel custom provider creation", async ({
       providersPage,
     }) => {

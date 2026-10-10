@@ -286,6 +286,61 @@ export const DefaultGithubCopilotKeyConfig: GithubCopilotKeyConfig = {
 	github_domain: { value: "", ref: "" },
 } as const satisfies Required<GithubCopilotKeyConfig>;
 
+// OAuthKeyConfig matching Go's schemas.OAuthKeyConfig. Honoured by openai and by custom
+// providers whose base_provider_type is openai: with an empty key value, Bifrost mints the
+// bearer from the token endpoint and refreshes it before expiry.
+export type OAuthGrantType = "client_credentials" | "jwt_bearer";
+export type OAuthAuthStyle = "header" | "body";
+export type OAuthSigningAlgorithm = "RS256" | "RS384" | "RS512" | "PS256" | "PS384" | "PS512" | "ES256" | "ES384" | "ES512";
+export const OAuthSigningAlgorithms: OAuthSigningAlgorithm[] = [
+	"RS256",
+	"RS384",
+	"RS512",
+	"PS256",
+	"PS384",
+	"PS512",
+	"ES256",
+	"ES384",
+	"ES512",
+];
+export interface OAuthKeyConfig {
+	grant_type: OAuthGrantType;
+	token_url: SecretVar;
+	client_id?: SecretVar;
+	client_secret?: SecretVar;
+	private_key?: SecretVar;
+	scopes?: string[];
+	audience?: string;
+	issuer?: string;
+	subject?: string;
+	key_id?: string;
+	signing_algorithm?: OAuthSigningAlgorithm;
+	auth_style?: OAuthAuthStyle;
+	extra_params?: Record<string, string>;
+	assertion_lifetime_seconds?: number;
+	// UI-only discriminator; not sent to the API.
+	_auth_type?: "api_key" | "oauth";
+}
+
+// Default OAuthKeyConfig
+export const DefaultOAuthKeyConfig: OAuthKeyConfig = {
+	grant_type: "client_credentials",
+	token_url: { value: "", ref: "" },
+	client_id: { value: "", ref: "" },
+	client_secret: { value: "", ref: "" },
+	private_key: { value: "", ref: "" },
+	scopes: [],
+	audience: "",
+	issuer: "",
+	subject: "",
+	key_id: "",
+	signing_algorithm: "RS256",
+	auth_style: "header",
+	extra_params: {},
+	assertion_lifetime_seconds: 300,
+	_auth_type: "api_key",
+} as const satisfies Required<OAuthKeyConfig>;
+
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
@@ -309,6 +364,7 @@ export interface ModelProviderKey {
 	sgl_key_config?: SGLKeyConfig;
 	databricks_key_config?: DatabricksKeyConfig;
 	github_copilot_key_config?: GithubCopilotKeyConfig;
+	oauth_key_config?: OAuthKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
