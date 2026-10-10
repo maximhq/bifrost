@@ -52,16 +52,6 @@ func newDecisionRequest(model string) *schemas.BifrostDecisionRequest {
 	}
 }
 
-func TestDecision_NonTypesafeModelIsUnsupported(t *testing.T) {
-	provider := newDecisionTestProvider("http://127.0.0.1:1")
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-
-	_, bifrostErr := provider.Decision(ctx, schemas.Key{}, newDecisionRequest("openai/gpt-4o"))
-	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "unsupported_operation" {
-		t.Fatalf("expected unsupported_operation so core emulates, got %+v", bifrostErr)
-	}
-}
-
 func TestDecision_TypesafeModelUsesNativeEndpoint(t *testing.T) {
 	for _, model := range []string{"typesafe/jev-1.13", "~typesafe/jev-latest"} {
 		t.Run(model, func(t *testing.T) {
@@ -125,6 +115,48 @@ func TestDecision_TypesafeModelUsesNativeEndpoint(t *testing.T) {
 			}
 			if resp.Usage.Cost == nil || resp.Usage.Cost.TotalCost != 0.000019992 {
 				t.Errorf("billed cost not carried: %+v", resp.Usage.Cost)
+			}
+		})
+	}
+}
+
+// TestDecision_EveryModelReachesNativeEndpoint pins that OpenRouter, not
+// Bifrost, decides which models its decisions endpoint serves: every model is
+// sent there, including one with no TypeSafe name (a newly served decisions
+// model such as Clef, or a chat model OpenRouter rejects itself) and one whose
+// datasheet row says it does not serve decisions.
+func TestDecision_EveryModelReachesNativeEndpoint(t *testing.T) {
+	var calls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var wire map[string]any
+		_ = json.Unmarshal(body, &wire)
+		calls = append(calls, fmt.Sprintf("%s %v", r.URL.Path, wire["model"]))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, decisionResponseBody)
+	}))
+	defer server.Close()
+
+	notDecisions := false
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if model == "typesafe/jev-router" {
+			return &schemas.ModelCapabilities{SupportsDecisions: &notDecisions}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	provider := newDecisionTestProvider(server.URL)
+	key := schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}
+	for _, model := range []string{"cloudflare/clef", "openai/gpt-4o", "typesafe/jev-router", "~typesafe/jev-latest"} {
+		t.Run(model, func(t *testing.T) {
+			calls = nil
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if _, bifrostErr := provider.Decision(ctx, key, newDecisionRequest(model)); bifrostErr != nil {
+				t.Fatalf("expected the native endpoint, got %v", bifrostErr.Error.Message)
+			}
+			if len(calls) != 1 || calls[0] != "/alpha/decisions "+model {
+				t.Errorf("expected one native call for %s, got %v", model, calls)
 			}
 		})
 	}
