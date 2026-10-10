@@ -115,6 +115,23 @@ const server = http.createServer((req, res) => {
 			model = JSON.parse(Buffer.concat(chunks).toString("utf8")).model || "";
 		} catch {}
 		hits[model] = (hits[model] || 0) + 1;
+		if (model === "upstream-fixed-length-short" || model === "upstream-fixed-length-ok") {
+			// finish_reason makes this semantically complete even without [DONE].
+			// Only the transport's Content-Length check can reject the short body.
+			const payload = [
+				{ id: "chatcmpl-fixed-length", object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { role: "assistant", content: "hello" } }] },
+				{ id: "chatcmpl-fixed-length", object: "chat.completion.chunk", model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
+			].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("");
+			const truncated = model === "upstream-fixed-length-short";
+			const socket = res.socket;
+			res.writeHead(200, {
+				"Content-Type": "text/event-stream",
+				"Content-Length": Buffer.byteLength(payload) + (truncated ? 100 : 0),
+			});
+			return res.end(payload, () => {
+				if (truncated) socket.end(); // Graceful EOF without a Connection: close header.
+			});
+		}
 		if (path === "/v1/responses") {
 			let body = {};
 			try {
