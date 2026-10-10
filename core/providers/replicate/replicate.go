@@ -3038,11 +3038,11 @@ func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 
 	// Initialize serial pagination helper (Replicate uses cursor-based pagination)
-	// allowNativeCursorFallback=false: Replicate's cursor is a full URL, so passing an
-	// unrecognised value through would produce a malformed request rather than a clean API error.
+	// allowNativeCursorFallback=false: an unrecognised value is a caller mistake and gets a
+	// clean 400 rather than being sent upstream as a cursor.
 	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, false)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
+		return nil, invalidPaginationCursorError(err)
 	}
 
 	// Get current key to query
@@ -3062,17 +3062,21 @@ func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	// Build URL with query params
+	// Build URL with query params. The request always lands on the configured file
+	// endpoint; a stored cursor only ever contributes the cursor query parameter.
 	requestURL := provider.networkConfig.BaseURL + "/v1/files"
 	values := url.Values{}
 	if request.Limit > 0 {
 		values.Set("limit", fmt.Sprintf("%d", request.Limit))
 	}
-	// Use native cursor from serial helper (Replicate pagination URL)
 	if nativeCursor != "" {
-		// For Replicate, the cursor is actually the full next URL
-		requestURL = nativeCursor
-	} else if encodedValues := values.Encode(); encodedValues != "" {
+		pageCursor, cursorErr := replicateFileListPageCursor(provider.networkConfig.BaseURL, nativeCursor)
+		if cursorErr != nil {
+			return nil, invalidPaginationCursorError(cursorErr)
+		}
+		values.Set("cursor", pageCursor)
+	}
+	if encodedValues := values.Encode(); encodedValues != "" {
 		requestURL += "?" + encodedValues
 	}
 
@@ -3124,13 +3128,15 @@ func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []
 		})
 	}
 
-	// Build cursor for next request
-	// Replicate uses full URL for pagination
+	// Build cursor for next request. Replicate's "next" field is a link; only its cursor
+	// value is stored so the follow-up request is rebuilt on the configured endpoint.
 	var nextCursor string
 	hasMore := false
-	if replicateResp.Next != nil && *replicateResp.Next != "" {
-		nextCursor = *replicateResp.Next
-		hasMore = true
+	if replicateResp.Next != nil {
+		if pageCursor := replicateNextPageCursor(*replicateResp.Next); pageCursor != "" {
+			nextCursor = pageCursor
+			hasMore = true
+		}
 	}
 
 	// Use helper to build proper cursor with key index

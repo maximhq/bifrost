@@ -220937,6 +220937,177 @@
           }
         }
       ]
+    },
+    {
+      "name": "196. Replicate file list cursor stays on the configured file endpoint (file-list-cursor)",
+      "description": "The after cursor on GET /v1/files is caller input. For Replicate it used to be dialed as the complete next-page URL; it is now only the cursor query value on the configured base URL. A cursor that names another host or path, or that does not decode at all, is answered with a 400 before any request is built, so none of these cases reach the provider.",
+      "item": [
+        {
+          "name": "[EXPECT-400] replicate file list with a cursor link naming another host is refused - file-list-cursor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The stored cursor is a link to 127.0.0.1:9. Bifrost must refuse it instead of building a request to that host.",
+                  "// Any other status (401/403/500/502) means the cursor was not refused by Bifrost.",
+                  "pm.test('replicate file list with a cursor link naming another host is refused (file-list-cursor): status is 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('replicate file list with a cursor link naming another host is refused (file-list-cursor): the 400 names the pagination cursor', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 400 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('invalid pagination cursor');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files?provider=replicate&after=eyJ2IjoxLCJpIjowLCJjIjoiaHR0cDovLzEyNy4wLjAuMTo5L3YxL2ZpbGVzP2N1cnNvcj1wcm9iZSJ9",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "replicate"
+                },
+                {
+                  "key": "after",
+                  "value": "eyJ2IjoxLCJpIjowLCJjIjoiaHR0cDovLzEyNy4wLjAuMTo5L3YxL2ZpbGVzP2N1cnNvcj1wcm9iZSJ9"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] replicate file list with a cursor link off the file path is refused - file-list-cursor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The stored cursor is a link on the provider host but to /v1/predictions. Only the file-list path is acceptable.",
+                  "// Any other status (401/403/500/502) means the cursor was not refused by Bifrost.",
+                  "pm.test('replicate file list with a cursor link off the file path is refused (file-list-cursor): status is 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('replicate file list with a cursor link off the file path is refused (file-list-cursor): the 400 names the pagination cursor', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 400 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('invalid pagination cursor');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files?provider=replicate&after=eyJ2IjoxLCJpIjowLCJjIjoiaHR0cHM6Ly9hcGkucmVwbGljYXRlLmNvbS92MS9wcmVkaWN0aW9ucz9jdXJzb3I9cHJvYmV4eCJ9",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "replicate"
+                },
+                {
+                  "key": "after",
+                  "value": "eyJ2IjoxLCJpIjowLCJjIjoiaHR0cHM6Ly9hcGkucmVwbGljYXRlLmNvbS92MS9wcmVkaWN0aW9ucz9jdXJzb3I9cHJvYmV4eCJ9"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] replicate file list with a cursor that does not decode is refused - file-list-cursor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// A value that is not a Bifrost pagination cursor is a caller mistake and gets a 400, not a 500.",
+                  "// Any other status (401/403/500/502) means the cursor was not refused by Bifrost.",
+                  "pm.test('replicate file list with a cursor that does not decode is refused (file-list-cursor): status is 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('replicate file list with a cursor that does not decode is refused (file-list-cursor): the 400 names the pagination cursor', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 400 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('invalid pagination cursor');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files?provider=replicate&after=not-a-cursor",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "replicate"
+                },
+                {
+                  "key": "after",
+                  "value": "not-a-cursor"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

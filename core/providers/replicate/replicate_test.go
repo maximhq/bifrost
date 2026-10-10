@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/internal/llmtests"
@@ -20,13 +21,13 @@ import (
 
 type testLogger struct{}
 
-func (l *testLogger) Debug(string, ...any)                     {}
-func (l *testLogger) Info(string, ...any)                      {}
-func (l *testLogger) Warn(string, ...any)                      {}
-func (l *testLogger) Error(string, ...any)                     {}
-func (l *testLogger) Fatal(string, ...any)                     {}
-func (l *testLogger) SetLevel(schemas.LogLevel)               {}
-func (l *testLogger) SetOutputType(schemas.LoggerOutputType)  {}
+func (l *testLogger) Debug(string, ...any)                   {}
+func (l *testLogger) Info(string, ...any)                    {}
+func (l *testLogger) Warn(string, ...any)                    {}
+func (l *testLogger) Error(string, ...any)                   {}
+func (l *testLogger) Fatal(string, ...any)                   {}
+func (l *testLogger) SetLevel(schemas.LogLevel)              {}
+func (l *testLogger) SetOutputType(schemas.LoggerOutputType) {}
 func (l *testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
 	return schemas.NoopLogEvent
 }
@@ -59,7 +60,7 @@ func multipartFieldOrderFromRequest(r *http.Request) ([]string, error) {
 
 func TestFileUpload_OrdersMetadataBeforeFile(t *testing.T) {
 	var (
-		order       []string
+		order      []string
 		handlerErr error
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -90,6 +91,141 @@ func TestFileUpload_OrdersMetadataBeforeFile(t *testing.T) {
 	require.NotNil(t, bifrostErr)
 	require.NoError(t, handlerErr)
 	assert.Equal(t, []string{"filename", "type", "metadata", "content"}, order)
+}
+
+// fileListServer is a loopback Replicate stand-in that records every /v1/files request it
+// receives and answers with the body the test supplies.
+type fileListServer struct {
+	*httptest.Server
+	mu       sync.Mutex
+	requests []*http.Request
+	body     string
+}
+
+func newFileListServer(t *testing.T, body string) *fileListServer {
+	t.Helper()
+	s := &fileListServer{body: body}
+	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.requests = append(s.requests, r.Clone(context.Background()))
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(s.body))
+	}))
+	t.Cleanup(s.Close)
+	return s
+}
+
+func (s *fileListServer) seen() []*http.Request {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*http.Request(nil), s.requests...)
+}
+
+func newFileListProvider(t *testing.T, baseURL string) *replicate.ReplicateProvider {
+	t.Helper()
+	provider, err := replicate.NewReplicateProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: baseURL},
+	}, &testLogger{})
+	require.NoError(t, err)
+	return provider
+}
+
+func fileListCursor(t *testing.T, native string) *string {
+	t.Helper()
+	encoded := schemas.EncodeSerialCursor(schemas.NewSerialCursor(0, native))
+	return &encoded
+}
+
+// TestFileList_CursorOffEndpointIsRefused pins that a pagination cursor naming a host other
+// than the configured base URL is answered with a 400 and never turned into a request.
+func TestFileList_CursorOffEndpointIsRefused(t *testing.T) {
+	upstream := newFileListServer(t, `{"results":[]}`)
+	elsewhere := newFileListServer(t, `{"results":[]}`)
+	provider := newFileListProvider(t, upstream.URL)
+	key := schemas.Key{Value: *schemas.NewSecretVar("r8_test_key")}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	for name, native := range map[string]string{
+		"other host":      elsewhere.URL + "/v1/files?cursor=abc",
+		"other path":      upstream.URL + "/v1/predictions?cursor=abc",
+		"userinfo":        "http://" + strings.TrimPrefix(upstream.URL, "http://") + "@" + strings.TrimPrefix(elsewhere.URL, "http://") + "/v1/files?cursor=abc",
+		"no cursor param": upstream.URL + "/v1/files",
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, bifrostErr := provider.FileList(ctx, []schemas.Key{key}, &schemas.BifrostFileListRequest{
+				Provider: schemas.Replicate,
+				After:    fileListCursor(t, native),
+			})
+			require.Nil(t, resp)
+			require.NotNil(t, bifrostErr)
+			require.NotNil(t, bifrostErr.StatusCode)
+			assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+			assert.Equal(t, "invalid pagination cursor", bifrostErr.Error.Message)
+		})
+	}
+	assert.Empty(t, upstream.seen(), "no request may be built from a refused cursor")
+	assert.Empty(t, elsewhere.seen(), "the key must never be sent to a host named by the cursor")
+}
+
+// TestFileList_NextLinkYieldsEndpointBoundCursor pins the round trip: the cursor Bifrost
+// returns carries only Replicate's cursor value, and following it lands on the configured
+// base URL with that value as the cursor query parameter.
+func TestFileList_NextLinkYieldsEndpointBoundCursor(t *testing.T) {
+	upstream := newFileListServer(t, `{"next":"https://api.replicate.com/v1/files?cursor=cD0yMDI0&limit=2","results":[{"id":"f1","name":"a.json","size":3,"created_at":"2024-01-01T00:00:00Z"}]}`)
+	provider := newFileListProvider(t, upstream.URL)
+	key := schemas.Key{Value: *schemas.NewSecretVar("r8_test_key")}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	first, bifrostErr := provider.FileList(ctx, []schemas.Key{key}, &schemas.BifrostFileListRequest{Provider: schemas.Replicate, Limit: 2})
+	require.Nil(t, bifrostErr)
+	require.True(t, first.HasMore)
+	require.NotNil(t, first.After)
+	cursor, err := schemas.DecodeSerialCursor(*first.After)
+	require.NoError(t, err)
+	assert.Equal(t, 0, cursor.KeyIndex)
+	assert.Equal(t, "cD0yMDI0", cursor.Cursor, "the stored cursor must be Replicate's cursor value, not the next link")
+
+	upstream.body = `{"next":null,"results":[]}`
+	second, bifrostErr := provider.FileList(ctx, []schemas.Key{key}, &schemas.BifrostFileListRequest{Provider: schemas.Replicate, Limit: 2, After: first.After})
+	require.Nil(t, bifrostErr)
+	assert.False(t, second.HasMore)
+	assert.Nil(t, second.After)
+
+	seen := upstream.seen()
+	require.Len(t, seen, 2)
+	assert.Equal(t, "/v1/files", seen[1].URL.Path)
+	assert.Equal(t, "cD0yMDI0", seen[1].URL.Query().Get("cursor"))
+	assert.Equal(t, "2", seen[1].URL.Query().Get("limit"))
+	assert.Equal(t, "Bearer r8_test_key", seen[1].Header.Get("Authorization"))
+}
+
+// TestFileList_PreviouslyIssuedLinkCursorOnEndpointStillWorks pins that a cursor issued before
+// Bifrost stored the bare value, which carried the full next link, keeps working as long as
+// that link is on the configured file endpoint.
+func TestFileList_PreviouslyIssuedLinkCursorOnEndpointStillWorks(t *testing.T) {
+	upstream := newFileListServer(t, `{"next":null,"results":[]}`)
+	provider := newFileListProvider(t, upstream.URL)
+	key := schemas.Key{Value: *schemas.NewSecretVar("r8_test_key")}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	resp, bifrostErr := provider.FileList(ctx, []schemas.Key{key}, &schemas.BifrostFileListRequest{
+		Provider: schemas.Replicate,
+		After:    fileListCursor(t, upstream.URL+"/v1/files?cursor=legacy&limit=5"),
+	})
+	require.Nil(t, bifrostErr)
+	assert.False(t, resp.HasMore)
+
+	seen := upstream.seen()
+	require.Len(t, seen, 1)
+	assert.Equal(t, "/v1/files", seen[0].URL.Path)
+	assert.Equal(t, "legacy", seen[0].URL.Query().Get("cursor"))
 }
 
 func TestReplicate(t *testing.T) {
@@ -1607,7 +1743,6 @@ func TestReplicateToBifrostResponsesResponse(t *testing.T) {
 		})
 	}
 }
-
 
 // TestReplicateSystemPromptReadsDatasheet covers the datasheet side of the
 // system_prompt gate. The hardcoded model list is covered by the
