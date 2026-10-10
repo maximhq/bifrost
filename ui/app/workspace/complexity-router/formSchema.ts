@@ -5,6 +5,7 @@ import {
 	DEFAULT_DECISION_MODEL,
 	DecisionGuidanceDefaults,
 	DecisionTier,
+	OPENAI_DECISION_MODEL,
 	OPENROUTER_DECISION_MODELS,
 	SELF_HOSTED_DECISION_MODELS,
 	MAX_DECISION_CRITERIA_ITEM_CHARACTERS,
@@ -534,13 +535,23 @@ export function isRouterConfigured(config: AnalyzerConfig | undefined): boolean 
 export type DecisionProviderState = "missing" | "failing" | "no-enabled-key" | "configured";
 
 // isDecisionProvider reports a provider that answers /v1/decisions natively:
-// Typesafe, OpenRouter, or a custom provider built on the Typesafe base (Laya,
-// Nimble, Clef). Other providers would only emulate decisions through chat,
-// which is what the LLM classifier is for.
+// Typesafe, OpenRouter, OpenAI or a custom provider built on it (their
+// decision models, such as gpt-6-luna), or a custom provider built on the
+// Typesafe base (Laya, Nimble, Clef). Other providers would only emulate
+// decisions through chat, which is what the LLM classifier is for.
 export function isDecisionProvider(provider: ModelProvider): boolean {
 	return (
-		provider.name === "typesafe" || provider.name === "openrouter" || provider.custom_provider_config?.base_provider_type === "typesafe"
+		provider.name === "typesafe" ||
+		provider.name === "openrouter" ||
+		isOpenAIDecisionProvider(provider) ||
+		provider.custom_provider_config?.base_provider_type === "typesafe"
 	);
+}
+
+// isOpenAIDecisionProvider reports OpenAI or a custom provider built on it.
+// Only the models the datasheet marks as decision models are offered on it.
+export function isOpenAIDecisionProvider(provider: ModelProvider | undefined): boolean {
+	return provider?.name === "openai" || provider?.custom_provider_config?.base_provider_type === "openai";
 }
 
 // selfHostedModelGroups is the checkpoint list offered for a self-hosted provider
@@ -552,13 +563,17 @@ export function selfHostedModelGroups(providerName: string): SelfHostedModelGrou
 }
 
 // defaultDecisionModel is the model a newly selected provider starts on: Jev's
-// latest alias (named per provider), the Clef model a Cloudflare URL serves, or
+// latest alias (named per provider), OpenAI's decision model (a custom
+// OpenAI-based provider starts empty, as only its listing says what it serves),
+// the Clef model a Cloudflare URL serves, or
 // the first checkpoint of the model a self-hosted provider is named after (Laya
 // starts on english). A provider whose name says nothing starts empty, since only
 // the operator knows which model it runs.
 export function defaultDecisionModel(provider: ModelProvider | undefined): string {
 	if (provider?.name === "typesafe") return DEFAULT_DECISION_MODEL;
 	if (provider?.name === "openrouter") return OPENROUTER_DECISION_MODELS[0];
+	if (provider?.name === "openai") return OPENAI_DECISION_MODEL;
+	if (isOpenAIDecisionProvider(provider)) return "";
 	return clefModelFromProvider(provider) ?? namedSelfHostedGroup(provider?.name ?? "")?.models[0] ?? "";
 }
 

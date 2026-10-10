@@ -1525,3 +1525,45 @@ func TestApplyCurrentRankingNamesBatchesLookups(t *testing.T) {
 		require.Equal(t, "now-"+row.ID, row.Name)
 	}
 }
+
+// racingDropManager simulates a maintenance-window drop landing between the
+// handler's two counter reads: every read bumps both counters after answering.
+type racingDropManager struct {
+	dashboardLogManager
+	total, maintenance int64
+}
+
+func (m *racingDropManager) GetDroppedRequests(context.Context) int64 {
+	v := m.total
+	m.total++
+	m.maintenance++
+	return v
+}
+
+func (m *racingDropManager) GetDroppedDuringMaintenance(context.Context) int64 {
+	v := m.maintenance
+	m.total++
+	m.maintenance++
+	return v
+}
+
+// TestGetDroppedRequestsMaintenanceSubsetNeverExceedsTotal pins the response
+// invariant dropped_during_maintenance <= dropped_requests even when a drop is
+// counted between the two reads.
+func TestGetDroppedRequestsMaintenanceSubsetNeverExceedsTotal(t *testing.T) {
+	h := &LoggingHandler{logManager: &racingDropManager{}}
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodGet)
+	req.SetRequestURI("/api/logs/dropped")
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+	h.getDroppedRequests(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	var body map[string]int64
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body))
+	total, maintenance := body["dropped_requests"], body["dropped_during_maintenance"]
+	if maintenance > total {
+		t.Fatalf("dropped_during_maintenance (%d) exceeds dropped_requests (%d): the subset must be read first", maintenance, total)
+	}
+}

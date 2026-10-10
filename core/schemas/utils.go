@@ -2221,9 +2221,34 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		}
 	}
 	if original.ResponsesOutputMessageContentCompaction != nil {
-		copy.ResponsesOutputMessageContentCompaction = &ResponsesOutputMessageContentCompaction{
+		copyCompaction := &ResponsesOutputMessageContentCompaction{
 			Summary: original.ResponsesOutputMessageContentCompaction.Summary,
 		}
+		// tool_changes are replayed to the provider verbatim, so they must survive the copy.
+		if changes := original.ResponsesOutputMessageContentCompaction.ToolChanges; changes != nil {
+			copyCompaction.ToolChanges = make([]ResponsesMessageContentBlock, len(changes))
+			for i, change := range changes {
+				copyCompaction.ToolChanges[i] = deepCopyResponsesMessageContentBlock(change)
+			}
+		}
+		copy.ResponsesOutputMessageContentCompaction = copyCompaction
+	}
+	// The tool target of a tool_addition / tool_removal block is what the provider acts on;
+	// without it the block is dropped on egress. The definition is copied by value (its nested
+	// schema pointers are shared, as no transform mutates a tool definition in place).
+	if original.ToolChange != nil {
+		copyTarget := &ResponsesToolChangeTarget{Type: original.ToolChange.Type}
+		if original.ToolChange.Name != nil {
+			copyTarget.Name = new(*original.ToolChange.Name)
+		}
+		if original.ToolChange.ServerName != nil {
+			copyTarget.ServerName = new(*original.ToolChange.ServerName)
+		}
+		if original.ToolChange.Definition != nil {
+			copyDefinition := *original.ToolChange.Definition
+			copyTarget.Definition = &copyDefinition
+		}
+		copy.ToolChange = copyTarget
 	}
 	if original.ResponsesOutputMessageContentFallback != nil {
 		copyFallback := &ResponsesOutputMessageContentFallback{
@@ -2522,6 +2547,26 @@ func IsOpus55Plus(model string) bool {
 		return false
 	}
 	return strings.Contains(m, "5-5") || strings.Contains(m, "5.5")
+}
+
+// openAIDecisionModelPrefixes are the model families OpenAI serves on its
+// POST /v1/decisions endpoint. They back DefaultSupportsDecisions for
+// deployments without the datasheet; with it, the supports_decisions row
+// decides.
+var openAIDecisionModelPrefixes = []string{"gpt-6-luna"}
+
+// DefaultSupportsDecisions is the name-based fallback for
+// ModelCaps.SupportsDecisions, used when the datasheet says nothing: true for
+// a model family OpenAI serves on its decisions endpoint. Dated snapshots
+// share their family's prefix.
+func DefaultSupportsDecisions(model string) bool {
+	model = strings.TrimPrefix(strings.ToLower(model), "openai/")
+	for _, prefix := range openAIDecisionModelPrefixes {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultSupportsForcedToolChoice is the name-based fallback for

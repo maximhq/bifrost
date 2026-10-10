@@ -1,0 +1,84 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "setup_token": "bifrost-e2e-setup-token",
+  "client": {
+    "enable_logging": true,
+    "enforce_auth_on_inference": false,
+    "drop_excess_requests": false,
+    "allowed_origins": ["*"]
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "127.0.0.1",
+      "port": "env.BIFROST_E2E_PG_PORT",
+      "user": "bifrost",
+      "password": "bifrost_password",
+      "db_name": "env.BIFROST_E2E_PG_DB",
+      "ssl_mode": "disable"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "127.0.0.1",
+      "port": "env.BIFROST_E2E_PG_PORT",
+      "user": "bifrost",
+      "password": "bifrost_password",
+      "db_name": "env.BIFROST_E2E_PG_DB",
+      "ssl_mode": "disable"
+    }
+  },
+  "governance": {
+    "auth_config": {
+      "admin_username": "env.BIFROST_ADMIN_USERNAME",
+      "admin_password": "env.BIFROST_ADMIN_PASSWORD",
+      "is_enabled": true
+    }
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "e2e-openai-key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": true
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "anthropic": {
+      "keys": [
+        {
+          "name": "e2e-anthropic-key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": true
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    }
+  },
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "TestClient001",
+        "connection_type": "http",
+        "connection_string": "http://localhost:3001/",
+        "auth_type": "none",
+        "is_ping_available": false,
+        "tools_to_execute": ["*"],
+        "tools_to_auto_execute": ["*"]
+      }
+    ]
+  }
+}

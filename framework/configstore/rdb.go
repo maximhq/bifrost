@@ -755,6 +755,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			OpenAIConfig:             providerConfig.OpenAIConfig,
 			PromptCache:              providerConfig.PromptCache,
+			InjectedTools:            providerConfig.InjectedTools,
 			ConfigHash:               providerConfig.ConfigHash,
 			Status:                   providerConfig.Status,
 			Description:              providerConfig.Description,
@@ -1039,6 +1040,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
 	dbProvider.OpenAIConfig = configCopy.OpenAIConfig
 	dbProvider.PromptCache = configCopy.PromptCache
+	dbProvider.InjectedTools = configCopy.InjectedTools
 	dbProvider.ConfigHash = configCopy.ConfigHash
 
 	// Save the updated provider
@@ -1235,6 +1237,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
 		OpenAIConfig:             configCopy.OpenAIConfig,
 		PromptCache:              configCopy.PromptCache,
+		InjectedTools:            configCopy.InjectedTools,
 		ConfigHash:               configCopy.ConfigHash,
 	}
 	// Create the provider
@@ -1416,6 +1419,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
 			OpenAIConfig:             dbProvider.OpenAIConfig,
 			PromptCache:              dbProvider.PromptCache,
+			InjectedTools:            dbProvider.InjectedTools,
 			ConfigHash:               dbProvider.ConfigHash,
 			Status:                   dbProvider.Status,
 			Description:              dbProvider.Description,
@@ -1451,6 +1455,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
 		OpenAIConfig:             dbProvider.OpenAIConfig,
 		PromptCache:              dbProvider.PromptCache,
+		InjectedTools:            dbProvider.InjectedTools,
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,
 		Description:              dbProvider.Description,
@@ -2924,6 +2929,9 @@ var pricingSyncUpdateColumns = []string{
 	"input_cost_per_token_fast",
 	"output_cost_per_token_fast",
 	"input_cost_per_character",
+	// Costs - Decisions
+	"input_cost_per_token_decisions",
+	"output_cost_per_token_decisions",
 	// Costs - 128k Tier
 	"input_cost_per_token_above_128k_tokens",
 	"input_cost_per_image_above_128k_tokens",

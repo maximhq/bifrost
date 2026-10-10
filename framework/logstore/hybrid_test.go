@@ -1623,3 +1623,28 @@ func TestHybrid_ExcludeFields_UnknownFieldIgnored(t *testing.T) {
 	// Standard behaviour: one object uploaded, input_history offloaded.
 	assert.Equal(t, 1, objStore.Len(), "upload should succeed with unknown exclude field")
 }
+
+// gateOnlyStore is an inner store that carries a MaintenanceGate and nothing
+// else the hybrid constructor or Close touches.
+type gateOnlyStore struct {
+	LogStore
+	migrating bool
+}
+
+func (s *gateOnlyStore) MigrationInProgress(context.Context) bool { return s.migrating }
+func (s *gateOnlyStore) Close(context.Context) error              { return nil }
+
+// TestHybridMigrationInProgressForwardsToInner pins that the hybrid wrapper
+// neither hides nor invents a migration: it reports whatever the inner store
+// reports, and false for an inner store without a gate.
+func TestHybridMigrationInProgressForwardsToInner(t *testing.T) {
+	hybrid, _, _ := newTestHybrid(t)
+	t.Cleanup(func() { _ = hybrid.Close(context.Background()) })
+	assert.False(t, hybrid.MigrationInProgress(context.Background()), "SQLite inner store has no migration lock")
+
+	gated := newHybridLogStore(&gateOnlyStore{migrating: true}, objectstore.NewInMemoryObjectStore(), "test", hybridTestLogger{}, nil, nil)
+	t.Cleanup(func() { _ = gated.Close(context.Background()) })
+	assert.True(t, gated.MigrationInProgress(context.Background()))
+
+	var _ MaintenanceGate = hybrid
+}

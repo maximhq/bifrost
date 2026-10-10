@@ -76,6 +76,7 @@ Tests all core scenarios using OpenAI SDK directly:
 64. Realtime client secret HTTP API - raw routes
 65. Realtime client secret HTTP API - OpenAI constructor base_url compatibility
 66. Realtime client secret HTTP API - unsupported provider
+67. Decisions API - ordered questions through both SDK base URLs
 xAI x_search tool tests (xAI-only):
 - xai_x_search_basic: x_search with no params, non-streaming
 - xai_x_search_with_handles: x_search with allowed_x_handles, non-streaming
@@ -95,6 +96,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote
 
+import httpx
 import pytest
 from openai import OpenAI
 
@@ -4981,3 +4983,50 @@ class TestOpenAIIntegration:
         body = result["body"]
         assert "error" in body, f"Expected error object in response, got {body}"
         assert "not support" in body["error"]["message"].lower() or "provider" in body["error"]["message"].lower()
+
+    def test_67_decisions_sdk_base_urls(self, test_config):
+        """Test Case 67: OpenAI's decisions body is served through both SDK base URLs.
+
+        The installed SDK has no decisions resource yet, so the request goes
+        through the SDK's generic post, which still uses its base URL, auth,
+        and transport. The two base URLs reach /openai/decisions and
+        /openai/v1/decisions; answers come back in question order, each
+        carrying its question's name, refusals included.
+        """
+        _ = test_config
+
+        if not os.environ.get("OPENAI_API_KEY"):
+            pytest.skip("OPENAI_API_KEY not configured")
+
+        config = get_config()
+        openai_base_url = config.get_integration_url("openai").rstrip("/")
+        api_key = get_api_key("openai")
+        body = {
+            "model": get_model("openai", "decisions"),
+            "input": "I was charged twice for my order and nobody has replied.",
+            "questions": [
+                {"type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?"},
+                {
+                    "type": "choice",
+                    "name": "category",
+                    "instructions": "Pick the ticket category",
+                    "choices": [{"value": "billing"}, {"value": "bug"}, {"value": "other"}],
+                },
+            ],
+        }
+
+        for base_url in (openai_base_url, f"{openai_base_url}/v1"):
+            client = OpenAI(api_key=api_key, base_url=base_url, timeout=60, max_retries=0)
+            response = client.post("/decisions", body=body, cast_to=httpx.Response)
+            assert response.status_code == 200, f"base_url={base_url}: {response.status_code} {response.text}"
+
+            answers = response.json()["answers"]
+            assert [answer.get("name") for answer in answers] == ["is_frustrated", "category"], (
+                f"Answers must follow question order with their names for base_url={base_url}, got {answers}"
+            )
+            if answers[0]["type"] != "refusal":
+                assert answers[0]["type"] == "predicate"
+                assert 0 <= answers[0]["probability"] <= 1
+            if answers[1]["type"] != "refusal":
+                assert answers[1]["type"] == "choice"
+                assert answers[1]["choice"] in ("billing", "bug", "other")

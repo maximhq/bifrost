@@ -74,10 +74,21 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
 
+		// Models older than GPT-5 reject custom tools with "Invalid value: 'custom'",
+		// so each one is sent as a function tool. Chat has no custom tool call shape,
+		// so the model's call reaches the client as a function call.
+		customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
+		if customToolsAsFunctions {
+			openaiReq.ChatParameters.ToolChoice = chatCustomToolChoiceAsFunction(openaiReq.ChatParameters.ToolChoice)
+		}
+
 		// Normalize tool parameters for deterministic JSON serialization (improves prompt caching)
 		if len(openaiReq.ChatParameters.Tools) > 0 {
 			normalizedTools := make([]schemas.ChatTool, len(openaiReq.ChatParameters.Tools))
 			for i, tool := range openaiReq.ChatParameters.Tools {
+				if customToolsAsFunctions && tool.Type == schemas.ChatToolTypeCustom {
+					tool = chatCustomToolAsFunction(tool)
+				}
 				normalizedTools[i] = tool
 				if tool.Function != nil && tool.Function.Parameters != nil {
 					funcCopy := *tool.Function

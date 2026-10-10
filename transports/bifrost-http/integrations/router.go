@@ -1138,7 +1138,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		}
 
 		// Convert Bifrost response to integration-specific format and send
-		response, err = config.ChatResponseConverter(bifrostCtx, chatResponse)
+		response, err = config.ChatResponseConverter(bifrostCtx, chatResponseForConverter(bifrostCtx, chatResponse))
 		bifrostExtraFields = chatResponse.ExtraFields
 	case bifrostReq.ResponsesRequest != nil:
 		responsesResponse, bifrostErr := g.client.ResponsesRequest(bifrostCtx, bifrostReq.ResponsesRequest)
@@ -1162,7 +1162,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		}
 
 		// Convert Bifrost response to integration-specific format and send
-		response, err = config.ResponsesResponseConverter(bifrostCtx, responsesResponse)
+		response, err = config.ResponsesResponseConverter(bifrostCtx, responsesResponseForConverter(bifrostCtx, responsesResponse))
 		bifrostExtraFields = responsesResponse.ExtraFields
 	case bifrostReq.EmbeddingRequest != nil:
 		embeddingResponse, bifrostErr := g.client.EmbeddingRequest(bifrostCtx, bifrostReq.EmbeddingRequest)
@@ -3857,4 +3857,28 @@ func (g *GenericRouter) handlePassthroughStream(
 			}
 		}
 	}()
+}
+
+// chatResponseForConverter is the response an integration converter gets. Several
+// converters answer with the raw upstream bytes when they are present. After
+// provider-injected tools ran, the response is assembled from several model turns and
+// RawResponse holds only the last one, so the converter gets a copy without it. The
+// original keeps the raw bytes; logging has already read them in the post-hooks.
+func chatResponseForConverter(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
+	if executed, _ := ctx.Value(schemas.BifrostContextKeyInjectedToolsExecuted).(bool); !executed || resp == nil || resp.ExtraFields.RawResponse == nil {
+		return resp
+	}
+	assembled := *resp
+	assembled.ExtraFields.RawResponse = nil
+	return &assembled
+}
+
+// responsesResponseForConverter is the Responses API counterpart of chatResponseForConverter.
+func responsesResponseForConverter(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) *schemas.BifrostResponsesResponse {
+	if executed, _ := ctx.Value(schemas.BifrostContextKeyInjectedToolsExecuted).(bool); !executed || resp == nil || resp.ExtraFields.RawResponse == nil {
+		return resp
+	}
+	assembled := *resp
+	assembled.ExtraFields.RawResponse = nil
+	return &assembled
 }

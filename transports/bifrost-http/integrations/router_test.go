@@ -1585,3 +1585,52 @@ func TestPassthroughManagementRoutesNeverForward(t *testing.T) {
 		}
 	}
 }
+
+// After provider-injected tools ran, a non-stream response is assembled from several
+// model turns, while RawResponse holds only the last one. Every integration whose
+// converter answers with the raw upstream bytes (OpenAI, Bedrock, Cohere, GenAI,
+// Typesafe, Anthropic) must get the assembled response instead. The raw bytes stay on
+// the original for logging.
+func TestResponseForConverterDropsRawAfterInjectedTools(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	chat := &schemas.BifrostChatResponse{
+		Choices:     []schemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Turn 1 text. Sunny.")}}}}},
+		ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI, RawResponse: `{"raw":"turn 2 only"}`},
+	}
+	responses := &schemas.BifrostResponsesResponse{
+		ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI, RawResponse: `{"raw":"turn 2 only"}`},
+	}
+
+	if got := chatResponseForConverter(ctx, chat); got.ExtraFields.RawResponse == nil {
+		t.Fatal("a single-turn reply keeps its raw bytes for raw-preferring converters")
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyInjectedToolsExecuted, true)
+	if got := chatResponseForConverter(ctx, chat); got.ExtraFields.RawResponse != nil {
+		t.Fatal("chat: after injected tools ran, the converter must not see the last turn's raw reply")
+	}
+	if got := responsesResponseForConverter(ctx, responses); got.ExtraFields.RawResponse != nil {
+		t.Fatal("responses: after injected tools ran, the converter must not see the last turn's raw reply")
+	}
+	if chat.ExtraFields.RawResponse == nil || responses.ExtraFields.RawResponse == nil {
+		t.Fatal("the original keeps its raw bytes for logging")
+	}
+
+	var openAIChat ChatResponseConverter
+	for _, route := range CreateOpenAIRouteConfigs("/openai", nil) {
+		if route.ChatResponseConverter != nil {
+			openAIChat = route.ChatResponseConverter
+			break
+		}
+	}
+	if openAIChat == nil {
+		t.Fatal("no OpenAI chat route")
+	}
+	body, err := openAIChat(ctx, chatResponseForConverter(ctx, chat))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, ok := body.(string); ok && s == `{"raw":"turn 2 only"}` {
+		t.Fatal("the OpenAI route answered with the last turn's raw bytes")
+	}
+}

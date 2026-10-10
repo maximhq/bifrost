@@ -112,6 +112,10 @@ type Options struct {
 	OutputCostPerTokenUltrafast *float64 `json:"output_cost_per_token_ultrafast,omitempty"`
 	InputCostPerTokenFlex       *float64 `json:"input_cost_per_token_flex,omitempty"`
 	OutputCostPerTokenFlex      *float64 `json:"output_cost_per_token_flex,omitempty"`
+	// Decision requests on a model whose row is another mode (OpenAI's gpt-6-luna
+	// is a chat row served natively on /v1/decisions). See computeDecisionCost.
+	InputCostPerTokenDecisions  *float64 `json:"input_cost_per_token_decisions,omitempty"`
+	OutputCostPerTokenDecisions *float64 `json:"output_cost_per_token_decisions,omitempty"`
 	// Fast mode (Anthropic research preview, speed:"fast" on Opus 4.6/4.7/4.8).
 	// Flat rate across the full context window — no 128k/200k/272k tiering.
 	InputCostPerTokenFast  *float64 `json:"input_cost_per_token_fast,omitempty"`
@@ -512,6 +516,10 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 // API. Many models carry a datasheet row under only one of the two modes (e.g.
 // bedrock's openai.gpt-5.5 ships as responses-only), so a lookup that misses in
 // its own mode retries under the counterpart rather than pricing at zero.
+// Decision requests retry under chat: a model served natively on a decisions
+// endpoint carries its decision rates on its chat row (see computeDecisionCost), and
+// one answered by emulation is billed as the chat call it is. A model with
+// only a responses row stays unpriced for decisions.
 // Returns false for request types with no such counterpart.
 func chatResponsesFallbackMode(reqType schemas.RequestType) (string, bool) {
 	switch reqType {
@@ -519,6 +527,8 @@ func chatResponsesFallbackMode(reqType schemas.RequestType) (string, bool) {
 		return normalizeRequestType(schemas.ChatCompletionRequest), true
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		return normalizeRequestType(schemas.ResponsesRequest), true
+	case schemas.DecisionRequest:
+		return normalizeRequestType(schemas.ChatCompletionRequest), true
 	}
 	return "", false
 }
@@ -734,6 +744,8 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerTokenUltrafast:                entry.OutputCostPerTokenUltrafast,
 		InputCostPerTokenFlex:                      entry.InputCostPerTokenFlex,
 		OutputCostPerTokenFlex:                     entry.OutputCostPerTokenFlex,
+		InputCostPerTokenDecisions:                 entry.InputCostPerTokenDecisions,
+		OutputCostPerTokenDecisions:                entry.OutputCostPerTokenDecisions,
 		InputCostPerTokenFast:                      entry.InputCostPerTokenFast,
 		OutputCostPerTokenFast:                     entry.OutputCostPerTokenFast,
 		InputCostPerTokenAbove200kTokens:           entry.InputCostPerTokenAbove200kTokens,
@@ -868,6 +880,8 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerTokenUltrafast:                pricing.OutputCostPerTokenUltrafast,
 		InputCostPerTokenFlex:                      pricing.InputCostPerTokenFlex,
 		OutputCostPerTokenFlex:                     pricing.OutputCostPerTokenFlex,
+		InputCostPerTokenDecisions:                 pricing.InputCostPerTokenDecisions,
+		OutputCostPerTokenDecisions:                pricing.OutputCostPerTokenDecisions,
 		InputCostPerTokenFast:                      pricing.InputCostPerTokenFast,
 		OutputCostPerTokenFast:                     pricing.OutputCostPerTokenFast,
 		InputCostPerTokenAbove200kTokens:           pricing.InputCostPerTokenAbove200kTokens,

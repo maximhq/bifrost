@@ -178,6 +178,51 @@ func TestToChatMessages_AttachesReasoningToToolCallAssistantMessage(t *testing.T
 	}
 }
 
+func TestToChatMessages_MapsOutputTextInMultiPartAssistantMessage(t *testing.T) {
+	messages := []ResponsesMessage{
+		{
+			Role: Ptr(ResponsesInputMessageRoleUser),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("hi")},
+				},
+			},
+		},
+		{
+			Role: Ptr(ResponsesInputMessageRoleAssistant),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesOutputMessageContentTypeText, Text: Ptr("a")},
+					{Type: ResponsesOutputMessageContentTypeText, Text: Ptr("b")},
+				},
+			},
+		},
+	}
+
+	chatMessages := ToChatMessages(messages)
+	if len(chatMessages) != 2 {
+		t.Fatalf("expected 2 chat messages, got %d", len(chatMessages))
+	}
+
+	assistant := chatMessages[1]
+	if assistant.Content == nil || len(assistant.Content.ContentBlocks) != 2 {
+		t.Fatalf("expected 2 content blocks on the assistant turn, got %#v", assistant.Content)
+	}
+	for i, block := range assistant.Content.ContentBlocks {
+		// "output_text" is not a chat-completions content part: a block left with
+		// the Responses spelling is rejected downstream as an unknown variant.
+		if block.Type != ChatContentBlockTypeText {
+			t.Fatalf("block %d: expected type %q, got %q", i, ChatContentBlockTypeText, block.Type)
+		}
+	}
+	if assistant.Content.ContentBlocks[0].Text == nil || *assistant.Content.ContentBlocks[0].Text != "a" {
+		t.Fatalf("expected first block text %q, got %#v", "a", assistant.Content.ContentBlocks[0].Text)
+	}
+	if assistant.Content.ContentBlocks[1].Text == nil || *assistant.Content.ContentBlocks[1].Text != "b" {
+		t.Fatalf("expected second block text %q, got %#v", "b", assistant.Content.ContentBlocks[1].Text)
+	}
+}
+
 func TestToResponsesMessages_EmitsReasoningMessageBeforeToolCalls(t *testing.T) {
 	reasoning := "I should call Bash to list the directory."
 	cm := &ChatMessage{
@@ -2020,5 +2065,46 @@ func TestReasoningSummarySurvivesChatResponsesConversion(t *testing.T) {
 			*back.Params.Reasoning.Summary != want {
 			t.Fatalf("%s: responses->chat dropped reasoning.summary: %+v", body, back.Params)
 		}
+	}
+}
+
+// TestToChatMessages_DropsToolChangeBlocks: Responses-to-Chat is the fallback that
+// OpenAI-compatible providers (Groq, Nebius, ...) take. Chat has no tool_addition /
+// tool_removal content part, so the blocks are dropped: text siblings stay, a system message
+// left with nothing is skipped rather than sent as an empty content array.
+func TestToChatMessages_DropsToolChangeBlocks(t *testing.T) {
+	removal := &ResponsesToolChangeTarget{Type: ResponsesToolChangeTargetTypeToolReference, Name: Ptr("get_weather")}
+	chat := ToChatMessages([]ResponsesMessage{
+		{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("What's the weather in Paris?")}},
+		{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+			{Type: ResponsesInputMessageContentBlockTypeToolRemoval, ToolChange: removal},
+			{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("Weather lookups are disabled.")},
+		}}},
+		{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+			{Type: ResponsesInputMessageContentBlockTypeToolRemoval, ToolChange: removal},
+		}}},
+	})
+	if len(chat) != 2 {
+		t.Fatalf("chat messages = %d, want 2 (the tool-change-only system message must be dropped): %+v", len(chat), chat)
+	}
+	sys := chat[1]
+	if sys.Role != ChatMessageRoleSystem || sys.Content == nil {
+		t.Fatalf("chat[1] = %+v, want the system message with content", sys)
+	}
+	var blocks []ChatContentBlock
+	if sys.Content.ContentBlocks != nil {
+		blocks = sys.Content.ContentBlocks
+	}
+	for _, b := range blocks {
+		if string(b.Type) == string(ResponsesInputMessageContentBlockTypeToolRemoval) || string(b.Type) == string(ResponsesInputMessageContentBlockTypeToolAddition) {
+			t.Fatalf("tool-change block forwarded as an unknown chat content part: %+v", blocks)
+		}
+	}
+	if sys.Content.ContentStr != nil {
+		if *sys.Content.ContentStr != "Weather lookups are disabled." {
+			t.Errorf("system text = %q, want the text sibling", *sys.Content.ContentStr)
+		}
+	} else if len(blocks) != 1 || blocks[0].Text == nil || *blocks[0].Text != "Weather lookups are disabled." {
+		t.Errorf("system content = %+v, want only the text sibling", blocks)
 	}
 }

@@ -531,7 +531,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	messages = make([]schemas.ResponsesMessage, 0, len(bifrostReq.Input))
 	// Tools lifted out of codex additional_tools items for providers that reject them.
 	var hoistedTools []schemas.ResponsesTool
-	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider)
+	// Models older than GPT-5 reject custom tools with "Invalid value: 'custom'", so
+	// each one is sent as a function tool and its replayed calls follow suit. Their
+	// additional_tools items are lifted to the top level so the tools inside them get
+	// the same rewrite; the item's tools live in raw bytes that are not rewritten in place.
+	customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
+	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider) && !customToolsAsFunctions
 	replayAssistantTextAsInput := isMantleGPTOSSResponses(ctx, bifrostReq.Provider, capModel)
 	replayComputerActions := bifrostReq.Params != nil && slices.ContainsFunc(bifrostReq.Params.Tools, func(t schemas.ResponsesTool) bool {
 		return t.Type == schemas.ResponsesToolTypeComputer
@@ -557,7 +562,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			needsRewrite := false
 			for _, block := range message.Content.ContentBlocks {
 				if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction ||
-					block.Type == schemas.ResponsesOutputMessageContentTypeFallback {
+					block.Type == schemas.ResponsesOutputMessageContentTypeFallback ||
+					block.Type == schemas.ResponsesInputMessageContentBlockTypeToolAddition ||
+					block.Type == schemas.ResponsesInputMessageContentBlockTypeToolRemoval {
 					needsRewrite = true
 					break
 				}
@@ -583,6 +590,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 						// Anthropic-only server-side fallback boundary marker. Unlike
 						// compaction it carries no user content (only from/to model
 						// names), so drop it rather than rendering it as text.
+					case schemas.ResponsesInputMessageContentBlockTypeToolAddition,
+						schemas.ResponsesInputMessageContentBlockTypeToolRemoval:
+						// Anthropic-only mid-conversation tool change; OpenAI has no
+						// per-turn tool-set edit and rejects unknown block types.
 					default:
 						// Keep every other block as-is
 						newContentBlocks = append(newContentBlocks, block)
@@ -673,10 +684,20 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 
 		// Gemini streaming sets status on all item types, but OpenAI rejects status on input.
-		// Strip it, except on apply_patch items, where OpenAI requires it and it carries
-		// whether the patch failed. message is a value copy, so the caller's input is untouched.
-		if message.Type == nil || (*message.Type != schemas.ResponsesMessageTypeApplyPatchCall &&
-			*message.Type != schemas.ResponsesMessageTypeApplyPatchCallOutput) {
+		// Strip it, with two exceptions. message is a value copy, so the caller's input is
+		// untouched.
+		switch {
+		case message.Type != nil && (*message.Type == schemas.ResponsesMessageTypeApplyPatchCall ||
+			*message.Type == schemas.ResponsesMessageTypeApplyPatchCallOutput):
+			// OpenAI requires status here, and it carries whether the patch failed.
+		case message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCallOutput &&
+			message.Status != nil && *message.Status == "incomplete":
+			// "incomplete" on a function_call_output is the only marker a failed tool
+			// result has left on this surface: the chat path strips is_error on the
+			// OpenAI wire, and `error` on an input item is rejected outright. Dropping
+			// it too would make a failed tool call indistinguishable from a successful
+			// one. Only this value is kept; any other status is still stripped.
+		default:
 			message.Status = nil
 		}
 
@@ -877,6 +898,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	params := bifrostReq.Params
 	asyncToolsSupported := caps.SupportsAsyncTools(defaultSupportsAsyncTools(capModel))
 	messages = normalizeAsyncCallItems(messages, asyncToolsSupported)
+	if customToolsAsFunctions {
+		messages = responsesCustomCallItemsAsFunctions(messages)
+	}
 	// Create the responses request with properly mapped parameters
 	req := &OpenAIResponsesRequest{
 		Model:    bifrostReq.Model,
@@ -1021,6 +1045,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 					return s == "message.output_text.logprobs"
 				})
 			}
+			// Codex asks for encrypted reasoning on every request; models that do not
+			// reason reject it ("Encrypted content is not supported with this model").
+			if !caps.SupportsReasoning(IsOpenAIReasoningModel(capModel)) &&
+				slices.Contains(req.ResponsesParameters.Include, "reasoning.encrypted_content") {
+				req.ResponsesParameters.Include = slices.DeleteFunc(slices.Clone(req.ResponsesParameters.Include), func(s string) bool {
+					return s == "reasoning.encrypted_content"
+				})
+			}
 		}
 	}
 
@@ -1052,6 +1084,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	if reserved := resolveReservedToolNamespaces(toolProvider, capModel); len(reserved) > 0 && len(req.Tools) > 0 {
 		substitute := toolProvider == schemas.BedrockMantle && caps.SupportsWebSearch(true)
 		req.Tools = dropReservedNamespaceTools(req.Tools, reserved, substitute)
+	}
+
+	// Runs before the normalization below so the rewritten tools are normalized too.
+	if customToolsAsFunctions {
+		req.Tools = responsesCustomToolsAsFunctions(req.Tools)
+		req.ToolChoice = responsesCustomToolChoiceAsFunction(req.ToolChoice)
 	}
 
 	// Normalize function tool parameters for deterministic JSON serialization, and
