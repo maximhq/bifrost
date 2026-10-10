@@ -307,8 +307,17 @@ Stop the fixture and isolated gateway with Ctrl+C after testing.
 | Path | Description |
 |------|-------------|
 | `collections/bifrost-model-catalog-wiring.postman_collection.json` | Generated collection asserting that management-API mutations (add/update/delete provider and key, toggle key, alias) propagate into the model catalog read endpoints. **Generated — do not hand-edit.** |
-| `runners/build-model-catalog-wiring-collection.py` | Generator for the collection above. Holds the scenario spec (the source of truth) and emits the JSON. |
-| `runners/individual/run-newman-model-catalog-wiring-tests.sh` | Script to run the model-catalog wiring collection. |
+| `runners/build-model-catalog-wiring.mjs` | Generator for the collection above. Holds the scenario spec (the source of truth) and emits the JSON. |
+| `runners/individual/run-newman-model-catalog-wiring-tests.sh` | Script to run the model-catalog wiring collection; `--binary` boots a clean server for the run. |
+
+### Routing Wiring Tests
+
+| Path | Description |
+|------|-------------|
+| `collections/bifrost-routing-wiring.postman_collection.json` | Generated collection asserting how virtual-key gates and per-key catalog gates compose on the routing path: the route each request takes, the error on a refusal, and the stored log. **Generated — do not hand-edit.** |
+| `runners/build-routing-wiring.mjs` | Generator for the collection above; its scenario table is the source of truth. |
+| `runners/individual/run-newman-routing-wiring-tests.sh` | Script to run the routing wiring collection; `--binary` boots a clean server for the run. |
+| `runners/lib/clean-bifrost.sh` | Boots that clean server for both wiring runners: no providers, sqlite stores in a throwaway app dir. |
 
 ### Shared Resources
 
@@ -569,8 +578,8 @@ These tests cover the path **HTTP mutation → config write → server-side cata
 hook → read endpoint**: the wiring that keeps the model catalog (`/api/models`,
 `/api/models/details`) in sync with provider and key changes made through the
 management API. Each scenario stands up an isolated custom provider backed by a
-real upstream (OpenAI), drives a sequence of mutations, and asserts the catalog
-reflects each one.
+real upstream (the per-provider scenarios run once each for OpenAI, Anthropic and
+Gemini), drives a sequence of mutations, and asserts the catalog reflects each one.
 
 What it covers (one scenario per contract):
 
@@ -584,16 +593,20 @@ What it covers (one scenario per contract):
 Run locally (from this directory):
 
 ```bash
-./runners/individual/run-newman-model-catalog-wiring-tests.sh
+./runners/individual/run-newman-model-catalog-wiring-tests.sh                                 # against a running server
+./runners/individual/run-newman-model-catalog-wiring-tests.sh --binary /path/to/bifrost-http  # boots a clean one (--port, default 8095)
 ```
+
+CI runs it with `--binary` from `.github/workflows/scripts/test-api-integrations.sh`.
 
 Requirements:
 
-- Bifrost running at `{{base_url}}` (default `http://localhost:8080`), ideally
+- With `--binary`, a built `bifrost-http`. Without it, Bifrost running at
+  `$BIFROST_BASE_URL`, else `{{base_url}}` (default `http://localhost:8080`), ideally
   against a clean config store so no pre-existing `catwiring-*` providers linger.
-- `openai_api_key` available — either in the seed env file (`generated/seed.env`
-  or `$BIFROST_E2E_SEED_ENV`) or exported in the shell. Scenarios whose required
-  credentials are missing skip themselves rather than fail.
+- The server's environment needs `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and
+  `GEMINI_API_KEY`: the collection's keys use `env.<NAME>` values, which Bifrost
+  resolves from its own process environment, so the runner forwards no credentials.
 
 Notes:
 
@@ -601,22 +614,47 @@ Notes:
   run-id is built once per run from `e2e_seed_prefix` plus a timestamp nonce, so
   parallel runs never collide and a failed run leaves no blocking state.
 - The catalog's live-model cache is populated asynchronously by the key hooks, so
-  every post-mutation read polls with exponential backoff (up to 8 attempts)
-  instead of asserting immediately.
+  every post-mutation catalog read polls with exponential backoff (up to 8 attempts)
+  instead of asserting immediately. The alias inference request is sent once, after
+  a read has seen the alias listed, so an alias that resolves only on a retry fails.
 - Each scenario has a cleanup folder that deletes its provider (cascading to its
   keys); it runs even when a mid-scenario step fails, and accepts 200/204/404.
 - To change or extend the scenarios, edit
-  `runners/build-model-catalog-wiring-collection.py` and re-run it, then commit
+  `runners/build-model-catalog-wiring.mjs` and re-run it, then commit
   both the script and the regenerated collection:
 
   ```bash
-  python3 runners/build-model-catalog-wiring-collection.py
+  node runners/build-model-catalog-wiring.mjs
   ```
 
-Required seed-env vars: `openai_api_key`, plus `e2e_seed_prefix` for
-run-id namespacing. The runner also forwards the full per-provider credential set
-(`anthropic_api_key`, `azure_*`, `bedrock_*`, `vertex_*`, etc.) so per-provider
-expansion needs no runner change.
+The only seed-env var it reads is `e2e_seed_prefix`, for run-id namespacing.
+
+### Routing Wiring Tests
+
+These tests cover how governance and the model catalog compose on the routing
+path. Each scenario creates providers and keys, gates them with a virtual key,
+sends inference, and asserts the route taken (`extra_fields.routing_info`), the
+error on a refusal, and the stored log. Before a scenario's first inference
+request, one step polls until the model catalog lists every provider's models and
+asserts nothing about routing; each routing request after it is sent once and
+judged once, so a route that only shows up on a retry fails.
+
+Some scenarios create the global standard providers (openai, anthropic, gemini,
+azure, bedrock, vertex), so run it against a server nothing else has configured. `--binary` boots
+one (no providers, sqlite stores in a throwaway app dir) and stops it afterwards;
+CI runs it this way from `.github/workflows/scripts/test-api-integrations.sh`.
+
+```bash
+./runners/individual/run-newman-routing-wiring-tests.sh --binary /path/to/bifrost-http  # --port, default 8094
+node runners/build-routing-wiring.mjs                                                  # regenerate after editing scenarios
+```
+
+It calls real providers through `env.<NAME>` keys, so the server's environment
+needs `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `AZURE_API_KEY` and
+`AZURE_ENDPOINT`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`,
+and `VERTEX_PROJECT_ID` and `VERTEX_CREDENTIALS`. Both wiring collections send the
+setup token on `/api` calls (`BIFROST_SETUP_TOKEN`, default
+`bifrost-e2e-setup-token`), which a server with a setup token and no admin requires.
 
 ### Auth Matrix Tests
 
