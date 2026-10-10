@@ -1,12 +1,58 @@
 package datasheet
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
+
+func TestIsEmptyModelCapabilities(t *testing.T) {
+	if !IsEmptyModelCapabilities(nil) {
+		t.Fatal("nil capabilities must be empty")
+	}
+	for _, tc := range []struct {
+		name  string
+		data  string
+		empty bool
+	}{
+		{"zero value", `{}`, true},
+		{"null", `null`, true},
+		{"empty endpoints", `{"supported_endpoints":[]}`, true},
+		{"empty parameters", `{"model_parameters":[]}`, true},
+		{"empty tools", `{"server_tools":{}}`, true},
+		{"empty collections", `{"supported_endpoints":[],"server_tools":{},"beta_headers":{}}`, true},
+		{"empty budget", `{"reasoning_budget":{}}`, true},
+		{"null budget bounds", `{"reasoning_budget":{"min":null,"max":null}}`, true},
+		{"null endpoints", `{"supported_endpoints":[null]}`, true},
+		{"blank endpoints", `{"supported_endpoints":[""]}`, true},
+		{"empty parameter descriptors", `{"model_parameters":[{},null,{"id":""}]}`, true},
+		{"zero budget floor", `{"reasoning_budget":{"min":0}}`, false},
+		{"zero budget ceiling", `{"reasoning_budget":{"max":0}}`, false},
+		{"mixed endpoints", `{"supported_endpoints":[null,"/v1/responses"]}`, false},
+		{"mixed parameter descriptors", `{"model_parameters":[{},null,{"id":"temperature"}]}`, false},
+		{"explicit false map entry", `{"unsupported_fields":{"temperature":false}}`, false},
+		{"explicit empty map entry", `{"reasoning_effort_renames":{"none":""}}`, false},
+		{"nonempty endpoints", `{"supported_endpoints":["/v1/responses"]}`, false},
+		{"nonempty tools", `{"server_tools":{"web_search":"web_search_20260209"}}`, false},
+		{"explicit false", `{"supports_function_calling":false}`, false},
+		{"explicit zero", `{"min_output_tokens":0}`, false},
+		{"explicit empty string", `{"synthetic_structured_output_tool_prefix":""}`, false},
+		{"empty collections with explicit false", `{"supported_endpoints":[],"server_tools":{},"supports_function_calling":false}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var caps schemas.ModelCapabilities
+			if err := json.Unmarshal([]byte(tc.data), &caps); err != nil {
+				t.Fatal(err)
+			}
+			if got := IsEmptyModelCapabilities(&caps); got != tc.empty {
+				t.Errorf("IsEmptyModelCapabilities(%s) = %t, want %t", tc.data, got, tc.empty)
+			}
+		})
+	}
+}
 
 func TestGetCapabilityEntry_PrefersChatThenResponsesThenCompletion(t *testing.T) {
 	contextLengthChat := 128000

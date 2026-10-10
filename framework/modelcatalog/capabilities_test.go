@@ -1,13 +1,27 @@
 package modelcatalog
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/lrucache"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"gorm.io/gorm"
 )
 
 // capabilityTestCatalog builds a catalog whose capability lookups are served by
@@ -212,5 +226,235 @@ func TestCleanup_ClearsGlobalCapabilityResolver(t *testing.T) {
 
 	if got := providerUtils.CapabilitiesFor(schemas.Anthropic, "claude-opus-5"); got != nil {
 		t.Errorf("resolver still answering from a torn-down catalog: %+v", got)
+	}
+}
+
+// Reproduce #8073 on the real SQLite -> datasheet -> capability cache ->
+// Anthropic HTTP path. The upstream witnesses max_tokens, not just a cached
+// capability value, before and after the same sync used at background startup.
+func TestModelParametersSyncPreservesCustomProviderMaxTokens(t *testing.T) {
+	const model = "custom-params-model"
+	const customProvider schemas.ModelProvider = "custom-anthropic"
+	ctx := t.Context()
+	logger := bifrost.NewNoOpLogger()
+	cs, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+	}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close(context.Background()) })
+	if err := cs.UpsertModelParametersBatch(ctx, []tables.TableModelParameters{
+		{Model: string(customProvider) + "/" + model, Data: `{"provider":"custom-anthropic","max_output_tokens":32000}`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	witness := make(chan int, 4)
+	var feedMode atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/params.json" {
+			if feedMode.Load() == 1 {
+				_, _ = w.Write([]byte(`{"custom-anthropic/custom-params-model":{"provider":"custom-anthropic","max_output_tokens":"invalid"}}`))
+				return
+			}
+			if feedMode.Load() == 2 {
+				_, _ = w.Write([]byte(`{"custom-params-model":{"provider":"anthropic","max_output_tokens":24000},"custom-anthropic/custom-params-model":{"provider":"custom-anthropic","max_output_tokens":"invalid"}}`))
+				return
+			}
+			if feedMode.Load() == 3 {
+				_, _ = w.Write([]byte(`{"custom-params-model":{"provider":"anthropic","max_output_tokens":28000},"custom-anthropic/custom-params-model":{"supported_endpoints":[],"server_tools":{}}}`))
+				return
+			}
+			if feedMode.Load() == 4 {
+				_, _ = w.Write([]byte(`{"custom-params-model":{"provider":"anthropic","max_output_tokens":30000},"custom-anthropic/custom-params-model":{"provider":"custom-anthropic","reasoning_budget":{},"model_parameters":[{}],"supported_endpoints":[null]}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"custom-params-model":{"provider":"anthropic","max_output_tokens":16000}}`))
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" {
+			http.Error(w, "unexpected fixture route", http.StatusNotFound)
+			return
+		}
+		var request struct {
+			Model     string `json:"model"`
+			MaxTokens int    `json:"max_tokens"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Model != model {
+			http.Error(w, "invalid fixture request", http.StatusBadRequest)
+			return
+		}
+		witness <- request.MaxTokens
+		_, _ = fmt.Fprintf(w, `{"id":"msg_fixture","type":"message","role":"assistant","model":%q,"content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`, model)
+	}))
+	t.Cleanup(upstream.Close)
+	ds := datasheet.New(cs, logger, datasheet.Config{ModelParametersURL: upstream.URL + "/params.json"})
+	mc := &ModelCatalog{datasheet: ds, capabilities: lrucache.New[*schemas.ModelCapabilities](capabilityCacheSize)}
+	mc.loadCapabilities = mc.datasheetCapabilityLoader
+	ds.SetOnModelParametersApplied(mc.capabilities.Flush)
+	providerUtils.SetCapabilityResolver(mc.GetModelCapabilities)
+	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+	if _, err := ds.LoadModelParamsFromDB(ctx); err != nil {
+		t.Fatal(err)
+	}
+	provider := anthropic.NewAnthropicProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.Anthropic,
+			IsKeyLess:        true,
+		},
+	}, logger)
+	for _, phase := range []string{"before sync", "after sync", "after mixed sync", "after unusable sync", "after empty collections sync", "after nested empty sync", "after DB reload"} {
+		switch phase {
+		case "after nested empty sync":
+			feedMode.Store(4)
+			if err := ds.SyncModelParamsFromURL(ctx); err != nil {
+				t.Fatal(err)
+			}
+		case "after empty collections sync":
+			feedMode.Store(3)
+			if err := ds.SyncModelParamsFromURL(ctx); err != nil {
+				t.Fatal(err)
+			}
+		case "after mixed sync":
+			feedMode.Store(2)
+			if err := ds.SyncModelParamsFromURL(ctx); err != nil {
+				t.Fatal(err)
+			}
+		case "after unusable sync":
+			feedMode.Store(1)
+			fallthrough
+		case "after sync":
+			if err := ds.SyncModelParamsFromURL(ctx); err != nil {
+				t.Fatal(err)
+			}
+		case "after DB reload":
+			// Also prove a cold lookup can still read the good row from SQLite.
+			if _, err := ds.LoadModelParamsFromDB(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, limit := range []*int{nil, schemas.Ptr(123)} {
+			request := &schemas.BifrostResponsesRequest{
+				Provider: customProvider,
+				Model:    model,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ResponsesParameters{MaxOutputTokens: limit},
+			}
+			response, err := provider.Responses(schemas.NewBifrostContext(ctx, time.Time{}), schemas.Key{}, request)
+			if err != nil || response == nil {
+				t.Fatalf("%s: provider request failed: %+v", phase, err)
+			}
+			want := 32000
+			if limit != nil {
+				want = *limit
+			}
+			got := <-witness
+			t.Logf("%s: omitted max_output_tokens=%t, upstream max_tokens=%d", phase, limit == nil, got)
+			if got != want {
+				t.Errorf("%s: upstream max_tokens = %d, want %d", phase, got, want)
+			}
+		}
+	}
+}
+
+// Delegate to real SQLite except for the operation whose failure is under test.
+type modelParamsFailureStore struct {
+	configstore.ConfigStore
+	readErr  error
+	writeErr error
+}
+
+func (s *modelParamsFailureStore) GetModelParameters(ctx context.Context) ([]tables.TableModelParameters, error) {
+	if s.readErr != nil {
+		return nil, s.readErr
+	}
+	return s.ConfigStore.GetModelParameters(ctx)
+}
+
+func (s *modelParamsFailureStore) UpsertModelParametersBatch(ctx context.Context, rows []tables.TableModelParameters, tx ...*gorm.DB) error {
+	if s.writeErr != nil {
+		return s.writeErr
+	}
+	return s.ConfigStore.UpsertModelParametersBatch(ctx, rows, tx...)
+}
+
+func TestModelParametersSyncDBFailurePreservesSnapshot(t *testing.T) {
+	for _, operation := range []string{"read", "write"} {
+		t.Run(operation, func(t *testing.T) {
+			ctx := t.Context()
+			cs, err := configstore.NewConfigStore(ctx, &configstore.Config{
+				Enabled: true, Type: configstore.ConfigStoreTypeSQLite,
+				Config: &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+			}, bifrost.NewNoOpLogger())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cs.Close(context.Background()) })
+			const model = "sync-failure-model"
+			const original = `{"provider":"anthropic","max_output_tokens":32000,"supported_endpoints":["/v1/responses"],"supports_function_calling":true}`
+			if err := cs.UpsertModelParametersBatch(ctx, []tables.TableModelParameters{{Model: model, Data: original}}); err != nil {
+				t.Fatal(err)
+			}
+			feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"sync-failure-model":{"provider":"anthropic","max_output_tokens":16000,"supported_endpoints":["/v1/chat/completions"],"supports_function_calling":false}}`))
+			}))
+			defer feed.Close()
+			wrapper := &modelParamsFailureStore{ConfigStore: cs}
+			ds := datasheet.New(wrapper, nil, datasheet.Config{ModelParametersURL: feed.URL})
+			mc := &ModelCatalog{datasheet: ds, capabilities: lrucache.New[*schemas.ModelCapabilities](capabilityCacheSize)}
+			mc.loadCapabilities = mc.datasheetCapabilityLoader
+			applied := 0
+			ds.SetOnModelParametersApplied(func() { applied++; mc.capabilities.Flush() })
+			if _, err := ds.LoadModelParamsFromDB(ctx); err != nil {
+				t.Fatal(err)
+			}
+			warm := mc.GetModelCapabilities(schemas.Anthropic, model)
+			if warm == nil || warm.MaxOutputTokens == nil || *warm.MaxOutputTokens != 32000 {
+				t.Fatalf("unexpected seed: %+v", warm)
+			}
+			injected := errors.New("injected database failure")
+			if operation == "read" {
+				wrapper.readErr = injected
+			} else {
+				wrapper.writeErr = injected
+			}
+			err = ds.SyncModelParamsFromURL(ctx)
+			wrapper.readErr, wrapper.writeErr = nil, nil
+			if !errors.Is(err, injected) {
+				t.Fatalf("sync error=%v, want injected database failure", err)
+			}
+			row, err := cs.GetModelParametersByModel(ctx, model)
+			if err != nil || row == nil || row.Data != original {
+				t.Errorf("failed sync changed stored row: %+v, %v", row, err)
+			}
+			for _, name := range []string{model, "anthropic/" + model} {
+				caps := mc.GetModelCapabilities(schemas.Anthropic, name)
+				if caps == nil || caps.MaxOutputTokens == nil || *caps.MaxOutputTokens != 32000 {
+					t.Errorf("failed sync: capabilities for %s = %+v, want 32000", name, caps)
+				}
+			}
+			if applied != 1 || !ds.IsRequestTypeSupported(model, schemas.ResponsesRequest) {
+				t.Error("failed sync changed cache or indexes")
+			}
+			if err := ds.SyncModelParamsFromURL(ctx); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{model, "anthropic/" + model} {
+				caps := mc.GetModelCapabilities(schemas.Anthropic, name)
+				if caps == nil || caps.MaxOutputTokens == nil || *caps.MaxOutputTokens != 16000 {
+					t.Errorf("retry: capabilities for %s = %+v, want 16000", name, caps)
+				}
+			}
+			if applied != 2 || ds.IsRequestTypeSupported(model, schemas.ResponsesRequest) || !ds.IsRequestTypeSupported(model, schemas.ChatCompletionRequest) {
+				t.Error("successful retry did not publish the new snapshot")
+			}
+		})
 	}
 }
