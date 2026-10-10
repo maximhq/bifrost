@@ -221555,7 +221555,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"input\": \"A train leaves at 9:47 at 83 km/h, another at 10:12 at 117 km/h from the same station on the same line. When does it catch up? Think carefully, then answer in one line.\",\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"max_output_tokens\": 1024,\n  \"stream\": true\n}",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"input\": \"A train leaves at 9:47 at 83 km/h, another at 10:12 at 117 km/h from the same station on the same line. When does it catch up? Think carefully, then answer in one line.\",\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"max_output_tokens\": 2048,\n  \"stream\": true\n}",
               "options": {
                 "raw": {
                   "language": "json"
