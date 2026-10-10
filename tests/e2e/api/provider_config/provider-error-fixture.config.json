@@ -17,6 +17,8 @@
             "upstream-429",
             "upstream-429-ms",
             "upstream-ok",
+            "upstream-fixed-length-short",
+            "upstream-fixed-length-ok",
             "gpt-5-pro"
           ],
           "weight": 1

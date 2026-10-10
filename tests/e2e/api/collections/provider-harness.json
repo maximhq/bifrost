@@ -220937,6 +220937,188 @@
           }
         }
       ]
+    },
+    {
+      "name": "196. Fixed-length streamed response integrity (content-length truncation)",
+      "description": "Local fixture regression, no live provider calls. Start provider-error-fixture.mjs and an isolated gateway using provider-error-fixture.config.json; enable providerErrorFixture=1. Both fixture models emit valid SSE with finish_reason=stop but no upstream [DONE]. upstream-fixed-length-short declares 100 extra body bytes and gracefully closes without Connection: close; the native and OpenAI SDK routes must emit a structured unexpected EOF read error instead of accepting the semantic finish marker as proof of HTTP completeness. upstream-fixed-length-ok declares the exact length and must complete successfully. Connection disposal and the next non-idempotent POST are pinned by TestContextTransport_TruncatedContentLengthStreamReportsUnexpectedEOFAndDiscardsConn. Setup and scoped run commands are in tests/e2e/api/README.md under Fixed-length response truncation.",
+      "item": [
+        {
+          "name": "196.1 openai openai/upstream-fixed-length-short rejects short Content-Length (content-length truncation)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('stream begins successfully with the fixture content', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include('text/event-stream');",
+                  "  pm.expect(raw, 'fixture content missing: ' + raw).to.include('hello');",
+                  "});",
+                  "pm.test('fixed-length truncation reaches the client as a read error despite finish_reason', function () {",
+                  "  pm.expect(raw, 'truncated body was accepted as complete: ' + raw).to.match(/unexpected EOF/i);",
+                  "  pm.expect(raw, 'structured stream error missing: ' + raw).to.match(/\"error\"\\s*:/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-fixed-length-short\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "196.2 openai upstream-fixed-length-short rejects short Content-Length (content-length truncation)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('stream begins successfully with the fixture content', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include('text/event-stream');",
+                  "  pm.expect(raw, 'fixture content missing: ' + raw).to.include('hello');",
+                  "});",
+                  "pm.test('fixed-length truncation reaches the client as a read error despite finish_reason', function () {",
+                  "  pm.expect(raw, 'truncated body was accepted as complete: ' + raw).to.match(/unexpected EOF/i);",
+                  "  pm.expect(raw, 'structured stream error missing: ' + raw).to.match(/\"error\"\\s*:/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"upstream-fixed-length-short\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "196.3 openai openai/upstream-fixed-length-ok accepts exact Content-Length (content-length truncation)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('stream begins successfully with the fixture content', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include('text/event-stream');",
+                  "  pm.expect(raw, 'fixture content missing: ' + raw).to.include('hello');",
+                  "});",
+                  "pm.test('an exact Content-Length body completes successfully', function () {",
+                  "  pm.expect(raw, 'unexpected read failure: ' + raw).to.not.match(/unexpected EOF/i);",
+                  "  pm.expect(raw, 'unexpected stream error: ' + raw).to.not.match(/\"error\"\\s*:/);",
+                  "  pm.expect(raw, 'completion missing: ' + raw).to.include('[DONE]');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-fixed-length-ok\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
