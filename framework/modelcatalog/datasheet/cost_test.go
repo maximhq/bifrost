@@ -6510,3 +6510,20 @@ func TestCalculateCost_QueuedVideoIsNotBilledAtSubmission(t *testing.T) {
 	terminal.VideoGenerationResponse.Videos = []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}}
 	assert.InDelta(t, 5.60, s.CalculateCost(terminal, nil), 1e-9)
 }
+
+func TestCalculateCostForUsage_LiveVoiceDuration(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{
+		Model: "gpt-live-1", Provider: "openai", Mode: "live",
+		InputCostPerSecond: new(0.001), CostPerRequest: new(0.01),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+	for _, seconds := range []float64{0, 15, 35} {
+		usage := &schemas.BifrostLLMUsage{AudioSeconds: new(seconds)}
+		cost := s.CalculateCostForUsage(usage, schemas.OpenAI, pricing.Model, schemas.LiveRequest, nil)
+		assert.InDelta(t, seconds*0.001, cost, 1e-12)
+		assert.InDelta(t, s.CalculateCost(liveVoiceWindow(pricing.Model, seconds), nil), cost, 1e-12,
+			"usage carried on an error is priced the same as successful voice usage")
+	}
+}

@@ -43,10 +43,14 @@ func TestLiveWebRTCCreateRejectsMalformedRequests(t *testing.T) {
 type fakeLiveWebRTCProvider struct {
 	schemas.LiveProvider
 	body []byte
+	err  *schemas.BifrostError
 }
 
 func (f *fakeLiveWebRTCProvider) CreateLiveWebRTCSession(_ *schemas.BifrostContext, _ schemas.Key, body []byte) (*schemas.LiveCreateResponse, *schemas.BifrostError) {
 	f.body = body
+	if f.err != nil {
+		return nil, f.err
+	}
 	return &schemas.LiveCreateResponse{
 		Session:   &schemas.LiveSession{ID: "live_webrtc"},
 		Transport: &schemas.LiveTransport{Type: "webrtc", SDP: "v=0 answer"},
@@ -360,4 +364,78 @@ func TestLiveWebRTCFinalizationIgnoresLateProviderEvents(t *testing.T) {
 	assert.Equal(t, expected, posts[0].live.Transcript)
 	assert.Equal(t, expected, messages.transcript.snapshot(), "late fragments do not mutate finalized state")
 	assert.Equal(t, expected, meter.ending.transcript, "late terminal events cannot replace the final snapshot")
+}
+
+func TestLiveWebRTCSetupFailureSettlesCreatedSession(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		refuse  bool
+		seconds float64
+		billed  float64
+	}{
+		{name: "upstream refusal", refuse: true},
+		{name: "handshake failure after create", billed: 15},
+		{name: "short reported usage", seconds: 4, billed: 15},
+		{name: "usage exceeds minimum", seconds: 20, billed: 20},
+		{name: "usage already billed in a window", seconds: 35, billed: 35},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeLiveRunner{}
+			meter := newTestLiveMeter(runner)
+			meter.setTransport("webrtc")
+			require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+			provider := &fakeLiveWebRTCProvider{}
+			if tc.refuse {
+				provider.err = newRealtimeWireBifrostError(403, "permission_error", "upstream refused session creation")
+			}
+			admission := &liveAdmission{
+				liveTarget: liveTarget{provider: provider},
+				ctx:        schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+				meter:      meter,
+			}
+			created, setupErr := createLiveWebRTCSession(admission, []byte(`{"session":{"model":"gpt-live-1"},"transport":{"type":"webrtc","sdp":"browser"}}`), "relay")
+			if tc.refuse {
+				require.Nil(t, created)
+				require.NotNil(t, setupErr)
+				assert.Zero(t, meter.minimumSeconds)
+			} else {
+				require.Nil(t, setupErr)
+				require.NotNil(t, created)
+				setupErr = newRealtimeWireBifrostError(502, "upstream_connection_error", "upstream ICE failed after session creation")
+				if tc.seconds > 0 {
+					require.Nil(t, meter.onUsage(tc.seconds))
+				}
+			}
+			meter.abort(setupErr)
+			meter.abort(newRealtimeWireBifrostError(500, "server_error", "duplicate failure"))
+			meter.finish(100)
+			opens, posts, cleanups := runner.snapshot()
+			require.Len(t, posts, len(opens))
+			assert.Equal(t, len(opens), cleanups, "every admitted unit closes exactly once")
+			var billed float64
+			for _, post := range posts {
+				if post.kind != liveUnitVoice {
+					continue
+				}
+				if post.resp != nil {
+					billed += postSeconds(t, post)
+				} else if post.err != nil && post.err.ExtraFields.BilledUsage != nil {
+					require.NotNil(t, post.err.ExtraFields.BilledUsage.AudioSeconds)
+					billed += *post.err.ExtraFields.BilledUsage.AudioSeconds
+				}
+			}
+			assert.Equal(t, tc.billed, billed, "only incurred usage is billed, including the initialization minimum")
+			last := posts[len(posts)-1]
+			assert.True(t, last.end)
+			require.NotNil(t, last.err, "the setup failure is preserved alongside billable usage")
+			assert.Equal(t, setupErr.Error.Message, last.err.Error.Message)
+			assert.Equal(t, schemas.LiveRequest, last.err.ExtraFields.RequestType)
+			assert.Nil(t, last.resp, "a failed setup stays an error, not a successful response")
+			assert.Nil(t, setupErr.ExtraFields.BilledUsage, "settlement does not mutate the caller's error")
+			if tc.refuse {
+				assert.Nil(t, last.err.ExtraFields.BilledUsage, "an upstream refusal incurred no usage")
+			}
+		})
+	}
 }

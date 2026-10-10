@@ -2,11 +2,15 @@ package logging
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -402,4 +406,51 @@ func TestLiveSessionAbortedRowKeepsItsSessionFacts(t *testing.T) {
 	require.NotNil(t, row.LiveSessionParsed)
 	assert.Equal(t, "webrtc", row.LiveSessionParsed.Transport, "the transport the meter recorded")
 	assert.Equal(t, "live_aborted", row.LiveSessionParsed.ProviderSessionID, "the provider session id the meter recorded")
+}
+
+func TestLiveSessionSetupFailureKeepsBilledUsage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pricing.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"gpt-live-1":{"provider":"openai","mode":"live","input_cost_per_second":0.001}}`), 0o600))
+	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + path})
+	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, modelcatalog.NewTestCatalogWithDatasheet(ds), nil)
+	require.NoError(t, err)
+
+	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-billed-abort", "voice-1", "voice", true, false), liveStartRequest("gpt-live-1"))
+	require.NoError(t, err)
+	closing := liveUnitCtx("bfsess-billed-abort", "voice-1", "voice", false, true)
+	closing.SetValue(schemas.BifrostContextKeyRealtimeTransport, "webrtc")
+	closing.SetValue(schemas.BifrostContextKeyRealtimeProviderSessionID, "live_created")
+	failure := &schemas.BifrostError{
+		StatusCode: new(502),
+		Error:      &schemas.ErrorField{Message: "upstream WebRTC connection failed"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType: schemas.LiveRequest, Provider: schemas.OpenAI, OriginalModelRequested: "gpt-live-1",
+			BilledUsage: &schemas.BifrostLLMUsage{AudioSeconds: new(15.0)},
+		},
+	}
+	result, returnedError, err := plugin.PostLLMHook(closing, nil, failure)
+	require.NoError(t, err)
+	assert.Nil(t, result)
+	assert.Same(t, failure, returnedError)
+	require.NoError(t, plugin.Cleanup())
+
+	row, err := store.FindByID(context.Background(), "bfsess-billed-abort")
+	require.NoError(t, err)
+	assert.Equal(t, logStatusError, row.Status)
+	require.NotNil(t, row.ErrorDetailsParsed)
+	assert.Equal(t, failure.Error.Message, row.ErrorDetailsParsed.Error.Message)
+	require.NotNil(t, row.LiveSessionParsed)
+	assert.Equal(t, "webrtc", row.LiveSessionParsed.Transport)
+	assert.Equal(t, "live_created", row.LiveSessionParsed.ProviderSessionID)
+	assert.Equal(t, 15.0, row.LiveSessionParsed.VoiceSeconds)
+	require.NotNil(t, row.LiveSessionParsed.VoiceCost)
+	assert.InDelta(t, 0.015, *row.LiveSessionParsed.VoiceCost, 1e-9)
+	require.NotNil(t, row.Cost)
+	assert.InDelta(t, 0.015, *row.Cost, 1e-9)
+	assert.Empty(t, row.LiveSessionParsed.Delegations)
+	require.NotNil(t, row.TokenUsageParsed)
+	require.NotNil(t, row.TokenUsageParsed.AudioSeconds)
+	assert.Equal(t, 15.0, *row.TokenUsageParsed.AudioSeconds)
 }

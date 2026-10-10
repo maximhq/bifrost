@@ -104,12 +104,28 @@ const server = http.createServer((req, res) => {
 	if (req.method === "GET" && path === "/__hits") {
 		return send(200, {}, JSON.stringify({ data: [{ hits: { ...hits } }] }));
 	}
-	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses")) {
+	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
 	}
 	const chunks = [];
 	req.on("data", (c) => chunks.push(c));
 	req.on("end", () => {
+		// Creating a session incurs the WebRTC minimum before the relay validates this answer.
+		if (path === "/v1/live/sessions") {
+			let body;
+			try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+			catch { return send(400, {}, errorBody("invalid JSON", "invalid_request_error", "invalid_json")); }
+			if (!body?.session?.model || typeof body.session.instructions !== "string" || body.transport?.type !== "webrtc") {
+				return send(400, {}, errorBody("session and WebRTC transport are required", "invalid_request_error", "invalid_session"));
+			}
+			if (body.session?.instructions === "refuse-live-create") {
+				return send(403, {}, errorBody("fixture refused live session creation", "permission_error", "session_refused"));
+			}
+			return send(201, {}, JSON.stringify({
+				session: { id: "live_" + body.session.instructions, model: body.session.model },
+				transport: { type: "webrtc", sdp: "invalid SDP answer" },
+			}));
+		}
 		let model = "";
 		try {
 			model = JSON.parse(Buffer.concat(chunks).toString("utf8")).model || "";

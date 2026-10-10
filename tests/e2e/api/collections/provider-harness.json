@@ -218620,6 +218620,212 @@
           ]
         }
       ]
+    },
+    {
+      "name": "190. WebRTC setup billing preserves incurred usage (OpenAI local fixture)",
+      "description": "Start node tests/e2e/api/runners/provider-error-fixture.mjs on 127.0.0.1:8791 and a gateway with logging enabled. Run FEATURE=\"WebRTC setup billing\" INCLUDE_PREVIEW=1. These preview cases create and remove unique OpenAI custom providers pointing only at the local fixture, never paid APIs. A valid static browser offer reaches upstream creation: a 201 with invalid SDP must leave one error log with 15 audio seconds; a 403 before creation must leave zero. The fixture answers immediately, so the browser need not connect. Go Live E2E tests separately pin the actual cost and virtual-key budget debit.",
+      "item": [
+        {
+          "name": "[PREVIEW] [EXPECT-502] openai/gpt-live-1 WebRTC setup billing after create",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var provider = 'openai-live-billing-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);",
+                  "pm.variables.set('liveBillingProvider', provider);",
+                  "pm.variables.set('liveBillingInstructions', pm.info.requestName.indexOf('before create') !== -1 ? 'refuse-live-create' : provider);",
+                  "var base = pm.variables.get('baseUrl');",
+                  "var headers = { 'Content-Type': 'application/json', 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || 'bifrost-e2e-setup-token' };",
+                  "pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode:'raw', raw: JSON.stringify({provider: provider, custom_provider_config:{base_provider_type:'openai'}, network_config:{base_url:'http://127.0.0.1:8791', max_retries:0, default_request_timeout_in_seconds:10}})}}, function(err, res) {",
+                  "  pm.test('Run-scoped fake provider created', function() { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.be.below(300); });",
+                  "  if (err || res.code >= 300) throw new Error('cannot create fake provider');",
+                  "  pm.sendRequest({url: base + '/api/providers/' + provider + '/keys', method:'POST', header:headers, body:{mode:'raw', raw:JSON.stringify({name:'fake-live-key', value:'sk-fake-live-billing', models:['gpt-live-1'], weight:1})}}, function(keyErr, keyRes) {",
+                  "    pm.test('Fake key created', function() { pm.expect(keyErr).not.to.be.ok; pm.expect(keyRes && keyRes.code, keyRes && keyRes.text()).to.be.below(300); });",
+                  "    if (keyErr || keyRes.code >= 300) throw new Error('cannot create fake key');",
+                  "    pm.sendRequest({url:base + '/api/governance/virtual-keys', method:'POST', header:headers, body:{mode:'raw', raw:JSON.stringify({name:provider, provider_configs:[{provider:provider, weight:1, allowed_models:['gpt-live-1'], key_ids:['*']}]})}}, function(vkErr, vkRes) {",
+                  "      pm.test('Virtual key created', function() { pm.expect(vkErr).not.to.be.ok; pm.expect(vkRes && vkRes.code, vkRes && vkRes.text()).to.be.below(300); });",
+                  "      if (vkErr || vkRes.code >= 300) throw new Error('cannot create virtual key');",
+                  "      pm.variables.set('liveBillingVK', vkRes.json().virtual_key.value);",
+                  "      pm.variables.set('liveBillingVKID', vkRes.json().virtual_key.id);",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var provider = pm.variables.get('liveBillingProvider');",
+                  "var base = pm.variables.get('baseUrl');",
+                  "var beforeCreate = pm.info.requestName.indexOf('before create') !== -1;",
+                  "var expectedSeconds = beforeCreate ? 0 : 15;",
+                  "pm.test('Setup failed at the intended stage', function() {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(beforeCreate ? 403 : 502);",
+                  "  pm.expect(pm.response.json().error.message, pm.response.text()).to.include(beforeCreate ? 'fixture refused' : 'invalid upstream SDP answer');",
+                  "});",
+                  "function cleanup() {",
+                  "  pm.sendRequest({url:base + '/api/governance/virtual-keys/' + pm.variables.get('liveBillingVKID'), method:'DELETE'}, function(vkErr, vkRes) {",
+                  "    pm.test('Virtual key removed', function() { pm.expect(vkErr).not.to.be.ok; pm.expect(vkRes && vkRes.code, vkRes && vkRes.text()).to.equal(200); });",
+                  "    pm.sendRequest({url:base + '/api/providers/' + provider, method:'DELETE'}, function(err, res) {",
+                  "      pm.test('Run-scoped provider removed', function() { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.equal(200); });",
+                  "    });",
+                  "  });",
+                  "}",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({url:base + '/api/logs?objects=live.session&providers=' + provider + '&limit=10', method:'GET'}, function(err, res) {",
+                  "    pm.test('Log lookup succeeds', function() { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.equal(200); });",
+                  "    if (err || res.code !== 200) { cleanup(); return; }",
+                  "    var rows = res.json().logs || [];",
+                  "    if (!rows.length && attempt < 15) { setTimeout(function(){ checkLog(attempt+1); }, 1000); return; }",
+                  "    pm.test('One session log appeared', function() { pm.expect(rows, res.text()).to.have.lengthOf(1); });",
+                  "    if (rows.length !== 1) { cleanup(); return; }",
+                  "    pm.sendRequest({url:base + '/api/logs/' + rows[0].id, method:'GET'}, function(detailErr, detailRes) {",
+                  "      pm.test('Failed session preserves incurred seconds', function() {",
+                  "        pm.expect(detailErr).not.to.be.ok;",
+                  "        pm.expect(detailRes && detailRes.code, detailRes && detailRes.text()).to.equal(200);",
+                  "        var row = detailRes.json();",
+                  "        pm.expect(row.status, detailRes.text()).to.equal('error');",
+                  "        pm.expect(row.error_details.error.message, detailRes.text()).to.include(beforeCreate ? 'fixture refused' : 'invalid upstream SDP answer');",
+                  "        pm.expect(row.live_session.transport, detailRes.text()).to.equal('webrtc');",
+                  "        pm.expect(row.live_session.voice_seconds, detailRes.text()).to.equal(expectedSeconds);",
+                  "        pm.expect((row.token_usage || {}).audio_seconds || 0, detailRes.text()).to.equal(expectedSeconds);",
+                  "        if (!beforeCreate) pm.expect(row.live_session.provider_session_id, detailRes.text()).to.equal('live_' + pm.variables.get('liveBillingInstructions'));",
+                  "        pm.expect(row.live_session.delegations || [], detailRes.text()).to.have.lengthOf(0);",
+                  "      });",
+                  "      cleanup();",
+                  "    });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{liveBillingVK}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session\": {\n    \"model\": \"{{liveBillingProvider}}/gpt-live-1\",\n    \"instructions\": \"{{liveBillingInstructions}}\"\n  },\n  \"transport\": {\n    \"type\": \"webrtc\",\n    \"sdp\": \"v=0\\no=- 2520596364147198086 1791637009 IN IP4 0.0.0.0\\ns=-\\nt=0 0\\na=msid-semantic:WMS *\\na=fingerprint:sha-256 29:56:DD:98:22:7C:B2:1F:84:9E:BF:87:BF:52:4D:17:A3:AE:46:84:AA:B1:B8:E1:68:43:E9:9E:76:8F:9F:86\\na=extmap-allow-mixed\\na=group:BUNDLE 0 1\\nm=audio 9 UDP/TLS/RTP/SAVPF 111 9 0 8\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:0\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\na=rtcp-mux\\na=rtcp-rsize\\na=rtpmap:111 opus/48000/2\\na=fmtp:111 minptime=10;useinbandfec=1\\na=rtcp-fb:111 transport-cc\\na=rtpmap:9 G722/8000\\na=rtcp-fb:9 transport-cc\\na=rtpmap:0 PCMU/8000\\na=rtcp-fb:0 transport-cc\\na=rtpmap:8 PCMA/8000\\na=rtcp-fb:8 transport-cc\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\na=ssrc:2776728827 cname:billing-fixture\\na=ssrc:2776728827 msid:billing-fixture audio\\na=ssrc:2776728827 mslabel:billing-fixture\\na=ssrc:2776728827 label:audio\\na=msid:billing-fixture audio\\na=sendrecv\\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:1\\na=sendrecv\\na=sctp-port:5000\\na=max-message-size:1073741823\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\n\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/v1/live/sessions"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-403] openai/gpt-live-1 WebRTC setup billing before create",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var provider = 'openai-live-billing-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);",
+                  "pm.variables.set('liveBillingProvider', provider);",
+                  "pm.variables.set('liveBillingInstructions', pm.info.requestName.indexOf('before create') !== -1 ? 'refuse-live-create' : provider);",
+                  "var base = pm.variables.get('baseUrl');",
+                  "var headers = { 'Content-Type': 'application/json', 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || 'bifrost-e2e-setup-token' };",
+                  "pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode:'raw', raw: JSON.stringify({provider: provider, custom_provider_config:{base_provider_type:'openai'}, network_config:{base_url:'http://127.0.0.1:8791', max_retries:0, default_request_timeout_in_seconds:10}})}}, function(err, res) {",
+                  "  pm.test('Run-scoped fake provider created', function() { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.be.below(300); });",
+                  "  if (err || res.code >= 300) throw new Error('cannot create fake provider');",
+                  "  pm.sendRequest({url: base + '/api/providers/' + provider + '/keys', method:'POST', header:headers, body:{mode:'raw', raw:JSON.stringify({name:'fake-live-key', value:'sk-fake-live-billing', models:['gpt-live-1'], weight:1})}}, function(keyErr, keyRes) {",
+                  "    pm.test('Fake key created', function() { pm.expect(keyErr).not.to.be.ok; pm.expect(keyRes && keyRes.code, keyRes && keyRes.text()).to.be.below(300); });",
+                  "    if (keyErr || keyRes.code >= 300) throw new Error('cannot create fake key');",
+                  "    pm.sendRequest({url:base + '/api/governance/virtual-keys', method:'POST', header:headers, body:{mode:'raw', raw:JSON.stringify({name:provider, provider_configs:[{provider:provider, weight:1, allowed_models:['gpt-live-1'], key_ids:['*']}]})}}, function(vkErr, vkRes) {",
+                  "      pm.test('Virtual key created', function() { pm.expect(vkErr).not.to.be.ok; pm.expect(vkRes && vkRes.code, vkRes && vkRes.text()).to.be.below(300); });",
+                  "      if (vkErr || vkRes.code >= 300) throw new Error('cannot create virtual key');",
+                  "      pm.variables.set('liveBillingVK', vkRes.json().virtual_key.value);",
+                  "      pm.variables.set('liveBillingVKID', vkRes.json().virtual_key.id);",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var provider = pm.variables.get('liveBillingProvider');",
+                  "var base = pm.variables.get('baseUrl');",
+                  "var beforeCreate = pm.info.requestName.indexOf('before create') !== -1;",
+                  "var expectedSeconds = beforeCreate ? 0 : 15;",
+                  "pm.test('Setup failed at the intended stage', function() {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(beforeCreate ? 403 : 502);",
+                  "  pm.expect(pm.response.json().error.message, pm.response.text()).to.include(beforeCreate ? 'fixture refused' : 'invalid upstream SDP answer');",
+                  "});",
+                  "function cleanup() {",
+                  "  pm.sendRequest({url:base + '/api/governance/virtual-keys/' + pm.variables.get('liveBillingVKID'), method:'DELETE'}, function(vkErr, vkRes) {",
+                  "    pm.test('Virtual key removed', function() { pm.expect(vkErr).not.to.be.ok; pm.expect(vkRes && vkRes.code, vkRes && vkRes.text()).to.equal(200); });",
+                  "    pm.sendRequest({url:base + '/api/providers/' + provider, method:'DELETE'}, function(err, res) {",
+                  "      pm.test('Run-scoped provider removed', function() { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.equal(200); });",
+                  "    });",
+                  "  });",
+                  "}",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({url:base + '/api/logs?objects=live.session&providers=' + provider + '&limit=10', method:'GET'}, function(err, res) {",
+                  "    pm.test('Log lookup succeeds', function() { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.equal(200); });",
+                  "    if (err || res.code !== 200) { cleanup(); return; }",
+                  "    var rows = res.json().logs || [];",
+                  "    if (!rows.length && attempt < 15) { setTimeout(function(){ checkLog(attempt+1); }, 1000); return; }",
+                  "    pm.test('One session log appeared', function() { pm.expect(rows, res.text()).to.have.lengthOf(1); });",
+                  "    if (rows.length !== 1) { cleanup(); return; }",
+                  "    pm.sendRequest({url:base + '/api/logs/' + rows[0].id, method:'GET'}, function(detailErr, detailRes) {",
+                  "      pm.test('Failed session preserves incurred seconds', function() {",
+                  "        pm.expect(detailErr).not.to.be.ok;",
+                  "        pm.expect(detailRes && detailRes.code, detailRes && detailRes.text()).to.equal(200);",
+                  "        var row = detailRes.json();",
+                  "        pm.expect(row.status, detailRes.text()).to.equal('error');",
+                  "        pm.expect(row.error_details.error.message, detailRes.text()).to.include(beforeCreate ? 'fixture refused' : 'invalid upstream SDP answer');",
+                  "        pm.expect(row.live_session.transport, detailRes.text()).to.equal('webrtc');",
+                  "        pm.expect(row.live_session.voice_seconds, detailRes.text()).to.equal(expectedSeconds);",
+                  "        pm.expect((row.token_usage || {}).audio_seconds || 0, detailRes.text()).to.equal(expectedSeconds);",
+                  "        if (!beforeCreate) pm.expect(row.live_session.provider_session_id, detailRes.text()).to.equal('live_' + pm.variables.get('liveBillingInstructions'));",
+                  "        pm.expect(row.live_session.delegations || [], detailRes.text()).to.have.lengthOf(0);",
+                  "      });",
+                  "      cleanup();",
+                  "    });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{liveBillingVK}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session\": {\n    \"model\": \"{{liveBillingProvider}}/gpt-live-1\",\n    \"instructions\": \"{{liveBillingInstructions}}\"\n  },\n  \"transport\": {\n    \"type\": \"webrtc\",\n    \"sdp\": \"v=0\\no=- 2520596364147198086 1791637009 IN IP4 0.0.0.0\\ns=-\\nt=0 0\\na=msid-semantic:WMS *\\na=fingerprint:sha-256 29:56:DD:98:22:7C:B2:1F:84:9E:BF:87:BF:52:4D:17:A3:AE:46:84:AA:B1:B8:E1:68:43:E9:9E:76:8F:9F:86\\na=extmap-allow-mixed\\na=group:BUNDLE 0 1\\nm=audio 9 UDP/TLS/RTP/SAVPF 111 9 0 8\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:0\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\na=rtcp-mux\\na=rtcp-rsize\\na=rtpmap:111 opus/48000/2\\na=fmtp:111 minptime=10;useinbandfec=1\\na=rtcp-fb:111 transport-cc\\na=rtpmap:9 G722/8000\\na=rtcp-fb:9 transport-cc\\na=rtpmap:0 PCMU/8000\\na=rtcp-fb:0 transport-cc\\na=rtpmap:8 PCMA/8000\\na=rtcp-fb:8 transport-cc\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\na=ssrc:2776728827 cname:billing-fixture\\na=ssrc:2776728827 msid:billing-fixture audio\\na=ssrc:2776728827 mslabel:billing-fixture\\na=ssrc:2776728827 label:audio\\na=msid:billing-fixture audio\\na=sendrecv\\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:1\\na=sendrecv\\na=sctp-port:5000\\na=max-message-size:1073741823\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\n\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/v1/live/sessions"
+          }
+        }
+      ]
     }
   ]
 }
