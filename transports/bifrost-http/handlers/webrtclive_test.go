@@ -242,12 +242,14 @@ func TestLiveWebRTCCloseBeforeEstablishedDoesNotFinish(t *testing.T) {
 	runner := &fakeLiveRunner{}
 	meter := newTestLiveMeter(runner)
 	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+	io := &recordingLiveIO{}
 	messages := &liveWebRTCMessages{relay: &webrtcRelay{}}
-	messages.liveSessionController = &liveSessionController{meter: meter, upstreamDone: make(chan struct{})}
+	messages.liveSessionController = &liveSessionController{io: io, meter: meter, upstreamDone: make(chan struct{})}
 
 	messages.closed()
 	_, posts, _ := runner.snapshot()
 	assert.Empty(t, posts, "a close before the relay is established bills nothing")
+	assert.Empty(t, io.client, "the create handler answers the browser; the relay says nothing")
 	assert.False(t, messages.relay.markEstablished(), "a relay closed during setup cannot then be established: setup fails and the handler aborts")
 
 	refusal := newRealtimeWireBifrostError(502, "upstream_connection_error", "upstream WebRTC connection failed")
@@ -262,9 +264,27 @@ func TestLiveWebRTCCloseBeforeEstablishedDoesNotFinish(t *testing.T) {
 	require.True(t, established.relay.markEstablished(), "setup wins when no close raced it")
 	meter2 := newTestLiveMeter(runner)
 	require.Nil(t, meter2.admit("gpt-live-1", "gpt-5.6-luna"))
-	established.liveSessionController = &liveSessionController{meter: meter2, upstreamDone: make(chan struct{})}
+	io2 := &recordingLiveIO{}
+	established.liveSessionController = &liveSessionController{io: io2, meter: meter2, upstreamDone: make(chan struct{})}
 	before := len(posts)
 	established.closed()
 	_, posts, _ = runner.snapshot()
 	assert.Greater(t, len(posts), before, "an established relay's close finishes the session")
+	require.Len(t, io2.client, 1, "the browser is told the session ended without session.closed")
+	assert.Contains(t, string(io2.client[0]), "before session.closed")
 }
+
+// recordingLiveIO is a session's client and upstream ends that only remember what was sent.
+type recordingLiveIO struct {
+	client, upstream [][]byte
+}
+
+func (io *recordingLiveIO) sendUpstream(message []byte) error {
+	io.upstream = append(io.upstream, message)
+	return nil
+}
+func (io *recordingLiveIO) sendClient(message []byte) error {
+	io.client = append(io.client, message)
+	return nil
+}
+func (io *recordingLiveIO) abandonUpstream() {}
