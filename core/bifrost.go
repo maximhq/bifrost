@@ -7554,6 +7554,25 @@ func disableAnthropicPassthrough(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
 }
 
+// clearGenAIPassthroughForNonGoogleProvider disables GenAI raw-body passthrough when a request
+// from the GenAI integration is attempted on a provider outside Google's API family. The
+// integration forwards the caller's Gemini body verbatim when the request names gemini/ (or
+// sends x-model-provider: gemini), and a fallback to, say, OpenAI would otherwise receive that
+// body and refuse it ("Missing required parameter: 'model'"); with passthrough off it converts
+// the request like any other. Gemini and Vertex keep it: Vertex is where the integration passes
+// its own native bodies (batch jobs, cached content) through. Re-runs per attempt, so a fallback
+// after a Gemini primary is caught. No-op outside the GenAI integration.
+func clearGenAIPassthroughForNonGoogleProvider(ctx *schemas.BifrostContext, baseProvider schemas.ModelProvider) {
+	if integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); integrationType != "genai" {
+		return
+	}
+	if baseProvider == schemas.Gemini || baseProvider == schemas.Vertex {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+	ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
+}
+
 // clearAnthropicPassthroughForUnsupportedStructuredOutput disables Anthropic raw-body passthrough
 // when the resolved provider cannot serve native structured outputs but the request carries a
 // schema. The raw body would forward output_config.format verbatim and the provider answers 400
@@ -7963,6 +7982,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
 				// Disable it too when this attempt's provider has no native structured outputs.
 				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
+				// Disable GenAI raw-body passthrough when this attempt's provider isn't Google's.
+				clearGenAIPassthroughForNonGoogleProvider(req.Context, baseProvider)
 				injectedTools := bifrost.injectedToolsForAttempt(req.Context, config, req.RequestType)
 				injectedTools = clearAnthropicPassthroughForInjectedTools(req.Context, injectedTools, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
@@ -8070,6 +8091,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
 				// Disable it too when this attempt's provider has no native structured outputs.
 				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
+				// Disable GenAI raw-body passthrough when this attempt's provider isn't Google's.
+				clearGenAIPassthroughForNonGoogleProvider(req.Context, baseProvider)
 				injectedTools := bifrost.injectedToolsForAttempt(req.Context, config, req.RequestType)
 				injectedTools = clearAnthropicPassthroughForInjectedTools(req.Context, injectedTools, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
