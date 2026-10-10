@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/maximhq/bifrost/core/network/proxytest"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1021,5 +1023,164 @@ func TestBedrockTransportProxyMatrix(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// Structured output on Bedrock is a synthetic bf_so_* tool call whose input is
+// streamed back as text. It must stream as a regular text item, so that the
+// Anthropic SSE stream has one text block: content_block_start, deltas on a
+// stable index, then content_block_stop (#8158). The item is a message with a
+// single content part, so its events carry content_index 0 even when dropped
+// reasoning or prose came first and the tool is at a higher Bedrock block index.
+func TestResponsesStream_StructuredOutputStreamsAsTextBlock(t *testing.T) {
+	soEvents := func(block int) [][2]string {
+		return [][2]string{
+			{"contentBlockStart", fmt.Sprintf(`{"start":{"toolUse":{"toolUseId":"tooluse_1","name":"bf_so_answer"}},"contentBlockIndex":%d}`, block)},
+			{"contentBlockDelta", fmt.Sprintf(`{"delta":{"toolUse":{"input":"{\"answer\":"}},"contentBlockIndex":%d}`, block)},
+			{"contentBlockDelta", fmt.Sprintf(`{"delta":{"toolUse":{"input":"\"Paris\",\"confident\":true}"}},"contentBlockIndex":%d}`, block)},
+			{"contentBlockStop", fmt.Sprintf(`{"contentBlockIndex":%d}`, block)},
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		events [][2]string
+	}{
+		{"tool only", soEvents(0)},
+		{"reasoning and prose before the tool", append([][2]string{
+			{"contentBlockDelta", `{"delta":{"reasoningContent":{"text":"The user wants the capital."}},"contentBlockIndex":0}`},
+			{"contentBlockStop", `{"contentBlockIndex":0}`},
+			{"contentBlockDelta", `{"delta":{"text":"Here is the answer:"},"contentBlockIndex":1}`},
+			{"contentBlockStop", `{"contentBlockIndex":1}`},
+		}, soEvents(2)...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := append([][2]string{{"messageStart", `{"role":"assistant"}`}}, tc.events...)
+			events = append(events,
+				[2]string{"messageStop", `{"stopReason":"tool_use"}`},
+				[2]string{"metadata", `{"usage":{"inputTokens":10,"outputTokens":5,"totalTokens":15},"metrics":{"latencyMs":1}}`})
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+				w.WriteHeader(http.StatusOK)
+				for _, e := range events {
+					writeEventStreamEvent(t, w, e[0], []byte(e[1]))
+				}
+			}))
+			defer ts.Close()
+
+			req := testResponsesRequest()
+			var text schemas.ResponsesTextConfig
+			require.NoError(t, json.Unmarshal([]byte(`{"format":{"type":"json_schema","name":"answer","schema":{
+				"type":"object",
+				"properties":{"answer":{"type":"string"},"confident":{"type":"boolean"}},
+				"required":["answer","confident"],
+				"additionalProperties":false}}}`), &text))
+			req.Params = &schemas.ResponsesParameters{Text: &text}
+
+			provider := newTestProviderWithServer(t, ts)
+			streamChan, bifrostErr := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
+			require.Nil(t, bifrostErr)
+
+			var responses []*schemas.BifrostResponsesStreamResponse
+			timeout := time.After(5 * time.Second)
+			for done := false; !done; {
+				select {
+				case chunk, ok := <-streamChan:
+					if !ok {
+						done = true
+						break
+					}
+					require.Nil(t, chunk.BifrostError, "unexpected stream error: %+v", chunk.BifrostError)
+					if chunk.BifrostResponsesStreamResponse != nil {
+						responses = append(responses, chunk.BifrostResponsesStreamResponse)
+					}
+				case <-timeout:
+					t.Fatal("stream did not finish")
+				}
+			}
+
+			// Responses events: the deltas belong to a text item that was added before them,
+			// and every event of that item uses the message-local content_index 0.
+			const answer = `{"answer":"Paris","confident":true}`
+			var deltas strings.Builder
+			added := map[int]bool{}
+			textOutputIndex := -1
+			var textItemID string
+			var completed *schemas.BifrostResponsesResponse
+			for _, r := range responses {
+				switch r.Type {
+				case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+					if r.OutputIndex != nil {
+						added[*r.OutputIndex] = true
+					}
+				case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+					require.NotNil(t, r.OutputIndex, "output_text.delta without output_index")
+					require.NotNil(t, r.ContentIndex, "output_text.delta without content_index")
+					require.NotNil(t, r.ItemID, "output_text.delta without item_id")
+					require.True(t, added[*r.OutputIndex], "output_text.delta before its output_item.added")
+					if textOutputIndex == -1 {
+						textOutputIndex = *r.OutputIndex
+						textItemID = *r.ItemID
+					}
+					require.Equal(t, textOutputIndex, *r.OutputIndex, "deltas of one answer must share an output index")
+					require.Equal(t, textItemID, *r.ItemID, "deltas of one answer must share an item id")
+					if r.Delta != nil {
+						deltas.WriteString(*r.Delta)
+					}
+				case schemas.ResponsesStreamResponseTypeCompleted:
+					completed = r.Response
+				}
+			}
+			require.Equal(t, answer, deltas.String())
+			for _, r := range responses {
+				if r.OutputIndex != nil && *r.OutputIndex == textOutputIndex && r.ContentIndex != nil {
+					require.Equal(t, 0, *r.ContentIndex, "%s of the single-part answer message must use content_index 0", r.Type)
+				}
+			}
+
+			// response.completed carries the same message with the full answer.
+			require.NotNil(t, completed, "no response.completed")
+			require.Len(t, completed.Output, 1, "completed output should only hold the answer message")
+			msg := completed.Output[0]
+			require.NotNil(t, msg.Type)
+			require.Equal(t, schemas.ResponsesMessageTypeMessage, *msg.Type)
+			require.NotNil(t, msg.ID)
+			require.Equal(t, textItemID, *msg.ID)
+			require.NotNil(t, msg.Content)
+			require.Len(t, msg.Content.ContentBlocks, 1)
+			require.NotNil(t, msg.Content.ContentBlocks[0].Text)
+			require.Equal(t, answer, *msg.Content.ContentBlocks[0].Text)
+
+			// Anthropic SSE: one text block, deltas on its index, then its stop.
+			anthropicCtx := testBedrockCtx()
+			var blockStarts, blockStops int
+			blockIndex := -1
+			var stopReason anthropic.AnthropicStopReason
+			for _, r := range responses {
+				for _, ev := range anthropic.ToAnthropicResponsesStreamResponse(anthropicCtx, r) {
+					switch ev.Type {
+					case anthropic.AnthropicStreamEventTypeContentBlockStart:
+						blockStarts++
+						require.NotNil(t, ev.Index)
+						require.NotNil(t, ev.ContentBlock)
+						require.Equal(t, anthropic.AnthropicContentBlockTypeText, ev.ContentBlock.Type)
+						blockIndex = *ev.Index
+					case anthropic.AnthropicStreamEventTypeContentBlockDelta:
+						require.NotNil(t, ev.Index)
+						require.Equal(t, blockIndex, *ev.Index, "content_block_delta outside the started block")
+					case anthropic.AnthropicStreamEventTypeContentBlockStop:
+						blockStops++
+						require.NotNil(t, ev.Index)
+						require.Equal(t, blockIndex, *ev.Index)
+					case anthropic.AnthropicStreamEventTypeMessageDelta:
+						if ev.Delta != nil && ev.Delta.StopReason != nil {
+							stopReason = *ev.Delta.StopReason
+						}
+					}
+				}
+			}
+			require.Equal(t, 1, blockStarts, "expected exactly one content_block_start")
+			require.Equal(t, 1, blockStops, "expected exactly one content_block_stop")
+			require.Equal(t, anthropic.AnthropicStopReasonEndTurn, stopReason)
+		})
 	}
 }

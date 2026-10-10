@@ -2068,6 +2068,10 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 			structuredOutputToolName = toolName
 		}
 		var isAccumulatingStructuredOutput bool
+		// The structured output becomes a message with one content part. Its events
+		// use content_index 0, not the Bedrock block index the stream state tracks.
+		var structuredOutputBlockIndex *int
+		structuredOutputOutputIndex := -1
 
 		// Process AWS Event Stream format using proper decoder
 		lastChunkTime := startTime
@@ -2096,6 +2100,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					// Converse API: finalize any open items at end of stream.
 					finalResponses := FinalizeBedrockStream(streamState, chunkIndex, usage, streamTrace)
 					for i, finalResponse := range finalResponses {
+						setSingleContentPartIndex(finalResponse, structuredOutputOutputIndex)
 						finalResponse.ExtraFields = schemas.BifrostResponseExtraFields{
 							ChunkIndex: chunkIndex,
 							Latency:    time.Since(lastChunkTime).Milliseconds(),
@@ -2187,40 +2192,24 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 							// This is the structured output tool - start accumulating, don't forward
 							isAccumulatingStructuredOutput = true
 							streamState.UsedStructuredOutputTool = true
+							structuredOutputBlockIndex = streamEvent.ContentBlockIndex
 							continue
 						}
 					}
 
 					// Check for tool use delta event
 					if streamEvent.Delta != nil && streamEvent.Delta.ToolUse != nil && isAccumulatingStructuredOutput {
-						// Convert tool use delta to text delta
-						content := streamEvent.Delta.ToolUse.Input
-						response := &schemas.BifrostResponsesStreamResponse{
-							Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
-							SequenceNumber: chunkIndex,
-							Delta:          &content,
-							ExtraFields: schemas.BifrostResponseExtraFields{
-								ChunkIndex: chunkIndex,
-								Latency:    time.Since(lastChunkTime).Milliseconds(),
-							},
-						}
-						chunkIndex++
-						lastChunkTime = time.Now()
-
-						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-							response.ExtraFields.RawResponse = string(message.Payload)
-						}
-
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
-						continue
-					}
-
-					// Suppress non-tool content events that would leak into the
-					// assembled structured output. Bedrock Claude can emit prose
-					// alongside the forced tool call (markdown, preambles, reasoning
-					// blocks); forwarding those as text deltas corrupts the JSON
-					// the client assembles from the structured-output stream.
-					if streamEvent.Delta != nil && (streamEvent.Delta.Text != nil || streamEvent.Delta.ReasoningContent != nil) {
+						// Convert tool use delta to text delta. It goes through the stream
+						// state below like any text delta, so the text item is opened
+						// before the first delta and closed at messageStop.
+						input := streamEvent.Delta.ToolUse.Input
+						streamEvent.Delta = &BedrockContentBlockDelta{Text: &input}
+					} else if streamEvent.Delta != nil && (streamEvent.Delta.Text != nil || streamEvent.Delta.ReasoningContent != nil) {
+						// Suppress non-tool content events that would leak into the
+						// assembled structured output. Bedrock Claude can emit prose
+						// alongside the forced tool call (markdown, preambles, reasoning
+						// blocks); forwarding those as text deltas corrupts the JSON
+						// the client assembles from the structured-output stream.
 						continue
 					}
 					if streamEvent.Start != nil && streamEvent.Start.ToolUse == nil {
@@ -2237,8 +2226,14 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
 				}
+				if structuredOutputBlockIndex != nil && structuredOutputOutputIndex < 0 {
+					if outputIndex, ok := streamState.ContentIndexToOutputIndex[*structuredOutputBlockIndex]; ok {
+						structuredOutputOutputIndex = outputIndex
+					}
+				}
 				for _, response := range responses {
 					if response != nil {
+						setSingleContentPartIndex(response, structuredOutputOutputIndex)
 						response.ExtraFields = schemas.BifrostResponseExtraFields{
 							ChunkIndex: chunkIndex,
 							Latency:    time.Since(lastChunkTime).Milliseconds(),
@@ -4861,5 +4856,14 @@ func (r *invokeEventStreamReader) ReadEvent() (string, []byte, error) {
 		// chunk.Bytes is a fresh base64-decoded slice, so it does not alias
 		// payloadBuf and is safe to hand to the caller before the next Decode.
 		return gjson.GetBytes(chunk.Bytes, "type").String(), chunk.Bytes, nil
+	}
+}
+
+// setSingleContentPartIndex sets content_index 0 on the events of the output item
+// at outputIndex, a message with a single content part. A negative outputIndex
+// means there is no such item.
+func setSingleContentPartIndex(response *schemas.BifrostResponsesStreamResponse, outputIndex int) {
+	if outputIndex >= 0 && response.OutputIndex != nil && *response.OutputIndex == outputIndex && response.ContentIndex != nil {
+		response.ContentIndex = schemas.Ptr(0)
 	}
 }
