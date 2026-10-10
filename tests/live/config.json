@@ -1,5 +1,6 @@
 {
   "$schema": "../../transports/config.schema.json",
+  "setup_token": "bifrost-live-setup-token",
   "providers": {
     "openai": {
       "keys": [
@@ -43,6 +44,7 @@
     "allowed_origins": ["*"],
     "enable_logging": true,
     "enforce_auth_on_inference": true,
+    "allow_direct_keys": true,
     "max_request_body_size_mb": 10
   }
 }

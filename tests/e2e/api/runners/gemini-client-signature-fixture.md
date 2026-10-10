@@ -1,6 +1,6 @@
 # Client-supplied Gemini tool signature recorder
 
-Folder 186 pins #8149 P1: a native Chat assistant tool call containing
+Folder 197 pins #8149 P1: a native Chat assistant tool call containing
 `extra_content.google.thought_signature` must retain those opaque bytes in the
 outgoing Gemini `functionCall` part. Unary and streaming rows cover both Gemini and
 the shared Vertex Chat conversion. Two controls retain the existing encoded call-ID

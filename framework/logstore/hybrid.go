@@ -12,6 +12,8 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/objectstore"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"gorm.io/gorm"
 )
 
@@ -63,21 +65,44 @@ type HybridLogStore struct {
 	excludedPayloadFields map[string]struct{}
 	// excludedRequestTypes is the set of log object types that are never offloaded; their rows stay complete in the DB.
 	excludedRequestTypes map[string]struct{}
+	// offloadErrorRawBodies: error_details is DB-resident only through databaseResidentPayloadFields, so its raw bodies are offloaded.
+	offloadErrorRawBodies bool
 }
 
 type scopedDBLogStore interface {
 	ScopedDB(context.Context) *gorm.DB
 }
 
+// databaseResidentPayloadFields stay in the database whatever the configured
+// exclusions say. error_details backs the error_type, error_code and
+// status_code rankings and filters, which query the column directly, so
+// offloading it left every error breakdown empty. It is not request content,
+// except for the provider raw bodies it can carry, which
+// moveErrorRawBodiesToObject sends to object storage. Content-hidden rows
+// still offload it with everything else.
+//
+// This applies to logs written from this change on. Rows written before it
+// hold error_details only in their object, so they stay out of the error
+// breakdowns: restoring them means one object read per failed log, with no
+// bound on the count, and is not done automatically.
+var databaseResidentPayloadFields = []string{"error_details"}
+
 // newHybridLogStore creates a HybridLogStore wrapping the given inner store.
 // excludeFields lists payload field DB column names that should be kept in the
-// database rather than offloaded to object storage. Pass nil for the default
-// behaviour of offloading all payload fields. excludeRequestTypes lists log
+// database rather than offloaded to object storage, on top of
+// databaseResidentPayloadFields. Pass nil to offload every other payload field. excludeRequestTypes lists log
 // object types whose rows are written to the DB unchanged and never uploaded.
 func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix string, logger schemas.Logger, excludeFields []string, excludeRequestTypes []string) *HybridLogStore {
-	excluded := make(map[string]struct{}, len(excludeFields))
+	excluded := make(map[string]struct{}, len(excludeFields)+len(databaseResidentPayloadFields))
+	for _, f := range databaseResidentPayloadFields {
+		excluded[f] = struct{}{}
+	}
+	offloadErrorRawBodies := true
 	for _, f := range excludeFields {
 		excluded[f] = struct{}{}
+		if f == "error_details" {
+			offloadErrorRawBodies = false
+		}
 	}
 	excludedTypes := make(map[string]struct{}, len(excludeRequestTypes))
 	for _, t := range excludeRequestTypes {
@@ -93,6 +118,7 @@ func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix s
 		uploadQueue:           make(chan *uploadWork, defaultUploadQueueSize),
 		excludedPayloadFields: excluded,
 		excludedRequestTypes:  excludedTypes,
+		offloadErrorRawBodies: offloadErrorRawBodies,
 	}
 	// Start upload workers.
 	for i := 0; i < defaultUploadWorkers; i++ {
@@ -350,6 +376,41 @@ func (h *HybridLogStore) extractUploadPayload(entry *Log) map[string]string {
 	return ExtractPayloadFiltered(entry, h.excludedPayloadFields)
 }
 
+// errorRawBodyPaths are the error_details paths holding provider raw bodies,
+// present only when content logging and raw storage are both on.
+var errorRawBodyPaths = []string{"extra_fields.raw_request", "extra_fields.raw_response"}
+
+// moveErrorRawBodiesToObject keeps error_details in the DB row without the
+// provider raw bodies it carries, and puts the whole value in the upload
+// payload instead, which FindByID merges back over the row's copy. Without it,
+// keeping error_details DB-resident would keep raw bodies in the database even
+// though raw_request and raw_response are offloaded. An operator who lists
+// error_details in object_storage_exclude_fields keeps it whole in the DB.
+// Content-hidden rows already offload error_details in full.
+func (h *HybridLogStore) moveErrorRawBodiesToObject(dbEntry *Log, payload map[string]string) {
+	if !h.offloadErrorRawBodies || dbEntry.ContentHidden || dbEntry.ErrorDetails == "" {
+		return
+	}
+	stripped := dbEntry.ErrorDetails
+	for _, path := range errorRawBodyPaths {
+		if !gjson.Get(stripped, path).Exists() {
+			continue
+		}
+		next, err := sjson.Delete(stripped, path)
+		if err != nil {
+			return
+		}
+		stripped = next
+	}
+	if stripped == dbEntry.ErrorDetails {
+		return
+	}
+	payload["error_details"] = dbEntry.ErrorDetails
+	dbEntry.ErrorDetails = stripped
+	// SerializeFields on the write path would re-serialize a parsed copy over it.
+	dbEntry.ErrorDetailsParsed = nil
+}
+
 // skipsOffload reports whether entry's request type is excluded from object
 // storage. Excluded entries are written to the inner store unchanged, which
 // builds their content summary on write. Hidden entries are always offloaded:
@@ -374,6 +435,7 @@ func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
 	prepareDBEntry(&dbEntry, h.excludedPayloadFields)
+	h.moveErrorRawBodiesToObject(&dbEntry, payload)
 	if err := h.inner.Create(ctx, &dbEntry); err != nil {
 		return err
 	}
@@ -397,6 +459,7 @@ func (h *HybridLogStore) CreateIfNotExists(ctx context.Context, entry *Log) erro
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
 	prepareDBEntry(&dbEntry, h.excludedPayloadFields)
+	h.moveErrorRawBodiesToObject(&dbEntry, payload)
 	if err := h.inner.CreateIfNotExists(ctx, &dbEntry); err != nil {
 		return err
 	}
@@ -439,6 +502,7 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 		// Work on a shallow copy so the caller's entries are preserved on DB failure.
 		dbEntry := *entry
 		prepareDBEntry(&dbEntry, h.excludedPayloadFields)
+		h.moveErrorRawBodiesToObject(&dbEntry, payload)
 		dbEntries = append(dbEntries, &dbEntry)
 		origEntries = append(origEntries, entry)
 		uploads = append(uploads, pendingUpload{

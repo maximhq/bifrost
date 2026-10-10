@@ -834,6 +834,26 @@ export const promptCacheFormSchema = z.object({
 
 export type PromptCacheFormSchema = z.infer<typeof promptCacheFormSchema>;
 
+export const injectedToolsConfigSchema = z.object({
+	web_search: z
+		.object({
+			mcp_client_name: z.string().min(1, "Pick an MCP server"),
+			tool_name: z.string().min(1, "Pick a tool"),
+		})
+		.optional(),
+});
+
+// The web search tab saves one injected tool. Removing it is the Remove button's job, so
+// a form is savable only with a server, its resolved name and a tool: a half-filled form
+// must never reach Save, which would otherwise clear the saved setting.
+export const injectedWebSearchFormSchema = z.object({
+	mcp_client_id: z.string().min(1, "Pick an MCP server"),
+	mcp_client_name: z.string().min(1, "Waiting for the MCP server to load"),
+	tool_name: z.string().min(1, "Pick the tool this MCP server should run as web search"),
+});
+
+export type InjectedWebSearchFormSchema = z.infer<typeof injectedWebSearchFormSchema>;
+
 // Allowed requests schema
 export const allowedRequestsSchema = z.object({
 	text_completion: z.boolean(),
@@ -971,6 +991,7 @@ export const addProviderRequestSchema = z.object({
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
+	injected_tools: injectedToolsConfigSchema.nullable().optional(),
 });
 
 // Update provider request schema
@@ -986,6 +1007,7 @@ export const updateProviderRequestSchema = z.object({
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
+	injected_tools: injectedToolsConfigSchema.nullable().optional(),
 });
 
 // Cache config schema

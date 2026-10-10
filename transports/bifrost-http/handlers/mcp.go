@@ -2840,13 +2840,14 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		// The GET response redacts the exchange credentials; a round-tripped
-		// redacted value means "keep the stored one", mirroring the header
-		// and TLS redacted-merge behavior above.
+		// masked value means "keep the stored one", mirroring the header
+		// and TLS redacted-merge behavior above. An env/vault reference is
+		// never a placeholder, so switching a credential to one is written.
 		if existingConfig.TokenExchange != nil {
-			if req.TokenExchange.ClientID.IsRedacted() {
+			if req.TokenExchange.ClientID.IsMaskedPlaceholder() {
 				req.TokenExchange.ClientID = existingConfig.TokenExchange.ClientID
 			}
-			if req.TokenExchange.ClientSecret.IsRedacted() {
+			if req.TokenExchange.ClientSecret.IsMaskedPlaceholder() {
 				req.TokenExchange.ClientSecret = existingConfig.TokenExchange.ClientSecret
 			}
 		}

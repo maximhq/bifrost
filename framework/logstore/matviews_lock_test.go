@@ -3,6 +3,7 @@ package logstore
 import (
 	"context"
 	"database/sql"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -289,4 +290,17 @@ func testMatViewExists(t *testing.T, db *gorm.DB, view string) bool {
 	`, view).Scan(&exists).Error
 	require.NoError(t, err)
 	return exists
+}
+
+// TestMatViewRefreshTickSkippedWhileMigrating pins that a refresh tick does
+// not touch the database at all while another node holds the migration lock:
+// a nil *gorm.DB would panic inside refreshMatViews if the tick ran.
+func TestMatViewRefreshTickSkippedWhileMigrating(t *testing.T) {
+	now := time.Now()
+	gate := &migrationLockProbe{now: func() time.Time { return now }, checkedAt: now, held: true}
+	var ready atomic.Bool
+	require.NotPanics(t, func() {
+		runMatViewRefreshTick(context.Background(), nil, gate, time.Minute, time.Minute, testLogger{}, &ready)
+	})
+	assert.False(t, ready.Load(), "a skipped tick must not mark the matviews ready")
 }

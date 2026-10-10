@@ -44,7 +44,7 @@ import (
 // default transport. Streamed responses cannot: Response.SetBodyStream resets the
 // body first, and that reset returns fasthttp's pooled request stream to its pool,
 // so the transport parses headers with ResponseHeader.Read and decodes the body
-// itself (chunked via net/http/httputil, Content-Length via io.LimitReader,
+// itself (chunked via net/http/httputil, Content-Length via contentLengthBody,
 // identity until close). The resulting streamBody implements fasthttp's
 // ReadCloserWithError contract that NewIdleTimeoutReader, SetupStreamCancellation,
 // ReleaseStreamingResponse and Response.Body already rely on.
@@ -337,7 +337,7 @@ func newStreamBodyReader(resp *fasthttp.Response, br *bufio.Reader) io.Reader {
 	case contentLength == -1:
 		return &chunkedBody{chunked: httputil.NewChunkedReader(br), br: br, resp: resp}
 	case contentLength >= 0:
-		return io.LimitReader(br, int64(contentLength))
+		return &contentLengthBody{reader: io.LimitedReader{R: br, N: int64(contentLength)}}
 	default:
 		// Identity encoding without a length: the body ends when the peer closes.
 		return br
@@ -347,6 +347,20 @@ func newStreamBodyReader(resp *fasthttp.Response, br *bufio.Reader) io.Reader {
 type eofReader struct{}
 
 func (eofReader) Read([]byte) (int, error) { return 0, io.EOF }
+
+// contentLengthBody bounds reads to the declared length and reports an early
+// EOF as truncation, even when the final read returns both bytes and EOF.
+type contentLengthBody struct {
+	reader io.LimitedReader
+}
+
+func (c *contentLengthBody) Read(p []byte) (int, error) {
+	n, err := c.reader.Read(p)
+	if errors.Is(err, io.EOF) && c.reader.N > 0 {
+		err = io.ErrUnexpectedEOF
+	}
+	return n, err
+}
 
 // chunkedBody decodes a chunked body and consumes the trailer section after the
 // terminating chunk, so a keep-alive connection is left positioned at the next
@@ -408,9 +422,12 @@ func (s *streamBody) Read(p []byte) (int, error) {
 		// an EOF without a terminal marker becomes the retryable 502 truncation
 		// error, while any other read error is a generic stream failure. The
 		// standard-library chunked reader says io.ErrUnexpectedEOF for the same
-		// close, so restore the contract here. fullyRead stays false: the half-read
-		// connection is closed on release, never returned to the pool.
-		err = io.EOF
+		// close, so restore that contract only for chunked bodies. Fixed-length
+		// bodies must preserve the truncation error. fullyRead stays false: the
+		// half-read connection is closed on release, never returned to the pool.
+		if _, chunked := s.reader.(*chunkedBody); chunked {
+			err = io.EOF
+		}
 	}
 	return n, err
 }

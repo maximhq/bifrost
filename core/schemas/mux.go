@@ -956,6 +956,13 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					switch block.Type {
 					case ResponsesInputMessageContentBlockTypeText:
 						chatBlockType = ChatContentBlockTypeText // "input_text" -> "text"
+					case ResponsesOutputMessageContentTypeText:
+						// Replayed assistant text. The single-part short-circuit above
+						// already treats this as plain text; without the case here a
+						// multi-part assistant turn falls through to the default and
+						// carries the Responses-only "output_text" spelling onto the
+						// chat surface, which has no such content part.
+						chatBlockType = ChatContentBlockTypeText // "output_text" -> "text"
 					case ResponsesInputMessageContentBlockTypeImage:
 						chatBlockType = ChatContentBlockTypeImage // "input_image" -> "image_url"
 					case ResponsesInputMessageContentBlockTypeFile:
@@ -1284,12 +1291,13 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 		}
 
 		// Handle Reasoning from reasoning_effort
-		if cr.Params.Reasoning != nil && (cr.Params.Reasoning.Enabled != nil || cr.Params.Reasoning.Effort != nil || cr.Params.Reasoning.MaxTokens != nil || cr.Params.Reasoning.Type != nil || cr.Params.Reasoning.Mode != nil) {
+		if cr.Params.Reasoning != nil && (cr.Params.Reasoning.Enabled != nil || cr.Params.Reasoning.Effort != nil || cr.Params.Reasoning.MaxTokens != nil || cr.Params.Reasoning.Type != nil || cr.Params.Reasoning.Mode != nil || cr.Params.Reasoning.Summary != nil) {
 			brr.Params.Reasoning = &ResponsesParametersReasoning{
 				Effort:    cr.Params.Reasoning.Effort,
 				MaxTokens: cr.Params.Reasoning.MaxTokens,
 				Type:      cr.Params.Reasoning.Type,
 				Mode:      cr.Params.Reasoning.Mode,
+				Summary:   cr.Params.Reasoning.Summary,
 			}
 		}
 
@@ -1387,6 +1395,7 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 				MaxTokens: brr.Params.Reasoning.MaxTokens,
 				Type:      brr.Params.Reasoning.Type,
 				Mode:      brr.Params.Reasoning.Mode,
+				Summary:   brr.Params.Reasoning.Summary,
 			}
 		}
 

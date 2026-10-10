@@ -203,9 +203,9 @@ curl -X POST http://localhost:8080/api/load-balancer-config/conditions/clear
 
 | Field | Effect |
 |-------|--------|
-| `provider` | Limits the release to one provider. Omit to match any provider |
-| `key_id` | Limits the release to one key. Omit, with the other fields, to release everything |
-| `model` | Limits the release to one model of the key. Requires `key_id`. A hold on the whole key, such as a rejected credential, is released only by naming the key without a model |
+| `provider` | Limits the release to one provider. Required with `key_id`. Omit, with the other fields, to release everything |
+| `key_id` | Limits the release to one key of the provider. Requires `provider`. Omit to release every key of the provider |
+| `model` | Limits the release to one model of the key. Requires `provider` and `key_id`. A hold on the whole key, such as a rejected credential, is released only by naming the key without a model |
 
 The response lists the routes that were put back and how many:
 
@@ -253,8 +253,8 @@ Adaptive load balancing ships **pre-tuned** - the scoring weights, thresholds, r
 |---------|---------|--------|
 | **Provider selection** (`direction_selection_enabled`) | On | Whether the system picks the provider (Level 1). A request that already carries a provider keeps it as the primary. Off ⇒ Level 1 leaves the request's provider and fallback list untouched (key selection is toggled separately). |
 | **Key selection** (`route_selection_enabled`) | On | Whether per-key (Level 2) selection is adaptive. Off ⇒ keys are chosen by static weighted-random (metrics are still tracked, and [held keys](#held-keys) are still skipped). |
-| **Append fallbacks to pinned requests** (`append_fallbacks_to_pinned`) | Off | A request that already carries a provider still gets the healthy providers eligible for its model appended as fallbacks behind any it configured (with pruning and model normalization applied). Off ⇒ a pinned request passes through untouched, apart from re-routing below. |
-| **Re-route failed providers** (`reroute_failed_directions`) | Off | If a pinned provider's direction is circuit-broken, re-route the request to a healthy provider for the same model. When no healthier provider exists, the pinned provider is kept. |
+| **Append fallbacks to pinned requests** (`append_fallbacks_to_pinned`) | Off | A request that already carries a provider still gets the healthy providers eligible for its model appended as fallbacks behind any it configured (with pruning and model normalization applied). Off ⇒ a pinned request passes through untouched, unless re-routing (below) is on and its provider is circuit-broken. |
+| **Re-route failed providers** (`reroute_failed_directions`) | Off | If a pinned provider's direction is circuit-broken, re-route the request to a healthy provider for the same model. When no healthier provider exists, the pinned provider is kept. Either way, and even with appending to pinned requests off, the request is handled as if appending were on: its model and configured fallbacks are normalized, circuit-broken fallbacks are pruned when pruning is on, and the healthy providers eligible for its model are appended as fallbacks. |
 | **Prune failed fallbacks** (`prune_failed_fallbacks`) | Off | Drop circuit-broken providers from a request's configured fallback list. |
 
 The two selection switches default **on**; the three pinned/failed-direction behaviors are **opt-in**. All five take effect live (no restart) and propagate across the cluster.
@@ -321,7 +321,8 @@ Unlike the API, this block is presence-aware: omitted fields keep their current 
 
 ## Scope & Limitations
 
-- **Pinned requests can still get fallbacks**: With provider selection on and the append-fallbacks-to-pinned switch enabled, a request that pins a provider — even one that configures no fallbacks of its own — receives the healthy providers eligible for its model as a fallback chain, so a failing primary fails over instead of failing fast. With the switch off (its default), a pinned request's provider and fallback list are left untouched.
+- **Pinned requests can still get fallbacks**: With provider selection on and the append-fallbacks-to-pinned switch enabled, a request that pins a provider — even one that configures no fallbacks of its own — receives the healthy providers eligible for its model as a fallback chain, so a failing primary fails over instead of failing fast. With the switch off (its default), a pinned request's provider and fallback list are left untouched, unless **Re-route failed providers** is on and the pinned provider is circuit-broken.
+- **A caller's own key goes wherever the request is first routed**: When direct keys are allowed and a request brings its own provider key (`x-bf-direct-key`), Bifrost uses that key on the first provider the request is routed to, whichever provider that is. Re-routing a failed pinned provider, the provider picked for a request that names none, and a circuit breaker redirect to another provider can therefore send the caller's key to a provider it was not issued for. Fallbacks never carry it: every fallback attempt, appended or configured, runs on that provider's own registered keys. For traffic that brings its own keys, pin the provider and keep re-routing and cross-provider circuit breaker policies off.
 - **Per-node weights**: Each node load-balances on its own observed metrics. The metric signal shared across nodes is a rate-limit (TPM) backoff, and only within the same region - there is no global weight consensus or cross-region coordination. This is deliberate: latency and error profiles differ per region, so importing another region's metrics would pollute a node's view of route health. [Held keys](#held-keys) are the exception: a provider refuses a key the same way from every region, so a hold is shared with every node.
 - **~5-second adaptation**: Weight and state changes lag live traffic by up to one recompute cycle. Immediate per-request resilience (key rotation and fallback failover) is handled separately and is not subject to this delay.
 - **Optimistic cold start**: A brand-new key or provider enters at full weight and competes at roughly fair share before it has been measured, then self-corrects within a cycle or two.

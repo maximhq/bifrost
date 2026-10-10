@@ -1173,3 +1173,50 @@ func TestPatchPricing_PriorityAbove272kCacheCreationRate(t *testing.T) {
 	require.NotNil(t, patched.CacheCreationInputTokenCostPriority)
 	assert.Equal(t, 0.000025, *patched.CacheCreationInputTokenCostPriority)
 }
+
+func TestPatchPricing_Above100kRates(t *testing.T) {
+	base := configstoreTables.TableModelPricing{Model: "claude-haiku-5-5", Provider: "anthropic", Mode: "chat",
+		InputCostPerToken: new(1e-07)}
+
+	patched := patchPricing(base, Options{
+		InputCostPerTokenAbove100kTokens:                   new(5e-07),
+		OutputCostPerTokenAbove100kTokens:                  new(2.5e-06),
+		CacheCreationInputTokenCostAbove100kTokens:         new(6.25e-07),
+		CacheReadInputTokenCostAbove100kTokens:             new(5e-08),
+		CacheCreationInputTokenCostAbove1hrAbove100kTokens: new(1e-06),
+	})
+	require.NotNil(t, patched.InputCostPerTokenAbove100kTokens)
+	assert.Equal(t, 5e-07, *patched.InputCostPerTokenAbove100kTokens)
+	require.NotNil(t, patched.OutputCostPerTokenAbove100kTokens)
+	assert.Equal(t, 2.5e-06, *patched.OutputCostPerTokenAbove100kTokens)
+	require.NotNil(t, patched.CacheCreationInputTokenCostAbove100kTokens)
+	assert.Equal(t, 6.25e-07, *patched.CacheCreationInputTokenCostAbove100kTokens)
+	require.NotNil(t, patched.CacheReadInputTokenCostAbove100kTokens)
+	assert.Equal(t, 5e-08, *patched.CacheReadInputTokenCostAbove100kTokens)
+	require.NotNil(t, patched.CacheCreationInputTokenCostAbove1hrAbove100kTokens)
+	assert.Equal(t, 1e-06, *patched.CacheCreationInputTokenCostAbove1hrAbove100kTokens)
+	// Untouched base rate survives the patch.
+	require.NotNil(t, patched.InputCostPerToken)
+	assert.Equal(t, 1e-07, *patched.InputCostPerToken)
+}
+
+// TestPatchPricing_DecisionRatesPassThrough pins that the decision rates in an
+// override patch land on the pricing row, and leave the plain rates alone.
+func TestPatchPricing_DecisionRatesPassThrough(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(1.0),
+		OutputCostPerToken: bifrost.Ptr(2.0),
+	}
+
+	patched := patchPricing(base, Options{
+		InputCostPerTokenDecisions:  bifrost.Ptr(0.1),
+		OutputCostPerTokenDecisions: bifrost.Ptr(0.2),
+	})
+
+	require.NotNil(t, patched.InputCostPerTokenDecisions)
+	require.NotNil(t, patched.OutputCostPerTokenDecisions)
+	assert.Equal(t, 0.1, *patched.InputCostPerTokenDecisions)
+	assert.Equal(t, 0.2, *patched.OutputCostPerTokenDecisions)
+	assert.Equal(t, 1.0, *patched.InputCostPerToken)
+	assert.Equal(t, 2.0, *patched.OutputCostPerToken)
+}

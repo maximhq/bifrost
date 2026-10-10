@@ -8,6 +8,7 @@ import {
 	ApiStructureFormFragment,
 	BetaHeadersFormFragment,
 	GovernanceFormFragment,
+	InjectedToolsFormFragment,
 	OpenAIConfigFormFragment,
 	PricingFormFragment,
 	ProxyFormFragment,
@@ -64,6 +65,10 @@ const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: bo
 	tabs.push({
 		id: "pricing",
 		label: "Pricing",
+	});
+	tabs.push({
+		id: "web-search",
+		label: "Web Search",
 	});
 	tabs.push({
 		id: "debugging",
@@ -162,6 +167,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 							</TabsContent>
 							<TabsContent value="pricing">
 								<PricingFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="web-search">
+								<InjectedToolsFormFragment provider={provider} />
 							</TabsContent>
 							<TabsContent value="debugging">
 								<DebuggingFormFragment provider={provider} />

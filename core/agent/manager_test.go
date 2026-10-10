@@ -2073,6 +2073,41 @@ func TestUpdateTransitionsAndRedactedSecretPreservation(t *testing.T) {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+// TestUpdateWritesAnOAuthSecretSwitchedToAReference pins that switching an upstream
+// OAuth secret to an env reference is written: every reference used to count as
+// redacted, so the old plaintext was kept, and adding OAuth with a reference failed.
+func TestUpdateWritesAnOAuthSecretSwitchedToAReference(t *testing.T) {
+	t.Setenv("AGENT_OAUTH_SECRET_V2", "rotated")
+	upstream, _, _ := fixture(t, nil, nil)
+	defer upstream.Close()
+	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	require.NoError(t, err)
+	defer m.Close()
+	base := upstream.URL + agentCardPath
+	oauth := func(id, secret string) *schemas.UpstreamAuth {
+		return &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{TokenURL: "https://idp.example.com/token", ClientID: schemas.NewSecretVar(id), ClientSecret: schemas.NewSecretVar(secret)}}
+	}
+	_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: base, Enabled: boolPtr(false), RuntimeAuth: oauth("client", "leaked-plain")})
+	require.NoError(t, err)
+
+	_, err = m.Update(context.Background(), "fixture", UpdateRequest{AgentCardURL: &base, Enabled: boolPtr(false), RuntimeAuth: oauth("client", "<REDACTED>")})
+	require.NoError(t, err)
+	stored, _ := store.GetAgentRegistration(context.Background(), "fixture")
+	require.Equal(t, "leaked-plain", stored.RuntimeAuth.OAuth.ClientSecret.GetValue(), "the masked placeholder keeps the stored secret")
+
+	_, err = m.Update(context.Background(), "fixture", UpdateRequest{AgentCardURL: &base, Enabled: boolPtr(false), RuntimeAuth: oauth("client", "env.AGENT_OAUTH_SECRET_V2")})
+	require.NoError(t, err)
+	stored, _ = store.GetAgentRegistration(context.Background(), "fixture")
+	require.True(t, stored.RuntimeAuth.OAuth.ClientSecret.IsFromSecret(), "the switch to a reference is written")
+	require.Equal(t, "rotated", stored.RuntimeAuth.OAuth.ClientSecret.GetValue())
+
+	_, err = m.Create(context.Background(), CreateRequest{Name: "fixture2", AgentCardURL: base, Enabled: boolPtr(false)})
+	require.NoError(t, err)
+	_, err = m.Update(context.Background(), "fixture2", UpdateRequest{AgentCardURL: &base, Enabled: boolPtr(false), RuntimeAuth: oauth("client", "env.AGENT_OAUTH_SECRET_V2")})
+	require.NoError(t, err, "adding OAuth with a reference has nothing to preserve and must be accepted")
+}
 func TestNormalizeRejectsIncompleteCredential(t *testing.T) {
 	_, err := normalize(CreateRequest{Name: "x", AgentCardURL: "https://example.com", DiscoveryAuth: &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeHeaders}})
 	require.Error(t, err)

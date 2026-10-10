@@ -125,6 +125,7 @@ type ProviderResponse struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`          // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`           // Prompt-cache breakpoint injection
+	InjectedTools            *schemas.InjectedToolsConfig     `json:"injected_tools,omitempty"`         // MCP tools injected and auto-executed server side
 	ProviderStatus           ProviderStatus                   `json:"provider_status"`                  // Health/initialization status of the provider
 	Status                   string                           `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
 	Description              string                           `json:"description,omitempty"`            // Error/status description
@@ -153,8 +154,9 @@ type providerCreatePayload struct {
 	StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"`
 	IgnoreProviderCost       *bool                             `json:"ignore_provider_cost,omitempty"`
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
-	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"` // OpenAI-specific configuration
-	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
+	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`  // OpenAI-specific configuration
+	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`   // Prompt-cache breakpoint injection
+	InjectedTools            *schemas.InjectedToolsConfig      `json:"injected_tools,omitempty"` // MCP tools injected and auto-executed server side
 }
 
 type providerUpdatePayload struct {
@@ -166,8 +168,9 @@ type providerUpdatePayload struct {
 	StoreRawRequestResponse  *bool                            `json:"store_raw_request_response,omitempty"`
 	IgnoreProviderCost       *bool                            `json:"ignore_provider_cost,omitempty"`
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
-	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"` // OpenAI-specific configuration
-	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
+	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`  // OpenAI-specific configuration
+	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`   // Prompt-cache breakpoint injection
+	InjectedTools            *schemas.InjectedToolsConfig     `json:"injected_tools,omitempty"` // MCP tools injected and auto-executed server side
 }
 
 // applyProviderConfigUpdates copies onto config only the nested config blocks the
@@ -204,6 +207,9 @@ func applyProviderConfigUpdates(config *configstore.ProviderConfig, payload *pro
 	}
 	if carried("prompt_cache") {
 		config.PromptCache = payload.PromptCache
+	}
+	if carried("injected_tools") {
+		config.InjectedTools = payload.InjectedTools
 	}
 }
 
@@ -419,6 +425,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		CustomProviderConfig:     payload.CustomProviderConfig,
 		OpenAIConfig:             payload.OpenAIConfig,
 		PromptCache:              payload.PromptCache,
+		InjectedTools:            payload.InjectedTools,
 	}
 	if requireGenuineAuthForInterception(ctx, configstore.ProviderConfig{}, config) {
 		return
@@ -433,6 +440,14 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	// and then rejected by the provider at request time instead.
 	if err := lib.ValidatePromptCache(config.PromptCache); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid prompt cache config: %v", err))
+		return
+	}
+	if err := lib.ValidateInjectedToolsBody(ctx.PostBody()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
+		return
+	}
+	if err := lib.ValidateInjectedTools(config.InjectedTools, h.inMemoryStore.GetMCPClientNames()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
 		return
 	}
 	// Add provider to store (env vars will be processed by store)
@@ -474,6 +489,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			CustomProviderConfig:     config.CustomProviderConfig,
 			OpenAIConfig:             config.OpenAIConfig,
 			PromptCache:              config.PromptCache,
+			InjectedTools:            config.InjectedTools,
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
@@ -570,6 +586,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		CustomProviderConfig:     oldConfigRaw.CustomProviderConfig,
 		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
 		PromptCache:              oldConfigRaw.PromptCache,
+		InjectedTools:            oldConfigRaw.InjectedTools,
 		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
 		IgnoreProviderCost:       oldConfigRaw.IgnoreProviderCost,
 		Status:                   oldConfigRaw.Status,
@@ -599,6 +616,14 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 	if err := lib.ValidatePromptCache(payload.PromptCache); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid prompt cache config: %v", err))
+		return
+	}
+	if err := lib.ValidateInjectedToolsBody(ctx.PostBody()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
+		return
+	}
+	if err := lib.ValidateInjectedTools(payload.InjectedTools, h.inMemoryStore.GetMCPClientNames()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
 		return
 	}
 
@@ -728,6 +753,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			CustomProviderConfig:     config.CustomProviderConfig,
 			OpenAIConfig:             config.OpenAIConfig,
 			PromptCache:              config.PromptCache,
+			InjectedTools:            config.InjectedTools,
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
@@ -868,6 +894,9 @@ type modelListQuery struct {
 	HideDeprecated bool
 	// IncludeDeprecated is the caller's explicit opt-out of HideDeprecated.
 	IncludeDeprecated bool
+	// Decisions keeps only models that serve decisions natively, by the same
+	// capability rule the provider applies at request time.
+	Decisions bool
 	// VK-based filtering: populated when a virtual key is found in request headers.
 	// HasVKFilter=true restricts providers/models to those allowed by the VK.
 	HasVKFilter bool
@@ -891,6 +920,9 @@ type listedModel struct {
 //   - offset: Number of results to skip (for pagination)
 //   - include_deprecated: If true, list deprecated models even when nothing is searched for.
 //     Without it, deprecated models appear only in a search (`query`), sorted below live ones.
+//   - decisions: If true, list only models that serve decisions natively: every model of a
+//     Typesafe-based provider, Typesafe models on OpenRouter, and models the datasheet (or
+//     built-in default) marks as decision models, such as OpenAI's gpt-6-luna.
 //
 // Request headers:
 //   - x-bf-vk / Authorization: Bearer / x-api-key / x-goog-api-key: Virtual key (sk-bf-…) to scope
@@ -1089,6 +1121,65 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 	}
 }
 
+// supportsDecisions reports whether the listed model serves decisions natively,
+// by the rule the provider's Decision call gates on, so the listing neither
+// offers a model the request would reject nor hides one it would serve: none
+// on a custom provider whose allowed requests exclude decisions, every model
+// of a Typesafe-based provider (Typesafe, or a custom provider on its base
+// serving Laya, Nimble, or Clef), a TypeSafe System One model on OpenRouter,
+// and otherwise a model the datasheet (or, without a row, the name-based
+// fallback) marks supports_decisions. A key alias is checked as the model it
+// points at, as the request path checks it.
+func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, model string) bool {
+	custom := h.customProviderConfig(provider)
+	if !custom.IsOperationAllowed(schemas.DecisionRequest) {
+		return false
+	}
+	if provider == schemas.Typesafe || (custom != nil && custom.BaseProviderType == schemas.Typesafe) {
+		return true
+	}
+	model = h.aliasTarget(provider, model)
+	if provider == schemas.OpenRouter {
+		return schemas.IsTypesafeModel(model)
+	}
+	return schemas.ResolveModelCaps(provider, model).SupportsDecisions(schemas.DefaultSupportsDecisions(model))
+}
+
+// customProviderConfig returns the provider's custom configuration, or nil for
+// a built-in provider or one that is not configured.
+func (h *ProviderHandler) customProviderConfig(provider schemas.ModelProvider) *schemas.CustomProviderConfig {
+	config, err := h.inMemoryStore.GetProviderConfigRaw(provider)
+	if err != nil {
+		return nil
+	}
+	return config.CustomProviderConfig
+}
+
+// aliasTarget returns the model a key alias points at, in the order the
+// request path resolves it (schemas.ResolveCanonicalModel): the alias's
+// ModelName, then its ModelID. A name that is not an alias is returned as is.
+// The listing names key aliases as models, and a capability lookup on the
+// alias itself finds nothing, so it is resolved through the catalog's alias
+// index first, as GetModelCapabilityEntryForModel does for the details listing.
+func (h *ProviderHandler) aliasTarget(provider schemas.ModelProvider, model string) string {
+	catalog := h.inMemoryStore.ModelCatalog
+	if catalog == nil {
+		return model
+	}
+	owner, ok := catalog.ResolveAlias(provider, model)
+	if !ok {
+		return model
+	}
+	if name := owner.Config.ModelName; name != nil && *name != "" {
+		return *name
+	}
+	if owner.Config.ModelID != "" {
+		return owner.Config.ModelID
+	}
+	return model
+}
+
+// isModelDeprecated reports whether the catalog marks the model as deprecated.
 func (h *ProviderHandler) isModelDeprecated(model string, provider schemas.ModelProvider) bool {
 	modelCatalog := h.inMemoryStore.ModelCatalog
 	if modelCatalog == nil {
@@ -1113,6 +1204,7 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, bifrostC
 		Unfiltered: string(queryArgs.Peek("unfiltered")) == "true",
 	}
 	query.IncludeDeprecated = string(queryArgs.Peek("include_deprecated")) == "true"
+	query.Decisions = string(queryArgs.Peek("decisions")) == "true"
 
 	if keysRaw := queryArgs.Peek("keys"); len(keysRaw) > 0 {
 		keyIDs := strings.Split(string(keysRaw), ",")
@@ -1182,6 +1274,10 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 	models := make([]listedModel, 0)
 	for _, provider := range providers {
 		models = append(models, h.listManagementModelsForProvider(provider, query)...)
+	}
+
+	if query.Decisions {
+		models = slices.DeleteFunc(models, func(m listedModel) bool { return !h.supportsDecisions(m.Provider, m.Name) })
 	}
 
 	for i := range models {
@@ -1566,6 +1662,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		CustomProviderConfig:     config.CustomProviderConfig,
 		OpenAIConfig:             config.OpenAIConfig,
 		PromptCache:              config.PromptCache,
+		InjectedTools:            config.InjectedTools,
 		ProviderStatus:           status,
 		Status:                   config.Status,
 		Description:              config.Description,

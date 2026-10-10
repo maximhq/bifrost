@@ -90,6 +90,8 @@ Virtual keys can also be passed via `Authorization: Bearer vk-*`, `x-api-key: vk
 
 Bifrost supports selecting a specific key by **ID** or **name**. When both are present, ID takes priority.
 
+A key belongs to one provider. When the request leaves the provider to routing (a bare model such as `gpt-4o`) and routing offers the key's provider further down the chain, that provider is tried first, on the pinned key, and the rest of the chain keeps its order behind it. A chain entry that a routing rule fallback or the load balancer pinned to a key of its own keeps its place. A request that names its provider (`openai/gpt-4o`) stays on it, so a pin on another provider's key fails key selection there and the fallbacks run without the pin. A key pinned by a matched routing rule takes precedence over these headers.
+
 #### By ID
 
 **Context Key:** `BifrostContextKeyAPIKeyID`
@@ -187,7 +189,7 @@ A direct key is **not** authentication. If [`enforce_auth_on_inference`](../depl
 </Note>
 
 <Warning>
-A direct key only replaces the provider credential — it bypasses the **key pool**: no weighted selection, no rotation or fallback across alternate keys, and no per-key model restrictions. **Governance still applies:** with a virtual key alongside it, that key's budgets, rate limits, allow-lists, and routing are enforced and the spend counts against its budget. Enable `allow_direct_keys` only when callers should manage their own provider credentials.
+A direct key only replaces the provider credential — it bypasses the **key pool**: no weighted selection, no rotation or fallback across alternate keys, and no per-key model restrictions. It also takes precedence over every key pin: a matched routing rule's target `key_id` and the caller's `x-bf-api-key-id` / `x-bf-api-key` are not used for the attempt that uses the caller's key. **Governance still applies:** with a virtual key alongside it, that key's budgets, rate limits, allow-lists, and routing are enforced and the spend counts against its budget. Enable `allow_direct_keys` only when callers should manage their own provider credentials.
 </Warning>
 
 <Note>
