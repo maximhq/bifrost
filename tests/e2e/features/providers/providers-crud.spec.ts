@@ -244,6 +244,49 @@ test.describe("Providers", () => {
       await providersPage.keyCancelBtn.click();
       await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
     });
+
+    test("should save a Cloudflare key with its account ID", async ({
+      providersPage,
+      page,
+    }) => {
+      if (!(await providersPage.providerExists("cloudflare"))) {
+        await providersPage.addKnownProviderFromDropdown("cloudflare");
+        createdProviders.push("cloudflare");
+      }
+      await expect(providersPage.getProviderItem("cloudflare")).toBeVisible({
+        timeout: 15000,
+      });
+      await providersPage.selectProvider("cloudflare");
+
+      const keyName = `Cloudflare-Key-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const accountId = "0123456789abcdef0123456789abcdef";
+      createdKeys.push({ provider: "cloudflare", keyName });
+
+      await providersPage.dismissToasts();
+      await providersPage.addKeyBtn.click();
+      await expect(providersPage.keyForm).toBeVisible();
+
+      await page.getByLabel("Name").fill(keyName);
+      await page.getByLabel("API Key").fill("e2e-cloudflare-api-token");
+      const accountIdInput = page.getByTestId("key-input-cloudflare-account-id");
+      await expect(accountIdInput).toBeVisible();
+      await accountIdInput.fill(accountId);
+
+      // Model discovery runs on save and fails against a fake token; the key must still save.
+      await providersPage.keySaveBtn.click();
+      await providersPage.waitForSuccessToast();
+      await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+      expect(await providersPage.keyExists(keyName)).toBe(true);
+
+      const keysResponse = await page.request.get("/api/providers/cloudflare/keys");
+      expect(keysResponse.ok()).toBe(true);
+      const provider = (await keysResponse.json()) as {
+        keys: { name: string; cloudflare_key_config?: { account_id?: { value?: string } } }[];
+      };
+      const saved = provider.keys.find((k) => k.name === keyName);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      expect(saved?.cloudflare_key_config?.account_id?.value).toBe(accountId);
+    });
   });
 
   test.describe("Custom Providers", () => {

@@ -624,6 +624,9 @@
         "wafer": {
           "$ref": "#/$defs/provider"
         },
+        "cloudflare": {
+          "$ref": "#/$defs/provider_with_cloudflare_config"
+        },
         "typesafe": {
           "$ref": "#/$defs/provider"
         },
@@ -4140,7 +4143,8 @@
                         "replicate",
                         "sgl",
                         "huggingface",
-                        "databricks"
+                        "databricks",
+                        "cloudflare"
                       ]
                     },
                     "embedding_model": {
@@ -6934,6 +6938,35 @@
         }
       ]
     },
+    "cloudflare_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "cloudflare_key_config": {
+              "type": "object",
+              "properties": {
+                "account_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Cloudflare account ID that serves Workers AI (can use env. prefix)"
+                }
+              },
+              "required": [
+                "account_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "cloudflare_key_config"
+          ]
+        }
+      ]
+    },
     "deepseek_key": {
       "allOf": [
         {
@@ -7670,6 +7703,51 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/sgl_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
+        "injected_tools": {
+          "$ref": "#/$defs/injected_tools"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "additionalProperties": false
+    },
+    "provider_with_cloudflare_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/cloudflare_key"
           },
           "minItems": 1,
           "description": "API keys for this provider"
@@ -12014,6 +12092,7 @@
             "fireworks",
             "sarvam",
             "wafer",
+            "cloudflare",
             "typesafe"
           ],
           "description": "Base provider type to extend"

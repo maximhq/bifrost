@@ -85,6 +85,9 @@ type TableKey struct {
 	// SGL config fields (embedded)
 	SGLUrl *schemas.SecretVar `gorm:"type:text" json:"sgl_url,omitempty"`
 
+	// Cloudflare config fields (embedded)
+	CloudflareAccountID *schemas.SecretVar `gorm:"type:text" json:"cloudflare_account_id,omitempty"`
+
 	// Databricks config fields (embedded)
 	DatabricksWorkspaceURL       *schemas.SecretVar `gorm:"type:text" json:"databricks_workspace_url,omitempty"`
 	DatabricksClientID           *schemas.SecretVar `gorm:"type:text" json:"databricks_client_id,omitempty"`
@@ -130,6 +133,7 @@ type TableKey struct {
 	SGLKeyConfig           *schemas.SGLKeyConfig           `gorm:"-" json:"sgl_key_config,omitempty"`
 	DatabricksKeyConfig    *schemas.DatabricksKeyConfig    `gorm:"-" json:"databricks_key_config,omitempty"`
 	GithubCopilotKeyConfig *schemas.GithubCopilotKeyConfig `gorm:"-" json:"github_copilot_key_config,omitempty"`
+	CloudflareKeyConfig    *schemas.CloudflareKeyConfig    `gorm:"-" json:"cloudflare_key_config,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -481,6 +485,13 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.SGLUrl = nil
 	}
 
+	if k.CloudflareKeyConfig != nil && k.CloudflareKeyConfig.AccountID.IsSet() {
+		a := k.CloudflareKeyConfig.AccountID
+		k.CloudflareAccountID = &a
+	} else {
+		k.CloudflareAccountID = nil
+	}
+
 	if k.DatabricksKeyConfig != nil {
 		if k.DatabricksKeyConfig.WorkspaceURL.IsSet() {
 			u := k.DatabricksKeyConfig.WorkspaceURL // Value-copy to prevent shared pointer mutation
@@ -685,6 +696,10 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptSecretVarPtr(&k.SGLUrl); err != nil {
 			return fmt.Errorf("failed to encrypt sgl url: %w", err)
 		}
+		// Cloudflare
+		if err := encryptSecretVarPtr(&k.CloudflareAccountID); err != nil {
+			return fmt.Errorf("failed to encrypt cloudflare account id: %w", err)
+		}
 		// Databricks
 		if err := encryptSecretVarPtr(&k.DatabricksWorkspaceURL); err != nil {
 			return fmt.Errorf("failed to encrypt databricks workspace url: %w", err)
@@ -835,6 +850,10 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		// SGL
 		if err := decryptSecretVarPtr(&k.SGLUrl); err != nil {
 			return fmt.Errorf("failed to decrypt sgl url: %w", err)
+		}
+		// Cloudflare
+		if err := decryptSecretVarPtr(&k.CloudflareAccountID); err != nil {
+			return fmt.Errorf("failed to decrypt cloudflare account id: %w", err)
 		}
 
 		// Databricks
@@ -1052,6 +1071,14 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 	} else {
 		k.SGLKeyConfig = nil
+	}
+	// Reconstruct Cloudflare config if fields are present
+	if k.CloudflareAccountID != nil {
+		k.CloudflareKeyConfig = &schemas.CloudflareKeyConfig{
+			AccountID: *k.CloudflareAccountID,
+		}
+	} else {
+		k.CloudflareKeyConfig = nil
 	}
 
 	// Reconstruct Databricks config if fields are present

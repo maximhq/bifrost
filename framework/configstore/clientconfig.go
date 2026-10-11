@@ -798,6 +798,13 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			redactedConfig.Keys[i].SGLKeyConfig = sglConfig
 		}
 
+		if key.CloudflareKeyConfig != nil {
+			cloudflareConfig := &schemas.CloudflareKeyConfig{}
+			// The account ID is an identifier, not a credential — surface it in plaintext.
+			cloudflareConfig.AccountID = *key.CloudflareKeyConfig.AccountID.RedactedIfSecret()
+			redactedConfig.Keys[i].CloudflareKeyConfig = cloudflareConfig
+		}
+
 		// Redact Databricks key config if present
 		if key.DatabricksKeyConfig != nil {
 			databricksConfig := &schemas.DatabricksKeyConfig{
@@ -1035,6 +1042,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash SGLKeyConfig
 	if key.SGLKeyConfig != nil {
 		data, err := sonic.Marshal(key.SGLKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash CloudflareKeyConfig
+	if key.CloudflareKeyConfig != nil {
+		data, err := sonic.Marshal(key.CloudflareKeyConfig)
 		if err != nil {
 			return "", err
 		}

@@ -158,6 +158,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	const isFireworks = effectiveProvider === "fireworks";
 	const isDatabricks = effectiveProvider === "databricks";
 	const isGithubCopilot = effectiveProvider === "github-copilot";
+	const isCloudflare = effectiveProvider === "cloudflare";
 	// Reactive, so the App-credential labels stay truthful. Once a Copilot token is present
 	// those fields genuinely are optional, and a static "(Required)" would contradict the
 	// section note telling the operator they can leave them blank.
@@ -1194,6 +1195,24 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 										placeholder={isOllama ? "http://localhost:11434" : "http://localhost:30000"}
 										{...field}
 									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
+			{isCloudflare && (
+				<div className="space-y-4">
+					<FormField
+						control={control}
+						name="key.cloudflare_key_config.account_id"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Account ID (Required)</FormLabel>
+								<FormDescription>The Cloudflare account that runs Workers AI.</FormDescription>
+								<FormControl>
+									<SecretVarInput data-testid="key-input-cloudflare-account-id" placeholder="env.CLOUDFLARE_ACCOUNT_ID" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>

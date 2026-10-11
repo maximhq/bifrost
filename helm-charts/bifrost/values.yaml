@@ -518,6 +518,15 @@ bifrost:
   #         # client_id: "env.DATABRICKS_CLIENT_ID"          # OAuth M2M service principal; set with client_secret
   #         # client_secret: "env.DATABRICKS_CLIENT_SECRET"  # and leave value empty
   #         # forward_gateway_tags: false         # Send Bifrost governance labels as Databricks-Ai-Gateway-Request-Tags
+  #
+  # # Cloudflare Workers AI example (requires cloudflare_key_config)
+  # cloudflare:
+  #   keys:
+  #     - name: "cloudflare-key"
+  #       value: "env.CLOUDFLARE_API_TOKEN"       # API token with Workers AI permission
+  #       weight: 1
+  #       cloudflare_key_config:
+  #         account_id: "env.CLOUDFLARE_ACCOUNT_ID"   # Required
 
   # Provider secrets - use existing Kubernetes secrets for provider API keys
   # These will be injected as environment variables that can be referenced in providers config
