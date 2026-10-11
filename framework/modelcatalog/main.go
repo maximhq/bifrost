@@ -85,6 +85,8 @@ func resolveMCPLibrarySyncInterval(config *Config) time.Duration {
 	}
 }
 
+// Init loads catalog data, schedules feed refreshes, and starts the sync worker.
+// An empty config store requires successful pricing and parameter syncs first.
 func Init(ctx context.Context, config *Config, configStore configstore.ConfigStore, logger schemas.Logger) (*ModelCatalog, error) {
 	pricingURL := DefaultPricingURL
 	if config != nil && config.PricingURL != nil {
@@ -196,20 +198,14 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 				mc.wg.Add(1)
 				go func() {
 					defer mc.wg.Done()
-					if err := mc.withDistributedLock(mc.syncCtx, "model_catalog_params_startup_sync", 10, func() error {
-						_, err := mc.runParamsSync(mc.syncCtx)
-						return err
-					}); err != nil {
+					if _, err := mc.runParamsSync(mc.syncCtx); err != nil {
 						logger.Warn("background startup model parameters sync failed: %v", err)
 					} else {
 						logger.Info("background startup model parameters sync completed successfully")
 					}
 				}()
 			} else {
-				if err := mc.withDistributedLock(ctx, "model_catalog_params_startup_sync", 10, func() error {
-					_, err := mc.runParamsSync(ctx)
-					return err
-				}); err != nil {
+				if _, err := mc.runParamsSync(ctx); err != nil {
 					paramsErr = fmt.Errorf("failed to sync model parameters data: %w", err)
 				}
 			}
@@ -579,14 +575,32 @@ func (mc *ModelCatalog) runPricingSync(ctx context.Context) (ran bool, err error
 	return true, mc.datasheet.SyncFromURL(ctx)
 }
 
-// runParamsSync wraps the datasheet params sync with the gate check. ran is
-// false when the gate skipped the sync.
+// runParamsSync is the shared entry point for startup, periodic and manual
+// parameter syncs. Serialize the DB snapshot, upsert and cache publication
+// across gateways; a Store's mutex only protects its own in-memory snapshot.
+// ran is false when the sync gate skipped the operation, including after a
+// lock wait, so callers do not publish a skipped sync as a successful update.
 func (mc *ModelCatalog) runParamsSync(ctx context.Context) (ran bool, err error) {
 	if !mc.syncGateOpen(ctx) {
 		mc.logger.Debug("model parameters sync cancelled by custom gate")
 		return false, nil
 	}
-	return true, mc.datasheet.SyncModelParamsFromURL(ctx)
+	if mc.configStore == nil {
+		return true, mc.datasheet.SyncModelParamsFromURL(ctx)
+	}
+	// Preserve startup's ten exponential-backoff retries (up to 191s). The
+	// default Acquire wait is only ~10s, shorter than a normal 45s URL fetch.
+	// The lease is renewed while held, and cancellation interrupts the wait.
+	heldCtx, release, err := mc.distributedLockManager.AcquireWithRetry(ctx, "model_catalog_params_sync", 10)
+	if err != nil {
+		return false, fmt.Errorf("failed to acquire model parameters sync lock: %w", err)
+	}
+	defer release()
+	// Leadership may have changed while this gateway waited for the lock.
+	if !mc.syncGateOpen(heldCtx) {
+		return false, nil
+	}
+	return true, mc.datasheet.SyncModelParamsFromURL(heldCtx)
 }
 
 // withDistributedLock acquires a named distributed lock and runs fn under
