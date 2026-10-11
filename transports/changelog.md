@@ -38,6 +38,7 @@
 
 ## 🐞 Fixed
 
+- **Built-in Plugin Ordering** - Preserve built-in placement and startup execution order during hot reload, ignoring caller- or database-supplied ordering values. [@Constantine3](https://github.com/Constantine3) (#7157)
 - **Startup No Longer Fails on a New Key's Unknown Grant** - A virtual key added in config.json whose `agent_grants` (or `relay_grants`) named an agent or relay that is not stored failed the whole governance sync, and Bifrost exited at startup. That grant is now skipped with a warning and the key is created, as an existing key's update already did. Agent grants in config.json belong on the agent (`agents[].virtual_key_ids`): agents load after virtual keys, so a key cannot grant an agent declared in the same file on its first start
 - **Anthropic Sonnet 5.5 Passthrough** - Native Sonnet 5.5 requests forward the caller's reasoning and sampling settings on both the typed and raw paths (thanks [@valentinyanakiev](https://github.com/valentinyanakiev)!)
 - **Anthropic message_delta** - Streaming `message_delta` frames keep their required `delta` object and report only the usage the upstream sent (thanks [@valentinyanakiev](https://github.com/valentinyanakiev)!)

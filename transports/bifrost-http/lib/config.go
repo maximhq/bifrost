@@ -135,18 +135,18 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
-// BuiltinPluginNames is the canonical list of built-in plugin names.
-// It is the single source of truth — update here when adding or removing a built-in plugin.
+// builtinPluginNames defines fixed execution order and must match loadBuiltinPlugins.
+// Update this list when adding, removing, or reordering a built-in plugin.
 var builtinPluginNames = []string{
 	telemetry.PluginName,
 	prompts.PluginName,
 	logging.PluginName,
 	governance.PluginName,
+	routing.PluginName,
 	otel.PluginName,
 	semanticcache.PluginName,
 	compat.PluginName,
 	maxim.PluginName,
-	routing.PluginName,
 }
 
 func GetBuiltinPluginNames() []string {
@@ -8591,14 +8591,19 @@ func (c *Config) UnregisterPlugin(name string) error {
 	}
 }
 
-// SetPluginOrderInfo stores ordering metadata for a plugin.
-// If placement is nil, defaults to "post_builtin". If order is nil, defaults to 0.
+// SetPluginOrderInfo preserves fixed placement and order for built-in plugins.
+// Custom plugins default to "post_builtin" placement and order 0 for nil values.
 func (c *Config) SetPluginOrderInfo(name string, placement *schemas.PluginPlacement, order *int) {
 	c.pluginsMu.Lock()
 	defer c.pluginsMu.Unlock()
 
 	if c.pluginOrderMap == nil {
 		c.pluginOrderMap = make(map[string]pluginOrderInfo)
+	}
+
+	if builtinIndex := slices.Index(builtinPluginNames, name); builtinIndex >= 0 {
+		c.pluginOrderMap[name] = pluginOrderInfo{Placement: schemas.PluginPlacementBuiltin, Order: builtinIndex + 1}
+		return
 	}
 
 	p := schemas.PluginPlacementPostBuiltin
