@@ -3,15 +3,15 @@ import { describe, expect, it } from "vitest";
 import { ModelProvider, ModelProviderKey } from "@/lib/types/config";
 import {
 	buildCloudflareMigrationPlan,
+	CloudflareMigrationApi,
 	deriveCloudflareAccount,
 	isCustomCloudflareProvider,
 	isMigratableCloudflareProvider,
 	MigrationPlan,
 	planNeedsInput,
 	runCloudflareMigration,
-	toCloudflareKeyPayload,
+	toCloudflareKeyUpdate,
 } from "./cloudflareMigration";
-import { MigrationApi } from "./databricksMigration";
 
 const ACCOUNT = "023e105f4ecef8ad9ca31a8372d0c353";
 const WORKERS_AI_URL = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/ai`;
@@ -33,6 +33,9 @@ const custom = (name: string, overrides: Partial<ModelProvider> = {}): ModelProv
 		concurrency_and_buffer_size: { concurrency: 10, buffer_size: 20 },
 		...overrides,
 	}) as ModelProvider;
+
+const keyed = (overrides: Partial<ModelProvider> = {}) =>
+	custom("cloudflare", { custom_provider_config: { base_provider_type: "openai" }, ...overrides });
 
 const key = (id: string, name: string, overrides: Partial<ModelProviderKey> = {}): ModelProviderKey => ({
 	id,
@@ -58,12 +61,13 @@ describe("deriveCloudflareAccount", () => {
 		}
 	});
 
-	it("rejects AI Gateway, other paths and garbage", () => {
+	it("rejects AI Gateway, other paths, garbage and malformed escapes without throwing", () => {
 		for (const url of [
 			`https://gateway.ai.cloudflare.com/v1/${ACCOUNT}/my-gateway/workers-ai`,
 			`https://gateway.ai.cloudflare.com/v1/${ACCOUNT}/my-gateway/compat`,
 			`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/ai/run`,
 			"https://api.cloudflare.com/client/v4",
+			"https://api.cloudflare.com/client/v4/accounts/%E0%A4%A/ai",
 			"",
 			undefined,
 			"::not a url::",
@@ -88,61 +92,57 @@ describe("isMigratableCloudflareProvider", () => {
 });
 
 describe("buildCloudflareMigrationPlan", () => {
-	it("synthesizes one key from the Authorization header for a keyless source", () => {
-		const plan = buildCloudflareMigrationPlan(custom("cloudflare"), []);
-		expect(plan.nameClash).toBe(true);
+	it("keeps the existing keys as they are, with nothing to re-enter", () => {
+		const keys = [key("k1", "prod"), key("k2", "backup", { value: { value: "", ref: "env.CLOUDFLARE_API_TOKEN", type: "env" } })];
+		const plan = buildCloudflareMigrationPlan(keyed(), keys);
 		expect(plan.accountId).toBe(ACCOUNT);
-		expect(plan.keys).toHaveLength(1);
-		expect(plan.keys[0]).toMatchObject({ name: "cloudflare-token", fromHeader: true, needsValue: false, models: ["*"] });
-		expect(plan.keys[0].value?.value).toBe("cf-token-1234567890");
+		expect(plan.keys).toEqual(keys);
+		expect(plan.headerToken).toBeUndefined();
 		expect(planNeedsInput(plan)).toBe(false);
 	});
 
-	it("drops the base url and Authorization header from provider settings", () => {
-		const plan = buildCloudflareMigrationPlan(
-			custom("cloudflare", {
-				network_config: { ...custom("x").network_config!, extra_headers: { Authorization: "Bearer t", "X-Team": "ml" } },
-			}),
+	it("reads the API token from the Authorization header for a keyless source", () => {
+		const plan = buildCloudflareMigrationPlan(custom("cloudflare"), []);
+		expect(plan.keys).toEqual([]);
+		expect(plan.headerToken).toMatchObject({ name: "cloudflare-token", value: { value: "cf-token-1234567890" } });
+		expect(planNeedsInput(plan)).toBe(false);
+
+		const noHeader = buildCloudflareMigrationPlan(
+			custom("cloudflare", { network_config: { ...custom("x").network_config!, extra_headers: {} } }),
 			[],
+		);
+		expect(noHeader.warnings.join(" ")).toContain("No Authorization header");
+		expect(planNeedsInput(noHeader)).toBe(true);
+	});
+
+	it("drops the base url and Authorization header and sends masked secrets back unchanged", () => {
+		const proxy = { type: "http" as const, url: { value: "http://proxy:8080", ref: "" }, password: { value: "****", ref: "" } };
+		const plan = buildCloudflareMigrationPlan(
+			keyed({
+				network_config: { ...custom("x").network_config!, extra_headers: { Authorization: "Bearer t", "X-Team": "ml" } },
+				proxy_config: proxy,
+			}),
+			[key("k1", "prod")],
 		);
 		expect(plan.providerSettings.network_config.base_url).toBeUndefined();
 		expect(plan.providerSettings.network_config.extra_headers).toEqual({ "X-Team": "ml" });
+		expect(plan.providerSettings.proxy_config).toEqual(proxy);
+		expect(plan.providerSettings.custom_provider_config).toBeNull();
 	});
 
-	it("maps keyed sources, requiring re-entry for masked values and keeping env refs and aliases", () => {
-		const plan = buildCloudflareMigrationPlan(custom("cloudflare", { custom_provider_config: { base_provider_type: "openai" } }), [
+	it("needs the account ID when it cannot be read", () => {
+		const plan = buildCloudflareMigrationPlan(keyed({ network_config: { ...custom("x").network_config!, base_url: "" } }), [
 			key("k1", "prod"),
-			key("k2", "backup", {
-				value: { value: "", ref: "env.CLOUDFLARE_API_TOKEN", type: "env" },
-				aliases: { clef: "@cf/cloudflare/clef" } as unknown as ModelProviderKey["aliases"],
-			}),
 		]);
-		expect(plan.keys.map((k) => [k.name, k.needsValue])).toEqual([
-			["prod", true],
-			["backup", false],
-		]);
-		expect(plan.keys[1].aliases).toEqual({ clef: { model_id: "@cf/cloudflare/clef" } });
-		expect(planNeedsInput(plan)).toBe(true);
-	});
-
-	it("asks for the account ID when it cannot be read, and needs it before migrating", () => {
-		const plan = buildCloudflareMigrationPlan(
-			custom("cloudflare", { network_config: { ...custom("x").network_config!, base_url: "" } }),
-			[],
-		);
-		expect(plan.accountId).toBe("");
 		expect(plan.warnings.join(" ")).toContain("account ID could not be read");
 		expect(planNeedsInput(plan)).toBe(true);
 		expect(planNeedsInput({ ...plan, accountId: ACCOUNT })).toBe(false);
 	});
 
-	it("builds a cloudflare key payload with the account ID on every key", () => {
-		const plan = buildCloudflareMigrationPlan(custom("cloudflare"), []);
-		const payload = toCloudflareKeyPayload({ ...plan, accountId: ` ${ACCOUNT} ` }, plan.keys[0]);
-		expect(payload).toMatchObject({
-			id: "",
-			name: "cloudflare-token",
-			models: ["*"],
+	it("updates a key in place with the account ID, keeping everything else", () => {
+		const plan = buildCloudflareMigrationPlan(keyed(), [key("k1", "prod")]);
+		expect(toCloudflareKeyUpdate({ ...plan, accountId: ` ${ACCOUNT} ` }, plan.keys[0])).toEqual({
+			...key("k1", "prod"),
 			cloudflare_key_config: { account_id: { value: ACCOUNT, ref: "" } },
 		});
 	});
@@ -154,81 +154,86 @@ describe("buildCloudflareMigrationPlan", () => {
 
 type Call = [string, ...unknown[]];
 
-const fakeApi = (failOn?: (call: Call) => Error | undefined) => {
+const fakeApi = (opts: { failOn?: (call: Call) => Error | undefined; converted?: boolean } = {}) => {
 	const calls: Call[] = [];
-	const keysByProvider = new Map<string, ModelProviderKey[]>();
-	let nextId = 1;
 	const record = async <T>(call: Call, result: () => T): Promise<T> => {
 		calls.push(call);
-		const err = failOn?.(call);
+		const err = opts.failOn?.(call);
 		if (err) throw err;
 		return result();
 	};
-	const api: MigrationApi = {
-		getProvider: (name) => record(["getProvider", name], () => ({ name, provider_status: "active" }) as ModelProvider),
-		getProviderKeys: (name) => record(["getProviderKeys", name], () => keysByProvider.get(name) ?? []),
-		createProvider: (body) =>
-			record(["createProvider", body.provider], () => ({ name: body.provider, provider_status: "active" }) as ModelProvider),
-		updateProvider: (name) => record(["updateProvider", name], () => ({ name, provider_status: "active" }) as ModelProvider),
-		deleteProvider: (name) => record(["deleteProvider", name], () => undefined),
-		createProviderKey: (provider, k) =>
-			record(["createProviderKey", provider, k.name, k.cloudflare_key_config?.account_id.value], () => {
-				const created = { ...k, id: `id-${nextId++}` };
-				keysByProvider.set(provider, [...(keysByProvider.get(provider) ?? []), created]);
-				return created;
+	const api: CloudflareMigrationApi = {
+		getProvider: (name) =>
+			record(["getProvider", name], () => {
+				const converted = opts.converted ?? true;
+				return {
+					name,
+					provider_status: "active",
+					custom_provider_config: converted ? undefined : { base_provider_type: "openai" },
+				} as ModelProvider;
 			}),
-		updateProviderKey: (provider, keyId, k) => record(["updateProviderKey", provider, keyId, k.name], () => ({ ...k, id: keyId })),
-		deleteProviderKey: (provider, keyId) => record(["deleteProviderKey", provider, keyId], () => undefined),
+		getProviderKeys: (name) => record(["getProviderKeys", name], () => []),
+		updateProvider: (name, body) => record(["updateProvider", name, body], () => ({ name, provider_status: "active" }) as ModelProvider),
+		updateProviderKey: (provider, keyId, k) =>
+			record(["updateProviderKey", provider, keyId, k.cloudflare_key_config?.account_id.value], () => k),
+		createProviderKey: (provider, k) =>
+			record(["createProviderKey", provider, k.name, k.cloudflare_key_config?.account_id.value], () => ({ ...k, id: "new" })),
 		refreshModels: (provider) => record(["refreshModels", provider], () => undefined),
 	};
 	return { api, calls, names: () => calls.map((c) => c[0]) };
 };
 
-const clashPlan = (): MigrationPlan =>
-	buildCloudflareMigrationPlan(custom("cloudflare", { custom_provider_config: { base_provider_type: "openai" } }), [
-		key("k1", "prod", { value: { value: "", ref: "env.A", type: "env" } }),
-	]);
+const keyedPlan = (): MigrationPlan => buildCloudflareMigrationPlan(keyed(), [key("k1", "prod"), key("k2", "backup")]);
 
 describe("runCloudflareMigration", () => {
-	it("deletes the custom provider first, then creates the official one with the account ID on its keys", async () => {
+	it("adds the account ID to each key, then converts the provider in place, deleting nothing", async () => {
 		const { api, names, calls } = fakeApi();
-		const result = await runCloudflareMigration(clashPlan(), api, () => {});
+		const result = await runCloudflareMigration(keyedPlan(), api, () => {});
 		expect(result).toMatchObject({ ok: true, partial: false });
 		expect(names()).toEqual([
-			"deleteProvider",
-			"createProvider",
+			"updateProviderKey",
+			"updateProviderKey",
 			"updateProvider",
-			"createProviderKey",
 			"getProvider",
 			"getProviderKeys",
 			"refreshModels",
 		]);
-		expect(calls.find((c) => c[0] === "createProviderKey")).toEqual(["createProviderKey", "cloudflare", "prod", ACCOUNT]);
-	});
-
-	it("restores the custom provider from the snapshot when creating the official one fails", async () => {
-		const { api, calls } = fakeApi((c) =>
-			c[0] === "createProvider" && calls.filter((x) => x[0] === "createProvider").length === 1 ? new Error("down") : undefined,
-		);
-		const result = await runCloudflareMigration(clashPlan(), api, () => {});
-		expect(result.ok).toBe(false);
-		expect(calls.map((c) => c[0])).toEqual(["deleteProvider", "createProvider", "createProvider", "createProviderKey"]);
-		// The restored key is the source key, without a Cloudflare key config.
-		expect(calls.at(-1)).toEqual(["createProviderKey", "cloudflare", "prod", undefined]);
-	});
-
-	it("rolls back the created provider and restores the source when a key fails", async () => {
-		const { api, names } = fakeApi((c) => (c[0] === "createProviderKey" && c[3] === ACCOUNT ? new Error("boom") : undefined));
-		const result = await runCloudflareMigration(clashPlan(), api, () => {});
-		expect(result.ok).toBe(false);
-		expect(names()).toEqual([
-			"deleteProvider",
-			"createProvider",
-			"updateProvider",
-			"createProviderKey",
-			"deleteProvider",
-			"createProvider",
-			"createProviderKey",
+		expect(calls.filter((c) => c[0] === "updateProviderKey").map((c) => [c[2], c[3]])).toEqual([
+			["k1", ACCOUNT],
+			["k2", ACCOUNT],
 		]);
+		const body = calls.find((c) => c[0] === "updateProvider")![2] as object;
+		expect((body as { custom_provider_config?: unknown }).custom_provider_config).toBeNull();
+	});
+
+	it("converts a keyless source first, then creates its key from the header token", async () => {
+		const { api, names, calls } = fakeApi();
+		const result = await runCloudflareMigration(buildCloudflareMigrationPlan(custom("cloudflare"), []), api, () => {});
+		expect(result.ok).toBe(true);
+		expect(names()).toEqual(["updateProvider", "createProviderKey", "getProvider", "getProviderKeys", "refreshModels"]);
+		expect(calls.find((c) => c[0] === "createProviderKey")).toEqual(["createProviderKey", "cloudflare", "cloudflare-token", ACCOUNT]);
+	});
+
+	it("leaves the custom provider untouched when a key update fails", async () => {
+		const { api, names } = fakeApi({ failOn: (c) => (c[0] === "updateProviderKey" && c[2] === "k2" ? new Error("boom") : undefined) });
+		const steps: string[] = [];
+		const result = await runCloudflareMigration(keyedPlan(), api, (s) => steps.push(s.map((x) => x.status).join(",")));
+		expect(result).toMatchObject({ ok: false, partial: false });
+		expect(result.message).toContain("still works as a custom provider");
+		expect(names()).not.toContain("updateProvider");
+		expect(steps.at(-1)).toContain("failed");
+	});
+
+	it("reports a partial result when verification fails after the conversion", async () => {
+		const { api } = fakeApi({ converted: false });
+		const result = await runCloudflareMigration(keyedPlan(), api, () => {});
+		expect(result).toMatchObject({ ok: false, partial: true });
+		expect(result.message).toContain("Nothing was deleted");
+	});
+
+	it("ignores refresh-models failures", async () => {
+		const { api } = fakeApi({ failOn: (c) => (c[0] === "refreshModels" ? new Error("busy") : undefined) });
+		const result = await runCloudflareMigration(keyedPlan(), api, () => {});
+		expect(result).toMatchObject({ ok: true, partial: false });
 	});
 });

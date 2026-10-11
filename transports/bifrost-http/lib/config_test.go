@@ -23324,6 +23324,21 @@ func TestValidateCustomProvider_BaseProviderTypes(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported base_provider_type")
 }
 
+// TestValidateCustomProviderUpdate_ConvertsReservedName pins that a custom provider
+// whose name has since become a standard provider (one created as "cloudflare" before
+// the first-party provider shipped) can drop custom_provider_config, converting it in
+// place, while any other custom provider still cannot.
+func TestValidateCustomProviderUpdate_ConvertsReservedName(t *testing.T) {
+	custom := configstore.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+	}
+	require.NoError(t, ValidateCustomProviderUpdate(configstore.ProviderConfig{}, custom, schemas.Cloudflare))
+
+	err := ValidateCustomProviderUpdate(configstore.ProviderConfig{}, custom, "my-cloudflare")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be removed after creation")
+}
+
 // TestValidateInjectedTools pins what the management API accepts for injected_tools.
 // A reference to an MCP client that does not exist is rejected up front: at request
 // time it would fail open and the provider would silently serve requests without the

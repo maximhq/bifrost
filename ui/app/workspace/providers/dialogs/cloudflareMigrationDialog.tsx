@@ -24,34 +24,24 @@ import {
 	useAppDispatch,
 	useAppSelector,
 	useCreateProviderKeyMutation,
-	useCreateProviderMutation,
-	useDeleteProviderKeyMutation,
-	useDeleteProviderMutation,
 	useLazyGetProviderKeysQuery,
 	useLazyGetProviderQuery,
 	useRefreshProviderModelsMutation,
 	useUpdateProviderKeyMutation,
 	useUpdateProviderMutation,
 } from "@/lib/store";
-import { ModelProvider, ModelProviderName } from "@/lib/types/config";
+import { ModelProvider, ModelProviderName, UpdateProviderRequest } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
 import {
 	buildCloudflareMigrationPlan,
 	buildMigrationSteps,
 	CLOUDFLARE_PROVIDER,
+	CloudflareMigrationApi,
 	MigrationPlan,
 	planNeedsInput,
 	runCloudflareMigration,
 } from "@/lib/utils/cloudflareMigration";
-import {
-	ExistingTarget,
-	getErrorStatus,
-	isSecretVarSet,
-	maskSecret,
-	MigrationApi,
-	MigrationResult,
-	MigrationStep,
-} from "@/lib/utils/databricksMigration";
+import { getErrorStatus, isSecretVarSet, maskSecret, MigrationResult, MigrationStep } from "@/lib/utils/databricksMigration";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { AlertTriangle, Check, CircleDashed, Loader2, X } from "lucide-react";
 import { ReactNode, useEffect, useMemo, useState } from "react";
@@ -76,17 +66,13 @@ export default function CloudflareMigrationDialog({ show, provider, onDeferred, 
 	const providerFormIsDirty = useAppSelector((state) => state.provider.isDirty);
 	const canCreate = useRbac(RbacResource.ModelProvider, RbacOperation.Create);
 	const canUpdate = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
-	const canDelete = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
-	const hasAccess = canCreate && canUpdate && canDelete;
+	const hasAccess = canCreate && canUpdate;
 
 	const [getProvider] = useLazyGetProviderQuery();
 	const [getProviderKeys] = useLazyGetProviderKeysQuery();
-	const [createProvider] = useCreateProviderMutation();
 	const [updateProvider] = useUpdateProviderMutation();
-	const [deleteProvider] = useDeleteProviderMutation();
 	const [createProviderKey] = useCreateProviderKeyMutation();
 	const [updateProviderKey] = useUpdateProviderKeyMutation();
-	const [deleteProviderKey] = useDeleteProviderKeyMutation();
 	const [refreshModels] = useRefreshProviderModelsMutation();
 
 	const [stage, setStage] = useState<Stage>("intro");
@@ -104,7 +90,7 @@ export default function CloudflareMigrationDialog({ show, provider, onDeferred, 
 		setResult(undefined);
 	}, [provider.name]);
 
-	const api = useMemo<MigrationApi>(
+	const api = useMemo<CloudflareMigrationApi>(
 		() => ({
 			getProvider: (name) =>
 				getProvider(name, false)
@@ -114,16 +100,9 @@ export default function CloudflareMigrationDialog({ show, provider, onDeferred, 
 				getProviderKeys(name, false)
 					.unwrap()
 					.catch((err) => Promise.reject(wrapError(err))),
-			createProvider: (body) =>
-				createProvider(body)
-					.unwrap()
-					.catch((err) => Promise.reject(wrapError(err))),
+			// The shared request type has no null custom_provider_config; the endpoint reads null as removing it.
 			updateProvider: (name, body) =>
-				updateProvider({ name: name as ModelProviderName, ...body })
-					.unwrap()
-					.catch((err) => Promise.reject(wrapError(err))),
-			deleteProvider: (name) =>
-				deleteProvider(name)
+				updateProvider({ name: name as ModelProviderName, ...(body as unknown as UpdateProviderRequest) })
 					.unwrap()
 					.catch((err) => Promise.reject(wrapError(err))),
 			createProviderKey: (p, key) =>
@@ -134,26 +113,12 @@ export default function CloudflareMigrationDialog({ show, provider, onDeferred, 
 				updateProviderKey({ provider: p, keyId, key })
 					.unwrap()
 					.catch((err) => Promise.reject(wrapError(err))),
-			deleteProviderKey: (p, keyId) =>
-				deleteProviderKey({ provider: p, keyId })
-					.unwrap()
-					.catch((err) => Promise.reject(wrapError(err))),
 			refreshModels: (p) =>
 				refreshModels(p)
 					.unwrap()
 					.catch((err) => Promise.reject(wrapError(err))),
 		}),
-		[
-			getProvider,
-			getProviderKeys,
-			createProvider,
-			updateProvider,
-			deleteProvider,
-			createProviderKey,
-			updateProviderKey,
-			deleteProviderKey,
-			refreshModels,
-		],
+		[getProvider, getProviderKeys, updateProvider, createProviderKey, updateProviderKey, refreshModels],
 	);
 
 	const loadPlan = async () => {
@@ -161,17 +126,7 @@ export default function CloudflareMigrationDialog({ show, provider, onDeferred, 
 		setLoadError(undefined);
 		try {
 			const [sourceProvider, sourceKeys] = await Promise.all([api.getProvider(provider.name), api.getProviderKeys(provider.name)]);
-			let existingTarget: ExistingTarget | undefined;
-			if (sourceProvider.name.trim().toLowerCase() !== CLOUDFLARE_PROVIDER) {
-				try {
-					const target = await api.getProvider(CLOUDFLARE_PROVIDER);
-					const targetKeys = await api.getProviderKeys(CLOUDFLARE_PROVIDER);
-					existingTarget = { provider: target, keys: targetKeys };
-				} catch (err) {
-					if (getErrorStatus(err) !== 404) throw err;
-				}
-			}
-			setPlan(buildCloudflareMigrationPlan(sourceProvider, sourceKeys, existingTarget));
+			setPlan(buildCloudflareMigrationPlan(sourceProvider, sourceKeys));
 			setStage("preview");
 		} catch (err) {
 			setLoadError(err instanceof Error ? err.message : getErrorMessage(err));
@@ -191,19 +146,12 @@ export default function CloudflareMigrationDialog({ show, provider, onDeferred, 
 		}
 	};
 
-	const updateKeyValue = (tempId: string, value: SecretVar) => {
-		setPlan((prev) =>
-			prev
-				? {
-						...prev,
-						keys: prev.keys.map((k) => (k.tempId === tempId ? { ...k, value } : k)),
-					}
-				: prev,
-		);
+	const updateHeaderToken = (value: SecretVar) => {
+		setPlan((prev) => (prev?.headerToken ? { ...prev, headerToken: { ...prev.headerToken, value } } : prev));
 	};
 
 	const migrateDisabledReason = !hasAccess
-		? "Migrating requires create, update and delete access to providers."
+		? "Migrating requires create and update access to providers."
 		: providerFormIsDirty
 			? "Save or discard your unsaved provider changes first."
 			: undefined;
@@ -232,13 +180,13 @@ export default function CloudflareMigrationDialog({ show, provider, onDeferred, 
 										this custom provider can no longer be edited. Your existing configuration needs to be migrated to the official provider.
 									</p>
 									<p>
-										Nothing changes until you confirm. You will see exactly what will be copied before the migration runs, and the custom
-										provider is only removed after the new one is verified.
+										The provider is converted in place, so its keys, virtual key access, budgets and limits are kept, and nothing is
+										deleted. Nothing changes until you confirm, and you will see what will change before the migration runs.
 									</p>
 								</>
 							)}
 							{stage === "preview" && (
-								<p>Review what will be migrated. Secrets are masked; anything that could not be read must be entered below.</p>
+								<p>Review what will change. Keys keep their stored tokens; anything that could not be read must be entered below.</p>
 							)}
 							{stage === "running" && <p>Migrating. Keep this window open until it finishes.</p>}
 							{stage === "finished" && result && <p>{result.message}</p>}
@@ -255,7 +203,11 @@ export default function CloudflareMigrationDialog({ show, provider, onDeferred, 
 				)}
 
 				{stage === "preview" && plan && (
-					<MigrationPreview plan={plan} onAccountIdChange={(v) => setPlan({ ...plan, accountId: v })} onKeyValueChange={updateKeyValue} />
+					<MigrationPreview
+						plan={plan}
+						onAccountIdChange={(v) => setPlan({ ...plan, accountId: v })}
+						onHeaderTokenChange={updateHeaderToken}
+					/>
 				)}
 
 				{(stage === "running" || stage === "finished") && <MigrationProgress steps={steps} />}
@@ -328,10 +280,10 @@ function DisabledTooltip({ reason, children }: { reason?: string; children: Reac
 interface PreviewProps {
 	plan: MigrationPlan;
 	onAccountIdChange: (value: string) => void;
-	onKeyValueChange: (tempId: string, value: SecretVar) => void;
+	onHeaderTokenChange: (value: SecretVar) => void;
 }
 
-function MigrationPreview({ plan, onAccountIdChange, onKeyValueChange }: PreviewProps) {
+function MigrationPreview({ plan, onAccountIdChange, onHeaderTokenChange }: PreviewProps) {
 	const net = plan.providerSettings.network_config;
 	const perf = plan.providerSettings.concurrency_and_buffer_size;
 	const otherHeaders = Object.keys(net.extra_headers ?? {});
@@ -354,77 +306,53 @@ function MigrationPreview({ plan, onAccountIdChange, onKeyValueChange }: Preview
 			</section>
 
 			<section className="space-y-2">
-				<SectionTitle>
-					{plan.keys.length === 1 && plan.source.isKeyless ? "Authentication" : `Keys (${plan.keys.length})`}
-					{plan.targetExists && (
-						<Badge variant="secondary" className="ml-2">
-							added to existing provider
-						</Badge>
-					)}
-				</SectionTitle>
+				<SectionTitle>{plan.headerToken ? "Authentication" : `Keys (${plan.keys.length})`}</SectionTitle>
 				<div className="divide-y rounded-md border">
 					{plan.keys.map((key) => (
-						<div key={key.tempId} className="space-y-2 p-3" data-testid={`cloudflare-migration-key-${key.tempId}`}>
-							<div className="flex flex-wrap items-center gap-2">
-								<span className="font-medium">{key.name}</span>
-								{key.fromHeader && (
-									<Badge variant="outline" className="text-muted-foreground">
-										from Authorization header
-									</Badge>
-								)}
-								{key.createName !== key.name && (
-									<Badge variant="outline" className="text-muted-foreground">
-										created as {key.createName}, renamed after cleanup
-									</Badge>
-								)}
-							</div>
+						<div key={key.id} className="space-y-1 p-3" data-testid={`cloudflare-migration-key-${key.id}`}>
+							<span className="font-medium">{key.name}</span>
 							<div className="text-muted-foreground flex flex-wrap gap-x-4 gap-y-1 text-xs">
-								<span>Models: {key.models.length === 0 || key.models.includes("*") ? "all" : key.models.join(", ")}</span>
-								{key.blacklisted_models.length > 0 && <span>Blacklisted: {key.blacklisted_models.join(", ")}</span>}
-								<span>Weight: {key.weight}</span>
+								<span>Models: {!key.models?.length || key.models.includes("*") ? "all" : key.models.join(", ")}</span>
 								<span>Aliases: {Object.keys(key.aliases ?? {}).length}</span>
+								<span>Token: kept</span>
 								{!key.enabled && <span>Disabled</span>}
 							</div>
-							{key.needsValue || !isSecretVarSet(key.value) ? (
+						</div>
+					))}
+					{plan.headerToken && (
+						<div className="space-y-2 p-3" data-testid="cloudflare-migration-header-token">
+							<div className="flex flex-wrap items-center gap-2">
+								<span className="font-medium">{plan.headerToken.name}</span>
+								<Badge variant="outline" className="text-muted-foreground">
+									from Authorization header
+								</Badge>
+							</div>
+							{isSecretVarSet(plan.headerToken.value) ? (
+								<div className="text-xs">
+									<span className="text-muted-foreground">API token: </span>
+									<code className="bg-muted rounded px-1 py-0.5 font-mono">{maskSecret(plan.headerToken.value)}</code>
+								</div>
+							) : (
 								<div className="space-y-1">
-									<Label htmlFor={`cloudflare-migration-token-${key.tempId}`}>
+									<Label htmlFor="cloudflare-migration-token">
 										API token <span className="text-destructive">*</span>
 									</Label>
 									<SecretVarInput
-										id={`cloudflare-migration-token-${key.tempId}`}
-										data-testid={`cloudflare-migration-token-${key.tempId}`}
-										value={key.value ?? { value: "", ref: "" }}
-										onChange={(v) => onKeyValueChange(key.tempId, v)}
+										id="cloudflare-migration-token"
+										data-testid="cloudflare-migration-token"
+										value={plan.headerToken.value ?? { value: "", ref: "" }}
+										onChange={onHeaderTokenChange}
 										placeholder="API token or env.CLOUDFLARE_API_TOKEN"
 									/>
-									<p className="text-muted-foreground text-xs">
-										{key.fromHeader
-											? "The token could not be read from the custom provider."
-											: "Stored secrets are masked and cannot be copied; enter it again."}
-									</p>
-								</div>
-							) : (
-								<div className="text-xs">
-									<span className="text-muted-foreground">API token: </span>
-									<code className="bg-muted rounded px-1 py-0.5 font-mono" data-testid={`cloudflare-migration-masked-${key.tempId}`}>
-										{maskSecret(key.value)}
-									</code>
 								</div>
 							)}
 						</div>
-					))}
+					)}
 				</div>
 			</section>
 
 			<section className="space-y-2">
-				<SectionTitle>
-					Provider settings
-					{plan.targetExists && (
-						<Badge variant="secondary" className="ml-2">
-							existing settings kept
-						</Badge>
-					)}
-				</SectionTitle>
+				<SectionTitle>Provider settings</SectionTitle>
 				<dl className="text-muted-foreground grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
 					<Stat label="Timeout" value={`${net.default_request_timeout_in_seconds}s`} />
 					<Stat label="Retries" value={String(net.max_retries)} />
@@ -442,7 +370,7 @@ function MigrationPreview({ plan, onAccountIdChange, onKeyValueChange }: Preview
 			</section>
 
 			{plan.warnings.length > 0 && (
-				<Alert variant={plan.nameClash ? "destructive" : "default"} data-testid="cloudflare-migration-warnings">
+				<Alert data-testid="cloudflare-migration-warnings">
 					<AlertTriangle className="h-4 w-4" />
 					<AlertTitle>Before you continue</AlertTitle>
 					<AlertDescription>
