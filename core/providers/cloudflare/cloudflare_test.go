@@ -439,32 +439,32 @@ func TestDecision_ResolvedAliasUsesTheClefTarget(t *testing.T) {
 	}
 }
 
-func TestDecision_NonClefModelIsUnsupported(t *testing.T) {
-	provider := newTestProvider(t, "http://127.0.0.1:1")
+// TestDecision_SendsAnyModelAndPassesTheErrorThrough pins that Decision does not gate on
+// the model name: a model Workers AI does not serve is sent, and its error comes back as is.
+func TestDecision_SendsAnyModelAndPassesTheErrorThrough(t *testing.T) {
+	const message = "AiError: No such model: No such model @cf/cloudflare/Clef-Flash or task (req-1)"
+	var capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		payload, _ := json.Marshal(map[string]any{"errors": []map[string]any{{"message": message, "code": 5007}}, "success": false, "result": map[string]any{}})
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+
+	provider := newTestProvider(t, server.URL)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	for _, model := range []string{"Clef-Flash", "clef-omni", "@cf/meta/llama-4-scout-17b-16e-instruct"} {
-		_, bifrostErr := provider.Decision(ctx, newTestKey("acct-1"), newDecisionRequest(model, schemas.DecisionInput{Text: schemas.Ptr("hi")}))
-		if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "unsupported_operation" {
-			t.Errorf("%s: expected unsupported_operation so core can emulate, got %+v", model, bifrostErr)
-		}
+	_, bifrostErr := provider.Decision(ctx, newTestKey("acct-1"), newDecisionRequest("Clef-Flash", schemas.DecisionInput{Text: schemas.Ptr("hi")}))
+
+	if want := "/accounts/acct-1/ai/run/@cf/cloudflare/Clef-Flash"; capturedPath != want {
+		t.Errorf("path = %q, want %q (the model is sent, not rejected locally)", capturedPath, want)
 	}
-}
-
-func TestDecision_DatasheetRowOverridesClefName(t *testing.T) {
-	notDecisions := false
-	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
-		if model == "clef-flash" {
-			return &schemas.ModelCapabilities{SupportsDecisions: &notDecisions}
-		}
-		return nil
-	})
-	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
-
-	provider := newTestProvider(t, "http://127.0.0.1:1")
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	_, bifrostErr := provider.Decision(ctx, newTestKey("acct-1"), newDecisionRequest("clef-flash", schemas.DecisionInput{Text: schemas.Ptr("hi")}))
-	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "unsupported_operation" {
-		t.Fatalf("expected the datasheet row to make clef-flash unsupported, got %+v", bifrostErr)
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected the upstream 400, got %+v", bifrostErr)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Message != message {
+		t.Errorf("message = %q, want the Workers AI message", bifrostErr.Error.Message)
 	}
 }
 

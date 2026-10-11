@@ -273,12 +273,9 @@ func (provider *CloudflareProvider) Embedding(ctx *schemas.BifrostContext, key s
 }
 
 // Decision runs a Clef decision on Workers AI. Clef binds the model to the URL and requires
-// the same bare name in the body; any other model is unsupported, so core can emulate it.
+// the same bare name in the body. Every model is sent as is; Workers AI rejects one it does
+// not serve, and that error is passed through.
 func (provider *CloudflareProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
-	capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
-	if !schemas.ResolveModelCaps(request.Provider, capModel).SupportsDecisions(schemas.IsClefModel(capModel)) {
-		return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
-	}
 	accountURL, bifrostErr := provider.accountURLOrError(key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
