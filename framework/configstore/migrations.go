@@ -8309,7 +8309,9 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger
 			}
 
 			// Backfill: for each ollama/sgl provider with a base_url, create a key
-			// with that URL and clear base_url from network_config.
+			// carrying that URL. network_config.base_url is left where it is -- the
+			// loop below creates the key and nothing else, which is what the
+			// non-rollbackable Rollback below is reasoned from.
 			// Read the rows as plain columns rather than through
 			// Find(&[]tables.TableProvider): TableProvider.AfterFind decodes the whole
 			// NetworkConfig, and NetworkConfig.UnmarshalJSON fails loud on a reference
