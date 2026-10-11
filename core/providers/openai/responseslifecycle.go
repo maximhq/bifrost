@@ -318,6 +318,12 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 			// Time the retrieve-stream decode as the response-parse phase.
 			parseStart := time.Now()
 			err := sonic.UnmarshalString(jsonData, &response)
+			if err != nil {
+				// See the create-stream path: shell_call_output_content.delta's `delta` is
+				// an object, not a string.
+				response = schemas.BifrostResponsesStreamResponse{}
+				err = schemas.UnmarshalResponsesStreamObjectDelta([]byte(jsonData), &response)
+			}
 			schemas.AddStreamParse(ctx, time.Since(parseStart))
 			if err != nil {
 				provider.logger.Warn("Failed to parse stream response: %v", err)

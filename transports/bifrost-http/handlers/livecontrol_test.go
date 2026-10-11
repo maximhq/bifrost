@@ -94,3 +94,43 @@ func TestServeLiveContentWritesTheRecording(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode())
 	assert.Contains(t, string(ctx.Response.Body()), "Session not found.")
 }
+
+// releaseOrderReader is a recording body that remembers whether the request was released
+// before it was closed.
+type releaseOrderReader struct {
+	io.Reader
+	released      *bool
+	releasedFirst bool
+}
+
+func (r *releaseOrderReader) Close() error {
+	r.releasedFirst = *r.released
+	return nil
+}
+
+func TestLiveContentBodyAbandonedMidwayIsCancelledFirst(t *testing.T) {
+	t.Parallel()
+
+	body := func() (*liveContentBody, *releaseOrderReader, *bool) {
+		released := false
+		r := &releaseOrderReader{Reader: bytes.NewReader(make([]byte, 16)), released: &released}
+		return &liveContentBody{ReadCloser: r, release: func() { released = true }}, r, &released
+	}
+
+	// The client hangs up after the first bytes: the request is cancelled before the upstream
+	// body closes, so the stream is abandoned instead of drained to its end for nobody.
+	b, r, released := body()
+	_, err := b.Read(make([]byte, 4))
+	require.NoError(t, err)
+	require.NoError(t, b.Close())
+	assert.True(t, r.releasedFirst, "an abandoned download cancels the request before closing the upstream body")
+	assert.True(t, *released)
+
+	// The whole recording was sent: the upstream body closes first and goes back to its pool.
+	b, r, released = body()
+	_, err = io.Copy(io.Discard, b)
+	require.NoError(t, err)
+	require.NoError(t, b.Close())
+	assert.False(t, r.releasedFirst, "a finished download closes the upstream body before the request ends")
+	assert.True(t, *released)
+}

@@ -161,9 +161,7 @@ func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// Forward provider response headers from context so streaming error responses include them
 	if bifrostCtx != nil {
 		if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-			for key, value := range headers {
-				ctx.Response.Header.Set(key, value)
-			}
+			lib.ForwardProviderResponseHeaders(ctx, headers)
 		}
 	}
 	// Routed identity after provider headers so a chained upstream's x-bifrost-* can't overwrite it.
@@ -202,9 +200,7 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 	// Forward provider response headers from context so error responses include them
 	if bifrostCtx != nil {
 		if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-			for key, value := range headers {
-				ctx.Response.Header.Set(key, value)
-			}
+			lib.ForwardProviderResponseHeaders(ctx, headers)
 		}
 	}
 	// Routed identity after provider headers so a chained upstream's x-bifrost-* can't overwrite it.
@@ -264,10 +260,10 @@ func (g *GenericRouter) tryStreamLargeResponse(ctx *fasthttp.RequestCtx, bifrost
 	// Forward provider response headers before streaming — providers store them in
 	// context via BifrostContextKeyProviderResponseHeaders, but some early-return
 	// branches in the router skip the common footer that normally forwards them.
+	// The x-bifrost-* names written above are skipped, so a chained upstream's own
+	// cannot replace them.
 	if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-		for key, value := range headers {
-			ctx.Response.Header.Set(key, value)
-		}
+		lib.ForwardProviderResponseHeaders(ctx, headers)
 	}
 	if g.streamLargeResponse(ctx, bifrostCtx) {
 		ctx.SetUserValue(lib.FastHTTPUserValueLargeResponseMode, true)

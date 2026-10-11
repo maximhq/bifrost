@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -409,4 +410,22 @@ func isAuthBypassed(ctx *fasthttp.RequestCtx) bool {
 func isSetupTokenAuthenticated(ctx *fasthttp.RequestCtx) bool {
 	authed, _ := ctx.UserValue(schemas.BifrostContextKeySetupTokenAuthenticated).(bool)
 	return authed
+}
+
+// RequestWorkTimeout bounds store, object-store and outbound HTTP work started while
+// serving an HTTP request.
+const RequestWorkTimeout = 30 * time.Second
+
+// RequestWorkContext returns the context to hand to stores and outbound clients for work
+// started while serving an HTTP request.
+//
+// Never derive a cancellable context from the *fasthttp.RequestCtx itself. Its Done() is
+// the server-wide fasthttp.Server.done, and ShutdownWithContext resets that field once
+// connections drain, so Err() returns to nil while Done() stays closed. The watcher
+// goroutine context.WithCancel/WithTimeout starts for such a parent then panics with
+// "context: internal error: missing cancel error" and races the pooled RequestCtx as
+// fasthttp recycles it. WithoutCancel drops Done()/Err() so no watcher is started, while
+// request values stay readable for the handler's lifetime.
+func RequestWorkContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }

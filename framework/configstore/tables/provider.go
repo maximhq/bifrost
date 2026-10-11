@@ -23,9 +23,11 @@ type TableProvider struct {
 	CustomProviderConfigJSON string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.CustomProviderConfig
 	OpenAIConfigJSON         string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.OpenAIConfig
 	PromptCacheJSON          string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.PromptCacheConfig
+	InjectedToolsJSON        string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.InjectedToolsConfig
 	SendBackRawRequest       bool      `json:"send_back_raw_request"`
 	SendBackRawResponse      bool      `json:"send_back_raw_response"`
 	StoreRawRequestResponse  bool      `json:"store_raw_request_response"`
+	IgnoreProviderCost       bool      `gorm:"default:false" json:"ignore_provider_cost"`
 	CreatedAt                time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt                time.Time `gorm:"index;not null" json:"updated_at"`
 
@@ -41,6 +43,7 @@ type TableProvider struct {
 	CustomProviderConfig *schemas.CustomProviderConfig `gorm:"-" json:"custom_provider_config,omitempty"`
 	OpenAIConfig         *schemas.OpenAIConfig         `gorm:"-" json:"openai_config,omitempty"`
 	PromptCache          *schemas.PromptCacheConfig    `gorm:"-" json:"prompt_cache,omitempty"`
+	InjectedTools        *schemas.InjectedToolsConfig  `gorm:"-" json:"injected_tools,omitempty"`
 
 	// Foreign keys
 	Models []TableModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
@@ -120,6 +123,15 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 	} else {
 		p.PromptCacheJSON = ""
 	}
+	if p.InjectedTools != nil {
+		data, err := json.Marshal(p.InjectedTools)
+		if err != nil {
+			return err
+		}
+		p.InjectedToolsJSON = string(data)
+	} else {
+		p.InjectedToolsJSON = ""
+	}
 	// Validate governance fields
 	if p.BudgetID != nil && strings.TrimSpace(*p.BudgetID) == "" {
 		return fmt.Errorf("budget_id cannot be an empty string")
@@ -197,6 +209,14 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 		p.PromptCache = &promptCache
+	}
+
+	if p.InjectedToolsJSON != "" {
+		var injectedTools schemas.InjectedToolsConfig
+		if err := json.Unmarshal([]byte(p.InjectedToolsJSON), &injectedTools); err != nil {
+			return err
+		}
+		p.InjectedTools = &injectedTools
 	}
 
 	return nil

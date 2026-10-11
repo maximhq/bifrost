@@ -874,6 +874,7 @@
                   "POST /openai/v1/responses/compact",
                   "POST /openai/v1/embeddings",
                   "POST /openai/openai/deployments/{deployment-id}/embeddings",
+                  "POST /openai/v1/decisions",
                   "POST /openai/v1/audio/speech",
                   "POST /openai/openai/deployments/{deployment-id}/audio/speech",
                   "POST /openai/v1/audio/transcriptions",
@@ -2161,8 +2162,6 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
-              "changelogs/helm-v2.1.46",
-              "changelogs/helm-v2.1.45",
               "changelogs/helm-v2.1.44",
               "changelogs/helm-v2.1.43",
               "changelogs/helm-v2.1.42",

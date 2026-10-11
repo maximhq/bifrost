@@ -22,6 +22,25 @@ type TypesafeQuestion struct {
 	Criteria     interface{} `json:"criteria,omitempty"`     // map for noul/choice, ordered array for score; null descriptions allowed
 }
 
+// UnmarshalJSON decodes a question, reading "kind" as the type when "type" is
+// absent: the deprecated /v1/decisions map body writes this same question
+// with "kind", and it is decoded through this type.
+func (q *TypesafeQuestion) UnmarshalJSON(data []byte) error {
+	type alias TypesafeQuestion
+	var decoded struct {
+		alias
+		Kind string `json:"kind"`
+	}
+	if err := sonic.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*q = TypesafeQuestion(decoded.alias)
+	if q.Type == "" {
+		q.Type = decoded.Kind
+	}
+	return nil
+}
+
 // TypesafeDecisionRequest is the body of POST /v1/systemone.
 type TypesafeDecisionRequest struct {
 	State       interface{}                 `json:"state"`

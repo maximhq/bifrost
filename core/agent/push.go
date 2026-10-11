@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -33,17 +34,18 @@ const GatewayPushCallbackPathSuffix = "/push/callback"
 const PushNotificationTokenHeader = "A2A-Notification-Token"
 
 // startPushTrace owns only traces that have no transport owner. Relay attempts
-// always use a fresh context, so retries never share an ingress trace.
-func (m *Manager) startPushTrace(ctx *schemas.BifrostContext, name string) func(error) {
+// always use a fresh context, so retries never share an ingress trace. The
+// returned function ends the trace and exports it only when export is true.
+func (m *Manager) startPushTrace(ctx *schemas.BifrostContext, name string) func(error, bool) {
 	if traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string); traceID != "" {
-		return func(error) { ctx.StampUpstreamLatency() }
+		return func(error, bool) { ctx.StampUpstreamLatency() }
 	}
 	tracer := m.tracer
 	if m.tracerProvider != nil {
 		tracer = m.tracerProvider()
 	}
 	if tracer == nil {
-		return func(error) {}
+		return func(error, bool) {}
 	}
 	requestID := uuid.NewString()
 	traceID := tracer.CreateTrace("", requestID)
@@ -52,14 +54,18 @@ func (m *Manager) startPushTrace(ctx *schemas.BifrostContext, name string) func(
 	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
 	id, root := tracer.StartSpanID(ctx, name, schemas.SpanKindHTTPRequest)
 	ctx.SetValue(schemas.BifrostContextKeySpanID, id)
-	return func(err error) {
+	return func(err error, export bool) {
 		ctx.StampUpstreamLatency()
 		if err != nil {
 			tracer.EndSpan(root, schemas.SpanStatusError, err.Error())
 		} else {
 			tracer.EndSpan(root, schemas.SpanStatusOk, "")
 		}
-		tracer.CompleteAndFlushTrace(traceID)
+		if export {
+			tracer.CompleteAndFlushTrace(traceID)
+		} else if trace := tracer.EndTrace(traceID); trace != nil {
+			tracer.ReleaseTrace(trace)
+		}
 	}
 }
 
@@ -171,11 +177,26 @@ func validatePushCallbackURL(rawURL string) error {
 	return nil
 }
 
+// validatePushCallbackAuth accepts only callback authentication Bifrost can
+// reproduce from the durable push configuration without upstream participation.
+func validatePushCallbackAuth(auth *a2a.PushAuthInfo) error {
+	if auth == nil {
+		return nil
+	}
+	if auth.Credentials == "" {
+		return fmt.Errorf("%w: push callback authentication credentials are required", a2a.ErrInvalidParams)
+	}
+	if !strings.EqualFold(auth.Scheme, "basic") && !strings.EqualFold(auth.Scheme, "bearer") {
+		return fmt.Errorf("%w: push callback authentication scheme must be Basic or Bearer", a2a.ErrInvalidParams)
+	}
+	return nil
+}
+
 // redactedPushConfig projects a stored push configuration for protocol reads.
 // Downstream secrets are write-only: the token is omitted entirely and the
 // auth block keeps only its scheme.
 func redactedPushConfig(stored *schemas.AgentPushConfig) *a2a.PushConfig {
-	out := &a2a.PushConfig{TaskID: a2a.TaskID(stored.TaskID), ID: stored.ConfigID, URL: stored.URL}
+	out := &a2a.PushConfig{Tenant: stored.Tenant, TaskID: a2a.TaskID(stored.TaskID), ID: stored.ConfigID, URL: stored.URL}
 	if stored.AuthScheme != "" {
 		out.Auth = &a2a.PushAuthInfo{Scheme: stored.AuthScheme}
 	}
@@ -267,6 +288,9 @@ func (h *proxyRequestHandler) CreateTaskPushConfig(ctx context.Context, config *
 	if err := validatePushCallbackURL(config.URL); err != nil {
 		return nil, err
 	}
+	if err := validatePushCallbackAuth(config.Auth); err != nil {
+		return nil, err
+	}
 	envelope := h.pushEnvelope(schemas.A2ARequestTypeCreateTaskPushConfig, config.TaskID, config.ID, redactedPushConfigRequest(config))
 	return forwardUpstream(ctx, h, envelope, func(ctx context.Context, client sdkClient) (*a2a.PushConfig, error) {
 		return m.createPushConfig(ctx, client, h.config.name, config)
@@ -287,6 +311,7 @@ func storedPushConfig(agentName, taskID, configID, tokenHash string, cfg *a2a.Pu
 		AgentName:        agentName,
 		TaskID:           taskID,
 		ConfigID:         configID,
+		Tenant:           cfg.Tenant,
 		URL:              cfg.URL,
 		IngressTokenHash: tokenHash,
 		CreatedAt:        now,
@@ -316,6 +341,7 @@ func (m *Manager) createPushConfig(ctx context.Context, client sdkClient, agentN
 	}
 	callStart := time.Now()
 	created, err := client.CreateTaskPushConfig(ctx, &a2a.PushConfig{
+		Tenant: config.Tenant,
 		TaskID: config.TaskID,
 		ID:     config.ID,
 		URL:    m.pushCallbackURL(agentName),
@@ -378,6 +404,9 @@ func (h *proxyRequestHandler) rewriteEmbeddedPushConfig(ctx context.Context, req
 	if err := validatePushCallbackURL(original.URL); err != nil {
 		return nil, err
 	}
+	if err := validatePushCallbackAuth(original.Auth); err != nil {
+		return nil, err
+	}
 	token, hash, err := mintPushIngressToken()
 	if err != nil {
 		return nil, err
@@ -399,7 +428,12 @@ func (h *proxyRequestHandler) rewriteEmbeddedPushConfig(ctx context.Context, req
 	if err := saveErr; err != nil {
 		return nil, fmt.Errorf("persist push configuration: %w", err)
 	}
-	req.Config.PushConfig = &a2a.PushConfig{ID: configID, URL: m.pushCallbackURL(agentName), Token: token}
+	req.Config.PushConfig = &a2a.PushConfig{
+		Tenant: original.Tenant,
+		ID:     configID,
+		URL:    m.pushCallbackURL(agentName),
+		Token:  token,
+	}
 	settled := false
 	return func(ctx context.Context, taskID a2a.TaskID) {
 		if settled {
@@ -546,7 +580,7 @@ func (h *proxyRequestHandler) DeleteTaskPushConfig(ctx context.Context, req *a2a
 func (m *Manager) AcceptPushCallback(ctx context.Context, agentName, token string, body []byte) (status int, resultErr error) {
 	gateCtx := gateContext(ctx)
 	finish := m.startPushTrace(gateCtx, "a2a.push.callback")
-	defer func() { finish(resultErr) }()
+	defer func() { finish(resultErr, true) }()
 	ctx = gateCtx
 	if !m.pushEnabled() {
 		return http.StatusNotFound, errors.New("push notifications are not supported")
@@ -750,7 +784,7 @@ func (r *pushRelay) prune() {
 	phase := startPhaseSpan(ctx, "a2a.push.db.prune")
 	err := m.pushStore.PruneAgentPushDeliveries(m.ctx, time.Now().UTC().Add(-pushDeliveryRetention))
 	endPhaseSpan(phase)
-	finish(err)
+	finish(err, true)
 	if err != nil && m.logger != nil && m.ctx.Err() == nil {
 		m.logger.Error("push relay failed to prune terminal deliveries: %v", err)
 	}
@@ -767,7 +801,7 @@ func (r *pushRelay) processDue() {
 		phase := startPhaseSpan(ctx, "a2a.push.db.list-due")
 		due, err := m.pushStore.ListDueAgentPushDeliveries(m.ctx, time.Now().UTC(), pushDeliveryBatchSize)
 		endPhaseSpan(phase)
-		finish(err)
+		finish(err, err != nil || len(due) > 0)
 		if err != nil {
 			if m.logger != nil && m.ctx.Err() == nil {
 				m.logger.Error("push relay failed to list due deliveries: %v", err)
@@ -818,7 +852,7 @@ func (r *pushRelay) deliver(delivery *schemas.AgentPushDelivery, leaseUntil time
 	gateCtx := gateContext(m.ctx)
 	finish := m.startPushTrace(gateCtx, "a2a.push.delivery")
 	var traceErr error
-	defer func() { finish(traceErr) }()
+	defer func() { finish(traceErr, true) }()
 	markPushNotificationTransport(gateCtx)
 	var opErr error
 	_, gateErr := m.RunWithPluginPipeline(gateCtx, envelope, func(*schemas.BifrostA2ARequest, func(*schemas.BifrostA2AEvent)) (*schemas.BifrostA2AResponse, error) {
@@ -882,11 +916,17 @@ func pushBackoff(attempts int) time.Duration {
 
 // newPushDeliveryClient creates the dedicated client for untrusted callback
 // URLs. Address validation happens on every dial so DNS changes cannot bypass
-// the private-network boundary between configuration and delivery.
-func newPushDeliveryClient() *http.Client {
+// the private-network boundary between configuration and delivery. When
+// allowPrivate is true the address check is skipped so loopback and private
+// callbacks work; this is only for controlled test environments.
+func newPushDeliveryClient(allowPrivate bool) *http.Client {
+	dial := network.SSRFSafeDialContext(pushSendTimeout)
+	if allowPrivate {
+		dial = (&net.Dialer{Timeout: pushSendTimeout}).DialContext
+	}
 	return &http.Client{
 		Transport: &http.Transport{
-			DialContext:           network.SSRFSafeDialContext(pushSendTimeout),
+			DialContext:           dial,
 			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          100,
 			IdleConnTimeout:       90 * time.Second,
@@ -908,7 +948,7 @@ func (m *Manager) sendPushDownstream(ctx context.Context, config *schemas.AgentP
 	if err != nil {
 		return fmt.Errorf("create push delivery request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/a2a+json")
 	if token := config.Token.GetValue(); token != "" {
 		req.Header.Set(PushNotificationTokenHeader, token)
 	}

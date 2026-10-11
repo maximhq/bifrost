@@ -1406,6 +1406,12 @@ func (l *Log) assembleCostBreakdown() {
 	if l.InputCost == 0 && l.OutputCost == 0 && l.AdditionalCost == 0 && total > 0 {
 		inputCost = total
 	}
+	// A provider-reported opaque total (no split) is not an input cost; leave the
+	// split empty so the UI shows only the total.
+	if l.TokenUsageParsed != nil && isOpaqueTotalCost(l.TokenUsageParsed.Cost) &&
+		l.OutputCost == 0 && l.AdditionalCost == 0 && costsReconcile(l.TokenUsageParsed.Cost.TotalCost, total) {
+		inputCost = 0
+	}
 	cb := &schemas.BifrostCost{
 		InputCost:      inputCost,
 		OutputCost:     l.OutputCost,
@@ -1425,6 +1431,11 @@ func (l *Log) assembleCostBreakdown() {
 		}
 	}
 	l.CostBreakdown = cb
+}
+
+// isOpaqueTotalCost reports whether a cost carries only a total with no input/output/additional split.
+func isOpaqueTotalCost(c *schemas.BifrostCost) bool {
+	return c != nil && c.TotalCost > 0 && c.InputCost == 0 && c.OutputCost == 0 && c.AdditionalCost == 0
 }
 
 // costsReconcile reports whether two cost figures match within float noise, used
@@ -1488,6 +1499,19 @@ type AgentLogStats struct {
 	ErrorCount     int64   `json:"error_count"`
 	SuccessRate    float64 `json:"success_rate"`    // Percentage of terminal entries that succeeded
 	AverageLatency float64 `json:"average_latency"` // Average latency in milliseconds
+}
+
+// AgentTopAgentResult is one Agent's operation totals in a top-Agents ranking.
+type AgentTopAgentResult struct {
+	AgentName      string  `json:"agent_name"`
+	Count          int64   `json:"count"`
+	ErrorCount     int64   `json:"error_count"`
+	AverageLatency float64 `json:"average_latency"` // Average latency in milliseconds
+}
+
+// AgentTopAgentsResult ranks Agents by operation count.
+type AgentTopAgentsResult struct {
+	Agents []AgentTopAgentResult `json:"agents"`
 }
 
 // AgentHistogramBucket is one time bucket of the A2A volume chart.
@@ -2994,7 +3018,8 @@ type DimensionRankingResult struct {
 	Dimension RankingDimension            `json:"dimension"`
 	// TotalActualRequests / TotalAttributedRequests are set for every rollup
 	// dimension (team / business unit / customer / user / virtual key), and both
-	// include the "Unassigned" bucket that owner-less traffic falls into.
+	// include the "Unassigned" bucket that owner-less traffic falls into and the
+	// "Other" bucket holding traffic whose entity the caller may not be shown.
 	//
 	// TotalActualRequests is the real number of requests in the window.
 	// TotalAttributedRequests is the sum of every ranking row. For team /

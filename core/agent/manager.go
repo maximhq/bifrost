@@ -90,8 +90,9 @@ var (
 )
 
 // invalidRegistrationError marks request validation and upstream discovery failures as client-correctable.
+// The cause stays in the chain so callers can still detect it, for example a discovery deadline.
 func invalidRegistrationError(err error) error {
-	return fmt.Errorf("%w: %v", ErrInvalidRegistration, err)
+	return fmt.Errorf("%w: %w", ErrInvalidRegistration, err)
 }
 
 // Store is the narrow persistence contract the Agent Gateway needs, declared here
@@ -502,13 +503,14 @@ type UpdateRequest struct {
 // describe the advertised endpoint; the transport layer owns the actual gRPC
 // listener. When GRPCBaseDomain is empty no gRPC interface is advertised.
 type ManagerConfig struct {
-	Tracer                schemas.Tracer
-	TracerProvider        func() schemas.Tracer
-	AuthPolicy            schemas.AgentGatewayAuthPolicy
-	PluginPipelineAcquire func() PluginPipeline
-	PluginPipelineRelease func(PluginPipeline)
-	GRPCBaseDomain        string
-	GRPCPort              int
+	Tracer                    schemas.Tracer
+	TracerProvider            func() schemas.Tracer
+	AuthPolicy                schemas.AgentGatewayAuthPolicy
+	PluginPipelineAcquire     func() PluginPipeline
+	PluginPipelineRelease     func(PluginPipeline)
+	GRPCBaseDomain            string
+	GRPCPort                  int
+	AllowPrivatePushCallbacks bool // test environments only; see newPushDeliveryClient
 	// ExternalURLProvider, when set, is consulted on every use of the public
 	// base URL so admin configuration changes apply without a process restart,
 	// matching how MCP reads the same setting per request. The constructor's
@@ -553,7 +555,7 @@ func NewManager(ctx context.Context, store Store, logger schemas.Logger, externa
 		externalURL:        strings.TrimRight(externalURL, "/"),
 		externalURLFn:      config.ExternalURLProvider,
 		httpClient:         client,
-		pushDeliveryClient: newPushDeliveryClient(),
+		pushDeliveryClient: newPushDeliveryClient(config.AllowPrivatePushCallbacks),
 		pushRelayID:        uuid.NewString(),
 		oauthTokens:        make(map[string]oauthToken),
 		oauthFingerprints:  make(map[string][sha256.Size]byte),
@@ -749,16 +751,18 @@ func (m *Manager) Update(ctx context.Context, name string, req UpdateRequest) (s
 			}
 			submitted.Headers[name] = storedValue
 		}
+		// Only a masked placeholder means "keep the stored credential"; an
+		// env/vault reference is a new value and is written as submitted.
 		if submitted.OAuth != nil {
 			if stored == nil || stored.OAuth == nil {
-				if (submitted.OAuth.ClientID != nil && submitted.OAuth.ClientID.IsRedacted()) || (submitted.OAuth.ClientSecret != nil && submitted.OAuth.ClientSecret.IsRedacted()) {
+				if submitted.OAuth.ClientID.IsMaskedPlaceholder() || submitted.OAuth.ClientSecret.IsMaskedPlaceholder() {
 					return nil, errors.New("cannot preserve missing upstream OAuth credentials")
 				}
 			} else {
-				if submitted.OAuth.ClientID != nil && submitted.OAuth.ClientID.IsRedacted() {
+				if submitted.OAuth.ClientID.IsMaskedPlaceholder() {
 					submitted.OAuth.ClientID = stored.OAuth.ClientID
 				}
-				if submitted.OAuth.ClientSecret != nil && submitted.OAuth.ClientSecret.IsRedacted() {
+				if submitted.OAuth.ClientSecret.IsMaskedPlaceholder() {
 					submitted.OAuth.ClientSecret = stored.OAuth.ClientSecret
 				}
 			}

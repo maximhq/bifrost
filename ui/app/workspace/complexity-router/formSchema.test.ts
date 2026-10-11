@@ -7,6 +7,7 @@ import {
 	clefModelFromProvider,
 	defaultDecisionModel,
 	isDecisionProvider,
+	isOpenAIDecisionProvider,
 	selfHostedModelGroups,
 	isRouterConfigured,
 	decisionGuidanceFormValues,
@@ -541,18 +542,31 @@ describe("decision model providers", () => {
 		} as Partial<ModelProvider>);
 	const typesafe = provider({ name: "typesafe" } as Partial<ModelProvider>);
 	const openrouter = provider({ name: "openrouter" } as Partial<ModelProvider>);
+	const openai = provider({ name: "openai" } as Partial<ModelProvider>);
 	const laya = custom("Laya");
 	const clef = custom("cloudflare clev", "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef");
 	const clefFlash = custom("clef-flash", "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef-flash/");
 
 	test("offers only providers that answer decisions natively", () => {
-		for (const candidate of [typesafe, openrouter, laya, clef]) expect(isDecisionProvider(candidate)).toBe(true);
-		expect(isDecisionProvider(provider({ name: "openai" } as Partial<ModelProvider>))).toBe(false);
+		for (const candidate of [typesafe, openrouter, openai, laya, clef]) expect(isDecisionProvider(candidate)).toBe(true);
+		expect(isDecisionProvider(provider({ name: "anthropic" } as Partial<ModelProvider>))).toBe(false);
 		expect(
 			isDecisionProvider(
-				provider({ name: "my-openai", custom_provider_config: { base_provider_type: "openai" } } as Partial<ModelProvider>),
+				provider({ name: "my-anthropic", custom_provider_config: { base_provider_type: "anthropic" } } as Partial<ModelProvider>),
 			),
 		).toBe(false);
+	});
+
+	test("treats a custom OpenAI-based provider like OpenAI", () => {
+		const customOpenAI = (name: string) =>
+			provider({ name, custom_provider_config: { base_provider_type: "openai" } } as Partial<ModelProvider>);
+		expect(isDecisionProvider(customOpenAI("my-openai"))).toBe(true);
+		expect(isOpenAIDecisionProvider(customOpenAI("my-openai"))).toBe(true);
+		expect(isOpenAIDecisionProvider(openai)).toBe(true);
+		expect(isOpenAIDecisionProvider(typesafe)).toBe(false);
+		// Only its listing says which decision models it serves, whatever it is named.
+		expect(defaultDecisionModel(customOpenAI("my-openai"))).toBe("");
+		expect(defaultDecisionModel(customOpenAI("laya-gateway"))).toBe("");
 	});
 
 	test("reads the Clef model from the provider's Cloudflare URL", () => {
@@ -572,6 +586,7 @@ describe("decision model providers", () => {
 	test("starts each provider on its known model", () => {
 		expect(defaultDecisionModel(typesafe)).toBe("jev-latest");
 		expect(defaultDecisionModel(openrouter)).toBe("~typesafe/jev-latest");
+		expect(defaultDecisionModel(openai)).toBe("gpt-6-luna");
 		expect(defaultDecisionModel(clefFlash)).toBe("clef-flash");
 		expect(defaultDecisionModel(laya)).toBe("english");
 		expect(defaultDecisionModel(custom("nimble-gpu"))).toBe("nimble-latest");

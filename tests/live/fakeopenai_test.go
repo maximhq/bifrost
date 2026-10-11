@@ -57,6 +57,7 @@ type fakeSession struct {
 
 	recordingBytes int           // a recording of this size replaces the one-second default
 	recordingPace  time.Duration // pause between 1 MiB chunks of a large recording
+	recordingSent  int           // bytes of a large recording written so far
 	closed         bool
 }
 
@@ -64,6 +65,7 @@ type fakeSession struct {
 type fakeConn interface {
 	send([]byte) error
 	close()
+	hangUp() // end the connection the orderly way, still without session.closed
 }
 
 type wsFakeConn struct {
@@ -79,6 +81,13 @@ func (c *wsFakeConn) send(frame []byte) error {
 
 func (c *wsFakeConn) close() { _ = c.conn.Close() }
 
+func (c *wsFakeConn) hangUp() {
+	c.mu.Lock()
+	_ = c.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+	c.mu.Unlock()
+	_ = c.conn.Close()
+}
+
 type dcFakeConn struct {
 	dc *webrtc.DataChannel
 	pc *webrtc.PeerConnection
@@ -86,6 +95,7 @@ type dcFakeConn struct {
 
 func (c *dcFakeConn) send(frame []byte) error { return c.dc.SendText(string(frame)) }
 func (c *dcFakeConn) close()                  { _ = c.pc.Close() }
+func (c *dcFakeConn) hangUp()                 { _ = c.pc.Close() }
 
 func startFakeOpenAI(addr string) (*fakeOpenAI, error) {
 	f := &fakeOpenAI{
@@ -250,6 +260,8 @@ func (f *fakeOpenAI) serveAttach(w http.ResponseWriter, r *http.Request, id stri
 	s.readLoop(conn, c)
 }
 
+const invalidWebRTCAnswerMarker = " [invalid-webrtc-answer]"
+
 // serveWebRTCCreate answers Bifrost's SDP offer with a pion peer and waits for its data channel.
 func (f *fakeOpenAI) serveWebRTCCreate(w http.ResponseWriter, r *http.Request) {
 	if status := int(f.refuseStatus.Load()); status != 0 {
@@ -274,6 +286,17 @@ func (f *fakeOpenAI) serveWebRTCCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	s := f.newSession("webrtc", r.Header.Get("Authorization"), gjson.ParseBytes(body.Session))
 	s.recordFrame([]byte(`{"type":"session.start","session":` + string(body.Session) + `}`))
+	// A provider can create a billable session before its answer fails relay setup.
+	if strings.HasSuffix(s.marker, invalidWebRTCAnswerMarker) {
+		_ = pc.Close()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session":   map[string]any{"id": s.id, "model": s.model},
+			"transport": map[string]any{"type": "webrtc", "sdp": "invalid SDP answer"},
+		})
+		return
+	}
 	pc.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		for {
 			if _, _, err := track.ReadRTP(); err != nil {
@@ -378,8 +401,18 @@ func (f *fakeOpenAI) serveContent(w http.ResponseWriter, r *http.Request, id str
 		if flusher != nil {
 			flusher.Flush()
 		}
+		s.mu.Lock()
+		s.recordingSent = written
+		s.mu.Unlock()
 		time.Sleep(pace)
 	}
+}
+
+// RecordingSent is how much of a large recording the provider has written so far.
+func (s *fakeSession) RecordingSent() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.recordingSent
 }
 
 // SetRecording makes the session's recording size bytes long, written in paced 1 MiB chunks.
@@ -555,6 +588,18 @@ func (s *fakeSession) Drop() {
 	s.mu.Unlock()
 	for _, c := range conns {
 		c.close()
+	}
+}
+
+// HangUp ends every connection with a normal close and no session.closed, as OpenAI's hangup
+// endpoint does to a WebRTC session.
+func (s *fakeSession) HangUp() {
+	s.mu.Lock()
+	s.closed = true
+	conns := append([]fakeConn(nil), s.conns...)
+	s.mu.Unlock()
+	for _, c := range conns {
+		c.hangUp()
 	}
 }
 

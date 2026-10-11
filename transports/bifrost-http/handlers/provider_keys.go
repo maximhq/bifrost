@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"regexp"
 	"slices"
@@ -174,6 +175,11 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if err := validateWeight(key.Weight); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid weight: %v", err))
+		return
+	}
+
 	if key.ID == "" {
 		key.ID = uuid.NewString()
 	}
@@ -286,6 +292,11 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 
 	if err := mergedKey.Aliases.Validate(baseProvider); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid aliases: %v", err))
+		return
+	}
+
+	if err := validateWeight(mergedKey.Weight); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid weight: %v", err))
 		return
 	}
 
@@ -838,6 +849,17 @@ func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
 	}
 
 	return decoded, nil
+}
+
+// validateWeight rejects a provider key or virtual key provider-config weight that weighted
+// selection cannot draw by: a negative one, or one that is not a finite number. Selection counts such
+// a weight as zero, but storing it would leave an entry that is never drawn beside weighted siblings
+// while reading as configured.
+func validateWeight(weight float64) error {
+	if weight < 0 || math.IsNaN(weight) || math.IsInf(weight, 0) {
+		return fmt.Errorf("must be a finite number greater than or equal to 0, got %v", weight)
+	}
+	return nil
 }
 
 // validateProviderKeyServerURLs holds the key-level server URLs (Ollama/SGL/VLLM) to the

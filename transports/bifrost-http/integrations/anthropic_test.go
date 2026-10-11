@@ -1184,3 +1184,77 @@ func TestAnthropicRawTransformsRetainsBillingLikeToolResults(t *testing.T) {
 		})
 	}
 }
+
+// Core can take an attempt off raw-body passthrough after the integration chose it
+// (injected tools, unsupported structured output). The response converters must then
+// re-encode Bifrost events instead of treating the reply as raw Anthropic passthrough.
+func TestResponsePassthroughFollowsCoreRawBodyDecision(t *testing.T) {
+	claudeCode := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUserAgent, "claude-cli/2.1.0 (external, cli)")
+		return ctx
+	}
+
+	ctx := claudeCode()
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	if !responsePassthroughActive(ctx, schemas.Anthropic, "claude-sonnet-4-5", "") {
+		t.Error("a passthrough attempt answers in passthrough")
+	}
+
+	ctx = claudeCode()
+	if !responsePassthroughActive(ctx, schemas.Anthropic, "claude-sonnet-4-5", "") {
+		t.Error("unset keeps the integration's own decision")
+	}
+
+	ctx = claudeCode()
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+	if responsePassthroughActive(ctx, schemas.Anthropic, "claude-sonnet-4-5", "") {
+		t.Error("core turned raw-body passthrough off for this attempt, so the reply must be re-encoded")
+	}
+}
+
+// After provider-injected tools ran, the raw upstream reply is only the last of several
+// model turns. The Messages route must answer with the assembled response instead (the
+// router hands converters a copy without the raw bytes), while a single-turn Claude reply
+// still goes back as the provider's own bytes.
+func TestAnthropicMessagesResponsesConverterSkipsRawAfterInjectedTools(t *testing.T) {
+	var convert ResponsesResponseConverter
+	for _, route := range createAnthropicMessagesRouteConfig("", nil) {
+		if route.Path == "/v1/messages" {
+			convert = route.ResponsesResponseConverter
+		}
+	}
+	if convert == nil {
+		t.Fatal("no /v1/messages route")
+	}
+	raw := json.RawMessage(`{"raw":"turn 2 only"}`)
+	resp := func() *schemas.BifrostResponsesResponse {
+		return &schemas.BifrostResponsesResponse{
+			Output: []schemas.ResponsesMessage{{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Turn 1 text. Sunny.")},
+			}},
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.Anthropic, OriginalModelRequested: "claude-sonnet-4-5", RawResponse: raw},
+		}
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
+
+	single, err := convert(ctx, responsesResponseForConverter(ctx, resp()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := single.(json.RawMessage); string(got) != string(raw) {
+		t.Fatalf("a single-turn Claude reply goes back as the provider's bytes, got %T", single)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyInjectedToolsExecuted, true)
+	assembled, err := convert(ctx, responsesResponseForConverter(ctx, resp()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := assembled.(json.RawMessage); ok && string(got) == string(raw) {
+		t.Fatal("after injected tools ran, the last turn's raw reply must not stand in for the answer")
+	}
+}

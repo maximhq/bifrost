@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -275,8 +276,8 @@ func TestAgentLogLatencyBreakdownRoundTrip(t *testing.T) {
 	now := time.Now().UTC()
 	upstream, overheadTotal, latency := 10.0, 5.0, 15.0
 	breakdown := []OverheadBucket{
-		{Name: "plugin.logging", Kind: "plugin", DurationUs: 2000},
-		{Name: "scheduling", Kind: "scheduling", DurationUs: 3000},
+		{Name: "plugin.logging", DurationUs: 2000},
+		{Name: "scheduling", DurationUs: 3000},
 	}
 	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{{
 		ID: "latency-row", Timestamp: now, RecordKind: "request", Operation: "message/send", Status: "success",
@@ -409,15 +410,99 @@ func TestGetAgentFilterDataUsesMembershipFanout(t *testing.T) {
 	require.Equal(t, []AgentFilterKeyPair{{ID: "team-a", Name: "Alpha"}, {ID: "team-b", Name: "Beta"}}, data.Teams)
 }
 
+// TestGetAgentFilterDataAppliesDimensionCeiling verifies the agent filter
+// dropdowns list only the organisations the caller may be shown, like the LLM
+// log dropdowns: a readable row still never names a team, customer, business
+// unit or user outside the ceiling.
+func TestGetAgentFilterDataAppliesDimensionCeiling(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&AgentLog{}))
+	store := &RDBLogStore{db: db, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+	userID, userName := "user-a", "Agent User"
+	otherID, otherName := "user-b", "Other User"
+	entries := []*AgentLog{
+		{
+			ID: "ceiling-a", Timestamp: time.Now().UTC(), RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "request-ceiling-a",
+			UserID: &userID, UserName: &userName,
+			TeamIDsParsed: []string{"team-a", "team-hidden"}, TeamNamesParsed: []string{"Alpha", "Hidden"},
+			CustomerIDsParsed: []string{"customer-a", "customer-hidden"}, CustomerNamesParsed: []string{"Acme", "Hidden Co"},
+			BusinessUnitIDsParsed: []string{"bu-hidden"}, BusinessUnitNamesParsed: []string{"Hidden BU"},
+		},
+		{
+			ID: "ceiling-b", Timestamp: time.Now().UTC(), RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "request-ceiling-b",
+			UserID: &otherID, UserName: &otherName,
+		},
+	}
+	for _, entry := range entries {
+		require.NoError(t, entry.SerializeFields())
+	}
+	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(context.Background(), entries)))
+
+	allowed := map[string][]string{"team_id": {"team-a"}, "customer_id": {"customer-a"}, "business_unit_id": {}, "user_id": {userID}}
+	ctx := queryscope.WithDimensionScope(context.Background(), func(col string) ([]string, bool) {
+		ids, ok := allowed[col]
+		return ids, ok
+	})
+	data, err := store.GetAgentFilterData(ctx, nil, 100, "")
+	require.NoError(t, err)
+	require.Equal(t, []AgentFilterKeyPair{{ID: "team-a", Name: "Alpha"}}, data.Teams)
+	require.Equal(t, []AgentFilterKeyPair{{ID: "customer-a", Name: "Acme"}}, data.Customers)
+	require.Empty(t, data.BusinessUnits)
+	require.Equal(t, []AgentFilterKeyPair{{ID: userID, Name: userName}}, data.Users)
+}
+
+// TestGetAgentFilterDataBindsLargeCeilingAsOneParameter verifies a ceiling
+// longer than SQLite's 32,766-parameter limit still loads the dropdowns: the
+// allowed ids must bind as one parameter, not one per id.
+func TestGetAgentFilterDataBindsLargeCeilingAsOneParameter(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&AgentLog{}))
+	store := &RDBLogStore{db: db, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+	userID, userName := "user-a", "Agent User"
+	entry := &AgentLog{
+		ID: "large-ceiling", Timestamp: time.Now().UTC(), RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "request-large-ceiling",
+		UserID: &userID, UserName: &userName,
+		TeamIDsParsed: []string{"team-a"}, TeamNamesParsed: []string{"Alpha"},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(context.Background(), []*AgentLog{entry})))
+
+	allowed := make([]string, 0, 40000)
+	for i := 0; i < 40000; i++ {
+		allowed = append(allowed, fmt.Sprintf("user-%d", i))
+	}
+	allowed = append(allowed, userID)
+	ctx := queryscope.WithDimensionScope(context.Background(), func(col string) ([]string, bool) {
+		if col == "user_id" {
+			return allowed, true
+		}
+		return nil, false
+	})
+	data, err := store.GetAgentFilterData(ctx, []string{"users"}, 100, "")
+	require.NoError(t, err)
+	require.Equal(t, []AgentFilterKeyPair{{ID: userID, Name: userName}}, data.Users)
+}
+
 func TestA2AAttributionFiltersApplyToRowsStatsAndHistogram(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&AgentLog{}))
 	store := &RDBLogStore{db: db, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+	assertA2AAttributionFilters(t, store, store.BatchCreateAgentLogsIfNotExists)
+}
+
+// assertA2AAttributionFilters pins every attribution filter on agent logs,
+// including ids held only in the team, customer and business-unit arrays.
+// create is the store's own writer, since ClickHouse writes agent logs its own
+// way.
+func assertA2AAttributionFilters(t *testing.T, store *RDBLogStore, create func(context.Context, []*AgentLog) ([]string, error)) {
+	t.Helper()
 	ctx := context.Background()
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Millisecond)
 	a, b := "a", "b"
-	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{
+	require.NoError(t, agentLogsCreateError(create(ctx, []*AgentLog{
 		{
 			ID: "a", Timestamp: now, RecordKind: "request", Operation: "message/send", Status: "success", AgentName: "fixture", RequestID: "request-a",
 			UserID: &a, VirtualKeyID: &a, TeamID: &a, CustomerID: &a, BusinessUnitID: &a, ProjectID: &a,
@@ -439,6 +524,11 @@ func TestA2AAttributionFiltersApplyToRowsStatsAndHistogram(t *testing.T) {
 		{CustomerID: []string{"customer-shared"}},
 		{BusinessUnitID: []string{a}},
 		{BusinessUnitID: []string{"bu-shared"}},
+		// Two ids, one matching: ClickHouse bound a list inside hasAny's
+		// brackets as one tuple, so these failed there.
+		{TeamID: []string{"team-shared", "team-none"}},
+		{CustomerID: []string{"customer-shared", "customer-none"}},
+		{BusinessUnitID: []string{"bu-shared", "bu-none"}},
 		{ProjectID: []string{a}},
 	}
 	for _, filter := range filters {

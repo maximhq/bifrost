@@ -25,6 +25,7 @@ import {
 import { useGetModelsQuery } from "@/lib/store/apis/providersApi";
 import type { ModelProvider } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
+import { decisionProviderIconKey } from "@/lib/utils/decisionModelProviders";
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, Check, ChevronRight, Info, LoaderCircle, Pencil, RotateCcw, Scale, TriangleAlert, Waypoints } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -42,6 +43,7 @@ import {
 	decisionTimeoutFieldValue,
 	defaultDecisionModel,
 	isDecisionProvider,
+	isOpenAIDecisionProvider,
 	selfHostedModelGroups,
 	type AnalyzerFormValues,
 	type DecisionProviderState,
@@ -285,7 +287,8 @@ interface DecisionFieldsProps {
 // how much conversation it sees and for how long. They apply wherever the
 // decision model runs, as the primary classifier or as the semantic fallback, so
 // both places render this. The model control follows the provider: Typesafe and
-// OpenRouter list Jev releases, a Cloudflare provider's URL fixes its Clef model,
+// OpenRouter list Jev releases, OpenAI lists its decision models, a Cloudflare
+// provider's URL fixes its Clef model,
 // and a self-hosted provider offers the models it lists, or the known Laya and
 // Nimble checkpoints when it lists none.
 export function DecisionFields({ control, register, setValue, errors, canUpdate, providers, providerKeyIds }: DecisionFieldsProps) {
@@ -293,8 +296,9 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 	const model = useWatch({ control, name: "decision.model" });
 	const provider = providers.find((candidate) => candidate.name === providerName);
 	const servesJev = providerName === "typesafe" || providerName === "openrouter";
+	const servesOpenAI = provider ? isOpenAIDecisionProvider(provider) : providerName === "openai";
 	const servesClef = clefModelFromProvider(provider) !== undefined;
-	const selfHosted = provider !== undefined && !servesJev && !servesClef;
+	const selfHosted = provider !== undefined && !servesJev && !servesOpenAI && !servesClef;
 
 	const { data: listed } = useGetModelsQuery(
 		{ provider: providerName, keys: providerKeyIds.length > 0 ? providerKeyIds : undefined, limit: 50 },
@@ -311,7 +315,7 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 			<div className="space-y-2">
 				<FieldLabel
 					htmlFor="decision-provider"
-					tooltip="Typesafe or OpenRouter for Jev, or a custom provider with base format Typesafe serving Laya, Nimble, or Clef."
+					tooltip="Typesafe or OpenRouter for Jev, OpenAI or a custom provider with base format OpenAI for OpenAI's decision models, or a custom provider with base format Typesafe serving Laya, Nimble, or Clef."
 				>
 					Provider
 				</FieldLabel>
@@ -323,6 +327,7 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 							inputId="decision-provider"
 							data-testid="complexity-router-decision-provider-select"
 							filter={isDecisionProvider}
+							resolveIconKey={decisionProviderIconKey}
 							value={field.value || ""}
 							onChange={(value: string) => {
 								if (value === field.value) return;
@@ -372,6 +377,25 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 								</Select>
 							);
 						}
+						if (servesOpenAI) {
+							// An OpenAI catalog, OpenAI's or a custom OpenAI-based provider's, is mostly
+							// chat models, which the decisions endpoint rejects, so only the models the
+							// datasheet marks as decision models are listed.
+							return (
+								<ModelSelector
+									inputId="decision-model"
+									data-testid="complexity-router-decision-model-select"
+									provider={providerName}
+									keys={providerKeyIds}
+									decisions
+									value={field.value ?? ""}
+									onChange={(next) => field.onChange(next)}
+									placeholder="Search OpenAI decision models…"
+									emptyMessage="This provider lists no OpenAI decision models"
+									disabled={!canUpdate}
+								/>
+							);
+						}
 						if (servesJev || !provider) {
 							return (
 								<ModelSelector
@@ -401,28 +425,39 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 								/>
 							);
 						}
+						if (listedModels.length > 0) {
+							// A listing is one page of a possibly longer catalog, so search and typed
+							// names stay available instead of a fixed list that hides later models.
+							return (
+								<ModelSelector
+									inputId="decision-model"
+									data-testid="complexity-router-decision-model-select"
+									provider={providerName || undefined}
+									keys={providerKeyIds}
+									value={field.value ?? ""}
+									onChange={(next) => field.onChange(next)}
+									allowCustomModel
+									placeholder="Search or type a model…"
+									disabled={!canUpdate}
+								/>
+							);
+						}
 						return (
 							<Select value={field.value || undefined} onValueChange={field.onChange} disabled={!canUpdate}>
 								<SelectTrigger className="w-full" id="decision-model" data-testid="complexity-router-decision-model-select">
 									<SelectValue placeholder="Select a model" />
 								</SelectTrigger>
 								<SelectContent>
-									{listedModels.length > 0
-										? listedModels.map((name) => (
+									{selfHostedModelGroups(providerName).map((group) => (
+										<SelectGroup key={group.label}>
+											<SelectLabel>{group.label}</SelectLabel>
+											{group.models.map((name) => (
 												<SelectItem key={name} value={name}>
 													{name}
 												</SelectItem>
-											))
-										: selfHostedModelGroups(providerName).map((group) => (
-												<SelectGroup key={group.label}>
-													<SelectLabel>{group.label}</SelectLabel>
-													{group.models.map((name) => (
-														<SelectItem key={name} value={name}>
-															{name}
-														</SelectItem>
-													))}
-												</SelectGroup>
 											))}
+										</SelectGroup>
+									))}
 								</SelectContent>
 							</Select>
 						);
@@ -918,7 +953,7 @@ const CLASSIFIER_OPTIONS: {
 		value: "decision",
 		title: "Decision model",
 		description:
-			"A decision model judges the complexity of each request and picks the tier whose definition, signals, and examples fit it best. Use Typesafe Jev, or run Laya, Nimble, or Clef. No phrases to write or maintain.",
+			"A decision model judges the complexity of each request and picks the tier whose definition, signals, and examples fit it best. Use Typesafe Jev or OpenAI's decision models, or run Laya, Nimble, or Clef. No phrases to write or maintain.",
 	},
 	{
 		value: "semantic",

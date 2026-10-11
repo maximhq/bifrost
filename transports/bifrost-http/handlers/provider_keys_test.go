@@ -970,6 +970,69 @@ func TestUpdateProviderKey_EndpointGuardWhenAuthBypassed(t *testing.T) {
 	}
 }
 
+// TestProviderKeyWeight_RejectsNegative pins that neither key write path stores a negative weight.
+// Key selection draws a key by its share of the pool's total weight, and a negative weight once
+// drove that total below zero, which panicked inside the request worker and took the gateway down.
+func TestProviderKeyWeight_RejectsNegative(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	cases := []struct {
+		name       string
+		create     bool
+		body       string
+		wantStatus int
+		wantWeight float64 // the stored weight of key-1 after the call
+	}{
+		{name: "create with a negative weight", create: true, body: `{"name":"new-key","value":"sk-test","weight":-1}`, wantStatus: fasthttp.StatusBadRequest, wantWeight: 1},
+		{name: "create with a zero weight", create: true, body: `{"name":"new-key","value":"sk-test","weight":0}`, wantStatus: fasthttp.StatusOK, wantWeight: 1},
+		{name: "update to a negative weight", body: `{"name":"openai-key","weight":-0.5}`, wantStatus: fasthttp.StatusBadRequest, wantWeight: 1},
+		{name: "update to a zero weight", body: `{"name":"openai-key","weight":0}`, wantStatus: fasthttp.StatusOK, wantWeight: 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{
+					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+						schemas.OpenAI: {Keys: []schemas.Key{{
+							ID:     "key-1",
+							Name:   "openai-key",
+							Value:  *schemas.NewSecretVar("sk-stored"),
+							Weight: 1,
+						}}},
+					},
+				},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+
+			ctx := newTestRequestCtx(tc.body)
+			ctx.SetUserValue("provider", string(schemas.OpenAI))
+			if tc.create {
+				h.createProviderKey(ctx)
+			} else {
+				ctx.SetUserValue("key_id", "key-1")
+				h.updateProviderKey(ctx)
+			}
+
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			if tc.wantStatus == fasthttp.StatusBadRequest && !strings.Contains(string(ctx.Response.Body()), "weight") {
+				t.Fatalf("expected the error to name the weight, got %s", ctx.Response.Body())
+			}
+			keys := h.inMemoryStore.Providers[schemas.OpenAI].Keys
+			if tc.create && tc.wantStatus == fasthttp.StatusBadRequest && len(keys) != 1 {
+				t.Fatalf("a rejected key must not be stored, got %d keys", len(keys))
+			}
+			if keys[0].Weight != tc.wantWeight {
+				t.Fatalf("stored weight of key-1 got %v, want %v", keys[0].Weight, tc.wantWeight)
+			}
+		})
+	}
+}
+
 // TestProviderKeyEndpointGuard_CoversEveryDialTarget pins that the fail-open bypass guard
 // keys off the fields Bifrost dials, not a provider-type list. Each of these fields sends the
 // key's credential to the configured host, so a bypassed caller must not be able to set or

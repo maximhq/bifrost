@@ -53,10 +53,13 @@ func dialLiveTestUpstream(t *testing.T) (*bfws.UpstreamConn, *ws.Conn) {
 	return upstream, openai
 }
 
-type fakeLiveModels struct{ allowed bool }
+type fakeLiveModels struct {
+	allowed bool
+	blocked string
+}
 
-func (f fakeLiveModels) KeySupportsModel(schemas.ModelProvider, schemas.Key, string) bool {
-	return f.allowed
+func (f fakeLiveModels) KeySupportsModel(_ schemas.ModelProvider, _ schemas.Key, model string) bool {
+	return f.allowed && model != f.blocked
 }
 
 type liveRelayFixture struct {
@@ -557,4 +560,28 @@ func TestLiveRelayAssemblesDelegationOutputFromItemEvents(t *testing.T) {
 	assert.Equal(t, schemas.ResponsesMessageTypeFunctionCallOutput, *billed[2].resp.Output[0].Type)
 	assert.Equal(t, "call_1", *billed[2].resp.Output[0].ResponsesToolMessage.CallID)
 	assert.Equal(t, schemas.ResponsesMessageTypeMessage, *billed[2].resp.Output[1].Type)
+}
+
+func TestLiveRelayBackendSwitchEnforcesPinnedKeyBeforeForwarding(t *testing.T) {
+	t.Parallel()
+	f := startLiveRelay(t, fakeLiveModels{allowed: true}, "gpt-5.6-luna")
+	f.runner.restrictKeys("gpt-5.6-terra", []string{"key-2"})
+	update := `{"type":"session.update","session":{"delegation":{"type":"responses","responses":{"model":"gpt-5.6-terra"}}}}`
+	sendFrame(t, f.app, update)
+	assert.Contains(t, readFrame(t, f.app), "the key serving this session is not allowed for model gpt-5.6-terra")
+	marker := `{"type":"session.thinking.append","delegation_id":null,"content":"still here"}`
+	sendFrame(t, f.app, marker)
+	assert.Equal(t, marker, readFrame(t, f.openai), "the refused update never reaches the provider and the session remains usable")
+
+	f.runner.restrictKeys("gpt-5.6-terra", []string{"key-1"})
+	sendFrame(t, f.app, update)
+	assert.Equal(t, update, readFrame(t, f.openai), "the permitted update is forwarded")
+	sendFrame(t, f.app, `{"type":"session.close"}`)
+	assert.Equal(t, `{"type":"session.close"}`, readFrame(t, f.openai))
+	sendFrame(t, f.openai, `{"type":"session.closed","usage":{"seconds":0}}`)
+	readFrame(t, f.app)
+	f.waitDone(t)
+	opens, posts, cleanups := f.runner.snapshot()
+	assert.Len(t, posts, len(opens))
+	assert.Equal(t, len(opens), cleanups, "rejected and admitted units are cleaned exactly once")
 }

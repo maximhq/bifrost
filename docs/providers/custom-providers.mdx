@@ -245,7 +245,7 @@ Available operations:
 - **`transcription`**: Speech-to-text conversion
 - **`transcription_stream`**: Streaming speech-to-text
 - **`rerank`**: Document reranking via `/v1/rerank` (OpenAI-compatible base only)
-- **`decisions`**: Decision requests via `/v1/decisions`. A `typesafe` base serves them natively; other bases emulate them through the Responses API
+- **`decisions`**: Decision requests via `/v1/decisions`. A `typesafe` base serves them natively, and so does an `openai` base for the models the datasheet marks `supports_decisions` (such as `gpt-6-luna`); other models and bases emulate them through the Responses API
 
 ### Base Provider Types
 

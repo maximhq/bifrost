@@ -1043,6 +1043,57 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		})
 	}
 
+	// Decisions endpoint. The route speaks OpenAI's Decisions API, and any
+	// decision model can answer: the request is converted to the normalized
+	// shape, so Typesafe-based models and emulation serve it as well as
+	// OpenAI's own decisions models. It registers no large-payload hook: a
+	// decision body is small, and the hook would leave the questions unparsed.
+	for _, path := range []string{
+		"/v1/decisions",
+		"/decisions",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.DecisionRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &openai.OpenAIDecisionRequest{}
+			},
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				decisionReq, ok := req.(*openai.OpenAIDecisionRequest)
+				if !ok {
+					return nil, errors.New("invalid decision request type")
+				}
+				bifrostDecisionReq, err := decisionReq.ToBifrostDecisionRequest()
+				if err != nil {
+					return nil, err
+				}
+				// The route is OpenAI's wire shape: a field a newer SDK sends
+				// always reaches the provider, no header needed.
+				if len(decisionReq.ExtraParams) > 0 && ctx != nil {
+					ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+				}
+				return &schemas.BifrostRequest{DecisionRequest: bifrostDecisionReq}, nil
+			},
+			DecisionResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostDecisionResponse) (interface{}, error) {
+				// As on the other OpenAI routes, the upstream body is relayed only
+				// when raw responses were asked for; otherwise the normalized
+				// response, as plugins left it, is rendered. Custom providers report
+				// their own name, so match on the base provider that served it.
+				if schemas.ResolveBaseProvider(ctx, resp.ExtraFields.Provider) == schemas.OpenAI && resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+				return openai.ToOpenAIDecisionResponse(resp), nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		})
+	}
+
 	// Speech synthesis endpoint
 	for _, path := range []string{
 		"/v1/audio/speech",

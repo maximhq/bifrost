@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -39,13 +41,16 @@ type liveBillingUnit struct {
 // liveLane is one model's rolling billing unit. The next unit is admitted before the current one
 // closes, so usage always lands on a unit governance already admitted.
 type liveLane struct {
-	model   string
-	backend bool // backend Responses tokens rather than voice seconds
-	current *liveBillingUnit
+	model         string // the caller-facing model admitted by governance
+	resolvedModel string // the provider identifier on the session
+	backend       bool   // backend Responses tokens rather than voice seconds
+	current       *liveBillingUnit
 
 	seconds     float64                         // voice: accrued, unbilled seconds
 	usage       *schemas.ResponsesResponseUsage // backend: accrued, unbilled tokens
 	serviceTier *schemas.BifrostServiceTier
+	status      *string
+	responseErr *schemas.ResponsesResponseError
 	outputs     []schemas.ResponsesMessage // backend: what the responses billed on the current unit produced
 	responseID  string                     // backend: the last response billed on the current unit
 	delegation  string                     // backend: the delegation the last response ran
@@ -76,6 +81,8 @@ type liveMeter struct {
 	reportedSeconds   float64 // latest cumulative seconds OpenAI reported
 	lastUsageAt       time.Time
 	billedResponses   map[string]struct{}
+	allowedKeys       []string              // keys every admitted unit may use, as governance narrowed them
+	keysRestricted    bool                  // allowedKeys applies; an empty list then allows no key
 	refusal           *schemas.BifrostError // set once the session may not continue
 	minimumSeconds    float64               // least voice time the session bills
 	finished          bool
@@ -106,7 +113,7 @@ func (m *liveMeter) admit(voiceModel, backendModel string) *schemas.BifrostError
 	if bifrostErr != nil {
 		return bifrostErr
 	}
-	m.voice = &liveLane{model: voiceModel, current: unit}
+	m.voice = &liveLane{model: voiceModel, resolvedModel: m.key.Aliases.Resolve(voiceModel), current: unit}
 	if backendModel == "" {
 		return nil
 	}
@@ -118,6 +125,30 @@ func (m *liveMeter) admit(voiceModel, backendModel string) *schemas.BifrostError
 	}
 	m.activeBackend = backendModel
 	return nil
+}
+
+// keySelectionContext is the session's context narrowed to the keys governance allows its units.
+func (m *liveMeter) keySelectionContext() *schemas.BifrostContext {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ctx := schemas.NewBifrostContext(m.baseCtx, schemas.NoDeadline)
+	if m.keysRestricted {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, m.allowedKeys)
+	}
+	return ctx
+}
+
+// setKey records the key the session was admitted on.
+func (m *liveMeter) setKey(key schemas.Key) {
+	m.mu.Lock()
+	m.key = key
+	if m.voice != nil {
+		m.voice.resolvedModel = key.Aliases.Resolve(m.voice.model)
+	}
+	for _, lane := range m.backends {
+		lane.resolvedModel = key.Aliases.Resolve(lane.model)
+	}
+	m.mu.Unlock()
 }
 
 // setTransport records how the client is connected, for the session's log row.
@@ -134,8 +165,8 @@ func (m *liveMeter) setEnding(transcript []schemas.LiveTranscriptLine) {
 	m.mu.Unlock()
 }
 
-// abort ends an admitted session that never ran, with the error that stopped it, so plugins see
-// the session close and log why.
+// abort ends an admitted session with its setup error. A successful upstream WebRTC create
+// has already incurred the minimum charge, even if the relay never connected.
 func (m *liveMeter) abort(bifrostErr *schemas.BifrostError) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -143,6 +174,7 @@ func (m *liveMeter) abort(bifrostErr *schemas.BifrostError) {
 		return
 	}
 	m.finished = true
+	m.accrueSecondsLocked(m.minimumSeconds)
 	for _, lane := range m.backends {
 		m.closeUnitWithError(liveUnitBackend, lane.current, lane.model, bifrostErr)
 		lane.current = nil
@@ -190,10 +222,14 @@ func (m *liveMeter) checkStale(now time.Time) *schemas.BifrostError {
 	return m.refusal
 }
 
-// onBackendResponse bills one terminal backend Responses event, once per response id, for the
-// delegation it ran.
+// onBackendResponse settles one terminal backend Responses event per response id, keeping
+// its outcome even when it reports no usage.
 func (m *liveMeter) onBackendResponse(response *schemas.BifrostResponsesResponse, delegationID string, delegatedMs int64) *schemas.BifrostError {
-	if response == nil || response.Usage == nil {
+	if response == nil {
+		return nil
+	}
+	failed := response.Error != nil || (response.Status != nil && *response.Status == schemas.ResponsesResponseStatusFailed)
+	if response.Usage == nil && !failed {
 		return nil
 	}
 	m.mu.Lock()
@@ -208,7 +244,10 @@ func (m *liveMeter) onBackendResponse(response *schemas.BifrostResponsesResponse
 	if lane == nil {
 		return m.refusal
 	}
-	lane.usage = addResponsesUsage(lane.usage, response.Usage)
+	if response.Usage != nil {
+		lane.usage = addResponsesUsage(lane.usage, response.Usage)
+	}
+	lane.status, lane.responseErr = response.Status, response.Error
 	lane.outputs = append(lane.outputs, response.Output...)
 	if response.ID != nil {
 		lane.responseID = *response.ID
@@ -221,11 +260,51 @@ func (m *liveMeter) onBackendResponse(response *schemas.BifrostResponsesResponse
 	return m.refusal
 }
 
+// failBackend records a delegation the provider refused to run: the open backend unit closes
+// with the error, as the delegation that ran nothing, and the next one is admitted. A refused
+// next unit still leaves the failed delegation on record; the refusal then ends the session.
+func (m *liveMeter) failBackend(bifrostErr *schemas.BifrostError) *schemas.BifrostError {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lane := m.backends[m.activeBackend]
+	if lane == nil || lane.current == nil || m.finished || m.refusal != nil {
+		return m.refusal
+	}
+	next, openErr := m.openUnit(liveUnitBackend, lane.model, true)
+	postErr := *bifrostErr
+	postErr.ExtraFields.RequestType = schemas.LiveRequest
+	postErr.ExtraFields.Provider = m.provider
+	postErr.ExtraFields.OriginalModelRequested = lane.model
+	postCtx := m.unitContext(lane.current.requestID, true, liveUnitBackend)
+	postCtx.SetValue(schemas.BifrostContextKeyLiveDelegationFailed, true)
+	m.runPostHooks(lane.current, postCtx, nil, &postErr)
+	lane.current = next
+	if openErr != nil {
+		m.refusal = openErr
+	}
+	return m.refusal
+}
+
 // switchBackend admits a backend model changed by session.update. A refusal leaves the current
 // backend in place.
 func (m *liveMeter) switchBackend(model string) *schemas.BifrostError {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.switchBackendLocked(model)
+}
+
+// confirmBackend maps a provider snapshot to an admitted identity. An unknown model, including
+// a sideband change, must be admitted as named; an alias is never guessed from the key's map.
+func (m *liveMeter) confirmBackend(model string) *schemas.BifrostError {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if lane := m.backendLaneForModelLocked(model, false); lane != nil {
+		model = lane.model
+	}
+	return m.switchBackendLocked(model)
+}
+
+func (m *liveMeter) switchBackendLocked(model string) *schemas.BifrostError {
 	// finish ran the open units' post-hooks and never runs again, so a unit opened now would leak.
 	if m.finished {
 		return newRealtimeWireBifrostError(409, "invalid_request_error", "the live session has ended")
@@ -313,11 +392,12 @@ func (m *liveMeter) closeLaneLocked(lane *liveLane) {
 	lane.current = nil
 	resp := &schemas.BifrostResponsesResponse{
 		Object: "response",
-		Model:  lane.model,
+		Model:  lane.resolvedModel,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType:            schemas.LiveRequest,
 			Provider:               m.provider,
 			OriginalModelRequested: lane.model,
+			ResolvedModelUsed:      lane.resolvedModel,
 			Latency:                time.Since(unit.startedAt).Milliseconds(),
 		},
 	}
@@ -326,6 +406,7 @@ func (m *liveMeter) closeLaneLocked(lane *liveLane) {
 		kind = liveUnitBackend
 		resp.ExtraFields.PricingRequestType = schemas.ResponsesRequest
 		resp.ServiceTier = lane.serviceTier
+		resp.Status, resp.Error = lane.status, lane.responseErr
 		resp.Usage = lane.usage
 		if resp.Usage == nil {
 			resp.Usage = &schemas.ResponsesResponseUsage{}
@@ -343,6 +424,7 @@ func (m *liveMeter) closeLaneLocked(lane *liveLane) {
 			postCtx.SetValue(schemas.BifrostContextKeyLiveDelegationStartMs, lane.delegatedMs)
 		}
 		lane.usage, lane.outputs, lane.responseID, lane.delegation, lane.delegatedMs = nil, nil, "", "", 0
+		lane.status, lane.responseErr = nil, nil
 	} else {
 		seconds := lane.seconds
 		resp.Usage = &schemas.ResponsesResponseUsage{AudioSeconds: &seconds}
@@ -366,6 +448,10 @@ func (m *liveMeter) closeUnitWithError(kind string, unit *liveBillingUnit, model
 	postCtx := m.unitContext(unit.requestID, false, kind)
 	if kind == liveUnitVoice && m.finished {
 		m.markEndLocked(postCtx)
+		if m.voice.seconds > 0 {
+			postErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{AudioSeconds: new(m.voice.seconds)}
+			m.voice.seconds = 0
+		}
 	}
 	m.runPostHooks(unit, postCtx, nil, &postErr)
 }
@@ -391,7 +477,23 @@ func (m *liveMeter) runPostHooks(unit *liveBillingUnit, postCtx *schemas.Bifrost
 		}
 	}()
 	applyRealtimeTurnContextValues(postCtx, unit.preValues)
+	// The units admitted before the key was chosen bill on it too.
+	if strings.TrimSpace(m.key.ID) != "" {
+		postCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, m.key.ID)
+	}
+	if strings.TrimSpace(m.key.Name) != "" {
+		postCtx.SetValue(schemas.BifrostContextKeySelectedKeyName, m.key.Name)
+	}
 	restoreRealtimeTurnTraceContext(postCtx, unit.traceID, unit.preValues)
+	_, _, model, _ := bifrost.GetResponseFields(resp, bifrostErr)
+	if config := m.key.Aliases.ResolveConfig(model); config != nil {
+		postCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: model, Config: config})
+	} else {
+		postCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, nil)
+	}
+	routingInfo := schemas.BuildRoutingInfo(postCtx, m.provider, model, m.key)
+	resp.PopulateRoutingInfo(routingInfo)
+	bifrostErr.PopulateRoutingInfo(routingInfo)
 	setRealtimeTurnStreamContext(postCtx, unit.startedAt, true)
 	if _, hookErr := unit.hooks.PostHookRunner(postCtx, resp, bifrostErr); hookErr != nil && hookErr.Error != nil {
 		logger.Warn("live session %s (%s) billing post-hook returned an error: %s", m.sessionID, m.providerSessionID, hookErr.Error.Message)
@@ -405,20 +507,49 @@ func (m *liveMeter) openBackendLane(model string) *schemas.BifrostError {
 	if bifrostErr != nil {
 		return bifrostErr
 	}
-	m.backends[model] = &liveLane{model: model, backend: true, current: unit}
+	m.backends[model] = &liveLane{model: model, resolvedModel: m.key.Aliases.Resolve(model), backend: true, current: unit}
 	return nil
 }
 
-// backendLaneForLocked picks the lane a backend response bills to: the lane whose model the
-// response names (OpenAI may report a dated snapshot of it), else the active backend.
+// backendLaneForModelLocked finds the admitted lane a provider model name belongs to.
+func (m *liveMeter) backendLaneForModelLocked(model string, snapshots bool) *liveLane {
+	matches := func(lane *liveLane) bool {
+		return model == lane.resolvedModel || (snapshots && strings.HasPrefix(model, lane.resolvedModel+"-"))
+	}
+	// A dated name belongs to the longest provider model it extends.
+	longest := ""
+	for _, lane := range m.backends {
+		if matches(lane) && len(lane.resolvedModel) > len(longest) {
+			longest = lane.resolvedModel
+		}
+	}
+	if longest == "" {
+		return nil
+	}
+	// Aliases sharing that provider model all bill the same: the active one, else the first by name.
+	if active := m.backends[m.activeBackend]; active != nil && active.resolvedModel == longest {
+		return active
+	}
+	var matched *liveLane
+	for _, lane := range m.backends {
+		if lane.resolvedModel == longest && (matched == nil || lane.model < matched.model) {
+			matched = lane
+		}
+	}
+	return matched
+}
+
+// backendLaneForLocked picks the admitted lane a response names, allowing dated snapshots,
+// and falls back to the active backend when the provider names no known model.
 func (m *liveMeter) backendLaneForLocked(responseModel string) *liveLane {
+	if lane := m.backendLaneForModelLocked(responseModel, false); lane != nil {
+		return lane
+	}
 	if lane, ok := m.backends[responseModel]; ok {
 		return lane
 	}
-	for model, lane := range m.backends {
-		if strings.HasPrefix(responseModel, model+"-") {
-			return lane
-		}
+	if lane := m.backendLaneForModelLocked(responseModel, true); lane != nil {
+		return lane
 	}
 	return m.backends[m.activeBackend]
 }
@@ -444,13 +575,33 @@ func (m *liveMeter) openUnit(kind, model string, continuation bool) (*liveBillin
 		return nil, bifrostErr
 	}
 	traceID, _ := preCtx.Value(schemas.BifrostContextKeyTraceID).(string)
-	return &liveBillingUnit{
+	unit := &liveBillingUnit{
 		hooks:     hooks,
 		requestID: requestID,
 		traceID:   traceID,
 		startedAt: startedAt,
 		preValues: preCtx.GetUserValues(),
-	}, nil
+	}
+	if ids, restricted := preCtx.Value(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys).([]string); restricted {
+		// Initial admission narrows the keys before selection. Later units must permit the
+		// pinned key: the upstream connection cannot change credentials during the session.
+		if m.key.ID != "" && !slices.Contains(ids, m.key.ID) {
+			bifrostErr := newRealtimeWireBifrostError(403, "invalid_request_error", fmt.Sprintf("the key serving this session is not allowed for model %s", model))
+			m.closeUnitWithError(kind, unit, model, bifrostErr)
+			return nil, bifrostErr
+		}
+		m.narrowKeysLocked(ids)
+	}
+	return unit, nil
+}
+
+// narrowKeysLocked keeps only the keys every admitted unit may use.
+func (m *liveMeter) narrowKeysLocked(ids []string) {
+	if !m.keysRestricted {
+		m.allowedKeys, m.keysRestricted = slices.Clone(ids), true
+		return
+	}
+	m.allowedKeys = slices.DeleteFunc(m.allowedKeys, func(id string) bool { return !slices.Contains(ids, id) })
 }
 
 // unitContext builds a billing unit's context from the session's: same identity and grant, its

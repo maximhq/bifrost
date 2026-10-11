@@ -2337,9 +2337,10 @@ func TestToOpenAIChatRequest_GPT56CacheBreakpoint(t *testing.T) {
 			_, present = part(t, m, 1, 1, raw)["prompt_cache_breakpoint"]
 			require.Falsef(t, present, "unmarked text part must not receive a breakpoint; raw=%s", raw)
 
-			opts, ok := m["prompt_cache_options"].(map[string]any)
-			require.Truef(t, ok, "a translated breakpoint must switch the request to explicit mode; raw=%s", raw)
-			require.Equalf(t, "explicit", opts["mode"], "raw=%s", raw)
+			// Explicit-only mode drops the implicit lookback over earlier message
+			// endings, so a rolling per-turn marker would never be read back.
+			_, present = m["prompt_cache_options"]
+			require.Falsef(t, present, "a translated breakpoint must not switch the request to explicit mode; raw=%s", raw)
 
 			// Copy-on-write: the caller's input must still carry its own markers only.
 			require.Nil(t, req.Input[0].Content.ContentBlocks[0].PromptCacheBreakpoint, "caller's input was mutated")
@@ -2376,7 +2377,7 @@ func TestToOpenAIChatRequest_GPT56CacheBreakpoint(t *testing.T) {
 		require.Falsef(t, present, "raw=%s", raw)
 	})
 
-	t.Run("more than four markers keeps the latest four", func(t *testing.T) {
+	overMarked := func() *schemas.BifrostChatRequest {
 		req := mkReq(schemas.OpenAI, "gpt-5.6-sol")
 		var extra []schemas.ChatMessage
 		for i := 0; i < 4; i++ {
@@ -2385,7 +2386,9 @@ func TestToOpenAIChatRequest_GPT56CacheBreakpoint(t *testing.T) {
 			}}})
 		}
 		req.Input = append(req.Input, extra...) // 6 markers in total: system, tool, 4 turns
-		m, raw := marshal(t, req)
+		return req
+	}
+	countBreakpoints := func(m map[string]any) int {
 		count := 0
 		msgs, _ := m["messages"].([]any)
 		for _, mm := range msgs {
@@ -2396,8 +2399,72 @@ func TestToOpenAIChatRequest_GPT56CacheBreakpoint(t *testing.T) {
 				}
 			}
 		}
-		require.Equalf(t, 4, count, "raw=%s", raw)
+		return count
+	}
+
+	t.Run("implicit mode keeps the latest three markers", func(t *testing.T) {
+		// The implicit breakpoint takes one of the four cache-write slots.
+		m, raw := marshal(t, overMarked())
+		require.Equalf(t, 3, countBreakpoints(m), "raw=%s", raw)
 		_, present := part(t, m, 0, 0, raw)["prompt_cache_breakpoint"]
 		require.Falsef(t, present, "the earliest marker (system) must be the one dropped; raw=%s", raw)
 	})
+
+	t.Run("caller explicit mode keeps the latest four markers", func(t *testing.T) {
+		req := overMarked()
+		req.Params.PromptCacheOptions = &schemas.PromptCacheOptions{Mode: schemas.Ptr("explicit")}
+		m, raw := marshal(t, req)
+		require.Equalf(t, 4, countBreakpoints(m), "raw=%s", raw)
+		opts, _ := m["prompt_cache_options"].(map[string]any)
+		require.Equalf(t, "explicit", opts["mode"], "raw=%s", raw)
+	})
+
+	t.Run("caller options without a mode keep the latest three markers", func(t *testing.T) {
+		req := overMarked()
+		req.Params.PromptCacheOptions = &schemas.PromptCacheOptions{TTL: schemas.Ptr("30m")}
+		m, raw := marshal(t, req)
+		require.Equalf(t, 3, countBreakpoints(m), "raw=%s", raw)
+	})
+
+	t.Run("passthrough explicit mode keeps the latest four markers", func(t *testing.T) {
+		// Passthrough extra params are merged into the wire body after serialization,
+		// so this prompt_cache_options is what the provider sees.
+		req := overMarked()
+		req.Params.ExtraParams = map[string]interface{}{
+			"prompt_cache_options": map[string]interface{}{"mode": "explicit"},
+		}
+		ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+		defer cancel()
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		out := ToOpenAIChatRequest(ctx, req)
+		require.NotNil(t, out)
+		b, err := out.MarshalJSON()
+		require.NoError(t, err)
+		var m map[string]any
+		require.NoError(t, sonic.Unmarshal(b, &m), string(b))
+		require.Equalf(t, 4, countBreakpoints(m), "raw=%s", string(b))
+	})
+}
+
+// The /openai integration keeps OpenAI's chat shape, which has no reasoning.summary:
+// it must not reach the Responses request unless sent via passthrough extra_params.
+func TestOpenAIInbound_ReasoningSummaryIsNotForwarded(t *testing.T) {
+	body := `{"model":"openai/gpt-6-astra","reasoning":{"effort":"high","summary":"auto"},"messages":[{"role":"user","content":"hi"}]}`
+
+	var req OpenAIChatRequest
+	if err := sonic.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	responses := req.ToBifrostChatRequest(ctx).ToResponsesRequest()
+	if responses.Params == nil || responses.Params.Reasoning == nil {
+		t.Fatalf("reasoning.effort should still be forwarded: %+v", responses.Params)
+	}
+	if responses.Params.Reasoning.Effort == nil || *responses.Params.Reasoning.Effort != "high" {
+		t.Fatalf("reasoning.effort = %v, want high", responses.Params.Reasoning.Effort)
+	}
+	if responses.Params.Reasoning.Summary != nil {
+		t.Fatalf("reasoning.summary leaked through the openai integration: %q", *responses.Params.Reasoning.Summary)
+	}
 }

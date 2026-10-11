@@ -131,7 +131,7 @@ type ServerCallbacks interface {
 	ReloadModelConfig(ctx context.Context, id string) (*tables.TableModelConfig, error)
 	ModelConfigIndexKey(model string, provider *string) string
 	RemoveModelConfig(ctx context.Context, id string) error
-	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
+	ReloadProvider(ctx context.Context, provider schemas.ModelProvider, isNew bool) (*tables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
@@ -1080,8 +1080,11 @@ func (s *BifrostHTTPServer) RemoveModelConfig(ctx context.Context, id string) er
 	return nil
 }
 
-// ReloadProvider reloads persisted provider settings into the live client.
-func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error) {
+// ReloadProvider reloads persisted provider settings into the live client. isNew says whether the
+// write that called it added the provider rather than edited one; the reload is the same either
+// way, and a server that wraps this one can tell an operator's edit apart by it.
+func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas.ModelProvider, isNew bool) (*tables.TableProvider, error) {
+	s.syncIgnoreProviderCost(provider)
 	if s.Config == nil || s.Config.ConfigStore == nil {
 		return nil, fmt.Errorf("config store not found")
 	}
@@ -1185,6 +1188,15 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	return updatedProvider, nil
 }
 
+// syncIgnoreProviderCost pushes the provider's ignore_provider_cost setting into the model catalog.
+func (s *BifrostHTTPServer) syncIgnoreProviderCost(provider schemas.ModelProvider) {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return
+	}
+	pc, err := s.Config.GetProviderConfigRaw(provider)
+	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, err == nil && pc != nil && pc.IgnoreProviderCost)
+}
+
 // RemoveProvider removes a provider from the in-memory store
 func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
 	err := s.Client.RemoveProvider(provider)
@@ -1207,6 +1219,7 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 	}
 	s.Config.ModelCatalog.InvalidateLiveProvider(provider)
 	s.Config.ModelCatalog.RemoveKeyConfigForProvider(provider)
+	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, false)
 
 	return nil
 }
@@ -1545,6 +1558,9 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	s.Config.Mu.Lock()
 	*s.Config.ClientConfig = *config
 	s.Config.Mu.Unlock()
+	if s.LogsCleaner != nil {
+		s.LogsCleaner.UpdateRetentionDays(config.LogRetentionDays)
+	}
 	// Reloading whitelisted routes from the client config
 	if s.AuthMiddleware != nil {
 		s.AuthMiddleware.UpdateWhitelistedRoutes(config.WhitelistedRoutes)
@@ -2425,14 +2441,39 @@ func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, name string, p
 	return nil
 }
 
+// PluginInitContext returns the context to hand to a plugin constructor. A plugin outlives
+// the request that loaded it and derives long-lived contexts from this one, so it must be the
+// server-lifetime context, never the pooled *fasthttp.RequestCtx an admin reload arrives on.
+// Carries the bootstrap plugin-name values, which Ctx inherits.
+func (s *BifrostHTTPServer) PluginInitContext() context.Context {
+	if s.Ctx == nil {
+		return context.Background()
+	}
+	return s.Ctx
+}
+
 // ReloadPlugin reloads a plugin with new instance and updates Bifrost core.
 // The plugin is checked for LLM and MCP interfaces independently and registered
 // to the appropriate arrays based on which interfaces it implements.
 func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error {
 	logger.Debug("reloading plugin %s", name)
-	// 1. Instantiate new version
-	plugin, err := InstantiatePlugin(ctx, name, path, pluginConfig, s.Config)
+	// 0. A semantic_cache config gets the same validation config.json does, here rather than when
+	// it is saved: the plugins API loads a plugin only when it is enabled, so a cache that no
+	// longer passes can still be disabled. A refused config changes nothing, status included.
+	if name == semanticcache.PluginName {
+		if err := s.Config.ValidateSemanticCacheConfig(&schemas.PluginConfig{Name: name, Config: pluginConfig}); err != nil {
+			return fmt.Errorf("%w: %w", lib.ErrInvalidPluginConfig, err)
+		}
+	}
+	// 1. Instantiate new version. When it fails, the running instance (if any)
+	// is left in place, so the status keeps describing that instance; only a
+	// plugin with nothing running is marked as errored.
+	plugin, err := InstantiatePlugin(s.PluginInitContext(), name, path, pluginConfig, s.Config)
 	if err != nil {
+		if s.Config.IsPluginLoaded(name) {
+			logger.Warn("plugin %s failed to load with its new config, the running instance stays in place: %v", name, err)
+			return err
+		}
 		return s.updatePluginErrorStatus(name, "loading", err)
 	}
 	// Wire the embedding executor on the new instance before syncing.
@@ -2600,6 +2641,7 @@ func (s *BifrostHTTPServer) InitializeAgentGateway(ctx context.Context, registra
 	if s.Config.ServerConfig != nil {
 		managerConfig.GRPCBaseDomain = s.Config.ServerConfig.A2AGRPCBaseDomain
 		managerConfig.GRPCPort = s.Config.ServerConfig.A2AGRPCPort
+		managerConfig.AllowPrivatePushCallbacks = s.Config.ServerConfig.A2AAllowPrivatePushCallbacks
 	}
 	if s.Client != nil {
 		managerConfig.PluginPipelineAcquire = func() agent.PluginPipeline {
@@ -3032,6 +3074,24 @@ func (s *BifrostHTTPServer) GetAllRedactedRoutingRules(ctx context.Context, ids 
 	return routingRules
 }
 
+// prometheusHTTPMiddleware records Prometheus HTTP metrics. The plugin is resolved per
+// request rather than captured once, for the same reason as the otel middleware: a config
+// reload swaps in a freshly constructed instance, and a pointer captured at startup kept
+// recording into the orphaned one, so http_* series stopped appearing on /metrics after
+// any reload. Requests still pass through when no telemetry plugin is loaded.
+func (s *BifrostHTTPServer) prometheusHTTPMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			prometheusPlugin, err := lib.FindPluginAs[*telemetry.PrometheusPlugin](s.Config, telemetry.PluginName)
+			if err != nil {
+				next(ctx)
+				return
+			}
+			prometheusPlugin.HTTPMiddleware(next)(ctx)
+		}
+	}
+}
+
 // PrepareCommonMiddlewares gets the common middlewares for the Bifrost HTTP server
 func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMiddleware {
 	commonMiddlewares := []schemas.BifrostHTTPMiddleware{}
@@ -3049,13 +3109,7 @@ func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMidd
 		}
 	})
 	// Preparing middlewares
-	// Initializing prometheus plugin
-	prometheusPlugin, err := lib.FindPluginAs[*telemetry.PrometheusPlugin](s.Config, telemetry.PluginName)
-	if err == nil {
-		commonMiddlewares = append(commonMiddlewares, prometheusPlugin.HTTPMiddleware)
-	} else {
-		logger.Warn("prometheus plugin not found, skipping telemetry middleware")
-	}
+	commonMiddlewares = append(commonMiddlewares, s.prometheusHTTPMiddleware())
 	// OTel HTTP metrics (http_requests_total etc., pushed via OTLP). The otel plugin is
 	// resolved per request rather than captured here: a config reload swaps in a freshly
 	// constructed plugin instance, and a pointer captured at startup would keep recording
@@ -3277,10 +3331,15 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	logger.Info("listing all models and adding to model catalog")
 	if s.Config.ModelCatalog != nil {
 		snapshot := make(map[schemas.ModelProvider][]schemas.Key, len(s.Config.Providers))
+		var ignoreProviderCost []schemas.ModelProvider
 		for provider, providerConfig := range s.Config.Providers {
 			snapshot[provider] = providerConfig.Keys
+			if providerConfig.IgnoreProviderCost {
+				ignoreProviderCost = append(ignoreProviderCost, provider)
+			}
 		}
 		s.Config.ModelCatalog.ReplaceKeyConfig(snapshot)
+		s.Config.ModelCatalog.ReplaceIgnoreProviderCost(ignoreProviderCost)
 
 		s.RefreshAllLiveModels(ctx)
 	}

@@ -699,7 +699,9 @@ export interface KeyAttemptRecord {
 	attempt: number;
 	key_id: string;
 	key_name: string;
-	fail_reason?: string | null; // null/undefined on the final (successful or last) attempt
+	fail_reason?: string | null; // why the key failed; null on a served attempt and on a cancelled one
+	failure_class?: string | null; // what the attempt told Bifrost (e.g. rate_limit, timeout, cancelled); null on a served attempt
+	status_code?: number | null; // the status the class was derived from
 }
 
 export interface RedactionMapping {
@@ -1170,6 +1172,10 @@ export type ResponsesMessageType =
 	| "code_interpreter_call"
 	| "local_shell_call"
 	| "local_shell_call_output"
+	| "shell_call"
+	| "shell_call_output"
+	| "apply_patch_call"
+	| "apply_patch_call_output"
 	| "mcp_call"
 	| "custom_tool_call"
 	| "custom_tool_call_output"

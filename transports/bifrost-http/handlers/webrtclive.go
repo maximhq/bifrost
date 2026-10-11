@@ -174,6 +174,10 @@ func createLiveWebRTCSession(admission *liveAdmission, body []byte, upstreamOffe
 	}
 	admission.meter.setMinimumSeconds(liveWebRTCMinimumSeconds)
 	admission.meter.setProviderSessionID(created.Session.ID)
+	// The session exists and has incurred its minimum even when its answer is unusable.
+	if created.Transport == nil || created.Transport.SDP == "" {
+		return nil, newRealtimeWireBifrostError(502, "upstream_connection_error", "live session create response has no SDP answer")
+	}
 	return created, nil
 }
 
@@ -229,5 +233,8 @@ func (m *liveWebRTCMessages) closed() {
 	if m.relay.closedDuringSetup() {
 		return
 	}
-	m.upstreamEnded()
+	if m.upstreamEndedEarly() {
+		// Let the frame reach the browser before the relay closes the channel.
+		time.Sleep(100 * time.Millisecond)
+	}
 }

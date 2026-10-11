@@ -108,6 +108,8 @@ export interface GetModelsRequest {
 	limit?: number;
 	offset?: number;
 	unfiltered?: boolean;
+	/** Lists only models that serve decisions natively. */
+	decisions?: boolean;
 }
 
 export interface GetBaseModelsRequest {
@@ -442,7 +444,7 @@ export const providersApi = baseApi.injectEndpoints({
 
 		// Get models with optional filtering
 		getModels: builder.query<ListModelsResponse, GetModelsRequest>({
-			query: ({ query, provider, keys, vks, limit, offset, unfiltered }) => {
+			query: ({ query, provider, keys, vks, limit, offset, unfiltered, decisions }) => {
 				const params = new URLSearchParams();
 				if (query) params.append("query", query);
 				if (provider) params.append("provider", provider);
@@ -451,6 +453,7 @@ export const providersApi = baseApi.injectEndpoints({
 				if (limit !== undefined) params.append("limit", limit.toString());
 				if (offset !== undefined) params.append("offset", offset.toString());
 				if (unfiltered !== undefined) params.append("unfiltered", unfiltered.toString());
+				if (decisions) params.append("decisions", "true");
 				return `/models?${params.toString()}`;
 			},
 			providesTags: ["Models"],

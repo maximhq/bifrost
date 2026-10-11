@@ -152,6 +152,55 @@ func chatChunk(content string, finishReason *string) string {
 		`"choices":[{"index":0,"delta":` + delta + `,"finish_reason":` + finish + `}]}` + "\n\n"
 }
 
+func TestChatStreamContentLengthTruncationAfterFinishReason(t *testing.T) {
+	for _, extraBytes := range []int{0, 100} {
+		t.Run(fmt.Sprintf("missing_%d_bytes", extraBytes), func(t *testing.T) {
+			body := chatChunk("hello", nil) + chatChunk("", schemas.Ptr("stop"))
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Content-Length", fmt.Sprint(len(body)+extraBytes))
+				if _, err := io.WriteString(w, body); err != nil {
+					t.Errorf("write body: %v", err)
+				}
+				w.(http.Flusher).Flush()
+				if extraBytes > 0 {
+					panic(http.ErrAbortHandler)
+				}
+			}))
+			defer server.Close()
+
+			provider := newStreamTestProvider(server.URL)
+			stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+			if bifrostErr != nil {
+				t.Fatalf("stream setup failed: %v", bifrostErr)
+			}
+			chunks := collectChunks(t, stream)
+			sawContent, sawError := false, false
+			for _, chunk := range chunks {
+				if chunk.BifrostError != nil {
+					sawError = true
+					if extraBytes == 0 || chunk.BifrostError.Error == nil || !strings.Contains(chunk.BifrostError.Error.Message, io.ErrUnexpectedEOF.Error()) {
+						t.Errorf("unexpected stream error: %+v", chunk.BifrostError)
+					}
+				}
+				if chunk.BifrostChatResponse != nil {
+					for _, choice := range chunk.BifrostChatResponse.Choices {
+						if choice.ChatStreamResponseChoice != nil && choice.Delta != nil && choice.Delta.Content != nil && *choice.Delta.Content == "hello" {
+							sawContent = true
+						}
+					}
+				}
+			}
+			if !sawContent {
+				t.Error("content received before the EOF was not forwarded")
+			}
+			if sawError != (extraBytes > 0) {
+				t.Errorf("stream error present = %v with %d missing bytes: finish_reason cannot prove HTTP body completeness", sawError, extraBytes)
+			}
+		})
+	}
+}
+
 // ModelScope-style OpenAI-compatible upstreams put a full `message` object next
 // to `delta` in every streaming chunk. BifrostResponseChoice embeds both the
 // stream and non-stream choice shapes, so a plain unmarshal allocated

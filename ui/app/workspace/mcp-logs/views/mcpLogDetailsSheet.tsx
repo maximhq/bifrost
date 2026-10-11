@@ -1,5 +1,8 @@
 import { formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
-import { getMCPLogPillTone, getMCPLogPresentation, getMCPLogTimeline, type MCPLogPillTone } from "@/lib/utils/mcpLogPresentation";
+import BlockHeader from "@/app/workspace/logs/views/blockHeader";
+import LogEntryDetailsView from "@/app/workspace/logs/views/logEntryDetailsView";
+import PluginLogsView from "@/app/workspace/logs/views/pluginLogsView";
+import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -10,9 +13,6 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
-import LogEntryDetailsView from "@/app/workspace/logs/views/logEntryDetailsView";
-import BlockHeader from "@/app/workspace/logs/views/blockHeader";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/ui/codeEditor";
@@ -27,20 +27,20 @@ import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
-import { OsIcon } from "@enterprise/lib/constants/edgeApps";
-import { useGetDeviceQuery } from "@enterprise/lib/store/apis/edgeControlApi";
+import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { mapAppToClientApp, mapUserAgentToApp } from "@/lib/constants/logs";
-import { cn } from "@/lib/utils";
 import { useGetMCPLogByIdQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
+import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
+import { getMCPLogPillTone, getMCPLogPresentation, getMCPLogTimeline, type MCPLogPillTone } from "@/lib/utils/mcpLogPresentation";
 import { applyRedactionMappingToValue, hasRedactionMappingEntries, mergeRedactionMappings } from "@/lib/utils/redaction";
-import PluginLogsView from "@/app/workspace/logs/views/pluginLogsView";
+import { OsIcon } from "@enterprise/lib/constants/edgeApps";
+import { useGetDeviceQuery } from "@enterprise/lib/store/apis/edgeControlApi";
 import { Link } from "@tanstack/react-router";
 import { format, isValid } from "date-fns";
-import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
-import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { ChevronDown, Clipboard, Download, Loader2, MoreVertical, Trash2 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
@@ -266,8 +266,11 @@ export function MCPLogDetailSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="border-secondary flex w-full flex-col gap-4 overflow-x-hidden border p-4 sm:max-w-[60%] md:p-8">
-				<SheetHeader className="flex flex-row items-center px-0" headerClassName="mb-0">
+			<SheetContent className="border-secondary flex w-full flex-col gap-2 overflow-x-hidden border p-0 sm:max-w-[60%]">
+				<SheetHeader
+					className="flex flex-row items-center px-0"
+					headerClassName="sticky -top-5 z-20 mx-4 mb-0 w-auto bg-card pt-4 pb-2 md:mx-8 md:pt-8"
+				>
 					<div className="flex w-full items-center gap-2">
 						<SheetNavigationButtons
 							hasPrev={hasPrev}
@@ -359,345 +362,347 @@ export function MCPLogDetailSheet({
 						</AlertDialogContent>
 					</AlertDialog>
 				</SheetHeader>
-				<div className="border-border rounded-sm border">
-					<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
-						<div className="min-w-0 flex-1">
-							<div className="flex flex-wrap items-center gap-2">
-								<Badge variant="outline" className="rounded-sm px-2 py-0.5 font-medium">
-									{displayLog.source === "native" ? "Native Tool" : "MCP Tool"}
-								</Badge>
-								<StatusPill label={presentation.label} tone={pillTone} />
-								{presentation.policy ? (
-									<Badge variant="outline" className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal">
-										pre-execution check
+				<div className="flex flex-col gap-2 px-4 pb-4 md:px-8 md:pb-8">
+					<div className="border-border rounded-sm border">
+						<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
+							<div className="min-w-0 flex-1">
+								<div className="flex flex-wrap items-center gap-2">
+									<Badge variant="outline" className="rounded-sm px-2 py-0.5 font-medium">
+										{displayLog.source === "native" ? "Native Tool" : "MCP Tool"}
 									</Badge>
-								) : null}
-							</div>
-							<div className="mt-3 flex items-center gap-2">
-								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Tool</div>
-								<Link
-									to="/workspace/mcp-logs"
-									search={{ tool_names: [displayLog.tool_name] }}
-									className="truncate font-mono text-[13px] font-medium text-blue-600 hover:underline dark:text-blue-400"
-									title={displayLog.tool_name}
-									data-testid="mcplogdetails-tool-name-link"
-								>
-									{displayLog.tool_name}
-								</Link>
-								<CopyInlineButton text={displayLog.tool_name} testId="mcplogdetails-copy-tool-name-button" />
-							</div>
-							<div className="mt-1 flex items-center gap-2">
-								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Request</div>
-								<code className="text-foreground truncate font-mono text-[13px]">{requestId || "—"}</code>
-								{requestId ? <CopyInlineButton text={requestId} testId="mcplogdetails-copy-request-id-button" /> : null}
-							</div>
-							{displayLog.session_id && (
-								<div className="mt-1 flex items-center gap-2">
-									<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Session</div>
-									<code className="text-foreground truncate font-mono text-[13px]">{displayLog.session_id}</code>
-									<CopyInlineButton text={displayLog.session_id} testId="mcplogdetails-copy-session-id-button" />
+									<StatusPill label={presentation.label} tone={pillTone} />
+									{presentation.policy ? (
+										<Badge variant="outline" className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal">
+											pre-execution check
+										</Badge>
+									) : null}
 								</div>
-							)}
-							{displayLog.llm_request_id && (
-								<div className="mt-1 flex items-center gap-2">
-									<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
-										LLM Request
-									</div>
-									<Link
-										to="/workspace/logs"
-										search={{ selected_log: displayLog.llm_request_id }}
-										className="truncate font-mono text-[13px] text-blue-600 hover:underline dark:text-blue-400"
-										data-testid="mcplogdetails-llm-request-id-link"
-									>
-										{displayLog.llm_request_id}
-									</Link>
-									<CopyInlineButton text={displayLog.llm_request_id} testId="mcplogdetails-copy-llm-request-id-button" />
-								</div>
-							)}
-							{(displayLog.virtual_key || displayLog.virtual_key_id) && (
-								<div className="mt-1 flex items-center gap-2">
-									<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Key</div>
-									<Link
-										to="/workspace/governance/virtual-keys"
-										search={{ selected_vk: displayLog.virtual_key?.id || displayLog.virtual_key_id! }}
-										className="truncate font-mono text-[13px] text-blue-600 hover:underline dark:text-blue-400"
-										data-testid="mcplogdetails-virtual-key-link"
-									>
-										{displayLog.virtual_key?.name || displayLog.virtual_key_name || displayLog.virtual_key_id}
-									</Link>
-								</div>
-							)}
-						</div>
-						<div className="flex shrink-0 items-center gap-1.5 rounded-sm border bg-white px-2 py-1 text-[12px] font-medium dark:bg-zinc-900">
-							{appIcon && <img src={appIcon} alt={app.name} width={14} height={14} />}
-							<span>{app.name}</span>
-						</div>
-					</div>
-					<div className="border-border grid grid-cols-1 border-t sm:grid-cols-2 md:grid-cols-4">
-						<HeroStat
-							label={durationLabel}
-							valueClass="text-primary"
-							value={durationMs == null || isNaN(durationMs) ? "—" : formatLatency(durationMs)}
-							sub={durationSub}
-							hasRightBorder
-						/>
-						<HeroStat
-							label="Server"
-							mono
-							value={displayLog.source === "native" ? "Local" : displayLog.server_label || "—"}
-							sub={displayLog.source === "native" ? "native" : "mcp"}
-							valueClass="whitespace-normal overflow-visible break-all"
-							hasRightBorder
-						/>
-						<HeroStat
-							label="User"
-							value={displayLog.user_name || displayLog.user_id || "—"}
-							sub={displayLog.team_name || displayLog.team_id || ""}
-							valueClass={displayLog.user_name ? undefined : "font-mono text-[15px]"}
-							hasRightBorder
-						/>
-						<HeroStat
-							label="Device"
-							mono={!device?.hostname}
-							value={
-								displayLog.device_id ? (
+								<div className="mt-3 flex items-center gap-2">
+									<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Tool</div>
 									<Link
 										to="/workspace/mcp-logs"
-										search={(prev) => ({ ...prev, offset: 0, selected_log: "", device_ids: [displayLog.device_id!] })}
-										className="inline-flex max-w-full items-center gap-1.5 text-blue-600 hover:underline dark:text-blue-400"
-										title={displayLog.device_id}
-										data-testid="mcplogdetails-device-tile-link"
+										search={{ tool_names: [displayLog.tool_name] }}
+										className="truncate font-mono text-[13px] font-medium text-blue-600 hover:underline dark:text-blue-400"
+										title={displayLog.tool_name}
+										data-testid="mcplogdetails-tool-name-link"
 									>
-										<OsIcon platform={device?.platform} className="h-4 w-4 shrink-0" />
-										<span className="truncate">{device?.hostname || displayLog.device_id}</span>
+										{displayLog.tool_name}
 									</Link>
-								) : (
-									"—"
-								)
-							}
-							sub={device ? [device.platform, device.os_version, device.arch].filter(Boolean).join(" · ") : ""}
-						/>
-					</div>
-				</div>
-				<details className="group bg-card rounded-sm border" open={false}>
-					<summary className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-4 py-2.5 text-sm transition">
-						<span className="text-foreground font-medium">More details</span>
-						<span className="text-muted-foreground flex items-center gap-2 text-xs">
-							<span className="hidden md:inline">timings, request meta{metadataEntries.length > 0 ? ", metadata" : ""}</span>
-							<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
-						</span>
-					</summary>
-					<div className="space-y-4 border-t px-4 py-4 md:px-6">
-						<p className="text-muted-foreground text-sm">{presentation.description}</p>
-						<DottedSeparator />
-						<div className="space-y-4">
-							<BlockHeader title="Timings" />
-							<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
-								<LogEntryDetailsView
-									className="w-full"
-									label="Start Timestamp"
-									value={startTimestamp && isValid(startTimestamp) ? format(startTimestamp, "yyyy-MM-dd hh:mm:ss aa") : "N/A"}
-								/>
-								<LogEntryDetailsView
-									className="w-full"
-									label={endLabel}
-									value={endTimestamp && isValid(endTimestamp) ? format(endTimestamp, "yyyy-MM-dd hh:mm:ss aa") : "N/A"}
-								/>
-								<LogEntryDetailsView
-									className="w-full"
-									label={durationLabel}
-									value={durationMs == null || isNaN(durationMs) ? "Not recorded" : `${durationMs.toFixed(2)}ms`}
-								/>
+									<CopyInlineButton text={displayLog.tool_name} testId="mcplogdetails-copy-tool-name-button" />
+								</div>
+								<div className="mt-1 flex items-center gap-2">
+									<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Request</div>
+									<code className="text-foreground truncate font-mono text-[13px]">{requestId || "—"}</code>
+									{requestId ? <CopyInlineButton text={requestId} testId="mcplogdetails-copy-request-id-button" /> : null}
+								</div>
+								{displayLog.session_id && (
+									<div className="mt-1 flex items-center gap-2">
+										<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Session</div>
+										<code className="text-foreground truncate font-mono text-[13px]">{displayLog.session_id}</code>
+										<CopyInlineButton text={displayLog.session_id} testId="mcplogdetails-copy-session-id-button" />
+									</div>
+								)}
+								{displayLog.llm_request_id && (
+									<div className="mt-1 flex items-center gap-2">
+										<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
+											LLM Request
+										</div>
+										<Link
+											to="/workspace/logs"
+											search={{ selected_log: displayLog.llm_request_id }}
+											className="truncate font-mono text-[13px] text-blue-600 hover:underline dark:text-blue-400"
+											data-testid="mcplogdetails-llm-request-id-link"
+										>
+											{displayLog.llm_request_id}
+										</Link>
+										<CopyInlineButton text={displayLog.llm_request_id} testId="mcplogdetails-copy-llm-request-id-button" />
+									</div>
+								)}
+								{(displayLog.virtual_key || displayLog.virtual_key_id) && (
+									<div className="mt-1 flex items-center gap-2">
+										<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Key</div>
+										<Link
+											to="/workspace/governance/virtual-keys"
+											search={{ selected_vk: displayLog.virtual_key?.id || displayLog.virtual_key_id! }}
+											className="truncate font-mono text-[13px] text-blue-600 hover:underline dark:text-blue-400"
+											data-testid="mcplogdetails-virtual-key-link"
+										>
+											{displayLog.virtual_key?.name || displayLog.virtual_key_name || displayLog.virtual_key_id}
+										</Link>
+									</div>
+								)}
+							</div>
+							<div className="flex shrink-0 items-center gap-1.5 rounded-sm border bg-white px-2 py-1 text-[12px] font-medium dark:bg-zinc-900">
+								{appIcon && <img src={appIcon} alt={app.name} width={14} height={14} />}
+								<span>{app.name}</span>
 							</div>
 						</div>
-						<DottedSeparator />
-						<div className="space-y-4">
-							<BlockHeader title="Request Details" />
-							<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
-								<LogEntryDetailsView className="col-span-3 w-full" label="Request ID" value={requestId} />
-								{displayLog.session_id && (
+						<div className="border-border grid grid-cols-1 border-t sm:grid-cols-2 md:grid-cols-4">
+							<HeroStat
+								label={durationLabel}
+								valueClass="text-primary"
+								value={durationMs == null || isNaN(durationMs) ? "—" : formatLatency(durationMs)}
+								sub={durationSub}
+								hasRightBorder
+							/>
+							<HeroStat
+								label="Server"
+								mono
+								value={displayLog.source === "native" ? "Local" : displayLog.server_label || "—"}
+								sub={displayLog.source === "native" ? "native" : "mcp"}
+								valueClass="whitespace-normal overflow-visible break-all"
+								hasRightBorder
+							/>
+							<HeroStat
+								label="User"
+								value={displayLog.user_name || displayLog.user_id || "—"}
+								sub={displayLog.team_name || displayLog.team_id || ""}
+								valueClass={displayLog.user_name ? undefined : "font-mono text-[15px]"}
+								hasRightBorder
+							/>
+							<HeroStat
+								label="Device"
+								mono={!device?.hostname}
+								value={
+									displayLog.device_id ? (
+										<Link
+											to="/workspace/mcp-logs"
+											search={(prev) => ({ ...prev, offset: 0, selected_log: "", device_ids: [displayLog.device_id!] })}
+											className="inline-flex max-w-full items-center gap-1.5 text-blue-600 hover:underline dark:text-blue-400"
+											title={displayLog.device_id}
+											data-testid="mcplogdetails-device-tile-link"
+										>
+											<OsIcon platform={device?.platform} className="h-4 w-4 shrink-0" />
+											<span className="truncate">{device?.hostname || displayLog.device_id}</span>
+										</Link>
+									) : (
+										"—"
+									)
+								}
+								sub={device ? [device.platform, device.os_version, device.arch].filter(Boolean).join(" · ") : ""}
+							/>
+						</div>
+					</div>
+					<details className="group bg-card rounded-sm border" open={false}>
+						<summary className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-4 py-2.5 text-sm transition">
+							<span className="text-foreground font-medium">More details</span>
+							<span className="text-muted-foreground flex items-center gap-2 text-xs">
+								<span className="hidden md:inline">timings, request meta{metadataEntries.length > 0 ? ", metadata" : ""}</span>
+								<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+							</span>
+						</summary>
+						<div className="space-y-4 border-t px-4 py-4 md:px-6">
+							<p className="text-muted-foreground text-sm">{presentation.description}</p>
+							<DottedSeparator />
+							<div className="space-y-4">
+								<BlockHeader title="Timings" />
+								<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
 									<LogEntryDetailsView
-										className="col-span-3 w-full"
-										label="Session ID"
-										value={<code className="truncate font-mono text-xs">{displayLog.session_id}</code>}
-									/>
-								)}
-								<LogEntryDetailsView
-									className="w-full"
-									label="App"
-									value={
-										<div className="flex items-center gap-2">
-											{appIcon && <img src={appIcon} alt={app.name} width={14} height={14} />}
-											<span>{app.name}</span>
-										</div>
-									}
-								/>
-								<LogEntryDetailsView
-									className="w-full"
-									label="Tool Name"
-									value={<span className="font-mono">{displayLog.tool_name}</span>}
-								/>
-								<LogEntryDetailsView
-									className="w-full"
-									label="Server"
-									value={
-										displayLog.source === "native" ? (
-											<Badge variant="secondary">Local · Native</Badge>
-										) : displayLog.server_label ? (
-											<Link
-												to="/workspace/mcp-logs"
-												search={{ server_labels: [displayLog.server_label] }}
-												data-testid="mcplogdetails-server-link"
-											>
-												<Badge variant="secondary" className="font-mono hover:underline">
-													{displayLog.server_label}
-												</Badge>
-											</Link>
-										) : (
-											"-"
-										)
-									}
-								/>
-								{scopeLinks.map(({ label, pluralLabel, idKey, items }) => (
-									<LogEntryDetailsView
-										key={idKey}
 										className="w-full"
-										label={items.length > 1 ? pluralLabel : label}
+										label="Start Timestamp"
+										value={startTimestamp && isValid(startTimestamp) ? format(startTimestamp, "yyyy-MM-dd hh:mm:ss aa") : "N/A"}
+									/>
+									<LogEntryDetailsView
+										className="w-full"
+										label={endLabel}
+										value={endTimestamp && isValid(endTimestamp) ? format(endTimestamp, "yyyy-MM-dd hh:mm:ss aa") : "N/A"}
+									/>
+									<LogEntryDetailsView
+										className="w-full"
+										label={durationLabel}
+										value={durationMs == null || isNaN(durationMs) ? "Not recorded" : `${durationMs.toFixed(2)}ms`}
+									/>
+								</div>
+							</div>
+							<DottedSeparator />
+							<div className="space-y-4">
+								<BlockHeader title="Request Details" />
+								<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
+									<LogEntryDetailsView className="col-span-3 w-full" label="Request ID" value={requestId} />
+									{displayLog.session_id && (
+										<LogEntryDetailsView
+											className="col-span-3 w-full"
+											label="Session ID"
+											value={<code className="truncate font-mono text-xs">{displayLog.session_id}</code>}
+										/>
+									)}
+									<LogEntryDetailsView
+										className="w-full"
+										label="App"
 										value={
-											<span className="inline-flex flex-wrap gap-x-1">
-												{items.map((item, i) => (
-													<Tooltip key={item.id}>
-														<TooltipTrigger asChild>
-															<Link
-																to="/workspace/mcp-logs"
-																search={(prev) => ({ ...prev, offset: 0, selected_log: "", [`${idKey}s`]: [item.id] })}
-																className={`text-sm font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400${item.name !== item.id ? "" : " font-mono"}`}
-																data-testid={`mcplogdetails-${idKey.replace("_id", "").replaceAll("_", "-")}-link-${item.id}`}
-															>
-																{item.name}
-																{i < items.length - 1 ? "," : ""}
-															</Link>
-														</TooltipTrigger>
-														<TooltipContent sideOffset={6}>
-															{item.name !== item.id ? item.id : `Filter by ${label.toLowerCase()}`}
-														</TooltipContent>
-													</Tooltip>
-												))}
-											</span>
+											<div className="flex items-center gap-2">
+												{appIcon && <img src={appIcon} alt={app.name} width={14} height={14} />}
+												<span>{app.name}</span>
+											</div>
 										}
 									/>
-								))}
-								{(displayLog.virtual_key || displayLog.virtual_key_id) && (
 									<LogEntryDetailsView
 										className="w-full"
-										label="Virtual Key"
-										value={displayLog.virtual_key?.name || displayLog.virtual_key_name || displayLog.virtual_key_id}
+										label="Tool Name"
+										value={<span className="font-mono">{displayLog.tool_name}</span>}
 									/>
-								)}
-								{displayLog.decision && <LogEntryDetailsView className="w-full" label="Decision" value={displayLog.decision} />}
-								{displayLog.llm_request_id && (
 									<LogEntryDetailsView
-										className="col-span-3 w-full"
-										label="LLM Request ID"
-										value={<span className="font-mono text-xs">{displayLog.llm_request_id}</span>}
+										className="w-full"
+										label="Server"
+										value={
+											displayLog.source === "native" ? (
+												<Badge variant="secondary">Local · Native</Badge>
+											) : displayLog.server_label ? (
+												<Link
+													to="/workspace/mcp-logs"
+													search={{ server_labels: [displayLog.server_label] }}
+													data-testid="mcplogdetails-server-link"
+												>
+													<Badge variant="secondary" className="font-mono hover:underline">
+														{displayLog.server_label}
+													</Badge>
+												</Link>
+											) : (
+												"-"
+											)
+										}
 									/>
-								)}
-							</div>
-						</div>
-						{metadataEntries.length > 0 && (
-							<>
-								<DottedSeparator />
-								<div className="space-y-4">
-									<BlockHeader title="Metadata" />
-									<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
-										{metadataEntries.map(([key, value]) => (
-											<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
-										))}
-									</div>
+									{scopeLinks.map(({ label, pluralLabel, idKey, items }) => (
+										<LogEntryDetailsView
+											key={idKey}
+											className="w-full"
+											label={items.length > 1 ? pluralLabel : label}
+											value={
+												<span className="inline-flex flex-wrap gap-x-1">
+													{items.map((item, i) => (
+														<Tooltip key={item.id}>
+															<TooltipTrigger asChild>
+																<Link
+																	to="/workspace/mcp-logs"
+																	search={(prev) => ({ ...prev, offset: 0, selected_log: "", [`${idKey}s`]: [item.id] })}
+																	className={`text-sm font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400${item.name !== item.id ? "" : " font-mono"}`}
+																	data-testid={`mcplogdetails-${idKey.replace("_id", "").replaceAll("_", "-")}-link-${item.id}`}
+																>
+																	{item.name}
+																	{i < items.length - 1 ? "," : ""}
+																</Link>
+															</TooltipTrigger>
+															<TooltipContent sideOffset={6}>
+																{item.name !== item.id ? item.id : `Filter by ${label.toLowerCase()}`}
+															</TooltipContent>
+														</Tooltip>
+													))}
+												</span>
+											}
+										/>
+									))}
+									{(displayLog.virtual_key || displayLog.virtual_key_id) && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Virtual Key"
+											value={displayLog.virtual_key?.name || displayLog.virtual_key_name || displayLog.virtual_key_id}
+										/>
+									)}
+									{displayLog.decision && <LogEntryDetailsView className="w-full" label="Decision" value={displayLog.decision} />}
+									{displayLog.llm_request_id && (
+										<LogEntryDetailsView
+											className="col-span-3 w-full"
+											label="LLM Request ID"
+											value={<span className="font-mono text-xs">{displayLog.llm_request_id}</span>}
+										/>
+									)}
 								</div>
-							</>
-						)}
-					</div>
-				</details>
-
-				<Tabs key={displayLog.id} defaultValue="execution" className="gap-2">
-					<TabsList className="bg-muted/60 h-10 w-fit">
-						<TabsTrigger value="execution" className="px-3">
-							Execution
-						</TabsTrigger>
-						<TabsTrigger value="plugins" className="px-3">
-							Plugin Logs
-							{pluginLogCount > 0 ? (
-								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-									{pluginLogCount}
-								</span>
-							) : null}
-						</TabsTrigger>
-					</TabsList>
-
-					<TabsContent value="execution" className="space-y-4">
-						{/* Arguments */}
-						{displayedArguments && (
-							<div className="w-full rounded-sm border">
-								<div className="border-b px-4 py-2 text-sm font-medium md:px-6">Arguments</div>
-								<CodeEditor
-									className="z-0 w-full"
-									shouldAdjustInitialHeight={true}
-									maxHeight={250}
-									wrap={true}
-									code={typeof displayedArguments === "string" ? displayedArguments : JSON.stringify(displayedArguments, null, 2)}
-									lang="json"
-									readonly={true}
-									options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
-								/>
 							</div>
-						)}
+							{metadataEntries.length > 0 && (
+								<>
+									<DottedSeparator />
+									<div className="space-y-4">
+										<BlockHeader title="Metadata" />
+										<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
+											{metadataEntries.map(([key, value]) => (
+												<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
+											))}
+										</div>
+									</div>
+								</>
+							)}
+						</div>
+					</details>
 
-						{/* Result */}
-						{displayedResult && displayLog.status !== "processing" && (
-							<div className="w-full rounded-sm border">
-								<div className="border-b px-4 py-2 text-sm font-medium md:px-6">Result</div>
-								<CodeEditor
-									className="z-0 w-full"
-									shouldAdjustInitialHeight={true}
-									maxHeight={350}
-									wrap={true}
-									code={typeof displayedResult === "string" ? displayedResult : JSON.stringify(displayedResult, null, 2)}
-									lang="json"
-									readonly={true}
-									options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
-								/>
-							</div>
-						)}
+					<Tabs key={displayLog.id} defaultValue="execution" className="gap-2">
+						<TabsList className="bg-muted/60 h-10 w-fit">
+							<TabsTrigger value="execution" className="px-3">
+								Execution
+							</TabsTrigger>
+							<TabsTrigger value="plugins" className="px-3">
+								Plugin Logs
+								{pluginLogCount > 0 ? (
+									<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+										{pluginLogCount}
+									</span>
+								) : null}
+							</TabsTrigger>
+						</TabsList>
 
-						{/* Error Details */}
-						{displayedErrorDetails && (
-							<div className="border-destructive/50 w-full rounded-sm border">
-								<div className="border-destructive/50 text-destructive border-b px-4 py-2 text-sm font-medium md:px-6">Error Details</div>
-								<CodeEditor
-									className="z-0 w-full"
-									shouldAdjustInitialHeight={true}
-									maxHeight={250}
-									wrap={true}
-									code={JSON.stringify(displayedErrorDetails, null, 2)}
-									lang="json"
-									readonly={true}
-									options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
-								/>
-							</div>
-						)}
-					</TabsContent>
+						<TabsContent value="execution" className="space-y-4">
+							{/* Arguments */}
+							{displayedArguments && (
+								<div className="w-full rounded-sm border">
+									<div className="border-b px-4 py-2 text-sm font-medium md:px-6">Arguments</div>
+									<CodeEditor
+										className="z-0 w-full"
+										shouldAdjustInitialHeight={true}
+										maxHeight={250}
+										wrap={true}
+										code={typeof displayedArguments === "string" ? displayedArguments : JSON.stringify(displayedArguments, null, 2)}
+										lang="json"
+										readonly={true}
+										options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+									/>
+								</div>
+							)}
 
-					<TabsContent value="plugins" className="space-y-3">
-						{displayLog.plugin_logs ? (
-							<PluginLogsView pluginLogs={displayLog.plugin_logs} />
-						) : (
-							<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
-								No plugin logs for this request.
-							</div>
-						)}
-					</TabsContent>
-				</Tabs>
+							{/* Result */}
+							{displayedResult && displayLog.status !== "processing" && (
+								<div className="w-full rounded-sm border">
+									<div className="border-b px-4 py-2 text-sm font-medium md:px-6">Result</div>
+									<CodeEditor
+										className="z-0 w-full"
+										shouldAdjustInitialHeight={true}
+										maxHeight={350}
+										wrap={true}
+										code={typeof displayedResult === "string" ? displayedResult : JSON.stringify(displayedResult, null, 2)}
+										lang="json"
+										readonly={true}
+										options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+									/>
+								</div>
+							)}
+
+							{/* Error Details */}
+							{displayedErrorDetails && (
+								<div className="border-destructive/50 w-full rounded-sm border">
+									<div className="border-destructive/50 text-destructive border-b px-4 py-2 text-sm font-medium md:px-6">Error Details</div>
+									<CodeEditor
+										className="z-0 w-full"
+										shouldAdjustInitialHeight={true}
+										maxHeight={250}
+										wrap={true}
+										code={JSON.stringify(displayedErrorDetails, null, 2)}
+										lang="json"
+										readonly={true}
+										options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+									/>
+								</div>
+							)}
+						</TabsContent>
+
+						<TabsContent value="plugins" className="space-y-3">
+							{displayLog.plugin_logs ? (
+								<PluginLogsView pluginLogs={displayLog.plugin_logs} />
+							) : (
+								<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
+									No plugin logs for this request.
+								</div>
+							)}
+						</TabsContent>
+					</Tabs>
+				</div>
 			</SheetContent>
 		</Sheet>
 	);

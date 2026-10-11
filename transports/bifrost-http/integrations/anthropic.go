@@ -48,7 +48,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 			return nil, errors.New("invalid request type")
 		},
 		TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
-			if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
+			if responsePassthroughActive(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
 				if resp.ExtraFields.RawResponse != nil {
 					return resp.ExtraFields.RawResponse, nil
 				}
@@ -192,7 +192,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 					soToolName, _ := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
-					if soToolName == "" && shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
+					if soToolName == "" && responsePassthroughActive(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
 						anthropic.SetResponsesStreamPassthrough(ctx)
 						// Skip passthrough for ContentPartAdded: it's a synthetic bifrost event whose
 						// RawResponse carries the parent content_block_start already emitted by OutputItemAdded.
@@ -898,6 +898,20 @@ func collectAnthropicRawContentBlockPaths(paths *[]string, block gjson.Result, p
 // shouldUsePassthrough checks if the request should be sent to the passthrough endpoint.
 func shouldUsePassthrough(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, alias string) bool {
 	return anthropic.IsClaudeCodeRequest(ctx) && isClaudeModel(ctx, model, alias, string(provider))
+}
+
+// responsePassthroughActive decides whether a reply is converted as raw Anthropic
+// passthrough. It follows shouldUsePassthrough, except that core may take an attempt off
+// raw-body passthrough after ingress chose it (provider-injected tools, structured output
+// on a provider without native support). That attempt was sent through the typed path,
+// so its reply must be re-encoded from Bifrost events: forwarding raw frames would show
+// the client turns it never asked for, and passthrough mode skips events the typed
+// stream relies on.
+func responsePassthroughActive(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, alias string) bool {
+	if useRaw, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && !useRaw {
+		return false
+	}
+	return shouldUsePassthrough(ctx, provider, model, alias)
 }
 
 // serverToolSynthesizesResultBlock reports whether an item's output_item.done

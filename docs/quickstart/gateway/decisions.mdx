@@ -1,15 +1,19 @@
 ---
 title: "Decisions"
-description: "Evaluate state against named questions using /v1/decisions."
+description: "Ask questions about some input and get typed answers using /v1/decisions."
 icon: "scale-balanced"
 ---
 
-Use decisions to get structured judgments - probabilities, choices, and rubric scores - from judgment models like TypeSafe's jev family. A decision request carries a `state` (what to evaluate) and a map of named `questions`; every question produces one typed answer.
+Use decisions to get structured judgments - probabilities, choices, and rubric scores - from judgment models like TypeSafe's jev family. A decision request carries an `input` (what to evaluate) and a list of `questions`; every question produces one typed answer, in the same order.
+
+Any decision model serves the same request: TypeSafe's jev models (and Laya, Nimble, and Clef deployments), OpenAI's decision models such as gpt-6-luna, or any chat model, which answers through structured output.
 
 ## Provider Model Examples
 
 - TypeSafe: `typesafe/jev-1.13.0`, `typesafe/jev-latest`, `typesafe/jev-preview`
 - OpenRouter: `openrouter/typesafe/jev-1.13`, `openrouter/~typesafe/jev-latest`
+- OpenAI: `openai/gpt-6-luna` (OpenAI's decisions endpoint)
+- Any chat model, for example `openai/gpt-4o-mini`
 
 ## Basic Request
 
@@ -18,62 +22,91 @@ curl --location 'http://localhost:8080/v1/decisions' \
 --header 'Content-Type: application/json' \
 --data '{
   "model": "typesafe/jev-1.13.0",
-  "state": "Customer message: I was double charged and nobody replied to my two emails. I want a refund today.",
-  "questions": {
-    "is_frustrated": {
-      "kind": "noul",
-      "instructions": "Is the customer frustrated?"
-    },
-    "category": {
-      "kind": "choice",
+  "input": "Customer message: I was double charged and nobody replied to my two emails. I want a refund today.",
+  "questions": [
+    { "type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?" },
+    {
+      "type": "choice",
+      "name": "category",
       "instructions": "Pick the ticket category",
-      "criteria": { "billing": "charges and refunds", "bug": "product defects", "other": "anything else" }
+      "choices": [
+        { "value": "billing", "description": "charges and refunds" },
+        { "value": "bug", "description": "product defects" },
+        { "value": "other", "description": "anything else" }
+      ]
     },
-    "urgency": {
-      "kind": "score",
+    {
+      "type": "score",
+      "name": "urgency",
       "instructions": "Rate how urgently this needs a human reply",
-      "criteria": ["can wait a week", "should be answered soon", "needs a reply today"]
+      "levels": [
+        { "label": "low", "description": "can wait a week" },
+        { "label": "medium", "description": "should be answered soon" },
+        { "label": "high", "description": "needs a reply today" }
+      ]
     }
-  }
+  ]
 }'
 ```
 
-## Question Kinds
+## Input
 
-| Kind | Answer value | Criteria |
-|------|--------------|----------|
-| `noul` | Probability between 0 and 1 | Optional `true`/`false` descriptions |
-| `choice` | One option string | Required map of option to description (max 255 options) |
-| `score` | Probability-weighted rubric score, including fractions | Required ordered array of 2-10 level descriptions |
+| `input` | Meaning |
+|---------|---------|
+| A string | Text to evaluate |
+| An array | Messages, each `{ "role": "user", "content": ... }` where content is text or parts: `{ "type": "input_text", "text": ... }` and `{ "type": "input_image", "image_url": "data:image/png;base64,...", "detail": "high" }`, where `image_url` is a base64 data URL or an HTTP(S) URL and `detail` (`low`, `high`, `auto`, or `original`) is optional. Images are read only by models that accept them; TypeSafe-based and chat models read text only and reject an image with a `400`, so a fallback can serve it. Parts of other types are rejected with a `400` |
+| An object | Structured data, passed to TypeSafe-based models as their state and rendered as JSON for others |
+| `null` | No input; TypeSafe-based models receive a `null` state, and OpenAI's decision models reject it with a `400`, so a fallback can serve it |
 
-`state` and `instructions` accept a plain string or structured data (object or array), preserved losslessly.
+## Questions
+
+| Field | Meaning |
+|-------|---------|
+| `type` | `predicate` (probability that a condition is true), `choice` (one of the choices), or `score` (a level index, which may fall between levels) |
+| `name` | Optional; the answer carries it back |
+| `instructions` | A string, or structured data (object or array) preserved for TypeSafe-based models and rendered as JSON for others |
+| `criteria` | Predicate only, optional: descriptions of the `true` and `false` outcomes; models without a criteria field receive them appended to the instructions |
+| `choices` | Choice only: each choice's `value` (a string or a boolean) and optional `description` |
+| `levels` | Score only: the ordered levels, each with a `label` and optional `description` |
+
+`safety_identifier` is forwarded to models that accept a stable end-user identifier.
 
 ## Response
 
 ```json
 {
   "model": "jev-1.13.0",
-  "answers": {
-    "is_frustrated": { "kind": "noul", "value": 0.98 },
-    "category": {
-      "kind": "choice",
-      "value": "billing",
+  "answers": [
+    { "type": "predicate", "name": "is_frustrated", "probability": 0.98 },
+    {
+      "type": "choice",
+      "name": "category",
+      "choice": "billing",
       "confidence": 1,
-      "probabilities": { "billing": 1, "bug": 0, "other": 0 }
+      "probabilities": [
+        { "value": "billing", "probability": 1 },
+        { "value": "bug", "probability": 0 },
+        { "value": "other", "probability": 0 }
+      ]
     },
-    "urgency": {
-      "kind": "score",
-      "value": 2,
+    {
+      "type": "score",
+      "name": "urgency",
+      "score": 2,
       "confidence": 1,
-      "probabilities": { "0": 0, "1": 0, "2": 1 },
-      "legend": { "0": "can wait a week", "1": "should be answered soon", "2": "needs a reply today" }
+      "probabilities": [
+        { "value": 0, "label": "low", "probability": 0 },
+        { "value": 1, "label": "medium", "probability": 0 },
+        { "value": 2, "label": "high", "probability": 1 }
+      ],
+      "legend": { "0": "low: can wait a week", "1": "medium: should be answered soon", "2": "high: needs a reply today" }
     }
-  },
+  ],
   "usage": { "prompt_tokens": 437, "completion_tokens": 72, "total_tokens": 509 }
 }
 ```
 
-Every declared question produces an answer of its declared kind. `confidence`, `probabilities`, and `legend` are included when the provider supplies them.
+Every question produces an answer of its type, in question order. `confidence`, `probabilities`, and `legend` are included when the model supplies them. A model that declines a question answers it with `"type": "refusal"`.
 
 ### Provider-Specific Fields
 
@@ -85,41 +118,67 @@ Some decision providers return fields beyond this shape. They appear on the resp
 | Laya | Response | `routing`: the checkpoint that answered and why |
 | Laya | `usage` | `state_tokens`, `state_tokens_dropped`, `truncated`, `truncated_questions` |
 
-```json
-{
-  "model": "laya-rl-agent",
-  "answers": {
-    "urgency": {
-      "kind": "score",
-      "value": 1.931,
-      "confidence": 0.7674,
-      "probabilities": { "0": 0.0045, "1": 0.0599, "2": 0.9355 },
-      "legend": { "0": "can wait", "1": "soon", "2": "today" },
-      "answer_confidence": 0.9355,
-      "action": { "act_probability": 1.0 },
-      "abstention": "passed",
-      "abstention_threshold": 0.9
-    }
-  },
-  "usage": { "prompt_tokens": 39, "total_tokens": 39, "state_tokens": 13, "state_tokens_dropped": 0, "truncated": false },
-  "routing": { "model": "english", "reason": "explicit model='english'" }
-}
-```
-
 ## Fallbacks
 
-Standard fallback syntax applies:
+Add `fallbacks` to any request above; a model that fails, or rejects an input it cannot read, hands the request to the next one:
 
 ```json
 {
   "model": "typesafe/jev-preview",
-  "fallbacks": ["typesafe/jev-1.13.0"]
+  "fallbacks": ["typesafe/jev-1.13.0"],
+  "input": "Customer message: I was double charged and nobody replied to my two emails.",
+  "questions": [
+    { "type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?" }
+  ]
 }
 ```
 
 ## Validation
 
-Requests are validated before dispatch and rejected with a `400` rather than silently approximated: unsupported kinds, missing instructions, missing choice criteria, score criteria outside 2-10 levels or with non-string entries, and states or instructions that are neither string, object, nor array.
+Requests are validated before dispatch and rejected with a `400` rather than silently approximated: unsupported question types, a choice question without choices, score levels outside what the model accepts, and repeated question names. A detail one model cannot read (an image or audio part for a TypeSafe model) fails only that attempt, so a configured fallback can serve the request; if every fallback fails too, the response carries the first attempt's error.
+
+## Map Form (Deprecated)
+
+Requests written in the earlier map form are still served and answered in the same form. New integrations should use the request above.
+
+```json
+{
+  "model": "typesafe/jev-1.13.0",
+  "state": "Customer message: I was double charged and nobody replied to my two emails. I want a refund today.",
+  "questions": {
+    "is_frustrated": { "kind": "noul", "instructions": "Is the customer frustrated?" },
+    "category": {
+      "kind": "choice",
+      "instructions": "Pick the ticket category",
+      "criteria": { "billing": "charges and refunds", "bug": "product defects", "other": "anything else" }
+    },
+    "urgency": {
+      "kind": "score",
+      "instructions": "Rate how urgently this needs a human reply",
+      "criteria": ["can wait a week", "should be answered soon", "needs a reply today"]
+    }
+  }
+}
+```
+
+The response keys answers by question name, each with a `kind` and a `value`:
+
+```json
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "is_frustrated": { "kind": "noul", "value": 0.98 },
+    "category": { "kind": "choice", "value": "billing", "confidence": 1, "probabilities": { "billing": 1, "bug": 0, "other": 0 } },
+    "urgency": { "kind": "score", "value": 2, "confidence": 1, "probabilities": { "0": 0, "1": 0, "2": 1 } }
+  }
+}
+```
+
+A body that does not read as the request above is read as the map form: its `questions` are an object keyed by name rather than a list. A `state` sent alongside `input` is ignored.
+
+<Note>
+OpenAI SDKs can send their own Decisions request to `POST /openai/v1/decisions` (see [OpenAI SDK](/integrations/openai-sdk/overview#decisions-api)). The body is the request above, and every decision model can answer it within the inputs it reads: TypeSafe-based and chat models read text only and reject image parts with a `400`, which a configured fallback can serve.
+</Note>
 
 <Note>
 TypeSafe's native API is also available 1:1 at `POST /typesafe/v1/systemone` - see the [TypeSafe provider page](/providers/supported-providers/typesafe) for the mapping between the two.

@@ -570,9 +570,11 @@ type ProviderConfig struct {
 	SendBackRawRequest       bool                              `json:"send_back_raw_request"`                 // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
+	IgnoreProviderCost       bool                              `json:"ignore_provider_cost"`                  // Ignore provider-reported usage.cost and price from Bifrost's catalog
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`                // Prompt-cache breakpoint injection
+	InjectedTools            *schemas.InjectedToolsConfig      `json:"injected_tools,omitempty"`              // MCP tools injected and auto-executed server side
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -591,9 +593,11 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		SendBackRawRequest:       p.SendBackRawRequest,
 		SendBackRawResponse:      p.SendBackRawResponse,
 		StoreRawRequestResponse:  p.StoreRawRequestResponse,
+		IgnoreProviderCost:       p.IgnoreProviderCost,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
 		PromptCache:              p.PromptCache,
+		InjectedTools:            p.InjectedTools,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,
@@ -883,6 +887,15 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 		hash.Write(data)
 	}
 
+	// Hash InjectedTools
+	if p.InjectedTools != nil {
+		data, err := sonic.Marshal(p.InjectedTools)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
 	// Hash SendBackRawRequest
 	if p.SendBackRawRequest {
 		hash.Write([]byte("sendBackRawRequest"))
@@ -896,6 +909,11 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash StoreRawRequestResponse
 	if p.StoreRawRequestResponse {
 		hash.Write([]byte("storeRawRequestResponse"))
+	}
+
+	// Hash IgnoreProviderCost
+	if p.IgnoreProviderCost {
+		hash.Write([]byte("ignoreProviderCost"))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil

@@ -243,6 +243,10 @@ export const SELF_HOSTED_DECISION_MODELS = [
 // the Jev Router), which that endpoint does not accept, so only these are offered.
 export const OPENROUTER_DECISION_MODELS = ["~typesafe/jev-latest", "typesafe/jev-1.13"] as const;
 
+// OPENAI_DECISION_MODEL is the model a newly selected OpenAI provider starts on.
+// The picker lists every model the datasheet marks as serving decisions.
+export const OPENAI_DECISION_MODEL = "gpt-6-luna";
+
 // DEFAULT_DECISION_CONFIG supplies the model, history window, and timeout for decision-model requests.
 export const DEFAULT_DECISION_CONFIG: Required<Pick<DecisionConfig, "provider" | "model" | "previous_message_count" | "timeout">> = {
 	provider: DEFAULT_DECISION_PROVIDER,

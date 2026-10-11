@@ -619,6 +619,9 @@ func TestRecoveryMiddleware_TracingRecordsPanicAsError(t *testing.T) {
 	if got := string(ctx.Response.Header.Peek("x-request-id")); got != "req-panic-1" {
 		t.Errorf("x-request-id = %q, want req-panic-1", got)
 	}
+	if got := string(ctx.Response.Header.Peek("x-bifrost-request-id")); got != "req-panic-1" {
+		t.Errorf("x-bifrost-request-id = %q, want req-panic-1", got)
+	}
 	if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
 		t.Error("expected x-bifrost-trace-id on the recovered 500")
 	}
@@ -3193,8 +3196,8 @@ func TestCollectDimensionHeaders(t *testing.T) {
 }
 
 // TestTracingMiddleware_SetsCorrelationHeaders asserts that every traced response
-// carries x-request-id and x-bifrost-trace-id so callers can pivot a request into
-// its logs and trace in Grafana/Tempo/Loki (BF-1041).
+// carries x-bifrost-request-id, x-bifrost-trace-id and the deprecated x-request-id so
+// callers can pivot a request into its logs and trace in Grafana/Tempo/Loki (BF-1041).
 func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 	SetLogger(&mockLogger{})
 
@@ -3218,8 +3221,12 @@ func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
 			t.Error("expected x-bifrost-trace-id response header to be set")
 		}
-		if got := string(ctx.Response.Header.Peek("x-request-id")); got == "" {
-			t.Error("expected x-request-id response header to be set")
+		got := string(ctx.Response.Header.Peek("x-bifrost-request-id"))
+		if got == "" {
+			t.Error("expected x-bifrost-request-id response header to be set")
+		}
+		if legacy := string(ctx.Response.Header.Peek("x-request-id")); legacy != got {
+			t.Errorf("x-request-id = %q, want the generated request id %q", legacy, got)
 		}
 	})
 
@@ -3228,11 +3235,39 @@ func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 		ctx.Request.Header.Set("x-request-id", "req-abc-123")
 		mw(func(*fasthttp.RequestCtx) {})(ctx)
 
+		if got := string(ctx.Response.Header.Peek("x-bifrost-request-id")); got != "req-abc-123" {
+			t.Errorf("x-bifrost-request-id = %q, want req-abc-123", got)
+		}
 		if got := string(ctx.Response.Header.Peek("x-request-id")); got != "req-abc-123" {
 			t.Errorf("x-request-id = %q, want req-abc-123", got)
 		}
 		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
 			t.Error("expected x-bifrost-trace-id response header to be set")
+		}
+	})
+
+	// An upstream that answers with its own x-request-id (OpenAI does) takes over the deprecated
+	// header, as it always has. x-bifrost-request-id and x-bifrost-trace-id stay this gateway's,
+	// even against a chained upstream Bifrost that sends its own.
+	t.Run("provider headers never replace the gateway's correlation headers", func(t *testing.T) {
+		ctx := newCtx()
+		ctx.Request.Header.Set("x-request-id", "req-abc-123")
+		mw(func(c *fasthttp.RequestCtx) {
+			lib.ForwardProviderResponseHeaders(c, map[string]string{
+				"X-Request-Id":         "req_upstream",
+				"X-Bifrost-Request-Id": "upstream-hop",
+				"X-Bifrost-Trace-Id":   "upstream-trace",
+			})
+		})(ctx)
+
+		if got := string(ctx.Response.Header.Peek("x-bifrost-request-id")); got != "req-abc-123" {
+			t.Errorf("x-bifrost-request-id = %q, want req-abc-123", got)
+		}
+		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" || got == "upstream-trace" {
+			t.Errorf("x-bifrost-trace-id = %q, want this gateway's trace id", got)
+		}
+		if got := string(ctx.Response.Header.Peek("x-request-id")); got != "req_upstream" {
+			t.Errorf("x-request-id = %q, want the provider's req_upstream", got)
 		}
 	})
 
@@ -3250,6 +3285,9 @@ func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 		}
 		if got := string(ctx.Response.Header.Peek("x-request-id")); got == "" {
 			t.Error("expected x-request-id to survive the error path")
+		}
+		if got := string(ctx.Response.Header.Peek("x-bifrost-request-id")); got == "" {
+			t.Error("expected x-bifrost-request-id to survive the error path")
 		}
 	})
 }

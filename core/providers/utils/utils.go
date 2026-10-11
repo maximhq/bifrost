@@ -4919,6 +4919,12 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	if ctx == nil {
 		return
 	}
+	// A provider-injected tool loop chains several upstream streams into one client
+	// stream. While another turn will follow, this stream's end is not the request's,
+	// so the request's single LLM span stays open for the final turn to complete.
+	if pending, _ := ctx.Value(schemas.BifrostContextKeyStreamTurnPending).(bool); pending {
+		return
+	}
 
 	// Get the trace ID from context (this IS available in the provider's goroutine)
 	traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string)

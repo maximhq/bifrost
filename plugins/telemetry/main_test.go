@@ -716,7 +716,9 @@ func gaugeValue(t *testing.T, reg *prometheus.Registry, name string, labels map[
 // docs describe: a failed attempt marks its key 0, except when the failure says nothing about
 // the key's health: a model this key cannot reach or that was retired (model_access,
 // model_gone), or a region block that may be the gateway's location (region_blocked). Those
-// leave the key's gauge untouched. The key that finally served is marked 1 either way.
+// leave the key's gauge untouched. A caller's cancellation carries no fail_reason, since the caller
+// leaving says nothing about the key, so it leaves the gauge untouched too; a timeout carries one and
+// marks the key down. The key that finally served is marked 1 either way.
 func TestProviderKeyUpSkipsModelAndRegionFailures(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -730,6 +732,8 @@ func TestProviderKeyUpSkipsModelAndRegionFailures(t *testing.T) {
 		{"model_access leaves the key untouched", schemas.FailureClassModelAccess, "model_access_error", 404, false},
 		{"model_gone leaves the key untouched", schemas.FailureClassModelGone, "model_retired_error", 404, false},
 		{"region_blocked leaves the key untouched", schemas.FailureClassRegionBlocked, "region_blocked_error", 400, false},
+		{"timeout marks the key down", schemas.FailureClassTimeout, schemas.RequestTimedOut, 504, true},
+		{"a cancellation, with no fail_reason, leaves the key untouched", schemas.FailureClassCancelled, "", 499, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -740,13 +744,16 @@ func TestProviderKeyUpSkipsModelAndRegionFailures(t *testing.T) {
 			resp.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", "gpt-4o")
 
 			status := tc.status
-			failReason := tc.failReason
+			var failReason *string
+			if tc.failReason != "" {
+				failReason = &tc.failReason
+			}
 			ctx := newHookContext(schemas.ChatCompletionRequest)
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-b")
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, "Key B")
 			ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, 1)
 			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{
-				{Attempt: 0, KeyID: "key-a", KeyName: "Key A", FailReason: &failReason, FailureClass: tc.class, StatusCode: &status, TriggeredRotation: true},
+				{Attempt: 0, KeyID: "key-a", KeyName: "Key A", FailReason: failReason, FailureClass: tc.class, StatusCode: &status, TriggeredRotation: true},
 				{Attempt: 1, KeyID: "key-b", KeyName: "Key B"},
 			})
 			if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
@@ -785,6 +792,11 @@ func TestLabelSetsAreNotAliased(t *testing.T) {
 		{"neither", false, nil},
 		{"several custom", true, []string{"user-email", "tenant", "region"}},
 		{"many custom", true, manyLabels(50)},
+		// A custom label naming one of the per-metric labels used to duplicate it on that
+		// metric and panic during registration, which took the gateway down at boot.
+		{"collides with spliced label", true, []string{"is_success"}},
+		{"collides with error metric labels", false, []string{"status_code", "error_type"}},
+		{"collides with cache label", false, []string{"cache_type"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &Config{CustomLabels: tc.custom}
@@ -822,4 +834,23 @@ func manyLabels(n int) []string {
 		out[i] = "custom_" + strconv.Itoa(i)
 	}
 	return out
+}
+
+// Init registers every metric through promauto, which panics rather than returning an
+// error. At boot that killed the process over a stored config value, so Init recovers and
+// reports the failure instead.
+func TestInitReturnsErrorOnRegistrationConflict(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "http_requests_total", Help: "conflicting registration"},
+		[]string{"path", "method", "status"},
+	))
+
+	p, err := Init(&Config{Registry: registry}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err == nil {
+		t.Fatal("Init succeeded despite a conflicting metric registration; a panic here takes the gateway down at boot")
+	}
+	if p != nil {
+		t.Fatalf("Init returned a plugin alongside the error: %v", p)
+	}
 }

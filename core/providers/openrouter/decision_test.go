@@ -37,37 +37,18 @@ func newDecisionRequest(model string) *schemas.BifrostDecisionRequest {
 	return &schemas.BifrostDecisionRequest{
 		Provider: schemas.OpenRouter,
 		Model:    model,
-		State:    "I was double charged and nobody replied. I want a refund today.",
-		Questions: map[string]schemas.DecisionQuestion{
-			"is_frustrated": {Kind: schemas.DecisionKindNoul, Instructions: "Is the customer frustrated?"},
-			"category": {
-				Kind:         schemas.DecisionKindChoice,
-				Instructions: "Pick the ticket category",
-				Criteria:     map[string]interface{}{"billing": "charges and refunds", "other": "anything else"},
-			},
-			"urgency": {
-				Kind:         schemas.DecisionKindScore,
-				Instructions: "Rate how urgently this needs a human reply",
-				Criteria:     []interface{}{"can wait a week", "needs a reply today"},
-			},
+		Input:    schemas.DecisionInput{Text: schemas.Ptr("I was double charged and nobody replied. I want a refund today.")},
+		Questions: []schemas.DecisionQuestion{
+			{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("is_frustrated"), Instructions: schemas.NewDecisionText("Is the customer frustrated?")},
+			{Type: schemas.DecisionTypeChoice, Name: schemas.Ptr("category"), Instructions: schemas.NewDecisionText("Pick the ticket category"), Choices: []schemas.DecisionChoice{
+				{Value: schemas.DecisionScalar{Str: schemas.Ptr("billing")}, Description: schemas.NewDecisionText("charges and refunds")},
+				{Value: schemas.DecisionScalar{Str: schemas.Ptr("other")}, Description: schemas.NewDecisionText("anything else")},
+			}},
+			{Type: schemas.DecisionTypeScore, Name: schemas.Ptr("urgency"), Instructions: schemas.NewDecisionText("Rate how urgently this needs a human reply"), Levels: []schemas.DecisionLevel{
+				{Label: "0", Description: schemas.NewDecisionText("can wait a week")},
+				{Label: "1", Description: schemas.NewDecisionText("needs a reply today")},
+			}},
 		},
-	}
-}
-
-func TestIsTypesafeModel(t *testing.T) {
-	cases := map[string]bool{
-		"typesafe/jev-1.13":    true,
-		"~typesafe/jev-latest": true,
-		"TypeSafe/jev-1.13":    true,
-		"openai/gpt-4o":        false,
-		"typesafe-jev":         false,
-		"nottypesafe/jev":      false,
-		"":                     false,
-	}
-	for model, want := range cases {
-		if got := schemas.IsTypesafeModel(model); got != want {
-			t.Errorf("IsTypesafeModel(%q) = %v, want %v", model, got, want)
-		}
 	}
 }
 
@@ -126,14 +107,18 @@ func TestDecision_TypesafeModelUsesNativeEndpoint(t *testing.T) {
 			if resp.Model != "typesafe/jev-1.13-20260917" {
 				t.Errorf("model = %q, want resolved upstream model", resp.Model)
 			}
-			if resp.Answers["is_frustrated"].Value != 0.96 || resp.Answers["category"].Value != "billing" || resp.Answers["urgency"].Value != 0.99 {
+			if len(resp.Answers) != 3 {
+				t.Fatalf("answers = %+v", resp.Answers)
+			}
+			frustrated, category, urgency := resp.Answers[0], resp.Answers[1], resp.Answers[2]
+			if *frustrated.Probability != 0.96 || *category.Choice.Str != "billing" || *urgency.Score != 0.99 {
 				t.Errorf("answers not preserved: %+v", resp.Answers)
 			}
-			if resp.Answers["category"].Probabilities["billing"] != 0.95 || *resp.Answers["category"].Confidence != 0.9 {
-				t.Errorf("choice probabilities or confidence lost: %+v", resp.Answers["category"])
+			if category.Probabilities[0].Probability != 0.95 || *category.Probabilities[0].Value.Str != "billing" || *category.Confidence != 0.9 {
+				t.Errorf("choice probabilities or confidence lost: %+v", category)
 			}
-			if resp.Answers["urgency"].Legend["1"] != "needs a reply today" {
-				t.Errorf("score legend lost: %+v", resp.Answers["urgency"])
+			if urgency.Legend["1"] != "needs a reply today" {
+				t.Errorf("score legend lost: %+v", urgency)
 			}
 			if resp.Usage == nil || resp.Usage.PromptTokens != 476 || resp.Usage.CompletionTokens != 70 || resp.Usage.TotalTokens != 546 {
 				t.Fatalf("usage tokens = %+v", resp.Usage)
@@ -165,8 +150,8 @@ func TestDecision_UpstreamErrorPreserved(t *testing.T) {
 }
 
 func TestToBifrostDecisionResponse_CostOnlyWhenBilled(t *testing.T) {
-	request := &schemas.BifrostDecisionRequest{Questions: map[string]schemas.DecisionQuestion{
-		"is_spam": {Kind: schemas.DecisionKindNoul, Instructions: "Is this spam?"},
+	request := &schemas.BifrostDecisionRequest{Questions: []schemas.DecisionQuestion{
+		{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("is_spam"), Instructions: schemas.NewDecisionText("Is this spam?")},
 	}}
 	tests := []struct {
 		name string

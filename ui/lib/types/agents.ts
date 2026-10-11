@@ -115,6 +115,7 @@ export interface AgentRegistrationView {
 
 export interface AgentPushConfigView {
 	agent_name: string;
+	tenant?: string;
 	task_id: string;
 	config_id: string;
 	url: string;

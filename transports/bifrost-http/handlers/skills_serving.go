@@ -1627,26 +1627,11 @@ func buildSkillFilePath(skillName string, file *tables.TableSkillFile) string {
 	return path.Join(skillName, file.Path)
 }
 
-// skillsServingWorkTimeout bounds store, object-store and outbound HTTP work started while
-// serving a skills request.
-const skillsServingWorkTimeout = 30 * time.Second
-
 // skillsServingWorkContext returns the context to hand to the config store, the object store
-// and outbound HTTP clients while serving a skills request.
-//
-// Never pass the *fasthttp.RequestCtx itself. Its Done() returns a server-wide channel
-// (fasthttp.Server.done), closed only on server shutdown, not per request (fasthttp's own
-// documented tradeoff, since allocating a channel per request is expensive). Whenever
-// ctx.Done() != nil, database/sql and net/http spawn an internal cancellation-watcher
-// goroutine that keeps reading RequestCtx.s.done after the handler returns, while
-// Server.ShutdownWithContext writes s.done = nil once every connection has closed. That is an
-// unsynchronized write against a live reader: the data race seen under -race in
-// TestClaudeMarketplaceGitRepoContainsMarketplaceAndCloneablePlugin.
-//
-// Deriving from context.Background() gives up nothing, because a RequestCtx carries no
-// per-request cancellation to propagate in the first place.
+// and outbound HTTP clients while serving a skills request. Background-rooted because these
+// paths read no request values; see RequestWorkContext for why the RequestCtx is never used.
 func skillsServingWorkContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), skillsServingWorkTimeout)
+	return RequestWorkContext(context.Background(), RequestWorkTimeout)
 }
 
 // lookupSkillByPathParam extracts the skill-name path parameter and fetches the skill.

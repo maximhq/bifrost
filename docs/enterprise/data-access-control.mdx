@@ -102,7 +102,7 @@ The table below summarizes which rows a member sees under each scope. Resources 
 The two remaining scopes follow the `team-data` column with a different grouping:
 
 - **`business-unit-data`** - own rows plus rows owned by the business units the user belongs to: their direct members and business-unit-owned virtual keys. It does not include `team-data`'s team rows; the two scopes are siblings.
-- **`customer-data`** - everything under the customers the user reaches through their teams or business units: every team and business unit of those customers, their members, and customer-owned virtual keys. It includes what both `team-data` and `business-unit-data` show.
+- **`customer-data`** - everything under the customers the user reaches through their teams or business units: every team and business unit of those customers, their members, and customer-owned virtual keys. A team or business unit that belongs to no customer grants nothing, so a user whose groups sit under no customer sees only their own rows.
 
 <Note>
   Rows created before DAC was adopted remain visible under every scope. New rows always carry

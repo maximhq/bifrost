@@ -517,3 +517,41 @@ func TestReservedKey_NonComparableKeyDoesNotPanic(t *testing.T) {
 	// userValues is still nil here; the guard must not panic before that check.
 	ctx.ClearValue([]string{"slice", "key"})
 }
+
+type trustedTestKey struct{}
+
+// TestTrustedValue_HiddenFromUserValues pins the trusted store: nothing a plugin can
+// enumerate or copy exposes it, yet children and plugin scopes of the context see it.
+func TestTrustedValue_HiddenFromUserValues(t *testing.T) {
+	root := NewBifrostContext(context.Background(), NoDeadline)
+	defer root.Cancel()
+	root.SetTrustedValue(trustedTestKey{}, "secret")
+
+	if v := root.Value(trustedTestKey{}); v != nil {
+		t.Fatalf("Value exposed a trusted value: %v", v)
+	}
+	for k := range root.GetUserValues() {
+		if _, ok := k.(trustedTestKey); ok {
+			t.Fatal("GetUserValues exposed a trusted key")
+		}
+	}
+	if v := root.GetParentCtxWithUserValues().Value(trustedTestKey{}); v != nil {
+		t.Fatalf("GetParentCtxWithUserValues copied a trusted value: %v", v)
+	}
+
+	child := NewBifrostContext(root, NoDeadline)
+	defer child.Cancel()
+	if v := child.TrustedValue(trustedTestKey{}); v != "secret" {
+		t.Fatalf("child context lost the trusted value: %v", v)
+	}
+
+	scoped := root.WithPluginScope(new("plugin"))
+	defer scoped.ReleasePluginScope()
+	if v := scoped.TrustedValue(trustedTestKey{}); v != "secret" {
+		t.Fatalf("plugin scope lost the trusted value: %v", v)
+	}
+	scoped.SetTrustedValue(trustedTestKey{}, "rewritten")
+	if v := root.TrustedValue(trustedTestKey{}); v != "rewritten" {
+		t.Fatalf("scoped write did not reach the root: %v", v)
+	}
+}

@@ -228,6 +228,7 @@ func (h *AgentGatewayHandler) RegisterManagementRoutes(r *router.Router, middlew
 	r.GET("/api/agents/history/filterdata", lib.ChainMiddlewares(h.historyFilterData, middlewares...))
 	r.GET("/api/agents/history/stats", lib.ChainMiddlewares(h.historyStats, middlewares...))
 	r.GET("/api/agents/history/histogram", lib.ChainMiddlewares(h.historyHistogram, middlewares...))
+	r.GET("/api/agents/history/top-agents", lib.ChainMiddlewares(h.historyTopAgents, middlewares...))
 	r.GET("/api/agents/history/{id}", lib.ChainMiddlewares(h.getHistoryEntry, middlewares...))
 }
 
@@ -536,6 +537,28 @@ func (h *AgentGatewayHandler) historyStats(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	SendJSON(ctx, stats)
+}
+
+// historyTopAgents serves GET /api/agents/history/top-agents: the ten Agents
+// with the most operations under the same filters as the list endpoint.
+func (h *AgentGatewayHandler) historyTopAgents(ctx *fasthttp.RequestCtx) {
+	if h.config.LogsStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "logs store is not available")
+		return
+	}
+	filter, _, err := parseAgentHistorySearch(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	logCtx := agentGatewayLogContext(ctx)
+	defer logCtx.Cancel()
+	result, err := h.config.LogsStore.GetAgentTopAgents(logCtx, filter, 10)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "failed to get top agents")
+		return
+	}
+	SendJSON(ctx, result)
 }
 
 // historyHistogram serves GET /api/agents/history/histogram, the volume chart's
@@ -861,7 +884,7 @@ func (h *AgentGatewayHandler) serveProtocol(ctx *fasthttp.RequestCtx, binding ag
 		}
 	}
 	downstreamTransport := binding.String()
-	requestOrigin := lib.BuildBaseURL(ctx, "")
+	requestOrigin := lib.BuildBaseURL(ctx, h.config.GetA2AExternalClientURL())
 	ctx.SetUserValue(schemas.BifrostContextKeyA2ADownstreamTransport, downstreamTransport)
 	ctx.SetUserValue(schemas.BifrostContextKeyA2ARequestOrigin, requestOrigin)
 	if bifrostCtx, ok := ctx.UserValue(agentGatewayBifrostContextKey).(*schemas.BifrostContext); ok {

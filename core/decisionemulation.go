@@ -59,13 +59,24 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 		}
 	}
 
-	tool, err := providerUtils.BuildDecisionResponsesTool(req.Questions)
+	// The state reaches the model as text, so an image, audio, or any other
+	// non-text part would be read as its encoding; refusing beats a silent
+	// answer that never saw the evidence.
+	if partType := req.Input.NonTextPartType(); partType != "" {
+		return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("decision emulation cannot read an %q part in the input; route the request to a provider that accepts it", partType))
+	}
+
+	names, err := schemas.DecisionQuestionNames(req.Questions)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
+	}
+	tool, err := providerUtils.BuildDecisionResponsesTool(req.Questions, names)
 	if err != nil {
 		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 	}
 
-	// State as the user message: string verbatim, structured as sorted JSON.
-	stateText, marshalErr := decisionStateText(req.State)
+	// Input as the user message: text verbatim, anything else as sorted JSON.
+	stateText, marshalErr := decisionStateText(req.Input)
 	if marshalErr != nil {
 		return nil, providerUtils.NewBifrostBadRequestError("decision state could not be serialized: " + marshalErr.Error())
 	}
@@ -99,7 +110,7 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 		return nil, providerUtils.NewBifrostOperationError(extractErr.Error(), nil)
 	}
 
-	answers, parseErr := providerUtils.ParseDecisionAnswers([]byte(argsJSON), req.Questions)
+	answers, parseErr := providerUtils.ParseDecisionAnswers([]byte(argsJSON), req.Questions, names)
 	if parseErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(parseErr.Error(), nil)
 	}
@@ -143,12 +154,17 @@ func decisionToolChoice(ctx *schemas.BifrostContext, provider schemas.ModelProvi
 	return string(schemas.ResponsesToolChoiceTypeRequired)
 }
 
-// decisionStateText renders the state into a message body.
-func decisionStateText(state interface{}) (string, error) {
-	if s, ok := state.(string); ok {
-		return s, nil
+// decisionStateText renders the input into a message body: text verbatim,
+// and messages, a structured input, or null as sorted JSON.
+func decisionStateText(input schemas.DecisionInput) (string, error) {
+	var value interface{} = input.Structured
+	switch {
+	case input.Text != nil:
+		return *input.Text, nil
+	case input.Messages != nil:
+		value = input.Messages
 	}
-	raw, err := providerUtils.MarshalSorted(state)
+	raw, err := providerUtils.MarshalSorted(value)
 	if err != nil {
 		return "", err
 	}

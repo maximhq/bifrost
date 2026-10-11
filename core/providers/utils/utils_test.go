@@ -3900,3 +3900,26 @@ func TestFasthttpRoundTripper_ContextEndsWhileDialing(t *testing.T) {
 		t.Fatalf("RoundTrip took %v after the context ended, want it to return promptly", elapsed)
 	}
 }
+
+// A provider-injected tool loop chains several upstream streams into one client stream.
+// While another turn will follow, an upstream stream's final chunk is not the end of the
+// request, so the request's single LLM span must stay open for the turns still to come.
+func TestCompleteDeferredSpan_LeavesSpanOpenWhileStreamTurnPending(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	ctx.SetValue(schemas.BifrostContextKeyStreamTurnPending, true)
+
+	EnsureStreamFinalizerCalled(ctx, nil)
+	if tracer.GetDeferredSpanHandle("trace-1") == nil {
+		t.Fatal("the span must stay parked while another turn is pending")
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamTurnPending, false)
+	EnsureStreamFinalizerCalled(ctx, nil)
+	if tracer.GetDeferredSpanHandle("trace-1") != nil {
+		t.Error("the span completes once no turn is pending")
+	}
+}

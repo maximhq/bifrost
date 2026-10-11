@@ -3,6 +3,7 @@ package llmtests
 import (
 	"context"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -11,43 +12,62 @@ import (
 )
 
 // BasicDecisionExpectations validates common decision invariants for provider
-// tests: every requested question produces an answer of its declared kind with
-// a well-typed value.
+// tests: every requested question produces an answer of its declared type, in
+// question order and under the question's name, with a well-typed value.
 func BasicDecisionExpectations(t *testing.T, response *schemas.BifrostDecisionResponse, request *schemas.BifrostDecisionRequest) {
 	t.Helper()
 
 	if response == nil {
 		t.Fatal("❌ Decision response is nil")
 	}
-	if len(response.Answers) == 0 {
-		t.Fatal("❌ Decision response carries no answers")
+	if len(response.Answers) != len(request.Questions) {
+		t.Fatalf("❌ Decision response carries %d answers for %d questions", len(response.Answers), len(request.Questions))
 	}
 
-	for name, question := range request.Questions {
-		answer, ok := response.Answers[name]
-		if !ok {
-			t.Fatalf("❌ Question %q produced no answer", name)
+	for i, question := range request.Questions {
+		answer := response.Answers[i]
+		name := *question.Name
+		if answer.Name == nil || *answer.Name != name {
+			t.Fatalf("❌ Answer %d is not named %q", i, name)
 		}
-		if answer.Kind != question.Kind {
-			t.Fatalf("❌ Answer %q has kind %q; expected %q", name, answer.Kind, question.Kind)
+		if answer.Type != question.Type {
+			t.Fatalf("❌ Answer %q has type %q; expected %q", name, answer.Type, question.Type)
 		}
-		switch answer.Kind {
-		case schemas.DecisionKindNoul:
-			number, ok := answer.Value.(float64)
-			if !ok || number < 0 || number > 1 {
-				t.Fatalf("❌ Noul answer %q is not a number in [0,1]: %v", name, answer.Value)
+		switch answer.Type {
+		case schemas.DecisionTypePredicate:
+			if answer.Probability == nil || *answer.Probability < 0 || *answer.Probability > 1 {
+				t.Fatalf("❌ Predicate answer %q carries no probability in [0,1]", name)
 			}
-		case schemas.DecisionKindChoice:
-			if _, ok := answer.Value.(string); !ok {
-				t.Fatalf("❌ Choice answer %q is not a string: %v", name, answer.Value)
+		case schemas.DecisionTypeChoice:
+			if answer.Choice == nil || answer.Choice.Str == nil {
+				t.Fatalf("❌ Choice answer %q carries no option", name)
 			}
-		case schemas.DecisionKindScore:
-			if _, ok := answer.Value.(float64); !ok {
-				t.Fatalf("❌ Score answer %q is not a number: %v", name, answer.Value)
+		case schemas.DecisionTypeScore:
+			if answer.Score == nil {
+				t.Fatalf("❌ Score answer %q carries no score", name)
 			}
 		default:
-			t.Fatalf("❌ Answer %q has unknown kind %q", name, answer.Kind)
+			t.Fatalf("❌ Answer %q has unknown type %q", name, answer.Type)
 		}
+	}
+}
+
+// decisionTestQuestions are the questions both live decision scenarios ask: a
+// predicate, a choice over the given options, and a score over the given
+// levels.
+func decisionTestQuestions(options map[string]string, levels []string) []schemas.DecisionQuestion {
+	choices := make([]schemas.DecisionChoice, 0, len(options))
+	for _, option := range []string{"billing", "bug", "other"} {
+		choices = append(choices, schemas.DecisionChoice{Value: schemas.DecisionScalar{Str: schemas.Ptr(option)}, Description: schemas.NewDecisionText(options[option])})
+	}
+	scoreLevels := make([]schemas.DecisionLevel, len(levels))
+	for i, level := range levels {
+		scoreLevels[i] = schemas.DecisionLevel{Label: strconv.Itoa(i), Description: schemas.NewDecisionText(level)}
+	}
+	return []schemas.DecisionQuestion{
+		{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("is_frustrated"), Instructions: schemas.NewDecisionText("Is the customer frustrated?")},
+		{Type: schemas.DecisionTypeChoice, Name: schemas.Ptr("category"), Instructions: schemas.NewDecisionText("Pick the ticket category"), Choices: choices},
+		{Type: schemas.DecisionTypeScore, Name: schemas.Ptr("urgency"), Instructions: schemas.NewDecisionText("Rate how urgently this ticket needs a human reply"), Levels: scoreLevels},
 	}
 }
 
@@ -72,27 +92,11 @@ func RunDecisionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 		request := &schemas.BifrostDecisionRequest{
 			Provider: testConfig.Provider,
 			Model:    testConfig.DecisionModel,
-			State:    state,
-			Questions: map[string]schemas.DecisionQuestion{
-				"is_frustrated": {
-					Kind:         schemas.DecisionKindNoul,
-					Instructions: "Is the customer frustrated?",
-				},
-				"category": {
-					Kind:         schemas.DecisionKindChoice,
-					Instructions: "Pick the ticket category",
-					Criteria: map[string]interface{}{
-						"billing": "charges, refunds, invoices",
-						"bug":     "product defects",
-						"other":   "anything else",
-					},
-				},
-				"urgency": {
-					Kind:         schemas.DecisionKindScore,
-					Instructions: "Rate how urgently this ticket needs a human reply",
-					Criteria:     []interface{}{"can wait a week", "should be answered soon", "needs a reply today"},
-				},
-			},
+			Input:    schemas.DecisionInput{Text: &state},
+			Questions: decisionTestQuestions(
+				map[string]string{"billing": "charges, refunds, invoices", "bug": "product defects", "other": "anything else"},
+				[]string{"can wait a week", "should be answered soon", "needs a reply today"},
+			),
 			Fallbacks: testConfig.DecisionFallbacks,
 		}
 
@@ -134,20 +138,11 @@ func RunDecisionEmulationTest(t *testing.T, client *bifrost.Bifrost, ctx context
 		request := &schemas.BifrostDecisionRequest{
 			Provider: provider,
 			Model:    model,
-			State:    "Customer message: I was double charged and support ignored my emails. I want a refund now or I cancel.",
-			Questions: map[string]schemas.DecisionQuestion{
-				"is_frustrated": {Kind: schemas.DecisionKindNoul, Instructions: "Is the customer frustrated?"},
-				"category": {
-					Kind:         schemas.DecisionKindChoice,
-					Instructions: "Pick the ticket category",
-					Criteria:     map[string]interface{}{"billing": "charges and refunds", "bug": "product defects", "other": "anything else"},
-				},
-				"urgency": {
-					Kind:         schemas.DecisionKindScore,
-					Instructions: "Rate how urgently this needs a human reply",
-					Criteria:     []interface{}{"low", "medium", "high"},
-				},
-			},
+			Input:    schemas.DecisionInput{Text: schemas.Ptr("Customer message: I was double charged and support ignored my emails. I want a refund now or I cancel.")},
+			Questions: decisionTestQuestions(
+				map[string]string{"billing": "charges and refunds", "bug": "product defects", "other": "anything else"},
+				[]string{"low", "medium", "high"},
+			),
 		}
 
 		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
@@ -157,9 +152,9 @@ func RunDecisionEmulationTest(t *testing.T, client *bifrost.Bifrost, ctx context
 		}
 
 		BasicDecisionExpectations(t, response, request)
-		for name, answer := range response.Answers {
+		for _, answer := range response.Answers {
 			if answer.Confidence == nil {
-				t.Errorf("❌ Emulated answer %q has no confidence", name)
+				t.Errorf("❌ Emulated answer %q has no confidence", *answer.Name)
 			}
 		}
 		t.Logf("✅ Decision emulation passed via %s: %d answers", testConfig.DecisionEmulationModel, len(response.Answers))

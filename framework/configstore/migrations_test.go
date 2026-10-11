@@ -4541,3 +4541,24 @@ func TestMigrationAddVirtualKeyDeleteAfterExpireColumn(t *testing.T) {
 	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_virtual_key_delete_after_expire_column").Error)
 	require.NoError(t, migrationAddVirtualKeyDeleteAfterExpireColumn(ctx, db, testMigrationLogger))
 }
+
+// Rolling back add_ignore_provider_cost_column is refused rather than performed:
+// the column holds an operator's per-provider choice, and dropping it would
+// silently send those providers back to trusting their reported usage.cost.
+func TestMigrationAddIgnoreProviderCostColumn_NonRollbackable(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableProvider{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableProvider{}, "ignore_provider_cost"))
+	require.NoError(t, migrationAddIgnoreProviderCostColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableProvider{}, "ignore_provider_cost"))
+
+	require.NoError(t, db.Create(&tables.TableProvider{Name: "cortecs", IgnoreProviderCost: true}).Error)
+
+	err := rollbackIgnoreProviderCostColumn(db, testMigrationLogger)
+	require.Error(t, err, "rollback must refuse: dropping the column discards the operator's setting")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&tables.TableProvider{}, "ignore_provider_cost"),
+		"a refused rollback must leave the column in place")
+}

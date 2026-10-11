@@ -16,7 +16,6 @@ export class ConfigSettingsPage extends BasePage {
 
   // Client Settings
   readonly dropExcessRequestsSwitch: Locator
-  readonly enableLiteLLMFallbacksSwitch: Locator
   readonly disableDBPingsSwitch: Locator
   readonly asyncJobResultTtlInput: Locator
 
@@ -57,7 +56,6 @@ export class ConfigSettingsPage extends BasePage {
 
     // Client Settings locators
     this.dropExcessRequestsSwitch = page.locator('#drop-excess-requests')
-    this.enableLiteLLMFallbacksSwitch = page.locator('#enable-litellm-fallbacks')
     this.disableDBPingsSwitch = page.locator('#disable-db-pings-in-health')
     this.asyncJobResultTtlInput = page.getByTestId('client-settings-async-job-result-ttl-input')
 
@@ -89,10 +87,10 @@ export class ConfigSettingsPage extends BasePage {
     this.observabilityToggles = page.locator('button[role="switch"]')
 
     // Pricing Config locators
-    this.pricingConfigView = page.getByTestId('pricing-config-view')
+    this.pricingConfigView = page.getByTestId('model-settings-view')
     this.pricingDatasheetUrlInput = page.getByTestId('pricing-datasheet-url-input')
     this.pricingForceSyncBtn = page.getByTestId('pricing-force-sync-btn')
-    this.pricingSaveBtn = page.getByTestId('pricing-save-btn')
+    this.pricingSaveBtn = page.getByTestId('model-settings-save-btn')
   }
 
   async goto(path: string): Promise<void> {
@@ -302,10 +300,6 @@ export class ConfigSettingsPage extends BasePage {
     await this.dropExcessRequestsSwitch.click()
   }
 
-  async toggleLiteLLMFallbacks(): Promise<void> {
-    await this.enableLiteLLMFallbacksSwitch.click()
-  }
-
   async toggleDisableDBPings(): Promise<void> {
     await this.disableDBPingsSwitch.click()
   }
@@ -413,7 +407,13 @@ export class ConfigSettingsPage extends BasePage {
   }
 
   async savePricingConfig(): Promise<void> {
+    // The save re-syncs the pricing datasheet and model parameters before responding, which can take ~10s.
+    const saved = this.page.waitForResponse(
+      (r) => r.url().endsWith('/api/config') && r.request().method() === 'PUT',
+      { timeout: 60_000 },
+    )
     await this.pricingSaveBtn.click()
+    expect((await saved).ok()).toBe(true)
     await this.waitForSuccessToast()
   }
 }

@@ -241,9 +241,31 @@ bifrost:
             weight: 1
             allowed_models: ["*"]
             key_ids: ["openai-batch"]    # only the batch-flagged key
+
+      # 7. Contractor key: expires, owned by a business unit, no content logging
+      - id: "vk-contractor"
+        name: "Contractor (expires end of year)"
+        value: "vk-contractor-token"
+        is_active: true
+        business_unit_id: "bu-research"   # mutually exclusive with team_id and customer_id
+        expires_at: "2026-12-31T23:59:59Z"
+        delete_after_expire: true         # delete the key once expires_at passes
+        disable_content_logging: true     # keep request/response content out of the logs for this key
+        allow_all_providers: true
 ```
 
 `provider_configs[].key_ids` and `provider_configs[].keys` are both supported in Helm values. Prefer `key_ids` for parity with `config.json` (`key_ids` should contain provider key names).
+
+| Field | Description |
+|-------|-------------|
+| `expires_at` | RFC3339 expiry. Once passed, requests with the key are rejected |
+| `delete_after_expire` | Delete the key once `expires_at` passes. Omit to follow `bifrost.client.deleteExpiredVirtualKeys` (default `false`); `true` or `false` overrides it for this key |
+| `disable_content_logging` | Per-key override of `bifrost.client.disableContentLogging`. Omit to inherit; `false` forces content into the log store even when the client setting is `true` |
+| `business_unit_id` | Owning business unit. Mutually exclusive with `team_id` and `customer_id` |
+
+To delete expired keys globally, set `bifrost.client.deleteExpiredVirtualKeys: true` (renders into `client.delete_expired_virtual_keys`). A daily job then removes every expired key except those with `delete_after_expire: false`.
+
+To let a virtual key call an A2A agent, grant it from the agent side with `bifrost.agents[].virtual_key_ids`.
 
 **Use a virtual key in API calls:**
 
@@ -335,7 +357,7 @@ CEL-expression-based routing rules redirect requests to different providers or m
 |-------|-------------|
 | `cel_expression` | CEL expression evaluated against the request; if `true`, rule fires |
 | `targets` | Provider/model targets with weights |
-| `fallbacks` | Providers to try if all targets fail |
+| `fallbacks` | Fallback chain tried if all targets fail. Each entry is a `provider/model` string (`provider/` keeps the incoming model), or an object `{ provider, model, provider_key_name }` that also pins a provider key |
 | `scope` | `global`, `team`, `customer`, or `virtual_key` |
 | `scope_id` | Required for non-global scopes |
 | `priority` | Lower number = evaluated first |
@@ -367,7 +389,11 @@ bifrost:
           - provider: "groq"
             model: "llama-3.3-70b-versatile"
             weight: 1.0
-        fallbacks: ["openai"]
+        fallbacks:
+          - "openai"
+          - provider: "azure"            # object form pins a provider key for this fallback
+            model: "gpt-4o"
+            provider_key_name: "azure-eu"
         scope: "global"
         priority: 1
 
@@ -390,7 +416,7 @@ bifrost:
 
 ## Complexity Router Configuration
 
-If you use `complexity_tier` in routing rules, choose a decision model or Semantic as the primary classifier in Helm. The chart renders this block to `governance.complexity_analyzer_config` in `config.json`. The decision model is Typesafe Jev by default, or any decision model reachable through `/v1/decisions` (for example Laya, Nimble, or Clef served by a custom provider with `base_provider_type: typesafe`); it uses that provider's enabled key. Semantic needs an embedding provider and reference phrases.
+If you use `complexity_tier` in routing rules, choose a decision model or Semantic as the primary classifier in Helm. The chart renders this block to `governance.complexity_analyzer_config` in `config.json`. The decision model is Typesafe Jev by default, or any decision model reachable through `/v1/decisions` (for example OpenAI's `gpt-6-luna` on the `openai` provider, or Laya, Nimble, or Clef served by a custom provider with `base_provider_type: typesafe`); it uses that provider's enabled key. Semantic needs an embedding provider and reference phrases.
 
 Omit this block, or leave `complexityAnalyzerConfig: null`, to leave complexity classification disabled. To enable it, supply all three `keywords` lists. They are required by the current config shape even when the decision model is primary, though it does not use the phrases. In the default split mode, supplied phrases merge with stored built-in defaults; with `sourceOfTruth: config.json`, the supplied lists are the complete phrase set.
 
