@@ -149,20 +149,25 @@ func (g *liveGateway) resolveTarget(preReqCtx *schemas.BifrostContext, path stri
 	return liveTarget{provider: liveProvider, providerKey: providerKey, voiceModel: voiceModel, backendModel: backendModel}, nil
 }
 
-// admit builds the session context, selects the one key that serves both models (OpenAI calls
-// the backend on it too) and opens the session's billing. The caller owns the returned cancel.
+// admit builds the session context, opens the session's billing and selects the one key that
+// serves both models (OpenAI calls the backend on it too). Governance admits the units first: it
+// publishes the keys the session may use, so the key is chosen among them, never outside them.
+// The caller owns the returned cancel.
 func (g *liveGateway) admit(auth *authHeaders, preReqCtx *schemas.BifrostContext, middlewareValues map[any]any, path string, target liveTarget, sessionID string) (*liveAdmission, *schemas.BifrostError) {
 	ctx, cancel := g.sessionContext(auth, preReqCtx, middlewareValues, path)
-	key, err := g.client.SelectKeyForProviderRequestType(ctx, schemas.LiveRequest, target.providerKey, target.voiceModel, target.backendModel)
-	if err != nil {
-		cancel()
-		return nil, newRealtimeWireBifrostError(400, "invalid_request_error", err.Error())
-	}
-	meter := newLiveMeter(g.client, ctx, target.providerKey, key, sessionID)
+	meter := newLiveMeter(g.client, ctx, target.providerKey, schemas.Key{}, sessionID)
 	if bifrostErr := meter.admit(target.voiceModel, target.backendModel); bifrostErr != nil {
 		cancel()
 		return nil, bifrostErr
 	}
+	key, err := g.client.SelectKeyForProviderRequestType(meter.keySelectionContext(), schemas.LiveRequest, target.providerKey, target.voiceModel, target.backendModel)
+	if err != nil {
+		bifrostErr := newRealtimeWireBifrostError(400, "invalid_request_error", err.Error())
+		meter.abort(bifrostErr)
+		cancel()
+		return nil, bifrostErr
+	}
+	meter.setKey(key)
 	_, isDirectKey := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
 	return &liveAdmission{liveTarget: target, ctx: ctx, cancel: cancel, key: key, meter: meter, checkKeyModels: !isDirectKey}, nil
 }

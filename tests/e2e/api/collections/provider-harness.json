@@ -246021,6 +246021,98 @@
       ]
     },
     {
+      "name": "198. Live admission needs one allowed key that serves both models (OpenAI local fixture)",
+      "description": "A live session runs its voice model and its backend model on one upstream connection, so one provider key has to serve both. Governance can limit a virtual key to a subset of the provider's keys; admission has to narrow key selection to that subset before looking for a key that serves both models (PR #8293). The case builds a run-scoped provider with a voice-only key, a backend-only key and an every-model key, limits the virtual key to the two split keys, and creates a WebRTC session naming both models on POST /v1/live/sessions, which runs the same admission as the WebSocket session.start. Red before the fix: the every-model key was still eligible, the create went upstream and failed on the fixture's SDP answer (502). Green after: 400 'no keys found ... that support both model' and nothing reaches the provider, so the local fixture does not need to be running.",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai/gpt-live-1 WebRTC create refused when no allowed key serves both models - live key admission",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var provider = 'openai-live-keys-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);",
+                  "pm.variables.set('liveKeysProvider', provider);",
+                  "var base = pm.variables.get('baseUrl');",
+                  "var headers = { 'Content-Type': 'application/json', 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || 'bifrost-e2e-setup-token' };",
+                  "function post(url, body, label, next) {",
+                  "  pm.sendRequest({url: base + url, method: 'POST', header: headers, body: {mode: 'raw', raw: JSON.stringify(body)}}, function (err, res) {",
+                  "    pm.test(label, function () { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.be.below(300); });",
+                  "    if (err || res.code >= 300) throw new Error('cannot: ' + label);",
+                  "    next(res);",
+                  "  });",
+                  "}",
+                  "// Three keys: one per model and one for every model. The virtual key may use only the two split keys.",
+                  "post('/api/providers', {provider: provider, custom_provider_config: {base_provider_type: 'openai'}, network_config: {base_url: 'http://127.0.0.1:8791', max_retries: 0, default_request_timeout_in_seconds: 10}}, 'Run-scoped fake provider created', function () {",
+                  "  post('/api/providers/' + provider + '/keys', {name: 'voice-only', value: 'sk-fake-voice-only', models: ['gpt-live-1'], weight: 1}, 'Voice-only key created', function () {",
+                  "    post('/api/providers/' + provider + '/keys', {name: 'backend-only', value: 'sk-fake-backend-only', models: ['gpt-5.6-luna'], weight: 1}, 'Backend-only key created', function () {",
+                  "      post('/api/providers/' + provider + '/keys', {name: 'every-model', value: 'sk-fake-every-model', models: ['*'], weight: 1}, 'Every-model key created', function () {",
+                  "        pm.sendRequest({url: base + '/api/providers/' + provider + '/keys', method: 'GET', header: headers}, function (err, res) {",
+                  "          pm.test('Provider keys listed', function () { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.equal(200); });",
+                  "          if (err || res.code !== 200) throw new Error('cannot list provider keys');",
+                  "          var ids = {}; (res.json().keys || []).forEach(function (k) { ids[k.name] = k.id; });",
+                  "          pm.test('Split keys have ids', function () { pm.expect(ids['voice-only'], res.text()).to.be.a('string'); pm.expect(ids['backend-only'], res.text()).to.be.a('string'); });",
+                  "          post('/api/governance/virtual-keys', {name: provider, provider_configs: [{provider: provider, weight: 1, allowed_models: ['gpt-live-1', 'gpt-5.6-luna'], key_ids: [ids['voice-only'], ids['backend-only']]}]}, 'Virtual key created', function (vkRes) {",
+                  "            pm.variables.set('liveKeysVK', vkRes.json().virtual_key.value);",
+                  "            pm.variables.set('liveKeysVKID', vkRes.json().virtual_key.id);",
+                  "          });",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var provider = pm.variables.get('liveKeysProvider');",
+                  "var base = pm.variables.get('baseUrl');",
+                  "// Admission narrows key selection to the virtual key's keys first: neither split key serves both",
+                  "// models, and the every-model key is off limits, so the create is refused before anything reaches",
+                  "// the provider. Before the fix the every-model key was picked and the create went upstream.",
+                  "pm.test('No allowed key serves both models: the create is refused with 400', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  var err = pm.response.json().error || {};",
+                  "  pm.expect(err.type, pm.response.text()).to.equal('invalid_request_error');",
+                  "  pm.expect(err.message, pm.response.text()).to.include('support both model');",
+                  "});",
+                  "pm.sendRequest({url: base + '/api/governance/virtual-keys/' + pm.variables.get('liveKeysVKID'), method: 'DELETE'}, function (vkErr, vkRes) {",
+                  "  pm.test('Virtual key removed', function () { pm.expect(vkErr).not.to.be.ok; pm.expect(vkRes && vkRes.code, vkRes && vkRes.text()).to.equal(200); });",
+                  "  pm.sendRequest({url: base + '/api/providers/' + provider, method: 'DELETE'}, function (err, res) {",
+                  "    pm.test('Run-scoped provider removed', function () { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.equal(200); });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{liveKeysVK}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session\": {\n    \"model\": \"{{liveKeysProvider}}/gpt-live-1\",\n    \"instructions\": \"live key admission\",\n    \"delegation\": {\n      \"type\": \"responses\",\n      \"responses\": {\n        \"model\": \"{{liveKeysProvider}}/gpt-5.6-luna\"\n      }\n    }\n  },\n  \"transport\": {\n    \"type\": \"webrtc\",\n    \"sdp\": \"v=0\\no=- 2520596364147198086 1791637009 IN IP4 0.0.0.0\\ns=-\\nt=0 0\\na=msid-semantic:WMS *\\na=fingerprint:sha-256 29:56:DD:98:22:7C:B2:1F:84:9E:BF:87:BF:52:4D:17:A3:AE:46:84:AA:B1:B8:E1:68:43:E9:9E:76:8F:9F:86\\na=extmap-allow-mixed\\na=group:BUNDLE 0 1\\nm=audio 9 UDP/TLS/RTP/SAVPF 111 9 0 8\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:0\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\na=rtcp-mux\\na=rtcp-rsize\\na=rtpmap:111 opus/48000/2\\na=fmtp:111 minptime=10;useinbandfec=1\\na=rtcp-fb:111 transport-cc\\na=rtpmap:9 G722/8000\\na=rtcp-fb:9 transport-cc\\na=rtpmap:0 PCMU/8000\\na=rtcp-fb:0 transport-cc\\na=rtpmap:8 PCMA/8000\\na=rtcp-fb:8 transport-cc\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\na=ssrc:2776728827 cname:billing-fixture\\na=ssrc:2776728827 msid:billing-fixture audio\\na=ssrc:2776728827 mslabel:billing-fixture\\na=ssrc:2776728827 label:audio\\na=msid:billing-fixture audio\\na=sendrecv\\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:1\\na=sendrecv\\na=sctp-port:5000\\na=max-message-size:1073741823\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\n\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/v1/live/sessions"
+          }
+        }
+      ]
+    },
+    {
       "name": "197. Anthropic mid-conversation tool changes keep their tool object on every inbound route (#8207)",
       "description": "Mid-conversation tool changes (beta mid-conversation-tool-changes-2026-07-01; by-value definitions under inline-tools-2026-09-15) add or withdraw tools from a role:system message inside messages[] without touching tools[], so the prompt-cache prefix stays intact. Issue #8207: the tool object on tool_addition / tool_removal blocks was dropped in the Responses conversion, the request still returned 200, and the model never saw the added tool. Covers both routes that reach the Anthropic provider with these blocks: the Anthropic SDK surface (/anthropic/v1/messages, beta header supplied by the client) and the neutral OpenAI-shaped surface (/v1/responses, where the client cannot set anthropic-beta and the gateway must derive both betas from the body). Cases pin the raw request via x-bf-send-back-raw-request and the model behaviour (it calls a tool it was given mid-conversation; it does not call one that was withdrawn). Bedrock, Bedrock Mantle and Vertex are not covered here: their egress inlines mid-conversation system messages as text, which cannot carry a tool.",
       "item": [

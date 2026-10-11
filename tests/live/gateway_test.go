@@ -72,6 +72,8 @@ func mustAPI(t *testing.T, method, path string, body any) gjson.Result {
 
 // virtualKeySpec is what a test needs of a key: which models it may use and what it may spend.
 type virtualKeySpec struct {
+	provider        string   // the one provider config's provider; openai when empty
+	keyNames        []string // the provider keys the virtual key may use; every key when empty
 	allowedModels   []string
 	budgetUSD       *float64
 	requestMaxLimit *int64
@@ -91,9 +93,17 @@ func createVirtualKey(t *testing.T, spec virtualKeySpec) virtualKey {
 	if len(allowed) == 0 {
 		allowed = []string{"*"}
 	}
+	provider := spec.provider
+	if provider == "" {
+		provider = "openai"
+	}
+	keyIDs := []string{"*"}
+	if len(spec.keyNames) > 0 {
+		keyIDs = providerKeyIDs(t, provider, spec.keyNames)
+	}
 	body := map[string]any{
 		"name":             "live-e2e " + t.Name() + " " + fmt.Sprint(time.Now().UnixNano()),
-		"provider_configs": []any{map[string]any{"provider": "openai", "weight": 1.0, "allowed_models": allowed, "key_ids": []string{"*"}}},
+		"provider_configs": []any{map[string]any{"provider": provider, "weight": 1.0, "allowed_models": allowed, "key_ids": keyIDs}},
 	}
 	if spec.budgetUSD != nil {
 		body["budgets"] = []any{map[string]any{"max_limit": *spec.budgetUSD, "reset_duration": "1h"}}
@@ -128,6 +138,19 @@ func createVirtualKey(t *testing.T, spec virtualKeySpec) virtualKey {
 		}
 	})
 	return vk
+}
+
+// providerKeyIDs resolves provider key names to the ids a virtual key's key_ids names.
+func providerKeyIDs(t *testing.T, provider string, names []string) []string {
+	t.Helper()
+	resp := mustAPI(t, http.MethodGet, "/api/providers/"+provider+"/keys", nil)
+	ids := make([]string, 0, len(names))
+	for _, name := range names {
+		id := resp.Get(`keys.#(name=="` + name + `").id`).Str
+		require.NotEmpty(t, id, "provider %s has no key named %s: %.300s", provider, name, resp.Raw)
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // waitBudgetUsage waits for a budget to reflect a spend; governance records it asynchronously.
