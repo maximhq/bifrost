@@ -65,6 +65,7 @@ type fakeSession struct {
 type fakeConn interface {
 	send([]byte) error
 	close()
+	hangUp() // end the connection the orderly way, still without session.closed
 }
 
 type wsFakeConn struct {
@@ -80,6 +81,13 @@ func (c *wsFakeConn) send(frame []byte) error {
 
 func (c *wsFakeConn) close() { _ = c.conn.Close() }
 
+func (c *wsFakeConn) hangUp() {
+	c.mu.Lock()
+	_ = c.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+	c.mu.Unlock()
+	_ = c.conn.Close()
+}
+
 type dcFakeConn struct {
 	dc *webrtc.DataChannel
 	pc *webrtc.PeerConnection
@@ -87,6 +95,7 @@ type dcFakeConn struct {
 
 func (c *dcFakeConn) send(frame []byte) error { return c.dc.SendText(string(frame)) }
 func (c *dcFakeConn) close()                  { _ = c.pc.Close() }
+func (c *dcFakeConn) hangUp()                 { _ = c.pc.Close() }
 
 func startFakeOpenAI(addr string) (*fakeOpenAI, error) {
 	f := &fakeOpenAI{
@@ -566,6 +575,18 @@ func (s *fakeSession) Drop() {
 	s.mu.Unlock()
 	for _, c := range conns {
 		c.close()
+	}
+}
+
+// HangUp ends every connection with a normal close and no session.closed, as OpenAI's hangup
+// endpoint does to a WebRTC session.
+func (s *fakeSession) HangUp() {
+	s.mu.Lock()
+	s.closed = true
+	conns := append([]fakeConn(nil), s.conns...)
+	s.mu.Unlock()
+	for _, c := range conns {
+		c.hangUp()
 	}
 }
 

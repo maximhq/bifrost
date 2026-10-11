@@ -409,10 +409,7 @@ func (r *liveWSRelay) pumpUpstream() {
 	for {
 		messageType, message, err := r.upstream.ReadMessage()
 		if err != nil {
-			r.upstreamEnded()
-			if !r.clientGone.Load() && !isNormalWebSocketClosure(err) {
-				r.sendError(newRealtimeWireBifrostError(502, "server_error", "the live session's upstream connection ended before session.closed"))
-			}
+			r.upstreamEndedEarly()
 			return
 		}
 		if messageType != ws.TextMessage {
