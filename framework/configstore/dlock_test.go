@@ -1303,3 +1303,31 @@ func TestDistributedLockManager_AcquireReportsLeaseLoss(t *testing.T) {
 		t.Fatal("losing the lease did not cancel the held context")
 	}
 }
+
+// TestDistributedLockManager_AcquireWithRetryLifecycle verifies renewal, cancellation, and idempotent release.
+func TestDistributedLockManager_AcquireWithRetryLifecycle(t *testing.T) {
+	store := setupLockTestStore(t)
+	manager := NewDistributedLockManager(store, newMockLogger(), WithDefaultTTL(150*time.Millisecond))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	held, release, err := manager.AcquireWithRetry(ctx, "retry-lifecycle", 0)
+	require.NoError(t, err)
+	t.Cleanup(release)
+
+	time.Sleep(500 * time.Millisecond)
+	require.NoError(t, held.Err())
+	_, _, err = manager.AcquireWithRetry(t.Context(), "retry-lifecycle", 0)
+	require.ErrorIs(t, err, ErrLockNotAcquired)
+
+	waitCtx, stopWaiting := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer stopWaiting()
+	_, _, err = manager.AcquireWithRetry(waitCtx, "retry-lifecycle", 10)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	cancel()
+	release()
+	release()
+
+	_, nextRelease, err := manager.AcquireWithRetry(t.Context(), "retry-lifecycle", 0)
+	require.NoError(t, err)
+	nextRelease()
+}
