@@ -11,22 +11,41 @@ import (
 )
 
 // TestClearGenAIPassthroughForNonGoogleProvider pins which attempts of a GenAI-integration request
-// keep the caller's Gemini body: Gemini and Vertex do, any other provider gets it converted, and
-// requests from other integrations are left alone.
+// keep the caller's Gemini body. Gemini does. Vertex does for the models it serves with a Google body
+// (Gemini, Gemma, Imagen, Veo and numeric tuned endpoints), for batch jobs, which Vertex runs for
+// Claude and Llama too, and for file and cached-content requests, which name no model or a Gemini one;
+// a Claude, Mistral or other Model Garden model gets it converted, as does any other provider.
+// Requests from other integrations are left alone.
 func TestClearGenAIPassthroughForNonGoogleProvider(t *testing.T) {
 	cases := []struct {
 		name            string
 		integrationType string
 		baseProvider    schemas.ModelProvider
+		requestType     schemas.RequestType
+		model           string
+		alias           *schemas.AliasConfig
 		wantCleared     bool
 	}{
-		{"genai to gemini keeps the raw body", "genai", schemas.Gemini, false},
-		{"genai to vertex keeps the raw body", "genai", schemas.Vertex, false},
-		{"genai to openai converts", "genai", schemas.OpenAI, true},
-		{"genai to anthropic converts", "genai", schemas.Anthropic, true},
-		{"genai to bedrock converts", "genai", schemas.Bedrock, true},
-		{"anthropic integration is not this helper's", "anthropic", schemas.OpenAI, false},
-		{"no integration is left alone", "", schemas.OpenAI, false},
+		{"genai to gemini keeps the raw body", "genai", schemas.Gemini, schemas.ChatCompletionRequest, "gemini-2.5-flash", nil, false},
+		{"genai to vertex gemini keeps the raw body", "genai", schemas.Vertex, schemas.ChatCompletionRequest, "gemini-2.5-flash", nil, false},
+		{"genai to vertex gemma keeps the raw body", "genai", schemas.Vertex, schemas.ChatCompletionStreamRequest, "gemma-3-27b-it", nil, false},
+		{"genai to a vertex tuned endpoint keeps the raw body", "genai", schemas.Vertex, schemas.ChatCompletionRequest, "1234567890123456789", nil, false},
+		{"genai to vertex imagen keeps the raw body", "genai", schemas.Vertex, schemas.ImageGenerationRequest, "imagen-4.0-generate-001", nil, false},
+		{"genai to vertex veo keeps the raw body", "genai", schemas.Vertex, schemas.VideoGenerationRequest, "veo-3.0-generate-001", nil, false},
+		{"genai to vertex claude converts", "genai", schemas.Vertex, schemas.ChatCompletionRequest, "claude-sonnet-4-5", nil, true},
+		{"genai to vertex claude streaming responses converts", "genai", schemas.Vertex, schemas.ResponsesStreamRequest, "claude-opus-4-7", nil, true},
+		{"genai to vertex mistral converts", "genai", schemas.Vertex, schemas.ChatCompletionRequest, "mistral-large-2411", nil, true},
+		{"genai to a vertex model garden model converts", "genai", schemas.Vertex, schemas.ChatCompletionRequest, "meta/llama-3.3-70b-instruct-maas", nil, true},
+		{"genai to a vertex alias for claude converts", "genai", schemas.Vertex, schemas.ChatCompletionRequest, "house-model", &schemas.AliasConfig{ModelID: "house-model", ModelName: schemas.Ptr("claude-sonnet-4-5")}, true},
+		{"genai batch job on vertex claude keeps the raw body", "genai", schemas.Vertex, schemas.BatchCreateRequest, "claude-sonnet-4-5", nil, false},
+		{"genai cached content create on vertex keeps the raw body", "genai", schemas.Vertex, schemas.CachedContentCreateRequest, "gemini-2.5-flash", nil, false},
+		{"genai cached content update naming no model on vertex keeps the raw body", "genai", schemas.Vertex, schemas.CachedContentUpdateRequest, "", nil, false},
+		{"genai file upload on vertex keeps the raw body", "genai", schemas.Vertex, schemas.FileUploadRequest, "", nil, false},
+		{"genai to openai converts", "genai", schemas.OpenAI, schemas.ChatCompletionRequest, "gpt-4o-mini", nil, true},
+		{"genai to anthropic converts", "genai", schemas.Anthropic, schemas.ChatCompletionRequest, "claude-sonnet-4-5", nil, true},
+		{"genai to bedrock converts", "genai", schemas.Bedrock, schemas.ChatCompletionRequest, "claude-sonnet-4-5", nil, true},
+		{"anthropic integration is not this helper's", "anthropic", schemas.OpenAI, schemas.ChatCompletionRequest, "gpt-4o-mini", nil, false},
+		{"no integration is left alone", "", schemas.OpenAI, schemas.ChatCompletionRequest, "gpt-4o-mini", nil, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -34,10 +53,13 @@ func TestClearGenAIPassthroughForNonGoogleProvider(t *testing.T) {
 			if tc.integrationType != "" {
 				ctx.SetValue(schemas.BifrostContextKeyIntegrationType, tc.integrationType)
 			}
+			if tc.alias != nil {
+				ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: tc.model, Config: tc.alias})
+			}
 			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 			ctx.SetValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter, schemas.RawRequestBodyTextRewriter(func(body []byte, _ map[string]string) ([]byte, error) { return body, nil }))
 
-			clearGenAIPassthroughForNonGoogleProvider(ctx, tc.baseProvider)
+			clearGenAIPassthroughForNonGoogleProvider(ctx, tc.baseProvider, tc.requestType, tc.model)
 
 			raw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool)
 			_, hasRewriter := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
