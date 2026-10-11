@@ -753,6 +753,30 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 
 // ToChatMessages converts a slice of ResponsesMessages back to ChatMessages
 // This handles the aggregation of function_call messages back into assistant messages with tool calls
+// ResponsesBlocksWithoutToolReferences returns blocks with the Anthropic tool_reference entries
+// removed, for wires that cannot carry them. It returns the input slice unchanged when there is
+// nothing to drop, and nil when nothing else is left: the shape a tool output had before
+// tool_reference was carried at all.
+func ResponsesBlocksWithoutToolReferences(blocks []ResponsesMessageContentBlock) []ResponsesMessageContentBlock {
+	drop := false
+	for _, block := range blocks {
+		if block.Type == ResponsesInputMessageContentBlockTypeToolReference {
+			drop = true
+			break
+		}
+	}
+	if !drop {
+		return blocks
+	}
+	var kept []ResponsesMessageContentBlock
+	for _, block := range blocks {
+		if block.Type != ResponsesInputMessageContentBlockTypeToolReference {
+			kept = append(kept, block)
+		}
+	}
+	return kept
+}
+
 // responsesBlocksWithoutToolChanges returns blocks with the Anthropic mid-conversation
 // tool_addition / tool_removal entries removed. It returns the input slice unchanged when
 // there is nothing to drop.
@@ -932,7 +956,8 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 							if rm.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
 								rm.Content.ContentStr = rm.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
 							} else if rm.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
-								rm.Content.ContentBlocks = rm.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks
+								// Chat has no tool_reference content part (Anthropic client-side tool search).
+								rm.Content.ContentBlocks = ResponsesBlocksWithoutToolReferences(rm.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
 							}
 						}
 					}

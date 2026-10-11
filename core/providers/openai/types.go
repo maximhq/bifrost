@@ -889,25 +889,35 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 					}
 				}
 
+				// tool_reference blocks (Anthropic client-side tool search) have no OpenAI
+				// equivalent and strict upstreams reject them; drop them before flattening
+				// so the wire matches what it was before they were carried at all.
+				if toolMsgCopy.Output != nil && hasToolReferenceBlock(toolMsgCopy.Output.ResponsesFunctionToolCallOutputBlocks) {
+					outputCopy := *toolMsgCopy.Output
+					outputCopy.ResponsesFunctionToolCallOutputBlocks = schemas.ResponsesBlocksWithoutToolReferences(outputCopy.ResponsesFunctionToolCallOutputBlocks)
+					toolMsgCopy.Output = &outputCopy
+					toolMsgModified = true
+				}
+
 				// Collapse text-only tool output blocks into a single string.
 				// OpenAI's Responses API defines function_call_output.output as
 				// a string; Anthropic's multi-turn tool_result content arrives
 				// as an array of content blocks and has to be flattened here.
 				// Strict upstream implementations (e.g. Ollama Cloud) return a
 				// 400 otherwise.
-				if msg.ResponsesToolMessage.Output != nil &&
-					msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil &&
-					isFunctionCallOutputBlocksFlattenable(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) {
-					flattened := flattenFunctionCallOutputBlocks(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
-					outputCopy := *msg.ResponsesToolMessage.Output
+				if toolMsgCopy.Output != nil &&
+					toolMsgCopy.Output.ResponsesFunctionToolCallOutputBlocks != nil &&
+					isFunctionCallOutputBlocksFlattenable(toolMsgCopy.Output.ResponsesFunctionToolCallOutputBlocks) {
+					flattened := flattenFunctionCallOutputBlocks(toolMsgCopy.Output.ResponsesFunctionToolCallOutputBlocks)
+					outputCopy := *toolMsgCopy.Output
 					outputCopy.ResponsesToolCallOutputStr = &flattened
 					outputCopy.ResponsesFunctionToolCallOutputBlocks = nil
 					toolMsgCopy.Output = &outputCopy
 					toolMsgModified = true
-				} else if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+				} else if toolMsgCopy.Output != nil && toolMsgCopy.Output.ResponsesFunctionToolCallOutputBlocks != nil {
 					// Strip CacheControl and FileType from tool message output blocks if needed
 					hasToolModification := false
-					for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+					for _, block := range toolMsgCopy.Output.ResponsesFunctionToolCallOutputBlocks {
 						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) {
 							hasToolModification = true
 							break
@@ -915,9 +925,9 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 					}
 
 					if hasToolModification {
-						outputCopy := *msg.ResponsesToolMessage.Output
-						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks))
-						for j, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+						outputCopy := *toolMsgCopy.Output
+						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(toolMsgCopy.Output.ResponsesFunctionToolCallOutputBlocks))
+						for j, block := range toolMsgCopy.Output.ResponsesFunctionToolCallOutputBlocks {
 							needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil)
 							if needsBlockCopy {
 								blockCopy := block
@@ -1182,6 +1192,9 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 			}
 		}
 		// Check output blocks
+		if msg.ResponsesToolMessage.Output != nil && hasToolReferenceBlock(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) {
+			return true
+		}
 		if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
 			// Text-only block arrays must be flattened to a string — OpenAI's
 			// Responses API defines function_call_output.output as a string
@@ -1206,6 +1219,17 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 					return true
 				}
 			}
+		}
+	}
+	return false
+}
+
+// hasToolReferenceBlock reports whether a function_call_output block slice carries an
+// Anthropic tool_reference block.
+func hasToolReferenceBlock(blocks []schemas.ResponsesMessageContentBlock) bool {
+	for _, block := range blocks {
+		if block.Type == schemas.ResponsesInputMessageContentBlockTypeToolReference {
+			return true
 		}
 	}
 	return false

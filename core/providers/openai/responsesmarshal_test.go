@@ -730,6 +730,73 @@ func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputConcatenatesM
 	}
 }
 
+// An Anthropic client running client-side tool search (Claude Code's ToolSearch)
+// sends tool_reference blocks inside the tool_result. They only mean something to
+// Anthropic, which expands them into deferred tool definitions; OpenAI has no
+// equivalent and strict upstreams reject the unknown block. The OpenAI wire must
+// look exactly as it did before tool_reference was carried at all: the text
+// blocks flatten to a string, and a reference-only output carries no blocks.
+func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputDropsToolReferenceBlocks(t *testing.T) {
+	functionCallOutput := func(blocks []schemas.ResponsesMessageContentBlock) *OpenAIResponsesRequestInput {
+		return &OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+				{
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("toolu_search"),
+						Output: &schemas.ResponsesToolMessageOutputStruct{
+							ResponsesFunctionToolCallOutputBlocks: blocks,
+						},
+					},
+				},
+			},
+		}
+	}
+	toolReference := schemas.ResponsesMessageContentBlock{
+		Type:     schemas.ResponsesInputMessageContentBlockTypeToolReference,
+		ToolName: schemas.Ptr("get_weather"),
+	}
+
+	t.Run("text and tool_reference flatten to the text", func(t *testing.T) {
+		jsonBytes, err := functionCallOutput([]schemas.ResponsesMessageContentBlock{
+			{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Loaded 1 tool")},
+			toolReference,
+		}).MarshalJSON()
+		if err != nil {
+			t.Fatalf("Failed to marshal: %v", err)
+		}
+		if strings.Contains(string(jsonBytes), "tool_reference") {
+			t.Fatalf("tool_reference must not reach the OpenAI wire: %s", string(jsonBytes))
+		}
+		var messages []map[string]interface{}
+		if err := sonic.Unmarshal(jsonBytes, &messages); err != nil {
+			t.Fatalf("Failed to unmarshal: %v\nraw=%s", err, string(jsonBytes))
+		}
+		got, ok := messages[0]["output"].(string)
+		if !ok {
+			t.Fatalf("output must be string, got %T\nraw=%s", messages[0]["output"], string(jsonBytes))
+		}
+		if want := "Loaded 1 tool"; got != want {
+			t.Fatalf("flattened output mismatch: want %q, got %q", want, got)
+		}
+	})
+
+	t.Run("tool_reference only matches an output with no blocks", func(t *testing.T) {
+		got, err := functionCallOutput([]schemas.ResponsesMessageContentBlock{toolReference}).MarshalJSON()
+		if err != nil {
+			t.Fatalf("Failed to marshal: %v", err)
+		}
+		want, err := functionCallOutput(nil).MarshalJSON()
+		if err != nil {
+			t.Fatalf("Failed to marshal: %v", err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("reference-only output must marshal like an output with no blocks:\nwant %s\ngot  %s", want, got)
+		}
+	})
+}
+
 // When the tool result contains a non-text block (e.g. an image), flattening is
 // unsafe — preserve the array form and let the upstream handle it. This keeps
 // the fix scoped to the common text-only case without dropping rich content.
