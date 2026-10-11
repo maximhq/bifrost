@@ -232,3 +232,9 @@ echo "🧪 Running routing-wiring newman collection..."
 echo ""
 echo "🧪 Running model-catalog-wiring newman collection..."
 "$REPO_ROOT/tests/e2e/api/runners/individual/run-newman-model-catalog-wiring-tests.sh" --binary "$BIFROST_BINARY" --port "$((PORT + 10))"
+
+# The semantic cache suite boots two clean servers of its own, one on the compose
+# stack's Redis and one on its Weaviate, and runs the collection against both at once.
+echo ""
+echo "🧪 Running semantic cache wiring newman collection (Redis and Weaviate)..."
+"$REPO_ROOT/tests/e2e/api/runners/individual/run-newman-semantic-cache-wiring-tests.sh" --binary "$BIFROST_BINARY" --port "$((PORT + 11))" --store both $REPORT_ARGS

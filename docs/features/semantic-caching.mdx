@@ -433,13 +433,9 @@ bifrost:
 
 In direct-only mode, all requests use hash matching regardless of the `x-bf-cache-type` header — no embeddings are generated and no embedding credentials are needed.
 
-### Recommended vector store for direct-only mode
+### Vector stores in direct-only mode
 
-**Redis/Valkey-compatible stores** are recommended for direct-only mode. They don't require a vector for metadata-only entries, and all cache fields are indexed as TAG fields for fast exact-match lookups.
-
-<Warning>
-**Qdrant, Pinecone, and Weaviate are not suitable for direct-only mode.** They require a vector for every entry; the plugin's zero-vector placeholder codepath needs an initialized embedding client, so storage fails when no provider is configured. Use Redis/Valkey for direct-only.
-</Warning>
+Every vector store works in direct-only mode. **Redis/Valkey-compatible stores** are the lightest choice: they store no vector for metadata-only entries, and all cache fields are indexed as TAG fields for fast exact-match lookups. Weaviate, Qdrant, and Pinecone require a vector for every entry, so the plugin stores a fixed placeholder vector with each one; it needs no embedding provider, and lookups still match on the request hash alone.
 
 ---
 
@@ -764,10 +760,6 @@ No embedding-capable provider is configured. Add one under **Providers** first; 
 
 <Accordion title='The "Enable Caching" toggle is disabled'>
 No vector store is enabled. Configure and enable one in `config.json` (see [Prerequisites](#prerequisites)).
-</Accordion>
-
-<Accordion title="Direct-only mode fails to store entries">
-You're likely using Qdrant, Pinecone, or Weaviate, which require a vector per entry. Switch to Redis/Valkey for direct-only mode.
 </Accordion>
 
 </AccordionGroup>

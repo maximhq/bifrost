@@ -319,6 +319,15 @@ Stop the fixture and isolated gateway with Ctrl+C after testing.
 | `runners/individual/run-newman-routing-wiring-tests.sh` | Script to run the routing wiring collection; `--binary` boots a clean server for the run. |
 | `runners/lib/clean-bifrost.sh` | Boots that clean server for both wiring runners: no providers, sqlite stores in a throwaway app dir. |
 
+### Semantic Cache Wiring Tests
+
+| Path | Description |
+|------|-------------|
+| `collections/bifrost-semantic-cache-wiring.postman_collection.json` | Generated collection covering the `semantic_cache` plugin end to end on one vector store: plugin management, direct and semantic caching on every cacheable request type, streams, per-request headers, the clear endpoints, `x-bifrost-cache-*` response headers, identity scoping and the logs. **Generated — do not hand-edit.** |
+| `runners/build-semantic-cache-wiring.mjs` | Generator for the collection above. Its folders are the scenario table and the source of truth. |
+| `runners/lib/semantic-cache-wiring.mjs` | Assertion library embedded in the collection: cache_debug outcomes, SSE parsing, header and log checks, polled reads. Unit tests: `runners/lib/semantic-cache-wiring.test.mjs`. |
+| `runners/individual/run-newman-semantic-cache-wiring-tests.sh` | Boots one clean server per vector store (Redis, Weaviate, or both concurrently) and runs the collection against each. |
+
 ### Shared Resources
 
 | Path | Description |
@@ -776,6 +785,57 @@ regenerate:
 ```bash
 node runners/build-warp-collection.mjs
 node runners/lib/warp-case.test.mjs
+```
+
+### Semantic Cache Wiring Tests
+
+The collection drives the `semantic_cache` plugin through the HTTP API and checks
+what a client sees: `extra_fields.cache_debug` on JSON bodies, the final chunk of
+every stream, the `x-bifrost-cache-*` response headers on routes whose bodies carry
+no cache_debug (Anthropic, GenAI, Cohere, Bedrock, speech), and the log row found
+through `x-bifrost-request-id`. Folders run in order: P (preconditions and providers),
+M (plugin management), D (direct cache on chat completions), X (every other request
+type), T (streams), H (per-request headers), C (clear endpoints), K (response
+headers), G (identity scoping by virtual key), S (semantic mode), O (logs).
+
+The runner **boots its own servers**, one per vector store, each on a temp app dir
+with SQLite config and logs stores, so the provider list and the logs table hold
+only this run's traffic. With `--store both` (the default) the Redis and Weaviate
+runs go concurrently on `--port` and `--port`+1, and the runner fails if either
+does. Every cache key carries the run id and every vector store namespace its
+alphanumeric form, so repeated runs never read each other's entries; the runner
+drops the run's Weaviate classes on exit.
+
+Reads that must hit are polled with backoff and send `x-bf-cache-no-store: true`, so
+a read that misses never writes the entry it is waiting for. A read that must miss
+is only issued after the entry it is isolated from was seen to hit. The only fixed
+waits are the TTL rows (TTL plus two seconds) and the "nothing was written" rows
+(two seconds).
+
+It is **live and paid**: OpenAI (chat, responses, embeddings, tts-1, whisper-1,
+gpt-image-1), Anthropic, Gemini, Cohere, OpenRouter (text completions, since OpenAI
+retired every `/v1/completions` model) and Bedrock. Every key is `env.<NAME>`, read
+from the environment of the server the runner boots; the runner refuses to start
+when one is missing. It needs Redis Stack and Weaviate (both in
+`tests/docker-compose.yml`) and a built `bifrost-http` binary. CI runs it from
+`.github/workflows/scripts/test-api-integrations.sh`.
+
+Run locally (from this directory):
+
+```bash
+docker compose -f ../../docker-compose.yml up -d redis-stack weaviate
+./runners/individual/run-newman-semantic-cache-wiring-tests.sh --binary /path/to/bifrost-http
+# options: --port <port> (default 8096), --store redis|weaviate|both, --folder <name> (repeatable; Setup and P always run, O also runs D, X and S), --html, --json, --verbose
+# env: OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY COHERE_API_KEY OPENROUTER_API_KEY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION, REDIS_ADDR (default localhost:6379), WEAVIATE_HOST (default localhost:9000)
+```
+
+Reports land in `newman-reports/semantic-cache-wiring-<store>/`, with the server
+log next to a failed run's report. To change a scenario, edit
+`runners/build-semantic-cache-wiring.mjs` and regenerate:
+
+```bash
+node runners/build-semantic-cache-wiring.mjs
+node runners/lib/semantic-cache-wiring.test.mjs
 ```
 
 ### Test Success Criteria
