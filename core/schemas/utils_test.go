@@ -231,10 +231,10 @@ func TestParseModelString(t *testing.T) {
 }
 
 func TestIsClefModel(t *testing.T) {
-	for _, model := range []string{"clef", "clef-flash", "@cf/cloudflare/clef", "@cf/cloudflare/clef-flash"} {
+	for _, model := range []string{"clef", "clef-flash", "clef-omni", "@cf/cloudflare/clef", "@cf/cloudflare/clef-flash", "@cf/cloudflare/clef-omni"} {
 		assert.True(t, IsClefModel(model), model)
 	}
-	for _, model := range []string{"Clef-Flash", "clef-omni", "@cf/cloudflare/clef-omni", "cloudflare/clef", "@cf/meta/llama-4-scout-17b-16e-instruct", ""} {
+	for _, model := range []string{"Clef-Flash", "cloudflare/clef", "@cf/meta/llama-4-scout-17b-16e-instruct", ""} {
 		assert.False(t, IsClefModel(model), model)
 	}
 }

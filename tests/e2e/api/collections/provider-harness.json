@@ -250883,21 +250883,21 @@
           }
         },
         {
-          "name": "cloudflare /v1/models lists chat, embedding and Clef models, not clef-omni",
+          "name": "cloudflare /v1/models lists chat, embedding and every Clef model",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('list models keeps the OpenAI-compatible tasks and the Clef models it serves', function () {",
+                  "pm.test('list models keeps the OpenAI-compatible tasks and every Clef model', function () {",
                   "  var body = pm.response.text() || '';",
                   "  pm.expect(pm.response.code, 'request failed: ' + body).to.eql(200);",
                   "  var ids = (pm.response.json().data || []).map(function (m) { return m.id; });",
                   "  pm.expect(ids, 'chat model missing: ' + body).to.include('cloudflare/@cf/meta/llama-4-scout-17b-16e-instruct');",
                   "  pm.expect(ids, 'embedding model missing: ' + body).to.include('cloudflare/@cf/baai/bge-large-en-v1.5');",
                   "  pm.expect(ids, 'Clef missing: ' + body).to.include('cloudflare/@cf/cloudflare/clef-flash');",
-                  "  pm.expect(ids, 'clef-omni is not served: ' + body).to.not.include('cloudflare/@cf/cloudflare/clef-omni');",
+                  "  pm.expect(ids, 'clef-omni missing: ' + body).to.include('cloudflare/@cf/cloudflare/clef-omni');",
                   "});"
                 ]
               }

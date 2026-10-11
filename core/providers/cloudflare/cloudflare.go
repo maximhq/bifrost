@@ -333,7 +333,7 @@ func (provider *CloudflareProvider) Decision(ctx *schemas.BifrostContext, key sc
 		return nil, bifrostErr
 	}
 	if !decisionResp.Success || decisionResp.Result == nil {
-		return nil, providerUtils.EnrichError(ctx, parseCloudflareEnvelopeFailure(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, parseCloudflareError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	bifrostResp, bifrostErr := typesafe.ToBifrostDecisionResponse(decisionResp.Result, request)

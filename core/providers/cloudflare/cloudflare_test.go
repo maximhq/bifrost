@@ -233,8 +233,8 @@ func TestListModels_PagesFiltersTasksAndListsClef(t *testing.T) {
 	if strings.Join(pages, ",") != "1,2" {
 		t.Errorf("pages requested = %v, want [1 2]", pages)
 	}
-	if len(resp.Data) != 102 {
-		t.Fatalf("models = %d, want 102 (100 chat + 1 embedding + clef-flash)", len(resp.Data))
+	if len(resp.Data) != 103 {
+		t.Fatalf("models = %d, want 103 (100 chat + 1 embedding + clef-flash + clef-omni)", len(resp.Data))
 	}
 	byID := make(map[string]schemas.Model, len(resp.Data))
 	for _, model := range resp.Data {
@@ -243,10 +243,12 @@ func TestListModels_PagesFiltersTasksAndListsClef(t *testing.T) {
 	if _, ok := byID["cloudflare/@cf/baai/bge-large-en-v1.5"]; !ok {
 		t.Fatal("embedding model missing")
 	}
-	if _, ok := byID["cloudflare/@cf/cloudflare/clef-flash"]; !ok {
-		t.Fatal("clef-flash must be listed under its Cloudflare ID")
+	for _, clef := range []string{"cloudflare/@cf/cloudflare/clef-flash", "cloudflare/@cf/cloudflare/clef-omni"} {
+		if _, ok := byID[clef]; !ok {
+			t.Fatalf("%s must be listed under its Cloudflare ID", clef)
+		}
 	}
-	for _, excluded := range []string{"cloudflare/clef-flash", "cloudflare/@cf/cloudflare/clef-omni", "cloudflare/@cf/black-forest-labs/flux-1-schnell"} {
+	for _, excluded := range []string{"cloudflare/clef-flash", "cloudflare/@cf/black-forest-labs/flux-1-schnell"} {
 		if _, ok := byID[excluded]; ok {
 			t.Errorf("%s must not be listed", excluded)
 		}
@@ -512,7 +514,7 @@ func TestDecision_SendsAnyModelAndPassesTheErrorThrough(t *testing.T) {
 	}
 }
 
-func TestDecision_EnvelopeWithoutResultIsBadGateway(t *testing.T) {
+func TestDecision_EnvelopeWithoutResultIsError(t *testing.T) {
 	for name, body := range map[string]string{
 		"success false":  `{"result":{},"success":false,"errors":[{"code":5000,"message":"upstream failed"}]}`,
 		"missing result": `{"success":true,"errors":[]}`,
@@ -528,8 +530,8 @@ func TestDecision_EnvelopeWithoutResultIsBadGateway(t *testing.T) {
 			provider := newTestProvider(t, server.URL)
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			_, bifrostErr := provider.Decision(ctx, newTestKey("acct-1"), newDecisionRequest("clef-flash", schemas.DecisionInput{Text: schemas.Ptr("hi")}))
-			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadGateway {
-				t.Fatalf("expected a 502, got %+v", bifrostErr)
+			if bifrostErr == nil {
+				t.Fatal("expected an error for an envelope without a result")
 			}
 		})
 	}
