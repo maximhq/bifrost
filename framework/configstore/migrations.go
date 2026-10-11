@@ -569,6 +569,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_oauth_private_allowlist_column"}, run: migrationAddMCPOAuthPrivateAllowlistColumn},
 	{IDs: []string{"add_provider_objects_table"}, run: migrationAddProviderObjectsTable},
 	{IDs: []string{"add_batch_jobs_file_id_indexes"}, run: migrationAddBatchJobsFileIDIndexes},
+	{IDs: []string{"add_provider_objects_object_id_index"}, run: migrationAddProviderObjectsObjectIDIndex},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1064,6 +1065,37 @@ func batchJobsFileIDIndexesMigration(ctx context.Context, migrationName string) 
 				}
 			}
 			return nil
+		},
+	}
+}
+
+// migrationAddProviderObjectsObjectIDIndex indexes provider_objects by (kind, object_id), the
+// lookup a live-session ownership check makes on every control route: by the session id under
+// any provider name. The table's other index leads with (kind, provider), which this lookup
+// cannot use past kind, and session rows stay after sessions end.
+func migrationAddProviderObjectsObjectIDIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_provider_objects_object_id_index"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, providerObjectsObjectIDIndexMigration(ctx, migrationName)); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// providerObjectsObjectIDIndexMigration builds the migration applied by
+// migrationAddProviderObjectsObjectIDIndex, so tests exercise its callbacks.
+func providerObjectsObjectIDIndexMigration(ctx context.Context, migrationName string) *migrator.Migration {
+	const name = "idx_provider_objects_kind_object_id"
+	return &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return ensureIndexConcurrently(tx.WithContext(ctx), "provider_objects", name, "kind, object_id", false)
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropIndexConcurrently(tx.WithContext(ctx), "provider_objects", name)
 		},
 	}
 }

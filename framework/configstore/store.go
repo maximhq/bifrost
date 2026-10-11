@@ -1045,6 +1045,9 @@ type ConfigStore interface {
 	// provider whose provider-side id ends in "/"+one of suffixes: full resource
 	// names addressed by their last segment.
 	GetProviderObjectsByObjectIDSuffixes(ctx context.Context, kind, provider string, suffixes []string) ([]*tables.TableProviderObject, error)
+	// GetProviderObjectsByObjectID returns the provider objects of kind recorded for
+	// objectID under any provider name, in no particular order.
+	GetProviderObjectsByObjectID(ctx context.Context, kind, objectID string) ([]*tables.TableProviderObject, error)
 	DeleteProviderObject(ctx context.Context, id string) error
 	// DeleteProviderObjectsByObjectIDSuffix forgets the provider objects of kind on
 	// provider that virtualKeyID created and whose provider-side id ends in

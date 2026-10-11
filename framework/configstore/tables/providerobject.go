@@ -11,6 +11,7 @@ const (
 	ProviderObjectKindContainer     = "container"
 	ProviderObjectKindCachedContent = "cached_content"
 	ProviderObjectKindContainerFile = "container_file"
+	ProviderObjectKindLiveSession   = "live_session"
 )
 
 // TableProviderObject records which virtual key created a provider-side object.
