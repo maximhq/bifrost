@@ -1291,6 +1291,61 @@ func TestInjectedWebSearch_ResponsesStreamRelaxesForcedChoiceAfterSearch(t *test
 	assert.Equal(t, "auto", bodies[1]["tool_choice"], "after a search the model must be free to answer")
 }
 
+func TestToolExecutionClientNotFound(t *testing.T) {
+	t.Parallel()
+
+	// Create manager with no clients
+	manager := setupMCPManager(t)
+
+	bifrost := setupBifrost(t)
+	bifrost.SetMCPManager(manager)
+
+	toolCall := GetSampleEchoToolCall("call-noclient", "test")
+	result, bifrostErr := bifrost.ExecuteChatMCPTool(createTestContext(), &toolCall)
+
+	assert.Nil(t, result)
+	require.NotNil(t, bifrostErr, "a tool with no client must error")
+	require.NotNil(t, bifrostErr.Error)
+	assert.Contains(t, bifrostErr.Error.Message, "not available or not permitted")
+}
+
+func TestToolExecutionMalformedRequest(t *testing.T) {
+	t.Parallel()
+
+	manager := setupMCPManager(t)
+	require.NoError(t, RegisterEchoTool(manager))
+
+	bifrost := setupBifrost(t)
+	bifrost.SetMCPManager(manager)
+
+	t.Run("missing_function_name", func(t *testing.T) {
+		toolCall := schemas.ChatAssistantMessageToolCall{
+			ID:   schemas.Ptr("call-noname"),
+			Type: schemas.Ptr("function"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name:      nil, // Missing name
+				Arguments: "{}",
+			},
+		}
+
+		result, bifrostErr := bifrost.ExecuteChatMCPTool(createTestContext(), &toolCall)
+
+		assert.Nil(t, result)
+		require.NotNil(t, bifrostErr, "a tool call without a name must error")
+		require.NotNil(t, bifrostErr.Error)
+		assert.Contains(t, bifrostErr.Error.Message, "missing function name")
+	})
+
+	t.Run("nil_tool_call", func(t *testing.T) {
+		result, bifrostErr := bifrost.ExecuteChatMCPTool(createTestContext(), nil)
+
+		assert.Nil(t, result)
+		require.NotNil(t, bifrostErr, "a nil tool call must error")
+		require.NotNil(t, bifrostErr.Error)
+		assert.Contains(t, bifrostErr.Error.Message, "toolCall cannot be nil")
+	})
+}
+
 // TestInjectedWebSearch_AnthropicPassthrough covers the path Claude Code takes to
 // Anthropic models: the integration forwards the caller's raw body. With injected
 // tools the attempt must leave passthrough, or the native web_search_20250305 tool
