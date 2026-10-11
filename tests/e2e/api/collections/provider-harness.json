@@ -259011,6 +259011,101 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "220. Compressed request bodies may only expand in proportion to what was sent (decompression-expansion)",
+      "description": "Request decompression runs ahead of routing and auth for anyone who can reach the listener. A body may expand to at most 100 times its compressed size, with a 1 MiB floor and the configured cap as the ceiling, and buffered decompressions reserve their allowance from a process-wide budget. The fixture is the gzip of 2 MiB of zeros, about two kilobytes on the wire, posted with no credential: it is answered 413 naming the expansion bound before the route or auth sees it, and the gateway keeps serving. Red before the change: the 2 MiB was inflated under the 100 MiB cap and the request reached auth, answering 401. The fixture file keeps the exact bytes on the wire; the openai keyword is only the harness filter label, no provider is called.",
+      "item": [
+        {
+          "name": "[EXPECT-413] openai decompression-expansion: a gzip body expanding far past its size is refused before routing and auth",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The fixture is the gzip of 2 MiB of zeros, about two kilobytes on the wire, sent with no",
+                  "// credential. Decompression runs ahead of routing and auth, so the body may expand only in",
+                  "// proportion to what was sent: 413 naming the expansion bound, never a 401 or 400 that would",
+                  "// mean the 2 MiB was inflated and handed on to the route.",
+                  "pm.test('decompression-expansion: gzip body expanding 1000x is 413', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(413);",
+                  "});",
+                  "pm.test('decompression-expansion: the refusal names the expansion bound', function () {",
+                  "  pm.expect(txt, 'unexpected body: ' + txt.slice(0, 400)).to.include('expansion');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Encoding",
+                "value": "gzip"
+              }
+            ],
+            "body": {
+              "mode": "file",
+              "file": {
+                "src": "tests/e2e/api/fixtures/gzip-2mib-zeros.gz"
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "openai decompression-expansion: gateway still serving after the refused body",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('decompression-expansion: /health is 200 after the refusal', function () {",
+                  "  pm.expect(pm.response.code, 'gateway did not survive the previous request: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

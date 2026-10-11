@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"reflect"
 	"runtime"
@@ -2782,6 +2783,172 @@ func TestRequestDecompressionMiddleware_ExactSizeLimit(t *testing.T) {
 
 // --- Streaming decompression path tests ---
 
+// compressedCodecs are the request encodings the middleware accepts, with a test encoder each.
+var compressedCodecs = []struct {
+	name     string
+	encoding string
+	encode   func([]byte) ([]byte, error)
+}{
+	{name: "gzip", encoding: "gzip", encode: gzipCompress},
+	{name: "deflate", encoding: "deflate", encode: deflateCompress},
+	{name: "brotli", encoding: "br", encode: brotliCompress},
+	{name: "zstd", encoding: "zstd", encode: zstdCompress},
+}
+
+// incompressibleBytes returns n bytes no codec shrinks, from a fixed xorshift sequence.
+func incompressibleBytes(n int) []byte {
+	out := make([]byte, n)
+	x := uint64(0x9E3779B97F4A7C15)
+	for i := range out {
+		x ^= x << 13
+		x ^= x >> 7
+		x ^= x << 17
+		out[i] = byte(x)
+	}
+	return out
+}
+
+// runDecompression sends one compressed body through the middleware and reports whether the
+// next handler ran.
+func runDecompression(t *testing.T, config *lib.Config, encoding string, compressed []byte) (*fasthttp.RequestCtx, bool) {
+	t.Helper()
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", encoding)
+	ctx.Request.SetBodyRaw(compressed)
+	nextCalled := false
+	RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) { nextCalled = true })(ctx)
+	return ctx, nextCalled
+}
+
+// TestRequestDecompressionMiddleware_ExpansionBound pins that what a compressed body may expand
+// to is bounded by what was sent, not only by the absolute cap: the middleware runs before
+// routing and auth, so the cap alone lets a few hundred unauthenticated bytes become 100 MiB of
+// heap. A body may grow to at most 100 times its compressed size, with a 1 MiB floor so small
+// bodies are never refused, and never past the cap. Bodies within those bounds are untouched.
+func TestRequestDecompressionMiddleware_ExpansionBound(t *testing.T) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 100}}
+
+	// A compressed length whose expansion would overflow int is still allowed the cap, not wrapped
+	// to a negative product and clamped to the floor. On a 32-bit build that is a 22 MiB body.
+	const capBytes = 100 << 20
+	if got := decompressionAllowance(math.MaxInt/requestDecompressionMaxRatio+1, capBytes); got != capBytes {
+		t.Fatalf("a length whose expansion overflows int must be allowed the cap %d, got %d", capBytes, got)
+	}
+	if got := decompressionAllowance(math.MaxInt, capBytes); got != capBytes {
+		t.Fatalf("the largest length must be allowed the cap %d, got %d", capBytes, got)
+	}
+
+	bomb := make([]byte, 2<<20) // 2 MiB of zeros: a few hundred bytes on the wire
+	for _, codec := range compressedCodecs {
+		t.Run(codec.name+" bomb", func(t *testing.T) {
+			compressed, err := codec.encode(bomb)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(compressed) > 8<<10 {
+				t.Fatalf("test bomb is %d bytes compressed, expected a few hundred", len(compressed))
+			}
+			ctx, nextCalled := runDecompression(t, config, codec.encoding, compressed)
+			if nextCalled {
+				t.Fatalf("a %d-byte body expanding to %d bytes must be refused before the router", len(compressed), len(bomb))
+			}
+			if ctx.Response.StatusCode() != fasthttp.StatusRequestEntityTooLarge {
+				t.Fatalf("expected 413, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			if !strings.Contains(string(ctx.Response.Body()), "expansion") {
+				t.Fatalf("the refusal must name the expansion bound, got %s", ctx.Response.Body())
+			}
+		})
+	}
+
+	// Under the floor, compressibility does not matter.
+	small := make([]byte, 512<<10)
+	compressed, err := gzipCompress(small)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctx, nextCalled := runDecompression(t, config, "gzip", compressed); !nextCalled {
+		t.Fatalf("a body under the floor must pass however well it compresses: %d %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+
+	// Above the floor, a body within the ratio passes.
+	within := incompressibleBytes(2 << 20)
+	compressed, err = gzipCompress(within)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctx, nextCalled := runDecompression(t, config, "gzip", compressed); !nextCalled {
+		t.Fatalf("a body within the ratio must pass: %d %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
+// TestRequestDecompressionMiddleware_InFlightBudget pins that buffered decompressions cannot
+// stack up without bound: each reserves its allowance from a budget of four times the cap for
+// the life of the request, and a request that cannot reserve is answered 503 rather than given
+// another buffer.
+func TestRequestDecompressionMiddleware_InFlightBudget(t *testing.T) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 1}}
+	compressed, err := gzipCompress([]byte(`{"model":"openai/gpt-4o-mini"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{}, 8)
+	release := make(chan struct{})
+	handler := RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) {
+		entered <- struct{}{}
+		<-release
+	})
+	send := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("POST")
+		ctx.Request.Header.Set("Content-Encoding", "gzip")
+		ctx.Request.SetBodyRaw(compressed)
+		handler(ctx)
+		return ctx
+	}
+
+	// With a 1 MiB cap every request reserves the whole 1 MiB floor, so four fill the budget.
+	done := make(chan struct{})
+	for range 4 {
+		go func() {
+			send()
+			done <- struct{}{}
+		}()
+	}
+	for range 4 {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the first four requests must be admitted")
+		}
+	}
+	fifth := make(chan *fasthttp.RequestCtx, 1)
+	go func() { fifth <- send() }()
+	select {
+	case ctx := <-fifth:
+		if ctx.Response.StatusCode() != fasthttp.StatusServiceUnavailable {
+			t.Fatalf("the fifth request must be refused with 503 while the budget is held, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+	case <-entered:
+		close(release)
+		t.Fatal("the fifth request was admitted while four held the whole budget")
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("the fifth request neither returned nor entered the handler")
+	}
+	close(release)
+	for range 4 {
+		<-done
+	}
+	// The reservations end with their requests.
+	release = make(chan struct{})
+	close(release)
+	if ctx := send(); ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("a request after the others returned must be admitted, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
 func TestShouldStreamDecompress(t *testing.T) {
 	defaultThreshold := int(schemas.DefaultLargePayloadRequestThresholdBytes)
 	tests := []struct {
@@ -4770,6 +4937,44 @@ func BenchmarkAuthBypassedMiddlewareOriginCheck(b *testing.B) {
 				if ctx.Response.StatusCode() == fasthttp.StatusForbidden {
 					b.Fatalf("%s was refused: %s", tc.name, ctx.Response.Body())
 				}
+			}
+		})
+	}
+}
+
+// BenchmarkRequestDecompressionMiddleware measures the decompression middleware on a 4 KiB JSON
+// request body sent uncompressed (the common case, which it passes straight through) and gzipped
+// (decompressed under the expansion bound and the in-flight budget).
+func BenchmarkRequestDecompressionMiddleware(b *testing.B) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 100}}
+	handler := RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) {})
+	body := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"` + strings.Repeat("hello world ", 340) + `"}]}`)
+	compressed, err := gzipCompress(body)
+	if err != nil {
+		b.Fatal(err)
+	}
+	cases := []struct {
+		name, encoding string
+		payload        []byte
+	}{
+		{"uncompressed", "", body},
+		{"gzip", "gzip", compressed},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			// fasthttp reuses one RequestCtx per connection; so does the benchmark.
+			ctx := &fasthttp.RequestCtx{}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				ctx.Request.Reset()
+				ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+				ctx.Request.SetRequestURI("/v1/chat/completions")
+				ctx.Request.Header.SetContentType("application/json")
+				if tc.encoding != "" {
+					ctx.Request.Header.Set("Content-Encoding", tc.encoding)
+				}
+				ctx.Request.SetBody(tc.payload)
+				handler(ctx)
 			}
 		})
 	}
