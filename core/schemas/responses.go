@@ -2002,6 +2002,9 @@ type ResponsesOutputMessageContentCompaction struct {
 	// ToolChanges is the server-recorded net tool set of the compacted range: tool_addition /
 	// tool_removal blocks (type + tool), replayed unchanged. Absent when the server did not compute it.
 	ToolChanges []ResponsesMessageContentBlock `json:"tool_changes,omitempty"`
+	// Signature is the opaque signature of a signed compaction block. The upstream rejects an
+	// adopted block that does not match its signature, so it is replayed unchanged.
+	Signature *string `json:"signature,omitempty"`
 }
 
 // ResponsesOutputMessageContentFallback carries the model boundary of a server-side

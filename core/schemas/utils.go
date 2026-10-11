@@ -2224,6 +2224,9 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		copyCompaction := &ResponsesOutputMessageContentCompaction{
 			Summary: original.ResponsesOutputMessageContentCompaction.Summary,
 		}
+		if sig := original.ResponsesOutputMessageContentCompaction.Signature; sig != nil {
+			copyCompaction.Signature = Ptr(*sig)
+		}
 		// tool_changes are replayed to the provider verbatim, so they must survive the copy.
 		if changes := original.ResponsesOutputMessageContentCompaction.ToolChanges; changes != nil {
 			copyCompaction.ToolChanges = make([]ResponsesMessageContentBlock, len(changes))

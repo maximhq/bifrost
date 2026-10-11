@@ -6458,6 +6458,7 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 								ResponsesOutputMessageContentCompaction: &schemas.ResponsesOutputMessageContentCompaction{
 									Summary:     summaryText,
 									ToolChanges: convertAnthropicToolChangesToBifrost(block.ToolChanges),
+									Signature:   block.Signature,
 								},
 							},
 						},
@@ -7129,6 +7130,7 @@ func convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx *schemas.Bifros
 								ResponsesOutputMessageContentCompaction: &schemas.ResponsesOutputMessageContentCompaction{
 									Summary:     summaryText,
 									ToolChanges: convertAnthropicToolChangesToBifrost(block.ToolChanges),
+									Signature:   block.Signature,
 								},
 							},
 						},
@@ -9884,6 +9886,7 @@ func convertContentBlockToAnthropicWithCaps(caps schemas.ModelCaps, block schema
 				},
 				CacheControl: block.CacheControl,
 				ToolChanges:  convertBifrostContentBlocksToAnthropic(caps, block.ResponsesOutputMessageContentCompaction.ToolChanges),
+				Signature:    block.ResponsesOutputMessageContentCompaction.Signature,
 			}
 		}
 	case schemas.ResponsesOutputMessageContentTypeFallback:

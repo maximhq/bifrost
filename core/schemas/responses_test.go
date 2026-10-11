@@ -2330,6 +2330,7 @@ func TestDeepCopyResponsesMessagePreservesToolChanges(t *testing.T) {
 			{Type: ResponsesOutputMessageContentTypeCompaction, ResponsesOutputMessageContentCompaction: &ResponsesOutputMessageContentCompaction{
 				Summary:     "summary",
 				ToolChanges: []ResponsesMessageContentBlock{{Type: ResponsesInputMessageContentBlockTypeToolRemoval, ToolChange: &ResponsesToolChangeTarget{Type: ResponsesToolChangeTargetTypeToolReference, Name: Ptr("echo")}}},
+				Signature:   Ptr("sig"),
 			}},
 		}},
 	}
@@ -2350,5 +2351,8 @@ func TestDeepCopyResponsesMessagePreservesToolChanges(t *testing.T) {
 	cmp := blocks[3].ResponsesOutputMessageContentCompaction
 	if cmp == nil || len(cmp.ToolChanges) != 1 || cmp.ToolChanges[0].ToolChange == nil {
 		t.Fatalf("compaction tool_changes lost on copy: %+v", cmp)
+	}
+	if cmp.Signature == nil || *cmp.Signature != "sig" {
+		t.Errorf("compaction signature lost on copy: %+v", cmp)
 	}
 }

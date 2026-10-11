@@ -583,3 +583,44 @@ func TestAnthropicIngressBedrockReplayKeepsCompaction(t *testing.T) {
 	require.NotNil(t, compaction.Content.ContentStr)
 	require.Equal(t, "Summary of the earlier turns", *compaction.Content.ContentStr)
 }
+
+// A compaction block returned by the compact-2026-09-04 mechanism is signed, and the
+// upstream rejects an adopted block that does not match its signature, so a replay
+// must carry the signature through both ingress converters.
+func TestAnthropicIngressReplayKeepsCompactionSignature(t *testing.T) {
+	for _, model := range []string{"bedrock/us.anthropic.claude-opus-5-5", "anthropic/claude-opus-5-5"} {
+		t.Run(model, func(t *testing.T) {
+			body := `{
+				"model": "` + model + `",
+				"max_tokens": 1024,
+				"messages": [
+					{"role": "user", "content": [
+						{"type": "compaction", "content": "<summary>Earlier turns</summary>", "signature": "EqQBCkgIBRABGAIiQL"}
+					]},
+					{"role": "user", "content": "Go on"}
+				]
+			}`
+			var ingressReq anthropic.AnthropicMessageRequest
+			require.NoError(t, json.Unmarshal([]byte(body), &ingressReq))
+
+			ctx := &schemas.BifrostContext{}
+			bifrostReq := ingressReq.ToBifrostResponsesRequest(ctx)
+			require.NotNil(t, bifrostReq)
+
+			anthropicReq, err := anthropic.ToAnthropicResponsesRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			var compaction *anthropic.AnthropicContentBlock
+			for i := range anthropicReq.Messages {
+				for j := range anthropicReq.Messages[i].Content.ContentBlocks {
+					if anthropicReq.Messages[i].Content.ContentBlocks[j].Type == anthropic.AnthropicContentBlockTypeCompaction {
+						compaction = &anthropicReq.Messages[i].Content.ContentBlocks[j]
+					}
+				}
+			}
+			require.NotNil(t, compaction, "compaction block was dropped")
+			require.NotNil(t, compaction.Signature, "compaction signature was dropped")
+			require.Equal(t, "EqQBCkgIBRABGAIiQL", *compaction.Signature)
+			require.Equal(t, "<summary>Earlier turns</summary>", *compaction.Content.ContentStr)
+		})
+	}
+}
