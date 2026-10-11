@@ -5,7 +5,7 @@ import { Check, Copy } from "lucide-react";
 function EndpointRow({ label, endpoint, testId }: { label: string; endpoint: string; testId: string }) {
 	const { copy, copied } = useCopyToClipboard({ successMessage: "Endpoint copied" });
 	return (
-		<div className="bg-muted/40 text-muted-foreground flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
+		<div className="bg-muted/40 text-muted-foreground flex items-center justify-between gap-2 rounded-sm border px-3 py-2 text-sm">
 			<div className="flex min-w-0 flex-col">
 				<span className="text-muted-foreground/70 text-xs">{label}</span>
 				<span className="font-mono break-all">{endpoint}</span>

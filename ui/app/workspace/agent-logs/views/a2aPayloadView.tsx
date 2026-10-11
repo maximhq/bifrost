@@ -2,11 +2,13 @@ import BlockHeader from "@/app/workspace/logs/views/blockHeader";
 import { Badge } from "@/components/ui/badge";
 import { CodeEditor } from "@/components/ui/codeEditor";
 import { DottedSeparator } from "@/components/ui/separator";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { StatusColors } from "@/lib/constants/logs";
 import { cn } from "@/lib/utils";
 import { format, isValid } from "date-fns";
-import { AlertCircle, ChevronDown, Download, ExternalLink, FileText, Webhook } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { AlertCircle, Check, ChevronDown, Copy, Download, ExternalLink, FileText, Webhook } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 /**
  * Structured renderer for A2A payload bodies.
@@ -683,13 +685,209 @@ function labelFromKey(value: string): string {
 		.replace(/^./, (letter) => letter.toUpperCase());
 }
 
+const MEDIA_TYPE_LABELS: Record<string, string> = {
+	"text/plain": "Text",
+	"text/markdown": "Markdown",
+	"text/html": "HTML",
+	"text/csv": "CSV",
+	"application/json": "JSON",
+	"application/pdf": "PDF",
+	"application/xml": "XML",
+	"application/octet-stream": "Binary",
+	"multipart/form-data": "Form data",
+};
+
+const MEDIA_FAMILY_LABELS: Record<string, string> = { image: "Image", audio: "Audio", video: "Video", text: "Text" };
+
+function mediaTypeLabel(mediaType: string): string {
+	const normalized = mediaType.split(";")[0].trim().toLowerCase();
+	if (MEDIA_TYPE_LABELS[normalized]) return MEDIA_TYPE_LABELS[normalized];
+	const [family, subtype] = normalized.split("/");
+	if (!subtype) return labelFromKey(normalized);
+	if (subtype.endsWith("+json")) return "JSON";
+	if (subtype === "*") return MEDIA_FAMILY_LABELS[family] ?? labelFromKey(family);
+	const name = subtype.replace(/^(x-|vnd\.)/, "");
+	const familyLabel = MEDIA_FAMILY_LABELS[family];
+	if (familyLabel && family !== "text") return `${name.toUpperCase()} ${familyLabel.toLowerCase()}`;
+	return name.length <= 4 ? name.toUpperCase() : labelFromKey(name);
+}
+
+function MediaTypeList({ modes }: { modes: string[] }) {
+	return (
+		<div className="flex flex-wrap gap-x-1">
+			{modes.map((mode, index) => (
+				<span key={mode}>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<span className="decoration-muted-foreground/40 cursor-help underline decoration-dotted underline-offset-4">
+								{mediaTypeLabel(mode)}
+							</span>
+						</TooltipTrigger>
+						<TooltipContent className="font-mono">{mode}</TooltipContent>
+					</Tooltip>
+					{index < modes.length - 1 && ","}
+				</span>
+			))}
+		</div>
+	);
+}
+
+function safeWebURL(value: string | undefined): string | null {
+	if (!value) return null;
+	try {
+		const url = new URL(value);
+		return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+	} catch {
+		return null;
+	}
+}
+
+/** One truncated line with an inline toggle, shown only when the text actually overflows. */
+function ExpandableLine({ text }: { text: string }) {
+	const [expanded, setExpanded] = useState(false);
+	const [overflowing, setOverflowing] = useState(false);
+	const textRef = useRef<HTMLSpanElement>(null);
+
+	useEffect(() => {
+		const element = textRef.current;
+		if (!element || expanded) return;
+		const measure = () => setOverflowing(element.scrollWidth > element.clientWidth);
+		measure();
+		const observer = new ResizeObserver(measure);
+		observer.observe(element);
+		return () => observer.disconnect();
+	}, [text, expanded]);
+
+	const toggle = (
+		<button
+			type="button"
+			onClick={() => setExpanded((value) => !value)}
+			className="text-foreground shrink-0 cursor-pointer text-[12px] font-medium hover:underline"
+		>
+			{expanded ? "Show less" : "Show more"}
+		</button>
+	);
+
+	if (expanded) {
+		return (
+			<div className="text-muted-foreground text-[12.5px] leading-relaxed">
+				{text} {toggle}
+			</div>
+		);
+	}
+	return (
+		<div className="text-muted-foreground flex min-w-0 items-baseline gap-1.5 text-[12.5px] leading-relaxed">
+			<span ref={textRef} className="min-w-0 truncate">
+				{text}
+			</span>
+			{overflowing && toggle}
+		</div>
+	);
+}
+
+function CardField({ label, children }: { label: string; children: ReactNode }) {
+	return (
+		<>
+			<div className="text-muted-foreground pt-px text-xs">{label}</div>
+			<div className="min-w-0 text-[12.5px]">{children}</div>
+		</>
+	);
+}
+
+function AgentInterfaceRow({ iface }: { iface: Record<string, unknown> }) {
+	const { copy, copied } = useCopyToClipboard({ successMessage: "Interface URL copied" });
+	const url = asString(iface.url);
+	const binding = asString(iface.protocolBinding) ?? "Interface";
+	const version = asString(iface.protocolVersion);
+
+	return (
+		<div className="group flex min-w-0 items-center gap-2">
+			<span className="shrink-0 font-medium" title={version ? `${binding} v${version}` : undefined}>
+				{binding}
+			</span>
+			{url && (
+				<>
+					<span className="text-muted-foreground min-w-0 truncate font-mono text-[11px]" title={url}>
+						{url}
+					</span>
+					<button
+						type="button"
+						aria-label={`Copy ${binding} URL`}
+						onClick={() => copy(url)}
+						className="text-muted-foreground hover:text-foreground flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+					>
+						{copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+					</button>
+				</>
+			)}
+		</div>
+	);
+}
+
+function AgentSkillRow({ skill, index }: { skill: Record<string, unknown>; index: number }) {
+	const name = asString(skill.name) ?? asString(skill.id) ?? `Skill ${index + 1}`;
+	const description = asString(skill.description);
+	const tags = asArray(skill.tags)?.filter((value): value is string => typeof value === "string") ?? [];
+	if (!description && tags.length === 0) return <div className="font-medium">{name}</div>;
+
+	return (
+		<details className="group">
+			<summary className="flex cursor-pointer list-none items-baseline gap-2 [&::-webkit-details-marker]:hidden">
+				<span className="shrink-0 font-medium">{name}</span>
+				{description && <span className="text-muted-foreground min-w-0 truncate text-[11.5px] group-open:hidden">{description}</span>}
+				<ChevronDown className="text-muted-foreground size-3 shrink-0 self-center transition-transform group-open:rotate-180" />
+			</summary>
+			<div className="space-y-1.5 pt-1">
+				{description && <div className="text-muted-foreground text-[11.5px] leading-relaxed">{description}</div>}
+				{tags.length > 0 && (
+					<div className="flex flex-wrap gap-1">
+						{tags.map((tag) => (
+							<span key={tag} className="bg-muted text-muted-foreground rounded-sm px-1.5 py-px text-[10.5px]">
+								{tag}
+							</span>
+						))}
+					</div>
+				)}
+			</div>
+		</details>
+	);
+}
+
+const SKILLS_PREVIEW_COUNT = 5;
+
+function AgentSkillsList({ skills }: { skills: unknown[] }) {
+	const [expanded, setExpanded] = useState(false);
+	const hiddenCount = skills.length - SKILLS_PREVIEW_COUNT;
+	const visible = expanded || hiddenCount <= 0 ? skills : skills.slice(0, SKILLS_PREVIEW_COUNT);
+
+	return (
+		<div className="space-y-1.5">
+			{visible.map((entry, index) => {
+				const skill = asRecord(entry);
+				if (!skill) return <JsonBlock key={index} code={prettyPrint(entry)} maxHeight={160} />;
+				return <AgentSkillRow key={asString(skill.id) ?? index} skill={skill} index={index} />;
+			})}
+			{hiddenCount > 0 && (
+				<button
+					type="button"
+					onClick={() => setExpanded((value) => !value)}
+					className="text-muted-foreground hover:text-foreground cursor-pointer text-[11.5px] transition-colors"
+				>
+					{expanded ? "Show fewer" : `+${hiddenCount} more`}
+				</button>
+			)}
+		</div>
+	);
+}
+
 function AgentCardView({ card }: { card: Record<string, unknown> }) {
 	const name = asString(card.name) ?? "Agent card";
 	const description = asString(card.description);
 	const version = asString(card.version);
 	const provider = asRecord(card.provider);
 	const providerName = asString(provider?.organization);
-	const providerURL = asString(provider?.url);
+	const providerHref = safeWebURL(asString(provider?.url));
+	const providerLabel = providerName ?? (providerHref ? new URL(providerHref).hostname : undefined);
 	const interfaces = asArray(card.supportedInterfaces) ?? [];
 	const skills = asArray(card.skills) ?? [];
 	const inputModes = asArray(card.defaultInputModes)?.filter((value): value is string => typeof value === "string") ?? [];
@@ -697,120 +895,89 @@ function AgentCardView({ card }: { card: Record<string, unknown> }) {
 	const capabilities = asRecord(card.capabilities);
 	const enabledCapabilities = capabilities
 		? Object.entries(capabilities)
-				.filter(([, value]) => value === true)
-				.map(([key]) => labelFromKey(key))
+			.filter(([, value]) => value === true)
+			.map(([key]) => labelFromKey(key))
 		: [];
+	const otherFields = unclaimedFields(card, [
+		"name",
+		"description",
+		"version",
+		"provider",
+		"supportedInterfaces",
+		"skills",
+		"defaultInputModes",
+		"defaultOutputModes",
+		"capabilities",
+	]);
 
 	return (
-		<div className="bg-card overflow-hidden rounded-sm border shadow-sm">
-			<div className="border-b px-4 py-4">
-				<div className="space-y-1">
-					<div className="flex flex-wrap items-center gap-2">
-						<span className="text-sm font-semibold">{name}</span>
-						{version && (
-							<Badge variant="outline" className="rounded-sm font-mono text-[10.5px]">
-								v{version}
-							</Badge>
-						)}
-					</div>
-					{description && <div className="text-muted-foreground text-[12.5px] leading-relaxed">{description}</div>}
-					{(providerName || providerURL) && (
-						<div className="text-muted-foreground flex flex-wrap items-center gap-1.5 text-[11.5px]">
-							<span>{providerName ?? "Provider"}</span>
-							{providerURL && (
+		<div className="bg-card overflow-hidden rounded-sm border">
+			<div className="space-y-1 border-b px-4 py-4">
+				<div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+					<span className="text-sm font-semibold">{name}</span>
+					{version && <span className="text-muted-foreground font-mono text-[11px]">v{version}</span>}
+					{providerLabel && (
+						<>
+							<span className="text-muted-foreground text-[11.5px]">·</span>
+							{providerHref ? (
 								<a
-									href={providerURL}
+									href={providerHref}
 									target="_blank"
-									rel="noreferrer"
-									className="hover:text-foreground inline-flex items-center gap-1 break-all hover:underline"
+									rel="noopener noreferrer"
+									title={providerHref}
+									className="text-muted-foreground hover:text-foreground decoration-muted-foreground/40 hover:decoration-foreground text-[12px] underline underline-offset-4 transition-colors"
 								>
-									{providerURL}
-									<ExternalLink className="h-3 w-3 shrink-0" />
+									{providerLabel}
 								</a>
+							) : (
+								<span className="text-muted-foreground text-[12px]">{providerLabel}</span>
 							)}
-						</div>
+						</>
 					)}
 				</div>
+				{description && <ExpandableLine text={description} />}
 			</div>
 
-			<div className="space-y-4 p-4">
-				{(enabledCapabilities.length > 0 || inputModes.length > 0 || outputModes.length > 0) && (
-					<div className="flex flex-wrap gap-1.5">
-						{enabledCapabilities.map((capability) => (
-							<Badge key={capability} variant="secondary" className="rounded-sm">
-								{capability}
-							</Badge>
-						))}
-						{inputModes.map((mode) => (
-							<Badge key={`in-${mode}`} variant="outline" className="rounded-sm">
-								in: {mode}
-							</Badge>
-						))}
-						{outputModes.map((mode) => (
-							<Badge key={`out-${mode}`} variant="outline" className="rounded-sm">
-								out: {mode}
-							</Badge>
-						))}
-					</div>
-				)}
+			<div className="grid grid-cols-[88px_minmax(0,1fr)] gap-x-4 gap-y-3 p-4">
+				{enabledCapabilities.length > 0 && <CardField label="Capabilities">{enabledCapabilities.join(", ")}</CardField>}
+				{inputModes.length > 0 && <CardField label="Input">
+						<MediaTypeList modes={inputModes} />
+					</CardField>}
+				{outputModes.length > 0 && <CardField label="Output">
+						<MediaTypeList modes={outputModes} />
+					</CardField>}
 
 				{interfaces.length > 0 && (
-					<Disclosure summary="Interfaces" meta={`${interfaces.length}`}>
-						<div className="space-y-2">
+					<CardField label="Interfaces">
+						<div className="space-y-1.5">
 							{interfaces.map((entry, index) => {
 								const iface = asRecord(entry);
 								if (!iface) return <JsonBlock key={index} code={prettyPrint(entry)} maxHeight={160} />;
-								return (
-									<div key={index} className="rounded-sm border px-3 py-2">
-										<div className="flex flex-wrap items-center gap-2 text-[12px]">
-											<span className="font-medium">{asString(iface.protocolBinding) ?? "Interface"}</span>
-											{asString(iface.protocolVersion) && <span className="text-muted-foreground">v{asString(iface.protocolVersion)}</span>}
-										</div>
-										{asString(iface.url) && (
-											<div className="text-muted-foreground mt-1 font-mono text-[11px] break-all">{asString(iface.url)}</div>
-										)}
-									</div>
-								);
+								return <AgentInterfaceRow key={asString(iface.url) ?? index} iface={iface} />;
 							})}
 						</div>
-					</Disclosure>
+					</CardField>
 				)}
 
 				{skills.length > 0 && (
-					<Disclosure summary="Skills" meta={`${skills.length}`}>
-						<div className="space-y-2">
-							{skills.map((entry, index) => {
-								const skill = asRecord(entry);
-								if (!skill) return <JsonBlock key={index} code={prettyPrint(entry)} maxHeight={160} />;
-								const tags = asArray(skill.tags)?.filter((value): value is string => typeof value === "string") ?? [];
-								return (
-									<div key={index} className="space-y-1.5 rounded-sm border px-3 py-2">
-										<div className="text-[12.5px] font-medium">{asString(skill.name) ?? asString(skill.id) ?? `Skill ${index + 1}`}</div>
-										{asString(skill.description) && (
-											<div className="text-muted-foreground text-[11.5px] leading-relaxed">{asString(skill.description)}</div>
-										)}
-										{tags.length > 0 && <div className="text-muted-foreground text-[10.5px] break-words">{tags.join(" · ")}</div>}
-									</div>
-								);
-							})}
-						</div>
-					</Disclosure>
+					<CardField label="Skills">
+						<AgentSkillsList skills={skills} />
+					</CardField>
 				)}
 
-				<UnclaimedFields
-					source={card}
-					claimed={[
-						"name",
-						"description",
-						"version",
-						"provider",
-						"supportedInterfaces",
-						"skills",
-						"defaultInputModes",
-						"defaultOutputModes",
-						"capabilities",
-					]}
-				/>
+				{otherFields && (
+					<CardField label="Other">
+						<details className="group">
+							<summary className="text-muted-foreground hover:text-foreground flex cursor-pointer list-none items-center gap-1.5 [&::-webkit-details-marker]:hidden">
+								<span className="truncate">{Object.keys(otherFields).join(", ")}</span>
+								<ChevronDown className="size-3 shrink-0 transition-transform group-open:rotate-180" />
+							</summary>
+							<div className="pt-2">
+								<JsonBlock code={prettyPrint(otherFields)} maxHeight={280} />
+							</div>
+						</details>
+					</CardField>
+				)}
 			</div>
 		</div>
 	);
