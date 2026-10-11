@@ -7,8 +7,8 @@
         "name": "sse_mcp",
         "connection_type": "sse",
         "connection_string": "http://localhost:3012/sse",
-        "tools_to_execute": ["*"],
-        "tools_to_auto_execute": ["*"]
+        "tools_to_execute": ["echo", "add", "greet"],
+        "tools_to_auto_execute": ["echo", "add", "greet"]
       }
     ]
   },
@@ -584,6 +584,58 @@
       "prompt_cache": {
         "auto_inject": true,
         "ttl": "1h"
+      }
+    },
+    "openai_websearch": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "injected_tools": {
+        "web_search": {
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "web_search"
+        }
+      }
+    },
+    "anthropic_websearch": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Anthropic API Key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "injected_tools": {
+        "web_search": {
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "web_search"
+        }
       }
     },
     "gemini_pc_auto": {

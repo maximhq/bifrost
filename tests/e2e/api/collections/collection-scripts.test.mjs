@@ -20,6 +20,10 @@ const guardsCollection = JSON.parse(
   readFileSync(join(here, "bifrost-v1-request-guards.postman_collection.json"), "utf8"),
 );
 
+const routingWiring = JSON.parse(
+  readFileSync(join(here, "bifrost-routing-wiring.postman_collection.json"), "utf8"),
+);
+
 // Locate a request by "Folder / Request Name" and return one of its scripts.
 function scriptFor(path, listen, source = collection) {
   const wanted = path.split(" / ");
@@ -945,6 +949,95 @@ test("proxy restore skips unless a leak was flagged and a raw snapshot exists", 
   const live = run(proxyRestorePre, { variables: { rg_proxy_leaked: "1", rg_proxy_before_raw: proxyBefore } });
   assert.strictEqual(live.state.skipped, false);
   assert.strictEqual(live.pm.request.body.raw, proxyBefore, "the earlier config is resent byte for byte");
+});
+
+// requestsIn lists the requests of the routing-wiring scenario folder whose name starts with title.
+function requestsIn(title) {
+  const folder = routingWiring.item.find((item) => item.name.startsWith(title));
+  assert.ok(folder, `no routing-wiring scenario named ${title}`);
+  return folder.item.filter((item) => !item.item);
+}
+
+// Each key's alias target is checked on a request pinned to that key: an unpinned request picks its
+// key at random, so a check that needs both keys to serve fails whenever every sample lands on one.
+test("routing-wiring: the alias-collision case checks each key's alias target on a pinned request", () => {
+  const checks = requestsIn("An alias defined on two keys").filter((item) =>
+    (item.event || []).some((e) => e.script.exec.join("\n").includes("resolved_key_alias")),
+  );
+  assert.ok(checks.length > 0, "no request checks the resolved alias");
+  const pinned = new Set();
+  for (const item of checks) {
+    const pin = (item.request.header || []).find((h) => h.key === "x-bf-api-key-id");
+    assert.ok(pin, `${item.name} checks the resolved alias on an unpinned request`);
+    pinned.add(pin.value);
+  }
+  assert.deepStrictEqual([...pinned].sort(), ["k1-{{run_id}}", "k2-{{run_id}}"]);
+});
+
+// With two equal keys, n samples all land on one key one run in 2^(n-1): 8 samples fail one run in
+// 128, 24 about one in eight million.
+test("routing-wiring: the weighted key split takes enough samples that a fair split shows both keys", () => {
+  const samples = requestsIn("Both keys serve under weighted key selection").filter((item) => / sample \d+\/\d+ /.test(item.name));
+  assert.ok(samples.length >= 24, `only ${samples.length} samples`);
+});
+
+// routingWiringRequests lists every request of the routing-wiring collection, in order.
+function routingWiringRequests() {
+  const out = [];
+  (function walk(items) {
+    for (const item of items) {
+      if (item.item) walk(item.item);
+      else out.push(item);
+    }
+  })(routingWiring.item);
+  return out;
+}
+
+// listenScript returns one of a request's scripts as source text.
+function listenScript(item, listen) {
+  const event = (item.event || []).find((e) => e.listen === listen);
+  return event ? event.script.exec.join("\n") : "";
+}
+
+// A virtual key update's provider configs are written as object literals inside the one
+// JSON.stringify that builds the body, never built up and changed field by field, so the payload's
+// field order is fixed (the repository's rule for E2E payloads).
+test("routing-wiring: a virtual key update builds its provider configs as literals", () => {
+  const updates = routingWiringRequests().filter((item) => listenScript(item, "prerequest").includes("provider_configs"));
+  assert.ok(updates.length > 0, "no virtual key update found");
+  for (const item of updates) {
+    const src = listenScript(item, "prerequest");
+    assert.ok(!/\bcfg\.\w+\s*=[^=]/.test(src) && !/\.push\(/.test(src), `${item.name} builds its payload by mutation:\n${src}`);
+    let body = null;
+    const pm = {
+      collectionVariables: { get: () => "{}" },
+      variables: { get: () => "run", replaceIn: (v) => v },
+      request: { body: { update: (raw) => { body = raw; } } },
+    };
+    new Function("pm", src)(pm);
+    const configs = JSON.parse(body).provider_configs;
+    assert.ok(Array.isArray(configs) && configs.length > 0, `${item.name} sent no provider configs: ${body}`);
+    for (const cfg of configs) {
+      const order = ["provider", "allowed_models", "key_ids", "id", "weight"];
+      const keys = Object.keys(cfg);
+      assert.deepStrictEqual(keys, order.filter((k) => keys.includes(k)), `${item.name} config fields out of order: ${JSON.stringify(cfg)}`);
+    }
+  }
+});
+
+// Every entry of a trail check's expectAbsent is resolved like its expectSubstrings, so an entry
+// naming the run's resources ({{run_id}}) is checked against what the trail really says.
+test("routing-wiring: a trail check resolves run variables in the lines it expects absent", () => {
+  const check = routingWiringRequests().find((item) => /var absent = \[/.test(listenScript(item, "test")));
+  assert.ok(check, "no trail check with expectAbsent found");
+  let src = listenScript(check, "test");
+  const body = src.slice(src.indexOf("function assertNow() {") + "function assertNow() {".length, src.indexOf("\n}\nvar ok = true"));
+  const probe = body.replace(/var expected = \[[^\]]*\]/, "var expected = []").replace(/var absent = \[[^\]]*\]/, 'var absent = ["foo-{{run_id}}"]');
+  const pm = {
+    response: { code: 200, json: () => ({ routing_engine_logs: "picked foo-run7 for the request" }) },
+    variables: { replaceIn: (v) => v.split("{{run_id}}").join("run7") },
+  };
+  assert.throws(() => new Function("pm", probe)(pm), /should not contain/, "an absent line naming {{run_id}} was not resolved before the check");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

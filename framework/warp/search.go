@@ -98,7 +98,6 @@ func (s *SemanticSearcher) SearchVisible(ctx context.Context, queries []string, 
 	if err != nil {
 		return SemanticSearchResult{}, err
 	}
-	certainty := scoresAsCertainty(s.vectors)
 	// The vector store only knows the metadata it was indexed with. Scope,
 	// content-hiding and ContentSearch are decided here, after hydration, so a
 	// single top-K page can be spent entirely on rows this loop discards and
@@ -111,7 +110,7 @@ func (s *SemanticSearcher) SearchVisible(ctx context.Context, queries []string, 
 	result := SemanticSearchResult{Rows: make([]SemanticSearchRow, 0, limit), Threshold: threshold}
 	prefilters := semanticPrefilters(filters, visible)
 	for {
-		pages, err := s.nearestPages(ctx, config.EffectiveLogVectorStoreNamespace(), embeddings, prefilters, storeThreshold(threshold, certainty), certainty, candidateLimit)
+		pages, err := s.nearestPages(ctx, config.EffectiveLogVectorStoreNamespace(), embeddings, prefilters, storeThreshold(threshold), candidateLimit)
 		if err != nil {
 			return SemanticSearchResult{}, fmt.Errorf("search log embeddings: %w", err)
 		}
@@ -286,7 +285,7 @@ func filtersWithinVisibility(filters *logstore.SearchFilters, visible *LogVisibi
 // together: they are independent reads, and neither more phrasings nor a
 // restricted caller should multiply the wait. Scores come back as similarity
 // whatever the store, so the merge compares pages on one scale.
-func (s *SemanticSearcher) nearestPages(ctx context.Context, namespace string, embeddings [][]float32, prefilters [][]vectorstore.Query, threshold float64, certainty bool, limit int) ([][]vectorstore.SearchResult, error) {
+func (s *SemanticSearcher) nearestPages(ctx context.Context, namespace string, embeddings [][]float32, prefilters [][]vectorstore.Query, threshold float64, limit int) ([][]vectorstore.SearchResult, error) {
 	pages := make([][]vectorstore.SearchResult, len(embeddings)*len(prefilters))
 	errs := make([]error, len(pages))
 	var wg sync.WaitGroup
@@ -317,7 +316,7 @@ func (s *SemanticSearcher) nearestPages(ctx context.Context, namespace string, e
 	for _, page := range pages {
 		for index := range page {
 			if score := page[index].Score; score != nil {
-				similarity := similarityFromScore(*score, certainty)
+				similarity := similarityFromScore(*score)
 				page[index].Score = &similarity
 			}
 		}
@@ -348,29 +347,18 @@ func (s *SemanticSearcher) embedQueries(ctx context.Context, config *schemas.War
 }
 
 // The configured threshold and every score Warp reports are a similarity in
-// 0..1, (1 + cosine) / 2, whatever the store. Weaviate already filters and
-// scores on that scale as its certainty; the other stores use raw cosine, so
-// they are converted at the boundary. Kept in Warp rather than the shared
-// vector store: semantic cache and the complexity classifier read thresholds
-// and scores in each store's own terms.
-func scoresAsCertainty(store vectorstore.VectorStore) bool {
-	_, ok := store.(*vectorstore.WeaviateStore)
-	return ok
-}
+// 0..1, (1 + cosine) / 2, whatever the store. Every vector store filters and
+// scores on raw cosine, so both are converted at the boundary. Kept in Warp
+// rather than the shared vector store: semantic cache and the complexity
+// classifier use cosine as it is.
 
-// storeThreshold is the similarity threshold in the store's own terms.
-func storeThreshold(similarity float64, certainty bool) float64 {
-	if certainty {
-		return similarity
-	}
+// storeThreshold is the similarity threshold as the cosine the store filters on.
+func storeThreshold(similarity float64) float64 {
 	return 2*similarity - 1
 }
 
-// similarityFromScore is a store's score as a similarity.
-func similarityFromScore(score float64, certainty bool) float64 {
-	if certainty {
-		return score
-	}
+// similarityFromScore is a store's cosine score as a similarity.
+func similarityFromScore(score float64) float64 {
 	return (1 + score) / 2
 }
 

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -76,6 +77,8 @@ type liveMeter struct {
 	reportedSeconds   float64 // latest cumulative seconds OpenAI reported
 	lastUsageAt       time.Time
 	billedResponses   map[string]struct{}
+	allowedKeys       []string              // keys every admitted unit may use, as governance narrowed them
+	keysRestricted    bool                  // allowedKeys applies; an empty list then allows no key
 	refusal           *schemas.BifrostError // set once the session may not continue
 	minimumSeconds    float64               // least voice time the session bills
 	finished          bool
@@ -118,6 +121,24 @@ func (m *liveMeter) admit(voiceModel, backendModel string) *schemas.BifrostError
 	}
 	m.activeBackend = backendModel
 	return nil
+}
+
+// keySelectionContext is the session's context narrowed to the keys governance allows its units.
+func (m *liveMeter) keySelectionContext() *schemas.BifrostContext {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ctx := schemas.NewBifrostContext(m.baseCtx, schemas.NoDeadline)
+	if m.keysRestricted {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, m.allowedKeys)
+	}
+	return ctx
+}
+
+// setKey records the key the session was admitted on.
+func (m *liveMeter) setKey(key schemas.Key) {
+	m.mu.Lock()
+	m.key = key
+	m.mu.Unlock()
 }
 
 // setTransport records how the client is connected, for the session's log row.
@@ -391,6 +412,13 @@ func (m *liveMeter) runPostHooks(unit *liveBillingUnit, postCtx *schemas.Bifrost
 		}
 	}()
 	applyRealtimeTurnContextValues(postCtx, unit.preValues)
+	// The units admitted before the key was chosen bill on it too.
+	if strings.TrimSpace(m.key.ID) != "" {
+		postCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, m.key.ID)
+	}
+	if strings.TrimSpace(m.key.Name) != "" {
+		postCtx.SetValue(schemas.BifrostContextKeySelectedKeyName, m.key.Name)
+	}
 	restoreRealtimeTurnTraceContext(postCtx, unit.traceID, unit.preValues)
 	setRealtimeTurnStreamContext(postCtx, unit.startedAt, true)
 	if _, hookErr := unit.hooks.PostHookRunner(postCtx, resp, bifrostErr); hookErr != nil && hookErr.Error != nil {
@@ -443,6 +471,9 @@ func (m *liveMeter) openUnit(kind, model string, continuation bool) (*liveBillin
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	if ids, ok := preCtx.Value(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys).([]string); ok {
+		m.narrowKeysLocked(ids)
+	}
 	traceID, _ := preCtx.Value(schemas.BifrostContextKeyTraceID).(string)
 	return &liveBillingUnit{
 		hooks:     hooks,
@@ -451,6 +482,15 @@ func (m *liveMeter) openUnit(kind, model string, continuation bool) (*liveBillin
 		startedAt: startedAt,
 		preValues: preCtx.GetUserValues(),
 	}, nil
+}
+
+// narrowKeysLocked keeps only the keys every admitted unit may use.
+func (m *liveMeter) narrowKeysLocked(ids []string) {
+	if !m.keysRestricted {
+		m.allowedKeys, m.keysRestricted = slices.Clone(ids), true
+		return
+	}
+	m.allowedKeys = slices.DeleteFunc(m.allowedKeys, func(id string) bool { return !slices.Contains(ids, id) })
 }
 
 // unitContext builds a billing unit's context from the session's: same identity and grant, its

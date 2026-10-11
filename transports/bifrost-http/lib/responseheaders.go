@@ -96,12 +96,33 @@ const (
 	HeaderBifrostRoutingInfoRequestedModel          = "x-bifrost-routing-info-requested-model"
 )
 
+// Headers mirroring the semantic cache's cache_debug fields 1:1, so a caller whose route returns
+// a provider-native body with no extra_fields (the Anthropic, GenAI, Bedrock and Cohere SDK
+// routes, and their streams) still learns whether the response came from cache and which entry
+// served it. Emitted on every inference route whenever the cache ran a lookup, and never on an
+// error response, matching the body.
+const (
+	HeaderBifrostCacheHit               = "x-bifrost-cache-hit"
+	HeaderBifrostCacheID                = "x-bifrost-cache-id"
+	HeaderBifrostCacheHitType           = "x-bifrost-cache-hit-type"
+	HeaderBifrostCacheHitLatency        = "x-bifrost-cache-hit-latency-ms"
+	HeaderBifrostCacheRequestedProvider = "x-bifrost-cache-requested-provider"
+	HeaderBifrostCacheRequestedModel    = "x-bifrost-cache-requested-model"
+	HeaderBifrostCacheSimilarity        = "x-bifrost-cache-similarity"
+	HeaderBifrostCacheThreshold         = "x-bifrost-cache-threshold"
+	HeaderBifrostCacheProviderUsed      = "x-bifrost-cache-provider-used"
+	HeaderBifrostCacheModelUsed         = "x-bifrost-cache-model-used"
+	HeaderBifrostCacheInputTokens       = "x-bifrost-cache-input-tokens"
+)
+
 // ApplyBifrostStreamResponseHeaders emits the routed-identity headers for a
 // streaming response, before the first SSE write. Streams only carry
 // ExtraFields on chunks — none exist at header-write time — so the identity
 // comes from the RoutingInfo snapshot core stashes in the context at stream
 // setup (BifrostContextKeyRoutingInfo). Absent snapshot (e.g. a plugin
-// short-circuited the stream) emits only the request-type header.
+// short-circuited the stream) emits only the request-type header. The cache
+// headers come the same way, from the lookup the semantic cache recorded
+// before the stream started, since cache_debug only rides on the last chunk.
 func ApplyBifrostStreamResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, requestType schemas.RequestType) {
 	if bifrostCtx == nil {
 		return
@@ -110,7 +131,42 @@ func ApplyBifrostStreamResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *sch
 	if ri, ok := bifrostCtx.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo); ok {
 		extra = ri.ToExtraFields(requestType)
 	}
+	if lookup, ok := schemas.CacheLookupFromContext(bifrostCtx); ok {
+		extra.CacheDebug = lookup
+	}
 	ApplyBifrostResponseHeaders(ctx, bifrostCtx, extra)
+}
+
+// applyCacheMetadataHeaders writes one x-bifrost-cache-* header per cache_debug field the
+// metadata carries. cache_hit is always written, so its presence alone says a lookup ran.
+func applyCacheMetadataHeaders(ctx *fasthttp.RequestCtx, metadata *schemas.BifrostCacheMetadata) {
+	if metadata == nil {
+		return
+	}
+	ctx.Response.Header.Set(HeaderBifrostCacheHit, strconv.FormatBool(metadata.CacheHit))
+	setIfPresent := func(name string, value *string) {
+		if value != nil && *value != "" {
+			ctx.Response.Header.Set(name, *value)
+		}
+	}
+	setIfPresent(HeaderBifrostCacheID, metadata.CacheID)
+	setIfPresent(HeaderBifrostCacheHitType, metadata.HitType)
+	setIfPresent(HeaderBifrostCacheRequestedProvider, metadata.RequestedProvider)
+	setIfPresent(HeaderBifrostCacheRequestedModel, metadata.RequestedModel)
+	setIfPresent(HeaderBifrostCacheProviderUsed, metadata.ProviderUsed)
+	setIfPresent(HeaderBifrostCacheModelUsed, metadata.ModelUsed)
+	if metadata.CacheHitLatency != nil {
+		ctx.Response.Header.Set(HeaderBifrostCacheHitLatency, strconv.FormatInt(*metadata.CacheHitLatency, 10))
+	}
+	if metadata.Similarity != nil {
+		ctx.Response.Header.Set(HeaderBifrostCacheSimilarity, strconv.FormatFloat(*metadata.Similarity, 'f', -1, 64))
+	}
+	if metadata.Threshold != nil {
+		ctx.Response.Header.Set(HeaderBifrostCacheThreshold, strconv.FormatFloat(*metadata.Threshold, 'f', -1, 64))
+	}
+	if metadata.InputTokens != nil {
+		ctx.Response.Header.Set(HeaderBifrostCacheInputTokens, strconv.Itoa(*metadata.InputTokens))
+	}
 }
 
 // ApplyBifrostErrorResponseHeaders emits the routed-identity headers on an
@@ -212,4 +268,5 @@ func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 				strconv.FormatFloat(float64(upstream)/float64(time.Millisecond), 'f', 3, 64))
 		}
 	}
+	applyCacheMetadataHeaders(ctx, extra.CacheDebug)
 }

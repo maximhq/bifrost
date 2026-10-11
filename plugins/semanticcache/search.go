@@ -336,6 +336,7 @@ func (plugin *Plugin) buildNonStreamingResponseFromResult(ctx *schemas.BifrostCo
 	}
 
 	plugin.stampCacheMetadataForHit(state, cachedResponse.GetExtraFields(), result.ID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
+	plugin.recordCacheLookupHit(ctx, state, result.ID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
 	state.ShortCircuited = true
 	return &schemas.LLMPluginShortCircuit{Response: &cachedResponse}, nil
 }
@@ -346,6 +347,7 @@ func (plugin *Plugin) buildNonStreamingResponseFromResult(ctx *schemas.BifrostCo
 // process.
 func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostContext, state *cacheState, req *schemas.BifrostRequest, result vectorstore.SearchResult, streamArray []string, cacheType CacheType, threshold *float64, similarity *float64, inputTokens *int) (*schemas.LLMPluginShortCircuit, error) {
 	requestedProvider, requestedModel, _ := req.GetRequestFields()
+	plugin.recordCacheLookupHit(ctx, state, result.ID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
 	streamChan := make(chan *schemas.BifrostStreamChunk)
 	done := ctx.Done()
 
