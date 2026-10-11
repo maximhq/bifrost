@@ -859,8 +859,8 @@ interface BaseCacheConfig {
 
 export interface DirectCacheConfig extends BaseCacheConfig {
 	dimension: 1;
-	provider?: undefined;
-	embedding_model?: undefined;
+	provider?: "";
+	embedding_model?: "";
 }
 
 export interface ProviderBackedCacheConfig extends BaseCacheConfig {

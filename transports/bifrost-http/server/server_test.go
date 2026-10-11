@@ -23,10 +23,12 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/prompts"
+	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -1531,6 +1533,107 @@ func TestReloadPluginGivesTheConstructorTheServerContext(t *testing.T) {
 	if got := governancePluginNameFromContext(store.gotCtx); got != "governance-custom" {
 		t.Errorf("constructor context governance plugin name = %q, want it inherited from the server context", got)
 	}
+}
+
+// mismatchVectorStore reports every namespace as already holding vectors of another size, which is
+// how a semantic cache config change that the store cannot serve fails to load.
+type mismatchVectorStore struct {
+	vectorstore.VectorStore
+}
+
+func (mismatchVectorStore) CreateNamespace(_ context.Context, namespace string, dimension int, _ map[string]vectorstore.VectorStoreProperties) error {
+	return fmt.Errorf("%w: namespace %q already exists with dimension 1536 but config requires %d", vectorstore.ErrDimensionMismatch, namespace, dimension)
+}
+
+// loadedStubPlugin stands in for an instance that is already running under a name.
+type loadedStubPlugin struct{ name string }
+
+func (p loadedStubPlugin) GetName() string { return p.name }
+func (p loadedStubPlugin) Cleanup() error  { return nil }
+
+// A reload whose new instance fails to load leaves the running one in place, so the status keeps
+// describing that instance rather than reporting an error for a plugin that is still serving. With
+// nothing running, the failure is the plugin's state and is reported as an error.
+func TestReloadPluginFailureKeepsTheRunningInstanceStatus(t *testing.T) {
+	SetLogger(bifrost.NewNoOpLogger())
+	directOnly := map[string]any{"dimension": 1}
+
+	t.Run("an instance is running", func(t *testing.T) {
+		cfg := &lib.Config{VectorStore: mismatchVectorStore{}}
+		running := []schemas.BasePlugin{loadedStubPlugin{name: semanticcache.PluginName}}
+		cfg.BasePlugins.Store(&running)
+		cfg.UpdatePluginOverallStatus(semanticcache.PluginName, semanticcache.PluginName, schemas.PluginStatusActive, nil, []schemas.PluginType{schemas.PluginTypeLLM})
+		s := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), Config: cfg}
+
+		err := s.ReloadPlugin(context.Background(), semanticcache.PluginName, nil, directOnly, nil, nil)
+		require.ErrorIs(t, err, vectorstore.ErrDimensionMismatch)
+
+		status, ok := cfg.GetPluginStatusByName(semanticcache.PluginName)
+		require.True(t, ok)
+		assert.Equal(t, schemas.PluginStatusActive, status.Status, "the running instance is still serving")
+	})
+
+	t.Run("nothing is running", func(t *testing.T) {
+		cfg := &lib.Config{VectorStore: mismatchVectorStore{}}
+		s := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), Config: cfg}
+
+		err := s.ReloadPlugin(context.Background(), semanticcache.PluginName, nil, directOnly, nil, nil)
+		require.ErrorIs(t, err, vectorstore.ErrDimensionMismatch)
+
+		status, ok := cfg.GetPluginStatusByName(semanticcache.PluginName)
+		require.True(t, ok)
+		assert.Equal(t, schemas.PluginStatusError, status.Status)
+	})
+}
+
+// semantic_cache configs are checked when the plugin is about to run, not when one is saved. The
+// plugins API loads a plugin only when it is enabled, so a cache that no longer passes (an
+// embedding provider since deleted, a row saved before validation existed) can still be disabled.
+// A config refused at load wraps lib.ErrInvalidPluginConfig and touches no plugin status.
+func TestReloadPluginValidatesSemanticCacheConfig(t *testing.T) {
+	SetLogger(bifrost.NewNoOpLogger())
+	cfg := &lib.Config{
+		Providers:   map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}},
+		VectorStore: mismatchVectorStore{},
+	}
+	s := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), Config: cfg}
+
+	rejected := []struct {
+		name   string
+		config map[string]any
+		want   string
+	}{
+		{"empty config", map[string]any{}, "requires 'provider' for semantic mode"},
+		{"dimension 0", map[string]any{"dimension": 0}, "'dimension' must be >= 1"},
+		{"provider with dimension 1", map[string]any{"provider": "openai", "dimension": 1}, "requires 'dimension' > 1 when 'provider' is set"},
+		{"provider without embedding_model", map[string]any{"provider": "openai", "dimension": 1536}, "requires 'embedding_model'"},
+		{"empty embedding_model", map[string]any{"provider": "openai", "embedding_model": "", "dimension": 1536}, "non-empty 'embedding_model'"},
+		{"provider not configured", map[string]any{"provider": "missing", "embedding_model": "text-embedding-3-small", "dimension": 1536}, "failed to get provider config"},
+		{"ttl abc", map[string]any{"dimension": 1, "ttl": "abc"}, "failed to parse TTL duration string 'abc'"},
+		{"negative ttl", map[string]any{"dimension": 1, "ttl": "-5s"}, "TTL must be non-negative"},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			err := s.ReloadPlugin(context.Background(), semanticcache.PluginName, nil, tc.config, nil, nil)
+			require.ErrorIs(t, err, lib.ErrInvalidPluginConfig)
+			assert.Contains(t, err.Error(), tc.want)
+			_, hasStatus := cfg.GetPluginStatusByName(semanticcache.PluginName)
+			assert.False(t, hasStatus, "a refused config must leave no plugin status behind")
+		})
+	}
+
+	t.Run("saving does not validate, so a cache that no longer passes can be disabled", func(t *testing.T) {
+		_, err := s.NormalizePluginConfig(semanticcache.PluginName, map[string]any{"provider": "missing", "embedding_model": "text-embedding-3-small", "dimension": 1536})
+		require.NoError(t, err)
+	})
+
+	t.Run("a valid config goes on to load, nulls included", func(t *testing.T) {
+		// The mismatch store refuses every namespace, so a config that passed validation ends in
+		// the store's error, not the validation one.
+		err := s.ReloadPlugin(context.Background(), semanticcache.PluginName, nil, map[string]any{"provider": nil, "embedding_model": nil, "dimension": 1, "ttl": "10m"}, nil, nil)
+		require.ErrorIs(t, err, vectorstore.ErrDimensionMismatch)
+		assert.NotErrorIs(t, err, lib.ErrInvalidPluginConfig)
+	})
 }
 
 // The accessor's own contract: it tracks the server, not the request that called it.

@@ -589,7 +589,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		}
 		// Cache no store header
 		if keyStr == "x-bf-cache-no-store" {
-			if valueStr := string(value); valueStr == "true" {
+			// A boolean header: "true" in any casing, with surrounding space ignored.
+			if strings.EqualFold(strings.TrimSpace(string(value)), "true") {
 				bifrostCtx.SetValue(semanticcache.CacheNoStoreKey, true)
 			}
 			return true

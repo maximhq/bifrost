@@ -636,10 +636,11 @@ func TestWeaviateStore_CompleteUseCases(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, results, 1) // user1_content
 
-		// Alice's similar content (semantic search with user filter)
+		// Alice's similar content (semantic search with user filter). The embeddings are random, so
+		// the threshold is -1, the loosest cosine similarity, and the user filter alone decides.
 		aliceFilter := []Query{{Field: "user", Operator: "Equal", Value: "alice"}}
 		queryEmbedding := userContent[0].embedding
-		vectorResults, err := setup.Store.GetNearest(setup.ctx, TestClassName, queryEmbedding, aliceFilter, filterFields, 0.1, 10)
+		vectorResults, err := setup.Store.GetNearest(setup.ctx, TestClassName, queryEmbedding, aliceFilter, filterFields, -1, 10)
 		require.NoError(t, err)
 		assert.Len(t, vectorResults, 2) // Both of Alice's content
 	})
@@ -809,4 +810,79 @@ func TestWeaviateStore_NamespaceDimensionHandling(t *testing.T) {
 			t.Logf("Warning: Failed to cleanup class: %v", err)
 		}
 	})
+}
+
+// TestWeaviateStore_CreateNamespaceRejectsDimensionChange pins the guard every store shares: a
+// class that already holds vectors of one size cannot be reopened at another, so a dimension
+// change surfaces when the plugin loads rather than as failed writes and silent misses later.
+// Weaviate keeps no dimension on the class, so the stored vectors are what is compared.
+func TestWeaviateStore_CreateNamespaceRejectsDimensionChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewTestSetup(t)
+	defer setup.Cleanup(t)
+
+	className := "TestDimensionGuard"
+	properties := map[string]VectorStoreProperties{"type": {DataType: VectorStorePropertyTypeString}}
+	_ = setup.Store.DeleteNamespace(setup.ctx, className)
+	defer func() { _ = setup.Store.DeleteNamespace(setup.ctx, className) }()
+
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, className, 512, properties))
+	// An empty class has no vectors to compare, so reopening it at another size is allowed.
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, className, 1024, properties))
+
+	require.NoError(t, setup.Store.Add(setup.ctx, className, generateUUID(), generateTestEmbedding(512), map[string]interface{}{"type": "doc"}))
+
+	// Reopening at the size it holds stays idempotent.
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, className, 512, properties))
+
+	err := setup.Store.CreateNamespace(setup.ctx, className, 1024, properties)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrDimensionMismatch)
+	assert.Contains(t, err.Error(), "already exists with dimension 512 but config requires 1024")
+}
+
+// TestWeaviateStore_GetNearestScoresCosineSimilarity pins GetNearest's threshold and score to
+// cosine similarity, the scale every store uses. Weaviate's certainty is (1 + cosine) / 2, so
+// filtering or scoring by it admits a vector at cosine 0.7 under a 0.8 threshold.
+func TestWeaviateStore_GetNearestScoresCosineSimilarity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewTestSetup(t)
+	defer setup.Cleanup(t)
+
+	className := "TestCosineScore"
+	properties := map[string]VectorStoreProperties{"label": {DataType: VectorStorePropertyTypeString}}
+	_ = setup.Store.DeleteNamespace(setup.ctx, className)
+	defer func() { _ = setup.Store.DeleteNamespace(setup.ctx, className) }()
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, className, 2, properties))
+
+	require.NoError(t, setup.Store.Add(setup.ctx, className, generateUUID(), unitVectorAtCosine(2, 0.9), map[string]interface{}{"label": "close"}))
+	require.NoError(t, setup.Store.Add(setup.ctx, className, generateUUID(), unitVectorAtCosine(2, 0.7), map[string]interface{}{"label": "far"}))
+
+	results, err := setup.Store.GetNearest(setup.ctx, className, unitVectorAtCosine(2, 1), nil, []string{"label"}, 0.8, 10)
+	require.NoError(t, err)
+	require.Len(t, results, 1, "only the vector at cosine 0.9 clears a 0.8 threshold")
+	assert.Equal(t, "close", results[0].Properties["label"])
+	require.NotNil(t, results[0].Score)
+	assert.InDelta(t, 0.9, *results[0].Score, 1e-3)
+}
+
+// TestWeaviateStore_DeleteMissingIDSucceeds pins deleting an id that was never written as a
+// no-op, the contract every store shares so clearing an unknown cache entry is not a server error.
+func TestWeaviateStore_DeleteMissingIDSucceeds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewTestSetup(t)
+	defer setup.Cleanup(t)
+
+	properties := map[string]VectorStoreProperties{"type": {DataType: VectorStorePropertyTypeString}}
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, TestClassName, 384, properties))
+	assert.NoError(t, setup.Store.Delete(setup.ctx, TestClassName, generateUUID()))
 }
