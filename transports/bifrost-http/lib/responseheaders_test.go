@@ -403,3 +403,130 @@ func TestApplyBifrostErrorResponseHeaders(t *testing.T) {
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoProvider)))
 	})
 }
+
+// cacheHeaderNames is every x-bifrost-cache-* header, one per cache_debug field.
+var cacheHeaderNames = []string{
+	"x-bifrost-cache-hit",
+	"x-bifrost-cache-id",
+	"x-bifrost-cache-hit-type",
+	"x-bifrost-cache-hit-latency-ms",
+	"x-bifrost-cache-requested-provider",
+	"x-bifrost-cache-requested-model",
+	"x-bifrost-cache-similarity",
+	"x-bifrost-cache-threshold",
+	"x-bifrost-cache-provider-used",
+	"x-bifrost-cache-model-used",
+	"x-bifrost-cache-input-tokens",
+}
+
+func cacheHeaders(ctx *fasthttp.RequestCtx) map[string]string {
+	out := map[string]string{}
+	for _, name := range cacheHeaderNames {
+		if v := ctx.Response.Header.Peek(name); len(v) > 0 {
+			out[name] = string(v)
+		}
+	}
+	return out
+}
+
+// TestApplyBifrostResponseHeaders_CacheMetadata covers the x-bifrost-cache-* headers: one per
+// cache_debug field, so a caller on a route whose body has no extra_fields (the Anthropic, GenAI,
+// Bedrock and Cohere SDK routes) still learns whether it was served from cache and which entry
+// served it. A normal response reads them from its own cache_debug; a stream, whose headers go out
+// before any chunk carries cache_debug, reads the lookup the cache plugin recorded on the context.
+func TestApplyBifrostResponseHeaders_CacheMetadata(t *testing.T) {
+	newBifrostCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+	str := func(v string) *string { return &v }
+	threshold, similarity := 0.85, 0.9375
+	inputTokens := 12
+	latency := int64(4)
+
+	t.Run("semantic hit emits every field", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ApplyBifrostResponseHeaders(ctx, newBifrostCtx(), schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionRequest,
+			CacheDebug: &schemas.BifrostCacheMetadata{
+				CacheHit:          true,
+				CacheID:           str("entry-1"),
+				HitType:           str("semantic"),
+				RequestedProvider: str("anthropic"),
+				RequestedModel:    str("claude-haiku-4-5"),
+				ProviderUsed:      str("openai"),
+				ModelUsed:         str("text-embedding-3-small"),
+				InputTokens:       &inputTokens,
+				Threshold:         &threshold,
+				Similarity:        &similarity,
+				CacheHitLatency:   &latency,
+			},
+		})
+
+		assert.Equal(t, map[string]string{
+			"x-bifrost-cache-hit":                "true",
+			"x-bifrost-cache-id":                 "entry-1",
+			"x-bifrost-cache-hit-type":           "semantic",
+			"x-bifrost-cache-hit-latency-ms":     "4",
+			"x-bifrost-cache-requested-provider": "anthropic",
+			"x-bifrost-cache-requested-model":    "claude-haiku-4-5",
+			"x-bifrost-cache-similarity":         "0.9375",
+			"x-bifrost-cache-threshold":          "0.85",
+			"x-bifrost-cache-provider-used":      "openai",
+			"x-bifrost-cache-model-used":         "text-embedding-3-small",
+			"x-bifrost-cache-input-tokens":       "12",
+		}, cacheHeaders(ctx))
+	})
+
+	t.Run("miss emits only what the miss carries", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ApplyBifrostResponseHeaders(ctx, newBifrostCtx(), schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionRequest,
+			CacheDebug:  &schemas.BifrostCacheMetadata{CacheHit: false, CacheID: str("entry-2")},
+		})
+
+		assert.Equal(t, map[string]string{
+			"x-bifrost-cache-hit": "false",
+			"x-bifrost-cache-id":  "entry-2",
+		}, cacheHeaders(ctx))
+	})
+
+	t.Run("no cache_debug emits no cache headers", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ApplyBifrostResponseHeaders(ctx, newBifrostCtx(), schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest})
+		assert.Empty(t, cacheHeaders(ctx))
+	})
+
+	t.Run("stream emits the recorded lookup", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newBifrostCtx()
+		schemas.SetCacheLookupOnContext(bifrostCtx, &schemas.BifrostCacheMetadata{
+			CacheHit: true, CacheID: str("entry-3"), HitType: str("direct"), CacheHitLatency: &latency,
+		})
+
+		ApplyBifrostStreamResponseHeaders(ctx, bifrostCtx, schemas.ChatCompletionStreamRequest)
+
+		assert.Equal(t, map[string]string{
+			"x-bifrost-cache-hit":            "true",
+			"x-bifrost-cache-id":             "entry-3",
+			"x-bifrost-cache-hit-type":       "direct",
+			"x-bifrost-cache-hit-latency-ms": "4",
+		}, cacheHeaders(ctx))
+	})
+
+	t.Run("stream with no lookup emits no cache headers", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ApplyBifrostStreamResponseHeaders(ctx, newBifrostCtx(), schemas.ChatCompletionStreamRequest)
+		assert.Empty(t, cacheHeaders(ctx))
+	})
+
+	// An error body carries no cache_debug, so neither do its headers, even after a lookup ran.
+	t.Run("error response emits no cache headers", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newBifrostCtx()
+		schemas.SetCacheLookupOnContext(bifrostCtx, &schemas.BifrostCacheMetadata{CacheHit: false, CacheID: str("entry-4")})
+
+		ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, schemas.BifrostErrorExtraFields{RequestType: schemas.ChatCompletionRequest})
+
+		assert.Empty(t, cacheHeaders(ctx))
+	})
+}

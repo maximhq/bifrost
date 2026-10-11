@@ -385,6 +385,7 @@ const (
 	BifrostContextKeyGuardrailMetadata                   BifrostContextKey = "bifrost-guardrail-debug"                          // *BifrostGuardrailMetadata (set by enterprise guardrails plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGuardrailHeaders                    BifrostContextKey = "bifrost-guardrail-headers"                        // map[string]string (the headers guardrail rules match against as `headers`; set by the guardrails HTTP pre-hook, or by an in-process caller that sends no HTTP request, such as Warp)
 	BifrostContextKeyCacheMetadata                       BifrostContextKey = "bifrost-cache-debug"                              // *BifrostCacheMetadata (set by semantic cache plugin - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyCacheLookup                         BifrostContextKey = "bifrost-cache-lookup"                             // *BifrostCacheMetadata (the semantic cache lookup's outcome, known before the response starts; read for stream response headers - set by semantic cache plugin)
 	BifrostContextKeyRoutingMetadata                     BifrostContextKey = "bifrost-routing-metadata"                         // *BifrostRoutingMetadata (set by routing plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyRedactionData                       BifrostContextKey = "bifrost-redaction-data"                           // RedactionData (set by enterprise guardrails plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyDisableContentLogging               BifrostContextKey = "x-bf-disable-content-logging"                     // bool (per-request override for content logging; only honored when BifrostContextKeyAllowPerRequestStorageOverride is true. When retain_content_in_object_storage is on, disabled content is still offloaded to object storage as hidden instead of dropped)
@@ -638,15 +639,19 @@ const LoadBalancerMetadataPrefix = "bifrost_alb_"
 // One record is appended per attempt regardless of whether the key changed between attempts.
 //
 // FailureClass and StatusCode are set on every failed attempt the provider answered (retryable or
-// terminal) and are empty on a successful attempt, on a cancelled one, and on an internal Bifrost
-// error. FailureClass is what the retry loop acted on; StatusCode is the raw status it was derived
-// from, kept so a consumer can tell a 401 from a 403 within the same class.
+// terminal), and on an attempt Bifrost ended: a timeout (the provider's, the request's deadline or a
+// TTFT miss) is FailureClassTimeout with 504, and a caller's cancellation is FailureClassCancelled
+// with 499. They are empty on a successful attempt and on an internal Bifrost error. FailureClass is
+// what the retry loop acted on; StatusCode is the raw status it was derived from, kept so a consumer
+// can tell a 401 from a 403 within the same class.
 //
-// FailReason is populated on the same attempts and is nil on the others. For the classes that
-// name what the provider refused it is the class's label: `rate_limit_error`, `authentication_error`,
-// `billing_error`, `model_access_error`, `model_retired_error`, `region_blocked_error`; otherwise the
-// provider's error Type is used, falling back to `unknown`. Use it to inspect what went wrong on a
-// given try.
+// FailReason is populated on the same attempts, except a cancelled one, and is nil on the others.
+// For the classes that name what the provider refused it is the class's label: `rate_limit_error`,
+// `authentication_error`, `billing_error`, `model_access_error`, `model_retired_error`,
+// `region_blocked_error`; a timeout is `request_timed_out`, or `ttft_timeout` for a TTFT miss;
+// otherwise the provider's error Type is used, falling back to `unknown`. A cancelled attempt has
+// none because FailReason says the key failed, and a caller leaving says nothing about the key.
+// Use it to inspect what went wrong on a given try.
 //
 // RetryAfter is the provider's own hint for how long to wait before trying this key again, in
 // milliseconds, carried from the error's ExtraFields.RetryAfter (see the retry hint sources in

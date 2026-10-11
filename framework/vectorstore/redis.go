@@ -86,7 +86,7 @@ func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dime
 		// without UnstableResp3 — which is exactly how this store configures it
 		// — so it always failed and the check below silently never ran.
 		if existing, ok := vectorDimensionFromFTInfo(infoResult.Val()); ok && existing != dimension {
-			return fmt.Errorf("namespace %q already exists with dimension %d but config requires %d — update vector_store_namespace to a new name or drop the existing index manually", namespace, existing, dimension)
+			return dimensionMismatchError(namespace, existing, dimension, "index")
 		}
 		s.cacheNamespaceFieldTypes(namespace, properties)
 		return nil // Index already exists with matching dimension
@@ -1392,15 +1392,11 @@ func (s *RedisStore) Delete(ctx context.Context, namespace string, id string) er
 
 	// Delete the hash key
 	result := s.client.Del(ctx, key)
+	// Deleting a key that is already gone is a no-op, as it is on every other store: the caller
+	// wanted the entry absent, and it is.
 	if result.Err() != nil {
 		return fmt.Errorf("failed to delete chunk %s: %w", id, result.Err())
 	}
-
-	// Check if the key actually existed
-	if result.Val() == 0 {
-		return fmt.Errorf("chunk not found: %s", id)
-	}
-
 	return nil
 }
 
