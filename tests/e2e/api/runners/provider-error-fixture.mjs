@@ -146,6 +146,19 @@ const server = http.createServer((req, res) => {
 			if (!body?.session?.model || typeof body.session.instructions !== "string" || body.transport?.type !== "webrtc") {
 				return send(400, {}, errorBody("session and WebRTC transport are required", "invalid_request_error", "invalid_session"));
 			}
+			if (body.session.instructions.startsWith("filtered-live-create-")) {
+				const permissions = body.session.client?.data_channel;
+				const selectors = permissions?.allowed_server_events;
+				const topLevel = ["session.started", "session.updated", "session.closed", "session.usage.updated", "session.delegation.created", "session.input_transcript.delta", "session.output_transcript.delta", "error"];
+				const responses = ["response.output_item.done", "response.completed", "response.incomplete", "response.failed"];
+				const has = (type, nested) => Array.isArray(selectors) && selectors.some((event) => event?.type === type && event.response_event === nested);
+				if (!topLevel.every((type) => has(type, undefined)) || !responses.every((type) => has("response.event", type))) {
+					return send(400, {}, errorBody("gateway accounting events missing from upstream permissions", "invalid_request_error", "missing_gateway_events"));
+				}
+				if (JSON.stringify(permissions.allowed_client_events) !== '["session.close"]') {
+					return send(400, {}, errorBody("frontend command permissions changed", "invalid_request_error", "changed_client_permissions"));
+				}
+			}
 			if (body.session?.instructions === "refuse-live-create") {
 				return send(403, {}, errorBody("fixture refused live session creation", "permission_error", "session_refused"));
 			}
