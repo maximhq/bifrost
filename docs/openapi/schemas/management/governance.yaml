@@ -2678,10 +2678,10 @@ ComplexityDecisionConfig:
   properties:
     provider:
       type: string
-      description: Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`.
+      description: Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`.
     model:
       type: string
-      description: Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`.
+      description: Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`.
     previous_message_count:
       type: integer
       minimum: 0
