@@ -171,7 +171,7 @@ func TestLiveWebRTCRelayEndToEnd(t *testing.T) {
 	meter := newTestLiveMeter(runner)
 	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
 	messages := &liveWebRTCMessages{}
-	messages.liveSessionController = newTestLiveController(fakeLiveModels{allowed: false}, meter, messages)
+	messages.liveSessionController = newTestLiveController(fakeLiveModels{allowed: true, blocked: "gpt-5.6-sol"}, meter, messages)
 	closed := make(chan struct{})
 	var closeOnce sync.Once
 
@@ -212,6 +212,17 @@ func TestLiveWebRTCRelayEndToEnd(t *testing.T) {
 	marker := `{"type":"session.thinking.append","delegation_id":null,"content":"hi"}`
 	browser.send(t, marker)
 	assert.Equal(t, marker, openai.next(t))
+
+	// Physical model support cannot override governance's model-specific key restriction.
+	runner.restrictKeys("gpt-5.6-terra", []string{"key-2"})
+	update := `{"type":"session.update","session":{"delegation":{"type":"responses","responses":{"model":"gpt-5.6-terra"}}}}`
+	browser.send(t, update)
+	assert.Contains(t, browser.next(t), "the key serving this session is not allowed for model gpt-5.6-terra")
+	browser.send(t, marker)
+	assert.Equal(t, marker, openai.next(t), "the forbidden update never reached the provider")
+	runner.restrictKeys("gpt-5.6-terra", []string{"key-1"})
+	browser.send(t, update)
+	assert.Equal(t, update, openai.next(t), "a permitted switch still reaches the provider")
 
 	// The browser leaves: Bifrost closes the session upstream and waits for the final usage.
 	require.NoError(t, browser.pc.Close())
@@ -288,3 +299,65 @@ func (io *recordingLiveIO) sendClient(message []byte) error {
 	return nil
 }
 func (io *recordingLiveIO) abandonUpstream() {}
+
+func TestLiveWebRTCCloseConcurrentWithTranscript(t *testing.T) {
+	for n := 0; n < 10; n++ {
+		runner := &fakeLiveRunner{}
+		meter := newTestLiveMeter(runner)
+		require.Nil(t, meter.admit("gpt-live-1", ""))
+		messages := &liveWebRTCMessages{relay: &webrtcRelay{}}
+		require.True(t, messages.relay.markEstablished())
+		messages.liveSessionController = newTestLiveController(fakeLiveModels{allowed: true}, meter, &recordingLiveIO{})
+		started, done := make(chan struct{}), make(chan struct{})
+		go func() {
+			defer close(done)
+			frame := []byte(`{"type":"session.input_transcript.delta","delta":"hello","start_ms":1,"end_ms":2}`)
+			messages.fromUpstream(frame)
+			close(started)
+			for i := 0; i < 1000; i++ {
+				messages.fromUpstream(frame)
+			}
+		}()
+		<-started
+		messages.closed()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("provider message handling did not finish after shutdown")
+		}
+		opens, posts, cleanups := runner.snapshot()
+		require.Len(t, posts, 1)
+		require.NotNil(t, posts[0].live)
+		assert.Equal(t, messages.transcript.snapshot(), posts[0].live.Transcript, "shutdown freezes the transcript carried by the closing unit")
+		assert.Equal(t, len(opens), cleanups, "shutdown closes the admitted unit exactly once")
+	}
+}
+
+func TestLiveWebRTCFinalizationIgnoresLateProviderEvents(t *testing.T) {
+	t.Parallel()
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	require.Nil(t, meter.admit("gpt-live-1", ""))
+	messages := &liveWebRTCMessages{relay: &webrtcRelay{}}
+	require.True(t, messages.relay.markEstablished())
+	messages.liveSessionController = newTestLiveController(fakeLiveModels{allowed: true}, meter, &recordingLiveIO{})
+	messages.fromUpstream([]byte(`{"type":"session.input_transcript.delta","delta":"hello","start_ms":1,"end_ms":2}`))
+	messages.fromUpstream([]byte(`{"type":"session.usage.updated","usage":{"seconds":7}}`))
+	messages.closed()
+
+	// Pion may deliver a callback already queued when the close callback finalized the session.
+	messages.fromUpstream([]byte(`{"type":"session.output_transcript.delta","delta":"late","start_ms":3,"end_ms":4}`))
+	messages.fromUpstream([]byte(`{"type":"session.usage.updated","usage":{"seconds":99}}`))
+	messages.fromUpstream([]byte(`{"type":"session.closed","usage":{"seconds":100}}`))
+	messages.closed()
+	_, posts, cleanups := runner.snapshot()
+	require.Len(t, posts, 1, "terminal callbacks do not run the post-hooks twice")
+	assert.Equal(t, 1, cleanups)
+	assert.Equal(t, 7.0, postSeconds(t, posts[0]))
+	assert.Equal(t, 7.0, meter.lastReportedSeconds(), "late events cannot accrue usage after billing ends")
+	require.NotNil(t, posts[0].live)
+	expected := []schemas.LiveTranscriptLine{{Role: "user", Text: "hello", StartMs: 1, EndMs: 2}}
+	assert.Equal(t, expected, posts[0].live.Transcript)
+	assert.Equal(t, expected, messages.transcript.snapshot(), "late fragments do not mutate finalized state")
+	assert.Equal(t, expected, meter.ending.transcript, "late terminal events cannot replace the final snapshot")
+}
