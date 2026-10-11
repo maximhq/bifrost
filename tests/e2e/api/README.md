@@ -88,13 +88,6 @@ Run from the repository root. Check that ports 8790 and 8791 are free before sta
 ```bash
 lsof -nP -iTCP:8790 -iTCP:8791 -sTCP:LISTEN
 ```
-## Sonnet 5.5 caller request surface
-
-These fourteen deterministic cases use a local synthetic Anthropic endpoint and an
-isolated gateway. They make no live provider calls, need no key, no quota and no
-subscription entitlement, and they assert **what Bifrost forwards** — a passing
-case is not evidence that the live Claude API accepts any of these request shapes.
-Run the following commands from the repository root.
 
 Start the fixture in one terminal:
 
@@ -121,6 +114,19 @@ After `/health` responds, run the three cases in a third terminal:
 make run-provider-harness-test PROVIDER=openai FEATURE="content-length truncation" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
 ```
 
+Stop the fixture and isolated gateway with Ctrl+C after testing.
+
+## Sonnet 5.5 caller request surface
+
+These fourteen deterministic cases use a local synthetic Anthropic endpoint and an
+isolated gateway. They make no live provider calls, need no key, no quota and no
+subscription entitlement, and they assert **what Bifrost forwards** — a passing
+case is not evidence that the live Claude API accepts any of these request shapes.
+Run the following commands from the repository root.
+
+Start the fixture in one terminal:
+
+```bash
 node tests/e2e/api/runners/anthropic-request-surface-fixture.mjs
 ```
 
@@ -199,7 +205,6 @@ HTTP handler directly, with no port bound, so an unknown or malformed request
 target is answered 404 rather than thrown on — a throw there rejects the async
 listener's promise, answers nothing, and takes the fixture down mid-folder.
 
-Stop the fixture and isolated gateway with Ctrl+C after testing.
 
 ## Provider 5xx failover and 429 retry-hint propagation
 
