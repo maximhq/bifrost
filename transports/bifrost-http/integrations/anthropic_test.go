@@ -8,6 +8,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -1256,5 +1257,80 @@ func TestAnthropicMessagesResponsesConverterSkipsRawAfterInjectedTools(t *testin
 	}
 	if got, ok := assembled.(json.RawMessage); ok && string(got) == string(raw) {
 		t.Fatal("after injected tools ran, the last turn's raw reply must not stand in for the answer")
+	}
+}
+
+// Claude Code keeps two system markers but moves the tool-result marker forward.
+// Explicit-only lookup would lose the previous turn's conversation boundary.
+func TestAnthropicMessagesGPTPromptCacheRollingMarker(t *testing.T) {
+	for _, model := range []string{
+		"openai/gpt-5.6-sol", "openai/gpt-6-sol", "azure/gpt-6-sol",
+		"bedrock/global.openai.gpt-5.6-sol", "bedrock/global.openai.gpt-6-sol",
+		"bedrock_mantle/openai.gpt-6-sol",
+	} {
+		t.Run(model, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			for _, turn := range []string{"first", "second"} {
+				messages := `{"role":"user","content":"Call echo."},
+     {"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"echo","input":{"text":"hello"}}]},
+     {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"RESULT_ONE"MARKER}]} `
+				if turn == "first" {
+					messages = strings.ReplaceAll(messages, "MARKER", `,"cache_control":{"type":"ephemeral"}`)
+				} else {
+					messages = strings.ReplaceAll(messages, "MARKER", "") + `,
+      {"role":"assistant","content":[{"type":"tool_use","id":"call_2","name":"echo","input":{"text":"again"}}]},
+      {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_2","content":"RESULT_TWO","cache_control":{"type":"ephemeral"}}]}`
+				}
+				raw := `{"model":"MODEL","max_tokens":64,"system":[
+     {"type":"text","text":"SYSTEM_ONE","cache_control":{"type":"ephemeral"}},
+     {"type":"text","text":"SYSTEM_TWO","cache_control":{"type":"ephemeral"}}],
+     "messages":[MESSAGES]}`
+				raw = strings.ReplaceAll(strings.ReplaceAll(raw, "MODEL", model), "MESSAGES", messages)
+				var incoming anthropic.AnthropicMessageRequest
+				if err := sonic.Unmarshal([]byte(raw), &incoming); err != nil {
+					t.Fatal(err)
+				}
+				for _, route := range createAnthropicMessagesRouteConfig("/anthropic", nil) {
+					request, err := route.RequestConverter(ctx, &incoming)
+					if err != nil {
+						t.Fatal(err)
+					}
+					outgoing := openai.ToOpenAIResponsesRequest(ctx, request.ResponsesRequest)
+					body, err := outgoing.MarshalJSON()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if gjson.GetBytes(body, "prompt_cache_options").Exists() {
+						t.Errorf("%s turn: rolling markers must keep implicit cache lookup: %s", turn, body)
+					}
+					var markers []string
+					gjson.GetBytes(body, "input").ForEach(func(_, item gjson.Result) bool {
+						for _, field := range []string{"content", "output"} {
+							item.Get(field).ForEach(func(_, block gjson.Result) bool {
+								if block.Get("cache_control").Exists() {
+									t.Errorf("Anthropic marker leaked onto wire: %s", body)
+								}
+								if block.Get("prompt_cache_breakpoint").Exists() {
+									if block.Get("prompt_cache_breakpoint.mode").String() != "explicit" {
+										t.Errorf("invalid block breakpoint: %s", body)
+									}
+									markers = append(markers, block.Get("text").String())
+								}
+								return true
+							})
+						}
+						return true
+					})
+					want := "SYSTEM_ONE,SYSTEM_TWO,RESULT_ONE"
+					if turn == "second" {
+						want = "SYSTEM_ONE,SYSTEM_TWO,RESULT_TWO"
+					}
+					if got := strings.Join(markers, ","); got != want {
+						t.Errorf("%s turn: markers = %q, want %q; body=%s", turn, got, want, body)
+					}
+				}
+			}
+		})
 	}
 }
