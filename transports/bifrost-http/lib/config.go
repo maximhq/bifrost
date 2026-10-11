@@ -8835,14 +8835,26 @@ func (c *Config) ValidateSemanticCacheConfig(config *schemas.PluginConfig) error
 		return fmt.Errorf("semantic_cache plugin config must be a map, got %T", config.Config)
 	}
 
+	// Decode through the plugin's own config type first, so a value the plugin would refuse when
+	// it loads (a TTL that does not parse, a field of the wrong type) is refused here instead.
+	raw, err := json.Marshal(configMap)
+	if err != nil {
+		return fmt.Errorf("semantic_cache plugin config is not valid JSON: %w", err)
+	}
+	var parsed semanticcache.Config
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return fmt.Errorf("semantic_cache plugin config is invalid: %w", err)
+	}
+
 	dimension, hasDimension, err := semanticCacheConfigDimension(configMap)
 	if err != nil {
 		return err
 	}
 
-	// Check if provider key exists and is a string
+	// Check if provider key exists and is a string. A null field is the same as an absent one: a
+	// plugin update merges its config over the stored one, so null is how a field is cleared.
 	providerVal, exists := configMap["provider"]
-	if !exists {
+	if !exists || providerVal == nil {
 		if hasDimension && dimension == 1 {
 			delete(configMap, "keys")
 			delete(configMap, "embedding_model")
@@ -8875,7 +8887,7 @@ func (c *Config) ValidateSemanticCacheConfig(config *schemas.PluginConfig) error
 	}
 
 	embeddingModelVal, exists := configMap["embedding_model"]
-	if !exists {
+	if !exists || embeddingModelVal == nil {
 		return fmt.Errorf("semantic_cache plugin requires 'embedding_model' when 'provider' is set")
 	}
 	embeddingModel, ok := embeddingModelVal.(string)
@@ -8898,7 +8910,7 @@ func (c *Config) ValidateSemanticCacheConfig(config *schemas.PluginConfig) error
 
 func semanticCacheConfigDimension(configMap map[string]interface{}) (int, bool, error) {
 	dimensionVal, exists := configMap["dimension"]
-	if !exists {
+	if !exists || dimensionVal == nil {
 		return 0, false, nil
 	}
 

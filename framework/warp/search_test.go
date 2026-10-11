@@ -301,7 +301,7 @@ func TestSemanticSearchToolHintsWhenNothingMatches(t *testing.T) {
 }
 
 // The threshold is a 0-1 similarity, (1 + cosine) / 2, on a cosine-scored index.
-// It was handed to the store as is, and only Weaviate reads a threshold as that
+// It was handed to the store as is, and only Weaviate read a threshold as that
 // certainty - Chromem, Qdrant, Pinecone and Redis compare it to raw cosine - so
 // the old 0.70 meant cosine 0.40 on one store and 0.70 on the others.
 //
@@ -317,9 +317,10 @@ func TestWarpDefaultSemanticThresholdAdmitsEveryMeasuredTopicMatch(t *testing.T)
 	require.Equal(t, 0.5, schemas.WarpDefaultSemanticSearchThreshold)
 }
 
-// On a store that scores raw cosine the similarity threshold goes down as
-// cosine, and the scores come back as similarity, so the model and the merge
-// read one scale whichever store is configured.
+// Every store, Weaviate included, filters and scores on raw cosine, so the
+// similarity threshold goes down as cosine and the scores come back as
+// similarity: the model and the merge read one scale whichever store is
+// configured.
 func TestWarpSemanticSearchConvertsACosineStoreToSimilarity(t *testing.T) {
 	reader := &semanticLogReader{logs: map[string]logstore.Log{"trip": semanticConversation("trip")}}
 	vectors := newFakeWarpVectorStore()
@@ -332,15 +333,6 @@ func TestWarpSemanticSearchConvertsACosineStoreToSimilarity(t *testing.T) {
 	require.Equal(t, schemas.WarpDefaultSemanticSearchThreshold, result.Threshold)
 	require.Len(t, result.Rows, 1)
 	require.InDelta(t, 0.7, result.Rows[0].Score, 1e-9, "cosine 0.4 is similarity 0.7")
-}
-
-// Weaviate already filters and scores as certainty, which is the similarity
-// scale, so it is passed through untouched.
-func TestWarpSemanticSearchPassesWeaviateCertaintyThrough(t *testing.T) {
-	require.True(t, scoresAsCertainty(&vectorstore.WeaviateStore{}))
-	require.False(t, scoresAsCertainty(newFakeWarpVectorStore()))
-	require.Equal(t, 0.5, storeThreshold(0.5, true))
-	require.Equal(t, 0.73, similarityFromScore(0.73, true))
 }
 
 // Each phrasing is embedded and searched, and a log keeps the best score any

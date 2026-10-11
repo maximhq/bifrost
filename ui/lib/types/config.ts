@@ -850,6 +850,7 @@ interface BaseCacheConfig {
 	exclude_system_prompt?: boolean;
 	cache_by_model: boolean;
 	cache_by_provider: boolean;
+	disable_identity_scoping?: boolean;
 	vector_store_namespace?: string;
 	default_cache_key?: string;
 	created_at?: string;
@@ -858,8 +859,8 @@ interface BaseCacheConfig {
 
 export interface DirectCacheConfig extends BaseCacheConfig {
 	dimension: 1;
-	provider?: undefined;
-	embedding_model?: undefined;
+	provider?: "";
+	embedding_model?: "";
 }
 
 export interface ProviderBackedCacheConfig extends BaseCacheConfig {

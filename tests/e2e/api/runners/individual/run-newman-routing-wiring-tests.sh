@@ -1,10 +1,14 @@
 #!/bin/bash
 
 # Bifrost Routing Wiring Test Runner
-# Drives the model-catalog wiring collection against a running Bifrost instance.
-# Each scenario stands up an isolated, run-namespaced custom provider backed by a
-# real upstream, mutates its providers/keys, and asserts the catalog read
-# endpoints reflect every mutation.
+# Drives the routing wiring collection: each scenario gates real providers with keys
+# and a virtual key, then asserts the route each request took and the stored log.
+# Some scenarios create the global standard providers (openai, azure, bedrock,
+# vertex), so the collection needs an instance nothing else has configured: with
+# --binary the runner boots a clean one for the run (CI does this); without it,
+# it runs against BIFROST_BASE_URL, else the environment file's base_url.
+#
+# Usage: run-newman-routing-wiring-tests.sh [--binary <bifrost-http> [--port <port>]]
 
 set -e
 set -o pipefail
@@ -21,6 +25,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 API_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CALLER_DIR="$PWD"
 cd "$API_DIR"
 
 COLLECTION="collections/bifrost-routing-wiring.postman_collection.json"
@@ -31,6 +36,25 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
+
+BIFROST_BINARY=""
+PORT="8094"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --binary) BIFROST_BINARY="$2"; shift 2 ;;
+        --port) PORT="$2"; shift 2 ;;
+        -h|--help)
+            echo "Usage: $0 [--binary <bifrost-http> [--port <port>]]"
+            echo "  --binary <path>   Boot a clean server from this binary for the run"
+            echo "  --port <port>     Port for that server (default: 8094)"
+            exit 0 ;;
+        *) echo -e "${RED}Unknown option: $1${NC}" >&2; exit 1 ;;
+    esac
+done
+# A relative --binary names a path from where the runner was started, not from tests/e2e/api.
+if [ -n "$BIFROST_BINARY" ] && [[ "$BIFROST_BINARY" != /* ]]; then
+    BIFROST_BINARY="$CALLER_DIR/$BIFROST_BINARY"
+fi
 
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}Bifrost Routing Wiring Tests${NC}"
@@ -119,6 +143,21 @@ cmd+=(--timeout-script 120000 --timeout 900000)
 ci_normalized="$(printf '%s' "${CI:-}" | tr '[:upper:]' '[:lower:]')"
 if [ "$ci_normalized" = "1" ] || [ "$ci_normalized" = "true" ]; then
     cmd+=(--reporter-cli-no-failures false)
+fi
+
+if [ -n "$BIFROST_BINARY" ]; then
+    source "$SCRIPT_DIR/../lib/clean-bifrost.sh"
+    trap 'stop_clean_bifrost "$API_DIR/$REPORT_DIR"' EXIT
+    boot_clean_bifrost "$BIFROST_BINARY" "$PORT" || exit 1
+    BIFROST_BASE_URL="http://localhost:$PORT"
+fi
+if [ -n "${BIFROST_BASE_URL:-}" ]; then
+    cmd+=(--env-var "base_url=$BIFROST_BASE_URL")
+fi
+# The collection sends the setup token on /api calls; its default matches CI's, so
+# forward the server's own only when one is set.
+if [ -n "${BIFROST_SETUP_TOKEN:-}" ]; then
+    cmd+=(--env-var "setup_token=$BIFROST_SETUP_TOKEN")
 fi
 
 echo -e "Collection: ${YELLOW}$COLLECTION${NC}"

@@ -6,14 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"sync"
 
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/plugins"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
+	"gorm.io/gorm"
 )
 
 type PluginsLoader interface {
@@ -35,6 +38,18 @@ type PluginsLoader interface {
 type PluginsHandler struct {
 	configStore   configstore.ConfigStore
 	pluginsLoader PluginsLoader
+	pluginLocks   sync.Map // plugin name -> *sync.Mutex, see lockPlugin
+}
+
+// lockPlugin serializes the saves of one plugin and returns the unlock. A save writes the row,
+// loads the plugin and, when the load fails, restores the row it found; another save of the same
+// plugin landing in between would have its saved config overwritten by that restore. The lock
+// covers this process only: gateways sharing one config store can still interleave.
+func (h *PluginsHandler) lockPlugin(name string) func() {
+	lock, _ := h.pluginLocks.LoadOrStore(name, &sync.Mutex{})
+	mu := lock.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // NewPluginsHandler creates a new PluginsHandler
@@ -310,6 +325,7 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 	if request.Path != nil && *request.Path == "" {
 		request.Path = nil
 	}
+	defer h.lockPlugin(request.Name)()
 	// Check if plugin already exists
 	existingPlugin, err := h.configStore.GetPlugin(ctx, request.Name)
 	if err == nil && existingPlugin != nil {
@@ -361,7 +377,7 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 			if rbErr := h.configStore.DeletePlugin(ctx, request.Name); rbErr != nil {
 				logger.Error("failed to rollback plugin creation: %v", rbErr)
 			}
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin created in database but failed to load: %v", err))
+			SendError(ctx, pluginLoadFailureStatus(err), fmt.Sprintf("Plugin was not created, it failed to load: %v", err))
 			return
 		}
 	}
@@ -406,6 +422,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Empty 'name' parameter not allowed")
 		return
 	}
+	defer h.lockPlugin(name)()
 	var plugin *configstoreTables.TablePlugin
 	var err error
 	// Fetch the existing plugin to enable config merging below.
@@ -517,7 +534,8 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 	if request.Enabled {
 		if err := h.pluginsLoader.ReloadPlugin(ctx, name, request.Path, mergedConfig, request.Placement, request.Order); err != nil {
 			logger.Error("failed to load plugin: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin updated in database but failed to load: %v", err))
+			h.restorePluginRow(ctx, name, existingPlugin, err)
+			SendError(ctx, pluginLoadFailureStatus(err), fmt.Sprintf("Plugin update was not applied, it failed to load and the previous configuration was kept: %v", err))
 			return
 		}
 	} else {
@@ -535,6 +553,41 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		"message": "Plugin updated successfully",
 		"plugin":  h.buildPluginResponse(ctx, plugin),
 	})
+}
+
+// pluginLoadFailureStatus is the status for a plugin that failed to load with the config it was
+// given: 400 when the config itself is what was refused (a config that fails validation, a vector
+// store namespace that already holds vectors of another size), 500 for anything else.
+func pluginLoadFailureStatus(err error) int {
+	if errors.Is(err, lib.ErrInvalidPluginConfig) || errors.Is(err, vectorstore.ErrDimensionMismatch) {
+		return fasthttp.StatusBadRequest
+	}
+	return fasthttp.StatusInternalServerError
+}
+
+// restorePluginRow puts the plugin's saved row back the way it was before an update that then
+// failed to load, so the saved config keeps describing the instance still running (the reload
+// leaves it in place). A row the update created itself is removed instead. When the restore fails
+// the saved config and the running plugin disagree until the next successful save, so it is
+// logged as an error naming the plugin and both failures.
+func (h *PluginsHandler) restorePluginRow(ctx context.Context, name string, previous *configstoreTables.TablePlugin, loadErr error) {
+	var err error
+	if previous == nil {
+		err = h.configStore.DeletePlugin(ctx, name)
+	} else {
+		// UpdatePlugin reads a nil placement or order as "keep the current value", which would
+		// keep whatever the failed update set, so the previous row is written back whole.
+		restored := *previous
+		err = h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			if err := h.configStore.DeletePlugin(ctx, name, tx); err != nil {
+				return err
+			}
+			return h.configStore.CreatePlugin(ctx, &restored, tx)
+		})
+	}
+	if err != nil {
+		logger.Error("failed to restore plugin %s after a failed update, its saved config no longer matches the running instance: %v (update failed with: %v)", name, err, loadErr)
+	}
 }
 
 // deletePlugin deletes an existing plugin
@@ -563,6 +616,7 @@ func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Empty 'name' parameter not allowed")
 		return
 	}
+	defer h.lockPlugin(name)()
 
 	if err := h.configStore.DeletePlugin(ctx, name); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
