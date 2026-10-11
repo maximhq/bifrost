@@ -81,7 +81,7 @@ export interface MigrationPlan {
 	/** Existing keys, updated in place with the account ID. Empty for a keyless source. */
 	keys: ModelProviderKey[];
 	/** For a keyless source, the API token read from the Authorization header, created as a key after conversion. */
-	headerToken?: { name: string; value?: SecretVar };
+	headerToken?: { name: string; value?: SecretVar; needsValue: boolean };
 	warnings: string[];
 }
 
@@ -131,7 +131,7 @@ export const buildCloudflareMigrationPlan = (source: ModelProvider, sourceKeys: 
 		} else if (auth.problem === "not_bearer") {
 			warnings.push("The Authorization header is not a Bearer token; enter the API token below.");
 		}
-		headerToken = { name: `${source.name}-token`, value: auth.token };
+		headerToken = { name: `${source.name}-token`, value: auth.token, needsValue: !auth.token };
 	}
 
 	if (hasRestrictedRequests(source)) {

@@ -41,7 +41,7 @@ import {
 	planNeedsInput,
 	runCloudflareMigration,
 } from "@/lib/utils/cloudflareMigration";
-import { getErrorStatus, isSecretVarSet, maskSecret, MigrationResult, MigrationStep } from "@/lib/utils/databricksMigration";
+import { getErrorStatus, maskSecret, MigrationResult, MigrationStep } from "@/lib/utils/databricksMigration";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { AlertTriangle, Check, CircleDashed, Loader2, X } from "lucide-react";
 import { ReactNode, useEffect, useMemo, useState } from "react";
@@ -327,7 +327,8 @@ function MigrationPreview({ plan, onAccountIdChange, onHeaderTokenChange }: Prev
 									from Authorization header
 								</Badge>
 							</div>
-							{isSecretVarSet(plan.headerToken.value) ? (
+							{/* needsValue is fixed when the plan is built, so the input stays up while the token is typed. */}
+							{!plan.headerToken.needsValue ? (
 								<div className="text-xs">
 									<span className="text-muted-foreground">API token: </span>
 									<code className="bg-muted rounded px-1 py-0.5 font-mono">{maskSecret(plan.headerToken.value)}</code>

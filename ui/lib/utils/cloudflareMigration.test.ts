@@ -104,7 +104,7 @@ describe("buildCloudflareMigrationPlan", () => {
 	it("reads the API token from the Authorization header for a keyless source", () => {
 		const plan = buildCloudflareMigrationPlan(custom("cloudflare"), []);
 		expect(plan.keys).toEqual([]);
-		expect(plan.headerToken).toMatchObject({ name: "cloudflare-token", value: { value: "cf-token-1234567890" } });
+		expect(plan.headerToken).toMatchObject({ name: "cloudflare-token", value: { value: "cf-token-1234567890" }, needsValue: false });
 		expect(planNeedsInput(plan)).toBe(false);
 
 		const noHeader = buildCloudflareMigrationPlan(
@@ -113,6 +113,12 @@ describe("buildCloudflareMigrationPlan", () => {
 		);
 		expect(noHeader.warnings.join(" ")).toContain("No Authorization header");
 		expect(planNeedsInput(noHeader)).toBe(true);
+		expect(noHeader.headerToken?.needsValue).toBe(true);
+
+		// Typing a token completes the plan, but the token still needs entering, so its input stays visible.
+		const typed = { ...noHeader, headerToken: { ...noHeader.headerToken!, value: { value: "c", ref: "" } } };
+		expect(planNeedsInput(typed)).toBe(false);
+		expect(typed.headerToken.needsValue).toBe(true);
 	});
 
 	it("drops the base url and Authorization header and sends masked secrets back unchanged", () => {
