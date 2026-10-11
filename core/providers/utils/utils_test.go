@@ -4128,12 +4128,13 @@ func TestExtractDecisionImages_LeavesImageFreeInputsAlone(t *testing.T) {
 	}
 }
 
-// TestExtractDecisionImages_PlacesImagesAfterTheirMessage pins the state layout: each
-// message's text, then its images in order, and an image-only message as images alone.
-func TestExtractDecisionImages_PlacesImagesAfterTheirMessage(t *testing.T) {
+// TestExtractDecisionImages_SendsPlainTextAndImageItems pins the state layout: text as
+// plain strings and images as image_url items, in their original order across messages,
+// with roles dropped. Message objects would reach the model as JSON text.
+func TestExtractDecisionImages_SendsPlainTextAndImageItems(t *testing.T) {
 	second := "data:image/jpeg;base64,/9j/4AAQ"
 	input := schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
-		decisionUserMessage(decisionTextPart("Compare these"), decisionImagePart("data:image/png;base64,iVBORw0KGgo=", schemas.Ptr("high"))),
+		decisionUserMessage(decisionTextPart("Compare these"), decisionImagePart("data:image/png;base64,iVBORw0KGgo=", schemas.Ptr("high")), decisionTextPart("and this")),
 		{Role: "assistant", Content: schemas.DecisionInputContent{Text: schemas.Ptr("Send the next one")}},
 		decisionUserMessage(decisionImagePart(second, nil)),
 	}}
@@ -4148,15 +4149,16 @@ func TestExtractDecisionImages_PlacesImagesAfterTheirMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantState := `[{"role":"user","content":[{"type":"input_text","text":"Compare these"}]},` +
+	wantState := `["Compare these",` +
 		`{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo=","detail":"high"}},` +
-		`{"role":"assistant","content":"Send the next one"},` +
+		`"and this",` +
+		`"Send the next one",` +
 		`{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,/9j/4AAQ"}}]`
 	if string(gotState) != wantState {
 		t.Errorf("state =\n%s\nwant\n%s", gotState, wantState)
 	}
 	gotText, _ := json.Marshal(textOnly)
-	wantText := `[{"role":"user","content":[{"type":"input_text","text":"Compare these"}]},{"role":"assistant","content":"Send the next one"}]`
+	wantText := `[{"role":"user","content":[{"type":"input_text","text":"Compare these"},{"type":"input_text","text":"and this"}]},{"role":"assistant","content":"Send the next one"}]`
 	if string(gotText) != wantText {
 		t.Errorf("text-only input =\n%s\nwant\n%s", gotText, wantText)
 	}

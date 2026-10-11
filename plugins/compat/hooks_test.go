@@ -256,7 +256,7 @@ func TestConfigForceReasoningOnlyModelsToResponsesDefaultsOn(t *testing.T) {
 // on (config or x-bf-compat override), the compat plugin marks a decision for
 // emulation unless the model catalog lists the model as a native decisions model:
 // a supports_decisions row decides in either direction, and without a row the
-// gpt-6-luna, Typesafe, Clef on Cloudflare and deciders on Perplexity are native. Typesafe and other request types
+// gpt-6-luna outside OpenRouter, Typesafe, Clef on Cloudflare and deciders on Perplexity are native. Typesafe and other request types
 // are never marked.
 func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 	rows := map[string]bool{"microsoft/decision-1": true, "typesafe/jev-router": false, "clef": false}
@@ -297,6 +297,7 @@ func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 		{name: "chat model marked", enabled: true, req: decision(schemas.OpenAI, "gpt-4o"), wantConverted: true},
 		{name: "header override", override: true, req: decision(schemas.OpenAI, "gpt-4o"), wantConverted: true},
 		{name: "gpt-6-luna family is native", enabled: true, req: decision(schemas.OpenAI, "gpt-6-luna")},
+		{name: "gpt-6-luna chat model on openrouter marked", enabled: true, req: decision(schemas.OpenRouter, "openai/gpt-6-luna-pro"), wantConverted: true},
 		{name: "typesafe model on openrouter is native", enabled: true, req: decision(schemas.OpenRouter, "~typesafe/jev-latest")},
 		{name: "true row is native", enabled: true, req: decision(schemas.OpenRouter, "microsoft/decision-1")},
 		{name: "false row overrides the typesafe name", enabled: true, req: decision(schemas.OpenRouter, "typesafe/jev-router"), wantConverted: true},

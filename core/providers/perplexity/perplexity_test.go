@@ -694,12 +694,12 @@ func TestToPerplexityDecisionRequest_MatchesTypesafeWithoutImages(t *testing.T) 
 }
 
 // TestToPerplexityDecisionRequest_SendsImagesAsStateItems pins the image layout Perplexity
-// reads: each message's text, then its images as image_url items, in the state array.
+// reads: plain-string text items and image_url items, in order, in the state array.
 func TestToPerplexityDecisionRequest_SendsImagesAsStateItems(t *testing.T) {
 	body := encodePerplexityDecision(t, newDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
 		decisionUserMessage(decisionTextPart("Look at this"), decisionImagePart(testImageURL)),
 	}}))
-	want := `"state":[{"role":"user","content":[{"type":"input_text","text":"Look at this"}]},{"type":"image_url","image_url":{"url":"` + testImageURL + `"}}]`
+	want := `"state":["Look at this",{"type":"image_url","image_url":{"url":"` + testImageURL + `"}}]`
 	if !strings.Contains(body, want) {
 		t.Errorf("body =\n%s\nwant state\n%s", body, want)
 	}

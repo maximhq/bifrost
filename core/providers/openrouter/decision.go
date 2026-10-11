@@ -2,6 +2,7 @@ package openrouter
 
 import (
 	"github.com/maximhq/bifrost/core/providers/typesafe"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -9,11 +10,40 @@ import (
 // Typesafe's systemone request and answer shapes.
 const openRouterDecisionPath = "/alpha/decisions"
 
-// openRouterDecisionModels are the System One models served on the decisions
-// endpoint. OpenRouter's /v1/models omits them, so ListModels merges them in.
-var openRouterDecisionModels = []schemas.Model{
-	{ID: "typesafe/jev-1.13", Name: schemas.Ptr("TypeSafe: Jev 1.13"), OwnedBy: schemas.Ptr("typesafe")},
-	{ID: "~typesafe/jev-latest", Name: schemas.Ptr("TypeSafe: Jev (latest)"), OwnedBy: schemas.Ptr("typesafe")},
+// openRouterDecisionModelsPath lists the models served on the decisions endpoint.
+// OpenRouter's default /v1/models omits them, so ListModels merges them in.
+const openRouterDecisionModelsPath = "/v1/models?output_modalities=decisions"
+
+// OpenRouterDecisionRequest is the body of POST /alpha/decisions: Typesafe's
+// systemone request, with images sent as image_url items in the state, plus
+// OpenRouter's end-user id. It is only ever encoded; decoding it would run
+// Typesafe's UnmarshalJSON on the embedded pointer and fail.
+type OpenRouterDecisionRequest struct {
+	*typesafe.TypesafeDecisionRequest
+	User *string `json:"user,omitempty"` // from SafetyIdentifier
+}
+
+// ToOpenRouterDecisionRequest converts a normalized decision request into
+// OpenRouter's body. Questions go through Typesafe's converter, so they
+// validate exactly as they do on Typesafe. An input with images is sent as
+// plain-string text items and image_url items in their original order, the
+// layout OpenRouter documents for multimodal decisions (see
+// providerUtils.ExtractDecisionImages). The request is not modified.
+func ToOpenRouterDecisionRequest(request *schemas.BifrostDecisionRequest) (*OpenRouterDecisionRequest, error) {
+	input, state, err := providerUtils.ExtractDecisionImages(request.Input)
+	if err != nil {
+		return nil, err
+	}
+	textOnly := *request
+	textOnly.Input = input
+	native, err := typesafe.ToTypesafeDecisionRequest(&textOnly)
+	if err != nil {
+		return nil, err
+	}
+	if state != nil {
+		native.State = state
+	}
+	return &OpenRouterDecisionRequest{TypesafeDecisionRequest: native, User: request.SafetyIdentifier}, nil
 }
 
 // OpenRouterDecisionUsage is Typesafe's usage plus the billed cost in USD.

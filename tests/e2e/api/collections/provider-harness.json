@@ -162425,6 +162425,172 @@
             }
           },
           "response": []
+        },
+        {
+          "name": "/v1/decisions - input_image reaches the decider - openrouter/perplexity/pplx-decider-v1.1-27b",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an input_image part is sent to the decider as an image_url state item', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].probability, 'a solid red image must read as mostly red: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/perplexity/pplx-decider-v1.1-27b\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is the screenshot.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - text and image in one message read together - openrouter/openai/gpt-6-luna-decisions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('message text goes as a plain string next to the image, the layout luna reads', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].probability, 'a red image sent with text must still read as red (a message object reads ~0.03): ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-6-luna-decisions\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is the screenshot.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - safety_identifier accepted and x-generation-id forwarded - openrouter/typesafe/jev-1.13",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('safety_identifier is sent as user and the generation id header reaches the caller', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.id, 'id: ' + pm.response.text()).to.match(/^gen-dec-/);",
+                  "  pm.expect(pm.response.headers.get('x-generation-id'), 'x-generation-id header missing').to.eql(body.id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/typesafe/jev-1.13\",\n  \"input\": \"The sky is clear and blue today.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  ],\n  \"safety_identifier\": \"harness-user-1\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/models - live decision models listed with chat models - openrouter",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('decision models come from OpenRouter\\'s decisions listing, next to chat models', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var ids = pm.response.json().data.map(function (m) { return m.id; });",
+                  "  ['openrouter/microsoft/microsoft-decision-1', 'openrouter/perplexity/pplx-decider-v1.1-27b', 'openrouter/openai/gpt-6-luna-decisions', 'openrouter/openai/gpt-4.1'].forEach(function (id) {",
+                  "    pm.expect(ids, id + ' missing').to.include(id);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=openrouter",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openrouter"
+                }
+              ]
+            }
+          }
         }
       ]
     },
@@ -251188,7 +251354,7 @@
     },
     {
       "name": "200. Perplexity decisions (perplexity-decisions)",
-      "description": "The perplexity provider serves its decider models (pplx-decider-*) natively on POST {base}/v1/decisions, in Typesafe's systemone shape. Perplexity's body carries no id, so Bifrost takes it from the x-request-id response header. input_image parts are sent as {\"type\":\"image_url\"} items in the state array, after the text of their message. With convert_decision_to_responses on, a decider name on Perplexity is still served natively rather than emulated. Perplexity's own validation (remote image URLs) comes back as its 400.\n\nThe image case sends a solid red square and asserts the decider reads it as mostly red, which a text-only answer does not.",
+      "description": "The perplexity provider serves its decider models (pplx-decider-*) natively on POST {base}/v1/decisions, in Typesafe's systemone shape. Perplexity's body carries no id, so Bifrost takes it from the x-request-id response header. An input with images is sent as plain-string text items and {\"type\":\"image_url\"} image items in their original order. With convert_decision_to_responses on, a decider name on Perplexity is still served natively rather than emulated. Perplexity's own validation (remote image URLs) comes back as its 400.\n\nThe image case sends a solid red square and asserts the decider reads it as mostly red, which a text-only answer does not.",
       "item": [
         {
           "name": "/v1/decisions - mixed kinds return typed answers and an id - perplexity/pplx-decider-v1.1-27b",

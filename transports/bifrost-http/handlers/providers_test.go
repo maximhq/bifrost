@@ -1292,11 +1292,13 @@ func TestListModels_DecisionsKeepsTypesafeBasedModels(t *testing.T) {
 // TestListModels_DecisionsOpenRouterFollowsDatasheet pins that decisions=true
 // lists OpenRouter models by the rule its Decision call gates on: a
 // supports_decisions row decides in either direction, and only a model with no
-// row falls back to the TypeSafe System One name check.
+// row falls back to the TypeSafe System One name check. The gpt-6-luna name rule does
+// not apply there: OpenRouter's gpt-6-luna chat models are rejected by its decisions
+// endpoint, which serves the family as openai/gpt-6-luna-decisions under its own row.
 func TestListModels_DecisionsOpenRouterFollowsDatasheet(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	rows := map[string]bool{"microsoft/decision-1": true, "typesafe/jev-router": false}
+	rows := map[string]bool{"microsoft/decision-1": true, "typesafe/jev-router": false, "openai/gpt-6-luna-decisions": true}
 	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
 		if supports, ok := rows[model]; ok {
 			return &schemas.ModelCapabilities{SupportsDecisions: &supports}
@@ -1305,7 +1307,7 @@ func TestListModels_DecisionsOpenRouterFollowsDatasheet(t *testing.T) {
 	})
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 
-	models := []string{"microsoft/decision-1", "typesafe/jev-router", "typesafe/jev-1.13", "openai/gpt-4o"}
+	models := []string{"microsoft/decision-1", "typesafe/jev-router", "typesafe/jev-1.13", "openai/gpt-6-luna-decisions", "openai/gpt-6-luna-pro", "openai/gpt-6-luna", "openai/gpt-4o"}
 	h := providerHandlerForTest(schemas.OpenRouter, []schemas.Key{{ID: "key-a"}}, models, models)
 
 	ctx := &fasthttp.RequestCtx{}
@@ -1325,7 +1327,7 @@ func TestListModels_DecisionsOpenRouterFollowsDatasheet(t *testing.T) {
 		names = append(names, model.Name)
 	}
 	slices.Sort(names)
-	if want := []string{"microsoft/decision-1", "typesafe/jev-1.13"}; !slices.Equal(names, want) {
+	if want := []string{"microsoft/decision-1", "openai/gpt-6-luna-decisions", "typesafe/jev-1.13"}; !slices.Equal(names, want) {
 		t.Fatalf("expected %v, got %v", want, names)
 	}
 }
