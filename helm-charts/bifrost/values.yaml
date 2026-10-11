@@ -730,6 +730,7 @@ bifrost:
         cache_by_provider: true
         exclude_system_prompt: false
         # cache_tool_call_responses: false  # Cache responses that carry tool calls (off: a replayed tool call runs in another caller's agent loop)
+        # disable_identity_scoping: false  # Share entries across virtual keys and users (off: an entry is only served to the identity that wrote it)
         vector_store_namespace: ""
 
     otel:

@@ -1316,6 +1316,22 @@ func TestValidateConfigSchema_SemanticCachePlugin_DirectModeValid(t *testing.T) 
 	}
 }
 
+// The identity-scoping opt-out is a documented config.json field, so the schema must accept it in
+// both modes; additionalProperties would otherwise reject a config that turns sharing back on.
+func TestValidateConfigSchema_SemanticCachePlugin_DisableIdentityScopingValid(t *testing.T) {
+	for name, config := range map[string]string{
+		"direct":   `{"dimension": 1, "disable_identity_scoping": true}`,
+		"semantic": `{"provider": "openai", "embedding_model": "text-embedding-3-small", "dimension": 1536, "disable_identity_scoping": false}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			validConfig := `{"plugins": [{"enabled": true, "name": "semantic_cache", "config": ` + config + `}]}`
+			if err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t)); err != nil {
+				t.Errorf("expected semantic cache config with disable_identity_scoping to pass validation, got error: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateConfigSchema_SemanticCachePlugin_DirectModeWithEmbeddingModelInvalid(t *testing.T) {
 	invalidConfig := `{
 		"plugins": [

@@ -1226,6 +1226,10 @@
                       "type": "boolean",
                       "description": "Persist responses that carry tool calls. Off by default: a replayed tool call runs in a later caller's agent loop with arguments chosen for someone else's prompt."
                     },
+                    "disable_identity_scoping": {
+                      "type": "boolean",
+                      "description": "Share cache entries across identities. Off by default: an entry is only served to the virtual key and user that wrote it."
+                    },
                     "vector_store_namespace": {
                       "type": "string"
                     },

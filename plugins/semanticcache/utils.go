@@ -301,6 +301,17 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		return nil, fmt.Errorf("unsupported request type for semantic caching")
 	}
 
+	// identity_scope keeps entries with the identity that wrote them (see
+	// resolveIdentityScope). Like request_family it is set after the params, so a
+	// request body field of the same name can never claim another identity's
+	// scope; with scoping disabled such a field is dropped rather than hashed, so
+	// the key stays the plugin's own in both modes.
+	if state != nil && state.IdentityScope != nil {
+		metadata["identity_scope"] = state.IdentityScope
+	} else {
+		delete(metadata, "identity_scope")
+	}
+
 	return metadata, nil
 }
 
