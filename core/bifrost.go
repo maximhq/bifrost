@@ -7613,14 +7613,26 @@ func disableAnthropicPassthrough(ctx *schemas.BifrostContext) {
 // integration forwards the caller's Gemini body verbatim when the request names gemini/ (or
 // sends x-model-provider: gemini), and a fallback to, say, OpenAI would otherwise receive that
 // body and refuse it ("Missing required parameter: 'model'"); with passthrough off it converts
-// the request like any other. Gemini and Vertex keep it: Vertex is where the integration passes
-// its own native bodies (batch jobs, cached content) through. Re-runs per attempt, so a fallback
-// after a Gemini primary is caught. No-op outside the GenAI integration.
-func clearGenAIPassthroughForNonGoogleProvider(ctx *schemas.BifrostContext, baseProvider schemas.ModelProvider) {
+// the request like any other. Gemini keeps it. Vertex keeps it for the models it serves with a
+// Google body (Gemini, Gemma, Imagen, Veo and numeric tuned endpoints), for batch jobs, whose body
+// is the job definition and which Vertex runs for Claude and Llama too, and for file and
+// cached-content requests, which name no model or a Gemini one; a Claude, Mistral or other Model
+// Garden model on Vertex is sent an Anthropic or OpenAI body, so it is converted. Call
+// this only after key-level alias resolution: the family predicates read the resolved alias.
+// Re-runs per attempt, so a fallback after a Gemini primary is caught. No-op outside the GenAI
+// integration.
+func clearGenAIPassthroughForNonGoogleProvider(ctx *schemas.BifrostContext, baseProvider schemas.ModelProvider, requestType schemas.RequestType, model string) {
 	if integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); integrationType != "genai" {
 		return
 	}
-	if baseProvider == schemas.Gemini || baseProvider == schemas.Vertex {
+	if baseProvider == schemas.Gemini {
+		return
+	}
+	if baseProvider == schemas.Vertex &&
+		(isBatchRequestType(requestType) || isFileRequestType(requestType) || isCachedContentRequestType(requestType) ||
+			schemas.IsGeminiModelFamily(ctx, model) || schemas.IsGemmaModelFamily(ctx, model) ||
+			schemas.IsImagenModelFamily(ctx, model) || schemas.IsVeoModelFamily(ctx, model) ||
+			schemas.IsAllDigitsASCII(model)) {
 		return
 	}
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
@@ -8037,7 +8049,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// Disable it too when this attempt's provider has no native structured outputs.
 				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
 				// Disable GenAI raw-body passthrough when this attempt's provider isn't Google's.
-				clearGenAIPassthroughForNonGoogleProvider(req.Context, baseProvider)
+				clearGenAIPassthroughForNonGoogleProvider(req.Context, baseProvider, req.RequestType, resolvedModel)
 				injectedTools := bifrost.injectedToolsForAttempt(req.Context, config, req.RequestType)
 				injectedTools = clearAnthropicPassthroughForInjectedTools(req.Context, injectedTools, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
@@ -8150,7 +8162,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// Disable it too when this attempt's provider has no native structured outputs.
 				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
 				// Disable GenAI raw-body passthrough when this attempt's provider isn't Google's.
-				clearGenAIPassthroughForNonGoogleProvider(req.Context, baseProvider)
+				clearGenAIPassthroughForNonGoogleProvider(req.Context, baseProvider, req.RequestType, resolvedModel)
 				injectedTools := bifrost.injectedToolsForAttempt(req.Context, config, req.RequestType)
 				injectedTools = clearAnthropicPassthroughForInjectedTools(req.Context, injectedTools, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
