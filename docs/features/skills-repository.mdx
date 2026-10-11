@@ -254,11 +254,55 @@ Shifting changes which version is served to marketplaces and downloads. It does 
 
 ## Register Bifrost as a marketplace
 
-Once your repository has skills, click **Register as Marketplace** in the Skills Repository header. A popover shows copyable CLI commands for each supported harness.
+Once your repository has skills, click **Register as Marketplace** in the Skills Repository header. The menu provides a Git repository URL for Claude Desktop and Cowork, plus CLI commands for Claude Code and Codex.
 
 <Frame>
-  <img src="/media/skills-repository/register-marketplace-menu.png" alt="Register as Marketplace menu showing Claude Code and Codex commands" />
+  <img src="/media/skills-repository/claude-desktop-marketplace-url.png" alt="Bifrost Register as Marketplace menu showing the Claude Desktop and Cowork Git URL" />
 </Frame>
+
+### Claude Desktop and Cowork
+
+1. In Bifrost, open **Skills Repository** and click **Register as Marketplace**.
+2. Select **Claude Desktop / Cowork** to copy the marketplace Git URL:
+
+   ```text
+   <your-bifrost-url>/api/skills/serve/claude-code.git
+   ```
+
+3. In Claude Desktop, open **Customize**, then select the **Plugins** tab.
+4. Click **Add** and select **Add marketplace**.
+
+<Frame>
+  <img src="/media/skills-repository/claude-desktop-add-marketplace-menu.png" alt="Claude Desktop Plugins page with the Add marketplace option open" />
+</Frame>
+
+5. Paste the Bifrost marketplace URL into the **URL** field, then click **Sync**.
+
+<Frame>
+  <img src="/media/skills-repository/claude-desktop-marketplace-url-dialog.png" alt="Claude Desktop Add marketplace dialog containing the Bifrost Git repository URL" />
+</Frame>
+
+6. Open the `bifrost-skills` marketplace and install the skill you want. Bifrost publishes each skill as `bifrost-{skill-name}` and also provides `bifrost-all-skills`.
+
+<Frame>
+  <img src="/media/skills-repository/claude-desktop-bifrost-marketplace.png" alt="Claude Desktop showing Bifrost plugins available to install" />
+</Frame>
+
+7. Enable the installed plugin.
+
+<Frame>
+  <img src="/media/skills-repository/claude-desktop-installed-skill.png" alt="Claude Desktop showing an installed and enabled Bifrost plugin" />
+</Frame>
+
+8. Start a new chat or Cowork task, type `/`, then select the skill command.
+
+<Frame>
+  <img src="/media/skills-repository/claude-desktop-skill-command.png" alt="Claude Desktop slash command menu showing an installed Bifrost skill" />
+</Frame>
+
+<Note>
+  This flow adds a personal marketplace. Organization-managed plugin marketplaces use Anthropic's GitHub integration and do not accept an arbitrary Bifrost Git URL.
+</Note>
 
 ### Claude Code
 
@@ -290,7 +334,7 @@ For example, a skill named `review-migrations` is exposed as:
 bifrost-review-migrations
 ```
 
-Claude Code shows each Bifrost skill as a separate installable plugin after the marketplace is registered.
+Claude Desktop, Cowork, and Claude Code show each Bifrost skill as a separate installable plugin after the marketplace is registered.
 
 <Frame>
   <img src="/media/skills-repository/claude-code-skill-plugin.png" alt="Claude Code showing individual Bifrost skill plugins" />

@@ -140,6 +140,7 @@ export function SystemMessageView({
 			</div>
 
 			<div
+				role="presentation"
 				onClick={(e) => {
 					if (!disabled && !editMode && !(e.target as HTMLElement).closest("button, a, [role='button']")) setEditMode(true);
 				}}
@@ -193,6 +194,7 @@ export function SystemMessageView({
 					/>
 				) : (
 					<div
+						role="presentation"
 						className={!disabled ? "cursor-text" : undefined}
 						onClick={(e) => {
 							if (disabled || editMode) return;

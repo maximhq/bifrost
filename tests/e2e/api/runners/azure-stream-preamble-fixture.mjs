@@ -32,13 +32,35 @@ const responsesSuccess = [
 	'{"type":"response.completed","sequence_number":7,"response":{"id":"azure-preamble-success","object":"response","status":"completed","model":"preamble-success","output":[{"id":"success-item","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello","annotations":[]}]}],"usage":{"input_tokens":10,"output_tokens":1,"total_tokens":11}}}',
 ];
 
+// Direct OpenAI (and every host serving OpenAI models) fails an overloaded
+// stream after the same startup events, with server_is_overloaded and no HTTP
+// status, so the failure is fallback-eligible but not retryable.
+const openaiChatFailure = [
+	chatFailure[1],
+	'{"error":{"message":"The server is overloaded. Please try again later.","type":"server_error","code":"server_is_overloaded"}}',
+];
+
+const openaiResponsesFailure = [
+	...responsesFailure.slice(0, 4),
+	'{"type":"response.failed","sequence_number":4,"response":{"id":"azure-preamble-failed","status":"failed","error":{"code":"server_is_overloaded","message":"The server is overloaded. Please try again later."}}}',
+];
+
+// Azure deployments are served under /openai/v1, direct OpenAI under /v1.
+const routes = {
+	"/openai/v1/chat/completions": { responses: false, openai: false },
+	"/openai/v1/responses": { responses: true, openai: false },
+	"/v1/chat/completions": { responses: false, openai: true },
+	"/v1/responses": { responses: true, openai: true },
+};
+
 const server = http.createServer(async (req, res) => {
 	const path = new URL(req.url, "http://localhost").pathname;
-	const responses = path === "/openai/v1/responses";
-	if (req.method !== "POST" || (!responses && path !== "/openai/v1/chat/completions")) {
+	const route = routes[path];
+	if (req.method !== "POST" || !route) {
 		res.writeHead(404).end();
 		return;
 	}
+	const { responses, openai } = route;
 	try {
 		req.setEncoding("utf8");
 		let body = "";
@@ -49,9 +71,10 @@ const server = http.createServer(async (req, res) => {
 			return;
 		}
 		const failed = model === "preamble-error";
-		const events = responses
-			? (failed ? responsesFailure : responsesSuccess)
-			: (failed ? chatFailure : chatSuccess);
+		const failure = responses
+			? (openai ? openaiResponsesFailure : responsesFailure)
+			: (openai ? openaiChatFailure : chatFailure);
+		const events = failed ? failure : (responses ? responsesSuccess : chatSuccess);
 		res.writeHead(200, { "Content-Type": "text/event-stream" });
 		res.flushHeaders();
 		for (const event of events) res.write(`data: ${event}\n\n`);
@@ -62,7 +85,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(port, "127.0.0.1", () => {
-	console.log(`Azure streaming fixture: http://127.0.0.1:${port}`);
+	console.log(`Azure/OpenAI streaming fixture: http://127.0.0.1:${port}`);
 });
 for (const signal of ["SIGINT", "SIGTERM"]) {
 	process.on(signal, () => server.close(() => process.exit(0)));

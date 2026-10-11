@@ -1,17 +1,21 @@
 package bifrost
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/internal/memtest"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // newEncryptedReasoningRequest builds a Responses request whose input replays a
@@ -68,6 +72,17 @@ func encryptedContentError() *schemas.BifrostError {
 			Type:    schemas.Ptr("invalid_request_error"),
 			Code:    schemas.Ptr("invalid_encrypted_content"),
 			Message: "The encrypted content for item rs_067d4968 could not be verified. Reason: Encrypted content could not be decrypted or parsed.",
+		},
+	}
+}
+
+func bedrockReasoningModelMismatchError() *schemas.BifrostError {
+	return &schemas.BifrostError{
+		StatusCode: schemas.Ptr(400),
+		Error: &schemas.ErrorField{
+			Type:    schemas.Ptr("invalid_request_error"),
+			Code:    schemas.Ptr("validation_error"),
+			Message: "encrypted reasoning was created for a different account or model",
 		},
 	}
 }
@@ -182,6 +197,12 @@ func TestExecuteRequestWithRetries_HealsOnEveryProviderRejection(t *testing.T) {
 					Message: "Publisher Model error: messages.1.content.0: Invalid `data` in `redacted_thinking` block",
 				},
 			},
+		},
+		{
+			name:     "bedrock runtime model switch",
+			provider: schemas.Bedrock,
+			model:    "us.openai.gpt-5.6-terra",
+			err:      bedrockReasoningModelMismatchError(),
 		},
 		{
 			// Bedrock Mantle serves OpenAI-family models over an OpenAI-compatible
@@ -740,6 +761,529 @@ func TestStripResponsesEncryptedContent(t *testing.T) {
 	})
 }
 
+func TestIsEncryptedReasoningRejection_BedrockModelSwitch(t *testing.T) {
+	for _, tc := range []struct {
+		name, message string
+		status        int
+		want          bool
+	}{
+		{"exact refusal", "encrypted reasoning was created for a different account or model", 400, true},
+		{"wrapped mixed case", "Bedrock: Encrypted Reasoning Was Created For A Different Account Or Model.", 400, true},
+		{"server error", "encrypted reasoning was created for a different account or model", 500, false},
+		{"auth error", "encrypted reasoning was created for a different account or model", 403, false},
+		{"unrelated validation", "invalid max_output_tokens", 400, false},
+		{"different resource", "resource was created for a different account or model", 400, false},
+		{"reasoning field only", "encrypted reasoning is required", 400, false},
+		{"reasoning validation", "invalid encrypted reasoning length", 400, false},
+		{"modified block exclusion", "encrypted reasoning was created for a different account or model; thinking blocks cannot be modified", 400, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := bedrockReasoningModelMismatchError()
+			err.Error.Message = tc.message
+			err.StatusCode = &tc.status
+			if got := isEncryptedReasoningRejection(err); got != tc.want {
+				t.Fatalf("isEncryptedReasoningRejection() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Exercise the real Bedrock runtime route and OpenAI error parser, including an HTTP
+// rejection before SSE starts. Capturing both bodies proves recovery changes the wire
+// payload without changing the model, credential, or ordinary conversation history.
+func TestBedrockResponsesModelSwitchRecovery(t *testing.T) {
+	const model = "us.openai.gpt-5.6-terra"
+	const refusal = `{"error":{"type":"invalid_request_error","code":"validation_error","message":"encrypted reasoning was created for a different account or model"}}`
+	for _, streaming := range []bool{false, true} {
+		mode := "unary"
+		if streaming {
+			mode = "streaming"
+		}
+		for _, tc := range []struct {
+			name          string
+			encrypted     bool
+			keepRejecting bool
+			wantAttempts  int
+		}{
+			{"heals", true, false, 2},
+			{"second rejection stops", true, true, 2},
+			{"nothing to strip", false, true, 1},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				recorder := &recordingServer{}
+				upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Error(err)
+					}
+					attempt := recorder.record(string(body))
+					if r.URL.Path != "/openai/v1/responses" || r.Method != http.MethodPost {
+						t.Errorf("unexpected route: %s %s", r.Method, r.URL.Path)
+					}
+					if r.Header.Get("Authorization") != "Bearer bedrock-test-key" {
+						t.Error("runtime request did not use the expected credential")
+					}
+					if attempt == 1 || tc.keepRejecting {
+						writeJSON(w, http.StatusBadRequest, refusal)
+						return
+					}
+					if streaming {
+						sseHandler(
+							`{"type":"response.output_text.delta","sequence_number":0,"output_index":0,"content_index":0,"item_id":"msg_1","delta":"tests pass"}`,
+							`{"type":"response.completed","sequence_number":1,"response":`+successBody+`}`,
+						)(w, r)
+					} else {
+						writeJSON(w, http.StatusOK, successBody)
+					}
+				}))
+				defer upstream.Close()
+
+				account := NewMockAccount()
+				account.AddProvider(schemas.Bedrock, 1, 1)
+				account.configs[schemas.Bedrock].NetworkConfig.MaxRetries = 0
+				account.configs[schemas.Bedrock].NetworkConfig.InsecureSkipVerify = true
+				account.SetKeysForProvider(schemas.Bedrock, []schemas.Key{{
+					ID: "bedrock-key", Value: *schemas.NewSecretVar("bedrock-test-key"),
+					Models: schemas.WhiteList{"*"}, Weight: 100, UseOpenAIEndpoints: schemas.Ptr(true),
+					BedrockKeyConfig: &schemas.BedrockKeyConfig{
+						Region:    schemas.NewSecretVar("us-east-1"),
+						Endpoints: &schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar(strings.TrimPrefix(upstream.URL, "https://"))},
+					},
+				}})
+				client := newStreamTestClient(t, account)
+				req := newEncryptedReasoningRequest("foreign-luna-ciphertext").ResponsesRequest
+				req.Provider, req.Model = schemas.Bedrock, model
+				if !tc.encrypted {
+					req.Input[1].ResponsesReasoning.EncryptedContent = nil
+				}
+				req.Input = append(req.Input,
+					schemas.ResponsesMessage{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("call_pwd"), Name: schemas.Ptr("pwd"), Arguments: schemas.Ptr("{}"),
+						},
+					},
+					schemas.ResponsesMessage{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("call_pwd"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("/home/test")},
+						},
+					},
+				)
+				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+				var requestErr *schemas.BifrostError
+				if streaming {
+					var stream chan *schemas.BifrostStreamChunk
+					stream, requestErr = client.ResponsesStreamRequest(ctx, req)
+					var text strings.Builder
+					completed := false
+					if stream != nil {
+						for chunk := range stream {
+							if chunk.BifrostError != nil {
+								t.Errorf("unexpected stream error: %v", chunk.BifrostError)
+							}
+							if response := chunk.BifrostResponsesStreamResponse; response != nil {
+								if response.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && response.Delta != nil {
+									text.WriteString(*response.Delta)
+								}
+								completed = completed || response.Type == schemas.ResponsesStreamResponseTypeCompleted
+							}
+						}
+					}
+					if !tc.keepRejecting && (text.String() != "tests pass" || !completed) {
+						t.Errorf("expected successful completed stream, got text=%q completed=%v", text.String(), completed)
+					}
+				} else {
+					var response *schemas.BifrostResponsesResponse
+					response, requestErr = client.ResponsesRequest(ctx, req)
+					if !tc.keepRejecting && (response == nil || response.ID == nil || *response.ID != "resp_healed_1") {
+						t.Errorf("expected healed response, got %v", response)
+					}
+				}
+				if tc.keepRejecting {
+					if requestErr == nil || requestErr.Error == nil || requestErr.Error.Message != bedrockReasoningModelMismatchError().Error.Message {
+						t.Errorf("expected original rejection, got %v", requestErr)
+					}
+				} else if requestErr != nil {
+					t.Errorf("expected recovery, got %v", requestErr)
+				}
+				bodies := recorder.snapshot()
+				if len(bodies) != tc.wantAttempts {
+					t.Fatalf("attempts = %d, want %d", len(bodies), tc.wantAttempts)
+				}
+				for _, body := range bodies {
+					if gjson.Get(body, "model").String() != model || gjson.Get(body, "stream").Bool() != streaming {
+						t.Errorf("model or stream mode changed: %s", body)
+					}
+				}
+				if tc.encrypted {
+					if gjson.Get(bodies[0], "input.1.encrypted_content").String() != "foreign-luna-ciphertext" || gjson.Get(bodies[1], "input.1.encrypted_content").Exists() {
+						t.Fatal("expected ciphertext only on the first attempt")
+					}
+					for _, path := range []string{"input.#", "input.0", "input.1.id", "input.1.summary", "input.2", "input.3"} {
+						before, after := gjson.Get(bodies[0], path), gjson.Get(bodies[1], path)
+						if !before.Exists() || before.Raw != after.Raw {
+							t.Errorf("retry changed %s: %s -> %s", path, before.Raw, after.Raw)
+						}
+					}
+				}
+				stripLogs := 0
+				for _, entry := range ctx.GetRoutingEngineLogs() {
+					if strings.Contains(entry.Message, "Stripped unverifiable encrypted reasoning content") {
+						stripLogs++
+					}
+				}
+				if stripLogs != tc.wantAttempts-1 {
+					t.Errorf("strip log count = %d, want %d", stripLogs, tc.wantAttempts-1)
+				}
+			})
+		}
+	}
+}
+
+// TestShouldStripReasoningAfterClientError pins the fail-soft gate: a 400 that names a
+// reasoning token by family word earns the one stripped retry, whatever verdict the
+// upstream attaches, and nothing else does. The verdict-based classifier is tested
+// separately and only labels the log line. The TRUE rows are the refusals each surface
+// was observed to return after a provider or model switch; only Anthropic's is
+// documented.
+func TestShouldStripReasoningAfterClientError(t *testing.T) {
+	for _, tc := range []struct {
+		name, message string
+		status        int
+		want          bool
+	}{
+		{"bedrock mantle", "invalid encrypted reasoning", 400, true},
+		{"bedrock mantle prefix", "encrypted content missing recognized prefix (expected `rsn_` or `smry_`)", 400, true},
+		{"bedrock runtime account or model", "encrypted reasoning was created for a different account or model", 400, true},
+		{"bedrock cross-region", "Encrypted content cannot be used in a different region from the one that created it.", 400, true},
+		{"openai", "The encrypted content for item rs_1 could not be verified. Reason: Encrypted content organization_id did not match the target organization.", 400, true},
+		{"xai", "Could not decrypt the provided encrypted_content. Ensure the value is the unmodified encrypted_content from a previous response.", 400, true},
+		{"anthropic signature", "messages.1.content.0: Invalid `signature` in `thinking` block", 400, true},
+		{"anthropic redacted", "messages.1.content.0: Invalid `data` in `redacted_thinking` block", 400, true},
+		{"bedrock converse unsupported field", "This model doesn't support the reasoningContent.reasoningText.signature field. Remove reasoningContent.reasoningText.signature and try again.", 400, true},
+		{"gemini invalid", "Invalid thought signature.", 400, true},
+		{"gemini corrupted", "Corrupted thought signature.", 400, true},
+		{"vertex gemini not valid", "Unable to submit request because Thought signature is not valid.", 400, true},
+		{"unrelated parameter", "unsupported parameter: `temperature` is not supported with this model", 400, false},
+		{"context length", "input exceeds the maximum context length for this model", 400, false},
+		{"max output tokens", "Invalid value for max_output_tokens", 400, false},
+		{"openai unsupported reasoning effort", "Unsupported parameter: 'reasoning.effort' is not supported with this model.", 400, false},
+		{"openai chat unsupported reasoning effort", "Unsupported value: 'reasoning_effort' does not support 'none' with this model.", 400, false},
+		{"openai unsupported reasoning summary", "Unsupported parameter: 'reasoning.summary' is not supported with this model.", 400, false},
+		{"anthropic budget below minimum", "thinking.budget_tokens: Input should be greater than or equal to 1024", 400, false},
+		{"anthropic retired thinking mode", "\"thinking.type.enabled\" is not supported for this model. Use \"thinking.type.adaptive\" and \"output_config.effort\" instead.", 400, false},
+		{"openrouter outer envelope alone", "Provider returned error", 400, false},
+		{"openrouter after the provider lifts metadata.raw", "Provider returned error (Anthropic): messages.1.content.0: Invalid `signature` in `thinking` block", 400, true},
+		{"anthropic latest-turn block is never healable", "messages.3.content.0: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified. These blocks must remain as they were in the original response.", 400, false},
+		{"unauthorized", "invalid encrypted reasoning", 401, false},
+		{"sigv4 mismatch", "The request signature we calculated does not match the signature you provided", 403, false},
+		{"not found", "The encrypted content for item rs_1 could not be verified.", 404, false},
+		{"rate limited", "The encrypted content for item rs_1 could not be verified.", 429, false},
+		{"server error", "invalid encrypted reasoning", 500, false},
+		{"unavailable", "invalid encrypted reasoning", 503, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := &schemas.BifrostError{
+				StatusCode: schemas.Ptr(tc.status),
+				Error:      &schemas.ErrorField{Type: schemas.Ptr("invalid_request_error"), Code: schemas.Ptr("validation_error"), Message: tc.message},
+			}
+			if got := shouldStripReasoningAfterClientError(err); got != tc.want {
+				t.Fatalf("shouldStripReasoningAfterClientError() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if shouldStripReasoningAfterClientError(nil) ||
+		shouldStripReasoningAfterClientError(&schemas.BifrostError{Error: &schemas.ErrorField{Message: "invalid encrypted reasoning"}}) ||
+		shouldStripReasoningAfterClientError(&schemas.BifrostError{StatusCode: schemas.Ptr(400)}) {
+		t.Fatal("an error without a 400 status and a message must not trigger the strip")
+	}
+}
+
+// contextLengthError is an ordinary 400 that has nothing to do with reasoning tokens.
+func contextLengthError() *schemas.BifrostError {
+	return &schemas.BifrostError{
+		StatusCode: schemas.Ptr(400),
+		Error: &schemas.ErrorField{
+			Type:    schemas.Ptr("invalid_request_error"),
+			Code:    schemas.Ptr("validation_error"),
+			Message: "input exceeds the maximum context length for this model",
+		},
+	}
+}
+
+// unknownWordingRefusal is a 400 that names the token in words the verdict-based
+// classifier does not know, the shape every new provider surface has produced so far.
+func unknownWordingRefusal() *schemas.BifrostError {
+	return &schemas.BifrostError{
+		StatusCode: schemas.Ptr(400),
+		Error: &schemas.ErrorField{
+			Type:    schemas.Ptr("invalid_request_error"),
+			Code:    schemas.Ptr("validation_error"),
+			Message: "invalid encrypted reasoning",
+		},
+	}
+}
+
+// TestClientErrorRetryIsGatedOnTokenFamilyWord pins both sides of the gate through the
+// real retry loop. A 400 that names the token, in wording the classifier has never
+// seen, spends exactly one more attempt with the token gone and then returns the
+// upstream's own error. An unrelated 400 spends nothing and leaves the request as it
+// was, and so does a request with no token to strip.
+func TestClientErrorRetryIsGatedOnTokenFamilyWord(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		encrypted    bool
+		refusal      func() *schemas.BifrostError
+		wantAttempts int
+	}{
+		{"names the token, unknown wording", true, unknownWordingRefusal, 2},
+		{"unrelated 400 with a token present", true, contextLengthError, 1},
+		{"names the token, nothing to strip", false, unknownWordingRefusal, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := createTestConfig(0, time.Millisecond, time.Millisecond)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+			req := newEncryptedReasoningRequest("foreign-luna-ciphertext")
+			if !tc.encrypted {
+				req.ResponsesRequest.Input[1].ResponsesReasoning.EncryptedContent = nil
+			}
+			attempts := 0
+			var lastInput []schemas.ResponsesMessage
+			handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+				attempts++
+				lastInput = req.ResponsesRequest.Input
+				return "", tc.refusal()
+			}
+			_, err := executeRequestWithRetries(ctx, config, handler, nil,
+				schemas.ResponsesRequest, schemas.BedrockMantle, "openai.gpt-6-luna", req, NewDefaultLogger(schemas.LogLevelError))
+			if err == nil || err.Error == nil || err.Error.Message != tc.refusal().Error.Message {
+				t.Fatalf("expected the upstream's own error back, got %v", err)
+			}
+			if attempts != tc.wantAttempts {
+				t.Fatalf("attempts = %d, want %d", attempts, tc.wantAttempts)
+			}
+			stripped := tc.encrypted && lastInput[1].ResponsesReasoning.EncryptedContent == nil
+			if stripped != (tc.wantAttempts == 2) {
+				t.Fatalf("stripped = %v, want %v", stripped, tc.wantAttempts == 2)
+			}
+		})
+	}
+}
+
+// TestCannotBeModifiedNeverRetries keeps the one documented exclusion: dropping the
+// latest assistant turn's thinking blocks cannot satisfy a complaint that they were
+// changed, so no attempt is spent.
+func TestCannotBeModifiedNeverRetries(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	req := newEncryptedReasoningRequest("foreign-luna-ciphertext")
+	attempts := 0
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		attempts++
+		return "", &schemas.BifrostError{
+			StatusCode: schemas.Ptr(400),
+			Error: &schemas.ErrorField{
+				Type:    schemas.Ptr("invalid_request_error"),
+				Message: "messages.1.content.0: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified. These blocks must remain as they were in the original response.",
+			},
+		}
+	}
+	if _, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ResponsesRequest, schemas.Anthropic, "claude-opus-5", req, NewDefaultLogger(schemas.LogLevelError)); err == nil {
+		t.Fatal("expected the refusal to be returned")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+	if req.ResponsesRequest.Input[1].ResponsesReasoning.EncryptedContent == nil {
+		t.Fatal("the request was stripped although no retry could help")
+	}
+}
+
+// TestNon400NeverStrips keeps the strip out of the transient and identity classes: a
+// 429 or 5xx that happens to mention encrypted content goes through the ordinary retry
+// path with the token intact on every attempt.
+func TestNon400NeverStrips(t *testing.T) {
+	for _, status := range []int{429, 500} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			config := createTestConfig(1, time.Millisecond, time.Millisecond)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+			req := newEncryptedReasoningRequest("foreign-luna-ciphertext")
+			attempts := 0
+			handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+				attempts++
+				if req.ResponsesRequest.Input[1].ResponsesReasoning.EncryptedContent == nil {
+					t.Errorf("attempt %d lost the token on a %d", attempts, status)
+				}
+				return "", &schemas.BifrostError{
+					StatusCode: schemas.Ptr(status),
+					Error:      &schemas.ErrorField{Message: "The encrypted content for item rs_067d4968 could not be verified."},
+				}
+			}
+			if _, err := executeRequestWithRetries(ctx, config, handler, nil,
+				schemas.ResponsesRequest, schemas.OpenAI, "gpt-5.6-sol", req, NewDefaultLogger(schemas.LogLevelError)); err == nil {
+				t.Fatal("expected the error to be returned")
+			}
+			if attempts < 1 {
+				t.Fatal("handler was never called")
+			}
+		})
+	}
+}
+
+// mantleInvalidEncryptedReasoningBody is the 400 Bedrock Mantle's OpenAI-compatible
+// /responses endpoint returned, verbatim, when a Codex conversation whose reasoning
+// items were minted through bedrock/openai.gpt-6-luna was moved to
+// bedrock_mantle/openai.gpt-6-luna. The classifier does not know this wording; the
+// status-only gate heals it anyway.
+const mantleInvalidEncryptedReasoningBody = `{"error":{"param":null,"type":"invalid_request_error","code":"validation_error","message":"invalid encrypted reasoning"}}`
+
+// TestBedrockMantleResponsesModelSwitchRecovery drives the real bedrock_mantle
+// provider, its OpenAI-compatible route and error parser, against a test server
+// reached through BedrockEndpoints.Mantle. Capturing both bodies proves recovery
+// changes the wire payload without changing the model, credential, or ordinary
+// conversation history, unary and streaming.
+func TestBedrockMantleResponsesModelSwitchRecovery(t *testing.T) {
+	const model = "openai.gpt-6-luna"
+	wantPath := "/" + string(schemas.ResolveBedrockMantleBasePath(model)) + "/responses"
+	for _, streaming := range []bool{false, true} {
+		mode := "unary"
+		if streaming {
+			mode = "streaming"
+		}
+		for _, tc := range []struct {
+			name          string
+			encrypted     bool
+			keepRejecting bool
+			wantAttempts  int
+		}{
+			{"heals", true, false, 2},
+			{"second rejection stops", true, true, 2},
+			{"nothing to strip", false, true, 1},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				recorder := &recordingServer{}
+				upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Error(err)
+					}
+					attempt := recorder.record(string(body))
+					if r.URL.Path != wantPath || r.Method != http.MethodPost {
+						t.Errorf("unexpected route: %s %s (want POST %s)", r.Method, r.URL.Path, wantPath)
+					}
+					if r.Header.Get("Authorization") != "Bearer mantle-test-key" {
+						t.Error("mantle request did not use the expected credential")
+					}
+					if attempt == 1 || tc.keepRejecting {
+						writeJSON(w, http.StatusBadRequest, mantleInvalidEncryptedReasoningBody)
+						return
+					}
+					if streaming {
+						sseHandler(
+							`{"type":"response.output_text.delta","sequence_number":0,"output_index":0,"content_index":0,"item_id":"msg_1","delta":"tests pass"}`,
+							`{"type":"response.completed","sequence_number":1,"response":`+successBody+`}`,
+						)(w, r)
+						return
+					}
+					writeJSON(w, http.StatusOK, successBody)
+				}))
+				defer upstream.Close()
+
+				account := NewMockAccount()
+				account.AddProvider(schemas.BedrockMantle, 1, 1)
+				account.configs[schemas.BedrockMantle].NetworkConfig.MaxRetries = 0
+				account.configs[schemas.BedrockMantle].NetworkConfig.InsecureSkipVerify = true
+				account.SetKeysForProvider(schemas.BedrockMantle, []schemas.Key{{
+					ID: "mantle-key", Value: *schemas.NewSecretVar("mantle-test-key"),
+					Models: schemas.WhiteList{"*"}, Weight: 100,
+					BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+						Region:    schemas.NewSecretVar("us-east-1"),
+						Endpoints: &schemas.BedrockEndpoints{Mantle: schemas.NewSecretVar(strings.TrimPrefix(upstream.URL, "https://"))},
+					},
+				}})
+				client := newStreamTestClient(t, account)
+				req := newEncryptedReasoningRequest("foreign-luna-ciphertext").ResponsesRequest
+				req.Provider, req.Model = schemas.BedrockMantle, model
+				if !tc.encrypted {
+					req.Input[1].ResponsesReasoning.EncryptedContent = nil
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+				var requestErr *schemas.BifrostError
+				if streaming {
+					var stream chan *schemas.BifrostStreamChunk
+					stream, requestErr = client.ResponsesStreamRequest(ctx, req)
+					var text strings.Builder
+					completed := false
+					if stream != nil {
+						for chunk := range stream {
+							if chunk.BifrostError != nil {
+								t.Errorf("unexpected stream error: %v", chunk.BifrostError)
+							}
+							if response := chunk.BifrostResponsesStreamResponse; response != nil {
+								if response.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && response.Delta != nil {
+									text.WriteString(*response.Delta)
+								}
+								completed = completed || response.Type == schemas.ResponsesStreamResponseTypeCompleted
+							}
+						}
+					}
+					if !tc.keepRejecting && (text.String() != "tests pass" || !completed) {
+						t.Errorf("expected successful completed stream, got text=%q completed=%v", text.String(), completed)
+					}
+				} else {
+					var response *schemas.BifrostResponsesResponse
+					response, requestErr = client.ResponsesRequest(ctx, req)
+					if !tc.keepRejecting && (response == nil || response.ID == nil || *response.ID != "resp_healed_1") {
+						t.Errorf("expected healed response, got %v", response)
+					}
+				}
+				if tc.keepRejecting {
+					if requestErr == nil || requestErr.Error == nil || requestErr.Error.Message != "invalid encrypted reasoning" {
+						t.Errorf("expected original rejection, got %v", requestErr)
+					}
+				} else if requestErr != nil {
+					t.Errorf("expected recovery, got %v", requestErr)
+				}
+				bodies := recorder.snapshot()
+				if len(bodies) != tc.wantAttempts {
+					t.Fatalf("attempts = %d, want %d", len(bodies), tc.wantAttempts)
+				}
+				for _, body := range bodies {
+					if gjson.Get(body, "model").String() != model || gjson.Get(body, "stream").Bool() != streaming {
+						t.Errorf("model or stream mode changed: %s", body)
+					}
+				}
+				if tc.encrypted {
+					if gjson.Get(bodies[0], "input.1.encrypted_content").String() != "foreign-luna-ciphertext" || gjson.Get(bodies[1], "input.1.encrypted_content").Exists() {
+						t.Fatal("expected ciphertext only on the first attempt")
+					}
+					for _, path := range []string{"input.#", "input.0", "input.1.id", "input.1.summary"} {
+						before, after := gjson.Get(bodies[0], path), gjson.Get(bodies[1], path)
+						if !before.Exists() || before.Raw != after.Raw {
+							t.Errorf("retry changed %s: %s -> %s", path, before.Raw, after.Raw)
+						}
+					}
+				}
+				stripLogs := 0
+				for _, entry := range ctx.GetRoutingEngineLogs() {
+					if strings.Contains(entry.Message, "Stripped unverifiable encrypted reasoning content") {
+						stripLogs++
+					}
+				}
+				if stripLogs != tc.wantAttempts-1 {
+					t.Errorf("strip log count = %d, want %d", stripLogs, tc.wantAttempts-1)
+				}
+			})
+		}
+	}
+}
+
 func TestIsEncryptedReasoningRejection(t *testing.T) {
 	tests := []struct {
 		name string
@@ -971,14 +1515,12 @@ func TestIsEncryptedReasoningRejection(t *testing.T) {
 // attempt, and the retry that reaches the same upstream with encrypted_content gone
 // from the serialized body.
 //
-// Fidelity note: the fallback runs as schemas.OpenAI rather than schemas.BedrockMantle
-// because the Mantle provider computes its host from the region
-// (bedrock-mantle.<region>.api.aws, see mantleOpenAIURL) and honours no BaseURL, so it
-// cannot be pointed at a test server. The surface being emulated is the same one --
-// Mantle serves OpenAI-family models over an OpenAI-compatible /v1/responses endpoint,
-// which is why its refusal arrives in an OpenAI error envelope -- and the fail-soft
-// path under test is provider-agnostic: it matches on the refusal text, not the
-// provider key.
+// Fidelity note: the fallback runs as schemas.OpenAI rather than schemas.BedrockMantle.
+// The surface being emulated is the same one -- Mantle serves OpenAI-family models over
+// an OpenAI-compatible /v1/responses endpoint, which is why its refusal arrives in an
+// OpenAI error envelope -- and the fail-soft path under test is provider-agnostic.
+// TestBedrockMantleResponsesModelSwitchRecovery drives the real bedrock_mantle provider
+// against a test server through BedrockEndpoints.Mantle.
 const mantleEncryptedContentRefusal = "encrypted content missing recognized prefix (expected `rsn_` or `smry_`)"
 
 // azureRateLimitBody is the 429 envelope the primary returned on all four attempts.
@@ -1235,10 +1777,11 @@ func TestResponsesFallbackHealsEncryptedContentRefusal(t *testing.T) {
 }
 
 // TestMantleEncryptedContentRefusalIsNotConfusedWithOtherValidationErrors guards the
-// widened detector from the other direction. Mantle returns the same
+// classifier from the other direction. Mantle returns the same
 // invalid_request_error/validation_error/400 envelope for ordinary bad requests, and
-// those must not buy a retry: the strip cannot fix them, so the extra upstream call
-// would be pure latency on a request that is going to fail either way.
+// the classifier must not label those as token refusals. The retry itself is gated
+// elsewhere (shouldStripReasoningAfterClientError, on status alone), so these cases
+// now decide which log line the operator sees, not whether the retry happens.
 func TestMantleEncryptedContentRefusalIsNotConfusedWithOtherValidationErrors(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -2224,5 +2767,272 @@ func TestStripResponsesEncryptedContent_KeepsMessageItemWithSurvivingContent(t *
 	if len(kept.Content.ContentBlocks) != 1 || kept.Content.ContentBlocks[0].Text == nil ||
 		*kept.Content.ContentBlocks[0].Text != "On it." {
 		t.Errorf("expected only the text block to survive, got %+v", kept.Content.ContentBlocks)
+	}
+}
+
+// TestStripRawAnthropicChatThinking_AllocationScaling pins the allocation shape of the
+// raw Anthropic thinking strip.
+//
+// The loop writes messages.<i>.content through the whole request body, once per message
+// it changes, and each sjson write reserialises the entire request. A long agentic
+// conversation is exactly the shape that makes that expensive.
+func TestStripRawAnthropicChatThinking_AllocationScaling(t *testing.T) {
+	memtest.AssertAllocScaling(t, func(turns int) []byte {
+		var b bytes.Buffer
+		b.WriteString(`{"model":"claude-opus-4-8","messages":[`)
+		for i := range turns {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			// A signed thinking block (stripped) alongside a text block that survives
+			// and carries the bulk of the bytes, so both N and payload size scale.
+			b.WriteString(`{"role":"assistant","content":[`)
+			b.WriteString(`{"type":"thinking","thinking":"reasoning","signature":"sig"},`)
+			b.WriteString(`{"type":"text","text":"`)
+			b.WriteString(strings.Repeat("x", 400))
+			b.WriteString(`"}]}`)
+		}
+		b.WriteString(`]}`)
+		return b.Bytes()
+	}, func(body []byte) {
+		scratch := append([]byte(nil), body...)
+		stripRawAnthropicChatThinking(&scratch)
+	})
+}
+
+// TestStripRawResponsesEncryptedContent_AllocationScaling pins the allocation shape of
+// the Responses encrypted-content strip.
+//
+// Its inner loop deletes content.<i>.<field> from the item being rewritten, once per
+// content block per reasoning carrier field, and each delete reserialises that whole
+// item. An item carrying many reasoning blocks pays that repeatedly.
+func TestStripRawResponsesEncryptedContent_AllocationScaling(t *testing.T) {
+	memtest.AssertAllocScaling(t, func(blocks int) []byte {
+		var b bytes.Buffer
+		b.WriteString(`{"model":"gpt-5","input":[{"type":"message","role":"assistant","content":[`)
+		for i := range blocks {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(`{"type":"reasoning_text","text":"`)
+			b.WriteString(strings.Repeat("r", 400))
+			b.WriteString(`","encrypted_content":"enc"}`)
+		}
+		b.WriteString(`]}]}`)
+		return b.Bytes()
+	}, func(body []byte) {
+		scratch := append([]byte(nil), body...)
+		stripRawResponsesEncryptedContent(&scratch, false)
+	})
+}
+
+// Gemini and Vertex mint no encrypted_content: the thought signature rides on the function
+// call, and Bifrost carries it inside the call id as "<id>_ts_<signature>" so it survives the
+// Responses shape. A history minted on the other platform is refused with 400 "Corrupted
+// thought signature.", and the strip used to find nothing to remove, report false, and let
+// that 400 through unhealed (harness folder 120, pairs C1/C2). The suffix IS the token here.
+const geminiSignedCallID = "call_154438_ts_AY89a18lvmxD_neXDqsyaZ8p8hQs5WEUcYCIXeXVnQlH"
+
+func newGeminiSignedCallRequest() *schemas.BifrostRequest {
+	return &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3.7-flash",
+			Input: []schemas.ResponsesMessage{
+				{
+					Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("What time is it in Tokyo?")},
+				},
+				{
+					ID:   schemas.Ptr("fc_" + geminiSignedCallID),
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID:    schemas.Ptr(geminiSignedCallID),
+						Name:      schemas.Ptr("get_time"),
+						Arguments: schemas.Ptr(`{"timezone":"Asia/Tokyo"}`),
+					},
+				},
+				{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr(geminiSignedCallID),
+						Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr(`{"time":"09:00 JST"}`)},
+					},
+				},
+				{
+					Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Now say OK.")},
+				},
+			},
+		},
+	}
+}
+
+func corruptedThoughtSignatureError() *schemas.BifrostError {
+	return &schemas.BifrostError{
+		StatusCode: schemas.Ptr(400),
+		Error: &schemas.ErrorField{
+			Type:    schemas.Ptr("INVALID_ARGUMENT"),
+			Code:    schemas.Ptr("400"),
+			Message: "Corrupted thought signature.",
+		},
+	}
+}
+
+func TestStripResponsesEncryptedContent_GeminiCallIDSignature(t *testing.T) {
+	t.Run("strips the _ts_ suffix from the call and its output and keeps both items", func(t *testing.T) {
+		req := newGeminiSignedCallRequest()
+		original := req.ResponsesRequest.Input
+
+		if !stripResponsesEncryptedContent(nil, req) {
+			t.Fatal("expected the strip to report a change: the call id carries the signature")
+		}
+		got := req.ResponsesRequest.Input
+		if len(got) != 4 {
+			t.Fatalf("expected all 4 items to survive (a tool item is never an emptied reasoning item), got %d", len(got))
+		}
+		for _, i := range []int{1, 2} {
+			if got[i].ResponsesToolMessage == nil || got[i].ResponsesToolMessage.CallID == nil {
+				t.Fatalf("item %d lost its tool message", i)
+			}
+			if *got[i].ResponsesToolMessage.CallID != "call_154438" {
+				t.Errorf("item %d: expected the bare call id, got %q", i, *got[i].ResponsesToolMessage.CallID)
+			}
+		}
+		if got[1].ID == nil || *got[1].ID != "fc_call_154438" {
+			t.Errorf("expected the item id built from the call id to be stripped too, got %v", got[1].ID)
+		}
+		// The caller's structs are shared with plugins and the transport layer.
+		if *original[1].ResponsesToolMessage.CallID != geminiSignedCallID || *original[1].ID != "fc_"+geminiSignedCallID {
+			t.Error("the caller's input was mutated in place")
+		}
+	})
+
+	t.Run("reports no change when no call id carries a signature", func(t *testing.T) {
+		req := newGeminiSignedCallRequest()
+		for i := range req.ResponsesRequest.Input {
+			if tm := req.ResponsesRequest.Input[i].ResponsesToolMessage; tm != nil {
+				tm.CallID = schemas.Ptr("call_154438")
+			}
+		}
+		req.ResponsesRequest.Input[1].ID = schemas.Ptr("fc_call_154438")
+		if stripResponsesEncryptedContent(nil, req) {
+			t.Error("expected no change: a bare call id is not a token")
+		}
+	})
+
+	t.Run("strips the suffix on the raw passthrough body", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		req := newGeminiSignedCallRequest()
+		req.ResponsesRequest.RawRequestBody = []byte(`{"model":"gemini-3.7-flash","input":[` +
+			`{"type":"message","role":"user","content":"What time is it in Tokyo?"},` +
+			`{"type":"function_call","id":"fc_` + geminiSignedCallID + `","call_id":"` + geminiSignedCallID + `","name":"get_time","arguments":"{}"},` +
+			`{"type":"function_call_output","call_id":"` + geminiSignedCallID + `","output":"{\"time\":\"09:00 JST\"}"},` +
+			`{"type":"message","role":"user","content":"Now say OK."}` +
+			`]}`)
+
+		if !stripResponsesEncryptedContent(ctx, req) {
+			t.Fatal("expected the raw strip to report a change")
+		}
+		body := string(req.ResponsesRequest.RawRequestBody)
+		if strings.Contains(body, "_ts_") {
+			t.Errorf("expected every _ts_ suffix to be gone, got %s", body)
+		}
+		if strings.Count(body, `"call_id":"call_154438"`) != 2 {
+			t.Errorf("expected the call and its output to share the bare id, got %s", body)
+		}
+		if !strings.Contains(body, `"id":"fc_call_154438"`) {
+			t.Errorf("expected the item id to be stripped too, got %s", body)
+		}
+		if !strings.Contains(body, `"output":"{\"time\":\"09:00 JST\"}"`) || !strings.Contains(body, `"name":"get_time"`) {
+			t.Errorf("expected the tool items to survive with their fields, got %s", body)
+		}
+	})
+}
+
+// The consequence: the 400 names the token by family word, the strip now has something to
+// remove, and the one fail-soft retry reaches the upstream with bare call ids.
+func TestExecuteRequestWithRetries_HealsGeminiCorruptedThoughtSignature(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	req := newGeminiSignedCallRequest()
+	callCount := 0
+	var secondAttemptInput []schemas.ResponsesMessage
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		if callCount == 1 {
+			return "", corruptedThoughtSignatureError()
+		}
+		secondAttemptInput = req.ResponsesRequest.Input
+		return "OK", nil
+	}
+
+	result, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ResponsesRequest, schemas.Gemini, "gemini-3.7-flash", req, logger)
+	if err != nil {
+		t.Fatalf("expected the stripped retry to succeed, got %v", err)
+	}
+	if result != "OK" || callCount != 2 {
+		t.Fatalf("expected 2 attempts ending in OK, got %d attempts and %q", callCount, result)
+	}
+	for _, i := range []int{1, 2} {
+		if id := *secondAttemptInput[i].ResponsesToolMessage.CallID; id != "call_154438" {
+			t.Errorf("attempt 2 item %d still carries the signature: %q", i, id)
+		}
+	}
+}
+
+func TestStripUnverifiableReasoning_ChatShape_GeminiToolCallIDSignature(t *testing.T) {
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3.7-flash",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What time is it in Tokyo?")}},
+				{
+					Role: schemas.ChatMessageRoleAssistant,
+					ChatAssistantMessage: &schemas.ChatAssistantMessage{
+						ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+							ID:       schemas.Ptr(geminiSignedCallID),
+							Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("get_time"), Arguments: `{"timezone":"Asia/Tokyo"}`},
+						}},
+					},
+				},
+				{
+					Role:            schemas.ChatMessageRoleTool,
+					ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(geminiSignedCallID)},
+					Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr(`{"time":"09:00 JST"}`)},
+				},
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Now say OK.")}},
+			},
+		},
+	}
+	originalCalls := req.ChatRequest.Input[1].ChatAssistantMessage.ToolCalls
+	originalTool := req.ChatRequest.Input[2].ChatToolMessage
+
+	if !stripUnverifiableReasoning(nil, req) {
+		t.Fatal("expected the strip to report a change: the tool call id carries the signature")
+	}
+	if id := *req.ChatRequest.Input[1].ChatAssistantMessage.ToolCalls[0].ID; id != "call_154438" {
+		t.Errorf("expected the bare tool call id, got %q", id)
+	}
+	if id := *req.ChatRequest.Input[2].ChatToolMessage.ToolCallID; id != "call_154438" {
+		t.Errorf("expected the tool result to share the bare id, got %q", id)
+	}
+	if *originalCalls[0].ID != geminiSignedCallID || *originalTool.ToolCallID != geminiSignedCallID {
+		t.Error("the caller's messages were mutated in place")
+	}
+
+	// A second call finds nothing left and must not buy another upstream attempt.
+	if stripUnverifiableReasoning(nil, req) {
+		t.Error("expected no change once the ids are bare")
 	}
 }

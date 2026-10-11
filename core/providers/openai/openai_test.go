@@ -46,7 +46,9 @@ func TestOpenAI(t *testing.T) {
 		ChatAudioModel:          "gpt-audio-mini",
 		PassthroughModel:        "gpt-4o",
 		ExternalCompactionModel: "gpt-4o",
+		DecisionEmulationModel:  "gpt-4o-mini",
 		Scenarios: llmtests.TestScenarios{
+			DecisionEmulation:          true,
 			TextCompletion:             true,
 			TextCompletionStream:       true,
 			SimpleChat:                 true,

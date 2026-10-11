@@ -16,7 +16,6 @@ export class ConfigSettingsPage extends BasePage {
 
   // Client Settings
   readonly dropExcessRequestsSwitch: Locator
-  readonly enableLiteLLMFallbacksSwitch: Locator
   readonly disableDBPingsSwitch: Locator
   readonly asyncJobResultTtlInput: Locator
 
@@ -32,6 +31,11 @@ export class ConfigSettingsPage extends BasePage {
   readonly enforceAuthOnInferenceSwitch: Locator
   readonly requiredHeadersTextarea: Locator
   readonly vkRotationCooldownInput: Locator
+  readonly dashboardAuthSwitch: Locator
+  readonly currentPasswordInput: Locator
+  readonly currentPasswordError: Locator
+  readonly setupTokenToggle: Locator
+  readonly setupTokenInput: Locator
 
   // Performance Tuning Settings
   readonly workerPoolSizeInput: Locator
@@ -52,7 +56,6 @@ export class ConfigSettingsPage extends BasePage {
 
     // Client Settings locators
     this.dropExcessRequestsSwitch = page.locator('#drop-excess-requests')
-    this.enableLiteLLMFallbacksSwitch = page.locator('#enable-litellm-fallbacks')
     this.disableDBPingsSwitch = page.locator('#disable-db-pings-in-health')
     this.asyncJobResultTtlInput = page.getByTestId('client-settings-async-job-result-ttl-input')
 
@@ -70,6 +73,11 @@ export class ConfigSettingsPage extends BasePage {
     this.enforceAuthOnInferenceSwitch = page.getByTestId('enforce-auth-on-inference-switch')
     this.requiredHeadersTextarea = page.getByTestId('required-headers-textarea')
     this.vkRotationCooldownInput = page.getByTestId('security-vk-rotation-cooldown-input')
+    this.dashboardAuthSwitch = page.locator('#auth-enabled')
+    this.currentPasswordInput = page.getByTestId('security-current-password-input')
+    this.currentPasswordError = page.getByTestId('security-current-password-error')
+    this.setupTokenToggle = page.getByTestId('security-setup-token-toggle')
+    this.setupTokenInput = page.getByTestId('security-setup-token-input')
 
     // Performance Tuning locators
     this.workerPoolSizeInput = page.getByLabel(/Worker Pool Size/i)
@@ -79,10 +87,10 @@ export class ConfigSettingsPage extends BasePage {
     this.observabilityToggles = page.locator('button[role="switch"]')
 
     // Pricing Config locators
-    this.pricingConfigView = page.getByTestId('pricing-config-view')
+    this.pricingConfigView = page.getByTestId('model-settings-view')
     this.pricingDatasheetUrlInput = page.getByTestId('pricing-datasheet-url-input')
     this.pricingForceSyncBtn = page.getByTestId('pricing-force-sync-btn')
-    this.pricingSaveBtn = page.getByTestId('pricing-save-btn')
+    this.pricingSaveBtn = page.getByTestId('model-settings-save-btn')
   }
 
   async goto(path: string): Promise<void> {
@@ -292,10 +300,6 @@ export class ConfigSettingsPage extends BasePage {
     await this.dropExcessRequestsSwitch.click()
   }
 
-  async toggleLiteLLMFallbacks(): Promise<void> {
-    await this.enableLiteLLMFallbacksSwitch.click()
-  }
-
   async toggleDisableDBPings(): Promise<void> {
     await this.disableDBPingsSwitch.click()
   }
@@ -334,6 +338,24 @@ export class ConfigSettingsPage extends BasePage {
 
   async toggleEnforceAuthOnInference(): Promise<void> {
     await this.enforceAuthOnInferenceSwitch.click()
+  }
+
+  /**
+   * Flip the "Password protect the dashboard" switch without saving.
+   */
+  async toggleDashboardAuth(): Promise<void> {
+    await this.dashboardAuthSwitch.click()
+  }
+
+  /**
+   * Fill the confirmation field that appears when auth is being turned back on
+   * while it is off: the admin password currently stored on the server.
+   */
+  async setCurrentPassword(value: string): Promise<void> {
+    await this.currentPasswordInput.clear()
+    if (value !== '') {
+      await this.currentPasswordInput.fill(value)
+    }
   }
 
   async setRequiredHeaders(value: string): Promise<void> {
@@ -385,7 +407,13 @@ export class ConfigSettingsPage extends BasePage {
   }
 
   async savePricingConfig(): Promise<void> {
+    // The save re-syncs the pricing datasheet and model parameters before responding, which can take ~10s.
+    const saved = this.page.waitForResponse(
+      (r) => r.url().endsWith('/api/config') && r.request().method() === 'PUT',
+      { timeout: 60_000 },
+    )
     await this.pricingSaveBtn.click()
+    expect((await saved).ok()).toBe(true)
     await this.waitForSuccessToast()
   }
 }

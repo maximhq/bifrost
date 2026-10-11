@@ -17,6 +17,7 @@ OpenAI is the **baseline schema** for Bifrost. When using OpenAI directly, param
 | Responses Lifecycle | ✅ | ✅ | `/v1/responses/{response_id}` |
 | Text Completions | ✅ | ✅ | `/v1/completions` |
 | Embeddings | ✅ | - | `/v1/embeddings` |
+| Decisions | ✅ | - | `/v1/decisions` |
 | Speech (TTS) | ✅ | ✅ | `/v1/audio/speech` |
 | Transcriptions (STT) | ✅ | ✅ | `/v1/audio/transcriptions` |
 | Image Generation | ✅ | ✅ | `/v1/images/generations` |
@@ -189,7 +190,7 @@ This conversion ensures compatibility across different model architectures for t
 **Other conversions:**
 - Action types `zoom` and `region` are converted to `screenshot`
 - `cache_control` fields are stripped from messages and tools
-- Unsupported tool types are silently filtered (only these are supported: `function`, `file_search`, `computer_use_preview`, `web_search`, `mcp`, `code_interpreter`, `image_generation`, `local_shell`, `custom`, `web_search_preview`)
+- Unsupported tool types are silently filtered (only these are supported: `function`, `file_search`, `computer_use_preview`, `web_search`, `mcp`, `code_interpreter`, `image_generation`, `local_shell`, `shell`, `programmatic_tool_calling`, `apply_patch`, `custom`, `web_search_preview`, `tool_search`, `namespace`)
 
 **Response:** Includes `id`, `status` (`completed`, `incomplete`, `pending`, `error`), `output` array with message content, and token `usage`.
 
@@ -208,6 +209,7 @@ This conversion ensures compatibility across different model architectures for t
 | Image generation | `response.image_generation_call.in_progress`, `response.image_generation_call.generating`, `response.image_generation_call.partial_image`, `response.image_generation_call.completed` |
 | MCP | `response.mcp_call_arguments.delta`, `response.mcp_call_arguments.done`, `response.mcp_call.in_progress`, `response.mcp_call.completed`, `response.mcp_call.failed`, `response.mcp_list_tools.in_progress`, `response.mcp_list_tools.completed`, `response.mcp_list_tools.failed` |
 | Code interpreter | `response.code_interpreter_call.in_progress`, `response.code_interpreter_call.interpreting`, `response.code_interpreter_call.completed`, `response.code_interpreter_call_code.delta`, `response.code_interpreter_call_code.done` |
+| Shell | `response.shell_call_command.added`, `response.shell_call_command.delta`, `response.shell_call_command.done`, `response.shell_call_output_content.delta`, `response.shell_call_output_content.done` |
 | Keepalive & errors | `response.ping` (sent by few providers, e.g. Anthropic), `error` |
 
 ## Response Lifecycle
@@ -640,6 +642,45 @@ Compresses a conversation into an opaque encrypted item that can be reused in fu
 | `fallbacks` | array | ❌ | Bifrost fallback model list. |
 
 **Endpoint**: `POST /v1/responses/compact`
+
+---
+
+# 15. Decisions
+
+Decision models such as `gpt-6-luna` are served on OpenAI's native `POST /v1/decisions`. Send them a request on Bifrost's [`/v1/decisions`](/quickstart/gateway/decisions) like any other decision model:
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai/gpt-6-luna",
+    "input": "Customer message: I was double charged and nobody replied.",
+    "questions": [
+      { "type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?" },
+      { "type": "choice", "name": "category", "instructions": "Pick the ticket category",
+        "choices": [ { "value": "billing" }, { "value": "bug" }, { "value": "other" } ] }
+    ]
+  }'
+```
+
+A model is sent to the decisions endpoint when the model datasheet marks it `supports_decisions`, so a newly released decisions model needs only a datasheet entry. Without the datasheet, the `gpt-6-luna` family is recognized by name. Any other OpenAI model answers decision requests through structured output on its chat API instead.
+
+OpenAI takes text where `/v1/decisions` also carries TypeSafe's structured values, so these are converted before the request is sent, the same way they are rendered for a chat model:
+
+| Request detail | Sent to OpenAI as |
+|----------------|-------------------|
+| Structured `input` (an object) | its JSON as text |
+| Structured `instructions` or choice and level `description` | its JSON as text |
+| A predicate's `criteria` | appended to the question's instructions |
+| A level without a `label` | labelled by its index (`"0"`, `"1"`, ...) |
+
+A request whose `input` is `null` is rejected with a `400` for the OpenAI attempt, since OpenAI requires one; a configured fallback can still serve it, and if every fallback fails too, the response carries the first attempt's error. A request with no `input` key at all is rejected before any provider is tried.
+
+Input messages are sent unchanged, including `input_image` parts with their `detail`: OpenAI's decision models read images, unlike TypeSafe-based models. A part of any other type is rejected with a `400`.
+
+OpenAI SDKs can call the same endpoint through Bifrost at `/openai/v1/decisions`, which takes OpenAI's request: a top-level `state`, and a field a question, choice, or level does not define (such as `criteria`), are rejected with a `400`, while other top-level fields a newer SDK sends are forwarded unchanged. See [OpenAI SDK](/integrations/openai-sdk/overview#decisions-api).
+
+**Endpoint**: `POST /v1/decisions`
 
 ---
 

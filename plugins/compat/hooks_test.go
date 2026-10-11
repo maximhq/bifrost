@@ -173,3 +173,81 @@ func TestPluginDroppedParamsClearedBetweenAttempts(t *testing.T) {
 		t.Errorf("dropped_compat_plugin_params = %v, want empty - the fallback attempt dropped nothing", got)
 	}
 }
+
+// TestReasoningWithToolsResponsesRouting covers routing chat requests to
+// Responses for models whose datasheet sets supports_reasoning_with_tool_calls false,
+// and the reasoning-off fallback when the toggle is off.
+func TestReasoningWithToolsResponsesRouting(t *testing.T) {
+	newPlugin := func(t *testing.T, enabled bool) *CompatPlugin {
+		t.Helper()
+		ds := datasheet.NewTestStore(nil)
+		ds.SetSupportedParamsForTest(map[string][]string{
+			"no-reasoning-with-tools": {"reasoning", "tools"},
+			"reasoning-with-tools":    {"reasoning", "tools", "reasoning_with_tool_calls"},
+		})
+		p, err := Init(Config{ShouldDropParams: true, ForceReasoningOnlyModelsToResponses: enabled}, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds))
+		if err != nil {
+			t.Fatalf("Init: %v", err)
+		}
+		return p
+	}
+	newChatRequest := func(model string, requestType schemas.RequestType, withTools bool) *schemas.BifrostRequest {
+		params := &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("high")}}
+		if withTools {
+			params.Tools = []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "lookup"}}}
+		}
+		return &schemas.BifrostRequest{
+			RequestType: requestType,
+			ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: model, Params: params},
+		}
+	}
+
+	tests := []struct {
+		name          string
+		enabled       bool
+		override      bool
+		model         string
+		requestType   schemas.RequestType
+		withTools     bool
+		wantConverted bool
+		wantReasoning bool
+	}{
+		{name: "flag false with tools", enabled: true, model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionRequest, withTools: true, wantConverted: true, wantReasoning: true},
+		{name: "flag false with tools stream", enabled: true, model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionStreamRequest, withTools: true, wantConverted: true, wantReasoning: true},
+		{name: "flag false without tools", enabled: true, model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionRequest, wantConverted: true, wantReasoning: true},
+		{name: "reasoning with tools supported", enabled: true, model: "reasoning-with-tools", requestType: schemas.ChatCompletionRequest, withTools: true, wantReasoning: true},
+		{name: "no datasheet entry", enabled: true, model: "unknown", requestType: schemas.ChatCompletionRequest, withTools: true, wantReasoning: true},
+		{name: "toggle off forces reasoning off", model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionRequest, withTools: true},
+		{name: "header override", override: true, model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionRequest, withTools: true, wantConverted: true, wantReasoning: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := newTestContext()
+			if tt.override {
+				ctx.SetValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses, true)
+			}
+			got, _, err := newPlugin(t, tt.enabled).PreLLMHook(ctx, newChatRequest(tt.model, tt.requestType, tt.withTools))
+			if err != nil {
+				t.Fatalf("PreLLMHook: %v", err)
+			}
+			changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
+			converted := ok && changeType == schemas.ResponsesRequest
+			if converted != tt.wantConverted {
+				t.Errorf("converted to responses = %v, want %v", converted, tt.wantConverted)
+			}
+			if hasReasoning := got.ChatRequest.Params.Reasoning != nil; hasReasoning != tt.wantReasoning {
+				t.Errorf("reasoning preserved = %v, want %v", hasReasoning, tt.wantReasoning)
+			}
+		})
+	}
+}
+
+func TestConfigForceReasoningOnlyModelsToResponsesDefaultsOn(t *testing.T) {
+	var c Config
+	if err := c.UnmarshalJSON([]byte(`{}`)); err != nil {
+		t.Fatalf("UnmarshalJSON: %v", err)
+	}
+	if !c.ForceReasoningOnlyModelsToResponses {
+		t.Error("force_reasoning_only_models_to_responses should default to true when absent")
+	}
+}

@@ -85,9 +85,10 @@ const (
 	// InputBypass means the operation is unsupported or explicitly belongs to a
 	// harness background workload. It neither classifies nor refreshes a session.
 	InputBypass InputDisposition = iota
-	// InputContinuation means a supported conversational request contains no new
-	// classifiable human text. It may reuse existing session state but cannot
-	// create or escalate it.
+	// InputContinuation means a supported conversational request is continuing an
+	// earlier turn. It may reuse existing session state; when that state is not
+	// available, LastUserText retains the recoverable task for a safe fallback
+	// classification.
 	InputContinuation
 	// InputClassifiable means the request contains human-authored text that may
 	// initialize or escalate a session tier.
@@ -122,11 +123,12 @@ func BuildInputWithDisposition(ctx *schemas.BifrostContext, req *schemas.Bifrost
 			return ComplexityInput{}, InputBypass
 		}
 		input, ok := extractFromChatMessages(req.ChatRequest.Input, harness)
+		input.Conversation = extractChatConversation(req.ChatRequest.Input, harness)
 		if !ok {
 			return ComplexityInput{}, InputContinuation
 		}
 		if chatHasTrailingContinuation(req.ChatRequest.Input, harness) {
-			return ComplexityInput{}, InputContinuation
+			return input, InputContinuation
 		}
 		return input, InputClassifiable
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
@@ -143,11 +145,12 @@ func BuildInputWithDisposition(ctx *schemas.BifrostContext, req *schemas.Bifrost
 			return ComplexityInput{}, InputBypass
 		}
 		input, ok := extractFromResponsesRequest(req.ResponsesRequest, harness)
+		input.Conversation = extractResponsesConversation(req.ResponsesRequest.Input, harness)
 		if !ok {
 			return ComplexityInput{}, InputContinuation
 		}
 		if responsesHasTrailingContinuation(req.ResponsesRequest.Input, harness) {
-			return ComplexityInput{}, InputContinuation
+			return input, InputContinuation
 		}
 		return input, InputClassifiable
 	default:
@@ -216,6 +219,30 @@ func responsesHasTrailingContinuation(messages []schemas.ResponsesMessage, harne
 	return false
 }
 
+// extractChatConversation keeps text-only user and assistant messages in request order.
+func extractChatConversation(messages []schemas.ChatMessage, harness complexityHarness) []ConversationMessage {
+	conversation := make([]ConversationMessage, 0, len(messages))
+	for _, message := range messages {
+		switch message.Role {
+		case schemas.ChatMessageRoleUser:
+			text, ok := extractChatTextOnly(message.Content)
+			if !ok {
+				continue
+			}
+			text, kind := sanitizeUserText(text, harness)
+			if kind == complexityTextHuman && strings.TrimSpace(text) != "" {
+				conversation = append(conversation, ConversationMessage{Role: "user", Content: text})
+			}
+		case schemas.ChatMessageRoleAssistant:
+			text, ok := extractChatTextOnly(message.Content)
+			if ok && strings.TrimSpace(text) != "" {
+				conversation = append(conversation, ConversationMessage{Role: "assistant", Content: text})
+			}
+		}
+	}
+	return conversation
+}
+
 // extractFromChatMessages builds a complexity input from chat messages by
 // preserving system/developer context and tracking only text-only user turns.
 func extractFromChatMessages(messages []schemas.ChatMessage, harness complexityHarness) (ComplexityInput, bool) {
@@ -234,7 +261,7 @@ func extractFromChatMessages(messages []schemas.ChatMessage, harness complexityH
 		case schemas.ChatMessageRoleUser:
 			text, ok := extractChatTextOnly(msg.Content)
 			if !ok {
-				return ComplexityInput{}, false
+				continue
 			}
 			text, kind := sanitizeUserText(text, harness)
 			switch kind {
@@ -301,6 +328,29 @@ func extractFromResponsesRequest(req *schemas.BifrostResponsesRequest, harness c
 		input.PriorUserTexts = userTexts[:len(userTexts)-1]
 	}
 	return input, true
+}
+
+// extractResponsesConversation keeps text-only user and assistant messages in request order.
+func extractResponsesConversation(messages []schemas.ResponsesMessage, harness complexityHarness) []ConversationMessage {
+	conversation := make([]ConversationMessage, 0, len(messages))
+	for _, message := range messages {
+		if message.Role == nil {
+			continue
+		}
+		switch *message.Role {
+		case schemas.ResponsesInputMessageRoleUser:
+			text, kind, hasText := classifyResponsesUserContent(message.Content, harness)
+			if hasText && kind == complexityTextHuman && strings.TrimSpace(text) != "" {
+				conversation = append(conversation, ConversationMessage{Role: "user", Content: text})
+			}
+		case schemas.ResponsesInputMessageRoleAssistant:
+			text, ok := extractResponsesTextOnly(message.Content)
+			if ok && strings.TrimSpace(text) != "" {
+				conversation = append(conversation, ConversationMessage{Role: "assistant", Content: text})
+			}
+		}
+	}
+	return conversation
 }
 
 // collectResponsesInputText gathers system context and human user text without
@@ -455,6 +505,7 @@ func isResponsesInputTextBlock(block schemas.ResponsesMessageContentBlock) bool 
 		block.Type == schemas.ResponsesOutputMessageContentTypeText
 }
 
+// detectComplexityHarness identifies the client harness from request context.
 func detectComplexityHarness(ctx *schemas.BifrostContext) complexityHarness {
 	if ctx == nil {
 		return complexityHarnessUnknown
@@ -476,6 +527,7 @@ func detectComplexityHarness(ctx *schemas.BifrostContext) complexityHarness {
 	}
 }
 
+// isCodexBackgroundRequest reports whether the request is Codex background work.
 func isCodexBackgroundRequest(ctx *schemas.BifrostContext) bool {
 	metadata, ok := parseCodexTurnMetadata(ctx)
 	if !ok {
@@ -523,6 +575,7 @@ func parseCodexTurnMetadata(ctx *schemas.BifrostContext) (codexTurnMetadata, boo
 	return metadata, true
 }
 
+// sanitizeUserText removes recognized harness metadata and classifies the remaining user text.
 func sanitizeUserText(text string, harness complexityHarness) (string, complexityTextKind) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -554,6 +607,7 @@ func isClaudeCodeHousekeepingText(text string) bool {
 	return strings.HasPrefix(text, claudeResumeRecapPrefix)
 }
 
+// sanitizeSystemText removes recognized harness metadata from system text.
 func sanitizeSystemText(text string, harness complexityHarness) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -571,6 +625,7 @@ func sanitizeSystemText(text string, harness complexityHarness) string {
 	return strings.TrimSpace(text)
 }
 
+// classifySanitizedText assigns a kind to text after harness metadata is removed.
 func classifySanitizedText(text string, removedContext, removedHousekeeping bool) (string, complexityTextKind) {
 	text = strings.TrimSpace(text)
 	if text != "" {
@@ -585,6 +640,7 @@ func classifySanitizedText(text string, removedContext, removedHousekeeping bool
 	return "", complexityTextInvalid
 }
 
+// stripComplexityTags removes complete configured tags while preserving adjacent words.
 func stripComplexityTags(text string, tags []complexityTagPair) (string, bool) {
 	removedAny := false
 	for _, tag := range tags {
@@ -633,11 +689,13 @@ func stripComplexityTags(text string, tags []complexityTagPair) (string, bool) {
 	return strings.TrimSpace(text), removedAny
 }
 
+// startsWithSpace reports whether a string starts with a Unicode whitespace rune.
 func startsWithSpace(s string) bool {
 	r, _ := utf8.DecodeRuneInString(s)
 	return unicode.IsSpace(r)
 }
 
+// endsWithSpace reports whether a string ends with a Unicode whitespace rune.
 func endsWithSpace(s string) bool {
 	r, _ := utf8.DecodeLastRuneInString(s)
 	return unicode.IsSpace(r)

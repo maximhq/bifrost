@@ -594,3 +594,241 @@ func TestIsAIPResourceID(t *testing.T) {
 		}
 	}
 }
+
+// Nothing is published for bedrock_apis on the runtime row yet, so family
+// detection is what actually gates the OpenAI-compatible Responses surface
+// today. AWS 404s every other family there.
+func TestRuntimeServesResponsesFamilyFallback(t *testing.T) {
+	optedIn := schemas.Key{UseOpenAIEndpoints: schemas.Ptr(true)}
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"us.openai.gpt-5.6-terra", true},
+		{"global.openai.gpt-5.6-luna", true},
+		{"global.xai.grok-4.6", true},
+		{"us.anthropic.claude-sonnet-4-6", false},
+		{"us.deepseek.r1-v1:0", false},
+		{"amazon.nova-pro-v1:0", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			ctx := surfaceTestCtx()
+			surface := resolveBedrockSurface(ctx, optedIn, tc.model)
+			if got := runtimeServesOpenAIAPI(ctx, optedIn, surface, tc.model, schemas.BedrockAPIResponses); got != tc.want {
+				t.Errorf("runtimeServesOpenAIAPI(%q) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+// A published runtime row is authoritative in both directions: it can divert a
+// model family detection would not, and hold back one it would.
+func TestRuntimeServesResponsesDatasheetWinsOverFamily(t *testing.T) {
+	optedIn := schemas.Key{UseOpenAIEndpoints: schemas.Ptr(true)}
+	installCaps(t, map[schemas.ModelProvider]map[string][]schemas.BedrockAPI{
+		schemas.Bedrock: {
+			// Converse-only despite being OpenAI family.
+			"us.openai.gpt-5.6-terra": {schemas.BedrockAPIConverse},
+			// Serves Responses despite not being a family we would divert.
+			"us.anthropic.claude-sonnet-4-6": {schemas.BedrockAPIConverse, schemas.BedrockAPIResponses},
+		},
+	})
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"us.openai.gpt-5.6-terra", false},
+		{"us.anthropic.claude-sonnet-4-6", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			ctx := surfaceTestCtx()
+			surface := resolveBedrockSurface(ctx, optedIn, tc.model)
+			if got := runtimeServesOpenAIAPI(ctx, optedIn, surface, tc.model, schemas.BedrockAPIResponses); got != tc.want {
+				t.Errorf("runtimeServesOpenAIAPI(%q) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+// An application inference profile is Converse-only. The wire id carries no
+// family, so without the guard the alias chain would resolve it to an OpenAI
+// name and divert a request AWS cannot serve.
+func TestRuntimeServesResponsesNeverDivertsApplicationProfile(t *testing.T) {
+	optedIn := keyWithARN(appProfileARN)
+	optedIn.UseOpenAIEndpoints = schemas.Ptr(true)
+	ctx := withAlias("my-gpt", "3dnkdwuaalc7", appProfileARN)
+	name := "gpt-5.6-luna"
+	schemas.GetResolvedAlias(ctx).Config.ModelName = &name
+
+	surface := resolveBedrockSurface(ctx, optedIn, "3dnkdwuaalc7")
+	if surface.reason != reasonApplicationProfile {
+		t.Fatalf("precondition: reason = %q, want %q", surface.reason, reasonApplicationProfile)
+	}
+	if runtimeServesOpenAIAPI(ctx, optedIn, surface, "3dnkdwuaalc7", schemas.BedrockAPIResponses) {
+		t.Error("an application inference profile must stay on Converse")
+	}
+}
+
+// Mantle has its own Responses path; the runtime surface must never claim it.
+func TestRuntimeServesResponsesIgnoresMantleSurface(t *testing.T) {
+	optedIn := schemas.Key{UseOpenAIEndpoints: schemas.Ptr(true)}
+	ctx := surfaceTestCtx()
+	surface := resolveBedrockSurface(ctx, optedIn, "openai.gpt-5.6-terra")
+	if !surface.isMantle() {
+		t.Fatalf("precondition: bare id should route to mantle, got %q", surface.host)
+	}
+	if runtimeServesOpenAIAPI(ctx, optedIn, surface, "openai.gpt-5.6-terra", schemas.BedrockAPIResponses) {
+		t.Error("a mantle-bound request must not divert to the runtime surface")
+	}
+}
+
+// The gate reads the canonical name, so an alias whose wire id carries no family
+// still diverts.
+func TestRuntimeServesResponsesResolvesAliasedModel(t *testing.T) {
+	optedIn := schemas.Key{UseOpenAIEndpoints: schemas.Ptr(true)}
+	ctx := withAlias("my-gpt", "us.openai.gpt-5.6-terra", "")
+	name := "gpt-5.6-terra"
+	schemas.GetResolvedAlias(ctx).Config.ModelName = &name
+
+	surface := resolveBedrockSurface(ctx, optedIn, "us.openai.gpt-5.6-terra")
+	if !runtimeServesOpenAIAPI(ctx, optedIn, surface, "us.openai.gpt-5.6-terra", schemas.BedrockAPIResponses) {
+		t.Error("aliased OpenAI model must divert to the runtime Responses surface")
+	}
+}
+
+func TestRuntimeOpenAIURL(t *testing.T) {
+	if got := runtimeOpenAIURL(nil, "us-east-1", "responses"); got != "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/responses" {
+		t.Errorf("runtimeOpenAIURL = %q", got)
+	}
+}
+
+// Opt-in, two states, mirroring use_anthropic_endpoints: off keeps everything on
+// Converse, on moves both request types to the OpenAI-compatible surface.
+func TestUseOpenAIEndpointsFlag(t *testing.T) {
+	const model = "us.openai.gpt-5.6-terra"
+	cases := []struct {
+		name string
+		flag *bool
+		want bool
+	}{
+		{"unset", nil, false},
+		{"false", schemas.Ptr(false), false},
+		{"true", schemas.Ptr(true), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := surfaceTestCtx()
+			key := schemas.Key{UseOpenAIEndpoints: tc.flag}
+			surface := resolveBedrockSurface(ctx, key, model)
+			for _, api := range []schemas.BedrockAPI{schemas.BedrockAPIResponses, schemas.BedrockAPIChatCompletions} {
+				if got := runtimeServesOpenAIAPI(ctx, key, surface, model, api); got != tc.want {
+					t.Errorf("%s = %v, want %v", api, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// Namespace tools are an OpenAI Responses wire feature. Only the Mantle
+// OpenAI-compatible surface understands them; Converse and the native Anthropic
+// Messages surface (Claude on Mantle) do not, so core flattens for those.
+func TestSupportsResponsesNamespaceTools(t *testing.T) {
+	provider := &BedrockProvider{}
+	cases := []struct {
+		name  string
+		ctx   *schemas.BifrostContext
+		key   schemas.Key
+		model string
+		want  bool
+	}{
+		{"mantle gpt", surfaceTestCtx(), schemas.Key{}, "openai.gpt-5.6-luna", true},
+		{"claude on runtime", surfaceTestCtx(), schemas.Key{}, "anthropic.claude-opus-5", false},
+		{"cross-region gpt pins runtime", surfaceTestCtx(), schemas.Key{}, "global.openai.gpt-5.6-luna", false},
+		{"application profile pins runtime", withAlias("gpt-model", "3dnkdwuaalc7", appProfileARN), schemas.Key{}, "3dnkdwuaalc7", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := provider.SupportsResponsesNamespaceTools(tc.ctx, tc.key, tc.model); got != tc.want {
+				t.Fatalf("SupportsResponsesNamespaceTools(%q) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+// An alias-level value wins over the key, matching use_anthropic_endpoints.
+func TestUseOpenAIEndpointsAliasOverridesKey(t *testing.T) {
+	const model = "us.openai.gpt-5.6-terra"
+	ctx := withAlias("my-gpt", model, "")
+	schemas.GetResolvedAlias(ctx).Config.UseOpenAIEndpoints = schemas.Ptr(false)
+
+	key := schemas.Key{UseOpenAIEndpoints: schemas.Ptr(true)}
+	surface := resolveBedrockSurface(ctx, key, model)
+	if runtimeServesOpenAIAPI(ctx, key, surface, model, schemas.BedrockAPIResponses) {
+		t.Error("alias false must override key true")
+	}
+}
+
+// Opting in cannot force a surface the model does not serve: AWS 404s Claude there.
+func TestUseOpenAIEndpointsCannotForceUnsupportedModel(t *testing.T) {
+	const model = "us.anthropic.claude-sonnet-4-6"
+	key := schemas.Key{UseOpenAIEndpoints: schemas.Ptr(true)}
+	ctx := surfaceTestCtx()
+	surface := resolveBedrockSurface(ctx, key, model)
+	if runtimeServesOpenAIAPI(ctx, key, surface, model, schemas.BedrockAPIResponses) {
+		t.Error("claude must stay on converse even when opted in")
+	}
+}
+
+// Nor can it override the application-inference-profile guard.
+func TestUseOpenAIEndpointsCannotForceApplicationProfile(t *testing.T) {
+	ctx := withAlias("my-gpt", "3dnkdwuaalc7", appProfileARN)
+	name := "gpt-5.6-luna"
+	schemas.GetResolvedAlias(ctx).Config.ModelName = &name
+
+	key := keyWithARN(appProfileARN)
+	key.UseOpenAIEndpoints = schemas.Ptr(true)
+	surface := resolveBedrockSurface(ctx, key, "3dnkdwuaalc7")
+	if runtimeServesOpenAIAPI(ctx, key, surface, "3dnkdwuaalc7", schemas.BedrockAPIResponses) {
+		t.Error("an application inference profile must stay on Converse even when opted in")
+	}
+}
+
+// The surface decides what the wire can structurally carry, and a datasheet row may
+// only narrow within that: on Mantle's OpenAI-compatible path a bedrock_mantle row can
+// switch namespace support off, but no row can switch it on for Converse or for the
+// Anthropic Messages surface Claude takes on Mantle, because those wires have no
+// namespace container to send. A bedrock row saying "supported" must therefore be
+// ignored on a Converse-routed attempt (CodeRabbit on #7082).
+func TestSupportsResponsesNamespaceToolsDatasheetRow(t *testing.T) {
+	rows := map[schemas.ModelProvider]map[string]*bool{
+		schemas.BedrockMantle: {
+			"openai.gpt-5.6-luna":     new(false), // narrows the Mantle default of true
+			"anthropic.claude-opus-5": new(true),  // must not widen the Anthropic Messages surface
+		},
+		schemas.Bedrock: {
+			"anthropic.claude-opus-5": new(true), // must not widen Converse
+		},
+	}
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		supported, ok := rows[provider][model]
+		if !ok {
+			return nil
+		}
+		return &schemas.ModelCapabilities{SupportsNamespaceTools: supported}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	provider := &BedrockProvider{}
+
+	if provider.SupportsResponsesNamespaceTools(surfaceTestCtx(), schemas.Key{}, "openai.gpt-5.6-luna") {
+		t.Error("a bedrock_mantle row saying unsupported must narrow the Mantle default")
+	}
+	if provider.SupportsResponsesNamespaceTools(surfaceTestCtx(), schemas.Key{}, "anthropic.claude-opus-5") {
+		t.Error("a bedrock row saying supported must not send namespace containers to Converse")
+	}
+	// Cross-region id pins Converse; neither row applies.
+	if provider.SupportsResponsesNamespaceTools(surfaceTestCtx(), schemas.Key{}, "global.openai.gpt-5.6-luna") {
+		t.Error("a Converse-routed attempt must answer false regardless of rows")
+	}
+}

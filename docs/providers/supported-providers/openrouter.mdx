@@ -24,6 +24,7 @@ OpenRouter is an **OpenAI-compatible provider routing service** that accesses mo
 | Embeddings | ✅ | - | `/v1/embeddings` |
 | Speech (TTS) | ✅ | ❌ | `/v1/audio/speech` |
 | Transcriptions (STT) | ✅ | ❌ | `/v1/audio/transcriptions` |
+| Decisions | ✅ | - | `/v1/decisions` |
 | Image Generation | ❌ | ❌ | - |
 | Files | ❌ | ❌ | - |
 | Batch | ❌ | ❌ | - |
@@ -288,6 +289,27 @@ OpenRouter exposes OpenAI-compatible audio endpoints, so Bifrost routes Speech a
 | `language` | Optional ISO-639-1 code for Transcription; auto-detected if omitted |
 
 Streaming Speech and Transcription are not supported by the upstream OpenRouter API and return a `BifrostError` with `"unsupported_operation"`.
+
+---
+
+## Decisions
+
+OpenRouter serves TypeSafe's jev family of System One judgment models on `/api/alpha/decisions`. Bifrost routes decision requests for these models there with your OpenRouter key, using the same request and answer conversion as the [TypeSafe provider](/providers/supported-providers/typesafe#decisions-api).
+
+| Parameter | Mapping |
+|-----------|---------|
+| `model` | System One model ID (e.g., `typesafe/jev-1.13`, `~typesafe/jev-latest`) |
+| `state` | Direct pass-through (string, object, or array) |
+| `questions` | `kind` maps to native `type`; criteria pass through unchanged |
+
+| Bifrost field | Built from native | Notes |
+|---------------|-------------------|-------|
+| `id` | `id` | OpenRouter generation ID |
+| `model` | `model` | Resolved upstream model (e.g., `typesafe/jev-1.13-20260917`) |
+| `usage.prompt_tokens` / `usage.completion_tokens` | `usage.input_tokens` / `usage.output_tokens` | |
+| `usage.cost.total_cost` | `usage.cost` | Billed amount in USD, used as-is for logging and budgets |
+
+Any other model on `/v1/decisions` returns `unsupported_operation` from the provider, so Bifrost emulates the decision through the model's tool calling. OpenRouter's `/v1/models` does not list the jev models, so Bifrost adds them to the model list.
 
 ---
 

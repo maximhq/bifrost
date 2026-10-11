@@ -30,6 +30,9 @@ func InferPluginTypes(plugin schemas.BasePlugin) []schemas.PluginType {
 	if _, ok := plugin.(schemas.MCPPlugin); ok {
 		types = append(types, schemas.PluginTypeMCP)
 	}
+	if _, ok := plugin.(schemas.A2APlugin); ok {
+		types = append(types, schemas.PluginTypeA2A)
+	}
 	if _, ok := plugin.(schemas.HTTPTransportPlugin); ok {
 		types = append(types, schemas.PluginTypeHTTP)
 	}
@@ -50,13 +53,36 @@ func InstantiatePlugin(ctx context.Context, name string, path *string, pluginCon
 	return loadBuiltinPlugin(ctx, name, pluginConfig, bifrostConfig)
 }
 
+// mergeCustomLabels unions the two sources of extra Prometheus label names, preserving
+// order and dropping duplicates. Both client_config.prometheus_labels and the telemetry
+// plugin's custom_labels name extra labels, so setting one must not silently drop the
+// other; only the client list used to be read, and custom_labels was accepted and
+// ignored. The result is freshly allocated so neither input's spare capacity is written.
+func mergeCustomLabels(clientLabels, pluginLabels []string) []string {
+	if len(clientLabels) == 0 && len(pluginLabels) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(clientLabels)+len(pluginLabels))
+	seen := make(map[string]struct{}, len(clientLabels)+len(pluginLabels))
+	for _, label := range append(append([]string(nil), clientLabels...), pluginLabels...) {
+		if label == "" {
+			continue
+		}
+		if _, dup := seen[label]; dup {
+			continue
+		}
+		seen[label] = struct{}{}
+		out = append(out, label)
+	}
+	return out
+}
+
 // loadBuiltinPlugin instantiates a built-in plugin by name
 func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifrostConfig *lib.Config) (schemas.BasePlugin, error) {
 	switch name {
 	case telemetry.PluginName:
-		telConfig := &telemetry.Config{
-			CustomLabels: bifrostConfig.ClientConfig.PrometheusLabels,
-		}
+		telConfig := &telemetry.Config{}
+		var pluginCustomLabels []string
 		// Merge persisted config if provided.
 		if pluginConfig != nil {
 			extraConfig, err := MarshalPluginConfig[telemetry.Config](pluginConfig)
@@ -73,8 +99,13 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 				if extraConfig.OverheadBreakdownEnabled != nil {
 					telConfig.OverheadBreakdownEnabled = extraConfig.OverheadBreakdownEnabled
 				}
+				if extraConfig.UserLabelsEnabled != nil {
+					telConfig.UserLabelsEnabled = extraConfig.UserLabelsEnabled
+				}
+				pluginCustomLabels = extraConfig.CustomLabels
 			}
 		}
+		telConfig.CustomLabels = mergeCustomLabels(bifrostConfig.ClientConfig.PrometheusLabels, pluginCustomLabels)
 		return telemetry.Init(telConfig, bifrostConfig.ModelCatalog, logger)
 
 	case prompts.PluginName:
@@ -98,9 +129,14 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			return nil, fmt.Errorf("failed to marshal governance plugin config: %w", err)
 		}
 		inMemoryStore := &GovernanceInMemoryStore{Config: bifrostConfig}
-		return governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore,
+		governancePlugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore,
 			bifrostConfig.GovernanceConfig, bifrostConfig.ModelCatalog,
 			bifrostConfig.MCPCatalog, inMemoryStore)
+		if err != nil {
+			return nil, err
+		}
+		governancePlugin.StartResetWorkers(ctx)
+		return governancePlugin, nil
 
 	case routing.PluginName:
 		routingConfig, err := MarshalPluginConfig[routing.Config](pluginConfig)
@@ -284,11 +320,12 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	// 8. Compat (if any compat feature is enabled in ClientConfig)
 	cc := s.Config.ClientConfig.Compat
 	compatCfg := &compat.Config{
-		ConvertTextToChat:      cc.ConvertTextToChat,
-		ConvertChatToResponses: cc.ConvertChatToResponses,
-		ShouldDropParams:       cc.ShouldDropParams,
-		ShouldConvertParams:    cc.ShouldConvertParams,
-		AzureDeepseek:          cc.AzureDeepseek,
+		ConvertTextToChat:                   cc.ConvertTextToChat,
+		ConvertChatToResponses:              cc.ConvertChatToResponses,
+		ShouldDropParams:                    cc.ShouldDropParams,
+		ShouldConvertParams:                 cc.ShouldConvertParams,
+		AzureDeepseek:                       cc.AzureDeepseek,
+		ForceReasoningOnlyModelsToResponses: cc.ForceReasoningOnlyModelsToResponses,
 	}
 	s.registerPluginWithStatus(ctx, compat.PluginName, nil, compatCfg, false)
 	s.Config.SetPluginOrderInfo(compat.PluginName, builtinPlacement, schemas.Ptr(8))

@@ -23,6 +23,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyDirectKey:               {},
 	BifrostContextKeyRequestID:               {},
 	BifrostContextKeyFallbackRequestID:       {},
+	BifrostContextKeyBillingNonce:            {},
 	BifrostContextKeySelectedKeyID:           {},
 	BifrostContextKeySelectedKeyName:         {},
 	BifrostContextKeyNumberOfRetries:         {},
@@ -32,14 +33,21 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeySkipBudgetAndRateLimits: {},
 	BifrostContextKeySkipProviderCheck:       {},
 	BifrostContextKeySkipModelCheck:          {},
+	BifrostContextKeyAdmitUngrantedUser:      {},
 	BifrostContextKeyURLPath:                 {},
 	BifrostContextKeyDeferTraceCompletion:    {},
 	BifrostContextKeyAttemptTrail:            {},
 	BifrostContextKeyStreamGated:             {},
+	BifrostContextKeyStreamAttemptAbort:      {},
 	BifrostContextKeyMCPHealthCheckRequest:   {},
+	BifrostContextKeyMCPUnattendedExecution:  {},
+	BifrostContextKeyInjectedToolsExecuted:   {},
 	BifrostContextKeyUpstreamLatency:         {},
 	BifrostContextKeyStreamOverhead:          {},
 	BifrostContextKeyRoutingInfo:             {},
+	BifrostContextKeyRequestedProvider:       {},
+	BifrostContextKeyRequestedModel:          {},
+	BifrostContextKeyProviderProxyConfig:     {},
 	BifrostContextKeyMCPInboundBearer:        {},
 }
 
@@ -82,6 +90,7 @@ type BifrostContext struct {
 	err                   error
 	errMu                 sync.RWMutex
 	userValues            map[any]any
+	trustedValues         map[any]any // read only by a holder of the key; see SetTrustedValue
 	valuesMu              sync.RWMutex
 	blockRestrictedWrites atomic.Bool
 	grant                 atomic.Pointer[Grant] // what the request has been granted; installed by the transport, root contexts only
@@ -516,6 +525,11 @@ func (bc *BifrostContext) SetRoutingInfoSnapshot(ri RoutingInfo) {
 	bc.setReservedValue(BifrostContextKeyRoutingInfo, ri)
 }
 
+// SetFallbackPinnedAPIKeyID pins a fallback's provider key, bypassing the restricted-writes guard (set by core - DO NOT SET THIS MANUALLY).
+func (bc *BifrostContext) SetFallbackPinnedAPIKeyID(keyID string) {
+	bc.setReservedValue(BifrostContextKeyAPIKeyID, keyID)
+}
+
 // ClearValue clears a value from the internal userValues map.
 // For scoped contexts, delegates to the root context via valueDelegate.
 func (bc *BifrostContext) ClearValue(key any) {
@@ -577,6 +591,42 @@ func (bc *BifrostContext) GetUserValues() map[any]any {
 	bc.valuesMu.RUnlock()
 
 	return result
+}
+
+// SetTrustedValue stores value under key in a store that Value, GetUserValues and
+// GetParentCtxWithUserValues never expose. Only a caller that already holds key can
+// read it back with TrustedValue, so a key of an unexported type is a capability: code
+// that cannot name the type can neither read nor write that slot, nor copy it out.
+// Scoped contexts write through to their root, as SetValue does.
+func (bc *BifrostContext) SetTrustedValue(key, value any) {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.SetTrustedValue(key, value)
+		return
+	}
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	if bc.trustedValues == nil {
+		bc.trustedValues = make(map[any]any)
+	}
+	bc.trustedValues[key] = value
+}
+
+// TrustedValue returns the value SetTrustedValue stored under key on this context or a
+// BifrostContext ancestor, or nil. Plain context.Context parents cannot hold one.
+func (bc *BifrostContext) TrustedValue(key any) any {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.TrustedValue(key)
+	}
+	bc.valuesMu.RLock()
+	val, ok := bc.trustedValues[key]
+	bc.valuesMu.RUnlock()
+	if ok {
+		return val
+	}
+	if parent, isBifrost := bc.parent.(*BifrostContext); isBifrost {
+		return parent.TrustedValue(key)
+	}
+	return nil
 }
 
 // GetParentCtxWithUserValues returns a copy of the parent context with all user-set values merged in.
@@ -798,6 +848,38 @@ func (bc *BifrostContext) CalculateCost(resp *BifrostResponse) float64 {
 		return 0
 	}
 	return catalog.CalculateRequestCost(bc, resp)
+}
+
+// CalculateCostBreakdown returns the per-category cost breakdown of a
+// completed response. It is the same computation as CalculateCost, so
+// TotalCost always equals what CalculateCost returns for the same response;
+// the difference is that the input, output and additional sides come back
+// split by category instead of collapsed into one number:
+//
+//   - InputCostDetails: TextCost, AudioCost, ImageCost, CachedReadCost,
+//     CachedWriteCost, RequestCost (flat per-request surcharge)
+//   - OutputCostDetails: TextCost, AudioCost, ImageCost, ReasoningCost,
+//     CitationCost, SearchQueriesCost
+//   - AdditionalCostDetails: GuardrailCost, MCPCost, SemanticCacheCost,
+//     RoutingCost (internal sidecar calls with no token category)
+//
+// The full pricing resolution applies exactly as in CalculateCost: long-context
+// tiers, batch/priority/flex/fast rates, cache read/write rates, the provider
+// and request-mode fallback chain, and any pricing overrides in effect.
+//
+// Returns nil when no catalog is wired or the response has no billable usage.
+// The returned value is a fresh copy owned by the caller; mutating it never
+// touches the response.
+//
+// PLUGIN AUTHORS: call this synchronously inside your hook, for the same reason
+// as CalculateCost. If you need the breakdown in a background goroutine, compute
+// it in the hook and close over the pointer.
+func (bc *BifrostContext) CalculateCostBreakdown(resp *BifrostResponse) *BifrostCost {
+	catalog, _ := bc.Value(BifrostContextKeyModelCatalog).(ModelInfoProvider)
+	if catalog == nil || resp == nil {
+		return nil
+	}
+	return catalog.CalculateRequestCostBreakdown(bc, resp)
 }
 
 // AppendRoutingEngineLog appends a routing engine log entry to the context.

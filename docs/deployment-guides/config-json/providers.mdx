@@ -50,13 +50,13 @@ Per-provider `network_config` options (applies to all standard providers):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `default_request_timeout_in_seconds` | integer | Per-request timeout |
+| `default_request_timeout_in_seconds` | integer | Per-request timeout. For streaming requests it bounds the connection, request write and wait for response headers; the body is governed by `stream_idle_timeout_in_seconds` |
 | `max_retries` | integer | Retry attempts on transient errors |
 | `retry_backoff_initial` | integer | Initial backoff in milliseconds |
 | `retry_backoff_max` | integer | Maximum backoff in milliseconds |
 | `max_conns_per_host` | integer | Max TCP connections to the provider endpoint (default: 5000) |
 | `extra_headers` | object | Static headers added to every provider request |
-| `stream_idle_timeout_in_seconds` | integer | Idle timeout per stream chunk (default: 60) |
+| `stream_idle_timeout_in_seconds` | integer | Idle timeout per stream chunk (default: 120) |
 | `insecure_skip_verify` | boolean | Disable TLS verification (last resort only) |
 | `ca_cert_pem` | string | PEM-encoded CA for self-signed or private CA endpoints |
 
@@ -531,7 +531,7 @@ Set the top-level `value` to a Bedrock Mantle API key and leave the SigV4 creden
 
 ### Google Vertex AI
 
-Vertex requires `vertex_key_config` with `project_id` and `region`. Two auth modes:
+Vertex requires `vertex_key_config` with `project_id` and `region`. Three auth modes:
 
 <Tabs>
 <Tab title="Service Account Key">
@@ -585,6 +585,38 @@ When `auth_credentials` is omitted, Bifrost calls `google.FindDefaultCredentials
   }
 }
 ```
+
+</Tab>
+<Tab title="AWS Workload Identity (EKS)">
+
+When Bifrost runs on AWS, `aws_workload_identity` federates the workload's IAM role (EKS IRSA / Pod Identity, ECS task role, EC2 instance profile) into a GCP token through a Workload Identity Pool AWS provider. No service account key and no AWS access key are stored. See [AWS Workload Identity Federation](/providers/supported-providers/vertex#aws-workload-identity-federation) for the GCP and AWS setup.
+
+```json
+{
+  "providers": {
+    "vertex": {
+      "keys": [
+        {
+          "name": "vertex-eks",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "vertex_key_config": {
+            "project_id": "my-gcp-project",
+            "region": "us-central1",
+            "aws_workload_identity": {
+              "audience": "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/eks-pool/providers/aws",
+              "service_account_email": "bifrost-vertex@my-gcp-project.iam.gserviceaccount.com"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+Omit `service_account_email` to call Vertex AI as the federated principal directly. `aws_region` and `aws_role_arn` are optional overrides.
 
 </Tab>
 </Tabs>

@@ -25,6 +25,8 @@ func TestMatchRedirectURI(t *testing.T) {
 		{"loopback scheme must still match", "https://127.0.0.1:5/cb", []string{"http://127.0.0.1:1/cb"}, false},
 		{"malformed candidate", "://bad", []string{"https://app.example/cb"}, false},
 		{"no registered uris", "https://app.example/cb", nil, false},
+		{"loopback query must match", "http://localhost:1234/cb?next=other", []string{"http://localhost:4321/cb?next=original"}, false},
+		{"fragment is rejected", "http://localhost:1234/cb#tail", []string{"http://localhost:4321/cb#tail"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -40,16 +42,33 @@ func TestOAuth2IssuerURL(t *testing.T) {
 		assert.Equal(t, testIssuer, oauth2IssuerURL(&fasthttp.RequestCtx{}, cfg))
 	})
 
-	t.Run("falls back to the request host when issuer is unset", func(t *testing.T) {
+	t.Run("falls back to the request host only while discovery is disabled", func(t *testing.T) {
 		cfg := &lib.Config{
 			ConfigStore:  &mockOAuth2Store{},
-			ClientConfig: &configstore.ClientConfig{MCPServerAuthMode: configtables.MCPServerAuthModeBoth},
+			ClientConfig: &configstore.ClientConfig{MCPServerAuthMode: configtables.MCPServerAuthModeHeaders},
 		}
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Request.SetRequestURI("http://mcp.local:8080/oauth2/authorize")
 		ctx.Request.Header.SetHost("mcp.local:8080")
 		got := oauth2IssuerURL(ctx, cfg)
 		assert.Equal(t, "http://mcp.local:8080", got)
+	})
+
+	// Config validation makes issuer_url mandatory once discovery is on, so this
+	// state is unreachable through normal loading; the resolver must still never
+	// hand out a Host-derived issuer if it is ever reached.
+	t.Run("never derives the issuer from the request host when discovery is enabled", func(t *testing.T) {
+		for _, mode := range []configtables.MCPServerAuthMode{configtables.MCPServerAuthModeBoth, configtables.MCPServerAuthModeOAuth} {
+			cfg := &lib.Config{
+				ConfigStore:  &mockOAuth2Store{},
+				ClientConfig: &configstore.ClientConfig{MCPServerAuthMode: mode},
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI("http://evil.example/oauth2/authorize")
+			ctx.Request.Header.SetHost("evil.example")
+			got := oauth2IssuerURL(ctx, cfg)
+			assert.NotContains(t, got, "evil.example", string(mode))
+		}
 	})
 }
 

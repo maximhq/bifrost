@@ -3,7 +3,9 @@ package anthropic
 import (
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 func TestBillableAnthropicUsage_CompactionPlusMessage(t *testing.T) {
@@ -291,6 +293,21 @@ func TestAccumulateAnthropicResponsesUsage_StreamReplica(t *testing.T) {
 	if usage.OutputTokensDetails == nil || usage.OutputTokensDetails.ReasoningTokens != 50 {
 		t.Fatalf("ReasoningTokens = %v, want 50", usage.OutputTokensDetails)
 	}
+	if len(usage.Iterations) != 2 {
+		t.Fatalf("Iterations = %d, want 2 (compaction + message)", len(usage.Iterations))
+	}
+	if it := usage.Iterations[0]; it.Type == nil || *it.Type != AnthropicUsageIterationTypeCompaction || it.OutputTokens != 312 {
+		t.Fatalf("Iterations[0] = %+v, want compaction with 312 output tokens", it)
+	}
+	if it := usage.Iterations[1]; it.Type == nil || *it.Type != "message" || it.OutputTokens != 74 {
+		t.Fatalf("Iterations[1] = %+v, want message with 74 output tokens", it)
+	}
+
+	// A later usage event without iterations must not erase the breakdown.
+	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{OutputTokens: 74})
+	if len(usage.Iterations) != 2 {
+		t.Fatalf("Iterations after iteration-less event = %d, want 2", len(usage.Iterations))
+	}
 
 	normalizeCachedUsage(billed)
 	if billed.CompletionTokens != 386 {
@@ -324,4 +341,94 @@ func TestPassthroughStream_CompactionIterations(t *testing.T) {
 	if uncached != 106578 {
 		t.Fatalf("uncached prompt = %d, want 106578", uncached)
 	}
+}
+
+// A cache READ turn must surface cached_read_tokens, and therefore cached_tokens on
+// the wire. This is the streaming shape behind harness rows 63.4/63.6 (#6180), which
+// assert `usage.input_tokens_details.cached_tokens > 0` after a paired [write] warmed
+// the prefix.
+//
+// The distinction the test pins is the one that made those rows hard to read when they
+// failed: a cache WRITE and a cache READ both mean "caching engaged", but only a read
+// may appear as cached_tokens — MarshalJSON aliases cached_tokens to CachedReadTokens
+// alone, deliberately, so OpenAI-spec consumers never price a write as a read
+// (schemas/responses.go). So a stream reporting cache_creation_input_tokens and nothing
+// else must marshal cached_tokens 0, and that zero is a faithful report of an upstream
+// miss rather than a mapping bug. Nothing covered either half before; the only signal
+// was a live harness row, which cannot separate "Bifrost dropped the read" from "the
+// provider never had the prefix".
+func TestAccumulateAnthropicResponsesUsage_CacheReadSurfacesCachedTokens(t *testing.T) {
+	t.Parallel()
+
+	marshalDetails := func(t *testing.T, u *schemas.ResponsesResponseUsage) string {
+		t.Helper()
+		if u.InputTokensDetails == nil {
+			t.Fatalf("InputTokensDetails must be populated, got %+v", u)
+		}
+		data, err := sonic.Marshal(u.InputTokensDetails)
+		if err != nil {
+			t.Fatalf("marshal input_tokens_details: %v", err)
+		}
+		return string(data)
+	}
+
+	// Turn 1, the [write]: Anthropic bills the cold prefix as cache creation. Usage
+	// arrives on message_start, which is the only frame carrying it for a read turn.
+	t.Run("write turn reports no cached_tokens", func(t *testing.T) {
+		usage := &schemas.ResponsesResponseUsage{}
+		billed := &schemas.BifrostLLMUsage{}
+		accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{
+			InputTokens:              14,
+			CacheCreationInputTokens: 4759,
+			CacheCreation:            AnthropicUsageCacheCreation{Ephemeral5mInputTokens: 4759},
+		})
+		accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{OutputTokens: 5})
+
+		if got := usage.InputTokensDetails.CachedWriteTokens; got != 4759 {
+			t.Fatalf("CachedWriteTokens = %d, want 4759", got)
+		}
+		if got := usage.InputTokensDetails.CachedReadTokens; got != 0 {
+			t.Fatalf("CachedReadTokens = %d, want 0 - a write is not a read", got)
+		}
+		raw := marshalDetails(t, usage)
+		if got := gjson.Get(raw, "cached_tokens").Int(); got != 0 {
+			t.Errorf("cached_tokens = %d, want 0 on a write-only turn: %s", got, raw)
+		}
+		if got := gjson.Get(raw, "cache_write_tokens").Int(); got != 4759 {
+			t.Errorf("cache_write_tokens = %d, want 4759: %s", got, raw)
+		}
+	})
+
+	// Turn 2, the [read]: byte-identical request against a warm prefix. This is what
+	// 63.4/63.6 assert, and what a run that drops the paired [write] can never produce.
+	t.Run("read turn surfaces cached_tokens", func(t *testing.T) {
+		usage := &schemas.ResponsesResponseUsage{}
+		billed := &schemas.BifrostLLMUsage{}
+		accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{
+			InputTokens:          14,
+			CacheReadInputTokens: 4759,
+		})
+		accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{OutputTokens: 5})
+
+		if got := usage.InputTokensDetails.CachedReadTokens; got != 4759 {
+			t.Fatalf("CachedReadTokens = %d, want 4759", got)
+		}
+		if got := usage.InputTokensDetails.CachedWriteTokens; got != 0 {
+			t.Fatalf("CachedWriteTokens = %d, want 0 on a pure read turn", got)
+		}
+		raw := marshalDetails(t, usage)
+		if got := gjson.Get(raw, "cached_tokens").Int(); got != 4759 {
+			t.Errorf("cached_tokens = %d, want 4759 - this is the field harness 63.4/63.6 assert on: %s", got, raw)
+		}
+
+		// Billing folds the cached tokens into the top-level counters exactly once, so a
+		// read turn is billed for the whole prefix it read, not just the 14 fresh tokens.
+		normalizeCachedUsage(billed)
+		if billed.PromptTokensDetails == nil || billed.PromptTokensDetails.CachedReadTokens != 4759 {
+			t.Fatalf("billed CachedReadTokens = %+v, want 4759", billed.PromptTokensDetails)
+		}
+		if billed.PromptTokens != 4773 {
+			t.Errorf("billed PromptTokens = %d, want 4773 (14 fresh + 4759 read)", billed.PromptTokens)
+		}
+	})
 }

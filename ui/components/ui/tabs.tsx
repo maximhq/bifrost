@@ -127,6 +127,9 @@ function TabsList({ className, children, ...props }: React.ComponentProps<typeof
 					<DropdownMenuTrigger asChild>
 						<button
 							type="button"
+							// A tablist may only own tabs (aria-required-children), so the trigger is exposed as a tab that opens a menu.
+							role="tab"
+							aria-selected={false}
 							data-testid="tabs-overflow-trigger"
 							aria-label={`Show ${overflow.length} more ${overflow.length === 1 ? "tab" : "tabs"}`}
 							className="text-foreground hover:bg-background/60 focus-visible:ring-ring/50 flex h-[calc(100%-1px)] shrink-0 cursor-pointer items-center gap-0.5 rounded-sm border border-transparent px-2 text-sm font-medium focus-visible:ring-[3px] focus-visible:outline-1"

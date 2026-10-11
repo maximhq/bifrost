@@ -112,8 +112,7 @@ func TestGenerateEmbeddingRequestShape(t *testing.T) {
 	assert.Equal(t, schemas.ModelProvider("openai"), gotReq.Provider)
 	assert.Equal(t, "text-embedding-3-small", gotReq.Model)
 	require.NotNil(t, gotReq.Input)
-	require.NotNil(t, gotReq.Input.Text)
-	assert.Equal(t, "classify me", *gotReq.Input.Text)
+	assert.Equal(t, []string{"classify me"}, embeddingRequestTexts(gotReq.Input))
 
 	// The internal request must skip the plugin pipeline (anti-recursion) and
 	// carry the configured hard timeout, not the caller's deadline.
@@ -130,8 +129,7 @@ func TestGenerateEmbeddingsBatchesAndRestoresInputOrder(t *testing.T) {
 	plugin := &RoutingPlugin{}
 	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		require.NotNil(t, req.Input)
-		assert.Nil(t, req.Input.Text)
-		assert.Equal(t, []string{"first", "second"}, req.Input.Texts)
+		assert.Equal(t, []string{"first", "second"}, embeddingRequestTexts(req.Input))
 		return &schemas.BifrostEmbeddingResponse{
 			Data: []schemas.EmbeddingData{
 				{Index: 1, Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0, 1}}},
@@ -834,4 +832,17 @@ func TestSettleWarmupEmbedUsageSkipsUnsupportedCostAttribution(t *testing.T) {
 	assert.NotPanics(t, func() {
 		plugin.settleWarmupEmbedUsage(cfg, 700)
 	})
+}
+
+// embeddingRequestTexts flattens the text parts of an embedding request input.
+func embeddingRequestTexts(input []schemas.EmbeddingInputItem) []string {
+	texts := make([]string, 0, len(input))
+	for _, item := range input {
+		for _, part := range item.Content {
+			if part.Text != nil {
+				texts = append(texts, *part.Text)
+			}
+		}
+	}
+	return texts
 }

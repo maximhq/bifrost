@@ -7,11 +7,50 @@ package lib
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
+
+// Correlation response headers, written by the tracing middleware on every traced response so a
+// caller can pivot a request into its log row, access log and trace.
+const (
+	// HeaderBifrostRequestID is the request id this gateway logs and traces the request under:
+	// the caller's x-request-id, or the UUID generated when it sent none.
+	HeaderBifrostRequestID = "x-bifrost-request-id"
+	HeaderBifrostTraceID   = "x-bifrost-trace-id"
+	// HeaderRequestID carries the same value as HeaderBifrostRequestID until a provider answers
+	// with its own x-request-id (OpenAI does), which then replaces it. It is deprecated for
+	// callers as a way to read this gateway's request id, and kept for compatibility.
+	HeaderRequestID = "x-request-id"
+)
+
+// gatewayOwnedResponseHeaderPrefix names the response headers this gateway writes about its own
+// handling of a request.
+const gatewayOwnedResponseHeaderPrefix = "x-bifrost-"
+
+// IsGatewayOwnedResponseHeader reports whether name is one of this gateway's x-bifrost-* response
+// headers. A provider's response header with such a name is never forwarded: when the provider is
+// another Bifrost, its x-bifrost-* headers describe its own hop, and forwarding them would replace
+// this hop's correlation ids and routed identity or add values this hop never set.
+func IsGatewayOwnedResponseHeader(name string) bool {
+	return len(name) >= len(gatewayOwnedResponseHeaderPrefix) &&
+		strings.EqualFold(name[:len(gatewayOwnedResponseHeaderPrefix)], gatewayOwnedResponseHeaderPrefix)
+}
+
+// ForwardProviderResponseHeaders copies a provider's response headers onto the response, except
+// the gateway-owned ones (see IsGatewayOwnedResponseHeader). The provider's values still reach
+// the caller in extra_fields.provider_response_headers on routes that return extra_fields.
+func ForwardProviderResponseHeaders(ctx *fasthttp.RequestCtx, headers map[string]string) {
+	for key, value := range headers {
+		if IsGatewayOwnedResponseHeader(key) {
+			continue
+		}
+		ctx.Response.Header.Set(key, value)
+	}
+}
 
 // HTTP response header names for the routed identity. Set on every successful
 // response from any integration so callers can recover the actual provider /
@@ -53,6 +92,8 @@ const (
 	HeaderBifrostRoutingInfoPrimaryProvider         = "x-bifrost-routing-info-primary-provider"
 	HeaderBifrostRoutingInfoPrimaryModel            = "x-bifrost-routing-info-primary-model"
 	HeaderBifrostRoutingInfoServerSideFallbackModel = "x-bifrost-routing-info-server-side-fallback-model"
+	HeaderBifrostRoutingInfoRequestedProvider       = "x-bifrost-routing-info-requested-provider"
+	HeaderBifrostRoutingInfoRequestedModel          = "x-bifrost-routing-info-requested-model"
 )
 
 // ApplyBifrostStreamResponseHeaders emits the routed-identity headers for a
@@ -105,9 +146,7 @@ func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 			defer t.EndSpan(h, schemas.SpanStatusOk, "")
 		}
 	}
-	for key, value := range extra.ProviderResponseHeaders {
-		ctx.Response.Header.Set(key, value)
-	}
+	ForwardProviderResponseHeaders(ctx, extra.ProviderResponseHeaders)
 	if extra.Provider != "" {
 		ctx.Response.Header.Set(HeaderBifrostProvider, string(extra.Provider))
 	}
@@ -153,6 +192,12 @@ func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 	}
 	if ri.ServerSideFallbackModel != nil && *ri.ServerSideFallbackModel != "" {
 		ctx.Response.Header.Set(HeaderBifrostRoutingInfoServerSideFallbackModel, *ri.ServerSideFallbackModel)
+	}
+	if ri.RequestedProvider != "" {
+		ctx.Response.Header.Set(HeaderBifrostRoutingInfoRequestedProvider, string(ri.RequestedProvider))
+	}
+	if ri.RequestedModel != "" {
+		ctx.Response.Header.Set(HeaderBifrostRoutingInfoRequestedModel, ri.RequestedModel)
 	}
 	// Fallback index lives on the request context, not the response struct.
 	// 0 = primary provider succeeded; non-zero = which fallback fired

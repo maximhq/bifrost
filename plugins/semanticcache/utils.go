@@ -2,9 +2,12 @@ package semanticcache
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -167,6 +170,39 @@ func int32ToFloat32Embedding(values []int32) []float32 {
 	return embedding
 }
 
+// decodeBase64Embedding decodes a base64-encoded embedding of raw IEEE 754 float32 bytes (little-endian).
+func decodeBase64Embedding(s string) ([]float32, error) {
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		b, err = base64.URLEncoding.DecodeString(s)
+		if err != nil {
+			return nil, fmt.Errorf("base64 decode failed: %w", err)
+		}
+	}
+	if len(b)%4 != 0 {
+		return nil, fmt.Errorf("base64 embedding byte length %d is not a multiple of 4", len(b))
+	}
+	vals := make([]float32, len(b)/4)
+	for i := range vals {
+		bits := binary.LittleEndian.Uint32(b[i*4 : i*4+4])
+		vals[i] = math.Float32frombits(bits)
+	}
+	return vals, nil
+}
+
+// uint8ToFloat32Embedding promotes a uint8/ubinary embedding to float32 for
+// cosine-similarity search in the semantic cache.
+func uint8ToFloat32Embedding(values []uint8) []float32 {
+	if len(values) == 0 {
+		return nil
+	}
+	embedding := make([]float32, len(values))
+	for i, value := range values {
+		embedding[i] = float32(value)
+	}
+	return embedding
+}
+
 // flattenToFloat32Embedding concatenates a 2D embedding (one inner slice per
 // input chunk) into a single flat []float32. Used when the provider returns
 // per-chunk embeddings that we want to store as a single vector.
@@ -200,6 +236,10 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		metadata["attachments"] = attachments
 	}
 
+	// request_family separates endpoints whose input and params hash the same,
+	// such as chat and responses (issue #7560). It is set after the params so
+	// extra params cannot override it. Stream variants share a family because
+	// "stream" is already in the hash.
 	switch req.RequestType {
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		if req.TextCompletionRequest == nil {
@@ -208,6 +248,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.TextCompletionRequest != nil && req.TextCompletionRequest.Params != nil {
 			plugin.extractTextCompletionParametersToMetadata(req.TextCompletionRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.TextCompletionRequest
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		if req.ChatRequest == nil {
 			return nil, fmt.Errorf("chat payload is nil")
@@ -215,6 +256,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.ChatRequest != nil && req.ChatRequest.Params != nil {
 			plugin.extractChatParametersToMetadata(req.ChatRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.ChatCompletionRequest
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 		if req.ResponsesRequest == nil {
 			return nil, fmt.Errorf("responses payload is nil")
@@ -222,6 +264,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
 			plugin.extractResponsesParametersToMetadata(req.ResponsesRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.ResponsesRequest
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		if req.SpeechRequest == nil {
 			return nil, fmt.Errorf("speech payload is nil")
@@ -229,6 +272,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.SpeechRequest != nil && req.SpeechRequest.Params != nil {
 			plugin.extractSpeechParametersToMetadata(req.SpeechRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.SpeechRequest
 	case schemas.EmbeddingRequest:
 		if req.EmbeddingRequest == nil {
 			return nil, fmt.Errorf("embedding payload is nil")
@@ -236,6 +280,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.EmbeddingRequest != nil && req.EmbeddingRequest.Params != nil {
 			plugin.extractEmbeddingParametersToMetadata(req.EmbeddingRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.EmbeddingRequest
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		if req.TranscriptionRequest == nil {
 			return nil, fmt.Errorf("transcription payload is nil")
@@ -243,6 +288,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.TranscriptionRequest != nil && req.TranscriptionRequest.Params != nil {
 			plugin.extractTranscriptionParametersToMetadata(req.TranscriptionRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.TranscriptionRequest
 	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
 		if req.ImageGenerationRequest == nil {
 			return nil, fmt.Errorf("image generation payload is nil")
@@ -250,11 +296,69 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Params != nil {
 			plugin.extractImageGenerationParametersToMetadata(req.ImageGenerationRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.ImageGenerationRequest
 	default:
 		return nil, fmt.Errorf("unsupported request type for semantic caching")
 	}
 
 	return metadata, nil
+}
+
+// responseHasToolCalls reports whether a response (or stream chunk) carries a
+// tool call the client would execute: chat tool_calls on a message or delta,
+// or a Responses API output item of a tool-call type. Server-side tool items
+// (web search, file search, code interpreter, image generation) are not
+// client-executed and do not count.
+func responseHasToolCalls(res *schemas.BifrostResponse) bool {
+	if res == nil {
+		return false
+	}
+	switch {
+	case res.ChatResponse != nil:
+		for _, choice := range res.ChatResponse.Choices {
+			if choice.ChatNonStreamResponseChoice != nil && choice.Message != nil &&
+				choice.Message.ChatAssistantMessage != nil && len(choice.Message.ToolCalls) > 0 {
+				return true
+			}
+			if choice.ChatStreamResponseChoice != nil && choice.Delta != nil && len(choice.Delta.ToolCalls) > 0 {
+				return true
+			}
+		}
+	case res.ResponsesResponse != nil:
+		return responsesOutputHasToolCalls(res.ResponsesResponse.Output)
+	case res.ResponsesStreamResponse != nil:
+		if item := res.ResponsesStreamResponse.Item; item != nil && item.Type != nil && isResponsesToolCallItem(*item.Type) {
+			return true
+		}
+		if full := res.ResponsesStreamResponse.Response; full != nil {
+			return responsesOutputHasToolCalls(full.Output)
+		}
+	}
+	return false
+}
+
+func responsesOutputHasToolCalls(output []schemas.ResponsesMessage) bool {
+	for _, item := range output {
+		if item.Type != nil && isResponsesToolCallItem(*item.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+func isResponsesToolCallItem(t schemas.ResponsesMessageType) bool {
+	switch t {
+	case schemas.ResponsesMessageTypeFunctionCall,
+		schemas.ResponsesMessageTypeCustomToolCall,
+		schemas.ResponsesMessageTypeComputerCall,
+		schemas.ResponsesMessageTypeLocalShellCall,
+		schemas.ResponsesMessageTypeShellCall,
+		schemas.ResponsesMessageTypeApplyPatchCall,
+		schemas.ResponsesMessageTypeMCPCall,
+		schemas.ResponsesMessageTypeMCPApprovalRequest:
+		return true
+	}
+	return false
 }
 
 // extractAttachmentsForCaching collects image/file URLs referenced by the
@@ -452,16 +556,16 @@ func (plugin *Plugin) buildUnifiedMetadata(provider schemas.ModelProvider, model
 	return unifiedMetadata
 }
 
-// addNonStreamingResponse marshals the response and writes it as a single
-// cache entry. The metadata map is mutated (response + stream_chunks added)
-// — safe because the calling goroutine owns it. The ttl parameter is
-// retained for symmetry with addStreamingResponse; the actual expiry is
-// already encoded in metadata["expires_at"] by buildUnifiedMetadata.
-func (plugin *Plugin) addNonStreamingResponse(ctx context.Context, responseID string, res *schemas.BifrostResponse, embedding []float32, metadata map[string]interface{}, ttl time.Duration) error {
-	responseData, err := json.Marshal(res)
-	if err != nil {
-		return fmt.Errorf("failed to marshal response: %w", err)
-	}
+// addNonStreamingResponse writes an already-serialized response as a single
+// cache entry. The caller (PostLLMHook) marshals the response synchronously
+// before the hook returns — this function must only ever receive owned bytes,
+// never the caller's *BifrostResponse, because core mutates that object right
+// after the post-hook chain returns (issue #7233). The metadata map is
+// mutated (response + stream_chunks added) — safe because the calling
+// goroutine owns it. The ttl parameter is retained for symmetry with
+// addStreamingResponse; the actual expiry is already encoded in
+// metadata["expires_at"] by buildUnifiedMetadata.
+func (plugin *Plugin) addNonStreamingResponse(ctx context.Context, responseID string, responseData []byte, embedding []float32, metadata map[string]interface{}, ttl time.Duration) error {
 	metadata["response"] = string(responseData)
 	metadata["stream_chunks"] = []string{}
 
@@ -473,24 +577,45 @@ func (plugin *Plugin) addNonStreamingResponse(ctx context.Context, responseID st
 	return nil
 }
 
-// addStreamingResponse appends one chunk to the per-request accumulator and,
-// when the final chunk arrives, flushes the accumulated stream to the cache.
+// addStreamingResponse appends one pre-serialized chunk to the per-request
+// accumulator and reports whether the caller should flush the accumulated
+// stream (final chunk observed, and this call won the completion gate). It
+// runs synchronously inside PostLLMHook — only the flush's store write is
+// async — so the accumulator never retains the caller's response pointer
+// (issue #7233).
+//
 // Errors never reach this function: PostLLMHook returns early on bifrostErr
 // (errors are always delivered as the final chunk), so an errored stream
-// simply leaves its accumulator behind for the periodic reaper.
-func (plugin *Plugin) addStreamingResponse(ctx context.Context, requestID string, storageID string, res *schemas.BifrostResponse, embedding []float32, metadata map[string]interface{}, ttl time.Duration, isFinalChunk bool) error {
+// simply leaves its accumulator behind for the periodic reaper. A stream
+// with a chunk that failed to serialize (see failStreamAccumulator) is
+// different: it is never flushed, and its accumulator is dropped as soon as
+// the final chunk arrives.
+func (plugin *Plugin) addStreamingResponse(requestID string, storageID string, chunk *StreamChunk, embedding []float32, metadata map[string]interface{}, ttl time.Duration, isFinalChunk bool) (shouldFlush bool, err error) {
 	accumulator := plugin.getOrCreateStreamAccumulator(requestID, storageID, embedding, metadata, ttl)
 
-	chunk := &StreamChunk{
-		Timestamp: time.Now(),
-		Response:  res,
+	accumulator.mu.Lock()
+	failed := accumulator.Failed
+	if failed {
+		// Discarded chunks still count as arrivals: keep LastSeenAt moving so
+		// the reaper doesn't evict the Failed marker mid-stream, which would
+		// let the next chunk start a clean accumulator and flush a partial
+		// entry on the final chunk.
+		accumulator.LastSeenAt = chunk.Timestamp
 	}
+	accumulator.mu.Unlock()
+	if failed {
+		if isFinalChunk {
+			plugin.cleanupStreamAccumulator(requestID)
+		}
+		return false, nil
+	}
+
 	if err := plugin.addStreamChunk(requestID, chunk); err != nil {
-		return fmt.Errorf("failed to add stream chunk: %w", err)
+		return false, fmt.Errorf("failed to add stream chunk: %w", err)
 	}
 
 	if !isFinalChunk {
-		return nil
+		return false, nil
 	}
 
 	// Gate final processing so it runs exactly once even if multiple chunks
@@ -502,13 +627,7 @@ func (plugin *Plugin) addStreamingResponse(ctx context.Context, requestID string
 	}
 	accumulator.mu.Unlock()
 
-	if alreadyComplete {
-		return nil
-	}
-	if err := plugin.processAccumulatedStream(ctx, requestID); err != nil {
-		plugin.logger.Warn("Failed to process accumulated stream for request %s: %v", requestID, err)
-	}
-	return nil
+	return !alreadyComplete, nil
 }
 
 // parseStreamChunks parses stream_chunks data from the various shapes
@@ -672,25 +791,24 @@ func (plugin *Plugin) getNormalizedInputForCaching(req *schemas.BifrostRequest) 
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		return normalizeText(req.SpeechRequest.Input.Input)
 	case schemas.EmbeddingRequest:
-		input := req.EmbeddingRequest.Input
-		out := schemas.EmbeddingInput{}
-		if input.Text != nil {
-			ns := normalizeText(*input.Text)
-			out.Text = &ns
-		} else if len(input.Texts) > 0 {
-			arr := make([]string, len(input.Texts))
-			for i, t := range input.Texts {
-				arr[i] = normalizeText(t)
+		// Deep copy contents and normalize text parts; non-text parts are
+		// copied as-is so multimodal inputs participate in cache hashing.
+		src := req.EmbeddingRequest.Input
+		copiedItems := make([]schemas.EmbeddingInputItem, len(src))
+		for i, item := range src {
+			copiedContent := make(schemas.EmbeddingContent, len(item.Content))
+			for j, part := range item.Content {
+				copied := part
+				if part.Type == schemas.EmbeddingContentPartTypeText && part.Text != nil {
+					normalized := normalizeText(*part.Text)
+					copied.Text = &normalized
+				}
+				copiedContent[j] = copied
 			}
-			out.Texts = arr
-		} else if input.Embedding != nil {
-			// Numeric embeddings aren't text-normalizable but must still appear
-			// in the hash payload, so copy the slice to avoid aliasing.
-			out.Embedding = append([]int(nil), input.Embedding...)
-		} else if input.Embeddings != nil {
-			out.Embeddings = append([][]int(nil), input.Embeddings...)
+			// Per-item params change the vector, so they belong in the hash.
+			copiedItems[i] = schemas.EmbeddingInputItem{Content: copiedContent, Params: item.Params}
 		}
-		return out
+		return copiedItems
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		return req.TranscriptionRequest.Input
 	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
@@ -827,7 +945,13 @@ func (plugin *Plugin) extractResponsesParametersToMetadata(params *schemas.Respo
 	putIfSet(metadata, "max_tokens", params.MaxOutputTokens)
 	putIfSet(metadata, "parallel_tool_calls", params.ParallelToolCalls)
 	putIfSet(metadata, "background", params.Background)
-	putIfSet(metadata, "conversation", params.Conversation)
+	if params.Conversation != nil {
+		if params.Conversation.ResponsesResponseConversationStr != nil {
+			metadata["conversation"] = *params.Conversation.ResponsesResponseConversationStr
+		} else if params.Conversation.ResponsesResponseConversationStruct != nil {
+			metadata["conversation"] = params.Conversation.ResponsesResponseConversationStruct.ID
+		}
+	}
 	putSortedSetIfNonEmpty(metadata, "include", params.Include)
 	putIfSet(metadata, "instructions", params.Instructions)
 	putIfSet(metadata, "max_tool_calls", params.MaxToolCalls)
@@ -927,6 +1051,9 @@ func (plugin *Plugin) extractSpeechParametersToMetadata(params *schemas.SpeechPa
 func (plugin *Plugin) extractEmbeddingParametersToMetadata(params *schemas.EmbeddingParameters, metadata map[string]interface{}) {
 	putIfSet(metadata, "encoding_format", params.EncodingFormat)
 	putIfSet(metadata, "dimensions", params.Dimensions)
+	putIfSet(metadata, "task_type", params.TaskType)
+	putIfSet(metadata, "title", params.Title)
+	putIfSet(metadata, "auto_truncate", params.AutoTruncate)
 	if len(params.ExtraParams) > 0 {
 		maps.Copy(metadata, params.ExtraParams)
 	}

@@ -39,9 +39,10 @@ export function VirtualKeyListItem({
 }: VirtualKeyListItemProps) {
 	const { copy } = useCopyToClipboard({ successMessage: "Virtual key copied" });
 	return (
+		// oxlint-disable-next-line jsx-a11y/no-static-element-interactions -- role, tabIndex and keys are set together whenever onClick exists; the linter cannot follow the conditional
 		<div
 			className={cn("group flex items-center justify-between gap-2 p-3", onClick && "cursor-pointer", className)}
-			role={onClick ? "button" : undefined}
+			role={onClick ? "button" : "presentation"}
 			tabIndex={onClick ? 0 : undefined}
 			onClick={onClick}
 			onKeyDown={

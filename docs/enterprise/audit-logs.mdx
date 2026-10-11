@@ -23,6 +23,7 @@ Audit log entries can be signed with an HMAC key, retained for a configurable nu
 | **Filtering**        | Filter by search text, action, outcome, and date range.                                       |
 | **Export**           | Export matching entries as JSON, JSON Lines, or Syslog when the user has download permission. |
 | **Retention**        | Configure how long audit log entries are kept.                                                |
+| **IP omission**      | Keep the audit trail without recording client IP addresses.                                   |
 | **Object storage archival** | Periodically archive audit events to S3/GCS in time-windowed, size-bounded JSONL objects for long-term, off-box, compliance-grade retention. |
 
 ---
@@ -46,6 +47,7 @@ Audit log entries can be signed with an HMAC key, retained for a configurable nu
 | `disabled`       | boolean | When `true`, audit logging is turned off. Default: `false`.                                                                                |
 | `hmac_key`       | string  | HMAC secret key used to sign audit events. Minimum 32 bytes. Supports `env.` prefix for environment variables (e.g. `env.AUDIT_HMAC_KEY`). |
 | `retention_days` | integer | Days to retain audit log entries **in the database**. `0` disables retention-based cleanup. Does not affect archived objects (see [Archiving to Object Storage](#archiving-to-object-storage)). |
+| `omit_ip_addresses` | boolean | When `true`, audit logs stop recording client IP addresses and never return them. Every other field is kept. Default: `false`. See [Omitting IP Addresses](#omitting-ip-addresses). |
 | `object_storage` | object  | Optional. When set, archives audit events to S3/GCS in addition to the database. Setting it is what enables archival — there is no separate on/off flag. See [Archiving to Object Storage](#archiving-to-object-storage). |
 | `archive_interval` | string | Archival window size, as a Go duration string (e.g. `"6h"`). Also the nominal period of the archival job. Default: `"24h"`. Minimum: `"5m"` (lower values are clamped up). |
 | `archive_grace_period` | string | How long a window is held open past its end before it may be archived, absorbing clock skew and late inserts. Must be **strictly less than** `archive_interval`. Default: `"15m"`. |
@@ -63,6 +65,34 @@ audit log archive routine started (interval: 24h0m0s, grace: 15m0s, max part siz
 ```
 </Note>
 
+## Omitting IP Addresses
+
+Some deployments can't record where employees connect from. Employee privacy law and works council agreements, common in Germany, often rule it out. Set `omit_ip_addresses` to keep the audit trail without IPs:
+
+```json
+{
+  "audit_logs": {
+    "hmac_key": "env.AUDIT_HMAC_KEY",
+    "retention_days": 365,
+    "omit_ip_addresses": true
+  }
+}
+```
+
+With the setting on:
+
+- The gateway never reads the client IP (`X-Forwarded-For`, `X-Real-IP` or the socket address) for audit events. New rows have an empty `request_ip` and initiator host.
+- The initiator, action, target, path, method, user agent, outcome and duration are still recorded. HMAC signatures don't cover the IP fields, so signature verification keeps working.
+- IPs in rows written before you turned the setting on are hidden from the list and detail APIs, the dashboard and every export format.
+- Search no longer matches on IP, IP filters are ignored, and the filter data endpoint returns no request IPs. Otherwise a caller could filter older rows by an address to learn who used it.
+- Events that object storage archival copies after the change carry no IP, including events from older rows.
+
+<Warning>
+Turning the setting on doesn't delete IPs that are already stored. Older database rows keep them until `retention_days` removes those rows. Archive objects already written to object storage also keep them. If your agreement requires those IPs to be erased, clear the `request_ip` and `initiator_host` columns of `enterprise_audit_logs` yourself, and apply your bucket's lifecycle or deletion rules to existing archives.
+</Warning>
+
+Turning the setting off again resumes IP recording for new events. Rows written while it was on stay without IPs.
+
 ## Viewing Audit Logs
 
 Open **Governance > Audit Logs** in the Bifrost dashboard.
@@ -77,10 +107,10 @@ The table shows:
 | **Initiator** | The user, API key, or system actor that initiated the action.                                        |
 | **Target**    | The resource affected by the action.                                                                 |
 | **Path**      | The request method and path, when available.                                                         |
-| **IP**        | The request IP address, when available.                                                              |
+| **IP**        | The request IP address, when available. Always empty when `omit_ip_addresses` is on.                 |
 | **Duration**  | Request duration in milliseconds, when available.                                                    |
 
-You can search by initiator, target, IP, or path, and filter by action, outcome, start date, and end date.
+You can search by initiator, target, IP, or path, and filter by action, outcome, start date, and end date. With `omit_ip_addresses` on, search skips IPs and the IP filter disappears.
 
 ## Exporting Audit Logs
 
@@ -93,6 +123,8 @@ Supported export formats:
 | JSON              | Structured review or ad hoc processing.                      |
 | JSON Lines        | Line-delimited ingestion pipelines.                          |
 | Syslog (RFC 5424) | SIEM or log-forwarding pipelines that accept syslog records. |
+
+With `omit_ip_addresses` on, exports contain no IP addresses in any format. The syslog `clientIP` parameter is left out.
 
 ## Archiving to Object Storage
 

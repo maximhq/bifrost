@@ -21,8 +21,17 @@ business-units:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `BusinessUnits:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List business units
-    description: Returns a paginated list of business units, each with its user count.
+    description: |
+      Returns a paginated list of business units, each with its user count.
     tags:
       - Governance
     parameters:
@@ -68,8 +77,17 @@ business-units:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `BusinessUnits:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create business unit
-    description: Creates a new business unit. Names must be unique.
+    description: |
+      Creates a new business unit. Names must be unique.
     tags:
       - Governance
     requestBody:
@@ -109,8 +127,17 @@ business-units-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `BusinessUnits:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get business unit
-    description: Returns a specific business unit by ID, including governance and user count.
+    description: |
+      Returns a specific business unit by ID, including governance and user count.
     tags:
       - Governance
     parameters:
@@ -148,8 +175,17 @@ business-units-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `BusinessUnits:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update business unit
-    description: Updates the business unit name.
+    description: |
+      Updates the business unit name.
     tags:
       - Governance
     parameters:
@@ -197,6 +233,14 @@ business-units-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `BusinessUnits:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete business unit
     description: |
       Deletes a business unit. Every user membership of it is atomically removed as part of the
@@ -242,6 +286,14 @@ business-units-users:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `BusinessUnits:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List business unit users
     description: |
       Returns a paginated list of users that belong to the business unit, each with the
@@ -304,6 +356,14 @@ business-units-users:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `BusinessUnits:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Assign user to business unit
     description: |
       Assigns an existing user to the business unit. Membership is many-to-many, so a user may
@@ -354,8 +414,17 @@ business-units-user-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `BusinessUnits:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Remove user from business unit
-    description: Removes a user's membership of the business unit.
+    description: |
+      Removes a user's membership of the business unit.
     tags:
       - Governance
     parameters:
@@ -404,6 +473,14 @@ business-units-governance:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `BusinessUnits:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create business unit governance
     description: |
       Configures budget and/or rate limit governance for a business unit. At least
@@ -460,6 +537,14 @@ business-units-governance:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `BusinessUnits:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update business unit governance
     description: |
       Updates budget and/or rate limit governance for a business unit. Passing an
@@ -509,8 +594,17 @@ business-units-governance:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `BusinessUnits:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete business unit governance
-    description: Removes all budget and rate limit governance from a business unit.
+    description: |
+      Removes all budget and rate limit governance from a business unit.
     tags:
       - Governance
     parameters:

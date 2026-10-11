@@ -1,3 +1,5 @@
+import { isReservedMetadataKey } from "@/lib/registries/logs";
+import type { ResponsesMessage } from "@/lib/types/logs";
 import { isLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 
 /**
@@ -37,6 +39,28 @@ export function resolveRawJsonNoticeState({
 	return match && match.store_raw_request_response === false ? "storage-disabled" : "unknown";
 }
 
+// Realtime turn keys the sheet's header already shows, so its Metadata grid leaves them out.
+const REALTIME_HEADER_METADATA_KEYS = new Set([
+	"realtime_session_id",
+	"provider_session_id",
+	"realtime_source",
+	"realtime_event_type",
+	"realtime_transport",
+	"realtime_voice",
+	"realtime",
+]);
+
+/**
+ * isShownMetadataKey says whether the log sheet's Metadata grid lists a metadata key: the caller's
+ * own keys are listed, while the async marker, a realtime turn's header keys and keys under a
+ * reserved prefix (which a registered panel shows its own way) are not.
+ */
+export function isShownMetadataKey(key: string, isRealtimeTurn: boolean): boolean {
+	if (key === "isAsyncRequest") return false;
+	if (isReservedMetadataKey(key)) return false;
+	return !(isRealtimeTurn && REALTIME_HEADER_METADATA_KEYS.has(key));
+}
+
 export interface RoutingDecisionLine {
 	timestamp: number | null;
 	engine: string | null;
@@ -54,4 +78,156 @@ export function parseRoutingDecisionLine(line: string): RoutingDecisionLine {
 	if (!match) return { timestamp: null, engine: null, level: null, message: line };
 	const level = match[3]?.toLowerCase();
 	return { timestamp: Number(match[1]), engine: match[2], level: isLogLevel(level) ? level : null, message: match[4] };
+}
+
+// Pulls a human-readable failure reason out of a provider error body. A provider whose
+// error shape does not match what its parser expects lands with an empty
+// error_details.error.message (Bedrock's invoke path answering AWS's {"message":...} through
+// the Anthropic parser was one such case), and the body is then the only place the reason
+// survives. Handles both the flat {"message":...} shape and the nested {"error":{"message":...}}
+// envelope, and accepts either a JSON string or an already-parsed object.
+export function extractProviderErrorMessage(raw: unknown): string | null {
+	if (raw == null) return null;
+
+	let value: unknown = raw;
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		if (!trimmed) return null;
+		try {
+			value = JSON.parse(trimmed);
+		} catch {
+			return trimmed;
+		}
+	}
+	if (typeof value === "string") return value.trim() || null;
+	if (value == null || typeof value !== "object") return null;
+
+	const obj = value as Record<string, unknown>;
+	const nested = obj.error;
+	if (nested && typeof nested === "object") {
+		const nestedMessage = (nested as Record<string, unknown>).message;
+		if (typeof nestedMessage === "string" && nestedMessage.trim()) return nestedMessage.trim();
+	}
+	if (typeof nested === "string" && nested.trim()) return nested.trim();
+
+	for (const key of ["message", "Message", "error_message", "detail"]) {
+		const candidate = obj[key];
+		if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+	}
+	return null;
+}
+// A Responses item that asks for a tool to run (function_call, custom_tool_call,
+// web_search_call, ...), as opposed to the *_call_output that carries its result.
+// Both render with the tool tone, but only the output is a result: labelling a call
+// "Tool Result" put its arguments - often just `{}` - where a result was expected.
+export function isResponsesToolCallItem(type: string | undefined): boolean {
+	return !!type && type.endsWith("_call");
+}
+
+// Calls the caller runs itself. Their output is not in this response - the caller
+// executes the tool and sends the result as input to its next request. Server-side
+// calls (web_search_call, mcp_call, ...) are resolved within the same response.
+// Computer use, shell and apply_patch run on the caller's machine as well.
+const CLIENT_TOOL_CALL_TYPES = new Set([
+	"function_call",
+	"custom_tool_call",
+	"computer_call",
+	"local_shell_call",
+	"shell_call",
+	"apply_patch_call",
+]);
+
+export function isClientToolCallItem(type: string | undefined): boolean {
+	return !!type && CLIENT_TOOL_CALL_TYPES.has(type);
+}
+
+// Index of the last output call the caller still has to run, or -1. A call whose output
+// is already in the same response (a hosted shell_call) ran upstream and needs no link.
+export function findLastPendingClientCallIndex(entries: Array<{ msg: ResponsesMessage; fromOutput: boolean }>): number {
+	const resolved = new Set(
+		entries.filter((e) => e.fromOutput && e.msg.type?.endsWith("_call_output") && e.msg.call_id).map((e) => e.msg.call_id),
+	);
+	return entries.findLastIndex((e) => e.fromOutput && isClientToolCallItem(e.msg.type) && !(e.msg.call_id && resolved.has(e.msg.call_id)));
+}
+
+// Whether a call's arguments name nothing: empty, or a JSON object with no keys.
+// Anything else - including arguments that are not valid JSON - is shown as sent.
+export function hasNoToolArguments(args: unknown): boolean {
+	if (typeof args !== "string") return false;
+	const trimmed = args.trim();
+	if (!trimmed) return true;
+	try {
+		const parsed: unknown = JSON.parse(trimmed);
+		return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) && Object.keys(parsed).length === 0;
+	} catch {
+		return false;
+	}
+}
+
+// A log timestamp as whole milliseconds plus the nanoseconds below them. Logs are
+// stored to the microsecond, finer than a JavaScript date, and two requests in the
+// same millisecond must still order. A timestamp that is not RFC3339 falls back to
+// Date.parse; undefined when that fails too.
+const RFC3339_PARTS = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/i;
+
+function parseLogTimestamp(timestamp: string): { ms: number; subMsNanos: number } | undefined {
+	const parts = RFC3339_PARTS.exec(timestamp);
+	const fraction = (parts?.[2] ?? "").padEnd(9, "0");
+	const ms = parts ? Date.parse(`${parts[1]}.${fraction.slice(0, 3)}${parts[3]}`) : Date.parse(timestamp);
+	if (Number.isNaN(ms)) return undefined;
+	return { ms, subMsNanos: parts ? Number(fraction.slice(3)) : 0 };
+}
+
+function isLaterTimestamp(a: { ms: number; subMsNanos: number }, b: { ms: number; subMsNanos: number }): boolean {
+	return a.ms > b.ms || (a.ms === b.ms && a.subMsNanos > b.subMsNanos);
+}
+
+// Where the next-request lookup starts: one nanosecond - the finest a log timestamp
+// carries - after `timestamp`. The next request cannot start before this response has
+// returned, so it is always strictly later, and starting just after skips every row
+// logged at the same instant - which otherwise filled a small page and hid the next
+// request. Written in UTC with the full fraction, which the API parses.
+export function nextSessionLookupStart(timestamp: string): string {
+	const at = parseLogTimestamp(timestamp);
+	if (!at) return timestamp;
+	let { ms, subMsNanos } = at;
+	subMsNanos += 1;
+	if (subMsNanos >= 1_000_000) {
+		ms += 1;
+		subMsNanos -= 1_000_000;
+	}
+	const iso = new Date(ms).toISOString();
+	const fraction = `${iso.slice(20, 23)}${String(subMsNanos).padStart(6, "0")}`.replace(/0+$/, "");
+	return `${iso.slice(0, 19)}${fraction ? `.${fraction}` : ""}Z`;
+}
+
+// The first log after `current` in a timestamp-ascending page of its session. That is
+// the request that carries the result of a tool call `current` ended on, since the
+// caller cannot send it until this response is back. The page may include `current`
+// itself, so it is skipped by id and by time. A timestamp that cannot be parsed is
+// never later.
+export function pickNextSessionLog<T extends { id: string; timestamp: string }>(
+	logs: readonly T[],
+	current: { id: string; timestamp: string },
+): T | undefined {
+	const after = parseLogTimestamp(current.timestamp);
+	if (!after) return undefined;
+	return logs.find((entry) => {
+		if (entry.id === current.id) return false;
+		const at = parseLogTimestamp(entry.timestamp);
+		return !!at && isLaterTimestamp(at, after);
+	});
+}
+/**
+ * The questions a decision request asked, as stored in the log's params.
+ *
+ * Logs store the questions as an array in request order; logs written before
+ * decisions were normalized store an object keyed by question name. Returns
+ * null when the log is not a decision log or carries none, so the caller
+ * renders nothing.
+ */
+export function decisionQuestions(object: string | undefined, params: unknown): { value: unknown; count: number } | null {
+	if (object !== "decisions" || params === null || typeof params !== "object") return null;
+	const count = Array.isArray(params) ? params.length : Object.keys(params).length;
+	return count > 0 ? { value: params, count } : null;
 }

@@ -1,0 +1,39 @@
+decisions:
+  post:
+    operationId: createDecision
+    summary: Evaluate a decision
+    description: |
+      Asks a list of questions about some input and returns one typed answer
+      per question, in order, with per-answer confidence and probabilities.
+      Served by any decision model: Typesafe's jev models (and Laya, Nimble,
+      and Clef), or any chat model through structured output.
+
+      The map form (a `state` plus questions keyed by name) is deprecated but
+      still served; a map-form request is answered in the map form.
+    tags:
+    - Decisions
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '../../schemas/inference/decisions.yaml#/DecisionRequest'
+              - $ref: '../../schemas/inference/decisions.yaml#/DecisionMapFormRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '../../schemas/inference/decisions.yaml#/DecisionResponse'
+                - $ref: '../../schemas/inference/decisions.yaml#/DecisionMapFormResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

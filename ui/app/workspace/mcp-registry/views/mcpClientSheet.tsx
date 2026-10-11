@@ -181,6 +181,7 @@ export default function MCPClientSheet({
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const globalToolSyncInterval = bifrostConfig?.client_config?.mcp_tool_sync_interval ?? 10;
 	const globalToolExecutionTimeout = bifrostConfig?.client_config?.mcp_tool_execution_timeout ?? 30;
+	const globalMaxInstructionsLength = bifrostConfig?.client_config?.mcp_max_instructions_per_client || 4096;
 	// External base URL + copy for the read-only endpoint the client is served at (/mcp/<slug>).
 	const baseUrl = getExternalBaseUrl(bifrostConfig?.client_config);
 	const { copy: copyEndpoint, copied: endpointCopied } = useCopyToClipboard({ successMessage: "Endpoint copied" });
@@ -317,6 +318,7 @@ export default function MCPClientSheet({
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
 			tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
+			max_instructions_length: mcpClient.config.max_instructions_length ?? 0,
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? {
@@ -368,6 +370,7 @@ export default function MCPClientSheet({
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
 			tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
+			max_instructions_length: mcpClient.config.max_instructions_length ?? 0,
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? {
@@ -521,6 +524,7 @@ export default function MCPClientSheet({
 					// unrelated edit would silently rewrite it.
 					tool_sync_interval: form.formState.dirtyFields.tool_sync_interval ? (data.tool_sync_interval ?? 0) : undefined,
 					tool_execution_timeout: data.tool_execution_timeout ?? 0,
+					max_instructions_length: data.max_instructions_length ?? 0,
 					allowed_extra_headers: data.allowed_extra_headers,
 					oauth_config: shouldRotateOAuthCredentials
 						? {
@@ -951,7 +955,7 @@ export default function MCPClientSheet({
 										<div className="space-y-4">
 											<SectionHeader
 												title="Sync & Timeouts"
-												description="Override the global tool sync interval and execution timeout for this server."
+												description="Override the global tool sync interval, execution timeout and instruction limit for this server."
 											/>
 											<div className="divide-y rounded-md border">
 												<FormField
@@ -1044,6 +1048,58 @@ export default function MCPClientSheet({
 																		min="0"
 																		step="1"
 																		data-testid="mcp-tool-execution-timeout"
+																	/>
+																</FormControl>
+															</FormItem>
+														);
+													}}
+												/>
+												<FormField
+													control={form.control}
+													name="max_instructions_length"
+													render={({ field }) => {
+														const isUsingGlobal = field.value === undefined || field.value === null || field.value === 0;
+														return (
+															<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+																<div className="flex flex-col items-start gap-0.5">
+																	<div className="flex items-start gap-2">
+																		<div>
+																			<FormLabel>Max Instruction Length (bytes)</FormLabel>
+																		</div>
+																		<TooltipProvider>
+																			<Tooltip>
+																				<TooltipTrigger asChild>
+																					<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+																				</TooltipTrigger>
+																				<TooltipContent className="max-w-xs">
+																					<p>
+																						Cap on the instructions forwarded from this server. Leave empty or set to 0 to use the global
+																						setting. The combined total across all servers is still bounded by the global total.
+																					</p>
+																				</TooltipContent>
+																			</Tooltip>
+																		</TooltipProvider>
+																	</div>
+																	<div>{isUsingGlobal && <p className="text-muted-foreground text-xs">Using global setting</p>}</div>
+																</div>
+																<FormControl>
+																	<Input
+																		type="number"
+																		className={`w-24 ${isUsingGlobal ? "text-muted-foreground" : ""}`}
+																		placeholder={String(globalMaxInstructionsLength)}
+																		value={field.value === 0 || field.value === undefined ? "" : String(field.value)}
+																		onChange={(e) => {
+																			if (e.target.value === "") {
+																				field.onChange(undefined);
+																				return;
+																			}
+																			const n = Number(e.target.value);
+																			if (!Number.isInteger(n)) return;
+																			field.onChange(n);
+																		}}
+																		min="0"
+																		step="1"
+																		data-testid="mcp-max-instructions-length"
 																	/>
 																</FormControl>
 															</FormItem>

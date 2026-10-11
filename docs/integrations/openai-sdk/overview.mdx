@@ -385,6 +385,34 @@ if (initial.status === "completed") {
 
 ---
 
+## Decisions API
+
+OpenAI's Decisions API works through Bifrost with the same `base_url`, at `/openai/v1/decisions` (or `/openai/decisions`). Any decision model can answer: OpenAI's decisions models such as `gpt-6-luna`, TypeSafe's jev models, or any chat model through structured output. Answers come back in OpenAI's response shape, with `name: null` for a question sent without a name, plus Bifrost's `extra_fields` as on the other OpenAI routes; when raw responses are enabled and OpenAI served the request, OpenAI's own response body is returned instead. The request is OpenAI's: a top-level `state` and a field a question, choice, or level does not define, such as TypeSafe's `criteria`, are rejected with a `400` rather than translated, while other top-level fields a newer SDK sends are forwarded unchanged. For TypeSafe-only features, use [`/v1/decisions`](/quickstart/gateway/decisions).
+
+`client.decisions.create` requires an SDK with the Decisions resource: `openai>=3.26.0` in Python or `openai>=7.30.0` in Node.
+
+```python
+response = client.decisions.create(
+    model="gpt-6-luna",  # or "typesafe/jev-1.13.0"
+    input="I was charged twice for my order and nobody has replied.",
+    questions=[
+        {"type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?"},
+        {
+            "type": "choice",
+            "name": "category",
+            "instructions": "Pick the ticket category",
+            "choices": [{"value": "billing"}, {"value": "bug"}, {"value": "other"}],
+        },
+    ],
+)
+for answer in response.answers:
+    print(answer.type, answer.name)
+```
+
+An SDK version without the `decisions` resource can send the same body with its generic request method, for example `client.post("/decisions", body={...}, cast_to=httpx.Response)` in Python or `client.post("/decisions", { body: {...} })` in Node. See [Decisions](../../quickstart/gateway/decisions) for the request fields.
+
+---
+
 ## Supported Features
 
 The OpenAI integration supports all features that are available in both the OpenAI SDK and Bifrost core functionality. If the OpenAI SDK supports a feature and Bifrost supports it, the integration will work seamlessly.

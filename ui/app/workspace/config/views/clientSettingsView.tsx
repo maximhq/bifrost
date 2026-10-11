@@ -356,7 +356,7 @@ export default function ClientSettingsView() {
 					/>
 				</div>
 				{/* Async Job Result TTL */}
-				<div className="flex items-center justify-between space-x-2">
+				<div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
 					<div className="space-y-0.5">
 						<label htmlFor="async-job-result-ttl" className="text-sm font-medium">
 							Async Job Result TTL (seconds)
@@ -369,7 +369,7 @@ export default function ClientSettingsView() {
 						id="async-job-result-ttl"
 						type="number"
 						min={1}
-						className="w-32"
+						className="w-32 shrink-0"
 						value={localConfig.async_job_result_ttl}
 						onChange={(e) => handleConfigChange("async_job_result_ttl", parseInt(e.target.value) || 0)}
 						disabled={!hasSettingsUpdateAccess}
@@ -569,7 +569,7 @@ export default function ClientSettingsView() {
 				controlsDisabled={isLoading || !hasSettingsUpdateAccess}
 			/>
 
-			<div className="flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				{hasSecurityHeaderError ? (
 					<Tooltip>
 						<TooltipTrigger asChild>

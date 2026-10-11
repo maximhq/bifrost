@@ -101,6 +101,51 @@ VertexKeyConfig:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
     auth_credentials:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
+    force_single_region:
+      type: boolean
+      default: false
+      description: When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint.
+    aws_workload_identity:
+      type: object
+      description: >-
+        GCP Workload Identity Federation from the workload's AWS identity (EKS IRSA / Pod Identity,
+        ECS task role, EC2 instance profile, AWS_* env vars). Takes precedence over auth_credentials;
+        the two must not be combined. aws_role_arn is redacted in GET responses; the other fields are
+        identifiers and are returned in clear.
+      properties:
+        audience:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        service_account_email:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        token_lifetime_seconds:
+          type: integer
+          minimum: 600
+          maximum: 43200
+          description: Lifetime of the impersonated service-account token in seconds; only used with service_account_email. Default 3600. Lifetimes above 3600 require the target service account to be allowed by the organization policy constraint constraints/iam.allowServiceAccountCredentialLifetimeExtension; otherwise token generation fails.
+        aws_region:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        aws_role_arn:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+      required: [audience]
+      additionalProperties: false
+  # A key authenticates with either a credentials JSON or AWS workload identity federation, never
+  # both; mirrors the rule in transports/config.schema.json and the API's validation.
+  if:
+    required: [aws_workload_identity]
+  then:
+    properties:
+      auth_credentials:
+        anyOf:
+          - type: string
+            maxLength: 0
+          - type: object
+            properties:
+              value:
+                type: string
+                maxLength: 0
+              ref:
+                type: string
+                maxLength: 0
 
 BedrockKeyConfig:
   type: object
@@ -196,12 +241,12 @@ Key:
       type: array
       items:
         type: string
-      description: List of models this key can access (whitelist)
+      description: List of models this key can access (whitelist). `["*"]` allows every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name; an empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400. `blacklisted_models` wins over this list.
     blacklisted_models:
       type: array
       items:
         type: string
-      description: List of models this key cannot access (blacklist)
+      description: List of models this key cannot access (blacklist), which wins over `models`. `["*"]` blocks every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name; an empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
     weight:
       type: number
       description: Weight for load balancing
@@ -265,6 +310,9 @@ AllowedRequests:
       type: boolean
     embedding:
       type: boolean
+    decisions:
+      type: boolean
+      description: Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API
     speech:
       type: boolean
     speech_stream:
@@ -341,6 +389,8 @@ ProviderResponse:
       $ref: '#/CustomProviderConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
+    injected_tools:
+      $ref: '#/InjectedToolsConfig'
     provider_status:
       $ref: '#/ProviderStatus'
     status:
@@ -388,6 +438,8 @@ AddProviderRequest:
       $ref: '#/CustomProviderConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
+    injected_tools:
+      $ref: '#/InjectedToolsConfig'
 
 CacheControlInjectionPoint:
   type: object
@@ -422,6 +474,34 @@ PromptCacheConfig:
       items:
         $ref: '#/CacheControlInjectionPoint'
 
+InjectedToolsConfig:
+  type: object
+  description: >-
+    MCP tools injected into every chat and responses request served by this provider and
+    executed server side when the model calls them. The client never sees the injected
+    tool call, only the final answer.
+  additionalProperties: false
+  properties:
+    web_search:
+      $ref: '#/InjectedToolRef'
+
+InjectedToolRef:
+  type: object
+  description: >-
+    MCP tool used as the provider's web search. Replaces any native web search tool or
+    web_search_options the client sends.
+  required: [mcp_client_name, tool_name]
+  additionalProperties: false
+  properties:
+    mcp_client_name:
+      type: string
+      minLength: 1
+      description: Name of the configured MCP client that provides the tool.
+    tool_name:
+      type: string
+      minLength: 1
+      description: Tool name as the MCP server exposes it, without the client prefix.
+
 UpdateProviderRequest:
   type: object
   description: Update provider request. Keys are managed separately via /api/providers/{provider}/keys.
@@ -442,6 +522,11 @@ UpdateProviderRequest:
       $ref: '#/CustomProviderConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
+    injected_tools:
+      description: Send null to remove the provider's injected tools.
+      oneOf:
+        - $ref: '#/InjectedToolsConfig'
+        - type: 'null'
 
 ListProviderKeysResponse:
   type: object

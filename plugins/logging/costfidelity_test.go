@@ -959,7 +959,6 @@ func TestRecalculateCostsBackfillsRecoveredUsageSoSecondRunSkipsObjectStore(t *t
 // calculateBatchAggregateCost reprices per model_breakdown entry instead, the
 // same way settlement originally priced each result item.
 
-
 // repriceAggregate drives the production seam: RepriceLog asks whichever job kind
 // owns the row to recompute it. Returns the cost and the kind's re-serialized
 // debug blob, matching the shape the old plugin-local helper returned.
@@ -1469,6 +1468,24 @@ func TestCalculateVideoAggregateCost_KeepsProviderReportedCost(t *testing.T) {
 	assert.NotEqual(t, 0.5*4, cost, "the catalog rate must not override the provider's own figure")
 }
 
+// A provider configured to ignore its reported cost reprices the saved video from the catalog.
+func TestCalculateVideoAggregateCost_IgnoredProviderCostReprices(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	plugin.pricingManager.SetIgnoreProviderCost(schemas.OpenAI, true)
+	providerCost := 0.0432
+	entry := videoSettlementRow("v-ignored", &schemas.VideoAccountingDebug{
+		Seconds:      new(4),
+		Size:         "1792x1024",
+		OutputCount:  1,
+		RequestType:  schemas.VideoGenerationRequest,
+		ProviderCost: &providerCost,
+	}, schemas.VideoStatusCompleted)
+
+	cost, _, err := repriceAggregate(t, plugin, entry)
+	require.NoError(t, err)
+	assertCostsEqual(t, "catalog rate applies", cost, 0.5*4)
+}
+
 // A failed generation settled at a real price of zero. Repricing must not turn that
 // into an error and park it in the backfill for every MissingCostOnly pass to retry.
 func TestCalculateVideoAggregateCost_FailedStaysZero(t *testing.T) {
@@ -1555,4 +1572,157 @@ func TestFailedVideoRepricesAsSettledZeroNotSkipped(t *testing.T) {
 	// an unresolved one. Getting it wrong is invisible until the backfill never drains.
 	settledZero := repriced.Cost <= 0 && !repriced.DisplayOnly
 	assert.True(t, settledZero, "must persist CostUpdate{} and count as priced")
+}
+
+// TestPricingScopesForLogCarriesBilledAt guards the one pricing input a reprice
+// cannot re-derive from the reconstructed response. Everything else the row was
+// billed under (served tier, OCR pages, speech usage) is restored from dedicated
+// columns; the billing instant has to come from the row's Timestamp the same
+// way. Without it, a model on a peak/off-peak schedule resolves time-of-day
+// pricing against whenever the recalculation happened to run, so the same row
+// reprices to a different cost on every pass.
+func TestPricingScopesForLogCarriesBilledAt(t *testing.T) {
+	vk := "vk-1"
+	userID := "user-1"
+	ts := time.Date(2026, 8, 17, 2, 0, 0, 0, time.UTC)
+
+	scopes := pricingScopesForLog(&logstore.Log{
+		Timestamp:     ts,
+		Provider:      string(schemas.DeepSeek),
+		SelectedKeyID: "key-1",
+		VirtualKeyID:  &vk,
+		UserID:        &userID,
+	})
+
+	if !scopes.BilledAt.Equal(ts) {
+		t.Fatalf("BilledAt = %v, want %v", scopes.BilledAt, ts)
+	}
+	if scopes.Provider != string(schemas.DeepSeek) || scopes.SelectedKeyID != "key-1" ||
+		scopes.VirtualKeyID != vk || scopes.UserID != userID {
+		t.Fatalf("unexpected scopes: %+v", scopes)
+	}
+}
+
+func TestPricingScopesForLogNilEntry(t *testing.T) {
+	if got := pricingScopesForLog(nil); !got.BilledAt.IsZero() {
+		t.Fatalf("BilledAt = %v, want zero", got.BilledAt)
+	}
+}
+
+// providerCostResponse mimics a provider that reports usage.cost in its own units (Cortecs credits).
+func providerCostResponse() *schemas.BifrostResponse {
+	return &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{
+				PromptTokens:     100,
+				CompletionTokens: 50,
+				TotalTokens:      150,
+				Cost:             &schemas.BifrostCost{TotalCost: 1067},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o"},
+			},
+		},
+	}
+}
+
+func TestAttachCostBreakdownKeepsProviderCostByDefault(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	result := providerCostResponse()
+	entry := &logstore.Log{Provider: string(schemas.OpenAI), Model: "gpt-4o"}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	plugin.applyNonStreamingOutputToEntry(entry, result, false, false)
+	plugin.attachCostBreakdown(ctx, entry, result)
+
+	require.NotNil(t, entry.TokenUsageParsed.Cost)
+	assert.InDelta(t, 1067, entry.TokenUsageParsed.Cost.TotalCost, 1e-12)
+}
+
+func TestAttachCostBreakdownIgnoresProviderCostWhenToggled(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	plugin.pricingManager.SetIgnoreProviderCost(schemas.OpenAI, true)
+	result := providerCostResponse()
+	entry := &logstore.Log{Provider: string(schemas.OpenAI), Model: "gpt-4o"}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	plugin.applyNonStreamingOutputToEntry(entry, result, false, false)
+	plugin.attachCostBreakdown(ctx, entry, result)
+
+	// gpt-4o testdata rates: input 2.5e-6/token, output 1e-5/token.
+	require.NotNil(t, entry.TokenUsageParsed.Cost)
+	assert.InDelta(t, 100*2.5e-6, entry.TokenUsageParsed.Cost.InputCost, 1e-12)
+	assert.InDelta(t, 50*1e-5, entry.TokenUsageParsed.Cost.OutputCost, 1e-12)
+	assert.InDelta(t, 100*2.5e-6+50*1e-5, entry.TokenUsageParsed.Cost.TotalCost, 1e-12)
+	// The client-facing usage keeps the provider's figure.
+	assert.InDelta(t, 1067, result.ChatResponse.Usage.Cost.TotalCost, 1e-12)
+}
+
+func TestCalculateCostForLogIgnoresStoredProviderCostWhenToggled(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	entry := &logstore.Log{
+		ID:               "req-provider-cost",
+		Timestamp:        time.Now().UTC(),
+		Object:           string(schemas.ChatCompletionRequest),
+		Provider:         string(schemas.OpenAI),
+		Model:            "gpt-4o",
+		Status:           "success",
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+		TokenUsageParsed: &schemas.BifrostLLMUsage{
+			PromptTokens:     100,
+			CompletionTokens: 50,
+			TotalTokens:      150,
+			Cost:             &schemas.BifrostCost{TotalCost: 1067},
+		},
+	}
+
+	got, err := plugin.calculateCostForLog(entry)
+	require.NoError(t, err)
+	assertCostsEqual(t, "provider cost trusted by default", got, 1067)
+
+	plugin.pricingManager.SetIgnoreProviderCost(schemas.OpenAI, true)
+	got, err = plugin.calculateCostForLog(entry)
+	require.NoError(t, err)
+	assertCostsEqual(t, "recalc ignores provider cost", got, 100*2.5e-6+50*1e-5)
+}
+
+// A stream error with a response chunk prices BilledUsage first; the later
+// attachCostBreakdown must not discard that catalog-priced breakdown.
+func TestErrorBillingBreakdownSurvivesAttachWhenToggled(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	plugin.pricingManager.SetIgnoreProviderCost(schemas.OpenAI, true)
+	entry := &logstore.Log{Provider: string(schemas.OpenAI), Model: "gpt-4o"}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	billed := &schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+		Cost:             &schemas.BifrostCost{TotalCost: 1067},
+	}
+	plugin.applyErrorBillingFromBilledUsage(ctx, entry, billed, schemas.ChatCompletionStreamRequest)
+
+	want := 100*2.5e-6 + 50*1e-5
+	require.NotNil(t, entry.Cost)
+	assert.InDelta(t, want, *entry.Cost, 1e-12)
+	require.NotNil(t, entry.TokenUsageParsed.Cost)
+	assert.InDelta(t, want, entry.TokenUsageParsed.Cost.TotalCost, 1e-12)
+	assert.InDelta(t, 1067, billed.Cost.TotalCost, 1e-12, "caller's billed usage is untouched")
+
+	// The response chunk carries no usage, so it prices to nothing.
+	chunk := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionStreamRequest,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o"},
+			},
+		},
+	}
+	plugin.attachCostBreakdown(ctx, entry, chunk)
+
+	require.NotNil(t, entry.TokenUsageParsed.Cost)
+	assert.InDelta(t, want, entry.TokenUsageParsed.Cost.TotalCost, 1e-12)
 }

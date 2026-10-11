@@ -1,12 +1,13 @@
 import { FilterSidebarTrigger } from "@/components/filters/filterSidebarTrigger";
 import { CheckboxFilterItem, FilterSection, SearchableCheckboxList, useAutoFocusOnOpen } from "@/components/filters/primitives";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Statuses } from "@/lib/constants/logs";
-import { useGetMCPLogsFilterDataQuery } from "@/lib/store";
+import { useGetAgentsQuery, useGetMCPLogsFilterDataQuery } from "@/lib/store";
 import type { MCPToolLogFilters } from "@/lib/types/logs";
-import { PanelLeftClose, RotateCcw } from "lucide-react";
+import { PanelLeftClose, RotateCcw, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 const COLLAPSE_STORAGE_KEY = "mcp-filter-sidebar-collapsed";
@@ -93,8 +94,50 @@ export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarP
 					<ToolNamesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					{/* Rest closed unless they have active filters */}
 					<ServersFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<AgentsFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ExactIDFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="session_id"
+						title="Session ID"
+						placeholder="Exact session ID"
+						testId="mcp-session-id-filter"
+					/>
+					<ExactIDFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="agent_correlation_id"
+						title="Agent correlation ID"
+						placeholder="Exact Agent correlation ID"
+						testId="mcp-agent-correlation-id-filter"
+					/>
 					<AppFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<VirtualKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
+					{(
+						[
+							["user_ids", "Users"],
+							["team_ids", "Teams"],
+							["customer_ids", "Customers"],
+							["business_unit_ids", "Business units"],
+							["project_ids", "Projects"],
+							["device_ids", "Devices"],
+						] as const
+					).map(([key, label]) =>
+						filters[key]?.length ? (
+							<FilterSection key={key} title={label} defaultOpen>
+								<Button
+									variant="ghost"
+									size="sm"
+									className="w-full justify-between"
+									data-testid={`mcp-clear-${key}`}
+									onClick={() => onFiltersChange({ ...filters, [key]: [] })}
+								>
+									<span>{filters[key]!.length} selected</span>
+									<RotateCcw className="size-3" />
+								</Button>
+							</FilterSection>
+						) : null,
+					)}
 				</div>
 			</ScrollArea>
 		</div>
@@ -111,6 +154,62 @@ interface FilterComponentProps {
 	defaultOpen?: boolean;
 }
 
+function AgentsFilter({ filters, onFiltersChange }: FilterComponentProps) {
+	const selected = filters.agent_names ?? [];
+	const hasActive = selected.length > 0;
+	const [opened, setOpened] = useState(hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const { data, isLoading } = useGetAgentsQuery(undefined, { skip: !opened && !hasActive });
+	const items = useMemo(
+		() =>
+			[...new Set([...(data?.agents.map((agent) => agent.name) ?? []), ...(filters.agent_names ?? [])])]
+				.sort()
+				.map((name) => ({ key: name, label: name })),
+		[data?.agents, filters.agent_names],
+	);
+	return (
+		<FilterSection title="Agent" defaultOpen={hasActive} loading={isLoading} onOpenChange={setOpened}>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search agents"
+				items={items}
+				isSelected={(name) => selected.includes(name)}
+				onToggle={(name) => {
+					const next = selected.includes(name) ? selected.filter((agentName) => agentName !== name) : [...selected, name];
+					onFiltersChange({ ...filters, agent_names: next.length > 0 ? next : undefined });
+				}}
+				testIdPrefix="mcp-agent-filter"
+				normalizeTestIdKey
+			/>
+		</FilterSection>
+	);
+}
+
+interface ExactIDFilterProps extends FilterComponentProps {
+	filterKey: "session_id" | "agent_correlation_id";
+	title: string;
+	placeholder: string;
+	testId: string;
+}
+
+function ExactIDFilter({ filters, onFiltersChange, filterKey, title, placeholder, testId }: ExactIDFilterProps) {
+	const hasActive = !!filters[filterKey];
+	return (
+		<FilterSection title={title} defaultOpen={hasActive}>
+			<div className="relative">
+				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+				<Input
+					value={filters[filterKey] || ""}
+					onChange={(event) => onFiltersChange({ ...filters, [filterKey]: event.target.value })}
+					placeholder={placeholder}
+					className="h-8 border-0 pl-8 text-sm"
+					data-testid={testId}
+				/>
+			</div>
+		</FilterSection>
+	);
+}
+
 // ---------------------------------------------------------------------------
 // StatusFilter
 // ---------------------------------------------------------------------------
@@ -120,7 +219,7 @@ function StatusFilter({ filters, onFiltersChange, defaultOpen }: FilterComponent
 
 	return (
 		<FilterSection title="Status" defaultOpen={defaultOpen || hasActive}>
-			{Statuses.map((status) => (
+			{[...Statuses, "unknown"].map((status) => (
 				<CheckboxFilterItem
 					key={status}
 					labelClassName="capitalize"

@@ -89,6 +89,50 @@ func TestValidateResponsesToolsForProvider(t *testing.T) {
 			wantKeep: 2,
 		},
 		{
+			// The reported Fireworks failure: its Anthropic-compatible endpoint
+			// answers a server web_search tool with 400 "server-side web search
+			// is not supported on this endpoint", so the tool has to be dropped
+			// before the request leaves Bifrost.
+			name:        "fireworks drops web_search",
+			provider:    schemas.Fireworks,
+			input:       []schemas.ResponsesTool{serverTool(schemas.ResponsesToolTypeWebSearch)},
+			wantKeep:    0,
+			wantDropped: []string{string(schemas.ResponsesToolTypeWebSearch)},
+			assertNotes: "Anthropic-hosted server tools do not exist on Fireworks",
+		},
+		{
+			name:     "fireworks keeps the caller's function tools",
+			provider: schemas.Fireworks,
+			input:    []schemas.ResponsesTool{fnTool, serverTool(schemas.ResponsesToolTypeWebSearch), fnTool},
+			wantKeep: 2,
+			wantDropped: []string{
+				string(schemas.ResponsesToolTypeWebSearch),
+			},
+		},
+		{
+			name:        "vllm drops web_search",
+			provider:    schemas.VLLM,
+			input:       []schemas.ResponsesTool{serverTool(schemas.ResponsesToolTypeWebSearch)},
+			wantKeep:    0,
+			wantDropped: []string{string(schemas.ResponsesToolTypeWebSearch)},
+		},
+		{
+			name:        "sgl drops web_search",
+			provider:    schemas.SGL,
+			input:       []schemas.ResponsesTool{serverTool(schemas.ResponsesToolTypeWebSearch)},
+			wantKeep:    0,
+			wantDropped: []string{string(schemas.ResponsesToolTypeWebSearch)},
+		},
+		{
+			// DeepSeek's endpoint does serve web search, so its entry keeps the
+			// tool. Guards the three entries above against a copy-paste that
+			// would silently disable a working feature.
+			name:     "deepseek keeps web_search",
+			provider: schemas.DeepSeek,
+			input:    []schemas.ResponsesTool{serverTool(schemas.ResponsesToolTypeWebSearch)},
+			wantKeep: 1,
+		},
+		{
 			name:     "unknown provider keeps everything (forward-compat)",
 			provider: schemas.ModelProvider("custom-new-provider"),
 			input:    []schemas.ResponsesTool{serverTool(schemas.ResponsesToolTypeMCP)},

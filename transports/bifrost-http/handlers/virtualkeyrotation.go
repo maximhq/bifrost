@@ -12,6 +12,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"gorm.io/gorm"
 )
 
 // VirtualKeyRotator rotates a virtual key's value exactly the way
@@ -70,7 +71,20 @@ func (r *VirtualKeyRotator) RotateVirtualKey(ctx context.Context, vkID string) (
 	} else {
 		vk.ClearPreviousValue()
 	}
-	if err := r.configStore.UpdateVirtualKey(ctx, vk); err != nil {
+	// MCP OAuth grants minted in vk mode are bound to this key's row id, not to
+	// its value, so they would keep refreshing under the new value forever, and a
+	// consented code not yet exchanged would mint a fresh grant after the fact.
+	// Rotation is the response to a value that may have leaked, and everything
+	// obtained with that value has to go with it; the cooldown applies to the
+	// retired value itself, not to what was minted from it. Revoking the grants
+	// and storing the new value commit in one transaction: if either fails,
+	// neither happens, and in-memory governance is reloaded only after commit.
+	if err := r.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		if err := r.configStore.RevokeOAuth2GrantsBySubject(ctx, string(schemas.MCPAuthModeVK), vk.ID, tx); err != nil {
+			return fmt.Errorf("failed to revoke the virtual key's MCP OAuth grants, rotation aborted: %w", err)
+		}
+		return r.configStore.UpdateVirtualKey(ctx, vk, tx)
+	}); err != nil {
 		return nil, err
 	}
 	preloadedVk, err := r.governanceManager.ReloadVirtualKey(ctx, vk.ID)

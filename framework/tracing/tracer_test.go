@@ -7,7 +7,11 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -742,4 +746,505 @@ func TestIntegration_FullDistributedTraceFlow(t *testing.T) {
 	t.Logf("    -> HTTP Span: %s (ParentID: %s)", httpSpan.SpanID, httpSpan.ParentID)
 	t.Logf("      -> LLM Span: %s (ParentID: %s)", llmSpan.SpanID, llmSpan.ParentID)
 	t.Logf("        -> Plugin Span: %s (ParentID: %s)", pluginSpan.SpanID, pluginSpan.ParentID)
+}
+
+// Span-derived connectors read the classification off the span, so it must land there.
+func TestTracer_PopulateLLMResponseAttributesStampsErrorType(t *testing.T) {
+	newSpan := func(t *testing.T, requestType schemas.RequestType) (*Tracer, *TraceStore, string, schemas.SpanHandle, *schemas.BifrostContext) {
+		t.Helper()
+		store := NewTraceStore(5*time.Minute, nil)
+		t.Cleanup(store.Stop)
+		tracer := NewTracer(store, nil, nil)
+		t.Cleanup(tracer.Stop)
+
+		traceID := tracer.CreateTrace("")
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+		_, handle := tracer.StartSpan(ctx, "llm-call", schemas.SpanKindLLMCall)
+		// Mirrors core/bifrost.go, which stamps request.type at span creation.
+		tracer.SpanFromHandle(handle).SetAttribute(schemas.AttrLegacyRequestType, string(requestType))
+		return tracer, store, traceID, handle, ctx
+	}
+
+	t.Run("provider 404 on an embedding", func(t *testing.T) {
+		tracer, store, traceID, handle, ctx := newSpan(t, schemas.EmbeddingRequest)
+		status := 404
+		tracer.PopulateLLMResponseAttributes(ctx, handle, nil, &schemas.BifrostError{
+			StatusCode: &status,
+			// The raw provider type must not win over the classification.
+			Error: &schemas.ErrorField{Type: schemas.Ptr("invalid_request_error")},
+		})
+
+		got := store.GetTrace(traceID).RootSpan.Attributes[schemas.AttrBifrostErrorType]
+		if got != string(schemas.ErrorTypeCallerModelUnknown) {
+			t.Errorf("attribute %s = %v, want %q", schemas.AttrBifrostErrorType, got, schemas.ErrorTypeCallerModelUnknown)
+		}
+	})
+
+	t.Run("a declaration wins over the status", func(t *testing.T) {
+		tracer, store, traceID, handle, ctx := newSpan(t, schemas.ChatCompletionRequest)
+		status := 403
+		bifrostErr := &schemas.BifrostError{StatusCode: &status}
+		bifrostErr.ExtraFields.ErrorType = schemas.ErrorTypePolicyModelBlocked
+		tracer.PopulateLLMResponseAttributes(ctx, handle, nil, bifrostErr)
+
+		got := store.GetTrace(traceID).RootSpan.Attributes[schemas.AttrBifrostErrorType]
+		if got != string(schemas.ErrorTypePolicyModelBlocked) {
+			t.Errorf("attribute %s = %v, want %q", schemas.AttrBifrostErrorType, got, schemas.ErrorTypePolicyModelBlocked)
+		}
+	})
+
+	t.Run("absent on success", func(t *testing.T) {
+		tracer, store, traceID, handle, ctx := newSpan(t, schemas.ChatCompletionRequest)
+		tracer.PopulateLLMResponseAttributes(ctx, handle, nil, nil)
+
+		if _, ok := store.GetTrace(traceID).RootSpan.Attributes[schemas.AttrBifrostErrorType]; ok {
+			t.Errorf("attribute %s present on a successful span", schemas.AttrBifrostErrorType)
+		}
+	})
+}
+
+// pluginSpanDemandStub declares its plugin-span and overhead demand explicitly.
+type pluginSpanDemandStub struct {
+	name           string
+	wantsPlugin    bool
+	statesPlugin   bool
+	wantsOverhead  bool
+	statesOverhead bool
+}
+
+func (p *pluginSpanDemandStub) GetName() string                                  { return p.name }
+func (p *pluginSpanDemandStub) Inject(_ context.Context, _ *schemas.Trace) error { return nil }
+func (p *pluginSpanDemandStub) Cleanup() error                                   { return nil }
+
+// ConsumesPluginSpans is only consulted when statesPlugin is set; a stub that
+// leaves it unset stands in for a connector predating the interface.
+func (p *pluginSpanDemandStub) ConsumesPluginSpans() bool {
+	if !p.statesPlugin {
+		return true
+	}
+	return p.wantsPlugin
+}
+
+func (p *pluginSpanDemandStub) ConsumesOverheadSpans() bool {
+	if !p.statesOverhead {
+		return false
+	}
+	return p.wantsOverhead
+}
+
+// TestPluginSpanDemandGate pins when plugin hook spans are created. Skipping is
+// irreversible, so the default in every ambiguous case must be to create them.
+func TestPluginSpanDemandGate(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		plugins []schemas.ObservabilityPlugin
+		want    bool
+	}{
+		{
+			name:    "no connector attached",
+			plugins: []schemas.ObservabilityPlugin{},
+			want:    false,
+		},
+		{
+			name:    "connector silent on plugin spans",
+			plugins: []schemas.ObservabilityPlugin{&pluginSpanDemandStub{name: "silent"}},
+			want:    true,
+		},
+		{
+			name: "connector declines plugin spans",
+			plugins: []schemas.ObservabilityPlugin{
+				&pluginSpanDemandStub{name: "declines", statesPlugin: true, wantsPlugin: false},
+			},
+			want: false,
+		},
+		{
+			name: "connector declines spans but consumes the overhead breakdown",
+			plugins: []schemas.ObservabilityPlugin{
+				&pluginSpanDemandStub{name: "overhead", statesPlugin: true, wantsPlugin: false,
+					statesOverhead: true, wantsOverhead: true},
+			},
+			want: true,
+		},
+		{
+			name: "one connector declines, another does not",
+			plugins: []schemas.ObservabilityPlugin{
+				&pluginSpanDemandStub{name: "declines", statesPlugin: true, wantsPlugin: false},
+				&pluginSpanDemandStub{name: "silent"},
+			},
+			want: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewTraceStore(5*time.Minute, nil)
+			tracer := NewTracer(store, nil, nil)
+			defer tracer.Stop()
+			tracer.SetObservabilityPlugins(tc.plugins, nil)
+
+			traceID := tracer.CreateTrace("")
+			ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+			ctx, root := tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
+			if root == nil {
+				t.Fatal("root span was skipped; only plugin spans are gated")
+			}
+
+			_, pluginHandle := tracer.StartSpanID(ctx, "plugin.governance.prehook", schemas.SpanKindPlugin)
+			if got := pluginHandle != nil; got != tc.want {
+				t.Errorf("plugin span created = %v, want %v", got, tc.want)
+			}
+
+			// An LLM span is never gated, whatever the demand.
+			if _, llm := tracer.StartSpanID(ctx, "chat gpt-4o", schemas.SpanKindLLMCall); llm == nil {
+				t.Error("LLM span was skipped; only plugin spans are gated")
+			}
+		})
+	}
+}
+
+// TestPluginSpanDemandUnknownCreatesSpans covers the boot window: a tracer whose
+// plugins have not been registered yet must create plugin spans, since unknown
+// demand is not the same as no demand.
+func TestPluginSpanDemandUnknownCreatesSpans(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	ctx, _ = tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
+
+	if _, handle := tracer.StartSpanID(ctx, "plugin.governance.prehook", schemas.SpanKindPlugin); handle == nil {
+		t.Error("plugin span skipped before SetObservabilityPlugins ran; unknown demand must not drop spans")
+	}
+}
+
+// TestPluginSpanDemandRecomputedOnReload covers adding a connector after boot:
+// the transport calls SetObservabilityPlugins again (server.reloadObservabilityPlugins),
+// which recomputes demand, so requests starting after that create plugin spans.
+// Requests already in flight keep whatever the demand was when their spans were
+// created, which is why an empty plugin set is only ever declared deliberately.
+func TestPluginSpanDemandRecomputedOnReload(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	startPluginSpan := func() bool {
+		traceID := tracer.CreateTrace("")
+		ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+		ctx, _ = tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
+		_, handle := tracer.StartSpanID(ctx, "plugin.governance.prehook", schemas.SpanKindPlugin)
+		return handle != nil
+	}
+
+	// Boot with no connectors: plugin spans are skipped.
+	tracer.SetObservabilityPlugins(nil, nil)
+	if startPluginSpan() {
+		t.Error("plugin span created with no connector attached")
+	}
+
+	// A connector is configured at runtime.
+	tracer.SetObservabilityPlugins(
+		[]schemas.ObservabilityPlugin{&pluginSpanDemandStub{name: "late"}}, nil)
+	if !startPluginSpan() {
+		t.Error("plugin span skipped after a connector was added; demand must be recomputed on reload")
+	}
+
+	// And removed again.
+	tracer.SetObservabilityPlugins(nil, nil)
+	if startPluginSpan() {
+		t.Error("plugin span created after the last connector was removed")
+	}
+}
+
+// A Responses API refusal must reach the llm.call span as both the spec'd
+// gen_ai.response.finish_reasons list and the legacy singular
+// gen_ai.response.finish_reason, exactly like a chat completion does. Before
+// the fix the Responses populator never emitted the key, so the tracer had
+// nothing to derive the singular from and both attributes were absent.
+func TestTracer_PopulateLLMResponseAttributesEmitsResponsesFinishReason(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, handle := tracer.StartSpan(ctx, "llm.call", schemas.SpanKindLLMCall)
+
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			ID:         schemas.Ptr("resp_refusal"),
+			Model:      "gpt-4o-mini",
+			StopReason: schemas.Ptr("refusal"),
+		},
+	}
+
+	bctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	tracer.PopulateLLMResponseAttributes(bctx, handle, resp, nil)
+
+	span := store.GetTrace(traceID).RootSpan
+	require.Equal(t, []string{"refusal"}, span.Attributes[schemas.AttrFinishReasons])
+	require.Equal(t, "refusal", span.Attributes[schemas.AttrFinishReason])
+}
+
+// Before SetObservabilityPlugins runs, demand is unknown rather than absent. A
+// request in flight during boot must still get its attributes; declaring an
+// empty plugin set is what expresses "nothing is listening".
+func TestDemandUnknownBeforeRegistrationIsFull(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	if d := tracer.Demand(); !d.Any || !d.Content {
+		t.Errorf("unregistered tracer demand = %+v, want full", d)
+	}
+
+	// An explicit empty set is the opposite: nothing is listening.
+	tracer.SetObservabilityPlugins(nil, nil)
+	if d := tracer.Demand(); d.Any || d.Content {
+		t.Errorf("empty plugin set demand = %+v, want zero", d)
+	}
+}
+
+// Raw demand must be recomputed on reload, like plugin-span demand: a connector
+// added after boot gets raw, and removing the last one stops building it.
+func TestRawPayloadDemandRecomputedOnReload(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	// Before registration, demand is unknown — raw must stay off.
+	if tracer.Demand().RawPayloads {
+		t.Error("raw demanded before any connector registered")
+	}
+
+	tracer.SetObservabilityPlugins(
+		[]schemas.ObservabilityPlugin{&rawDemandStub{name: "quiet", wants: false}}, nil)
+	if tracer.Demand().RawPayloads {
+		t.Error("raw demanded when the only connector declined")
+	}
+
+	tracer.SetObservabilityPlugins(
+		[]schemas.ObservabilityPlugin{
+			&rawDemandStub{name: "quiet", wants: false},
+			&rawDemandStub{name: "loud", wants: true},
+		}, nil)
+	if !tracer.Demand().RawPayloads {
+		t.Error("raw not demanded after a consuming connector was added")
+	}
+
+	tracer.SetObservabilityPlugins(nil, nil)
+	if tracer.Demand().RawPayloads {
+		t.Error("raw still demanded after the last connector was removed")
+	}
+}
+
+type rawDemandStub struct {
+	name  string
+	wants bool
+}
+
+func (p *rawDemandStub) GetName() string                                  { return p.name }
+func (p *rawDemandStub) Inject(_ context.Context, _ *schemas.Trace) error { return nil }
+func (p *rawDemandStub) Cleanup() error                                   { return nil }
+func (p *rawDemandStub) ConsumesRawPayloads() bool                        { return p.wants }
+
+// A failed request whose provider is set to ignore_provider_cost must not fall
+// back to the provider-reported BilledUsage.Cost when the catalog cannot price
+// the model: that figure is exactly what the operator chose to discard (e.g.
+// Cortecs credits read as dollars).
+func TestPopulateLLMResponseAttributes_ErrorPathHonorsIgnoreProviderCost(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		ignore   bool
+		wantCost bool
+	}{
+		{name: "provider cost trusted", ignore: false, wantCost: true},
+		{name: "provider cost ignored", ignore: true, wantCost: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog := modelcatalog.NewTestCatalog(nil)
+			catalog.SetIgnoreProviderCost("cortecs", tc.ignore)
+			tracer := NewTracer(NewTraceStore(time.Hour, nil), catalog, nil)
+
+			_, ctx := newHandleTestCtx(tracer)
+			_, handle := tracer.StartSpanID(ctx, "llm", schemas.SpanKindLLMCall)
+			span := tracer.SpanFromHandle(handle)
+			require.NotNil(t, span)
+			span.LLM = &schemas.LLMSpanData{RequestType: schemas.ChatCompletionRequest}
+
+			bifrostErr := &schemas.BifrostError{}
+			bifrostErr.ExtraFields.Provider = "cortecs"
+			bifrostErr.ExtraFields.OriginalModelRequested = "unpriced-model"
+			bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionRequest
+			bifrostErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{
+				PromptTokens: 100,
+				TotalTokens:  100,
+				Cost:         &schemas.BifrostCost{TotalCost: 1067},
+			}
+
+			tracer.PopulateLLMResponseAttributes(schemas.NewBifrostContext(ctx, time.Now()), handle, nil, bifrostErr)
+
+			got, ok := span.GetAttribute(schemas.AttrUsageCost)
+			if tc.wantCost {
+				require.True(t, ok, "trusted provider cost should be recorded")
+				require.Equal(t, 1067.0, got)
+			} else {
+				require.False(t, ok, "ignored provider cost leaked into the trace: %v", got)
+			}
+		})
+	}
+}
+
+// streamProviderCostChunks feeds a two-chunk chat stream for an uncatalogued model
+// whose final chunk reports usage.cost in the provider's own units, and returns the
+// accumulated result for the final chunk.
+func streamProviderCostChunks(t *testing.T, tracer *Tracer, ctx *schemas.BifrostContext) *schemas.StreamAccumulatorResult {
+	t.Helper()
+	traceID := "trace-stream-provider-cost"
+	tracer.GetAccumulator().CreateStreamAccumulator(traceID, time.Now())
+	t.Cleanup(func() { tracer.ForceCleanupStreamAccumulator(traceID) })
+
+	extra := schemas.BifrostResponseExtraFields{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		RoutingInfo: schemas.RoutingInfo{Provider: "cortecs", Model: "unpriced-model"},
+	}
+	content := "hi"
+	first := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{{ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+			Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &content},
+		}}},
+		ExtraFields: extra,
+	}}
+	tracer.ProcessStreamingChunk(ctx, traceID, false, first, nil)
+
+	extra.ChunkIndex = 1
+	last := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{
+			PromptTokens:     1000,
+			CompletionTokens: 500,
+			TotalTokens:      1500,
+			Cost:             &schemas.BifrostCost{TotalCost: 1067},
+		},
+		ExtraFields: extra,
+	}}
+	result := tracer.ProcessStreamingChunk(ctx, traceID, true, last, nil)
+	require.NotNil(t, result)
+	return result
+}
+
+// When the catalog cannot price a streamed model, the accumulated result falls back
+// to the provider's reported cost, unless the provider is configured with
+// ignore_provider_cost.
+func TestProcessStreamingChunk_HonorsIgnoreProviderCost(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		ignore   bool
+		wantCost bool
+	}{
+		{name: "provider cost trusted", ignore: false, wantCost: true},
+		{name: "provider cost ignored", ignore: true, wantCost: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog := modelcatalog.NewTestCatalog(nil)
+			catalog.SetIgnoreProviderCost("cortecs", tc.ignore)
+			tracer := NewTracer(NewTraceStore(time.Hour, nil), catalog, bifrost.NewNoOpLogger())
+
+			result := streamProviderCostChunks(t, tracer, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+
+			if tc.wantCost {
+				require.NotNil(t, result.Cost)
+				require.Equal(t, 1067.0, *result.Cost)
+			} else if result.Cost != nil {
+				require.Zero(t, *result.Cost, "ignored provider cost leaked into the accumulated stream cost")
+			}
+		})
+	}
+}
+
+// The accumulated stream cost must be priced with the same scopes as the request,
+// so a user-scoped pricing override applies to the streamed total just as it does
+// to the per-category breakdown the logging plugin computes from the real context.
+// The user comes from the request's grant; the deprecated context key still works
+// for contexts built without one.
+func TestProcessStreamingChunk_PricesWithRequestUserScope(t *testing.T) {
+	const userID = "user-stream-pricing"
+	for _, tc := range []struct {
+		name     string
+		identify func(ctx *schemas.BifrostContext)
+	}{
+		{
+			name: "grant identity",
+			identify: func(ctx *schemas.BifrostContext) {
+				g := grant.New()
+				g.SetIdentity(grant.NewIdentity(schemas.Credential{}, &schemas.UserRef{ID: userID}, nil, nil, nil, nil, nil))
+				require.True(t, ctx.SetGrant(g))
+			},
+		},
+		{
+			name: "deprecated user id key",
+			identify: func(ctx *schemas.BifrostContext) {
+				ctx.SetValue(schemas.BifrostContextKeyUserID, userID)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog := modelcatalog.NewTestCatalog(nil)
+			catalog.SetIgnoreProviderCost("cortecs", true)
+			uid := userID
+			require.NoError(t, catalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
+				ID:               "user-scoped-override",
+				ScopeKind:        "user",
+				UserID:           &uid,
+				MatchType:        "exact",
+				Pattern:          "unpriced-model",
+				RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest},
+				PricingPatchJSON: `{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002}`,
+			}}))
+			tracer := NewTracer(NewTraceStore(time.Hour, nil), catalog, bifrost.NewNoOpLogger())
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			tc.identify(ctx)
+			result := streamProviderCostChunks(t, tracer, ctx)
+
+			// 1000*0.000001 + 500*0.000002
+			require.NotNil(t, result.Cost)
+			require.InDelta(t, 0.002, *result.Cost, 1e-12)
+		})
+	}
+}
+
+// The streamed total is billed at the request's start time, not the moment the
+// stream finishes, so an off-peak request keeps its discount however late its
+// final chunk lands.
+func TestProcessStreamingChunk_PricesAtRequestStartTime(t *testing.T) {
+	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog.SetIgnoreProviderCost("cortecs", true)
+	providerID := "cortecs"
+	// Peak covers every day except the 6-hour gap from 00:00 to 06:00 UTC, so
+	// "now" is only off-peak during that gap.
+	require.NoError(t, catalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
+		ID:           "off-peak-override",
+		ScopeKind:    "provider",
+		ProviderID:   &providerID,
+		MatchType:    "exact",
+		Pattern:      "unpriced-model",
+		RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002,` +
+			`"off_peak_cost_multiplier":0.5,` +
+			`"peak_hours":{"timezone":"UTC","windows":[{"days":[0,1,2,3,4,5,6],"start":"06:00","end":"00:00"}]}}`,
+	}}))
+	tracer := NewTracer(NewTraceStore(time.Hour, nil), catalog, bifrost.NewNoOpLogger())
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	// 03:00 UTC is inside the off-peak gap.
+	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, time.Date(2026, 8, 17, 3, 0, 0, 0, time.UTC))
+	result := streamProviderCostChunks(t, tracer, ctx)
+
+	// (1000*0.000001 + 500*0.000002) * 0.5
+	require.NotNil(t, result.Cost)
+	require.InDelta(t, 0.001, *result.Cost, 1e-12)
 }

@@ -11,7 +11,7 @@ interface ExternalCacheTokenMeterChartProps {
 	data: TokenHistogramResponse | null;
 }
 
-const METER_COLORS = { cached: "#06b6d4", input: "#3b82f6" };
+const METER_COLORS = { cached: "var(--chart-seq-2)", input: "var(--chart-seq-5)" };
 
 function ExternalCacheTokenMeterChartImpl({ data }: ExternalCacheTokenMeterChartProps) {
 	const { ref, width, height } = useGaugeSize();
@@ -46,7 +46,7 @@ function ExternalCacheTokenMeterChartImpl({ data }: ExternalCacheTokenMeterChart
 					{!hasData && <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>}
 					{hasData && gaugeGeometry && (
 						<>
-							<ResponsiveContainer width="100%" height="100%">
+							<ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
 								<PieChart>
 									<Pie
 										data={valueData}
@@ -76,14 +76,14 @@ function ExternalCacheTokenMeterChartImpl({ data }: ExternalCacheTokenMeterChart
 					<div>
 						<div className="flex shrink-0 flex-col items-center pt-1 leading-none">
 							<div className="text-muted-foreground text-3xl font-semibold tracking-tight">{percentage.toFixed(1)}%</div>
-							<div className="mt-1 flex items-center gap-1 text-[11px] text-zinc-400">
+							<div className="text-muted-foreground mt-1 flex items-center gap-1 text-[11px]">
 								<span>of input tokens cached by provider</span>
 								<Tooltip>
 									<TooltipTrigger asChild>
 										<button
 											type="button"
 											data-testid="external-cache-meter-info-btn"
-											className="text-zinc-500 transition-colors hover:text-zinc-300"
+											className="text-muted-foreground hover:text-foreground transition-colors"
 											aria-label="More information about external cache hit rate"
 										>
 											<Info className="h-3 w-3" />

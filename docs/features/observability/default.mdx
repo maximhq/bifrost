@@ -51,42 +51,53 @@ When Bifrost retries a request (per-key failure or transient network/5xx error) 
 |-------|---------|
 | `selected_key_id` / `selected_key_name` | The API key that **successfully** served the request. `null` when all attempts failed - use `attempt_trail` to see which keys were tried. |
 | `number_of_retries` | Total number of attempts minus one. **Does not indicate which key was used on each attempt.** |
-| `attempt_trail` | Ordered array of every attempt. Each entry contains `attempt`, `key_id`, `key_name`, `fail_reason` (set on every failed attempt — including the terminal one — and omitted from the JSON on a successful attempt), and `triggered_rotation` (always present; `true` only when this attempt's per-key failure — rate-limit (429), auth (401/403), or billing (402) — caused the next retry to switch to a different key, `false` otherwise). |
+| `attempt_trail` | Ordered array of every attempt. Each entry contains `attempt`, `key_id`, `key_name`, `fail_reason` (set on every failed attempt, including the terminal one, and omitted from the JSON on a successful attempt), `failure_class` and `status_code` (set on every failed attempt, including transport failures where the provider never answered: those are classed `transient` and carry Bifrost's synthetic `502`; see [how failures are classified](/features/retries-and-fallbacks#how-failures-are-classified)), `retry_after_ms` (the provider's own wait for that attempt, omitted when it gave none; see [provider retry hints](/features/retries-and-fallbacks#provider-retry-hints)), and `triggered_rotation` (always present; `true` only when this attempt's per-key failure (a rate limit, a rejected credential, an exhausted quota, a model this key cannot reach, a retired model, or a region block on this key's project or account) caused the next retry to switch to a different key, `false` otherwise). |
+
+`fail_reason` is the class's label for the classes that name what the provider refused: `rate_limit_error`, `authentication_error`, `billing_error`, `model_access_error`, `model_retired_error`, `region_blocked_error`. For other failures it is the provider's own error type, falling back to `unknown`.
 
 **Example `attempt_trail`** — two rate-limit rotations then success on a third key:
 
 ```json
 "attempt_trail": [
-  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "rate_limit_error", "triggered_rotation": true },
-  { "attempt": 1, "key_id": "key-b", "key_name": "Key B", "fail_reason": "rate_limit_error", "triggered_rotation": true },
+  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "rate_limit_error", "failure_class": "rate_limit", "status_code": 429, "triggered_rotation": true },
+  { "attempt": 1, "key_id": "key-b", "key_name": "Key B", "fail_reason": "rate_limit_error", "failure_class": "rate_limit", "status_code": 429, "triggered_rotation": true },
   { "attempt": 2, "key_id": "key-c", "key_name": "Key C", "triggered_rotation": false }
 ]
 ```
 
-Auth and billing failures (401/402/403) also rotate to a different key, since the failure is bound to the credential. `fail_reason` is `authentication_error` (401/403) or `billing_error` (402):
+Permanent per-key failures also rotate to a different key, since the failure is bound to the key, and they do so even at `max_retries: 0`. A rejected credential:
 
 ```json
 "attempt_trail": [
-  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "authentication_error", "triggered_rotation": true },
+  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "authentication_error", "failure_class": "credential", "status_code": 401, "triggered_rotation": true },
   { "attempt": 1, "key_id": "key-b", "key_name": "Key B", "triggered_rotation": false }
 ]
 ```
 
-Network/5xx retries reuse the same key — they are transient server issues, not per-key problems. `triggered_rotation` is therefore `false` on network-error attempts even when a retry follows:
+A model the first key cannot reach (an Azure deployment that exists only on the second key's resource):
 
 ```json
 "attempt_trail": [
-  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "network_error", "triggered_rotation": false },
-  { "attempt": 1, "key_id": "key-a", "key_name": "Key A", "fail_reason": "rate_limit_error", "triggered_rotation": true },
+  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "model_access_error", "failure_class": "model_access", "status_code": 404, "triggered_rotation": true },
+  { "attempt": 1, "key_id": "key-b", "key_name": "Key B", "triggered_rotation": false }
+]
+```
+
+Network/5xx retries reuse the same key: they are transient server issues, not per-key problems. `triggered_rotation` is therefore `false` on network-error attempts even when a retry follows (a network error carries Bifrost's own `provider_connection_failed` type and a synthetic `502`):
+
+```json
+"attempt_trail": [
+  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "provider_connection_failed", "failure_class": "transient", "status_code": 502, "triggered_rotation": false },
+  { "attempt": 1, "key_id": "key-a", "key_name": "Key A", "fail_reason": "rate_limit_error", "failure_class": "rate_limit", "status_code": 429, "triggered_rotation": true },
   { "attempt": 2, "key_id": "key-b", "key_name": "Key B", "triggered_rotation": false }
 ]
 ```
 
-For terminal failures (no retry happens, including `max_retries = 0` and non-retryable errors), the trail has a single entry with `fail_reason` set and `triggered_rotation` `false`:
+For terminal failures (no retry happens, including non-retryable errors), the trail has a single entry with `fail_reason` set and `triggered_rotation` `false`:
 
 ```json
 "attempt_trail": [
-  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "invalid_request_error", "triggered_rotation": false }
+  { "attempt": 0, "key_id": "key-a", "key_name": "Key A", "fail_reason": "invalid_request_error", "failure_class": "caller_fault", "status_code": 400, "triggered_rotation": false }
 ]
 ```
 

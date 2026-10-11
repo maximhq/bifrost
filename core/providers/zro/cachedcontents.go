@@ -32,4 +32,3 @@ func (provider *ZroProvider) CachedContentUpdate(ctx *schemas.BifrostContext, ke
 func (provider *ZroProvider) CachedContentDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostCachedContentDeleteRequest) (*schemas.BifrostCachedContentDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CachedContentDeleteRequest, provider.GetProviderKey())
 }
-

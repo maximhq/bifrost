@@ -45,6 +45,35 @@ var contextDimSources = []struct {
 	{schemas.AttrBifrostFallbackIndex, schemas.BifrostContextKeyFallbackIndex, 2},
 }
 
+// derivedDimSources are dims applyContextSpanAttributes emits by deriving from a
+// context value rather than copying it, so they cannot use contextDimSources'
+// key-equals-value pairing.
+var derivedDimSources = []struct {
+	spanAttr string
+	ctxKey   schemas.BifrostContextKey
+	ctxValue any
+	want     any
+}{
+	{schemas.AttrBifrostApp, schemas.BifrostContextKeyUserAgent, "claude-code/1.0", "Claude Code"},
+}
+
+// TestDerivedContextSpanAttributesEmit pins the derivation, not just the wiring.
+func TestDerivedContextSpanAttributesEmit(t *testing.T) {
+	for _, d := range derivedDimSources {
+		ctx := context.WithValue(context.Background(), d.ctxKey, d.ctxValue)
+		span := &schemas.Span{}
+		applyContextSpanAttributes(span, ctx)
+		got, ok := span.Attributes[d.spanAttr]
+		if !ok {
+			t.Errorf("span attribute %q was not emitted (context key %q)", d.spanAttr, d.ctxKey)
+			continue
+		}
+		if !reflect.DeepEqual(got, d.want) {
+			t.Errorf("span attribute %q = %v, want %v", d.spanAttr, got, d.want)
+		}
+	}
+}
+
 // dimsEmittedElsewhere are registry dimensions NOT emitted by
 // applyContextSpanAttributes: request-sourced ones written at span creation, and
 // post-response ones written in framework/tracing from ExtractedFields or context.
@@ -94,8 +123,11 @@ func TestContextSpanAttributesEmit(t *testing.T) {
 // classification: a context source or "elsewhere" entry for a key no longer in
 // the registry.
 func TestEnrichmentRegistryDimsAllEmitted(t *testing.T) {
-	inContext := make(map[string]bool, len(contextDimSources))
+	inContext := make(map[string]bool, len(contextDimSources)+len(derivedDimSources))
 	for _, d := range contextDimSources {
+		inContext[d.spanAttr] = true
+	}
+	for _, d := range derivedDimSources {
 		inContext[d.spanAttr] = true
 	}
 	registry := make(map[string]bool)
@@ -113,9 +145,62 @@ func TestEnrichmentRegistryDimsAllEmitted(t *testing.T) {
 			t.Errorf("contextDimSources references %q which is no longer in EnrichmentDims", d.spanAttr)
 		}
 	}
+	for _, d := range derivedDimSources {
+		if !registry[d.spanAttr] {
+			t.Errorf("derivedDimSources references %q which is no longer in EnrichmentDims", d.spanAttr)
+		}
+	}
 	for attr := range dimsEmittedElsewhere {
 		if !registry[attr] {
 			t.Errorf("dimsEmittedElsewhere references %q which is no longer in EnrichmentDims", attr)
+		}
+	}
+}
+
+// TestContextSpanEnrichmentMatchesAttributes pins the typed dimensions to the
+// attribute keys they are emitted alongside. Both derive from one mapping, so a
+// field added to SpanEnrichment without an attribute (or the reverse) shows up
+// here rather than as a connector silently reading a zero value.
+func TestContextSpanEnrichmentMatchesAttributes(t *testing.T) {
+	ctx := context.Background()
+	for _, src := range contextDimSources {
+		ctx = context.WithValue(ctx, src.ctxKey, src.value)
+	}
+	span := &schemas.Span{Attributes: map[string]any{}}
+	applyContextSpanAttributes(span, ctx)
+	span.SetRetries(3)
+
+	if span.Enrichment == nil {
+		t.Fatal("span.Enrichment is nil, want the dimensions attached")
+	}
+	if span.Enrichment.Retries != 3 {
+		t.Errorf("Retries = %d, want 3", span.Enrichment.Retries)
+	}
+
+	// Every dimension the registry marks as context-sourced must be readable
+	// from the typed struct, not only from the attribute map.
+	typed := map[string]any{
+		schemas.AttrBifrostVirtualKeyID:    span.Enrichment.VirtualKeyID,
+		schemas.AttrBifrostSelectedKeyID:   span.Enrichment.SelectedKeyID,
+		schemas.AttrBifrostRoutingRuleID:   span.Enrichment.RoutingRuleID,
+		schemas.AttrBifrostTeamID:          span.Enrichment.TeamID,
+		schemas.AttrBifrostCustomerID:      span.Enrichment.CustomerID,
+		schemas.AttrBifrostBusinessUnitID:  span.Enrichment.BusinessUnitID,
+		schemas.AttrBifrostProjectID:       span.Enrichment.ProjectID,
+		schemas.AttrBifrostUserID:          span.Enrichment.UserID,
+		schemas.AttrBifrostUserEmail:       span.Enrichment.UserEmail,
+		schemas.AttrBifrostTeamIDs:         span.Enrichment.TeamIDs,
+		schemas.AttrBifrostCustomerIDs:     span.Enrichment.CustomerIDs,
+		schemas.AttrBifrostBusinessUnitIDs: span.Enrichment.BusinessUnitIDs,
+	}
+	for attr, got := range typed {
+		want, ok := span.Attributes[attr]
+		if !ok {
+			t.Errorf("%s: attribute not emitted", attr)
+			continue
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: typed = %#v, attribute = %#v", attr, got, want)
 		}
 	}
 }

@@ -1,16 +1,25 @@
 package network
 
 import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -572,5 +581,779 @@ func TestCreateFasthttpClientPoolSettings(t *testing.T) {
 	}
 	if client.MaxConnsPerHost != DefaultClientConfig.MaxConnsPerHost {
 		t.Errorf("MaxConnsPerHost = %d, want %d", client.MaxConnsPerHost, DefaultClientConfig.MaxConnsPerHost)
+	}
+}
+
+// TestFactoryFasthttpProxyReachesIPv6ProxyAndHonoursNoProxyList pins two things on the
+// factory's fasthttp proxy dialer (SCIM, guardrails and other API clients):
+//   - a proxy given as an IPv6 literal is reachable. The non-DualStack fasthttpproxy
+//     constructors dial the proxy over tcp4 only and fail with "couldn't find dns entries".
+//   - every entry of a comma-separated no_proxy list is honoured, not just a
+//     single-entry list.
+func TestFactoryFasthttpProxyReachesIPv6ProxyAndHonoursNoProxyList(t *testing.T) {
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Fatalf("listen on IPv6 loopback: %v", err)
+	}
+	var mu sync.Mutex
+	var targets []string
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		targets = append(targets, r.Host)
+		mu.Unlock()
+		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			_, _ = conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+			conn.Close()
+		}
+	})}
+	go func() { _ = server.Serve(listener) }()
+	defer server.Close()
+	_, port, _ := net.SplitHostPort(listener.Addr().String())
+
+	factory := NewHTTPClientFactory(&GlobalProxyConfig{
+		Enabled:      true,
+		Type:         GlobalProxyTypeHTTP,
+		URL:          "http://[::1]:" + port,
+		NoProxy:      "other.test, bypass.bifrost.test",
+		EnableForAPI: true,
+	}, nil)
+	client := factory.GetFasthttpClient(ClientPurposeAPI)
+	send := func(url string) {
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseRequest(req)
+		defer fasthttp.ReleaseResponse(resp)
+		req.SetRequestURI(url)
+		// The recorder closes every tunnel, and a direct dial to a .test name has
+		// nowhere to go, so only the proxy's log tells the cases apart.
+		_ = client.DoTimeout(req, resp, 3*time.Second)
+	}
+
+	send("https://api.bifrost.test/v1/check")
+	// The second no_proxy entry must bypass the proxy.
+	send("https://bypass.bifrost.test/v1/check")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(targets) != 1 || targets[0] != "api.bifrost.test:443" {
+		t.Fatalf("proxy saw %v, want exactly [api.bifrost.test:443]", targets)
+	}
+}
+
+// factoryMatrixSource is one state of the global proxy config for a purpose.
+type factoryMatrixSource struct {
+	name   string
+	config func(s *proxytest.Set, purpose ClientPurpose) *GlobalProxyConfig
+	route  proxytest.Route
+}
+
+// enabledFor returns a global proxy config enabled only for purpose.
+func enabledFor(purpose ClientPurpose, proxyType GlobalProxyType, proxyURL string) *GlobalProxyConfig {
+	return &GlobalProxyConfig{
+		Enabled:            true,
+		Type:               proxyType,
+		URL:                proxyURL,
+		EnableForSCIM:      purpose == ClientPurposeSCIM,
+		EnableForAPI:       purpose == ClientPurposeAPI,
+		EnableForInference: purpose == ClientPurposeInference,
+	}
+}
+
+func otherPurpose(purpose ClientPurpose) ClientPurpose {
+	if purpose == ClientPurposeAPI {
+		return ClientPurposeSCIM
+	}
+	return ClientPurposeAPI
+}
+
+var factoryMatrixSources = []factoryMatrixSource{
+	{name: "no-global-proxy", config: func(*proxytest.Set, ClientPurpose) *GlobalProxyConfig { return nil }},
+	{name: "disabled", config: func(s *proxytest.Set, p ClientPurpose) *GlobalProxyConfig {
+		cfg := enabledFor(p, GlobalProxyTypeHTTP, "http://127.0.0.1:"+s.Config.Port())
+		cfg.Enabled = false
+		return cfg
+	}},
+	{name: "enabled-for-other-purpose", config: func(s *proxytest.Set, p ClientPurpose) *GlobalProxyConfig {
+		return enabledFor(otherPurpose(p), GlobalProxyTypeHTTP, "http://127.0.0.1:"+s.Config.Port())
+	}},
+	{name: "http-ip", route: proxytest.Route{Proxy: "config"}, config: func(s *proxytest.Set, p ClientPurpose) *GlobalProxyConfig {
+		return enabledFor(p, GlobalProxyTypeHTTP, "http://127.0.0.1:"+s.Config.Port())
+	}},
+	{name: "http-hostname", route: proxytest.Route{Proxy: "config"}, config: func(s *proxytest.Set, p ClientPurpose) *GlobalProxyConfig {
+		return enabledFor(p, GlobalProxyTypeHTTP, "http://localhost:"+s.Config.Port())
+	}},
+	{name: "http-ipv6", route: proxytest.Route{Proxy: "config6"}, config: func(s *proxytest.Set, p ClientPurpose) *GlobalProxyConfig {
+		return enabledFor(p, GlobalProxyTypeHTTP, "http://[::1]:"+s.Config6.Port())
+	}},
+	{name: "http-credentials", route: proxytest.Route{Proxy: "config", Auth: proxytest.BasicAuth}, config: func(s *proxytest.Set, p ClientPurpose) *GlobalProxyConfig {
+		cfg := enabledFor(p, GlobalProxyTypeHTTP, "http://127.0.0.1:"+s.Config.Port())
+		cfg.Username, cfg.Password = proxytest.User, proxytest.Pass
+		return cfg
+	}},
+	// An https:// global proxy. The global proxy has no CA field, so its self-signed
+	// certificate is accepted through skip_tls_verify, which already covers every TLS
+	// session the global proxy carries.
+	{name: "https-skip-verify", route: proxytest.Route{Proxy: "config-tls"}, config: func(s *proxytest.Set, p ClientPurpose) *GlobalProxyConfig {
+		cfg := enabledFor(p, GlobalProxyTypeHTTP, "https://127.0.0.1:"+s.TLS.Port())
+		cfg.SkipTLSVerify = true
+		return cfg
+	}},
+	{name: "https-credentials", route: proxytest.Route{Proxy: "config-tls", Auth: proxytest.BasicAuth}, config: func(s *proxytest.Set, p ClientPurpose) *GlobalProxyConfig {
+		cfg := enabledFor(p, GlobalProxyTypeHTTP, "https://127.0.0.1:"+s.TLS.Port())
+		cfg.SkipTLSVerify = true
+		cfg.Username, cfg.Password = proxytest.User, proxytest.Pass
+		return cfg
+	}},
+	{name: "socks5", route: proxytest.Route{Proxy: "socks"}, config: func(s *proxytest.Set, p ClientPurpose) *GlobalProxyConfig {
+		return enabledFor(p, GlobalProxyTypeSOCKS5, "socks5://127.0.0.1:"+s.Socks.Port())
+	}},
+	{name: "socks5-credentials", route: proxytest.Route{Proxy: "socks", Auth: proxytest.SOCKSAuth(proxytest.User, proxytest.Pass)}, config: func(s *proxytest.Set, p ClientPurpose) *GlobalProxyConfig {
+		cfg := enabledFor(p, GlobalProxyTypeSOCKS5, "socks5://127.0.0.1:"+s.Socks.Port())
+		cfg.Username, cfg.Password = proxytest.User, proxytest.Pass
+		return cfg
+	}},
+	{name: "socks5-rejected", route: proxytest.Route{Proxy: "socks", Auth: proxytest.SOCKSAuth(proxytest.User, proxytest.RejectedPass), MustFail: true}, config: func(s *proxytest.Set, p ClientPurpose) *GlobalProxyConfig {
+		cfg := enabledFor(p, GlobalProxyTypeSOCKS5, "socks5://127.0.0.1:"+s.Socks.Port())
+		cfg.Username, cfg.Password = proxytest.User, proxytest.RejectedPass
+		return cfg
+	}},
+	{name: "http+no_proxy", config: func(s *proxytest.Set, p ClientPurpose) *GlobalProxyConfig {
+		cfg := enabledFor(p, GlobalProxyTypeHTTP, "http://127.0.0.1:"+s.Config.Port())
+		cfg.NoProxy = "other.example, " + proxytest.TargetHost + ", " + proxytest.FetchTargetHost
+		return cfg
+	}},
+}
+
+// sendFactoryMatrixRequest sends one request for targetURL through a client of kind and
+// returns its error. The route is read from the recorders.
+func sendFactoryMatrixRequest(t *testing.T, factory *HTTPClientFactory, purpose ClientPurpose, kind, targetURL, hostPort string, expectDirect bool) error {
+	t.Helper()
+	timeout := 3 * time.Second
+	if expectDirect && kind == "ssrf" {
+		// A direct fetch to the documentation-range target never connects.
+		timeout = 150 * time.Millisecond
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
+	defer cancel()
+	switch kind {
+	case "fasthttp":
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseRequest(req)
+		defer fasthttp.ReleaseResponse(resp)
+		req.SetRequestURI(targetURL)
+		return factory.GetFasthttpClient(purpose).DoTimeout(req, resp, timeout)
+	case "grpc":
+		conn, err := factory.GRPCDialer(purpose)(ctx, hostPort)
+		if err == nil {
+			conn.Close()
+		}
+		return err
+	case "http", "tls", "ssrf":
+		client := factory.GetHTTPClient(purpose)
+		switch kind {
+		case "tls":
+			client = factory.HTTPClientWithTLS(purpose, factoryMatrixTLS)
+		case "ssrf":
+			client = &http.Client{Transport: factory.PolicyTransport(purpose, factoryMatrixSSRFPolicy)}
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+		resp, err := client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+		return err
+	}
+	t.Fatalf("unknown client kind %q", kind)
+	return nil
+}
+
+// factoryMatrixSSRFPolicy is the policy the "ssrf" client kind enforces.
+var factoryMatrixSSRFPolicy = SSRFPolicy(nil)
+
+// factoryMatrixTLS stands in for a caller's own TLS settings (HTTPClientWithTLS).
+var factoryMatrixTLS = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: "custom.example"}
+
+// TestHTTPClientFactoryProxyMatrix pins, for every purpose and every kind of client the
+// factory hands out, where a request goes for every global proxy state: which proxy saw
+// it, for which target, with which credentials, that it went direct, or that it failed
+// rather than going direct when the proxy refused the login.
+func TestHTTPClientFactoryProxyMatrix(t *testing.T) {
+	set := proxytest.NewSet(t)
+	for _, purpose := range []ClientPurpose{ClientPurposeSCIM, ClientPurposeAPI, ClientPurposeInference} {
+		for _, source := range factoryMatrixSources {
+			for _, kind := range []string{"fasthttp", "http", "tls", "grpc", "ssrf"} {
+				for _, scheme := range []string{"https", "http"} {
+					t.Run(fmt.Sprintf("%s/%s/%s/%s", purpose, source.name, kind, scheme), func(t *testing.T) {
+						set.Reset()
+						host := proxytest.TargetHost
+						if kind == "ssrf" {
+							host = proxytest.FetchTargetHost
+						}
+						port := "443"
+						if scheme == "http" {
+							port = "80"
+						}
+						hostPort := net.JoinHostPort(host, port)
+						factory := NewHTTPClientFactory(source.config(set, purpose), noopTestLogger{})
+						err := sendFactoryMatrixRequest(t, factory, purpose, kind, scheme+"://"+hostPort+"/resource", hostPort, source.route.Proxy == "")
+						proxytest.AssertRoute(t, set, source.route, hostPort, err)
+					})
+				}
+			}
+		}
+	}
+}
+
+// TestDialViaProxyTLSVerifiesTheProxy pins the TLS hop to an https:// proxy: the proxy's
+// certificate must verify against the given roots (the system roots when none are given)
+// and match the proxy's host, and a proxy that fails verification never sees the
+// CONNECT, so a spoofed proxy never learns the target or the credentials.
+func TestDialViaProxyTLSVerifiesTheProxy(t *testing.T) {
+	recorder := proxytest.NewHTTPSRecorder(t, "tls")
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM([]byte(recorder.CAPEM)) {
+		t.Fatal("recorder CA does not parse")
+	}
+	trusted := &tls.Config{RootCAs: roots}
+	const target = "api.bifrost.test:443"
+
+	for _, tc := range []struct {
+		name     string
+		proxyURL string
+		tls      *tls.Config
+		wantErr  string
+	}{
+		{"trusted CA", "https://" + proxytest.User + ":" + proxytest.Pass + "@127.0.0.1:" + recorder.Port(), trusted, ""},
+		{"system roots reject a private CA", "https://127.0.0.1:" + recorder.Port(), nil, "proxy TLS handshake"},
+		{"certificate must match the proxy host", "https://localhost:" + recorder.Port(), trusted, "proxy TLS handshake"},
+		{"skip verify", "https://localhost:" + recorder.Port(), &tls.Config{InsecureSkipVerify: true}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder.Reset()
+			proxyURL, err := url.Parse(tc.proxyURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			conn, err := DialViaProxyTLS(ctx, proxyURL, target, tc.tls)
+			if tc.wantErr != "" {
+				if err == nil {
+					conn.Close()
+					t.Fatalf("dial succeeded, want %q", tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("got %v, want %q", err, tc.wantErr)
+				}
+				if seen := recorder.Seen(); len(seen) != 0 {
+					t.Fatalf("an unverified proxy saw %+v", seen)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			// The tunnel must not look like a finished TLS session: clients (fasthttp)
+			// skip their TLS to the target for any connection with a Handshake method.
+			if _, ok := conn.(interface{ Handshake() error }); ok {
+				t.Error("the tunnel through an https:// proxy exposes Handshake, so clients would send target traffic in plaintext")
+			}
+			conn.Close()
+			want := proxytest.Hit{Target: target}
+			if proxyURL.User != nil {
+				want.Auth = proxytest.BasicAuth
+			}
+			if seen := recorder.Seen(); len(seen) != 1 || seen[0] != want {
+				t.Fatalf("proxy saw %+v, want [%+v]", seen, want)
+			}
+		})
+	}
+}
+
+// TestHTTPClientFactoryClientsAreLive pins that a client handed out before a proxy
+// change follows it: the same object goes direct, then through the proxy, then direct
+// again. Callers keep factory clients for their whole life (alerting senders, JWT
+// validators, guardrail providers), so a client that captured the proxy at creation
+// would silently ignore every later change.
+func TestHTTPClientFactoryClientsAreLive(t *testing.T) {
+	set := proxytest.NewSet(t)
+	factory := NewHTTPClientFactory(nil, noopTestLogger{})
+	hostPort := net.JoinHostPort(proxytest.TargetHost, "443")
+	targetURL := "https://" + hostPort + "/resource"
+	proxied := enabledFor(ClientPurposeAPI, GlobalProxyTypeHTTP, "http://127.0.0.1:"+set.Config.Port())
+
+	fasthttpClient := factory.GetFasthttpClient(ClientPurposeAPI)
+	httpClient := factory.GetHTTPClient(ClientPurposeAPI)
+	tlsClient := factory.HTTPClientWithTLS(ClientPurposeAPI, factoryMatrixTLS)
+	dialer := factory.GRPCDialer(ClientPurposeAPI)
+
+	for _, step := range []struct {
+		name   string
+		config *GlobalProxyConfig
+		route  proxytest.Route
+	}{
+		{"before any proxy", nil, proxytest.Direct},
+		{"after enabling the proxy", proxied, proxytest.Route{Proxy: "config"}},
+		{"after disabling it again", nil, proxytest.Direct},
+	} {
+		factory.UpdateProxyConfig(step.config)
+		for _, kind := range []string{"fasthttp", "http", "tls", "grpc"} {
+			set.Reset()
+			err := sendFactoryMatrixRequest(t, factory, ClientPurposeAPI, kind, targetURL, hostPort, step.route.Proxy == "")
+			t.Run(step.name+"/"+kind, func(t *testing.T) { proxytest.AssertRoute(t, set, step.route, hostPort, err) })
+		}
+	}
+
+	if factory.GetFasthttpClient(ClientPurposeAPI) != fasthttpClient || factory.GetHTTPClient(ClientPurposeAPI) != httpClient ||
+		factory.HTTPClientWithTLS(ClientPurposeAPI, factoryMatrixTLS) != tlsClient {
+		t.Error("the factory must hand out the same client objects across proxy changes")
+	}
+	_ = dialer
+}
+
+// hangingProxy accepts connections and never answers.
+func hangingProxy(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conns []net.Conn
+	var mu sync.Mutex
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, conn)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		listener.Close()
+		mu.Lock()
+		for _, c := range conns {
+			c.Close()
+		}
+		mu.Unlock()
+	})
+	return "http://" + listener.Addr().String()
+}
+
+// TestHTTPClientFactoryLiveClientsKeepTimeouts pins that the live wrappers do not lose
+// deadlines: fasthttp's DoTimeout (kept on the request) and the global proxy timeout on
+// the net/http client both still end a request stuck on an unresponsive proxy.
+func TestHTTPClientFactoryLiveClientsKeepTimeouts(t *testing.T) {
+	cfg := enabledFor(ClientPurposeAPI, GlobalProxyTypeHTTP, hangingProxy(t))
+	cfg.Timeout = 1
+	factory := NewHTTPClientFactory(cfg, noopTestLogger{})
+
+	start := time.Now()
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	req.SetRequestURI("https://api.bifrost.test/resource")
+	if err := factory.GetFasthttpClient(ClientPurposeAPI).DoTimeout(req, resp, 200*time.Millisecond); err == nil {
+		t.Error("fasthttp request through a hanging proxy succeeded")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("DoTimeout(200ms) took %v through the live client", elapsed)
+	}
+
+	start = time.Now()
+	if resp, err := factory.GetHTTPClient(ClientPurposeAPI).Get("https://api.bifrost.test/resource"); err == nil {
+		resp.Body.Close()
+		t.Error("net/http request through a hanging proxy succeeded")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("the 1s global proxy timeout took %v to end the request", elapsed)
+	}
+}
+
+// TestHTTPClientFactoryNeverProxiesLocalOrMetadata pins that local and instance-metadata
+// targets connect directly on every client kind, even with the proxy on.
+func TestHTTPClientFactoryNeverProxiesLocalOrMetadata(t *testing.T) {
+	for _, host := range []string{"169.254.169.254", "metadata.google.internal", "100.100.100.200", "fd00:ec2::254", "localhost", "127.0.0.1", "::1"} {
+		if !IsLocalOrMetadataHost(host) {
+			t.Errorf("IsLocalOrMetadataHost(%q) = false, want true", host)
+		}
+	}
+	for _, host := range []string{"login.microsoftonline.com", "10.0.0.5", "203.0.113.10"} {
+		if IsLocalOrMetadataHost(host) {
+			t.Errorf("IsLocalOrMetadataHost(%q) = true, want false", host)
+		}
+	}
+
+	set := proxytest.NewSet(t)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) }))
+	defer target.Close()
+	factory := NewHTTPClientFactory(enabledFor(ClientPurposeSCIM, GlobalProxyTypeHTTP, "http://127.0.0.1:"+set.Config.Port()), noopTestLogger{})
+
+	resp, err := factory.GetHTTPClient(ClientPurposeSCIM).Get(target.URL)
+	if err != nil {
+		t.Fatalf("net/http request to a loopback target failed: %v", err)
+	}
+	resp.Body.Close()
+
+	req := fasthttp.AcquireRequest()
+	fresp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(fresp)
+	req.SetRequestURI(target.URL)
+	if err := factory.GetFasthttpClient(ClientPurposeSCIM).DoTimeout(req, fresp, 3*time.Second); err != nil {
+		t.Fatalf("fasthttp request to a loopback target failed: %v", err)
+	}
+
+	conn, err := factory.GRPCDialer(ClientPurposeSCIM)(t.Context(), strings.TrimPrefix(target.URL, "http://"))
+	if err != nil {
+		t.Fatalf("gRPC dial to a loopback target failed: %v", err)
+	}
+	conn.Close()
+
+	if seen := set.Config.Seen(); len(seen) != 0 {
+		t.Errorf("the proxy saw %+v, want no requests for a loopback target", seen)
+	}
+}
+
+// noopTestLogger satisfies schemas.Logger for factories built in tests.
+type noopTestLogger struct{}
+
+func (noopTestLogger) Debug(string, ...any)                   {}
+func (noopTestLogger) Info(string, ...any)                    {}
+func (noopTestLogger) Warn(string, ...any)                    {}
+func (noopTestLogger) Error(string, ...any)                   {}
+func (noopTestLogger) Fatal(string, ...any)                   {}
+func (noopTestLogger) SetLevel(schemas.LogLevel)              {}
+func (noopTestLogger) SetOutputType(schemas.LoggerOutputType) {}
+func (noopTestLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
+
+// TestPolicyTransport_ProxiedTunnelIsBoundToTheCheckedAddress pins that a proxied
+// request from a policy transport reaches the proxy as a tunnel to the address the
+// policy checked, never as the hostname. The proxy would otherwise resolve the name
+// again, and a DNS answer that changed after the check (rebinding) would let a target
+// that passed as public reach an internal one. Plain http:// targets are tunneled too,
+// so no request leaves bound only to a name.
+func TestPolicyTransport_ProxiedTunnelIsBoundToTheCheckedAddress(t *testing.T) {
+	set := proxytest.NewSet(t)
+	factory := NewHTTPClientFactory(&GlobalProxyConfig{
+		Enabled:      true,
+		Type:         GlobalProxyTypeHTTP,
+		URL:          "http://127.0.0.1:" + set.Config.Port(),
+		EnableForAPI: true,
+	}, noopTestLogger{})
+	resolver := hostResolver{
+		"rebind.example":   {net.ParseIP("203.0.113.10")},
+		"internal.example": {net.ParseIP("10.0.0.5")},
+	}
+	policy := NewDialPolicy(SSRFSafeDialContext(0), publicTargetCheck(resolver, nil))
+	client := &http.Client{Transport: factory.PolicyTransport(ClientPurposeAPI, policy)}
+
+	for _, tc := range []struct {
+		url, want string
+	}{
+		{"https://rebind.example/hook", "203.0.113.10:443"},
+		{"http://rebind.example/hook", "203.0.113.10:80"},
+	} {
+		t.Run(tc.url, func(t *testing.T) {
+			set.Reset()
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, tc.url, nil)
+			if resp, err := client.Do(req); err == nil {
+				resp.Body.Close()
+			}
+			proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "config"}, tc.want, nil)
+		})
+	}
+
+	t.Run("a target resolving to a private address never reaches the proxy", func(t *testing.T) {
+		set.Reset()
+		_, err := client.Get("https://internal.example/hook")
+		if err == nil || !strings.Contains(err.Error(), "non-public address") {
+			t.Fatalf("expected the policy to refuse the target, got %v", err)
+		}
+		proxytest.AssertRoute(t, set, proxytest.Direct, "", nil)
+	})
+}
+
+// TestDefaultHTTPClientFactoryRouting pins the process defaults (DefaultTransport,
+// DefaultProxyFunc, DefaultGRPCDialer) that outbound call sites without a factory handle
+// use: they follow the registered factory's global proxy for the purpose, fall back to
+// http.DefaultTransport's own selector when the global proxy is off or no factory is
+// registered, and resolve the factory per request, so clients built before the server
+// registers it still follow it.
+func TestDefaultHTTPClientFactoryRouting(t *testing.T) {
+	set := proxytest.NewSet(t)
+	t.Cleanup(func() { SetDefaultHTTPClientFactory(nil) })
+
+	// Stand-in for an environment proxy: the selector http.DefaultTransport carries.
+	envProxy, _ := url.Parse("http://127.0.0.1:" + set.EnvHTTPS.Port())
+	defaultTransport := http.DefaultTransport.(*http.Transport)
+	previous := defaultTransport.Proxy
+	defaultTransport.Proxy = http.ProxyURL(envProxy)
+	t.Cleanup(func() { defaultTransport.Proxy = previous })
+
+	// Built before any factory is registered.
+	client := &http.Client{Transport: DefaultTransport(ClientPurposeAPI)}
+	proxyFunc := DefaultProxyFunc(ClientPurposeAPI)
+	dialer := DefaultGRPCDialer(ClientPurposeAPI)
+	req, _ := http.NewRequest(http.MethodGet, "https://api.bifrost.test/v1", nil)
+
+	send := func() {
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+		r, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.bifrost.test/v1", nil)
+		if resp, err := client.Do(r); err == nil {
+			resp.Body.Close()
+		}
+	}
+
+	// No factory: exactly http.DefaultTransport.
+	set.Reset()
+	send()
+	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "env-https"}, "api.bifrost.test:443", nil)
+	if got, _ := proxyFunc(req); got == nil || got.Host != envProxy.Host {
+		t.Errorf("no factory: DefaultProxyFunc = %v, want the DefaultTransport selector's %v", got, envProxy)
+	}
+
+	// Factory with the global proxy on for API: every default follows it.
+	SetDefaultHTTPClientFactory(NewHTTPClientFactory(&GlobalProxyConfig{
+		Enabled: true, Type: GlobalProxyTypeHTTP, URL: "http://127.0.0.1:" + set.Config.Port(),
+		NoProxy: "bypass.bifrost.test", EnableForAPI: true,
+	}, noopTestLogger{}))
+	set.Reset()
+	send()
+	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "config"}, "api.bifrost.test:443", nil)
+	if got, _ := proxyFunc(req); got == nil || got.Port() != set.Config.Port() {
+		t.Errorf("global proxy on: DefaultProxyFunc = %v, want the global proxy", got)
+	}
+	for _, host := range []string{"bypass.bifrost.test", "169.254.169.254", "localhost"} {
+		direct, _ := http.NewRequest(http.MethodGet, "https://"+host+"/v1", nil)
+		if got, _ := proxyFunc(direct); got != nil {
+			t.Errorf("DefaultProxyFunc(%s) = %v, want a direct connection", host, got)
+		}
+	}
+	set.Reset()
+	if conn, err := dialer(t.Context(), "api.bifrost.test:443"); err == nil {
+		conn.Close()
+	}
+	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "config"}, "api.bifrost.test:443", nil)
+
+	// Factory with the global proxy off for API: back to DefaultTransport's selector.
+	SetDefaultHTTPClientFactory(NewHTTPClientFactory(&GlobalProxyConfig{
+		Enabled: true, Type: GlobalProxyTypeHTTP, URL: "http://127.0.0.1:" + set.Config.Port(), EnableForSCIM: true,
+	}, noopTestLogger{}))
+	set.Reset()
+	send()
+	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "env-https"}, "api.bifrost.test:443", nil)
+}
+
+// TestGRPCDialersConnectUnixSockets pins that the gRPC dialers connect a unix-socket
+// target to the socket itself, never over TCP or through a proxy, with or without a
+// registered factory and with the global proxy on. GRPCPassthroughTarget leaves unix:
+// targets alone, and gRPC then hands a custom dialer "unix:///abs/path" or
+// "unix:relative-path" (abstract sockets arrive as "\x00name"); an OTel collector
+// listening on a unix socket must keep working once the OTel plugin uses these dialers.
+func TestGRPCDialersConnectUnixSockets(t *testing.T) {
+	set := proxytest.NewSet(t)
+	t.Cleanup(func() { SetDefaultHTTPClientFactory(nil) })
+	// A short directory: unix socket paths are capped near 104 bytes on macOS.
+	dir, err := os.MkdirTemp("", "grpcsock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "otel.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("listen on %s: %v", socket, err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	var accepted atomic.Int32
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			accepted.Add(1)
+			conn.Close()
+		}
+	}()
+	t.Chdir(dir)
+	addrs := []string{"unix://" + socket, "unix:otel.sock"}
+	if runtime.GOOS == "linux" {
+		abstract, err := net.Listen("unix", "@bifrost-grpc-dialer-test")
+		if err != nil {
+			t.Fatalf("listen on abstract socket: %v", err)
+		}
+		t.Cleanup(func() { abstract.Close() })
+		go func() {
+			for {
+				conn, err := abstract.Accept()
+				if err != nil {
+					return
+				}
+				accepted.Add(1)
+				conn.Close()
+			}
+		}()
+		addrs = append(addrs, "\x00bifrost-grpc-dialer-test")
+	}
+
+	proxied := NewHTTPClientFactory(&GlobalProxyConfig{
+		Enabled: true, Type: GlobalProxyTypeHTTP, URL: "http://127.0.0.1:" + set.Config.Port(), EnableForAPI: true,
+	}, noopTestLogger{})
+	dialers := []struct {
+		name  string
+		setup func()
+		dial  func(context.Context, string) (net.Conn, error)
+	}{
+		{"default dialer, no factory", func() { SetDefaultHTTPClientFactory(nil) }, DefaultGRPCDialer(ClientPurposeAPI)},
+		{"default dialer, global proxy on", func() { SetDefaultHTTPClientFactory(proxied) }, DefaultGRPCDialer(ClientPurposeAPI)},
+		{"factory dialer, global proxy on", func() {}, proxied.GRPCDialer(ClientPurposeAPI)},
+	}
+	for _, d := range dialers {
+		for _, addr := range addrs {
+			t.Run(d.name+"/"+strings.ReplaceAll(addr, "\x00", "@"), func(t *testing.T) {
+				d.setup()
+				set.Reset()
+				before := accepted.Load()
+				ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+				defer cancel()
+				conn, err := d.dial(ctx, addr)
+				if err != nil {
+					t.Fatalf("dial %q: %v", addr, err)
+				}
+				conn.Close()
+				deadline := time.Now().Add(2 * time.Second)
+				for accepted.Load() == before && time.Now().Before(deadline) {
+					time.Sleep(10 * time.Millisecond)
+				}
+				if accepted.Load() == before {
+					t.Fatalf("dial %q did not reach the unix socket", addr)
+				}
+				proxytest.AssertRoute(t, set, proxytest.Direct, "", nil)
+			})
+		}
+	}
+}
+
+func TestGRPCPassthroughTarget(t *testing.T) {
+	tests := map[string]string{
+		"collector.example:4317":       "passthrough:///collector.example:4317",
+		"10.0.0.9:4317":                "passthrough:///10.0.0.9:4317",
+		"[::1]:4317":                   "passthrough:///[::1]:4317",
+		"dns:///collector.example:443": "dns:///collector.example:443",
+		"unix:/var/run/otel.sock":      "unix:/var/run/otel.sock",
+	}
+	for endpoint, want := range tests {
+		if got := GRPCPassthroughTarget(endpoint); got != want {
+			t.Errorf("GRPCPassthroughTarget(%q) = %q, want %q", endpoint, got, want)
+		}
+	}
+}
+
+// TestHTTPClientFactoryApplyOptions pins that options applied to a factory after it
+// handed out clients reach them: enterprise adds its SCIM header buffer sizes to the
+// factory the config loader built.
+func TestHTTPClientFactoryApplyOptions(t *testing.T) {
+	factory := NewHTTPClientFactory(nil, noopTestLogger{})
+	live := factory.GetFasthttpClient(ClientPurposeSCIM)
+	if inner := factory.currentFasthttpClient(ClientPurposeSCIM); inner.ReadBufferSize != 0 {
+		t.Fatalf("ReadBufferSize = %d before any option, want fasthttp's default (0)", inner.ReadBufferSize)
+	}
+	factory.ApplyOptions(WithFasthttpBufferSizes(64*1024, 32*1024))
+	inner := factory.currentFasthttpClient(ClientPurposeSCIM)
+	if inner.ReadBufferSize != 64*1024 || inner.WriteBufferSize != 32*1024 {
+		t.Errorf("SCIM inner client buffers = %d/%d, want 65536/32768", inner.ReadBufferSize, inner.WriteBufferSize)
+	}
+	if factory.GetFasthttpClient(ClientPurposeSCIM) != live {
+		t.Error("ApplyOptions must keep the live client object")
+	}
+}
+
+func TestDefaultHTTPClientFactoryGetter(t *testing.T) {
+	t.Cleanup(func() { SetDefaultHTTPClientFactory(nil) })
+	SetDefaultHTTPClientFactory(nil)
+	if DefaultHTTPClientFactory() != nil {
+		t.Fatal("no factory registered: want nil")
+	}
+	factory := NewHTTPClientFactory(nil, noopTestLogger{})
+	SetDefaultHTTPClientFactory(factory)
+	if DefaultHTTPClientFactory() != factory {
+		t.Fatal("want the registered factory")
+	}
+}
+
+// TestLiveFasthttpClientHonorsDisablePathNormalizing pins that a copy of the live
+// client with DisablePathNormalizing set still sends an escaped path segment (%2F)
+// as written, while a client that did not ask for it keeps fasthttp's default
+// normalization. The live client forwards to an inner client, and fasthttp applies
+// the inner client's setting right before writing the request.
+func TestLiveFasthttpClientHonorsDisablePathNormalizing(t *testing.T) {
+	const escaped = "/guardrail/arn:aws:bedrock:us-east-1:123456789012:guardrail%2Ftest/version/1/apply"
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	received := make(chan string, 4)
+	go func() {
+		_ = fasthttp.Serve(ln, func(ctx *fasthttp.RequestCtx) {
+			received <- string(ctx.RequestURI())
+		})
+	}()
+	t.Cleanup(func() { _ = ln.Close() })
+
+	factory := NewHTTPClientFactory(nil, noopTestLogger{})
+	send := func(client *fasthttp.Client) string {
+		t.Helper()
+		req := fasthttp.AcquireRequest()
+		defer fasthttp.ReleaseRequest(req)
+		resp := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseResponse(resp)
+		req.SetRequestURI("http://" + ln.Addr().String() + escaped)
+		if err := client.DoTimeout(req, resp, 5*time.Second); err != nil {
+			t.Fatal(err)
+		}
+		return <-received
+	}
+
+	live := factory.GetFasthttpClient(ClientPurposeAPI)
+	raw := &fasthttp.Client{Transport: live.Transport, DisablePathNormalizing: true}
+
+	if got := send(raw); got != escaped {
+		t.Errorf("client with DisablePathNormalizing sent %q, want %q", got, escaped)
+	}
+	if got := send(live); got == escaped {
+		t.Errorf("default client sent %q unchanged, want fasthttp's normalized path", got)
+	}
+}
+
+// TestRawPathInnerClientFollowsProxyUpdates pins that UpdateProxyConfig drops the
+// raw-path inner client along with the default one, so a request that keeps escaped
+// path segments never reuses a client built for the previous proxy config.
+func TestRawPathInnerClientFollowsProxyUpdates(t *testing.T) {
+	factory := NewHTTPClientFactory(nil, noopTestLogger{})
+	key := fasthttpClientKey{purpose: ClientPurposeAPI, rawPath: true}
+
+	first := factory.currentFasthttpClientFor(key)
+	if !first.DisablePathNormalizing {
+		t.Fatal("raw-path inner client must have DisablePathNormalizing set")
+	}
+	if factory.currentFasthttpClient(ClientPurposeAPI).DisablePathNormalizing {
+		t.Fatal("default inner client must keep fasthttp's path normalization")
+	}
+
+	factory.UpdateProxyConfig(&GlobalProxyConfig{})
+	if second := factory.currentFasthttpClientFor(key); second == first {
+		t.Error("raw-path inner client survived UpdateProxyConfig")
 	}
 }

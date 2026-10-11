@@ -96,3 +96,25 @@ func TestZroConfigIsolation(t *testing.T) {
 		t.Error("default provider identity must remain zro")
 	}
 }
+
+// TestZroNewOperationsUnsupported preserves unsupported-operation metadata for the new provider interface methods.
+func TestZroNewOperationsUnsupported(t *testing.T) {
+	for _, name := range []schemas.ModelProvider{schemas.Zro, "custom-zro"} {
+		t.Run(string(name), func(t *testing.T) {
+			p, err := NewZroProvider(&schemas.ProviderConfig{CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: string(name)}}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, decisionErr := p.Decision(nil, schemas.Key{}, nil)
+			_, retrieveErr := p.ModelRetrieve(nil, schemas.Key{}, nil)
+			for requestType, apiErr := range map[schemas.RequestType]*schemas.BifrostError{schemas.DecisionRequest: decisionErr, schemas.ModelRetrieveRequest: retrieveErr} {
+				if apiErr == nil || apiErr.Error == nil || apiErr.Error.Code == nil {
+					t.Fatalf("expected unsupported operation for %s, got %v", requestType, apiErr)
+				}
+				if *apiErr.Error.Code != "unsupported_operation" || apiErr.ExtraFields.RequestType != requestType || apiErr.ExtraFields.RoutingInfo.Provider != name {
+					t.Fatalf("incorrect unsupported-operation metadata: %+v", apiErr)
+				}
+			}
+		})
+	}
+}

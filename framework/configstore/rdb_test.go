@@ -66,6 +66,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableWebhookJob{},
 	)
 	require.NoError(t, err, "Failed to migrate test database")
+	require.NoError(t, migrationAddAgentGatewayTables(context.Background(), db, testMigrationLogger), "Failed to migrate Agent Gateway tables")
 
 	// Virtual MCP tables (separate call: the in-batch AutoMigrate above does not create
 	// enterprise_mcp_tool_groups reliably). MCP client create now cross-checks slugs against them.
@@ -525,6 +526,93 @@ func TestLatestCreatedSkillVersionUsesCreationOrder(t *testing.T) {
 	skill, err := store.GetSkillLean(ctx, skillID)
 	require.NoError(t, err)
 	assert.Equal(t, "1.0.2-1", skill.HighestVersion)
+}
+
+func setupSkillTestStore(t *testing.T) *RDBConfigStore {
+	store := setupRDBTestStore(t)
+	err := store.DB().AutoMigrate(
+		&tables.TableSkill{},
+		&tables.TableSkillVersion{},
+		&tables.TableSkillFile{},
+		&tables.TableSkillFileBlob{},
+	)
+	require.NoError(t, err)
+	return store
+}
+
+func skillURLFile(path string) tables.TableSkillFile {
+	sourceURL := "https://example.com/" + path
+	return tables.TableSkillFile{Path: path, SourceType: tables.SkillSourceTypeURL, SourceURL: &sourceURL}
+}
+
+// The config-driven skills registry passes a freshly built skill whose
+// LatestVersion is empty, so serving the new version must not depend on it.
+func TestUpdateSkillServesNewVersionWhenLatestVersionIsUnset(t *testing.T) {
+	store := setupSkillTestStore(t)
+	ctx := context.Background()
+
+	created := &tables.TableSkill{
+		Name:        "config-update",
+		Description: "first",
+		SkillMDBody: "body 1",
+		Files:       []tables.TableSkillFile{skillURLFile("references/v1.md")},
+	}
+	require.NoError(t, store.CreateSkill(ctx, created, "1.0.0", nil))
+
+	updated := &tables.TableSkill{
+		ID:          created.ID,
+		Name:        created.Name,
+		Description: "second",
+		SkillMDBody: "body 2",
+		Files:       []tables.TableSkillFile{skillURLFile("references/v2.md")},
+	}
+	require.NoError(t, store.UpdateSkill(ctx, updated, "1.1.0", true, nil))
+
+	assert.Equal(t, "1.1.0", updated.LatestVersion)
+	require.Len(t, updated.Files, 1)
+	assert.Equal(t, "references/v2.md", updated.Files[0].Path)
+
+	skill, err := store.GetSkill(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "1.1.0", skill.LatestVersion)
+	assert.Equal(t, "body 2", skill.SkillMDBody)
+	require.Len(t, skill.Files, 1)
+	assert.Equal(t, "references/v2.md", skill.Files[0].Path)
+}
+
+func TestUpdateSkillWithoutServeKeepsServingVersion(t *testing.T) {
+	store := setupSkillTestStore(t)
+	ctx := context.Background()
+
+	created := &tables.TableSkill{
+		Name:        "config-draft",
+		Description: "first",
+		SkillMDBody: "body 1",
+		Files:       []tables.TableSkillFile{skillURLFile("references/v1.md")},
+	}
+	require.NoError(t, store.CreateSkill(ctx, created, "1.0.0", nil))
+
+	updated := &tables.TableSkill{
+		ID:          created.ID,
+		Name:        created.Name,
+		Description: "second",
+		SkillMDBody: "body 2",
+		Files:       []tables.TableSkillFile{skillURLFile("references/v2.md")},
+	}
+	require.NoError(t, store.UpdateSkill(ctx, updated, "1.1.0", false, nil))
+
+	assert.Equal(t, "1.0.0", updated.LatestVersion)
+	require.Len(t, updated.Files, 1)
+	assert.Equal(t, "references/v1.md", updated.Files[0].Path)
+
+	skill, err := store.GetSkill(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "1.0.0", skill.LatestVersion)
+	assert.Equal(t, "body 1", skill.SkillMDBody)
+
+	version, err := store.GetSkillVersion(ctx, created.ID, "1.1.0")
+	require.NoError(t, err)
+	assert.Equal(t, "body 2", version.SkillMDBody)
 }
 
 // =============================================================================
@@ -1266,6 +1354,84 @@ func TestGetVirtualKeysPaginated_AssignmentFilters(t *testing.T) {
 	}
 }
 
+// TestGetVirtualKeysPaginated_Search covers the fields a search term matches. The
+// search box is the only free-text affordance on the virtual keys page, so it
+// matches everything the "Assigned To" column can display - the key's own name,
+// its team, and its customer - rather than the name alone. (The assigned user is
+// the enterprise store's addition; the link table does not exist here.)
+func TestGetVirtualKeysPaginated_Search(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: "cust-1", Name: "Acme Corp"}))
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "Platform Squad"}))
+
+	custID, teamID := "cust-1", "team-1"
+	seed := []*tables.TableVirtualKey{
+		{ID: "vk-cust", Name: "billing key", Value: *schemas.NewSecretVar("vk-cust-val"), IsActive: schemas.Ptr(true), CustomerID: &custID},
+		{ID: "vk-team", Name: "ingest key", Value: *schemas.NewSecretVar("vk-team-val"), IsActive: schemas.Ptr(true), TeamID: &teamID},
+		{ID: "vk-none", Name: "Platform scratch", Value: *schemas.NewSecretVar("vk-none-val"), IsActive: schemas.Ptr(true)},
+	}
+	for _, vk := range seed {
+		require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	}
+
+	tests := []struct {
+		name    string
+		search  string
+		wantIDs []string
+	}{
+		{name: "matches the key name", search: "billing", wantIDs: []string{"vk-cust"}},
+		{name: "matches the key name case-insensitively", search: "BILLING", wantIDs: []string{"vk-cust"}},
+		{name: "matches the customer name", search: "acme", wantIDs: []string{"vk-cust"}},
+		{name: "matches the team name", search: "squad", wantIDs: []string{"vk-team"}},
+		{
+			// One term can hit a key by its own name and another by its team, and
+			// both belong in the results.
+			name:    "unions matches across fields",
+			search:  "platform",
+			wantIDs: []string{"vk-none", "vk-team"},
+		},
+		{name: "matches nothing when no field contains the term", search: "nonexistent", wantIDs: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vks, totalCount, err := store.GetVirtualKeysPaginated(ctx, VirtualKeyQueryParams{Search: tt.search})
+			require.NoError(t, err)
+
+			gotIDs := make([]string, 0, len(vks))
+			for _, vk := range vks {
+				gotIDs = append(gotIDs, vk.ID)
+			}
+			sort.Strings(gotIDs)
+			assert.Equal(t, tt.wantIDs, nonEmptyIDs(gotIDs))
+			assert.Equal(t, int64(len(tt.wantIDs)), totalCount)
+		})
+	}
+}
+
+// A search must not widen an assignment filter: the two narrow together.
+func TestGetVirtualKeysPaginated_SearchWithAssignmentFilter(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "Platform Squad"}))
+	teamID := "team-1"
+	require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
+		ID: "vk-team", Name: "ingest key", Value: *schemas.NewSecretVar("vk-team-val"), IsActive: schemas.Ptr(true), TeamID: &teamID,
+	}))
+	require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
+		ID: "vk-none", Name: "ingest scratch", Value: *schemas.NewSecretVar("vk-none-val"), IsActive: schemas.Ptr(true),
+	}))
+
+	vks, totalCount, err := store.GetVirtualKeysPaginated(ctx, VirtualKeyQueryParams{Search: "ingest", TeamID: "team-1"})
+	require.NoError(t, err)
+	require.Len(t, vks, 1)
+	assert.Equal(t, "vk-team", vks[0].ID)
+	assert.Equal(t, int64(1), totalCount)
+}
+
 // nonEmptyIDs normalizes an empty slice to nil so table cases can express
 // "matches nothing" as a nil wantIDs.
 func nonEmptyIDs(ids []string) []string {
@@ -1412,6 +1578,56 @@ func TestUpdateVirtualKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Updated Name", result.Name)
 	assert.False(t, result.IsActiveValue())
+
+	// Content logging is tri-state and every state must survive an update: the update path names
+	// its columns explicitly, so a column left off that list is silently never written.
+	vk.DisableContentLogging = new(true)
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, "vk-update")
+	require.NoError(t, err)
+	require.NotNil(t, result.DisableContentLogging, "forcing content off must persist")
+	assert.True(t, *result.DisableContentLogging)
+
+	vk.DisableContentLogging = new(false)
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, "vk-update")
+	require.NoError(t, err)
+	require.NotNil(t, result.DisableContentLogging, "forcing content on must persist")
+	assert.False(t, *result.DisableContentLogging)
+
+	vk.DisableContentLogging = nil
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, "vk-update")
+	require.NoError(t, err)
+	assert.Nil(t, result.DisableContentLogging, "clearing the override must write NULL, back to inherit")
+}
+
+// TestUpdateVirtualKey_PersistsBusinessUnitOwner verifies an update writes business_unit_id, so
+// assigning an existing key to a business unit sticks and moving it elsewhere clears it.
+func TestUpdateVirtualKey_PersistsBusinessUnitOwner(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-bu-owner",
+		Name:     "BU Owner",
+		Value:    *schemas.NewSecretVar("vk-bu-owner-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	vk.BusinessUnitID = schemas.Ptr("bu-1")
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err := store.GetVirtualKey(ctx, "vk-bu-owner")
+	require.NoError(t, err)
+	require.NotNil(t, result.BusinessUnitID, "assigning a business unit must persist")
+	assert.Equal(t, "bu-1", *result.BusinessUnitID)
+
+	vk.BusinessUnitID = nil
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, "vk-bu-owner")
+	require.NoError(t, err)
+	assert.Nil(t, result.BusinessUnitID, "clearing the business unit must write NULL")
 }
 
 func TestUpdateVirtualKey_PreservesRotationStateOnPlainUpdate(t *testing.T) {
@@ -2369,6 +2585,59 @@ func TestUpdateClientConfig_VKRotationCooldownRoundTrip(t *testing.T) {
 	assert.Equal(t, 5*time.Minute, result.VKRotationCooldown.D())
 }
 
+func TestUpdateClientConfig_MCPCodeModeLimitsRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := func(limits *schemas.MCPCodeModeLimits) *ClientConfig {
+		return &ClientConfig{
+			EnableLogging:        new(true),
+			InitialPoolSize:      100,
+			LogRetentionDays:     30,
+			MaxRequestBodySizeMB: 50,
+			MCPCodeModeLimits:    limits,
+		}
+	}
+	limits := &schemas.MCPCodeModeLimits{MaxSteps: 5_000_000, MaxToolCalls: 500, MaxNestingDepth: 128}
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(limits)))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, limits, result.MCPCodeModeLimits)
+
+	mcpConfig, err := store.GetMCPConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, mcpConfig)
+	require.NotNil(t, mcpConfig.ToolManagerConfig)
+	assert.Equal(t, limits, mcpConfig.ToolManagerConfig.CodeModeLimits, "the MCP config built from the store must carry the limits")
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(nil)))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, result.MCPCodeModeLimits, "clearing the limits must persist")
+}
+
+func TestGenerateClientConfigHash_MCPCodeModeLimits(t *testing.T) {
+	hash := func(limits *schemas.MCPCodeModeLimits) string {
+		h, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, MCPCodeModeLimits: limits}).GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+	base := hash(nil)
+	baseHash, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, base, "unset limits must not change existing hashes")
+	assert.NotEqual(t, base, hash(&schemas.MCPCodeModeLimits{MaxSteps: 5}))
+	assert.NotEqual(t, hash(&schemas.MCPCodeModeLimits{MaxSteps: 5}), hash(&schemas.MCPCodeModeLimits{MaxSteps: 6}))
+
+	cc := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
+	withoutLimits, err := cc.GenerateClientConfigHashWithToolManager(&schemas.MCPToolManagerConfig{MaxAgentDepth: 10})
+	require.NoError(t, err)
+	withLimits, err := cc.GenerateClientConfigHashWithToolManager(&schemas.MCPToolManagerConfig{MaxAgentDepth: 10, CodeModeLimits: &schemas.MCPCodeModeLimits{MaxToolCalls: 5}})
+	require.NoError(t, err)
+	assert.NotEqual(t, withoutLimits, withLimits, "tool_manager_config.code_mode_limits must take part in the file hash")
+}
+
 func TestUpdateClientConfig_CompatAzureDeepseekRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -2394,6 +2663,41 @@ func TestUpdateClientConfig_CompatAzureDeepseekRoundTrip(t *testing.T) {
 	assert.True(t, result.Compat.AzureDeepseek, "re-enabling the toggle must persist")
 }
 
+func TestUpdateClientConfig_CompatForceReasoningOnlyModelsToResponsesRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := func(enabled bool) *ClientConfig {
+		return &ClientConfig{
+			EnableLogging:        new(true),
+			InitialPoolSize:      100,
+			LogRetentionDays:     30,
+			MaxRequestBodySizeMB: 50,
+			Compat:               CompatConfig{ForceReasoningOnlyModelsToResponses: enabled},
+		}
+	}
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(false)))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.Compat.ForceReasoningOnlyModelsToResponses, "disabling the toggle must persist")
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(true)))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.Compat.ForceReasoningOnlyModelsToResponses, "re-enabling the toggle must persist")
+}
+
+func TestGenerateClientConfigHash_CompatForceReasoningOnlyModelsToResponses(t *testing.T) {
+	on := &ClientConfig{InitialPoolSize: 100, Compat: CompatConfig{ForceReasoningOnlyModelsToResponses: true}}
+	off := &ClientConfig{InitialPoolSize: 100}
+	onHash, err := on.GenerateClientConfigHash()
+	require.NoError(t, err)
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, onHash, offHash, "toggling force_reasoning_only_models_to_responses must change the hash")
+}
+
 func TestGenerateClientConfigHash_VKRotationCooldown(t *testing.T) {
 	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
 	baseHash, err := base.GenerateClientConfigHash()
@@ -2413,6 +2717,25 @@ func TestGenerateClientConfigHash_VKRotationCooldown(t *testing.T) {
 	assert.NotEqual(t, baseHash, cooldownHash)
 }
 
+func TestGenerateClientConfigHash_A2AExternalClientURL(t *testing.T) {
+	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+
+	// An unset A2A external client URL must not change the hash: existing
+	// deployments see no config drift after upgrade.
+	unset := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, A2AExternalClientURL: schemas.NewSecretVar("")}
+	unsetHash, err := unset.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, unsetHash)
+
+	// A configured URL is a meaningful config change.
+	withURL := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, A2AExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com")}
+	urlHash, err := withURL.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, urlHash)
+}
+
 func TestClientConfigVKRotationCooldown_UnmarshalDurationString(t *testing.T) {
 	var cfg ClientConfig
 	require.NoError(t, json.Unmarshal([]byte(`{"vk_rotation_cooldown": "5m"}`), &cfg))
@@ -2425,6 +2748,24 @@ func TestClientConfigVKRotationCooldown_UnmarshalDurationString(t *testing.T) {
 	var cfgAbsent ClientConfig
 	require.NoError(t, json.Unmarshal([]byte(`{}`), &cfgAbsent))
 	assert.Equal(t, time.Duration(0), cfgAbsent.VKRotationCooldown.D())
+}
+
+func TestUpdateClientConfig_PreservesMetadataAcrossSync(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{EnableLogging: new(true), LogRetentionDays: 30}))
+	require.NoError(t, store.UpdateClientMetadata(ctx, map[string]any{"onboarding_dismissed": true, "onboarding_skipped": []any{"scim"}}))
+
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{EnableLogging: new(false), LogRetentionDays: 7}))
+
+	metadata, err := store.GetClientMetadata(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, true, metadata["onboarding_dismissed"])
+	assert.Equal(t, []any{"scim"}, metadata["onboarding_skipped"])
+	cfg, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 7, cfg.LogRetentionDays)
 }
 
 func TestUpdateClientMetadata(t *testing.T) {
@@ -3300,6 +3641,24 @@ func TestUpsertModelPricesBatch_SQLite(t *testing.T) {
 	assert.InDelta(t, 0.000005, *updated.InputCostPerToken, 1e-9)
 }
 
+func TestUpsertModelPricesBatch_WebSearchCostPerRequest_SurvivesResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{{Model: "claude-haiku-4-5", Provider: "anthropic", Mode: "chat", WebSearchCostPerRequest: cost(0.01)}}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+	pricing[0].WebSearchCostPerRequest = cost(0.02)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].WebSearchCostPerRequest)
+	assert.InDelta(t, 0.02, *got[0].WebSearchCostPerRequest, 1e-9)
+}
+
 func TestUpsertModelPricesBatch_MegapixelImageTierColumns_SurviveResync(t *testing.T) {
 	// Regression test for pricingSyncUpdateColumns: a column present on
 	// TableModelPricing but missing from that explicit update-column list
@@ -3348,6 +3707,106 @@ func TestUpsertModelPricesBatch_MegapixelImageTierColumns_SurviveResync(t *testi
 	assert.InDelta(t, 0.05, *row.OutputCostPerImageAbove16Megapixels, 1e-9) // survived resync with the updated value
 	assert.InDelta(t, 0.06, *row.OutputCostPerImageAbove32Megapixels, 1e-9)
 	assert.InDelta(t, 0.12, *row.OutputCostPerImageAbove64Megapixels, 1e-9)
+}
+
+func TestUpsertModelPricesBatch_TimeOfDayColumns_SurviveResync(t *testing.T) {
+	// Same pricingSyncUpdateColumns regression as the megapixel test above, for
+	// the peak/off-peak columns. peak_hours additionally exercises the
+	// serializer:json round-trip, which the plain *float64 columns do not.
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{
+		{
+			Model:                 "deepseek-v4-flash",
+			Provider:              "deepseek",
+			Mode:                  "chat",
+			InputCostPerToken:     cost(0.00000044),
+			OutputCostPerToken:    cost(0.00000132),
+			OffPeakCostMultiplier: cost(0.5),
+			PeakHours: &tables.PeakHoursSchedule{
+				Timezone: "UTC",
+				Windows: []tables.PeakHoursWindow{
+					{Days: []int{1, 2, 3, 4, 5}, Start: "01:00", End: "04:00"},
+					{Days: []int{1, 2, 3, 4, 5}, Start: "06:00", End: "10:00"},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	// Re-upsert the same row (the next scheduled datasheet sync) with BOTH
+	// columns changed, to exercise the ON CONFLICT update path. peak_hours has
+	// to change too: leaving it identical would let the row keep the value the
+	// first insert wrote, so the assertions below would still pass even if
+	// peak_hours were missing from pricingSyncUpdateColumns, which is the exact
+	// regression this test exists to catch.
+	pricing[0].OffPeakCostMultiplier = cost(0.6)
+	pricing[0].PeakHours = &tables.PeakHoursSchedule{
+		Timezone: "Asia/Shanghai",
+		Windows: []tables.PeakHoursWindow{
+			{Days: []int{1, 2, 3, 4, 5}, Start: "02:00", End: "05:00"},
+		},
+	}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+
+	row := got[0]
+	require.NotNil(t, row.OffPeakCostMultiplier)
+	assert.InDelta(t, 0.6, *row.OffPeakCostMultiplier, 1e-9) // survived resync with the updated value
+
+	// Every field below differs from the first insert, so a peak_hours column
+	// that never got updated fails here rather than passing by coincidence.
+	require.NotNil(t, row.PeakHours)
+	assert.Equal(t, "Asia/Shanghai", row.PeakHours.Timezone)
+	require.Len(t, row.PeakHours.Windows, 1)
+	assert.Equal(t, []int{1, 2, 3, 4, 5}, row.PeakHours.Windows[0].Days)
+	assert.Equal(t, "02:00", row.PeakHours.Windows[0].Start)
+	assert.Equal(t, "05:00", row.PeakHours.Windows[0].End)
+}
+
+// TestUpsertModelPricesBatch_DecisionRateColumns_SurviveResync is the same
+// pricingSyncUpdateColumns regression for the decision rate columns: both
+// values change on the second upsert so a column missing from the list fails
+// here instead of keeping its first value.
+func TestUpsertModelPricesBatch_DecisionRateColumns_SurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{{
+		Model:                       "gpt-6-luna",
+		Provider:                    "openai",
+		Mode:                        "chat",
+		InputCostPerToken:           cost(0.000002),
+		OutputCostPerToken:          cost(0.000008),
+		InputCostPerTokenDecisions:  cost(0.0000001),
+		OutputCostPerTokenDecisions: cost(0.0000003),
+	}}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	pricing[0].InputCostPerTokenDecisions = cost(0.0000002)
+	pricing[0].OutputCostPerTokenDecisions = cost(0.0000004)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+
+	row := got[0]
+	require.NotNil(t, row.InputCostPerTokenDecisions, "input_cost_per_token_decisions missing from pricingSyncUpdateColumns")
+	require.NotNil(t, row.OutputCostPerTokenDecisions, "output_cost_per_token_decisions missing from pricingSyncUpdateColumns")
+	assert.InDelta(t, 0.0000002, *row.InputCostPerTokenDecisions, 1e-12)
+	assert.InDelta(t, 0.0000004, *row.OutputCostPerTokenDecisions, 1e-12)
 }
 
 func TestUpsertModelParametersBatch_SQLite(t *testing.T) {
@@ -4222,6 +4681,42 @@ func TestRDBConfigStore_SyncRoutingRules(t *testing.T) {
 	}
 }
 
+// TestRDBConfigStore_RoutingRuleUpdateOmittedEnabled pins the update path for a rule whose
+// enabled field is omitted, as every config.json rule without "enabled" is. Save writes every
+// column, so a nil Enabled used to write NULL into the NOT NULL column and fail startup.
+func TestRDBConfigStore_RoutingRuleUpdateOmittedEnabled(t *testing.T) {
+	ctx := context.Background()
+
+	updaters := map[string]func(store *RDBConfigStore, rule *tables.TableRoutingRule) error{
+		"SyncRoutingRules": func(store *RDBConfigStore, rule *tables.TableRoutingRule) error {
+			return store.SyncRoutingRules(ctx, nil, []tables.TableRoutingRule{*rule})
+		},
+		"UpdateRoutingRule": func(store *RDBConfigStore, rule *tables.TableRoutingRule) error {
+			return store.UpdateRoutingRule(ctx, rule)
+		},
+	}
+
+	for name, update := range updaters {
+		for _, stored := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/stored=%t", name, stored), func(t *testing.T) {
+				store := setupRDBTestStore(t)
+				created := routingRuleFixture("rule-a", 0, "openai")
+				created.Enabled = new(stored)
+				require.NoError(t, store.CreateRoutingRule(ctx, created))
+
+				incoming := routingRuleFixture("rule-a", 0, "openai")
+				incoming.Enabled = nil
+				require.NoError(t, update(store, incoming))
+
+				got, err := store.GetRoutingRule(ctx, "rule-a")
+				require.NoError(t, err)
+				require.NotNil(t, got.Enabled)
+				require.Equal(t, stored, *got.Enabled, "omitted enabled must keep the stored value")
+			})
+		}
+	}
+}
+
 // TestUpsertModelPricesBatch_InputCostPerQuerySurvivesResync guards the ON CONFLICT DO UPDATE
 // column list. Create() writes every column, so a first sync looks correct even when a field is
 // missing from pricingSyncUpdateColumns - the value only disappears on the next resync of an
@@ -4363,6 +4858,106 @@ func TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate(t *testing.T) {
 
 		assertCreatedAt(t, store, "rule-a", created.CreatedAt)
 	})
+}
+
+// TestRDBConfigStore_RoutingRuleDuplicatePriority pins the conflict two rules sharing a priority in
+// one scope raise on create and update: it is ErrAlreadyExists, so the API answers 409 rather than
+// 500, and its message names the scope ID rather than the address of the pointer that holds it.
+func TestRDBConfigStore_RoutingRuleDuplicatePriority(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	scoped := func(id string, priority int, scopeID string) *tables.TableRoutingRule {
+		rule := routingRuleFixture(id, priority, "openai")
+		rule.Scope = "virtual_key"
+		rule.ScopeID = &scopeID
+		return rule
+	}
+
+	require.NoError(t, store.CreateRoutingRule(ctx, routingRuleFixture("global-a", 5, "openai")))
+	err := store.CreateRoutingRule(ctx, routingRuleFixture("global-b", 5, "openai"))
+	require.ErrorIs(t, err, ErrAlreadyExists)
+	require.ErrorIs(t, err, ErrRoutingRulePriorityTaken, "a priority conflict is told apart from other conflicts")
+	require.Contains(t, err.Error(), "priority 5")
+	require.Contains(t, err.Error(), "scope 'global'")
+
+	require.NoError(t, store.CreateRoutingRule(ctx, scoped("vk-a", 7, "vk-1")))
+	err = store.CreateRoutingRule(ctx, scoped("vk-b", 7, "vk-1"))
+	require.ErrorIs(t, err, ErrAlreadyExists)
+	require.Contains(t, err.Error(), "'vk-1'")
+	require.NotContains(t, err.Error(), "0x", "the scope ID must be printed, not its pointer")
+
+	// The same priority in another scope, or under another scope ID, is no conflict.
+	require.NoError(t, store.CreateRoutingRule(ctx, scoped("vk-c", 5, "vk-1")))
+	require.NoError(t, store.CreateRoutingRule(ctx, scoped("vk-d", 7, "vk-2")))
+
+	require.NoError(t, store.CreateRoutingRule(ctx, routingRuleFixture("global-c", 8, "openai")))
+	err = store.UpdateRoutingRule(ctx, routingRuleFixture("global-c", 5, "openai"))
+	require.ErrorIs(t, err, ErrAlreadyExists)
+	err = store.UpdateRoutingRule(ctx, scoped("vk-d", 7, "vk-1"))
+	require.ErrorIs(t, err, ErrAlreadyExists)
+	require.Contains(t, err.Error(), "'vk-1'")
+	require.NotContains(t, err.Error(), "0x", "the scope ID must be printed, not its pointer")
+}
+
+// TestRDBConfigStore_RoutingTargetTTFTTimeoutRoundTrip pins a target's
+// ttft_timeout_ms through create, read, update and clearing it back to nil.
+func TestRDBConfigStore_RoutingTargetTTFTTimeoutRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+
+	rule := routingRuleFixture("rule-ttft", 0, "openai")
+	require.NotEmpty(t, rule.Targets)
+	rule.Targets[0].TTFTTimeoutMs = new(1500)
+	require.NoError(t, store.CreateRoutingRule(ctx, rule))
+	got, err := store.GetRoutingRule(ctx, "rule-ttft")
+	require.NoError(t, err)
+	require.NotEmpty(t, got.Targets)
+	require.NotNil(t, got.Targets[0].TTFTTimeoutMs)
+	require.Equal(t, 1500, *got.Targets[0].TTFTTimeoutMs)
+
+	got.Targets[0].TTFTTimeoutMs = new(800)
+	require.NoError(t, store.UpdateRoutingRule(ctx, got))
+	got, err = store.GetRoutingRule(ctx, "rule-ttft")
+	require.NoError(t, err)
+	require.NotNil(t, got.Targets[0].TTFTTimeoutMs)
+	require.Equal(t, 800, *got.Targets[0].TTFTTimeoutMs)
+
+	got.Targets[0].TTFTTimeoutMs = nil
+	require.NoError(t, store.UpdateRoutingRule(ctx, got))
+	got, err = store.GetRoutingRule(ctx, "rule-ttft")
+	require.NoError(t, err)
+	require.Nil(t, got.Targets[0].TTFTTimeoutMs, "clearing the field must persist as NULL")
+}
+
+// TestGenerateRoutingRuleHash_TargetTTFTTimeout: a rule whose targets carry no
+// deadline keeps the hash it had before the field existed, and setting one
+// changes the hash.
+func TestGenerateRoutingRuleHash_TargetTTFTTimeout(t *testing.T) {
+	// Hash of this fixture from the implementation before ttft_timeout_ms
+	// existed. Comparing two current hashes would not catch a change to it.
+	const preTTFTHash = "f9808962adb5bd07a2da3521037890b40ebafbafc61881986c3830f6d362e053"
+
+	rule := *routingRuleFixture("rule-hash", 0, "openai")
+	require.NotEmpty(t, rule.Targets)
+	rule.Targets = append([]tables.TableRoutingTarget(nil), rule.Targets...)
+	unset, err := GenerateRoutingRuleHash(rule)
+	require.NoError(t, err)
+	require.Equal(t, preTTFTHash, unset, "a target without ttft_timeout_ms must keep its pre-upgrade hash")
+
+	rule.Targets[0].TTFTTimeoutMs = new(1500)
+	set, err := GenerateRoutingRuleHash(rule)
+	require.NoError(t, err)
+	require.NotEqual(t, unset, set, "setting ttft_timeout_ms must change the config hash")
+
+	rule.Targets[0].TTFTTimeoutMs = new(2000)
+	changed, err := GenerateRoutingRuleHash(rule)
+	require.NoError(t, err)
+	require.NotEqual(t, set, changed, "changing ttft_timeout_ms must change the config hash")
+
+	rule.Targets[0].TTFTTimeoutMs = nil
+	cleared, err := GenerateRoutingRuleHash(rule)
+	require.NoError(t, err)
+	require.Equal(t, unset, cleared, "a target without ttft_timeout_ms must keep its pre-upgrade hash")
 }
 
 // TestUpsertModelPricesBatch_VideoResolutionColumnsSurviveResync pins the
@@ -4567,4 +5162,219 @@ func TestRDBConfigStore_CreatedAtSurvivesConfigSync(t *testing.T) {
 			require.Equal(t, createdAt, syncedAt, "created_at must survive a config sync")
 		})
 	}
+}
+
+func TestListExpiredVirtualKeysForDeletion(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	past := now.Add(-time.Hour)
+	future := now.Add(time.Hour)
+
+	keys := []*tables.TableVirtualKey{
+		{ID: "vk-expired-flagged", Name: "expired flagged", Value: *schemas.NewSecretVar("v1"), ExpiresAt: &past, DeleteAfterExpire: schemas.Ptr(true)},
+		{ID: "vk-expired-inactive-flagged", Name: "expired inactive flagged", Value: *schemas.NewSecretVar("v2"), ExpiresAt: &past, DeleteAfterExpire: schemas.Ptr(true), IsActive: schemas.Ptr(false)},
+		{ID: "vk-expired-unset", Name: "expired unset", Value: *schemas.NewSecretVar("v3"), ExpiresAt: &past},
+		{ID: "vk-expired-opt-out", Name: "expired opt out", Value: *schemas.NewSecretVar("v7"), ExpiresAt: &past, DeleteAfterExpire: schemas.Ptr(false)},
+		{ID: "vk-future-flagged", Name: "future flagged", Value: *schemas.NewSecretVar("v4"), ExpiresAt: &future, DeleteAfterExpire: schemas.Ptr(true)},
+		{ID: "vk-never-flagged", Name: "never flagged", Value: *schemas.NewSecretVar("v5"), DeleteAfterExpire: schemas.Ptr(true)},
+	}
+	for _, vk := range keys {
+		require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	}
+	// An omitted flag must round-trip as NULL, not the column default.
+	unset, err := store.GetVirtualKey(ctx, "vk-expired-unset")
+	require.NoError(t, err)
+	assert.Nil(t, unset.DeleteAfterExpire)
+
+	listIDs := func(includeUnset bool) []string {
+		got, err := store.ListExpiredVirtualKeysForDeletion(ctx, now, includeUnset)
+		require.NoError(t, err)
+		var ids []string
+		for _, vk := range got {
+			ids = append(ids, vk.ID)
+			assert.NotEmpty(t, vk.Name)
+		}
+		sort.Strings(ids)
+		return ids
+	}
+
+	// Client default off: only explicitly flagged keys.
+	assert.Equal(t, []string{"vk-expired-flagged", "vk-expired-inactive-flagged"}, listIDs(false))
+	// Client default on: unset keys join, explicit false stays out.
+	assert.Equal(t, []string{"vk-expired-flagged", "vk-expired-inactive-flagged", "vk-expired-unset"}, listIDs(true))
+
+	// A key whose expiry is exactly now counts as expired, matching IsExpiredAt.
+	boundary := &tables.TableVirtualKey{ID: "vk-boundary", Name: "boundary", Value: *schemas.NewSecretVar("v6"), ExpiresAt: &now, DeleteAfterExpire: schemas.Ptr(true)}
+	require.NoError(t, store.CreateVirtualKey(ctx, boundary))
+	assert.Len(t, listIDs(false), 3)
+}
+
+func TestVirtualKeyDeleteAfterExpireUpdateRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	future := time.Now().UTC().Add(time.Hour)
+	vk := &tables.TableVirtualKey{ID: "vk-rt", Name: "rt", Value: *schemas.NewSecretVar("rt"), ExpiresAt: &future, DeleteAfterExpire: schemas.Ptr(true)}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	// UpdateVirtualKey uses an explicit column list; NULL must persist through it.
+	vk.DeleteAfterExpire = nil
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	got, err := store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Nil(t, got.DeleteAfterExpire)
+
+	vk.DeleteAfterExpire = schemas.Ptr(false)
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	got, err = store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.DeleteAfterExpire)
+	assert.False(t, *got.DeleteAfterExpire)
+}
+
+func TestDeleteExpiredVirtualKey_RechecksEligibility(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	past := now.Add(-time.Hour)
+	future := now.Add(time.Hour)
+
+	keys := []*tables.TableVirtualKey{
+		{ID: "vk-eligible", Name: "eligible", Value: *schemas.NewSecretVar("e1"), ExpiresAt: &past, DeleteAfterExpire: schemas.Ptr(true)},
+		// Updated after the scan: the operator cleared the flag or extended the expiry.
+		{ID: "vk-opted-out", Name: "opted out", Value: *schemas.NewSecretVar("e2"), ExpiresAt: &past, DeleteAfterExpire: schemas.Ptr(false)},
+		{ID: "vk-extended", Name: "extended", Value: *schemas.NewSecretVar("e3"), ExpiresAt: &future, DeleteAfterExpire: schemas.Ptr(true)},
+		{ID: "vk-unset", Name: "unset", Value: *schemas.NewSecretVar("e4"), ExpiresAt: &past},
+	}
+	for _, vk := range keys {
+		require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	}
+
+	for _, id := range []string{"vk-opted-out", "vk-extended", "vk-unset"} {
+		deleted, err := store.DeleteExpiredVirtualKey(ctx, id, now, false)
+		require.NoError(t, err)
+		assert.Nil(t, deleted, "%s no longer qualifies and must survive", id)
+		_, err = store.GetVirtualKey(ctx, id)
+		assert.NoError(t, err, "%s was deleted despite being ineligible", id)
+	}
+
+	deleted, err := store.DeleteExpiredVirtualKey(ctx, "vk-eligible", now, false)
+	require.NoError(t, err)
+	require.NotNil(t, deleted)
+	assert.Equal(t, "eligible", deleted.Name)
+	_, err = store.GetVirtualKey(ctx, "vk-eligible")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	// The job scanned with the default on, but an admin turned it off before the delete:
+	// the unset key must follow the current default and survive.
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{DeleteExpiredVirtualKeys: false}))
+	deleted, err = store.DeleteExpiredVirtualKey(ctx, "vk-unset", now, true)
+	require.NoError(t, err)
+	assert.Nil(t, deleted, "unset key was deleted after the client default was turned off")
+	_, err = store.GetVirtualKey(ctx, "vk-unset")
+	require.NoError(t, err)
+
+	// An unset flag follows the client default when it is on.
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{DeleteExpiredVirtualKeys: true}))
+	deleted, err = store.DeleteExpiredVirtualKey(ctx, "vk-unset", now, true)
+	require.NoError(t, err)
+	require.NotNil(t, deleted)
+
+	_, err = store.DeleteExpiredVirtualKey(ctx, "vk-missing", now, true)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestUpsertModelPricesBatch_PriorityAbove272kCacheCreation_SurvivesResync guards
+// the pricingSyncUpdateColumns entry for the priority >272k cache-write column:
+// the first sync writes every column, only the ON CONFLICT DO UPDATE of the
+// second sync reveals a column missing from the explicit update list.
+func TestUpsertModelPricesBatch_PriorityAbove272kCacheCreation_SurvivesResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{{
+		Model: "gpt-6-astra", Provider: "openai", Mode: "responses",
+		CacheCreationInputTokenCostPriority:                cost(0.000025),
+		CacheCreationInputTokenCostAbove272kTokensPriority: cost(0.00005),
+	}}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	pricing[0].CacheCreationInputTokenCostAbove272kTokensPriority = cost(0.00006)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove272kTokensPriority)
+	assert.InDelta(t, 0.00006, *got[0].CacheCreationInputTokenCostAbove272kTokensPriority, 1e-12)
+}
+
+// TestUpsertModelPricesBatch_Above100kColumns_SurviveResync guards the
+// pricingSyncUpdateColumns entries for the >100k tier columns.
+func TestUpsertModelPricesBatch_Above100kColumns_SurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	pricing := []tables.TableModelPricing{{
+		Model: "claude-haiku-5-5", Provider: "anthropic", Mode: "chat",
+		InputCostPerToken:                                  new(1e-07),
+		InputCostPerTokenAbove100kTokens:                   new(4e-07),
+		OutputCostPerTokenAbove100kTokens:                  new(2e-06),
+		CacheCreationInputTokenCostAbove100kTokens:         new(5e-07),
+		CacheReadInputTokenCostAbove100kTokens:             new(4e-08),
+		CacheCreationInputTokenCostAbove1hrAbove100kTokens: new(8e-07),
+	}}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	pricing[0].InputCostPerTokenAbove100kTokens = new(5e-07)
+	pricing[0].OutputCostPerTokenAbove100kTokens = new(2.5e-06)
+	pricing[0].CacheCreationInputTokenCostAbove100kTokens = new(6.25e-07)
+	pricing[0].CacheReadInputTokenCostAbove100kTokens = new(5e-08)
+	pricing[0].CacheCreationInputTokenCostAbove1hrAbove100kTokens = new(1e-06)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].InputCostPerTokenAbove100kTokens)
+	assert.InDelta(t, 5e-07, *got[0].InputCostPerTokenAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].OutputCostPerTokenAbove100kTokens)
+	assert.InDelta(t, 2.5e-06, *got[0].OutputCostPerTokenAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove100kTokens)
+	assert.InDelta(t, 6.25e-07, *got[0].CacheCreationInputTokenCostAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].CacheReadInputTokenCostAbove100kTokens)
+	assert.InDelta(t, 5e-08, *got[0].CacheReadInputTokenCostAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove1hrAbove100kTokens)
+	assert.InDelta(t, 1e-06, *got[0].CacheCreationInputTokenCostAbove1hrAbove100kTokens, 1e-15)
+}
+
+// TestProviderInjectedToolsRoundTrip pins injected_tools through every provider write
+// path (bulk upsert, add, update) and both read paths, including clearing it.
+func TestProviderInjectedToolsRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	webSearch := &schemas.InjectedToolsConfig{
+		WebSearch: &schemas.InjectedToolRef{MCPClientName: "tavily", ToolName: "search"},
+	}
+
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		schemas.OpenAI: {InjectedTools: webSearch},
+	}))
+	all, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, webSearch, all[schemas.OpenAI].InjectedTools)
+
+	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, ProviderConfig{InjectedTools: webSearch}))
+	got, err := store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	assert.Equal(t, webSearch, got.InjectedTools)
+
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{}))
+	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	assert.Nil(t, got.InjectedTools, "updating with a nil block must clear the stored column")
 }

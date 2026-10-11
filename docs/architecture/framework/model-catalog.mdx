@@ -65,7 +65,15 @@ It integrates with semantic caching to provide accurate cost calculations:
 
 ### **5. Tiered Pricing Support**
 
-The system automatically applies different pricing rates for high-token contexts, reflecting real provider pricing models. Two tiers are supported: above 128k tokens and above 200k tokens, with the higher tier taking precedence when both are configured.
+The system automatically applies different pricing rates for high-token contexts, reflecting real provider pricing models. Supported tiers are above 100k, 128k, 200k and 272k tokens, with the highest matching tier taking precedence when several are configured.
+
+### **6. Time-of-Day Pricing**
+
+Models can declare recurring weekly peak windows (`peak_hours`) and a discount (`off_peak_cost_multiplier`) that scales every usage-based charge outside them — DeepSeek's V4 lineup, for instance, bills at half rate outside Monday-Friday `01:00-04:00` and `06:00-10:00` UTC.
+
+The mechanism is generic: nothing in the cost engine names a provider, so any model whose datasheet row carries the two fields is priced this way. Base rates are the peak prices and the multiplier only ever scales downward, so a row with an incomplete or unparseable schedule bills at the full rate rather than under-billing. Flat per-request and per-query fees are excluded from the discount.
+
+Peak vs off-peak is decided by the request's **start time**, carried on `LookupScopes.BilledAt`, so pricing is deterministic and a stream crossing a boundary bills entirely at its start-time rate.
 
 ## Configuration
 
@@ -138,6 +146,10 @@ type PricingEntry struct {
     OutputCostPerTokenBatches         *float64 `json:"output_cost_per_token_batches,omitempty"`
     InputCostPerTokenPriority         *float64 `json:"input_cost_per_token_priority,omitempty"`
     OutputCostPerTokenPriority        *float64 `json:"output_cost_per_token_priority,omitempty"`
+    InputCostPerTokenDecisions        *float64 `json:"input_cost_per_token_decisions,omitempty"`
+    OutputCostPerTokenDecisions       *float64 `json:"output_cost_per_token_decisions,omitempty"`
+    InputCostPerTokenAbove100kTokens  *float64 `json:"input_cost_per_token_above_100k_tokens,omitempty"`
+    OutputCostPerTokenAbove100kTokens *float64 `json:"output_cost_per_token_above_100k_tokens,omitempty"`
     InputCostPerTokenAbove200kTokens  *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
     OutputCostPerTokenAbove200kTokens *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
 
@@ -148,6 +160,9 @@ type PricingEntry struct {
     CacheReadInputTokenCostAbove200kTokens             *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
     CacheCreationInputTokenCostAbove1hr                *float64 `json:"cache_creation_input_token_cost_above_1hr,omitempty"`
     CacheCreationInputTokenCostAbove1hrAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_1hr_above_200k_tokens,omitempty"`
+    CacheCreationInputTokenCostAbove100kTokens         *float64 `json:"cache_creation_input_token_cost_above_100k_tokens,omitempty"`
+    CacheReadInputTokenCostAbove100kTokens             *float64 `json:"cache_read_input_token_cost_above_100k_tokens,omitempty"`
+    CacheCreationInputTokenCostAbove1hrAbove100kTokens *float64 `json:"cache_creation_input_token_cost_above_1hr_above_100k_tokens,omitempty"`
     CacheCreationInputAudioTokenCost                   *float64 `json:"cache_creation_input_audio_token_cost,omitempty"`
     CacheReadInputTokenCostPriority                    *float64 `json:"cache_read_input_token_cost_priority,omitempty"`
 
@@ -203,9 +218,14 @@ type PricingEntry struct {
 
     // Costs - Other
     SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
+    WebSearchCostPerRequest       *float64 `json:"web_search_cost_per_request,omitempty"`
     InputCostPerQuery             *float64 `json:"input_cost_per_query,omitempty"`
     CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
     CostPerRequest                *float64 `json:"cost_per_request,omitempty"`
+
+    // Costs - Time of day
+    OffPeakCostMultiplier *float64           `json:"off_peak_cost_multiplier,omitempty"`
+    PeakHours             *PeakHoursSchedule `json:"peak_hours,omitempty"`
 }
 ```
 

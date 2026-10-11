@@ -284,6 +284,18 @@ func TestParseCopilotError(t *testing.T) {
 		assert.Equal(t, "slow down", bErr.Error.Message)
 	})
 
+	t.Run("429 keeps the status and the retry hint", func(t *testing.T) {
+		resp := newResponse(fasthttp.StatusTooManyRequests, `{"error":{"message":"slow down"}}`)
+		defer fasthttp.ReleaseResponse(resp)
+		resp.Header.Set("Retry-After", "7")
+
+		bErr := parseCopilotError(resp)
+
+		require.NotNil(t, bErr.StatusCode)
+		assert.Equal(t, fasthttp.StatusTooManyRequests, *bErr.StatusCode)
+		assert.Equal(t, int64(7000), bErr.ExtraFields.RetryAfter)
+	})
+
 	t.Run("an empty body still produces an actionable message", func(t *testing.T) {
 		resp := newResponse(fasthttp.StatusUnauthorized, "")
 		defer fasthttp.ReleaseResponse(resp)

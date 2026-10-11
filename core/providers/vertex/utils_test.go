@@ -2,7 +2,10 @@ package vertex
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -1003,5 +1006,98 @@ func TestVertexAnthropicPassthroughStreamUsage(t *testing.T) {
 	}
 	if usage.LLMUsage.PromptTokens != 522 || usage.LLMUsage.CompletionTokens != 13 || usage.LLMUsage.TotalTokens != 535 {
 		t.Fatalf("unexpected usage: %+v", usage.LLMUsage)
+	}
+}
+func TestVertexResourceNamesStayOnExpectedEndpoint(t *testing.T) {
+	t.Parallel()
+
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{ProjectID: *schemas.NewSecretVar("proj"), Region: *schemas.NewSecretVar("us-central1")}}
+	validBatch := map[string]string{
+		"123": "https://us-central1-aiplatform.googleapis.com/v1/projects/proj/locations/us-central1/batchPredictionJobs/123",
+		// Vertex returns the project number, and the job may live in another region.
+		"projects/987654321/locations/europe-west4/batchPredictionJobs/123": "https://europe-west4-aiplatform.googleapis.com/v1/projects/987654321/locations/europe-west4/batchPredictionJobs/123",
+	}
+	for id, want := range validBatch {
+		got, bifrostErr := vertexBatchJobURL(key, id)
+		if bifrostErr != nil || got != want {
+			t.Fatalf("vertexBatchJobURL(%q) = %q, %v; want %q", id, got, bifrostErr, want)
+		}
+	}
+	for _, id := range []string{
+		"../endpoints",
+		"123?x=1",
+		"projects/p/locations/attacker.example#/batchPredictionJobs/1",
+		"projects/p/locations/us-central1/endpoints/1",
+		"projects/p/locations/us-central1/batchPredictionJobs/../endpoints",
+		"projects/p/locations/us-central1/batchPredictionJobs/1/extra",
+	} {
+		if got, bifrostErr := vertexBatchJobURL(key, id); bifrostErr == nil {
+			t.Fatalf("vertexBatchJobURL(%q) = %q, want error", id, got)
+		}
+	}
+
+	operation := "projects/proj/locations/europe-west4/publishers/google/models/veo-3/operations/op-1"
+	if got, bifrostErr := vertexVideoOperationURL(operation); bifrostErr != nil || got != "https://europe-west4-aiplatform.googleapis.com/v1/projects/proj/locations/europe-west4/publishers/google/models/veo-3:fetchPredictOperation" {
+		t.Fatalf("vertexVideoOperationURL = %q, %v", got, bifrostErr)
+	}
+	for _, id := range []string{
+		"projects/proj/locations/us-central1/../../endpoints/operations/op-1",
+		"projects/proj/locations/attacker.example#/publishers/google/models/veo-3/operations/op-1",
+	} {
+		if got, bifrostErr := vertexVideoOperationURL(id); bifrostErr == nil {
+			t.Fatalf("vertexVideoOperationURL(%q) = %q, want error", id, got)
+		}
+	}
+
+	if got, bifrostErr := expandVertexCachedContentName("cachedContents/abc", "proj", "us-central1"); bifrostErr != nil || got != "projects/proj/locations/us-central1/cachedContents/abc" {
+		t.Fatalf("expandVertexCachedContentName = %q, %v", got, bifrostErr)
+	}
+	if got, bifrostErr := expandVertexCachedContentName("projects/proj/locations/us-central1/cachedContents/../endpoints", "proj", "us-central1"); bifrostErr == nil {
+		t.Fatalf("expandVertexCachedContentName accepted a traversal: %q", got)
+	}
+}
+
+// A Veo operation lives in the region that created it, so polls must go there whatever region
+// the selected key is configured for.
+func TestVertexVideoPollUsesOperationRegion(t *testing.T) {
+	var mu sync.Mutex
+	var dialed []string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		dialed = append(dialed, r.Host)
+		mu.Unlock()
+		http.Error(w, "recorded", http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+
+	config := &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10},
+		ProxyConfig:   &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxy.URL)},
+	}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+
+	key := schemas.Key{
+		Value:           *schemas.NewSecretVar("api-key"),
+		VertexKeyConfig: &schemas.VertexKeyConfig{ProjectID: *schemas.NewSecretVar("proj"), Region: *schemas.NewSecretVar("us-east5")},
+	}
+	videoID := providerUtils.AddVideoIDProviderSuffix("projects/proj/locations/us-central1/publishers/google/models/veo-3.0-generate-001/operations/op-1", schemas.Vertex)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	if _, bifrostErr := provider.VideoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: schemas.Vertex, ID: videoID}); bifrostErr == nil {
+		t.Fatal("VideoRetrieve succeeded against the recording proxy")
+	}
+	if _, bifrostErr := provider.VideoDownload(ctx, key, &schemas.BifrostVideoDownloadRequest{Provider: schemas.Vertex, ID: videoID}); bifrostErr == nil {
+		t.Fatal("VideoDownload succeeded against the recording proxy")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"us-central1-aiplatform.googleapis.com:443", "us-central1-aiplatform.googleapis.com:443"}
+	if !reflect.DeepEqual(dialed, want) {
+		t.Fatalf("video polls dialed %v, want %v", dialed, want)
 	}
 }

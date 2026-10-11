@@ -106,7 +106,16 @@ func (s *RDBLogStore) triggerMatViewSelfHeal() {
 			}
 			return
 		}
-		if err := refreshMatViews(ctx, s.db); err != nil {
+		// Bound the refresh like a periodic tick. refreshMatViews holds the refresh
+		// advisory lock for its whole run; unbounded, one refresh over a very large
+		// logs table would block every replica's periodic refresher indefinitely.
+		refreshCtx, cancel := ctx, context.CancelFunc(func() {})
+		if s.matViewRefreshTimeout > 0 {
+			refreshCtx, cancel = context.WithTimeout(ctx, s.matViewRefreshTimeout)
+		}
+		err := refreshMatViews(refreshCtx, s.db)
+		cancel()
+		if err != nil {
 			if s.logger != nil {
 				s.logger.Warn(fmt.Sprintf("logstore: matview self-heal refresh failed: %s (still serving from raw tables)", err))
 			}

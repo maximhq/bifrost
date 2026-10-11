@@ -180,3 +180,127 @@ func TestCohereRerankResponseConverterConvertsForCrossProvider(t *testing.T) {
 	require.True(t, ok, "cross-provider responses must be converted, not passed through")
 	require.Len(t, cohereResp.Results, 1)
 }
+
+func cohereChatRoute(t *testing.T) *RouteConfig {
+	t.Helper()
+	routes := CreateCohereRouteConfigs("/cohere")
+	for i := range routes {
+		if routes[i].Path == "/cohere/v2/chat" {
+			return &routes[i]
+		}
+	}
+	t.Fatal("cohere chat route not found")
+	return nil
+}
+
+func TestCohereChatResponseConverterEmitsCohereV2Shape(t *testing.T) {
+	route := cohereChatRoute(t)
+	require.NotNil(t, route.ChatResponseConverter)
+
+	text := "The answer is 42."
+	finishReason := string(schemas.BifrostFinishReasonToolCalls)
+	toolType := string(schemas.ChatToolTypeFunction)
+	toolID := "call-1"
+	toolName := "get_answer"
+	resp := &schemas.BifrostChatResponse{
+		ID: "chat-123",
+		Choices: []schemas.BifrostResponseChoice{{
+			Index:        0,
+			FinishReason: &finishReason,
+			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+				Message: &schemas.ChatMessage{
+					Role:    schemas.ChatMessageRoleAssistant,
+					Content: &schemas.ChatMessageContent{ContentStr: &text},
+					ChatAssistantMessage: &schemas.ChatAssistantMessage{
+						ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+							Index: 0,
+							Type:  &toolType,
+							ID:    &toolID,
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      &toolName,
+								Arguments: `{"value":42}`,
+							},
+						}},
+					},
+				},
+			},
+		}},
+		Usage: &schemas.BifrostLLMUsage{
+			PromptTokens:     11,
+			CompletionTokens: 7,
+			TotalTokens:      18,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+				CachedReadTokens: 3,
+			},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.Cohere},
+	}
+
+	converted, err := route.ChatResponseConverter(nil, resp)
+	require.NoError(t, err)
+	cohereResp, ok := converted.(*cohere.CohereChatResponse)
+	require.True(t, ok)
+	assert.Equal(t, "chat-123", cohereResp.ID)
+	require.NotNil(t, cohereResp.FinishReason)
+	assert.Equal(t, cohere.FinishReasonToolCall, *cohereResp.FinishReason)
+	require.NotNil(t, cohereResp.Message)
+	assert.Equal(t, "assistant", cohereResp.Message.Role)
+	require.NotNil(t, cohereResp.Message.Content)
+	require.Len(t, cohereResp.Message.Content.GetBlocks(), 1)
+	assert.Equal(t, text, *cohereResp.Message.Content.GetBlocks()[0].Text)
+	require.Len(t, cohereResp.Message.ToolCalls, 1)
+	assert.Equal(t, toolID, *cohereResp.Message.ToolCalls[0].ID)
+	assert.Equal(t, toolName, *cohereResp.Message.ToolCalls[0].Function.Name)
+	assert.Equal(t, `{"value":42}`, cohereResp.Message.ToolCalls[0].Function.Arguments)
+	require.NotNil(t, cohereResp.Usage)
+	assert.Nil(t, cohereResp.Usage.BilledUnits)
+	assert.Equal(t, 11, *cohereResp.Usage.Tokens.InputTokens)
+	assert.Equal(t, 7, *cohereResp.Usage.Tokens.OutputTokens)
+	assert.Equal(t, 3, *cohereResp.Usage.CachedTokens)
+
+	encoded, err := sonic.Marshal(cohereResp)
+	require.NoError(t, err)
+	var payload map[string]interface{}
+	require.NoError(t, sonic.Unmarshal(encoded, &payload))
+	assert.Contains(t, payload, "message")
+	assert.NotContains(t, payload, "choices")
+	assert.NotContains(t, payload, "model")
+	assert.NotContains(t, payload, "extra_fields")
+}
+
+func TestCohereChatResponseConverterUsesNativeRawResponse(t *testing.T) {
+	route := cohereChatRoute(t)
+	raw := map[string]interface{}{"id": "chat-raw", "message": map[string]interface{}{"role": "assistant"}}
+	resp := &schemas.BifrostChatResponse{ExtraFields: schemas.BifrostResponseExtraFields{
+		Provider:    schemas.Cohere,
+		RawResponse: raw,
+	}}
+
+	converted, err := route.ChatResponseConverter(nil, resp)
+	require.NoError(t, err)
+	assert.Equal(t, raw, converted)
+}
+
+func TestCohereChatResponseConverterConvertsCrossProviderRawResponse(t *testing.T) {
+	route := cohereChatRoute(t)
+	text := "fallback response"
+	resp := &schemas.BifrostChatResponse{
+		ID: "chat-fallback",
+		Choices: []schemas.BifrostResponseChoice{{
+			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+				Message: &schemas.ChatMessage{Content: &schemas.ChatMessageContent{ContentStr: &text}},
+			},
+		}},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider:    schemas.OpenAI,
+			RawResponse: map[string]interface{}{"choices": []interface{}{}},
+		},
+	}
+
+	converted, err := route.ChatResponseConverter(nil, resp)
+	require.NoError(t, err)
+	cohereResp, ok := converted.(*cohere.CohereChatResponse)
+	require.True(t, ok, "cross-provider responses must be converted, not passed through")
+	require.NotNil(t, cohereResp.Message)
+	assert.Equal(t, text, *cohereResp.Message.Content.GetBlocks()[0].Text)
+}

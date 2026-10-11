@@ -1,3 +1,4 @@
+import { StartTruncatedLabel } from "@/components/ui/truncatedLabel";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type {
 	CostHistogramResponse,
@@ -206,6 +207,90 @@ function OverviewTabImpl({
 		<>
 			{/* Charts Grid */}
 			<div className="grid grid-cols-1 gap-2 lg:grid-cols-2 2xl:grid-cols-3">
+				{/* Cost Chart: first so spend is the first thing the page answers. */}
+				<ChartCard
+					title="Cost"
+					loading={loadingCost}
+					testId="chart-cost-total"
+					totalLabel="Total"
+					total={
+						costTotal !== null ? (
+							<NumberFlow value={costTotal} format={{ ...COMPACT_NUMBER_FORMAT, style: "currency", currency: "USD" }} />
+						) : undefined
+					}
+					totalTooltip={
+						costTotal !== null
+							? costTotal.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 6 })
+							: undefined
+					}
+					legend={
+						<div className={CHART_HEADER_LEGEND_CLASS}>
+							{costModel === "all" ? (
+								costModels.length > 0 && (
+									<>
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<span tabIndex={0} data-testid="cost-legend-trigger" className="flex items-center gap-1">
+													<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
+													<StartTruncatedLabel className="text-muted-foreground max-w-[160px]">{costModels[0]}</StartTruncatedLabel>
+												</span>
+											</TooltipTrigger>
+											<TooltipContent>{costModels[0]}</TooltipContent>
+										</Tooltip>
+										{costModels.length > 1 && (
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<span tabIndex={0} data-testid="cost-legend-more-trigger" className="text-muted-foreground cursor-default">
+														+{costModels.length - 1} more
+													</span>
+												</TooltipTrigger>
+												<TooltipContent>
+													<div className="flex flex-col gap-1">
+														{costModels.slice(1).map((model, idx) => (
+															<span key={model} className="flex items-center gap-1">
+																<span
+																	className="h-2 w-2 shrink-0 rounded-full"
+																	style={{
+																		backgroundColor: model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx + 1),
+																	}}
+																/>
+																{model === OTHER_SERIES_KEY ? OTHER_SERIES_LABEL : model}
+															</span>
+														))}
+													</div>
+												</TooltipContent>
+											</Tooltip>
+										)}
+									</>
+								)
+							) : (
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<span tabIndex={0} data-testid="cost-legend-single-trigger" className="flex items-center gap-1">
+											<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
+											<StartTruncatedLabel className="text-muted-foreground max-w-[160px]">{costModel}</StartTruncatedLabel>
+										</span>
+									</TooltipTrigger>
+									<TooltipContent>{costModel}</TooltipContent>
+								</Tooltip>
+							)}
+						</div>
+					}
+					controls={
+						<>
+							<ModelFilterSelect
+								models={availableModels}
+								selectedModel={costModel}
+								onModelChange={onCostModelChange}
+								data-testid="dashboard-cost-model-filter"
+							/>
+							<ChartTypeToggle chartType={costChartType} onToggle={onCostChartToggle} data-testid="dashboard-cost-chart-toggle" />
+						</>
+					}
+				>
+					<CostChart data={costData} chartType={costChartType} startTime={startTime} endTime={endTime} selectedModel={costModel} />
+				</ChartCard>
+
 				{/* Log Volume Chart */}
 				<ChartCard
 					title="Request Volume"
@@ -276,90 +361,6 @@ function OverviewTabImpl({
 					<LocalCacheTokenMeterChart data={logsStats} />
 				</ChartCard>
 
-				{/* Cost Chart */}
-				<ChartCard
-					title="Cost"
-					loading={loadingCost}
-					testId="chart-cost-total"
-					totalLabel="Total"
-					total={
-						costTotal !== null ? (
-							<NumberFlow value={costTotal} format={{ ...COMPACT_NUMBER_FORMAT, style: "currency", currency: "USD" }} />
-						) : undefined
-					}
-					totalTooltip={
-						costTotal !== null
-							? costTotal.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 6 })
-							: undefined
-					}
-					legend={
-						<div className={CHART_HEADER_LEGEND_CLASS}>
-							{costModel === "all" ? (
-								costModels.length > 0 && (
-									<>
-										<Tooltip>
-											<TooltipTrigger asChild>
-												<span tabIndex={0} data-testid="cost-legend-trigger" className="flex items-center gap-1">
-													<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-													<span className="text-muted-foreground max-w-[100px] truncate">{costModels[0]}</span>
-												</span>
-											</TooltipTrigger>
-											<TooltipContent>{costModels[0]}</TooltipContent>
-										</Tooltip>
-										{costModels.length > 1 && (
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<span tabIndex={0} data-testid="cost-legend-more-trigger" className="text-muted-foreground cursor-default">
-														+{costModels.length - 1} more
-													</span>
-												</TooltipTrigger>
-												<TooltipContent>
-													<div className="flex flex-col gap-1">
-														{costModels.slice(1).map((model, idx) => (
-															<span key={model} className="flex items-center gap-1">
-																<span
-																	className="h-2 w-2 shrink-0 rounded-full"
-																	style={{
-																		backgroundColor: model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx + 1),
-																	}}
-																/>
-																{model === OTHER_SERIES_KEY ? OTHER_SERIES_LABEL : model}
-															</span>
-														))}
-													</div>
-												</TooltipContent>
-											</Tooltip>
-										)}
-									</>
-								)
-							) : (
-								<Tooltip>
-									<TooltipTrigger asChild>
-										<span tabIndex={0} data-testid="cost-legend-single-trigger" className="flex items-center gap-1">
-											<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-											<span className="text-muted-foreground max-w-[100px] truncate">{costModel}</span>
-										</span>
-									</TooltipTrigger>
-									<TooltipContent>{costModel}</TooltipContent>
-								</Tooltip>
-							)}
-						</div>
-					}
-					controls={
-						<>
-							<ModelFilterSelect
-								models={availableModels}
-								selectedModel={costModel}
-								onModelChange={onCostModelChange}
-								data-testid="dashboard-cost-model-filter"
-							/>
-							<ChartTypeToggle chartType={costChartType} onToggle={onCostChartToggle} data-testid="dashboard-cost-chart-toggle" />
-						</>
-					}
-				>
-					<CostChart data={costData} chartType={costChartType} startTime={startTime} endTime={endTime} selectedModel={costModel} />
-				</ChartCard>
-
 				{/* Model Usage Chart */}
 				<ChartCard
 					title="Model Usage"
@@ -377,7 +378,7 @@ function OverviewTabImpl({
 											<TooltipTrigger asChild>
 												<span tabIndex={0} data-testid="usage-legend-trigger" className="flex items-center gap-1">
 													<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-													<span className="text-muted-foreground max-w-[100px] truncate">{usageModels[0]}</span>
+													<StartTruncatedLabel className="text-muted-foreground max-w-[160px]">{usageModels[0]}</StartTruncatedLabel>
 												</span>
 											</TooltipTrigger>
 											<TooltipContent>{usageModels[0]}</TooltipContent>

@@ -487,3 +487,193 @@ func TestResolvePromptCacheConfig(t *testing.T) {
 		assert.Len(t, got.InjectionPoints, 1, "the header only flips auto_inject; points remain config-level")
 	})
 }
+
+func TestStripChatCachePoints(t *testing.T) {
+	cachePoint := &schemas.CachePoint{Type: "default"}
+	input := []schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("sys")}},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("hi"), CachePoint: cachePoint},
+			{CachePoint: cachePoint},
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("there")},
+		}}},
+	}
+
+	out, stripped := StripChatCachePoints(input)
+	require.True(t, stripped)
+	require.Len(t, out[1].Content.ContentBlocks, 2)
+	assert.Nil(t, out[1].Content.ContentBlocks[0].CachePoint)
+	assert.Equal(t, "there", *out[1].Content.ContentBlocks[1].Text)
+	assert.Same(t, input[0].Content, out[0].Content)
+
+	// The caller's request is shared with fallbacks, so it must keep its markers.
+	require.Len(t, input[1].Content.ContentBlocks, 3)
+	assert.NotNil(t, input[1].Content.ContentBlocks[0].CachePoint)
+	assert.NotNil(t, input[1].Content.ContentBlocks[1].CachePoint)
+
+	same, stripped := StripChatCachePoints(out)
+	assert.False(t, stripped)
+	assert.Equal(t, &out[0], &same[0])
+}
+
+func TestChatCachePointsSupported(t *testing.T) {
+	t.Run("no datasheet row falls back to the name", func(t *testing.T) {
+		assert.True(t, ChatCachePointsSupported(schemas.Bedrock, "anthropic.claude-3-5-haiku-20241022-v1:0"))
+		assert.True(t, ChatCachePointsSupported(schemas.Bedrock, "amazon.nova-pro-v1:0"))
+		assert.False(t, ChatCachePointsSupported(schemas.Bedrock, "meta.llama3-70b-instruct-v1:0"))
+	})
+
+	t.Run("only Converse takes the marker", func(t *testing.T) {
+		// The name fallback matches a Claude model whatever serves it, so the
+		// provider gate is what keeps a cachePoint off the Anthropic wire.
+		for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.BedrockMantle, schemas.Vertex, schemas.OpenAI} {
+			assert.False(t, ChatCachePointsSupported(provider, "claude-3-5-haiku-20241022"), string(provider))
+		}
+	})
+
+	t.Run("the datasheet overrides the name in both directions", func(t *testing.T) {
+		withResolver(t, func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+			switch model {
+			case "meta.llama3-70b-instruct-v1:0":
+				return &schemas.ModelCapabilities{SupportsCachePoint: schemas.Ptr(true)}
+			case "anthropic.claude-3-5-haiku-20241022-v1:0":
+				return &schemas.ModelCapabilities{SupportsCachePoint: schemas.Ptr(false)}
+			}
+			return nil
+		})
+		assert.True(t, ChatCachePointsSupported(schemas.Bedrock, "meta.llama3-70b-instruct-v1:0"))
+		assert.False(t, ChatCachePointsSupported(schemas.Bedrock, "anthropic.claude-3-5-haiku-20241022-v1:0"))
+		// A row saying yes still cannot put a Converse element on another wire.
+		assert.False(t, ChatCachePointsSupported(schemas.Anthropic, "meta.llama3-70b-instruct-v1:0"))
+	})
+}
+
+func toolOutputMsg(callID, output string) schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr(callID),
+			Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr(output)},
+		},
+	}
+}
+
+// messageMarkers returns the indices of messages carrying a message-level marker,
+// the form a function_call_output item uses because it has no content blocks.
+func messageMarkers(msgs []schemas.ResponsesMessage) []int {
+	var out []int
+	for i := range msgs {
+		if msgs[i].CacheControl != nil {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// TestInjectResponses_PointsReachToolOutputs pins that an agent loop's last message,
+// a function_call_output, is reachable by an injection point. It has no role and no
+// content blocks, so it used to be skipped: index -1 matched nothing on every
+// tool-calling turn, and the marker that should have anchored the cached prefix at
+// the end of the conversation was never written.
+func TestInjectResponses_PointsReachToolOutputs(t *testing.T) {
+	convo := func() []schemas.ResponsesMessage {
+		return []schemas.ResponsesMessage{
+			blockMsg(schemas.ResponsesInputMessageRoleSystem, textBlock("sys")),
+			blockMsg(schemas.ResponsesInputMessageRoleUser, textBlock("u1")),
+			{Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("echo"), Arguments: schemas.Ptr(`{}`)}},
+			toolOutputMsg("call_1", "hello"),
+		}
+	}
+	point := func(role string, index *int) schemas.CacheControlInjectionPoint {
+		p := schemas.CacheControlInjectionPoint{Location: schemas.CacheControlInjectionLocationMessage, Index: index}
+		if role != "" {
+			p.Role = schemas.Ptr(role)
+		}
+		return p
+	}
+
+	cases := []struct {
+		name       string
+		points     []schemas.CacheControlInjectionPoint
+		wantBlocks map[int][]int
+		wantMsgs   []int
+	}{
+		{
+			name:       "index -1 marks the trailing tool result",
+			points:     []schemas.CacheControlInjectionPoint{point("", schemas.Ptr(-1))},
+			wantBlocks: map[int][]int{},
+			wantMsgs:   []int{3},
+		},
+		{
+			name:       "role user reaches the user turn and the tool result",
+			points:     []schemas.CacheControlInjectionPoint{point("user", nil)},
+			wantBlocks: map[int][]int{1: {0}},
+			wantMsgs:   []int{3},
+		},
+		{
+			name:       "role user with index -1 marks the tool result",
+			points:     []schemas.CacheControlInjectionPoint{point("user", schemas.Ptr(-1))},
+			wantBlocks: map[int][]int{},
+			wantMsgs:   []int{3},
+		},
+		{
+			name:       "role assistant does not reach a tool result",
+			points:     []schemas.CacheControlInjectionPoint{point("assistant", schemas.Ptr(-1))},
+			wantBlocks: map[int][]int{},
+			wantMsgs:   nil,
+		},
+		{
+			name:       "a function_call item is never marked",
+			points:     []schemas.CacheControlInjectionPoint{point("", schemas.Ptr(2))},
+			wantBlocks: map[int][]int{},
+			wantMsgs:   nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := convo()
+			out := InjectResponsesCacheBreakpoints(&schemas.PromptCacheConfig{InjectionPoints: tc.points}, in)
+			assert.Equal(t, tc.wantBlocks, markers(out))
+			assert.Equal(t, tc.wantMsgs, messageMarkers(out))
+			assert.Nil(t, in[3].CacheControl, "caller's input must not be mutated")
+			if len(tc.wantMsgs) > 0 {
+				assert.Equal(t, "hello", *out[3].ResponsesToolMessage.Output.ResponsesToolCallOutputStr, "tool body must be untouched")
+			}
+		})
+	}
+
+	t.Run("a caller marker on the tool result disables injection", func(t *testing.T) {
+		in := convo()
+		in[3].CacheControl = &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+		out := InjectResponsesCacheBreakpoints(autoInject(), in)
+		assert.Equal(t, map[int][]int{}, markers(out), "the caller spoke; nothing else may be marked")
+	})
+
+	t.Run("auto_inject still marks the first block, not the tool result", func(t *testing.T) {
+		out := InjectResponsesCacheBreakpoints(autoInject(), convo())
+		assert.Equal(t, map[int][]int{0: {0}}, markers(out))
+		assert.Nil(t, messageMarkers(out))
+	})
+}
+
+// TestInjectChat_PointsReachToolMessages is the Chat parallel: a tool message has
+// role "tool" on the wire, which no injection point can name, so role "user" reaches
+// it as the client-supplied turn after a tool call.
+func TestInjectChat_PointsReachToolMessages(t *testing.T) {
+	in := []schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("sys")}},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("u1")}},
+		{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}},
+	}
+	cfg := &schemas.PromptCacheConfig{InjectionPoints: []schemas.CacheControlInjectionPoint{
+		{Location: schemas.CacheControlInjectionLocationMessage, Role: schemas.Ptr("user"), Index: schemas.Ptr(-1)},
+	}}
+	out := InjectChatCacheBreakpoints(cfg, in)
+	require.NotNil(t, out[2].Content.ContentBlocks, "string tool body must be promoted to a text block")
+	assert.NotNil(t, out[2].Content.ContentBlocks[0].CacheControl, "role user with index -1 must mark the trailing tool message")
+	assert.Equal(t, "hello", *out[2].Content.ContentBlocks[0].Text)
+	assert.Nil(t, out[1].Content.ContentBlocks, "the user message is not the match; its string body stays a string")
+	assert.NotNil(t, in[2].Content.ContentStr, "caller's input must not be mutated")
+}

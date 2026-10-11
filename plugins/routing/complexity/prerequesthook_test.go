@@ -159,9 +159,13 @@ func complexitySessionContext(sessionID string) *schemas.BifrostContext {
 }
 
 func testEmbeddingExecutor(_ *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-	texts := req.Input.Texts
-	if req.Input.Text != nil {
-		texts = []string{*req.Input.Text}
+	texts := make([]string, 0, len(req.Input))
+	for _, item := range req.Input {
+		for _, part := range item.Content {
+			if part.Text != nil {
+				texts = append(texts, *part.Text)
+			}
+		}
 	}
 	data := make([]schemas.EmbeddingData, len(texts))
 	for i, text := range texts {
@@ -337,7 +341,7 @@ func TestPreRequestHook_SessionStoreFailureFallsBackToCurrentClassification(t *t
 	require.Equal(t, complexity.MechanismSemantic, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
 }
 
-func TestPreRequestHook_SessionContinuationReusesButDoesNotInitializeTier(t *testing.T) {
+func TestPreRequestHook_SessionContinuationReusesOrClassifiesRecoveredTask(t *testing.T) {
 	plugin := newSessionComplexityRuleFixture(t)
 	plugin.SetEmbeddingRequestExecutor(testEmbeddingExecutor)
 	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(sessionAnalyzerConfig()))
@@ -360,8 +364,8 @@ func TestPreRequestHook_SessionContinuationReusesButDoesNotInitializeTier(t *tes
 
 	absentCtx := complexitySessionContext("new-session")
 	require.NoError(t, plugin.PreRequestHook(absentCtx, continuationRequest()))
-	require.Nil(t, absentCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
-	require.Equal(t, complexity.MechanismSkipped, absentCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
+	require.Equal(t, complexity.TierComplex, absentCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
+	require.Equal(t, complexity.MechanismSemantic, absentCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
 
 	initialCtx := complexitySessionContext("existing-session")
 	require.NoError(t, plugin.PreRequestHook(initialCtx, chatRequest("a medium request")))
@@ -456,7 +460,7 @@ func TestPreRequestHook_ComplexityUnsupportedInputRecordsSkippedMechanism(t *tes
 		EmbeddingRequest: &schemas.BifrostEmbeddingRequest{
 			Provider: schemas.OpenAI,
 			Model:    "text-embedding-3-small",
-			Input:    &schemas.EmbeddingInput{Text: schemas.Ptr("some text")},
+			Input:    []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("some text")}}}},
 		},
 	}
 	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

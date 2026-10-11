@@ -27,6 +27,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { OverheadBreakdown } from "@/components/logs/overheadBreakdown";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
@@ -42,21 +43,31 @@ import {
 	RoutingEngineUsedLabels,
 	Status,
 } from "@/lib/constants/logs";
-import { useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
+import { getLogRoutingPanel } from "@/lib/registries/logs";
+import { useGetLogsQuery, useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
 import { COMPLEXITY_MECHANISM_LABELS } from "@/lib/types/complexityRouter";
-import { BatchRequestCounts, ContentBlock, LLMUsage, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
+import {
+	BatchRequestCounts,
+	ContentBlock,
+	InputCostDetails,
+	LLMUsage,
+	LogEntry,
+	OutputCostDetails,
+	ResponsesMessage,
+} from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { applyRedactionMapping, applyRedactionMappingToValue, hasRedactionMappingEntries } from "@/lib/utils/redaction";
-import { extractResponsesItemPayload, summarizeResponsesToolCall } from "@/lib/utils/responsesItems";
 import { isJson } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import "@enterprise/lib/registrations/logs";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
 import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench, X } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { parseAsBoolean, parseAsString, useQueryState } from "nuqs";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
 import CollapsibleBox from "../views/collapsibleBox";
@@ -69,7 +80,32 @@ import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
-import { parseRoutingDecisionLine, resolveRawJsonNoticeState } from "./logDetailView.utils";
+import {
+	decisionQuestions,
+	extractProviderErrorMessage,
+	findLastPendingClientCallIndex,
+	nextSessionLookupStart,
+	isShownMetadataKey,
+	parseRoutingDecisionLine,
+	pickNextSessionLog,
+	resolveRawJsonNoticeState,
+} from "./logDetailView.utils";
+import LiveSessionView from "../views/liveSessionView";
+import {
+	CollapsibleCode,
+	EncryptedReveal,
+	MessageRow,
+	ResponsesItemRow,
+	ToolNameLabel,
+	extractReasoningParts,
+	extractResponsesText,
+	flattenDeclaredTools,
+	getResponsesRole,
+	messageDotClass,
+	messageRoleLabel,
+	messageToneClass,
+	type MessageRole,
+} from "../views/responsesItemRow";
 
 // Full-precision cost for the detail view; per-request costs are often < $0.01,
 // where formatCost's 2-4 dp rounding would hide the value.
@@ -110,125 +146,6 @@ const formatRealtimeSource = (value: unknown): string => {
 	}
 };
 
-const extractResponsesText = (msg: ResponsesMessage, mapping?: Record<string, string>): string => {
-	let text: string;
-	if (msg.type === "reasoning") {
-		const summaryText = (msg.summary ?? [])
-			.map((s) => s.text)
-			.filter(Boolean)
-			.join("\n")
-			.trim();
-		if (summaryText) text = summaryText;
-		else if (msg.encrypted_content) text = msg.encrypted_content;
-		else text = "";
-	} else if (typeof msg.content === "string") {
-		text = msg.content;
-	} else if (Array.isArray(msg.content)) {
-		text = msg.content
-			.filter(
-				(b: any) =>
-					b &&
-					(b.text || b.refusal) &&
-					(b.type === "input_text" || b.type === "output_text" || b.type === "reasoning_text" || b.type === "refusal"),
-			)
-			// Refusal blocks carry their text in `refusal`, not `text`.
-			.map((b: any) => (b.text ?? b.refusal) as string)
-			.join("\n");
-	} else if (typeof (msg as any).arguments === "string") {
-		text = (msg as any).arguments as string;
-	} else {
-		text = "";
-	}
-	if (mapping && text) {
-		for (const [key, value] of Object.entries(mapping)) {
-			text = text.replaceAll(`[${key}]`, value);
-		}
-	}
-	return text;
-};
-
-type ReasoningParts = {
-	summaries: string[];
-	encrypted?: string;
-	signatures: string[];
-	contentText?: string;
-};
-
-const collectReasoningFromBlocks = (blocks: any[]): { text: string; signatures: string[] } => {
-	const texts: string[] = [];
-	const signatures: string[] = [];
-	for (const b of blocks) {
-		if (!b || typeof b !== "object") continue;
-		const isReasoningish =
-			b.type === "input_text" || b.type === "output_text" || b.type === "reasoning_text" || b.type === "refusal" || !b.type;
-		if (isReasoningish && typeof b.text === "string" && b.text.trim()) {
-			texts.push(b.text);
-		}
-		if (typeof b.signature === "string" && b.signature.trim()) {
-			signatures.push(b.signature.trim());
-		}
-	}
-	return { text: texts.join("\n"), signatures };
-};
-
-const extractReasoningParts = (msg: ResponsesMessage, mapping?: Record<string, string>): ReasoningParts => {
-	let summaries = (msg.summary ?? []).map((s) => (s?.text ?? "").trim()).filter(Boolean);
-	const encryptedRaw = (msg as any).encrypted_content?.trim?.();
-	let encrypted = encryptedRaw ? encryptedRaw : undefined;
-	const signatures: string[] = [];
-	let contentText = "";
-	if (typeof msg.content === "string") {
-		contentText = msg.content;
-	} else if (Array.isArray(msg.content)) {
-		const fromContent = collectReasoningFromBlocks(msg.content as any[]);
-		contentText = fromContent.text;
-		signatures.push(...fromContent.signatures);
-	}
-	// Some providers stash reasoning under `output` instead of `content`
-	const out = (msg as any).output;
-	if (out !== undefined) {
-		if (typeof out === "string" && out.trim() && !contentText) {
-			contentText = out;
-		} else if (Array.isArray(out)) {
-			const fromOutput = collectReasoningFromBlocks(out as any[]);
-			if (!contentText && fromOutput.text) contentText = fromOutput.text;
-			signatures.push(...fromOutput.signatures);
-		}
-	}
-	// Defensive: top-level text-bearing fields some variants use
-	if (!contentText) {
-		const topText =
-			(typeof (msg as any).text === "string" && (msg as any).text) ||
-			(typeof (msg as any).thinking === "string" && (msg as any).thinking) ||
-			"";
-		if (topText.trim()) contentText = topText;
-	}
-	if (mapping) {
-		summaries = summaries.map((s) => {
-			for (const [key, value] of Object.entries(mapping)) {
-				s = s.replaceAll(`[${key}]`, value);
-			}
-			return s;
-		});
-		if (encrypted) {
-			for (const [key, value] of Object.entries(mapping)) {
-				encrypted = encrypted.replaceAll(`[${key}]`, value);
-			}
-		}
-		if (contentText) {
-			for (const [key, value] of Object.entries(mapping)) {
-				contentText = contentText.replaceAll(`[${key}]`, value);
-			}
-		}
-	}
-	return {
-		summaries,
-		encrypted,
-		signatures,
-		contentText: contentText || undefined,
-	};
-};
-
 const extractChatReasoning = (message: any, mapping?: Record<string, string>): string => {
 	if (!message) return "";
 	let text = "";
@@ -249,27 +166,6 @@ const extractChatReasoning = (message: any, mapping?: Record<string, string>): s
 	return text;
 };
 
-const getResponsesRole = (msg: ResponsesMessage): MessageRole => {
-	if (msg.type === "reasoning") return "reasoning";
-	if (
-		msg.type &&
-		(msg.type.endsWith("_call") ||
-			msg.type.endsWith("_call_output") ||
-			msg.type === "tool_search_output" ||
-			msg.type === "additional_tools" ||
-			msg.type === "mcp_list_tools" ||
-			msg.type === "mcp_approval_request" ||
-			msg.type === "mcp_approval_responses")
-	) {
-		return "tool";
-	}
-	const r = msg.role;
-	if (r === "user") return "user";
-	if (r === "assistant") return "assistant";
-	if (r === "system" || r === "developer") return "system";
-	return "assistant";
-};
-
 const isPlainAssistantResponsesMessage = (m: ResponsesMessage): boolean => {
 	if (m.type && m.type !== "message") return false;
 	return getResponsesRole(m) === "assistant";
@@ -280,15 +176,6 @@ const isReasoningResponsesMessage = (m: ResponsesMessage): boolean => m.type ===
 // Streaming providers can emit a single logical assistant turn (or reasoning
 // item) as many small messages. Collapse adjacent ones so the UI shows one
 // bubble per turn instead of N "1 line" bubbles.
-// Expands namespace tool declarations into their callable children
-// (`namespace.tool` names), leaving plain declarations untouched.
-const flattenDeclaredTools = (tools: any[]): any[] =>
-	tools.flatMap((tool) =>
-		tool?.type === "namespace" && Array.isArray(tool.tools)
-			? (tool.tools as any[]).map((nested) => ({ ...nested, name: `${tool.name ?? "namespace"}.${nested?.name ?? ""}` }))
-			: [tool],
-	);
-
 // Later declarations of the same tool replace earlier ones — a conversation
 // history can carry multiple `additional_tools` items, each a point-in-time
 // update, so the effective tool set is last-write-wins by name. Unnamed
@@ -423,6 +310,35 @@ const getInputTokensTooltip = (usage?: LLMUsage): string | undefined => {
 	return lines.join("\n");
 };
 
+const INPUT_COST_LABELS: [keyof InputCostDetails, string][] = [
+	["text_cost", "Text"],
+	["audio_cost", "Audio"],
+	["image_cost", "Image"],
+	["cached_read_cost", "Cache read"],
+	["cached_write_cost", "Cache write"],
+	["request_cost", "Per-request fee"],
+];
+
+const OUTPUT_COST_LABELS: [keyof OutputCostDetails, string][] = [
+	["text_cost", "Text"],
+	["audio_cost", "Audio"],
+	["image_cost", "Image"],
+	["reasoning_cost", "Reasoning"],
+	["citation_cost", "Citations"],
+	["search_queries_cost", "Web search"],
+];
+
+// Lists the non-zero cost categories; undefined when there are none or text is the only one.
+const getCostDetailsTooltip = <T extends InputCostDetails | OutputCostDetails>(
+	details: T | undefined,
+	labels: [keyof T, string][],
+): string | undefined => {
+	if (!details) return undefined;
+	const set = labels.filter(([key]) => ((details[key] as number | undefined) ?? 0) > 0);
+	if (set.length === 0 || (set.length === 1 && set[0][0] === "text_cost")) return undefined;
+	return set.map(([key, label]) => `${label}: ${formatCostPrecise(details[key] as number)}`).join("\n");
+};
+
 // Helper to detect passthrough operations
 const isPassthroughOperation = (object: string) => object === "passthrough" || object === "passthrough_stream";
 
@@ -446,22 +362,22 @@ const isContainerOperation = (object: string) => {
 };
 
 const statusPillStyles: Record<string, string> = {
-	success: "bg-green-50 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-400 dark:border-green-900",
-	error: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-900",
+	success: "border-chart-success/30 bg-chart-success/10 text-chart-success-ink",
+	error: "border-chart-error/30 bg-chart-error/10 text-chart-error-ink",
 	processing: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900",
 	cancelled: "bg-gray-50 text-gray-700 border-gray-200 dark:bg-gray-900/40 dark:text-gray-400 dark:border-gray-800",
 };
 const statusDotStyles: Record<string, string> = {
-	success: "bg-green-500",
-	error: "bg-red-500",
+	success: "bg-chart-success",
+	error: "bg-chart-error",
 	processing: "bg-blue-500",
 	cancelled: "bg-gray-400",
 };
 
 const batchStatusBadgeStyles: Record<string, string> = {
-	completed: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-	ended: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-	failed: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
+	completed: "bg-chart-success/15 text-chart-success-ink",
+	ended: "bg-chart-success/15 text-chart-success-ink",
+	failed: "bg-chart-error/15 text-chart-error-ink",
 	expired: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
 	cancelled: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
 	deleted: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
@@ -484,13 +400,12 @@ function StatusPill({ status }: { status: Status }) {
 
 // Colors an HTTP status code badge by response class.
 function statusCodeBadgeClass(code: number): string {
-	if (code >= 200 && code < 300)
-		return "bg-green-50 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-400 dark:border-green-900";
+	if (code >= 200 && code < 300) return "border-chart-success/30 bg-chart-success/10 text-chart-success-ink";
 	if (code >= 300 && code < 400)
 		return "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900";
 	if (code >= 400 && code < 500)
 		return "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900";
-	return "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-900";
+	return "border-chart-error/30 bg-chart-error/10 text-chart-error-ink";
 }
 
 function HeroStat({
@@ -519,307 +434,6 @@ function HeroStat({
 	);
 }
 
-// formatMicros renders a microsecond overhead value, promoting to ms once it is
-// large enough that microseconds would just be noise.
-function formatMicros(us: number): string {
-	if (us >= 1000) return `${(us / 1000).toFixed(2)} ms`;
-	return `${us.toFixed(us < 10 ? 1 : 0)} µs`;
-}
-
-// Top-level overhead categories shown in the stacked bar + legend. Raw backend span
-// names are grouped into a handful of user-facing categories: Serialization (JSON
-// parse/encode), Conversion (API schema translation), Plugins, Middleware (auth/access),
-// Key selection, Processing (internal request pipeline), Networking
-// (client<->gateway<->provider handling), Client delivery (SSE egress to the client), and Miscellaneous
-// (small glue on no dedicated span plus the residual goroutine-hop latency between phases). "View details" drills into the member
-// spans inside each grouped category with their friendly labels. See OVERHEAD_LABELS /
-// OVERHEAD_BUCKET_CATEGORY / overheadCategoryKey for the mapping.
-type OverheadCategory = {
-	key: string;
-	label: string;
-	colorClass: string;
-	totalUs: number;
-	members: OverheadBucket[];
-};
-
-// The four serialization phases collapsed into the "Serialization" category. Their
-// per-phase labels below are used for the drill-down rows.
-const OVERHEAD_SERIALIZATION_PHASES = new Set(["request-unmarshal", "request-marshal", "response-parse", "response-marshal"]);
-
-// Top-level categories shown in the stacked bar + legend. Each has a distinct colour.
-const OVERHEAD_CATEGORY_META: Record<string, { label: string; colorClass: string }> = {
-	serialization: { label: "Serialization", colorClass: "bg-indigo-500/70" },
-	conversion: { label: "Conversion", colorClass: "bg-fuchsia-500/70" },
-	plugins: { label: "Plugins", colorClass: "bg-blue-500/70" },
-	middleware: { label: "Middleware", colorClass: "bg-cyan-500/70" },
-	routing: { label: "Key selection", colorClass: "bg-amber-500/70" },
-	processing: { label: "Processing", colorClass: "bg-teal-500/70" },
-	networking: { label: "Networking", colorClass: "bg-emerald-500/70" },
-	streaming: { label: "Client delivery", colorClass: "bg-red-500/70" },
-	miscellaneous: { label: "Miscellaneous", colorClass: "bg-slate-500/70" },
-	other: { label: "Other", colorClass: "bg-muted-foreground/50" },
-};
-
-// Friendly drill-down labels for each raw bucket name (the technical span names the
-// backend emits). Members without an entry fall back to the name with any "plugin."
-// prefix stripped.
-const OVERHEAD_LABELS: Record<string, string> = {
-	// Serialization (JSON parse / encode)
-	"request-unmarshal": "Request parse",
-	"request-marshal": "Request encode",
-	"response-parse": "Response parse",
-	"response-marshal": "Response encode",
-	// Conversion (API schema translation)
-	convertor: "Schema conversion",
-	"convertor.stream-in": "Stream convert (inbound)",
-	"convertor.stream-out": "Stream convert (outbound)",
-	// Middleware (auth / access control)
-	"middleware.apikeys": "API",
-	"middleware.scim": "SCIM",
-	"middleware.auth": "Auth",
-	// Routing
-	"key-pool": "Key pool",
-	"key.selection": "Key selection",
-	// Processing (internal request pipeline)
-	"handle-setup": "Request setup",
-	"pipeline-pre": "Pre-hooks",
-	"pipeline-post": "Post-hooks",
-	"worker-setup": "Worker setup",
-	"worker-handoff": "Worker handoff",
-	"queue-wait": "Queue wait",
-	"attribute-population": "Attribute population",
-	miscellaneous: "Uncaptured glue",
-	// Networking (client<->gateway<->provider handling)
-	"provider-internal": "Provider processing",
-	"transport-context": "Request context building",
-	"transport-response-headers": "Response headers",
-	"response-finalize": "Response read",
-	"request-sign": "Request signing",
-	"credentials-fetch": "Credential fetch",
-	// Streaming relay
-	"stream-backpressure": "Client backpressure",
-	"stream-client-write": "Client write",
-	scheduling: "Scheduling residual",
-};
-
-// Category assignment for buckets that aren't matched by a prefix rule below. Every
-// backend bucket name should be either matched by a prefix rule (serialization phases,
-// middleware.*, convertor*, plugin.*) or listed here — otherwise it lands in "Other",
-// which is the signal that a new bucket needs a home.
-const OVERHEAD_BUCKET_CATEGORY: Record<string, string> = {
-	"key-pool": "routing",
-	"key.selection": "routing",
-	"handle-setup": "processing",
-	"pipeline-pre": "processing",
-	"pipeline-post": "processing",
-	"worker-setup": "processing",
-	"worker-handoff": "processing",
-	"queue-wait": "processing",
-	"attribute-population": "processing",
-	miscellaneous: "miscellaneous",
-	"provider-internal": "networking",
-	"transport-context": "networking",
-	"transport-response-headers": "networking",
-	"response-finalize": "networking",
-	"request-sign": "networking",
-	"credentials-fetch": "networking",
-	"stream-backpressure": "streaming",
-	"stream-client-write": "streaming",
-	scheduling: "miscellaneous",
-};
-
-// Raw backend spans that split one user-facing step into internals a reader doesn't care
-// about are folded into a single member. key-pool (the pool lookup) + key.selection (the
-// actual pick) are both "choosing the API key", so they collapse into "Key selection".
-const OVERHEAD_MEMBER_MERGE: Record<string, string> = {
-	"key-pool": "key.selection",
-};
-function mergedBucketName(name: string): string {
-	return OVERHEAD_MEMBER_MERGE[name] ?? name;
-}
-
-function overheadCategoryKey(b: OverheadBucket): string {
-	if (OVERHEAD_SERIALIZATION_PHASES.has(b.name)) {
-		return "serialization";
-	}
-	if (b.name.startsWith("middleware.")) {
-		return "middleware";
-	}
-	// The bare "convertor" phase and the per-chunk streaming variants (convertor.stream-in
-	// / .stream-out) all fold into the single Conversion category.
-	if (b.name === "convertor" || b.name.startsWith("convertor.")) {
-		return "conversion";
-	}
-	const mapped = OVERHEAD_BUCKET_CATEGORY[b.name];
-	if (mapped) {
-		return mapped;
-	}
-	return b.kind === "plugin" ? "plugins" : "other";
-}
-
-// overheadMemberLabel renders a drill-down member with its friendly label when there is
-// one, else the span name with the redundant "plugin." prefix stripped (every plugin row
-// already sits under the Plugins group).
-// Plugin display names where a plain title-case of the kebab id would read wrong
-// (acronyms, multi-word tokens). Everything else is title-cased from its id.
-const PLUGIN_LABEL_OVERRIDES: Record<string, string> = {
-	otel: "OpenTelemetry",
-	datadog: "Datadog",
-	compat: "Compatibility",
-	"adaptive-loadbalancer": "Adaptive Load Balancer",
-	"model-catalog-resolver": "Model Catalog Resolver",
-};
-
-// pluginDisplayName turns a plugin's kebab-case id ("enterprise-governance") into a
-// friendly label ("Enterprise Governance"), honouring PLUGIN_LABEL_OVERRIDES first.
-function pluginDisplayName(id: string): string {
-	if (PLUGIN_LABEL_OVERRIDES[id]) return PLUGIN_LABEL_OVERRIDES[id];
-	return id
-		.split("-")
-		.filter(Boolean)
-		.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-		.join(" ");
-}
-
-function overheadMemberLabel(name: string): string {
-	const friendly = OVERHEAD_LABELS[name];
-	if (friendly) return friendly;
-	if (name.startsWith("plugin.")) return pluginDisplayName(name.slice("plugin.".length));
-	if (name.startsWith("middleware.")) return name.slice("middleware.".length);
-	return name;
-}
-
-// buildOverheadCategories groups the raw buckets into the top-level categories,
-// ordered largest-first so the bar and legend read like the numbers.
-function buildOverheadCategories(buckets: OverheadBucket[]): OverheadCategory[] {
-	const grouped = new Map<string, OverheadBucket[]>();
-	for (const b of buckets) {
-		const key = overheadCategoryKey(b);
-		const list = grouped.get(key);
-		if (list) list.push(b);
-		else grouped.set(key, [b]);
-	}
-	const cats: OverheadCategory[] = [];
-	for (const [key, rawMembers] of grouped) {
-		// Fold raw span splits into their merged member (e.g. key-pool -> key.selection),
-		// summing durations, before sorting/rendering.
-		const byName = new Map<string, OverheadBucket>();
-		for (const m of rawMembers) {
-			const name = mergedBucketName(m.name);
-			const existing = byName.get(name);
-			if (existing) existing.duration_us += m.duration_us;
-			else byName.set(name, { ...m, name });
-		}
-		const members = Array.from(byName.values());
-		members.sort((a, b) => b.duration_us - a.duration_us);
-		cats.push({
-			key,
-			label: OVERHEAD_CATEGORY_META[key]?.label ?? key,
-			colorClass: OVERHEAD_CATEGORY_META[key]?.colorClass ?? "bg-muted-foreground/50",
-			totalUs: members.reduce((acc, m) => acc + m.duration_us, 0),
-			members,
-		});
-	}
-	return cats.sort((a, b) => b.totalUs - a.totalUs);
-}
-
-// OverheadBreakdown renders Bifrost's overhead as a single horizontal stacked bar
-// split into the top-level categories, with a legend beneath. Plugin and internal
-// spans are measured directly; the "scheduling" bucket (from the backend) accounts for
-// the residual goroutine-hop latency between phases, so the segments sum to the full
-// overhead number. "View details" expands the categories that hold more than one span
-// into their individual members so a specific phase or plugin can be inspected.
-function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBucket[]; overheadMs?: number }) {
-	const [showDetails, setShowDetails] = useState(false);
-	if (!buckets || buckets.length === 0) return null;
-
-	const categories = buildOverheadCategories(buckets);
-	const sumUs = buckets.reduce((acc, b) => acc + b.duration_us, 0);
-	const overheadUs = overheadMs != null && !isNaN(overheadMs) ? overheadMs * 1000 : undefined;
-
-	// When measured spans already exceed the computed overhead, the backend omits a
-	// scheduling bucket (it would be negative): a sign the upstream accumulator is
-	// over-counting. Surface it rather than let the numbers look inconsistent.
-	const overCounted = overheadUs != null && sumUs > overheadUs + 1;
-
-	const barTotal = categories.reduce((acc, c) => acc + c.totalUs, 0) || 1;
-	// Only categories that aggregate more than one span are worth drilling into.
-	const drillable = categories.filter((c) => c.members.length > 1);
-
-	return (
-		<div className="space-y-3">
-			<div className="flex items-center justify-between gap-2">
-				<BlockHeader title="Overhead Breakdown" />
-				<div className="font-mono text-xs tabular-nums">{formatMicros(overheadUs ?? sumUs)}</div>
-			</div>
-
-			<div className="flex h-3 w-full overflow-hidden rounded-sm">
-				{categories.map((c) => (
-					<div
-						key={c.key}
-						className={cn(c.colorClass, "h-full")}
-						style={{ width: `${(c.totalUs / barTotal) * 100}%` }}
-						title={`${c.label} · ${formatMicros(c.totalUs)}`}
-					/>
-				))}
-			</div>
-
-			<div className="flex flex-wrap gap-x-4 gap-y-1.5">
-				{categories.map((c) => (
-					<div key={c.key} className="flex items-center gap-1.5 font-mono text-[11px]">
-						<span className={cn("h-2.5 w-2.5 shrink-0 rounded-[2px]", c.colorClass)} />
-						<span>{c.label}</span>
-						<span className="text-muted-foreground tabular-nums">{formatMicros(c.totalUs)}</span>
-					</div>
-				))}
-			</div>
-
-			{drillable.length > 0 ? (
-				<button
-					type="button"
-					onClick={() => setShowDetails((v) => !v)}
-					className="text-muted-foreground hover:text-foreground flex items-center gap-1 font-mono text-[11px] transition"
-				>
-					View details
-					<ChevronDown className={cn("h-3 w-3 transition-transform", showDetails ? "rotate-180" : "rotate-0")} />
-				</button>
-			) : null}
-
-			{showDetails ? (
-				<div className="space-y-3 pt-1">
-					{drillable.map((c) => (
-						<div key={c.key} className="space-y-1.5">
-							<div className="text-muted-foreground flex items-center gap-1.5 text-[11px] font-medium tracking-wide uppercase">
-								<span className={cn("h-2 w-2 shrink-0 rounded-[2px]", c.colorClass)} />
-								{c.label}
-								{/* normal-case: keep the unit as "µs" — uppercasing mangles the micro sign into "ΜS" (reads as ms) */}
-								<span className="normal-case tabular-nums">{formatMicros(c.totalUs)}</span>
-							</div>
-							<div className="space-y-1 pl-3">
-								{c.members.map((m) => (
-									<div key={m.name} className="flex items-center justify-between gap-3 font-mono text-[11px]">
-										<span className="truncate" title={m.name}>
-											{overheadMemberLabel(m.name)}
-										</span>
-										<span className="text-muted-foreground shrink-0 tabular-nums">{formatMicros(m.duration_us)}</span>
-									</div>
-								))}
-							</div>
-						</div>
-					))}
-				</div>
-			) : null}
-
-			{overCounted ? (
-				<div className="text-muted-foreground text-[11px]">
-					Measured spans ({formatMicros(sumUs)}) exceed the computed overhead ({formatMicros(overheadUs!)}); the upstream accumulator may be
-					over-counting.
-				</div>
-			) : null}
-		</div>
-	);
-}
-
 function CopyInlineButton({ text, testId }: { text: string; testId?: string }) {
 	const { copy } = useCopyToClipboard({ successMessage: "Copied" });
 	return (
@@ -838,27 +452,13 @@ function CopyInlineButton({ text, testId }: { text: string; testId?: string }) {
 	);
 }
 
-type MessageRole = "system" | "user" | "assistant" | "reasoning" | "tool";
-const messageToneClass: Record<MessageRole, string> = {
-	system: "bg-zinc-50 border-zinc-200 dark:bg-zinc-900/40 dark:border-zinc-800",
-	user: "bg-blue-50/60 border-blue-200 dark:bg-blue-950/30 dark:border-blue-900",
-	assistant: "bg-white border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800",
-	reasoning: "bg-violet-50/70 border-violet-200 dark:bg-violet-950/30 dark:border-violet-900",
-	tool: "bg-amber-50/70 border-amber-200 dark:bg-amber-950/30 dark:border-amber-900",
-};
-const messageDotClass: Record<MessageRole, string> = {
-	system: "bg-zinc-400",
-	user: "bg-blue-500",
-	assistant: "bg-zinc-900 dark:bg-zinc-100",
-	reasoning: "bg-violet-500",
-	tool: "bg-amber-500",
-};
-const messageRoleLabel: Record<MessageRole, string> = {
-	system: "System",
-	user: "User",
-	assistant: "Assistant",
-	reasoning: "Reasoning",
-	tool: "Tool Result",
+// Decision logs store the state as the user message and the answers as the
+// assistant message; label them by what they actually are.
+const decisionRoleLabel = (requestType: string | undefined, role: MessageRole): string | undefined => {
+	if (requestType !== "decisions") return undefined;
+	if (role === "user") return "State";
+	if (role === "assistant") return "Decision";
+	return undefined;
 };
 
 // deriveComplexityRouting returns the complexity tier / classification mechanism /
@@ -955,73 +555,131 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
 	);
 }
 
-function EncryptedReveal({ text, label }: { text: string; label: string }) {
-	const [open, setOpen] = useState(false);
+// A response that ends on a tool call the caller runs itself (Warp's agent loop, any
+// Responses client) has no result in this row: the caller executes the tool and, if
+// it carries on, sends the output with a later request. Point at the next row in the
+// same session, without claiming it is the one that carries the result.
+function NextSessionRequestLink({ log, onOpenLog }: { log: LogEntry; onOpenLog: (logId: string) => void }) {
+	// currentData, not data: data keeps the previous log's page while this one's
+	// lookup runs, which would briefly link to the wrong request.
+	const { currentData, isError, refetch } = useGetLogsQuery(
+		{
+			filters: { session_id: log.session_id, start_time: nextSessionLookupStart(log.timestamp) },
+			pagination: { limit: 2, offset: 0, sort_by: "timestamp", order: "asc" },
+			rootsOnly: true,
+		},
+		// The caller may send its follow-up after this opens, so look again while
+		// the page is in view.
+		{ skip: !log.session_id, pollingInterval: 10_000, skipPollingIfUnfocused: true },
+	);
+	const next = currentData ? pickNextSessionLog(currentData.logs, log) : undefined;
+	// A failed lookup is not "there is no next request": say so, and offer a retry.
+	if (isError && !currentData) {
+		return (
+			<div className="text-muted-foreground mt-2 text-[12px]" data-testid="log-tool-call-next-request-error">
+				Couldn't look up the next request in this session.{" "}
+				<button
+					type="button"
+					className="text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+					onClick={() => void refetch()}
+					data-testid="log-tool-call-next-request-retry"
+				>
+					Retry
+				</button>
+			</div>
+		);
+	}
 	return (
-		<div className="space-y-1">
-			<button
-				type="button"
-				onClick={() => setOpen((o) => !o)}
-				className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-[10.5px] font-semibold tracking-wider uppercase"
-			>
-				<ChevronDown className={cn("h-3 w-3 transition-transform", open ? "rotate-180" : "-rotate-90")} />
-				{label}
-				{!open ? (
-					<span className="text-muted-foreground/70 ml-1 font-mono text-[10px] tracking-normal normal-case">{text.length} chars</span>
-				) : null}
-			</button>
-			{open ? <pre className="font-mono text-[12.5px] leading-[1.6] break-all whitespace-pre-wrap">{text}</pre> : null}
+		<div className="text-muted-foreground mt-2 text-[12px]" data-testid="log-tool-call-next-request">
+			The tool's result isn't in this request.{" "}
+			{next ? (
+				<button
+					type="button"
+					className="text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+					onClick={() => onOpenLog(next.id)}
+					data-testid="log-tool-call-next-request-link"
+				>
+					Open next request
+				</button>
+			) : !log.session_id ? null : currentData ? (
+				// The lookup finished and found nothing: the caller has not sent a
+				// follow-up in this session, or has not yet.
+				<span data-testid="log-tool-call-next-request-none">No later request in this session.</span>
+			) : (
+				<span data-testid="log-tool-call-next-request-loading">Looking for the next request…</span>
+			)}
 		</div>
 	);
 }
 
-function CollapsibleCode({ text, preview = 3, lang, mono = true }: { text: string; preview?: number; lang?: string; mono?: boolean }) {
+// Collapses all but the last two messages of a long input history. The earlier
+// turns stay in the DOM order they occurred in; expanding reveals them in place.
+function MessageHistoryCollapse({ count, children }: { count: number; children: ReactNode }) {
 	const [open, setOpen] = useState(false);
-	const lines = text.split("\n");
-	const shown = open ? lines : lines.slice(0, preview);
-	const hasMore = lines.length > preview;
-	const moreCount = lines.length - preview;
 	return (
 		<>
-			{mono ? (
-				<pre className="font-mono text-[12.5px] leading-[1.6] break-words whitespace-pre-wrap">{shown.join("\n")}</pre>
-			) : (
-				<div className="text-[13px] leading-relaxed break-words whitespace-pre-wrap">{shown.join("\n")}</div>
-			)}
-			{hasMore && (
-				<div className="mt-1.5 flex items-center justify-between">
-					<button
-						type="button"
-						onClick={() => setOpen((o) => !o)}
-						className="text-primary inline-flex items-center gap-1 text-[11.5px] font-medium hover:underline"
-					>
-						{open ? "Show less" : `Show ${moreCount} more lines`}
-						<ChevronDown className={cn("h-3 w-3 transition-transform", open && "rotate-180")} />
-					</button>
-					<span className="text-muted-foreground font-mono text-[10.5px]">
-						{lines.length} lines{lang ? ` · ${lang}` : ""}
-					</span>
-				</div>
-			)}
+			<button
+				type="button"
+				data-testid="log-messages-history-toggle"
+				onClick={() => setOpen((v) => !v)}
+				className="text-muted-foreground hover:text-foreground mb-3 flex w-full items-center gap-2 text-[11.5px] font-medium"
+			>
+				<ChevronDown className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-180")} />
+				{open ? "Hide earlier history" : `Show ${count} earlier message${count === 1 ? "" : "s"}`}
+				<span className="bg-border h-px flex-1" />
+			</button>
+			{open ? children : null}
 		</>
 	);
 }
 
-function MessageRow({ role, meta, children, last = false }: { role: MessageRole; meta?: string; children: ReactNode; last?: boolean }) {
+// DecisionQuestionsBox shows the questions a decision request asked, with their
+// instructions and criteria, choices or levels. The state and answers sit in the
+// message timeline; without the questions they cannot be read.
+function DecisionQuestionsBox({ value, count }: { value: unknown; count: number }) {
+	const json = JSON.stringify(value, null, 2);
 	return (
-		<div className="flex gap-3">
-			<div className="flex flex-col items-center pt-1.5">
-				<span className={cn("h-2 w-2 rounded-sm", messageDotClass[role])} />
-				{!last && <div className="bg-border my-1 w-px flex-1" />}
-			</div>
-			<div className="min-w-0 flex-1 pb-4">
-				<div className="mb-1 flex items-center gap-2">
-					<span className="text-foreground text-[11.5px] font-semibold">{messageRoleLabel[role]}</span>
-					{meta ? <span className="text-muted-foreground text-[11px]">{meta}</span> : null}
-				</div>
-				<div className={cn("rounded-sm border p-3 text-[13px] leading-relaxed", messageToneClass[role])}>{children}</div>
-			</div>
+		<div data-testid="log-decision-questions">
+			<CollapsibleBox title={`Questions (${count})`} onCopy={() => json} collapsedHeight={150}>
+				<CodeEditor
+					className="z-0 w-full"
+					shouldAdjustInitialHeight
+					maxHeight={450}
+					wrap
+					code={json}
+					lang="json"
+					readonly
+					options={{
+						collapsibleBlocks: true,
+						scrollBeyondLastLine: false,
+						lineNumbers: "off",
+						alwaysConsumeMouseWheel: false,
+					}}
+				/>
+			</CollapsibleBox>
 		</div>
+	);
+}
+
+function EmbeddingJsonBox({ title, value }: { title: string; value: unknown }) {
+	const json = JSON.stringify(value, null, 2);
+	return (
+		<CollapsibleBox title={title} onCopy={() => json} collapsedHeight={150}>
+			<CodeEditor
+				className="z-0 w-full"
+				shouldAdjustInitialHeight
+				maxHeight={450}
+				wrap
+				code={json}
+				lang="json"
+				readonly
+				options={{
+					scrollBeyondLastLine: false,
+					lineNumbers: "off",
+					alwaysConsumeMouseWheel: false,
+				}}
+			/>
+		</CollapsibleBox>
 	);
 }
 
@@ -1035,6 +693,7 @@ interface LogDetailViewProps {
 	headerAction?: ReactNode;
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
 	onFilterBySessionId?: (sessionId: string) => void;
+	onOpenLog?: (logId: string) => void;
 }
 
 // Explains an empty Raw JSON tab. Raw payloads are only persisted when the
@@ -1113,6 +772,7 @@ export function LogDetailView({
 	headerAction,
 	onFilterByParentRequestId,
 	onFilterBySessionId,
+	onOpenLog,
 }: LogDetailViewProps) {
 	const { copy: copyBody } = useCopyToClipboard({
 		successMessage: "Request body copied to clipboard",
@@ -1131,6 +791,12 @@ export function LogDetailView({
 
 	const allRoles: MessageRole[] = ["system", "user", "assistant", "tool", "reasoning"];
 	const [visibleRoles, setVisibleRoles] = useState<Set<MessageRole>>(new Set(allRoles));
+	// Kept in the URL so the open section and active tab survive switching logs, which remounts this view.
+	const [moreDetailsOpen, setMoreDetailsOpen] = useQueryState(
+		"log_more",
+		parseAsBoolean.withDefault(false).withOptions({ history: "replace" }),
+	);
+	const [tabParam, setTabParam] = useQueryState("log_tab", parseAsString.withOptions({ history: "replace" }));
 
 	const handleToggleReveal = (checked: boolean) => {
 		setShowRevealedValues(checked && revealAvailable);
@@ -1157,9 +823,15 @@ export function LogDetailView({
 	const detectedAppLabel = detectedApp ? logAppDisplayName(detectedApp, log.user_agent) : "";
 	const showTabs = !isContainer;
 	const complexityRouting = deriveComplexityRouting(log);
+	// A downstream build can draw its own routing record at the top of the Routing tab.
+	const RoutingPanel = getLogRoutingPanel();
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
+	const isRealtimeTranscription =
+		isRealtimeTurn && log.metadata?.realtime_event_type === "conversation.item.input_audio_transcription.completed";
+	const audioSeconds = log.token_usage?.audio_seconds;
 	const isBatch = isBatchOperation(log.object);
+	const isEmbedding = log.object === "embedding";
 	const batchDebug = log.batch_debug;
 	// Set on both the submission row and the aggregate cost row a settlement writes;
 	// only the latter carries accounting, which is what tells the two apart.
@@ -1193,14 +865,14 @@ export function LogDetailView({
 					const contents = item?.request?.contents;
 					const messages = Array.isArray(contents)
 						? contents.map((c: any) => ({
-							role: c?.role === "model" ? "assistant" : c?.role || "user",
-							content: Array.isArray(c?.parts)
-								? c.parts
-									.filter((p: any) => p && typeof p.text === "string")
-									.map((p: any) => p.text)
-									.join("")
-								: "",
-						}))
+								role: c?.role === "model" ? "assistant" : c?.role || "user",
+								content: Array.isArray(c?.parts)
+									? c.parts
+											.filter((p: any) => p && typeof p.text === "string")
+											.map((p: any) => p.text)
+											.join("")
+									: "",
+							}))
 						: [];
 					return {
 						customId: typeof item?.metadata?.key === "string" && item.metadata.key ? item.metadata.key : `request-${index + 1}`,
@@ -1259,9 +931,9 @@ export function LogDetailView({
 					const parts = candidate?.content?.parts;
 					const text = Array.isArray(parts)
 						? parts
-							.filter((p: any) => p && typeof p.text === "string")
-							.map((p: any) => p.text)
-							.join("")
+								.filter((p: any) => p && typeof p.text === "string")
+								.map((p: any) => p.text)
+								.join("")
 						: "";
 					const role = candidate?.content?.role === "model" ? "assistant" : candidate?.content?.role || "assistant";
 					message = { role, content: text };
@@ -1284,11 +956,11 @@ export function LogDetailView({
 	}, [batchRawResponse]);
 	const passthroughParams = isPassthrough
 		? (log.params as {
-			method?: string;
-			path?: string;
-			raw_query?: string;
-			status_code?: number;
-		})
+				method?: string;
+				path?: string;
+				raw_query?: string;
+				status_code?: number;
+			})
 		: null;
 	// Only errors and passthrough requests carry a real HTTP status code; others have none.
 	// Non-HTTP errors (timeouts, network, marshal) default to 0; treat that as no status
@@ -1308,12 +980,22 @@ export function LogDetailView({
 	if (declaredTools.length) {
 		try {
 			toolsParameter = JSON.stringify(declaredTools, null, 2);
-		} catch { }
+		} catch {}
 	}
 
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
 	const rawRequest = applyRedactionMapping(log.raw_request, activeInputRevealMapping);
 	const rawResponse = applyRedactionMapping(log.raw_response, activeOutputRevealMapping);
+	// An error whose message the provider parser could not extract still carries the provider's
+	// body on the error's raw response (and on the raw_response column when raw-response
+	// persistence is on), so fall back to that instead of showing nothing.
+	const errorMessageFallback = (() => {
+		if (log.error_details?.error.message) return null;
+		const fromErrorDetails = extractProviderErrorMessage(log.error_details?.extra_fields?.raw_response);
+		const text = fromErrorDetails ?? (log.status === "error" ? extractProviderErrorMessage(log.raw_response) : null);
+		return text ? applyRedactionMapping(text, activeOutputRevealMapping) : null;
+	})();
+	const displayErrorMessage = log.error_details?.error.message || errorMessageFallback;
 	const passthroughRequestBody = applyRedactionMapping(log.passthrough_request_body, activeInputRevealMapping);
 	const passthroughResponseBody = applyRedactionMapping(log.passthrough_response_body, activeOutputRevealMapping);
 	const videoOutput = log.video_generation_output || log.video_retrieve_output || log.video_download_output || log.video_delete_output;
@@ -1325,9 +1007,20 @@ export function LogDetailView({
 			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
 				return Object.values(parsed).reduce<number>((sum, v) => sum + (Array.isArray(v) ? v.length : 0), 0);
 			}
-		} catch { }
+		} catch {}
 		return 0;
 	})();
+
+	const availableTabs = [
+		showBatchDetailsTab && "details",
+		showTabs && !isBatch && "messages",
+		showTabs && !isPassthrough && !log.list_models_output && !isBatch && !isEmbedding && "tools",
+		showTabs && "routing",
+		"plugins",
+		!isPassthrough && "raw",
+	].filter((t): t is string => Boolean(t));
+	const defaultTab = showBatchDetailsTab ? "details" : showTabs && !isBatch ? "messages" : showTabs ? "routing" : "plugins";
+	const activeTab = tabParam && availableTabs.includes(tabParam) ? tabParam : defaultTab;
 
 	return loading ? (
 		<div className="flex h-full items-center justify-center">
@@ -1336,7 +1029,7 @@ export function LogDetailView({
 	) : (
 		<>
 			{/* Breadcrumb header with actions */}
-			<div className="flex items-center justify-between gap-3">
+			<div className="bg-card sticky -top-5 z-20 mx-4 flex items-center justify-between gap-3 pt-4 pb-2 md:mx-8 md:pt-8">
 				<div className="text-muted-foreground flex items-center gap-2 text-sm">
 					{headerAction}
 					<span className="text-foreground font-medium">Request details</span>
@@ -1359,7 +1052,7 @@ export function LogDetailView({
 						<AlertDialog>
 							<DropdownMenu>
 								<DropdownMenuTrigger asChild>
-									<Button variant="ghost" className="size-8" type="button" data-testid="logdetails-actions-button">
+									<Button variant="ghost" className="size-7" type="button" data-testid="logdetails-actions-button">
 										<MoreVertical className="h-3 w-3" />
 									</Button>
 								</DropdownMenuTrigger>
@@ -1413,7 +1106,7 @@ export function LogDetailView({
 					{onClose ? (
 						<Button
 							variant="ghost"
-							className="size-8"
+							className="size-7"
 							type="button"
 							onClick={onClose}
 							data-testid="logdetails-close-button"
@@ -1424,1456 +1117,1422 @@ export function LogDetailView({
 					) : null}
 				</div>
 			</div>
-			<div className="border-border rounded-sm border">
-				<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
-					<div className="min-w-0 flex-1">
-						<div className="flex flex-wrap items-center gap-2">
-							<Badge
-								variant="outline"
-								className={cn(
-									"rounded-sm px-2 py-0.5 font-medium",
-									RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800",
-								)}
-							>
-								{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object}
-							</Badge>
-							<StatusPill status={log.status as Status} />
-							{statusCode != null && (
+			<div className="flex flex-col gap-4 px-4 pb-4 md:px-8 md:pb-8">
+				<div className="border-border rounded-sm border">
+					<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
+						<div className="min-w-0 flex-1">
+							<div className="flex flex-wrap items-center gap-2">
 								<Badge
 									variant="outline"
-									className={cn("rounded-sm px-2 py-0.5 font-medium tabular-nums", statusCodeBadgeClass(statusCode))}
+									className={cn(
+										"rounded-sm px-2 py-0.5 font-medium",
+										RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800",
+									)}
 								>
-									{statusCode}
+									{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object}
 								</Badge>
+								<StatusPill status={log.status as Status} />
+								{statusCode != null && (
+									<Badge
+										variant="outline"
+										className={cn("rounded-sm px-2 py-0.5 font-medium tabular-nums", statusCodeBadgeClass(statusCode))}
+									>
+										{statusCode}
+									</Badge>
+								)}
+								{log.routing_rule && (
+									<Link
+										to="/workspace/logs"
+										search={(prev) => ({ ...prev, offset: 0, selected_log: "", routing_rule_ids: [log.routing_rule!.id] })}
+										data-testid="logdetails-header-routing-rule-link"
+									>
+										<Badge variant="outline" className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal hover:underline">
+											rule: {log.routing_rule.name}
+										</Badge>
+									</Link>
+								)}
+								{log.metadata?.isAsyncRequest ? (
+									<Badge variant="outline" className="rounded-sm bg-teal-100 px-2 py-0.5 text-teal-800 dark:bg-teal-900 dark:text-teal-200">
+										Async
+									</Badge>
+								) : null}
+								{log.cache_debug?.hit_type === "direct" ? (
+									<Badge
+										variant="outline"
+										className="rounded-sm bg-indigo-100 px-2 py-0.5 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200"
+									>
+										Direct Cache
+									</Badge>
+								) : null}
+								{log.cache_debug?.hit_type === "semantic" ? (
+									<Badge variant="outline" className="rounded-sm bg-rose-100 px-2 py-0.5 text-rose-800 dark:bg-rose-900 dark:text-rose-200">
+										Semantic Cache
+									</Badge>
+								) : null}
+								{(log.is_large_payload_request || log.is_large_payload_response) && (
+									<Badge
+										variant="outline"
+										className="rounded-sm border-amber-300 bg-amber-50 px-2 py-0.5 text-amber-700 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-400"
+									>
+										Large Payload
+									</Badge>
+								)}
+								{isRealtimeTurn && log.metadata?.realtime_transport && (
+									<Badge
+										variant="outline"
+										className={cn("rounded-sm px-2 py-0.5 font-medium", getRealtimeTransportBadgeClass(log.metadata.realtime_transport))}
+									>
+										{formatRealtimeTransport(log.metadata.realtime_transport)}
+									</Badge>
+								)}
+								{isRealtimeTurn && log.metadata?.realtime_voice && (
+									<Badge
+										variant="outline"
+										className="rounded-sm border-amber-300 bg-amber-50 px-2 py-0.5 font-medium text-amber-700 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-300"
+									>
+										{log.metadata.realtime_voice}
+									</Badge>
+								)}
+								{batchDebug?.status && (
+									<Badge
+										variant="outline"
+										className={cn(
+											"rounded-sm px-2 py-0.5 font-medium uppercase",
+											batchStatusBadgeStyles[batchDebug.status] ?? batchStatusBadgeDefault,
+										)}
+									>
+										{batchDebug.status.replace(/_/g, " ")}
+									</Badge>
+								)}
+								{videoDebug?.status && (
+									<Badge
+										variant="outline"
+										className={cn(
+											"rounded-sm px-2 py-0.5 font-medium uppercase",
+											batchStatusBadgeStyles[videoDebug.status] ?? batchStatusBadgeDefault,
+										)}
+									>
+										{videoDebug.status.replace(/_/g, " ")}
+									</Badge>
+								)}
+							</div>
+							<div className="mt-3 flex items-center gap-2">
+								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Request</div>
+								<code className="text-foreground truncate font-mono text-[13px]">{log.id || "—"}</code>
+								{log.id ? <CopyInlineButton text={log.id} testId="logdetails-copy-request-id-button" /> : null}
+							</div>
+							{log.cache_debug?.cache_id && (
+								<div className="mt-1 flex items-center gap-2">
+									<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
+										Cache {log.cache_debug.cache_hit ? "(hit)" : "(miss)"}
+									</div>
+									<code className="text-foreground truncate font-mono text-[13px]">{log.cache_debug.cache_id}</code>
+									<CopyInlineButton text={log.cache_debug.cache_id} testId="logdetails-copy-cache-id-button" />
+								</div>
 							)}
 							{log.routing_rule && (
-								<Link
-									to="/workspace/logs"
-									search={(prev) => ({ ...prev, offset: 0, selected_log: "", routing_rule_ids: [log.routing_rule!.id] })}
-									data-testid="logdetails-header-routing-rule-link"
-								>
-									<Badge variant="outline" className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal hover:underline">
-										rule: {log.routing_rule.name}
-									</Badge>
-								</Link>
-							)}
-							{log.metadata?.isAsyncRequest ? (
-								<Badge variant="outline" className="rounded-sm bg-teal-100 px-2 py-0.5 text-teal-800 dark:bg-teal-900 dark:text-teal-200">
-									Async
-								</Badge>
-							) : null}
-							{log.cache_debug?.hit_type === "direct" ? (
-								<Badge
-									variant="outline"
-									className="rounded-sm bg-indigo-100 px-2 py-0.5 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200"
-								>
-									Direct Cache
-								</Badge>
-							) : null}
-							{log.cache_debug?.hit_type === "semantic" ? (
-								<Badge variant="outline" className="rounded-sm bg-rose-100 px-2 py-0.5 text-rose-800 dark:bg-rose-900 dark:text-rose-200">
-									Semantic Cache
-								</Badge>
-							) : null}
-							{(log.is_large_payload_request || log.is_large_payload_response) && (
-								<Badge
-									variant="outline"
-									className="rounded-sm border-amber-300 bg-amber-50 px-2 py-0.5 text-amber-700 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-400"
-								>
-									Large Payload
-								</Badge>
-							)}
-							{isRealtimeTurn && log.metadata?.realtime_transport && (
-								<Badge
-									variant="outline"
-									className={cn("rounded-sm px-2 py-0.5 font-medium", getRealtimeTransportBadgeClass(log.metadata.realtime_transport))}
-								>
-									{formatRealtimeTransport(log.metadata.realtime_transport)}
-								</Badge>
-							)}
-							{isRealtimeTurn && log.metadata?.realtime_voice && (
-								<Badge
-									variant="outline"
-									className="rounded-sm border-amber-300 bg-amber-50 px-2 py-0.5 font-medium text-amber-700 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-300"
-								>
-									{log.metadata.realtime_voice}
-								</Badge>
-							)}
-							{batchDebug?.status && (
-								<Badge
-									variant="outline"
-									className={cn(
-										"rounded-sm px-2 py-0.5 font-medium uppercase",
-										batchStatusBadgeStyles[batchDebug.status] ?? batchStatusBadgeDefault,
-									)}
-								>
-									{batchDebug.status.replace(/_/g, " ")}
-								</Badge>
-							)}
-							{videoDebug?.status && (
-								<Badge
-									variant="outline"
-									className={cn(
-										"rounded-sm px-2 py-0.5 font-medium uppercase",
-										batchStatusBadgeStyles[videoDebug.status] ?? batchStatusBadgeDefault,
-									)}
-								>
-									{videoDebug.status.replace(/_/g, " ")}
-								</Badge>
-							)}
-						</div>
-						<div className="mt-3 flex items-center gap-2">
-							<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Request</div>
-							<code className="text-foreground truncate font-mono text-[13px]">{log.id || "—"}</code>
-							{log.id ? <CopyInlineButton text={log.id} testId="logdetails-copy-request-id-button" /> : null}
-						</div>
-						{log.cache_debug?.cache_id && (
-							<div className="mt-1 flex items-center gap-2">
-								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
-									Cache {log.cache_debug.cache_hit ? "(hit)" : "(miss)"}
-								</div>
-								<code className="text-foreground truncate font-mono text-[13px]">{log.cache_debug.cache_id}</code>
-								<CopyInlineButton text={log.cache_debug.cache_id} testId="logdetails-copy-cache-id-button" />
-							</div>
-						)}
-						{log.routing_rule && (
-							<div className="mt-1 flex items-center gap-2">
-								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Rule</div>
-								<Link
-									to="/workspace/logs"
-									search={(prev) => ({ ...prev, offset: 0, selected_log: "", routing_rule_ids: [log.routing_rule!.id] })}
-									className="truncate text-[13px] font-medium text-blue-600 hover:underline dark:text-blue-400"
-									data-testid="logdetails-header-rule-link"
-								>
-									&ldquo;{log.routing_rule.name}&rdquo;
-								</Link>
-							</div>
-						)}
-						{log.selected_key && (
-							<div className="mt-1 flex items-center gap-2">
-								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Key</div>
-								<Link
-									to="/workspace/logs"
-									search={(prev) => ({ ...prev, offset: 0, selected_log: "", selected_key_ids: [log.selected_key_id] })}
-									className="truncate font-mono text-[13px] text-blue-600 hover:underline dark:text-blue-400"
-									data-testid="logdetails-header-selected-key-link"
-								>
-									{log.selected_key.name}
-								</Link>
-							</div>
-						)}
-					</div>
-					<div className="flex shrink-0 items-center gap-1.5 rounded-sm border bg-white px-2 py-1 text-[12px] font-medium dark:bg-zinc-900">
-						<RenderProviderIcon provider={log.provider as ProviderIconType} size="xs" />
-						<span className="uppercase">{log.provider}</span>
-					</div>
-				</div>
-				<div className="border-border grid grid-cols-1 border-t sm:grid-cols-2 md:grid-cols-5">
-					<HeroStat
-						label="Latency"
-						valueClass="text-primary"
-						value={log.latency == null || isNaN(log.latency) ? "—" : formatLatency(log.latency)}
-						sub={(() => {
-							if (!log.timestamp) return "";
-							const start = new Date(log.timestamp);
-							if (isNaN(start.getTime())) return "";
-							const startStr = format(start, "HH:mm:ss");
-							if (log.latency == null || isNaN(log.latency)) return startStr;
-							return `${startStr} → ${format(addMilliseconds(start, log.latency), "HH:mm:ss")}`;
-						})()}
-						hasRightBorder
-					/>
-					<HeroStat
-						label="Model"
-						mono
-						value={log.model || "—"}
-						sub={log.provider?.toLowerCase() || ""}
-						valueClass="whitespace-normal overflow-visible break-all"
-						hasRightBorder
-					/>
-					<HeroStat
-						label="Tokens in / out"
-						mono
-						value={
-							log.token_usage
-								? `${formatCompactNumber(log.token_usage.prompt_tokens ?? 0)} / ${formatCompactNumber(log.token_usage.completion_tokens ?? 0)}`
-								: "—"
-						}
-						sub={
-							log.token_usage
-								? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${log.token_usage.completion_tokens_details?.reasoning_tokens
-									? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
-									: ""
-								}`
-								: "—"
-						}
-						hasRightBorder
-					/>
-					<HeroStat
-						label="Cost"
-						value={log.cost != null ? formatCost(log.cost) : "—"}
-						sub={
-							log.cost != null && log.token_usage?.total_tokens
-								? `≈ ${((log.cost / log.token_usage.total_tokens) * 1000).toFixed(6)}＄ per 1k`
-								: ""
-						}
-						hasRightBorder
-					/>
-					{isRealtimeTurn ? (
-						<HeroStat
-							label="Voice"
-							value={log.metadata?.realtime_voice ? String(log.metadata.realtime_voice) : "\u2014"}
-							sub={log.metadata?.realtime_transport ? formatRealtimeTransport(log.metadata.realtime_transport) : ""}
-						/>
-					) : (
-						<HeroStat
-							label="Tools available"
-							value={declaredTools.length.toString()}
-							sub={(log.params as any)?.tool_choice != null ? `choice: ${formatToolChoice((log.params as any).tool_choice)}` : ""}
-						/>
-					)}
-				</div>
-			</div>
-			<details className="group bg-card rounded-sm border" open={false}>
-				<summary className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-4 py-2.5 text-sm transition">
-					<span className="text-foreground font-medium">More details</span>
-					<span className="text-muted-foreground flex items-center gap-2 text-xs">
-						<span className="hidden md:inline">timings, request meta, tokens, caching, metadata</span>
-						<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
-					</span>
-				</summary>
-				<div className="space-y-4 border-t px-4 py-4 md:px-6">
-					<div className="space-y-4">
-						<BlockHeader title="Timings" />
-						<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
-							<LogEntryDetailsView
-								className="w-full"
-								label="Start Timestamp"
-								value={(() => {
-									const d = log.timestamp ? new Date(log.timestamp) : null;
-									return d && !isNaN(d.getTime()) ? format(d, "yyyy-MM-dd hh:mm:ss aa") : "N/A";
-								})()}
-							/>
-							<LogEntryDetailsView
-								className="w-full"
-								label="End Timestamp"
-								value={(() => {
-									const d = log.timestamp ? new Date(log.timestamp) : null;
-									return d && !isNaN(d.getTime()) ? format(addMilliseconds(d, log.latency || 0), "yyyy-MM-dd hh:mm:ss aa") : "N/A";
-								})()}
-							/>
-							<LogEntryDetailsView
-								className="w-full"
-								label="Latency"
-								tooltip="Total end-to-end request time: upstream plus Bifrost overhead."
-								value={log.latency == null || isNaN(log.latency) ? "N/A" : <div>{log.latency.toFixed(2)}ms</div>}
-							/>
-							<LogEntryDetailsView
-								className="w-full"
-								label="Upstream Latency"
-								tooltip="Time spent waiting on the provider, summed across every attempt."
-								value={log.upstream_latency == null || isNaN(log.upstream_latency) ? "N/A" : <div>{log.upstream_latency.toFixed(2)}ms</div>}
-							/>
-							<LogEntryDetailsView
-								className="w-full"
-								label="Bifrost Overhead"
-								tooltip="Time added by Bifrost itself: routing, plugins, and processing."
-								value={log.overhead_latency == null || isNaN(log.overhead_latency) ? "N/A" : <div>{log.overhead_latency.toFixed(2)}ms</div>}
-							/>
-						</div>
-						{log.overhead_breakdown && log.overhead_breakdown.length > 0 ? (
-							<OverheadBreakdown buckets={log.overhead_breakdown} overheadMs={log.overhead_latency} />
-						) : null}
-					</div>
-					<DottedSeparator />
-					<div className="space-y-4">
-						<BlockHeader title="Request Details" />
-						<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
-							<LogEntryDetailsView
-								className="w-full"
-								label="Provider"
-								value={
-									<Badge variant="secondary" className="uppercase">
-										<RenderProviderIcon provider={log.provider as ProviderIconType} size="sm" />
-										{log.provider}
-									</Badge>
-								}
-							/>
-							{!isContainer && <LogEntryDetailsView className="w-full" label="Model" value={log.model} />}
-							{!isContainer && log.alias && <LogEntryDetailsView className="w-full" label="Alias" value={log.alias} />}
-							{!isContainer && log.canonical_model_name && (
-								<LogEntryDetailsView className="w-full" label="Canonical Model" value={log.canonical_model_name} />
-							)}
-							{!isContainer && log.alias_model_family && (
-								<LogEntryDetailsView className="w-full" label="Model Family" value={log.alias_model_family} />
-							)}
-							{!isContainer && log.server_side_fallback_model && (
-								<LogEntryDetailsView className="w-full" label="Served By (fallback)" value={log.server_side_fallback_model} />
-							)}
-							{!isContainer && log.served_model && (
-								<LogEntryDetailsView className="w-full" label="Served Model" value={log.served_model} />
-							)}
-							{detectedApp && (
-								<LogEntryDetailsView
-									className="w-full"
-									label="App"
-									value={
-										<div className="flex min-w-0 items-center gap-2" title={log.user_agent || undefined}>
-											{detectedAppIcon ? (
-												<img
-													className="rounded-sm"
-													src={detectedAppIcon}
-													alt={detectedAppLabel}
-													width={20}
-													height={20}
-													loading="lazy"
-													decoding="async"
-												/>
-											) : null}
-											<span className="truncate">{detectedAppLabel}</span>
-										</div>
-									}
-								/>
-							)}
-							<LogEntryDetailsView
-								className="w-full"
-								label="Type"
-								value={
-									<div
-										className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"} rounded-sm px-3 py-1`}
+								<div className="mt-1 flex items-center gap-2">
+									<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Rule</div>
+									<Link
+										to="/workspace/logs"
+										search={(prev) => ({ ...prev, offset: 0, selected_log: "", routing_rule_ids: [log.routing_rule!.id] })}
+										className="truncate text-[13px] font-medium text-blue-600 hover:underline dark:text-blue-400"
+										data-testid="logdetails-header-rule-link"
 									>
-										{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object ?? "unknown"}
-									</div>
-								}
-							/>
-							{log.service_tier && (
-								<LogEntryDetailsView
-									className="w-full"
-									label="Service Tier"
-									value={
-										<Badge variant="secondary" className="uppercase" data-testid="logdetails-service-tier">
-											{log.service_tier}
-										</Badge>
-									}
-								/>
-							)}
-							{log.stop_reason && (
-								<LogEntryDetailsView
-									className="w-full"
-									label="Stop Reason"
-									value={
-										<Badge
-											variant="secondary"
-											className={cn(
-												"uppercase",
-												log.stop_reason === "content_filter" || log.stop_reason === "safety" || log.stop_reason === "refusal"
-													? "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300"
-													: log.stop_reason === "length" || log.stop_reason === "max_tokens"
-														? "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300"
-														: "",
-											)}
-										>
-											{log.stop_reason}
-										</Badge>
-									}
-								/>
-							)}
-							{log.parent_request_id && (
-								<LogEntryDetailsView
-									className="w-full"
-									label="Parent Request ID"
-									value={
-										onFilterByParentRequestId ? (
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<code
-														className="block max-w-full min-w-0 cursor-pointer truncate font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
-														onClick={() => onFilterByParentRequestId(log.parent_request_id as string)}
-													>
-														{log.parent_request_id}
-													</code>
-												</TooltipTrigger>
-												<TooltipContent sideOffset={6} className="max-w-md break-all">
-													{log.parent_request_id} · Filter this session
-												</TooltipContent>
-											</Tooltip>
-										) : (
-											<TruncatedLabel className="block max-w-full min-w-0 font-normal" tooltipSide="top">
-												{log.parent_request_id}
-											</TruncatedLabel>
-										)
-									}
-								/>
-							)}
-							{log.session_id && (
-								<LogEntryDetailsView
-									className="w-full"
-									label="Session ID"
-									value={
-										onFilterBySessionId ? (
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<button
-														type="button"
-														className="block max-w-full min-w-0 cursor-pointer truncate bg-transparent p-0 text-left font-mono font-normal text-blue-600 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 dark:text-blue-400"
-														onClick={() => onFilterBySessionId(log.session_id as string)}
-													>
-														{log.session_id}
-													</button>
-												</TooltipTrigger>
-												<TooltipContent sideOffset={6} className="max-w-md break-all">
-													{log.session_id} · Filter this session
-												</TooltipContent>
-											</Tooltip>
-										) : (
-											<TruncatedLabel className="block max-w-full min-w-0 font-normal" tooltipSide="top">
-												{log.session_id}
-											</TruncatedLabel>
-										)
-									}
-								/>
+										&ldquo;{log.routing_rule.name}&rdquo;
+									</Link>
+								</div>
 							)}
 							{log.selected_key && (
+								<div className="mt-1 flex items-center gap-2">
+									<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Key</div>
+									<Link
+										to="/workspace/logs"
+										search={(prev) => ({ ...prev, offset: 0, selected_log: "", selected_key_ids: [log.selected_key_id] })}
+										className="truncate font-mono text-[13px] text-blue-600 hover:underline dark:text-blue-400"
+										data-testid="logdetails-header-selected-key-link"
+									>
+										{log.selected_key.name}
+									</Link>
+								</div>
+							)}
+						</div>
+						<div className="flex shrink-0 items-center gap-1.5 rounded-sm border bg-white px-2 py-1 text-[12px] font-medium dark:bg-zinc-900">
+							<RenderProviderIcon provider={log.provider as ProviderIconType} size="xs" />
+							<span className="uppercase">{log.provider}</span>
+						</div>
+					</div>
+					<div className="border-border grid grid-cols-1 border-t sm:grid-cols-2 md:grid-cols-5">
+						<HeroStat
+							label="Latency"
+							valueClass="text-primary"
+							value={log.latency == null || isNaN(log.latency) ? "—" : formatLatency(log.latency)}
+							sub={(() => {
+								if (!log.timestamp) return "";
+								const start = new Date(log.timestamp);
+								if (isNaN(start.getTime())) return "";
+								const startStr = format(start, "HH:mm:ss");
+								if (log.latency == null || isNaN(log.latency)) return startStr;
+								return `${startStr} → ${format(addMilliseconds(start, log.latency), "HH:mm:ss")}`;
+							})()}
+							hasRightBorder
+						/>
+						<HeroStat
+							label="Model"
+							mono
+							value={log.model || "—"}
+							sub={log.provider?.toLowerCase() || ""}
+							valueClass="whitespace-normal overflow-visible break-all"
+							hasRightBorder
+						/>
+						<HeroStat
+							label={audioSeconds != null ? "Audio duration" : "Tokens in / out"}
+							mono
+							value={
+								audioSeconds != null
+									? `${audioSeconds}s`
+									: log.token_usage
+										? `${formatCompactNumber(log.token_usage.prompt_tokens ?? 0)} / ${formatCompactNumber(log.token_usage.completion_tokens ?? 0)}`
+										: "—"
+							}
+							sub={
+								audioSeconds != null
+									? "duration billed"
+									: log.token_usage
+										? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${
+												log.token_usage.completion_tokens_details?.reasoning_tokens
+													? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
+													: ""
+											}`
+										: "—"
+							}
+							hasRightBorder
+						/>
+						<HeroStat
+							label="Cost"
+							// Routing classifiers add sidecar cost to normal inference
+							// requests, so keep those totals visible at useful precision.
+							value={
+								log.cost != null
+									? log.object === "decisions" ||
+										(log.cost_breakdown?.additional_cost_details?.routing_cost ?? 0) > 0 ||
+										(log.status === "cancelled" && log.stream && log.provider === "anthropic")
+										? formatCostPrecise(log.cost)
+										: formatCost(log.cost)
+									: "—"
+							}
+							sub={
+								log.cost != null && audioSeconds
+									? `≈ ${(log.cost / audioSeconds).toFixed(6)}＄ per second`
+									: log.cost != null && log.token_usage?.total_tokens
+										? `≈ ${((log.cost / log.token_usage.total_tokens) * 1000).toFixed(6)}＄ per 1k`
+										: ""
+							}
+							hasRightBorder
+						/>
+						{log.live_session ? (
+							<HeroStat
+								label="Voice"
+								value={log.live_session.transport ? formatRealtimeTransport(log.live_session.transport) : "\u2014"}
+								valueClass="text-[15px]"
+							/>
+						) : isRealtimeTurn ? (
+							<HeroStat
+								label={isRealtimeTranscription ? "Type" : "Voice"}
+								value={
+									isRealtimeTranscription ? "Transcription" : log.metadata?.realtime_voice ? String(log.metadata.realtime_voice) : "\u2014"
+								}
+								sub={log.metadata?.realtime_transport ? formatRealtimeTransport(log.metadata.realtime_transport) : ""}
+							/>
+						) : (
+							<HeroStat
+								label="Tools available"
+								value={declaredTools.length.toString()}
+								sub={(log.params as any)?.tool_choice != null ? `choice: ${formatToolChoice((log.params as any).tool_choice)}` : ""}
+							/>
+						)}
+					</div>
+				</div>
+				<details
+					className="group bg-card rounded-sm border"
+					open={moreDetailsOpen}
+					onToggle={(e) => setMoreDetailsOpen(e.currentTarget.open)}
+				>
+					<summary className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-4 py-2.5 text-sm transition">
+						<span className="text-foreground font-medium">More details</span>
+						<span className="text-muted-foreground flex items-center gap-2 text-xs">
+							<span className="hidden md:inline">timings, request meta, tokens, caching, metadata</span>
+							<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+						</span>
+					</summary>
+					<div className="space-y-4 border-t px-4 py-4 md:px-6">
+						<div className="space-y-4">
+							<BlockHeader title="Timings" />
+							<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
 								<LogEntryDetailsView
 									className="w-full"
-									label="Selected Key"
+									label="Start Timestamp"
+									value={(() => {
+										const d = log.timestamp ? new Date(log.timestamp) : null;
+										return d && !isNaN(d.getTime()) ? format(d, "yyyy-MM-dd hh:mm:ss aa") : "N/A";
+									})()}
+								/>
+								<LogEntryDetailsView
+									className="w-full"
+									label="End Timestamp"
+									value={(() => {
+										const d = log.timestamp ? new Date(log.timestamp) : null;
+										return d && !isNaN(d.getTime()) ? format(addMilliseconds(d, log.latency || 0), "yyyy-MM-dd hh:mm:ss aa") : "N/A";
+									})()}
+								/>
+								<LogEntryDetailsView
+									className="w-full"
+									label="Latency"
+									tooltip="Total end-to-end request time: upstream plus Bifrost overhead."
+									value={log.latency == null || isNaN(log.latency) ? "N/A" : <div>{log.latency.toFixed(2)}ms</div>}
+								/>
+								<LogEntryDetailsView
+									className="w-full"
+									label="Upstream Latency"
+									tooltip="Time spent waiting on the provider, summed across every attempt."
 									value={
-										<Link
-											to="/workspace/logs"
-											search={(prev) => ({ ...prev, offset: 0, selected_log: "", selected_key_ids: [log.selected_key_id] })}
-											className="text-blue-600 hover:underline dark:text-blue-400"
-											data-testid="logdetails-selected-key-link"
-										>
-											{log.selected_key.name}
-										</Link>
+										log.upstream_latency == null || isNaN(log.upstream_latency) ? "N/A" : <div>{log.upstream_latency.toFixed(2)}ms</div>
 									}
 								/>
-							)}
-							{(log.selected_prompt_id || log.selected_prompt_name || log.selected_prompt_version) && (
 								<LogEntryDetailsView
 									className="w-full"
-									label="Selected Prompt"
+									label="Bifrost Overhead"
+									tooltip="Time added by Bifrost itself: routing, plugins, and processing."
 									value={
-										<Link
-											to="/workspace/prompt-repo"
-											className="text-blue-600 hover:underline dark:text-blue-400"
-											data-testid="logdetails-selected-prompt-link"
-										>
-											<span className="break-words">
-												{selectedPromptDisplayName}
-												{selectedPromptDisplayName && log.selected_prompt_version ? " · " : ""}
-												{log.selected_prompt_version ? <>v{log.selected_prompt_version}</> : null}
-											</span>
-										</Link>
+										log.overhead_latency == null || isNaN(log.overhead_latency) ? "N/A" : <div>{log.overhead_latency.toFixed(2)}ms</div>
 									}
 								/>
-							)}
-							{log.number_of_retries > 0 && (
-								<LogEntryDetailsView className="w-full" label="Number of Retries" value={log.number_of_retries} />
-							)}
-							{(log.team_ids?.length || log.team_id) && (
+							</div>
+							{log.overhead_breakdown && log.overhead_breakdown.length > 0 ? (
+								<OverheadBreakdown buckets={log.overhead_breakdown} overheadMs={log.overhead_latency} />
+							) : null}
+						</div>
+						<DottedSeparator />
+						<div className="space-y-4">
+							<BlockHeader title="Request Details" />
+							<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 								<LogEntryDetailsView
 									className="w-full"
-									label={(log.team_ids?.length ?? 0) > 1 ? "Teams" : "Team"}
+									label="Provider"
 									value={
-										<span className="inline-flex flex-wrap gap-x-1">
-											{(log.team_ids?.length
-												? log.team_ids.map((id, i) => ({ id, name: log.team_names?.[i] || id }))
-												: [{ id: log.team_id!, name: log.team_name || log.team_id! }]
-											).map((t, i, arr) => (
-												<Link
-													key={t.id}
-													to="/workspace/logs"
-													search={(prev) => ({ ...prev, offset: 0, selected_log: "", team_ids: [t.id] })}
-													className="text-blue-600 hover:underline dark:text-blue-400"
-													data-testid={`logdetails-team-link-${t.id}`}
-												>
-													{t.name}
-													{i < arr.length - 1 ? "," : ""}
-												</Link>
-											))}
-										</span>
-									}
-								/>
-							)}
-							{(log.customer_ids?.length || log.customer_id) && (
-								<LogEntryDetailsView
-									className="w-full"
-									label={(log.customer_ids?.length ?? 0) > 1 ? "Customers" : "Customer"}
-									value={
-										<span className="inline-flex flex-wrap gap-x-1">
-											{(log.customer_ids?.length
-												? log.customer_ids.map((id, i) => ({ id, name: log.customer_names?.[i] || id }))
-												: [{ id: log.customer_id!, name: log.customer_name || log.customer_id! }]
-											).map((c, i, arr) => (
-												<Link
-													key={c.id}
-													to="/workspace/logs"
-													search={(prev) => ({ ...prev, offset: 0, selected_log: "", customer_ids: [c.id] })}
-													className="text-blue-600 hover:underline dark:text-blue-400"
-													data-testid={`logdetails-customer-link-${c.id}`}
-												>
-													{c.name}
-													{i < arr.length - 1 ? "," : ""}
-												</Link>
-											))}
-										</span>
-									}
-								/>
-							)}
-							{(log.business_unit_ids?.length || log.business_unit_id) && (
-								<LogEntryDetailsView
-									className="w-full"
-									label={(log.business_unit_ids?.length ?? 0) > 1 ? "Business Units" : "Business Unit"}
-									value={
-										<span className="inline-flex flex-wrap gap-x-1">
-											{(log.business_unit_ids?.length
-												? log.business_unit_ids.map((id, i) => ({ id, name: log.business_unit_names?.[i] || id }))
-												: [{ id: log.business_unit_id!, name: log.business_unit_name || log.business_unit_id! }]
-											).map((b, i, arr) => (
-												<Link
-													key={b.id}
-													to="/workspace/logs"
-													search={(prev) => ({ ...prev, offset: 0, selected_log: "", business_unit_ids: [b.id] })}
-													className="text-blue-600 hover:underline dark:text-blue-400"
-													data-testid={`logdetails-business-unit-link-${b.id}`}
-												>
-													{b.name}
-													{i < arr.length - 1 ? "," : ""}
-												</Link>
-											))}
-										</span>
-									}
-								/>
-							)}
-							{log.project_id && (
-								<LogEntryDetailsView
-									className="w-full"
-									label="Project"
-									value={
-										<Link
-											to="/workspace/logs"
-											search={(prev) => ({ ...prev, offset: 0, selected_log: "", project_ids: [log.project_id!] })}
-											className="text-blue-600 hover:underline dark:text-blue-400"
-											data-testid={`logdetails-project-link-${log.project_id}`}
-										>
-											{log.project_name || log.project_id}
-										</Link>
-									}
-								/>
-							)}
-							{log.user_id && (
-								<LogEntryDetailsView
-									className="w-full"
-									label="User"
-									value={
-										<Tooltip>
-											<TooltipTrigger asChild>
-												<Link
-													to="/workspace/logs"
-													search={(prev) => ({ ...prev, offset: 0, selected_log: "", user_ids: [log.user_id] })}
-													className={`block max-w-full min-w-0 cursor-pointer truncate text-sm font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400${log.user_name ? "" : " font-mono"}`}
-													data-testid="logdetails-user-link"
-												>
-													{log.user_name || log.user_id}
-												</Link>
-											</TooltipTrigger>
-											<TooltipContent sideOffset={6}>{log.user_name ? log.user_id : "Filter by user"}</TooltipContent>
-										</Tooltip>
-									}
-								/>
-							)}
-							{log.fallback_index > 0 && <LogEntryDetailsView className="w-full" label="Fallback Index" value={log.fallback_index} />}
-							{log.virtual_key && (
-								<LogEntryDetailsView
-									className="w-full"
-									label="Virtual Key"
-									value={
-										<Link
-											to="/workspace/governance/virtual-keys"
-											search={{ selected_vk: log.virtual_key.id }}
-											className="text-blue-600 hover:underline dark:text-blue-400"
-											data-testid="logdetails-virtual-key-link"
-										>
-											{log.virtual_key.name}
-										</Link>
-									}
-								/>
-							)}
-							{log.routing_engines_used && log.routing_engines_used.length > 0 && (
-								<LogEntryDetailsView
-									className="w-full"
-									label="Routing Engines Used"
-									value={
-										<div className="flex flex-wrap gap-2">
-											{log.routing_engines_used.map((engine) => (
-												<Badge
-													key={engine}
-													className={cn(
-														"border-0 py-1 uppercase",
-														RoutingEngineUsedColors[engine as keyof typeof RoutingEngineUsedColors] ?? "bg-gray-100 text-gray-800",
-													)}
-												>
-													<div className="flex items-center gap-2">
-														{RoutingEngineUsedIcons[engine as keyof typeof RoutingEngineUsedIcons]?.({ className: "h-3.5 w-3.5" })}
-														<span>{RoutingEngineUsedLabels[engine as keyof typeof RoutingEngineUsedLabels] ?? engine}</span>
-													</div>
-												</Badge>
-											))}
-										</div>
-									}
-								/>
-							)}
-							{log.routing_rule && (
-								<LogEntryDetailsView
-									className="w-full"
-									label="Routing Rule"
-									value={
-										<Link
-											to="/workspace/logs"
-											search={(prev) => ({ ...prev, offset: 0, selected_log: "", routing_rule_ids: [log.routing_rule!.id] })}
-											className="text-blue-600 hover:underline dark:text-blue-400"
-											data-testid="logdetails-routing-rule-link"
-										>
-											{log.routing_rule.name}
-										</Link>
-									}
-								/>
-							)}
-							{complexityRouting.tier && (
-								<LogEntryDetailsView
-									className="w-full"
-									label="Complexity Tier"
-									value={
-										<Badge
-											className={cn(
-												"border-0 py-1 uppercase",
-												ComplexityTierColors[complexityRouting.tier as keyof typeof ComplexityTierColors] ?? "bg-gray-100 text-gray-800",
-											)}
-											data-testid="logdetails-complexity-tier-badge"
-										>
-											{complexityRouting.tier}
+										<Badge variant="secondary" className="uppercase">
+											<RenderProviderIcon provider={log.provider as ProviderIconType} size="sm" />
+											{log.provider}
 										</Badge>
 									}
 								/>
-							)}
-							{complexityRouting.mechanism && (
-								<LogEntryDetailsView
-									className="w-full"
-									label="Complexity Mechanism"
-									value={COMPLEXITY_MECHANISM_LABELS[complexityRouting.mechanism] ?? complexityRouting.mechanism}
-								/>
-							)}
-							{complexityRouting.score !== undefined && (
-								<LogEntryDetailsView className="w-full" label="Complexity Score" value={complexityRouting.score.toFixed(2)} />
-							)}
-
-							{(log.params as any)?.audio && (
-								<>
-									{(log.params as any).audio.format && (
-										<LogEntryDetailsView className="w-full" label="Audio Format" value={(log.params as any).audio.format} />
-									)}
-									{(log.params as any).audio.voice && (
-										<LogEntryDetailsView className="w-full" label="Audio Voice" value={(log.params as any).audio.voice} />
-									)}
-								</>
-							)}
-
-							{isRealtimeTurn && (
-								<>
-									{log.metadata?.realtime_session_id && (
-										<LogEntryDetailsView
-											className="w-full"
-											label="Realtime Session"
-											value={
-												<span className="flex items-center gap-1">
-													<code className="font-mono text-xs">{log.metadata.realtime_session_id}</code>
-													<CopyInlineButton
-														text={String(log.metadata.realtime_session_id)}
-														testId="logdetails-copy-realtime-session-id-button"
-													/>
-												</span>
-											}
-										/>
-									)}
-									{log.metadata?.provider_session_id && (
-										<LogEntryDetailsView
-											className="w-full"
-											label="Provider Session"
-											value={
-												<span className="flex items-center gap-1">
-													<code className="font-mono text-xs">{log.metadata.provider_session_id}</code>
-													<CopyInlineButton
-														text={String(log.metadata.provider_session_id)}
-														testId="logdetails-copy-provider-session-id-button"
-													/>
-												</span>
-											}
-										/>
-									)}
-									{log.metadata?.realtime_transport && (
-										<LogEntryDetailsView
-											className="w-full"
-											label="Transport"
-											value={formatRealtimeTransport(log.metadata.realtime_transport)}
-										/>
-									)}
-									{log.metadata?.realtime_voice && (
-										<LogEntryDetailsView className="w-full" label="Voice" value={String(log.metadata.realtime_voice)} />
-									)}
-									{log.metadata?.realtime_source && (
-										<LogEntryDetailsView
-											className="w-full"
-											label="Turn Source"
-											value={formatRealtimeSource(log.metadata.realtime_source)}
-										/>
-									)}
-									{log.metadata?.realtime_event_type && (
-										<LogEntryDetailsView
-											className="w-full"
-											label="Trigger Event"
-											value={<code className="font-mono text-xs">{log.metadata.realtime_event_type}</code>}
-										/>
-									)}
-								</>
-							)}
-
-							{passthroughParams && (
-								<>
-									{passthroughParams.method && <LogEntryDetailsView className="w-full" label="Method" value={passthroughParams.method} />}
-									{passthroughParams.path && <LogEntryDetailsView className="w-full" label="Path" value={passthroughParams.path} />}
-									{passthroughParams.raw_query && (
-										<LogEntryDetailsView className="w-full" label="Query" value={passthroughParams.raw_query} />
-									)}
-									{(passthroughParams.status_code ?? 0) !== 0 && (
-										<LogEntryDetailsView className="w-full" label="Status Code" value={passthroughParams.status_code} />
-									)}
-								</>
-							)}
-
-							{log.params &&
-								Object.keys(log.params).length > 0 &&
-								Object.entries(log.params)
-									.filter(([key]) => {
-										const passthroughKeys = ["method", "path", "raw_query", "status_code"];
-										return (
-											key !== "tools" && key !== "instructions" && key !== "audio" && !(isPassthrough && passthroughKeys.includes(key))
-										);
-									})
-									.filter(([_, value]) => typeof value === "boolean" || typeof value === "number" || typeof value === "string")
-									.map(([key, value]) => <LogEntryDetailsView key={key} className="w-full" label={key} value={value} />)}
-						</div>
-					</div>
-					{log.status === "success" && !isContainer && !isPassthrough && (
-						<>
-							<DottedSeparator />
-							<div className="space-y-4">
-								<BlockHeader title="Tokens" />
-								<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
+								{!isContainer && <LogEntryDetailsView className="w-full" label="Model" value={log.model} />}
+								{!isContainer && log.alias && <LogEntryDetailsView className="w-full" label="Alias" value={log.alias} />}
+								{!isContainer && log.canonical_model_name && (
+									<LogEntryDetailsView className="w-full" label="Canonical Model" value={log.canonical_model_name} />
+								)}
+								{!isContainer && log.alias_model_family && (
+									<LogEntryDetailsView className="w-full" label="Model Family" value={log.alias_model_family} />
+								)}
+								{!isContainer && log.server_side_fallback_model && (
+									<LogEntryDetailsView className="w-full" label="Served By (fallback)" value={log.server_side_fallback_model} />
+								)}
+								{!isContainer && log.served_model && (
+									<LogEntryDetailsView className="w-full" label="Served Model" value={log.served_model} />
+								)}
+								{detectedApp && (
 									<LogEntryDetailsView
 										className="w-full"
-										label="Input Tokens"
-										value={log.token_usage?.prompt_tokens || "-"}
-										tooltip={getInputTokensTooltip(log.token_usage)}
-									/>
-									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
-									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
-									{(log.cost_breakdown?.input_cost ?? 0) > 0 && (
-										<LogEntryDetailsView className="w-full" label="Input Cost" value={formatCostPrecise(log.cost_breakdown?.input_cost)} />
-									)}
-									{(log.cost_breakdown?.output_cost ?? 0) > 0 && (
-										<LogEntryDetailsView
-											className="w-full"
-											label="Output Cost"
-											value={formatCostPrecise(log.cost_breakdown?.output_cost)}
-										/>
-									)}
-									{(log.cost_breakdown?.total_cost ?? log.cost ?? 0) > 0 && (
-										<LogEntryDetailsView
-											className="w-full"
-											label="Total Cost"
-											value={formatCostPrecise(log.cost_breakdown?.total_cost ?? log.cost)}
-										/>
-									)}
-									{/* An async job settles onto a child row, so the request that started it
-									    has no cost of its own. Without this the detail view of a video
-									    generation reads as free while the list beside it shows the spend. */}
-									{log.cost == null && (log.children_cost ?? 0) > 0 && (
-										<LogEntryDetailsView
-											className="w-full"
-											label="Settled Cost"
-											value={formatCostPrecise(log.children_cost)}
-										/>
-									)}
-									{/* Additional cost (guardrail / semantic cache / routing / MCP) on its own row below. */}
-									{(log.cost_breakdown?.additional_cost ?? 0) > 0 && (
-										<LogEntryDetailsView
-											className="w-full md:col-start-1"
-											label="Additional Cost"
-											value={formatCostPrecise(log.cost_breakdown?.additional_cost)}
-										/>
-									)}
-									{(log.cost_breakdown?.additional_cost_details?.guardrail_cost ?? 0) > 0 && (
-										<LogEntryDetailsView
-											className="w-full"
-											label="Guardrail Cost"
-											value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.guardrail_cost)}
-										/>
-									)}
-									{(log.cost_breakdown?.additional_cost_details?.semantic_cache_cost ?? 0) > 0 && (
-										<LogEntryDetailsView
-											className="w-full"
-											label="Semantic Cache Cost"
-											value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.semantic_cache_cost)}
-										/>
-									)}
-									{(log.cost_breakdown?.additional_cost_details?.mcp_cost ?? 0) > 0 && (
-										<LogEntryDetailsView
-											className="w-full"
-											label="MCP Cost"
-											value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.mcp_cost)}
-										/>
-									)}
-									{(log.cost_breakdown?.additional_cost_details?.routing_cost ?? 0) > 0 && (
-										<LogEntryDetailsView
-											className="w-full"
-											label="Routing Cost"
-											value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.routing_cost)}
-										/>
-									)}
-									{isRealtimeTurn && (
-										<>
-											<LogEntryDetailsView
-												className="w-full"
-												label="Input Text Tokens"
-												value={(log.token_usage?.prompt_tokens ?? 0) - (log.token_usage?.prompt_tokens_details?.audio_tokens ?? 0)}
-											/>
-											<LogEntryDetailsView
-												className="w-full"
-												label="Input Audio Tokens"
-												value={log.token_usage?.prompt_tokens_details?.audio_tokens ?? 0}
-											/>
-											<LogEntryDetailsView
-												className="w-full"
-												label="Output Text Tokens"
-												value={
-													(log.token_usage?.completion_tokens ?? 0) -
-													(log.token_usage?.completion_tokens_details?.audio_tokens ?? 0) -
-													(log.token_usage?.completion_tokens_details?.reasoning_tokens ?? 0)
-												}
-											/>
-											<LogEntryDetailsView
-												className="w-full"
-												label="Output Audio Tokens"
-												value={log.token_usage?.completion_tokens_details?.audio_tokens ?? 0}
-											/>
-											{(log.token_usage?.completion_tokens_details?.reasoning_tokens ?? 0) > 0 && (
-												<LogEntryDetailsView
-													className="w-full"
-													label="Reasoning Tokens"
-													value={log.token_usage?.completion_tokens_details?.reasoning_tokens ?? 0}
-												/>
-											)}
-										</>
-									)}
-									{!isRealtimeTurn && log.token_usage?.prompt_tokens_details && (
-										<>
-											{log.token_usage.prompt_tokens_details.cached_read_tokens && (
-												<LogEntryDetailsView
-													className="w-full"
-													label="Cache Read Tokens"
-													value={log.token_usage.prompt_tokens_details.cached_read_tokens ?? 0}
-												/>
-											)}
-											{log.token_usage.prompt_tokens_details.cached_write_tokens && (
-												<LogEntryDetailsView
-													className="w-full"
-													label="Cache Write Tokens"
-													value={log.token_usage.prompt_tokens_details.cached_write_tokens ?? 0}
-												/>
-											)}
-											{log.token_usage.prompt_tokens_details.audio_tokens && (
-												<LogEntryDetailsView
-													className="w-full"
-													label="Input Audio Tokens"
-													value={log.token_usage.prompt_tokens_details.audio_tokens || "-"}
-												/>
-											)}
-										</>
-									)}
-									{!isRealtimeTurn && log.token_usage?.completion_tokens_details && (
-										<>
-											{log.token_usage.completion_tokens_details.reasoning_tokens && (
-												<LogEntryDetailsView
-													className="w-full"
-													label="Reasoning Tokens"
-													value={log.token_usage.completion_tokens_details.reasoning_tokens || "-"}
-												/>
-											)}
-											{log.token_usage.completion_tokens_details.audio_tokens && (
-												<LogEntryDetailsView
-													className="w-full"
-													label="Output Audio Tokens"
-													value={log.token_usage.completion_tokens_details.audio_tokens || "-"}
-												/>
-											)}
-											{log.token_usage.completion_tokens_details.accepted_prediction_tokens && (
-												<LogEntryDetailsView
-													className="w-full"
-													label="Accepted Prediction Tokens"
-													value={log.token_usage.completion_tokens_details.accepted_prediction_tokens || "-"}
-												/>
-											)}
-											{log.token_usage.completion_tokens_details.rejected_prediction_tokens && (
-												<LogEntryDetailsView
-													className="w-full"
-													label="Rejected Prediction Tokens"
-													value={log.token_usage.completion_tokens_details.rejected_prediction_tokens || "-"}
-												/>
-											)}
-										</>
-									)}
-								</div>
-							</div>
-							{(() => {
-								const params = log.params as any;
-								const reasoning = params?.reasoning;
-								if (!reasoning || typeof reasoning !== "object" || Object.keys(reasoning).length === 0) {
-									return null;
-								}
-								return (
-									<>
-										<DottedSeparator />
-										<div className="space-y-4">
-											<BlockHeader title="Reasoning Parameters" />
-											<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
-												{reasoning.effort && (
-													<LogEntryDetailsView
-														className="w-full"
-														label="Effort"
-														value={
-															<Badge variant="secondary" className="uppercase">
-																{reasoning.effort}
-															</Badge>
-														}
-													/>
-												)}
-												{reasoning.summary && (
-													<LogEntryDetailsView
-														className="w-full"
-														label="Summary"
-														value={
-															<Badge variant="secondary" className="uppercase">
-																{reasoning.summary}
-															</Badge>
-														}
-													/>
-												)}
-												{reasoning.generate_summary && (
-													<LogEntryDetailsView
-														className="w-full"
-														label="Generate Summary"
-														value={
-															<Badge variant="secondary" className="uppercase">
-																{reasoning.generate_summary}
-															</Badge>
-														}
-													/>
-												)}
-												{reasoning.max_tokens && <LogEntryDetailsView className="w-full" label="Max Tokens" value={reasoning.max_tokens} />}
-											</div>
-										</div>
-									</>
-								);
-							})()}
-							{batchDebug && (
-								<>
-									<DottedSeparator />
-									<div className="space-y-4">
-										<BlockHeader title="Batch Details" />
-										{batchDebug.batch_id && (
-											<LogEntryDetailsView
-												className="w-full"
-												label="Batch ID"
-												value={
-													<span className="flex items-center gap-1">
-														<code className="font-mono text-xs">{batchDebug.batch_id}</code>
-														<CopyInlineButton text={batchDebug.batch_id} testId="logdetails-copy-batch-id-button" />
-													</span>
-												}
-											/>
-										)}
-										{(batchDebug.request_counts || batchDebug.accounting?.cost != null) && (
-											<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
-												{batchDebug.request_counts && (
-													<>
-														<LogEntryDetailsView
-															className="w-full"
-															label="Total Requests"
-															value={String(batchDebug.request_counts.total)}
-														/>
-														{batchRequestStates(batchDebug.request_counts).map(([label, count]) => (
-															<LogEntryDetailsView key={label} className="w-full" label={label} value={String(count)} />
-														))}
-													</>
-												)}
-												{batchDebug.accounting?.cost != null && (
-													<LogEntryDetailsView className="w-full" label="Batch Cost" value={formatCost(batchDebug.accounting.cost)} />
-												)}
-											</div>
-										)}
-									</div>
-								</>
-							)}
-
-							{videoDebug && (
-								<>
-									<DottedSeparator />
-									<div className="space-y-4">
-										<BlockHeader title="Video Details" />
-										{videoDebug.video_id && (
-											<LogEntryDetailsView
-												className="w-full"
-												label="Video ID"
-												value={
-													<span className="flex items-center gap-1">
-														<code className="font-mono text-xs">{videoDebug.video_id}</code>
-														<CopyInlineButton text={videoDebug.video_id} testId="logdetails-copy-video-id-button" />
-													</span>
-												}
-											/>
-										)}
-										{videoAccounting && (
-											<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
-												{videoAccounting.seconds != null && (
-													<LogEntryDetailsView className="w-full" label="Billed Seconds" value={String(videoAccounting.seconds)} />
-												)}
-												{videoAccounting.size && <LogEntryDetailsView className="w-full" label="Resolution" value={videoAccounting.size} />}
-												{videoAccounting.output_count != null && (
-													<LogEntryDetailsView className="w-full" label="Clips Billed" value={String(videoAccounting.output_count)} />
-												)}
-											</div>
-										)}
-										{videoAccounting?.incomplete && (
-											<p className="text-muted-foreground text-xs">
-												Priced with no published rate, or from dimensions the provider never confirmed, so this cost may be short.
-											</p>
-										)}
-									</div>
-								</>
-							)}
-
-							{log.cache_debug && (
-								<>
-									<DottedSeparator />
-									<div className="space-y-4">
-										<BlockHeader title={`Caching Details (${log.cache_debug.cache_hit ? "Hit" : "Miss"})`} />
-										<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
-											{log.cache_debug.cache_hit ? (
-												<>
-													<LogEntryDetailsView
-														className="w-full"
-														label="Cache Type"
-														value={
-															<Badge variant="secondary" className="uppercase">
-																{log.cache_debug.hit_type}
-															</Badge>
-														}
-													/>
-													{log.cache_debug.hit_type === "semantic" && (
-														<>
-															{log.cache_debug.provider_used && (
-																<LogEntryDetailsView
-																	className="w-full"
-																	label="Embedding Provider"
-																	value={
-																		<Badge variant="secondary" className="uppercase">
-																			{log.cache_debug.provider_used}
-																		</Badge>
-																	}
-																/>
-															)}
-															{log.cache_debug.model_used && (
-																<LogEntryDetailsView className="w-full" label="Embedding Model" value={log.cache_debug.model_used} />
-															)}
-															{log.cache_debug.threshold && (
-																<LogEntryDetailsView className="w-full" label="Threshold" value={log.cache_debug.threshold || "-"} />
-															)}
-															{log.cache_debug.similarity && (
-																<LogEntryDetailsView
-																	className="w-full"
-																	label="Similarity Score"
-																	value={log.cache_debug.similarity?.toFixed(2) || "-"}
-																/>
-															)}
-															{log.cache_debug.input_tokens && (
-																<LogEntryDetailsView
-																	className="w-full"
-																	label="Embedding Input Tokens"
-																	value={log.cache_debug.input_tokens}
-																/>
-															)}
-														</>
-													)}
-												</>
-											) : (
-												<>
-													{log.cache_debug.provider_used && (
-														<LogEntryDetailsView
-															className="w-full"
-															label="Embedding Provider"
-															value={
-																<Badge variant="secondary" className="uppercase">
-																	{log.cache_debug.provider_used}
-																</Badge>
-															}
-														/>
-													)}
-													{log.cache_debug.model_used && (
-														<LogEntryDetailsView className="w-full" label="Embedding Model" value={log.cache_debug.model_used} />
-													)}
-													{log.cache_debug.input_tokens && (
-														<LogEntryDetailsView className="w-full" label="Embedding Input Tokens" value={log.cache_debug.input_tokens} />
-													)}
-												</>
-											)}
-										</div>
-									</div>
-								</>
-							)}
-						</>
-					)}
-					{!isContainer && !isPassthrough && log.guardrail_debug?.judge_calls && log.guardrail_debug.judge_calls.length > 0 && (
-						<>
-							<DottedSeparator />
-							<div className="space-y-4">
-								<BlockHeader title="Guardrail Details" />
-								<div className="space-y-4">
-									{log.guardrail_debug.judge_calls.map((call, index) => (
-										<div
-											key={`${call.rule_id ?? call.rule_name ?? "guardrail"}-${call.guardrail_name ?? "judge"}-${index}`}
-											className={cn("grid w-full grid-cols-1 gap-4 md:grid-cols-3", index > 0 && "border-border border-t pt-4")}
-										>
-											{call.rule_name && <LogEntryDetailsView className="w-full" label="Rule" value={call.rule_name} />}
-											{call.phase && (
-												<LogEntryDetailsView
-													className="w-full"
-													label="Phase"
-													value={
-														<Badge variant="secondary" className="uppercase">
-															{call.phase}
-														</Badge>
-													}
-												/>
-											)}
-											{call.action && (
-												<LogEntryDetailsView
-													className="w-full"
-													label="Action"
-													value={
-														<Badge variant={call.action === "GUARDRAIL_INTERVENED" ? "destructive" : "success"}>
-															{call.action === "GUARDRAIL_INTERVENED" ? "Blocked" : "Allowed"}
-														</Badge>
-													}
-												/>
-											)}
-											{call.guardrail_name && <LogEntryDetailsView className="w-full" label="Guardrail" value={call.guardrail_name} />}
-											{call.guardrail_provider && (
-												<LogEntryDetailsView className="w-full" label="Guardrail Provider" value={call.guardrail_provider} />
-											)}
-											{call.judge_provider && (
-												<LogEntryDetailsView
-													className="w-full"
-													label="Judge Provider"
-													value={
-														<Badge variant="secondary" className="uppercase">
-															{call.judge_provider}
-														</Badge>
-													}
-												/>
-											)}
-											{call.judge_model && <LogEntryDetailsView className="w-full" label="Judge Model" value={call.judge_model} />}
-											<LogEntryDetailsView className="w-full" label="Prompt Tokens" value={call.prompt_tokens ?? 0} />
-											<LogEntryDetailsView className="w-full" label="Completion Tokens" value={call.completion_tokens ?? 0} />
-											<LogEntryDetailsView className="w-full" label="Total Tokens" value={call.total_tokens ?? 0} />
-											{call.reason && <LogEntryDetailsView className="w-full md:col-span-3" label="Reason" value={call.reason} />}
-										</div>
-									))}
-								</div>
-							</div>
-						</>
-					)}
-					{!isContainer && !isPassthrough && log.routing_metadata?.calls && log.routing_metadata.calls.length > 0 && (
-						<>
-							<DottedSeparator />
-							<div className="space-y-4">
-								<BlockHeader title="Routing Classification Details" />
-								<div className="space-y-4">
-									{log.routing_metadata.calls.map((call, index) => (
-										<div
-											key={`${call.provider_used ?? "routing"}-${call.model_used ?? "call"}-${index}`}
-											className={cn("grid w-full grid-cols-1 gap-4 md:grid-cols-3", index > 0 && "border-border border-t pt-4")}
-										>
-											<LogEntryDetailsView
-												className="w-full"
-												label="Mechanism"
-												value={
-													<Badge variant="secondary" className="uppercase">
-														{call.output_tokens != null ? "LLM Classification" : "Embedding"}
-													</Badge>
-												}
-											/>
-											{call.provider_used && (
-												<LogEntryDetailsView
-													className="w-full"
-													label="Provider"
-													value={
-														<Badge variant="secondary" className="uppercase">
-															{call.provider_used}
-														</Badge>
-													}
-												/>
-											)}
-											{call.model_used && <LogEntryDetailsView className="w-full" label="Model" value={call.model_used} />}
-											<LogEntryDetailsView className="w-full" label="Input Tokens" value={call.input_tokens ?? 0} />
-											{call.output_tokens != null && (
-												<LogEntryDetailsView className="w-full" label="Output Tokens" value={call.output_tokens} />
-											)}
-										</div>
-									))}
-								</div>
-							</div>
-						</>
-					)}
-					{!isContainer &&
-						!isPassthrough &&
-						log.metadata &&
-						Object.keys(log.metadata).filter((k) => {
-							if (k === "isAsyncRequest") return false;
-							if (
-								isRealtimeTurn &&
-								[
-									"realtime_session_id",
-									"provider_session_id",
-									"realtime_source",
-									"realtime_event_type",
-									"realtime_transport",
-									"realtime_voice",
-									"realtime",
-								].includes(k)
-							)
-								return false;
-							return true;
-						}).length > 0 && (
-							<>
-								<DottedSeparator />
-								<div className="space-y-4">
-									<BlockHeader title="Metadata" />
-									<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
-										{Object.entries(log.metadata)
-											.filter(([key]) => {
-												if (key === "isAsyncRequest") return false;
-												if (
-													isRealtimeTurn &&
-													[
-														"realtime_session_id",
-														"provider_session_id",
-														"realtime_source",
-														"realtime_event_type",
-														"realtime_transport",
-														"realtime_voice",
-														"realtime",
-													].includes(key)
-												)
-													return false;
-												return true;
-											})
-											.map(([key, value]) => (
-												<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
-											))}
-									</div>
-								</div>
-							</>
-						)}
-				</div>
-			</details>
-			<Tabs
-				key={log.id}
-				defaultValue={showBatchDetailsTab ? "details" : showTabs && !isBatch ? "messages" : showTabs ? "routing" : "plugins"}
-				className="gap-2"
-			>
-				<TabsList className="bg-muted/60 h-10 w-fit">
-					{showBatchDetailsTab && (
-						<TabsTrigger value="details" className="px-3">
-							Details
-							{batchInlineRequests.length + batchResultItems.length ? (
-								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-									{batchInlineRequests.length + batchResultItems.length}
-								</span>
-							) : null}
-						</TabsTrigger>
-					)}
-					{showTabs && !isBatch && (
-						<TabsTrigger value="messages" className="px-3">
-							Messages
-							{log.input_history?.length ? (
-								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-									{log.input_history.length + (log.output_message ? 1 : 0)}
-								</span>
-							) : null}
-						</TabsTrigger>
-					)}
-
-					{showTabs && !isPassthrough && !log.list_models_output && !isBatch && (
-						<TabsTrigger value="tools" className="px-3">
-							Tools
-							{declaredTools.length ? (
-								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-									{declaredTools.length}
-								</span>
-							) : null}
-						</TabsTrigger>
-					)}
-					{showTabs && (
-						<TabsTrigger value="routing" className="px-3">
-							Routing
-							{log.routing_engine_logs ? (
-								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-									{log.routing_engine_logs.split("\n").filter(Boolean).length}
-								</span>
-							) : null}
-						</TabsTrigger>
-					)}
-					<TabsTrigger value="plugins" className="px-3">
-						Plugin Logs
-						{pluginLogCount > 0 ? (
-							<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
-								{pluginLogCount}
-							</span>
-						) : null}
-					</TabsTrigger>
-					{!isPassthrough && (
-						<TabsTrigger value="raw" className="px-3">
-							Raw JSON
-						</TabsTrigger>
-					)}
-				</TabsList>
-
-				{showBatchDetailsTab && (
-					<TabsContent value="details" className="space-y-4">
-						{(batchId || batchStatus || (batchInlineRequests.length === 0 && batchInputFileId)) && (
-							<div className="bg-card space-y-4 rounded-sm border p-5">
-								{batchId && (
-									<LogEntryDetailsView
-										label="Batch ID"
+										label="App"
 										value={
-											<span className="flex items-center gap-1">
-												<code className="font-mono text-xs">{batchId}</code>
-												<CopyInlineButton text={batchId} testId="logdetails-details-copy-batch-id-button" />
-											</span>
+											<div className="flex min-w-0 items-center gap-2" title={log.user_agent || undefined}>
+												{detectedAppIcon ? (
+													<img
+														className="rounded-sm"
+														src={detectedAppIcon}
+														alt={detectedAppLabel}
+														width={20}
+														height={20}
+														loading="lazy"
+														decoding="async"
+													/>
+												) : null}
+												<span className="truncate">{detectedAppLabel}</span>
+											</div>
 										}
 									/>
 								)}
-								{batchInlineRequests.length === 0 && batchInputFileId && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Type"
+									value={
+										<div
+											className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"} rounded-sm px-3 py-1`}
+										>
+											{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object ?? "unknown"}
+										</div>
+									}
+								/>
+								{log.service_tier && (
 									<LogEntryDetailsView
-										label="Input File ID"
+										className="w-full"
+										label="Service Tier"
 										value={
-											<span className="flex items-center gap-1">
-												<code className="font-mono text-xs">{batchInputFileId}</code>
-												<CopyInlineButton text={batchInputFileId} testId="logdetails-copy-input-file-id-button" />
-											</span>
-										}
-									/>
-								)}
-								{batchStatus && (
-									<LogEntryDetailsView
-										label="Status"
-										value={
-											<Badge
-												variant="outline"
-												className={cn(
-													"rounded-sm px-2 py-0.5 font-medium uppercase",
-													batchStatusBadgeStyles[batchStatus] ?? batchStatusBadgeDefault,
-												)}
-											>
-												{batchStatus.replace(/_/g, " ")}
+											<Badge variant="secondary" className="uppercase" data-testid="logdetails-service-tier">
+												{log.service_tier}
 											</Badge>
 										}
 									/>
 								)}
-							</div>
-						)}
-						<div className="bg-card rounded-sm border">
-							{batchInlineRequests.length > 0 ? (
-								<div className="px-5 pt-5 pb-2">
-									<div className="text-muted-foreground mb-1 text-[10.5px] font-semibold tracking-wider uppercase">
-										Batch Requests ({batchInlineRequests.length})
-									</div>
-									<Accordion type="multiple" className="w-full">
-										{batchInlineRequests.map((request, index) => (
-											<AccordionItem key={`${request.customId}-${index}`} value={`${request.customId}-${index}`}>
-												<AccordionTrigger className="text-[13px]">
-													<span className="flex items-center gap-2">
-														<code className="font-mono text-xs">{request.customId}</code>
-														{request.model && (
-															<Badge variant="secondary" className="rounded-sm px-1.5 py-0 text-[10.5px] font-normal">
-																{request.model}
-															</Badge>
+								{log.stop_reason && (
+									<LogEntryDetailsView
+										className="w-full"
+										label="Stop Reason"
+										value={
+											<Badge
+												variant="secondary"
+												className={cn(
+													"uppercase",
+													log.stop_reason === "content_filter" || log.stop_reason === "safety" || log.stop_reason === "refusal"
+														? "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300"
+														: log.stop_reason === "length" || log.stop_reason === "max_tokens"
+															? "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300"
+															: "",
+												)}
+											>
+												{log.stop_reason}
+											</Badge>
+										}
+									/>
+								)}
+								{log.parent_request_id && (
+									<LogEntryDetailsView
+										className="w-full"
+										label="Parent Request ID"
+										value={
+											onFilterByParentRequestId ? (
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<button
+															type="button"
+															className="block max-w-full min-w-0 cursor-pointer truncate text-left font-mono font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+															onClick={() => onFilterByParentRequestId(log.parent_request_id as string)}
+														>
+															{log.parent_request_id}
+														</button>
+													</TooltipTrigger>
+													<TooltipContent sideOffset={6} className="max-w-md break-all">
+														{log.parent_request_id} · Filter this session
+													</TooltipContent>
+												</Tooltip>
+											) : (
+												<TruncatedLabel className="block max-w-full min-w-0 font-normal" tooltipSide="top">
+													{log.parent_request_id}
+												</TruncatedLabel>
+											)
+										}
+									/>
+								)}
+								{log.session_id && (
+									<LogEntryDetailsView
+										className="w-full"
+										label="Session ID"
+										value={
+											onFilterBySessionId ? (
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<button
+															type="button"
+															className="focus-visible:ring-ring block max-w-full min-w-0 cursor-pointer truncate bg-transparent p-0 text-left font-mono font-normal text-blue-600 underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none dark:text-blue-400"
+															onClick={() => onFilterBySessionId(log.session_id as string)}
+														>
+															{log.session_id}
+														</button>
+													</TooltipTrigger>
+													<TooltipContent sideOffset={6} className="max-w-md break-all">
+														{log.session_id} · Filter this session
+													</TooltipContent>
+												</Tooltip>
+											) : (
+												<TruncatedLabel className="block max-w-full min-w-0 font-normal" tooltipSide="top">
+													{log.session_id}
+												</TruncatedLabel>
+											)
+										}
+									/>
+								)}
+								{log.selected_key && (
+									<LogEntryDetailsView
+										className="w-full"
+										label="Selected Key"
+										value={
+											<Link
+												to="/workspace/logs"
+												search={(prev) => ({ ...prev, offset: 0, selected_log: "", selected_key_ids: [log.selected_key_id] })}
+												className="text-blue-600 hover:underline dark:text-blue-400"
+												data-testid="logdetails-selected-key-link"
+											>
+												{log.selected_key.name}
+											</Link>
+										}
+									/>
+								)}
+								{(log.selected_prompt_id || log.selected_prompt_name || log.selected_prompt_version) && (
+									<LogEntryDetailsView
+										className="w-full"
+										label="Selected Prompt"
+										value={
+											<Link
+												to="/workspace/prompt-repo"
+												className="text-blue-600 hover:underline dark:text-blue-400"
+												data-testid="logdetails-selected-prompt-link"
+											>
+												<span className="break-words">
+													{selectedPromptDisplayName}
+													{selectedPromptDisplayName && log.selected_prompt_version ? " · " : ""}
+													{log.selected_prompt_version ? <>v{log.selected_prompt_version}</> : null}
+												</span>
+											</Link>
+										}
+									/>
+								)}
+								{log.number_of_retries > 0 && (
+									<LogEntryDetailsView className="w-full" label="Number of Retries" value={log.number_of_retries} />
+								)}
+								{(log.team_ids?.length || log.team_id) && (
+									<LogEntryDetailsView
+										className="w-full"
+										label={(log.team_ids?.length ?? 0) > 1 ? "Teams" : "Team"}
+										value={
+											<span className="inline-flex flex-wrap gap-x-1">
+												{(log.team_ids?.length
+													? log.team_ids.map((id, i) => ({ id, name: log.team_names?.[i] || id }))
+													: [{ id: log.team_id!, name: log.team_name || log.team_id! }]
+												).map((t, i, arr) => (
+													<Link
+														key={t.id}
+														to="/workspace/logs"
+														search={(prev) => ({ ...prev, offset: 0, selected_log: "", team_ids: [t.id] })}
+														className="text-blue-600 hover:underline dark:text-blue-400"
+														data-testid={`logdetails-team-link-${t.id}`}
+													>
+														{t.name}
+														{i < arr.length - 1 ? "," : ""}
+													</Link>
+												))}
+											</span>
+										}
+									/>
+								)}
+								{(log.customer_ids?.length || log.customer_id) && (
+									<LogEntryDetailsView
+										className="w-full"
+										label={(log.customer_ids?.length ?? 0) > 1 ? "Customers" : "Customer"}
+										value={
+											<span className="inline-flex flex-wrap gap-x-1">
+												{(log.customer_ids?.length
+													? log.customer_ids.map((id, i) => ({ id, name: log.customer_names?.[i] || id }))
+													: [{ id: log.customer_id!, name: log.customer_name || log.customer_id! }]
+												).map((c, i, arr) => (
+													<Link
+														key={c.id}
+														to="/workspace/logs"
+														search={(prev) => ({ ...prev, offset: 0, selected_log: "", customer_ids: [c.id] })}
+														className="text-blue-600 hover:underline dark:text-blue-400"
+														data-testid={`logdetails-customer-link-${c.id}`}
+													>
+														{c.name}
+														{i < arr.length - 1 ? "," : ""}
+													</Link>
+												))}
+											</span>
+										}
+									/>
+								)}
+								{(log.business_unit_ids?.length || log.business_unit_id) && (
+									<LogEntryDetailsView
+										className="w-full"
+										label={(log.business_unit_ids?.length ?? 0) > 1 ? "Business Units" : "Business Unit"}
+										value={
+											<span className="inline-flex flex-wrap gap-x-1">
+												{(log.business_unit_ids?.length
+													? log.business_unit_ids.map((id, i) => ({ id, name: log.business_unit_names?.[i] || id }))
+													: [{ id: log.business_unit_id!, name: log.business_unit_name || log.business_unit_id! }]
+												).map((b, i, arr) => (
+													<Link
+														key={b.id}
+														to="/workspace/logs"
+														search={(prev) => ({ ...prev, offset: 0, selected_log: "", business_unit_ids: [b.id] })}
+														className="text-blue-600 hover:underline dark:text-blue-400"
+														data-testid={`logdetails-business-unit-link-${b.id}`}
+													>
+														{b.name}
+														{i < arr.length - 1 ? "," : ""}
+													</Link>
+												))}
+											</span>
+										}
+									/>
+								)}
+								{log.project_id && (
+									<LogEntryDetailsView
+										className="w-full"
+										label="Project"
+										value={
+											<Link
+												to="/workspace/logs"
+												search={(prev) => ({ ...prev, offset: 0, selected_log: "", project_ids: [log.project_id!] })}
+												className="text-blue-600 hover:underline dark:text-blue-400"
+												data-testid={`logdetails-project-link-${log.project_id}`}
+											>
+												{log.project_name || log.project_id}
+											</Link>
+										}
+									/>
+								)}
+								{log.user_id && (
+									<LogEntryDetailsView
+										className="w-full"
+										label="User"
+										value={
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<Link
+														to="/workspace/logs"
+														search={(prev) => ({ ...prev, offset: 0, selected_log: "", user_ids: [log.user_id] })}
+														className={`block max-w-full min-w-0 cursor-pointer truncate text-sm font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400${log.user_name ? "" : " font-mono"}`}
+														data-testid="logdetails-user-link"
+													>
+														{log.user_name || log.user_id}
+													</Link>
+												</TooltipTrigger>
+												<TooltipContent sideOffset={6}>{log.user_name ? log.user_id : "Filter by user"}</TooltipContent>
+											</Tooltip>
+										}
+									/>
+								)}
+								{log.fallback_index > 0 && <LogEntryDetailsView className="w-full" label="Fallback Index" value={log.fallback_index} />}
+								{log.virtual_key && (
+									<LogEntryDetailsView
+										className="w-full"
+										label="Virtual Key"
+										value={
+											<Link
+												to="/workspace/governance/virtual-keys"
+												search={{ selected_vk: log.virtual_key.id }}
+												className="text-blue-600 hover:underline dark:text-blue-400"
+												data-testid="logdetails-virtual-key-link"
+											>
+												{log.virtual_key.name}
+											</Link>
+										}
+									/>
+								)}
+								{log.routing_engines_used && log.routing_engines_used.length > 0 && (
+									<LogEntryDetailsView
+										className="w-full"
+										label="Routing Engines Used"
+										value={
+											<div className="flex flex-wrap gap-2">
+												{log.routing_engines_used.map((engine) => (
+													<Badge
+														key={engine}
+														className={cn(
+															"border-0 py-1 uppercase",
+															RoutingEngineUsedColors[engine as keyof typeof RoutingEngineUsedColors] ?? "bg-gray-100 text-gray-800",
 														)}
-														<span className="text-muted-foreground text-[11px]">
-															{request.messages.length} message{request.messages.length === 1 ? "" : "s"}
-														</span>
-													</span>
-												</AccordionTrigger>
-												<AccordionContent className="space-y-3 pb-2">
-													{request.messages.map((message: any, msgIndex: number) => {
-														const role = ((message?.role as string) || "user") as MessageRole;
-														const text = extractMessageText(message);
-														return (
-															<MessageRow key={msgIndex} role={role} last={msgIndex === request.messages.length - 1}>
-																{text ? (
-																	<CollapsibleCode text={text} preview={3} mono={false} />
-																) : (
-																	<span className="text-muted-foreground text-xs">Empty message</span>
-																)}
-															</MessageRow>
-														);
-													})}
-												</AccordionContent>
-											</AccordionItem>
-										))}
-									</Accordion>
-								</div>
-							) : batchResultItems.length > 0 ? (
-								<div className="px-5 pt-5 pb-2">
-									<div className="text-muted-foreground mb-1 text-[10.5px] font-semibold tracking-wider uppercase">
-										Batch Results ({batchResultItems.length})
-									</div>
-									<Accordion type="multiple" className="w-full">
-										{batchResultItems.map((result, index) => (
-											<AccordionItem key={`${result.customId}-${index}`} value={`${result.customId}-${index}`}>
-												<AccordionTrigger className="text-[13px]">
-													<span className="flex items-center gap-2">
-														<code className="font-mono text-xs">{result.customId}</code>
-														{result.model && (
-															<Badge variant="secondary" className="rounded-sm px-1.5 py-0 text-[10.5px] font-normal">
-																{result.model}
-															</Badge>
-														)}
-														{result.errorMessage && <span className="text-[11px] text-red-600 dark:text-red-400">Failed</span>}
-													</span>
-												</AccordionTrigger>
-												<AccordionContent className="space-y-3 pb-2">
-													{result.errorMessage ? (
-														<div className="rounded-sm border border-red-200 bg-red-50/70 p-3 text-[12.5px] text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-400">
-															{result.errorMessage}
+													>
+														<div className="flex items-center gap-2">
+															{RoutingEngineUsedIcons[engine as keyof typeof RoutingEngineUsedIcons]?.({ className: "h-3.5 w-3.5" })}
+															<span>{RoutingEngineUsedLabels[engine as keyof typeof RoutingEngineUsedLabels] ?? engine}</span>
 														</div>
-													) : result.message ? (
-														(() => {
-															const role = ((result.message?.role as string) || "assistant") as MessageRole;
-															const text = extractMessageText(result.message);
+													</Badge>
+												))}
+											</div>
+										}
+									/>
+								)}
+								{log.routing_rule && (
+									<LogEntryDetailsView
+										className="w-full"
+										label="Routing Rule"
+										value={
+											<Link
+												to="/workspace/logs"
+												search={(prev) => ({ ...prev, offset: 0, selected_log: "", routing_rule_ids: [log.routing_rule!.id] })}
+												className="text-blue-600 hover:underline dark:text-blue-400"
+												data-testid="logdetails-routing-rule-link"
+											>
+												{log.routing_rule.name}
+											</Link>
+										}
+									/>
+								)}
+								{complexityRouting.tier && (
+									<LogEntryDetailsView
+										className="w-full"
+										label="Complexity Tier"
+										value={
+											<Badge
+												className={cn(
+													"border-0 py-1 uppercase",
+													ComplexityTierColors[complexityRouting.tier as keyof typeof ComplexityTierColors] ?? "bg-gray-100 text-gray-800",
+												)}
+												data-testid="logdetails-complexity-tier-badge"
+											>
+												{complexityRouting.tier}
+											</Badge>
+										}
+									/>
+								)}
+								{complexityRouting.mechanism && (
+									<LogEntryDetailsView
+										className="w-full"
+										label="Complexity Mechanism"
+										value={COMPLEXITY_MECHANISM_LABELS[complexityRouting.mechanism] ?? complexityRouting.mechanism}
+									/>
+								)}
+								{complexityRouting.score !== undefined && (
+									<LogEntryDetailsView className="w-full" label="Complexity Score" value={complexityRouting.score.toFixed(2)} />
+								)}
+
+								{(log.params as any)?.audio && (
+									<>
+										{(log.params as any).audio.format && (
+											<LogEntryDetailsView className="w-full" label="Audio Format" value={(log.params as any).audio.format} />
+										)}
+										{(log.params as any).audio.voice && (
+											<LogEntryDetailsView className="w-full" label="Audio Voice" value={(log.params as any).audio.voice} />
+										)}
+									</>
+								)}
+
+								{isRealtimeTurn && (
+									<>
+										{log.metadata?.realtime_session_id && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Realtime Session"
+												value={
+													<span className="flex items-center gap-1">
+														<code className="font-mono text-xs">{log.metadata.realtime_session_id}</code>
+														<CopyInlineButton
+															text={String(log.metadata.realtime_session_id)}
+															testId="logdetails-copy-realtime-session-id-button"
+														/>
+													</span>
+												}
+											/>
+										)}
+										{log.metadata?.provider_session_id && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Provider Session"
+												value={
+													<span className="flex items-center gap-1">
+														<code className="font-mono text-xs">{log.metadata.provider_session_id}</code>
+														<CopyInlineButton
+															text={String(log.metadata.provider_session_id)}
+															testId="logdetails-copy-provider-session-id-button"
+														/>
+													</span>
+												}
+											/>
+										)}
+										{log.metadata?.realtime_transport && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Transport"
+												value={formatRealtimeTransport(log.metadata.realtime_transport)}
+											/>
+										)}
+										{log.metadata?.realtime_voice && (
+											<LogEntryDetailsView className="w-full" label="Voice" value={String(log.metadata.realtime_voice)} />
+										)}
+										{log.metadata?.realtime_source && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Turn Source"
+												value={formatRealtimeSource(log.metadata.realtime_source)}
+											/>
+										)}
+										{log.metadata?.realtime_event_type && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Trigger Event"
+												value={<code className="font-mono text-xs">{log.metadata.realtime_event_type}</code>}
+											/>
+										)}
+									</>
+								)}
+
+								{passthroughParams && (
+									<>
+										{passthroughParams.method && <LogEntryDetailsView className="w-full" label="Method" value={passthroughParams.method} />}
+										{passthroughParams.path && <LogEntryDetailsView className="w-full" label="Path" value={passthroughParams.path} />}
+										{passthroughParams.raw_query && (
+											<LogEntryDetailsView className="w-full" label="Query" value={passthroughParams.raw_query} />
+										)}
+										{(passthroughParams.status_code ?? 0) !== 0 && (
+											<LogEntryDetailsView className="w-full" label="Status Code" value={passthroughParams.status_code} />
+										)}
+									</>
+								)}
+
+								{log.params &&
+									Object.keys(log.params).length > 0 &&
+									Object.entries(log.params)
+										.filter(([key]) => {
+											const passthroughKeys = ["method", "path", "raw_query", "status_code"];
+											return (
+												key !== "tools" && key !== "instructions" && key !== "audio" && !(isPassthrough && passthroughKeys.includes(key))
+											);
+										})
+										.filter(([_, value]) => typeof value === "boolean" || typeof value === "number" || typeof value === "string")
+										.map(([key, value]) => <LogEntryDetailsView key={key} className="w-full" label={key} value={value} />)}
+							</div>
+						</div>
+						{log.status === "success" && !isContainer && !isPassthrough && (
+							<>
+								<DottedSeparator />
+								<div className="space-y-4">
+									<BlockHeader title="Tokens" />
+									<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
+										<LogEntryDetailsView
+											className="w-full"
+											label="Input Tokens"
+											value={log.token_usage?.prompt_tokens || "-"}
+											tooltip={getInputTokensTooltip(log.token_usage)}
+										/>
+										<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
+										<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
+										{(log.cost_breakdown?.input_cost ?? 0) > 0 && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Input Cost"
+												value={formatCostPrecise(log.cost_breakdown?.input_cost)}
+												tooltip={getCostDetailsTooltip(log.cost_breakdown?.input_cost_details, INPUT_COST_LABELS)}
+											/>
+										)}
+										{(log.cost_breakdown?.output_cost ?? 0) > 0 && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Output Cost"
+												value={formatCostPrecise(log.cost_breakdown?.output_cost)}
+												tooltip={getCostDetailsTooltip(log.cost_breakdown?.output_cost_details, OUTPUT_COST_LABELS)}
+											/>
+										)}
+										{(log.cost_breakdown?.total_cost ?? log.cost ?? 0) > 0 && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Total Cost"
+												value={formatCostPrecise(log.cost_breakdown?.total_cost ?? log.cost)}
+											/>
+										)}
+										{/* An async job settles onto a child row, so the request that started it
+									    has no cost of its own. Without this the detail view of a video
+									    generation reads as free while the list beside it shows the spend. */}
+										{log.cost == null && (log.children_cost ?? 0) > 0 && (
+											<LogEntryDetailsView className="w-full" label="Settled Cost" value={formatCostPrecise(log.children_cost)} />
+										)}
+										{/* Additional cost (guardrail / semantic cache / routing / MCP) on its own row below. */}
+										{(log.cost_breakdown?.additional_cost ?? 0) > 0 && (
+											<LogEntryDetailsView
+												className="w-full md:col-start-1"
+												label="Additional Cost"
+												value={formatCostPrecise(log.cost_breakdown?.additional_cost)}
+											/>
+										)}
+										{(log.cost_breakdown?.additional_cost_details?.guardrail_cost ?? 0) > 0 && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Guardrail Cost"
+												value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.guardrail_cost)}
+											/>
+										)}
+										{(log.cost_breakdown?.additional_cost_details?.semantic_cache_cost ?? 0) > 0 && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Semantic Cache Cost"
+												value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.semantic_cache_cost)}
+											/>
+										)}
+										{(log.cost_breakdown?.additional_cost_details?.mcp_cost ?? 0) > 0 && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="MCP Cost"
+												value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.mcp_cost)}
+											/>
+										)}
+										{(log.cost_breakdown?.additional_cost_details?.routing_cost ?? 0) > 0 && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Routing Cost"
+												value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.routing_cost)}
+											/>
+										)}
+										{isRealtimeTurn && (
+											<>
+												<LogEntryDetailsView
+													className="w-full"
+													label="Input Text Tokens"
+													value={(log.token_usage?.prompt_tokens ?? 0) - (log.token_usage?.prompt_tokens_details?.audio_tokens ?? 0)}
+												/>
+												<LogEntryDetailsView
+													className="w-full"
+													label="Input Audio Tokens"
+													value={log.token_usage?.prompt_tokens_details?.audio_tokens ?? 0}
+												/>
+												<LogEntryDetailsView
+													className="w-full"
+													label="Output Text Tokens"
+													value={
+														(log.token_usage?.completion_tokens ?? 0) -
+														(log.token_usage?.completion_tokens_details?.audio_tokens ?? 0) -
+														(log.token_usage?.completion_tokens_details?.reasoning_tokens ?? 0)
+													}
+												/>
+												<LogEntryDetailsView
+													className="w-full"
+													label="Output Audio Tokens"
+													value={log.token_usage?.completion_tokens_details?.audio_tokens ?? 0}
+												/>
+												{(log.token_usage?.completion_tokens_details?.reasoning_tokens ?? 0) > 0 && (
+													<LogEntryDetailsView
+														className="w-full"
+														label="Reasoning Tokens"
+														value={log.token_usage?.completion_tokens_details?.reasoning_tokens ?? 0}
+													/>
+												)}
+											</>
+										)}
+										{!isRealtimeTurn && log.token_usage?.prompt_tokens_details && (
+											<>
+												{log.token_usage.prompt_tokens_details.cached_read_tokens && (
+													<LogEntryDetailsView
+														className="w-full"
+														label="Cache Read Tokens"
+														value={log.token_usage.prompt_tokens_details.cached_read_tokens ?? 0}
+													/>
+												)}
+												{log.token_usage.prompt_tokens_details.cached_write_tokens && (
+													<LogEntryDetailsView
+														className="w-full"
+														label="Cache Write Tokens"
+														value={log.token_usage.prompt_tokens_details.cached_write_tokens ?? 0}
+													/>
+												)}
+												{log.token_usage.prompt_tokens_details.audio_tokens && (
+													<LogEntryDetailsView
+														className="w-full"
+														label="Input Audio Tokens"
+														value={log.token_usage.prompt_tokens_details.audio_tokens || "-"}
+													/>
+												)}
+											</>
+										)}
+										{!isRealtimeTurn && log.token_usage?.completion_tokens_details && (
+											<>
+												{log.token_usage.completion_tokens_details.reasoning_tokens && (
+													<LogEntryDetailsView
+														className="w-full"
+														label="Reasoning Tokens"
+														value={log.token_usage.completion_tokens_details.reasoning_tokens || "-"}
+													/>
+												)}
+												{log.token_usage.completion_tokens_details.audio_tokens && (
+													<LogEntryDetailsView
+														className="w-full"
+														label="Output Audio Tokens"
+														value={log.token_usage.completion_tokens_details.audio_tokens || "-"}
+													/>
+												)}
+												{log.token_usage.completion_tokens_details.accepted_prediction_tokens && (
+													<LogEntryDetailsView
+														className="w-full"
+														label="Accepted Prediction Tokens"
+														value={log.token_usage.completion_tokens_details.accepted_prediction_tokens || "-"}
+													/>
+												)}
+												{log.token_usage.completion_tokens_details.rejected_prediction_tokens && (
+													<LogEntryDetailsView
+														className="w-full"
+														label="Rejected Prediction Tokens"
+														value={log.token_usage.completion_tokens_details.rejected_prediction_tokens || "-"}
+													/>
+												)}
+											</>
+										)}
+									</div>
+								</div>
+								{(() => {
+									const params = log.params as any;
+									const reasoning = params?.reasoning;
+									if (!reasoning || typeof reasoning !== "object" || Object.keys(reasoning).length === 0) {
+										return null;
+									}
+									return (
+										<>
+											<DottedSeparator />
+											<div className="space-y-4">
+												<BlockHeader title="Reasoning Parameters" />
+												<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
+													{reasoning.effort && (
+														<LogEntryDetailsView
+															className="w-full"
+															label="Effort"
+															value={
+																<Badge variant="secondary" className="uppercase">
+																	{reasoning.effort}
+																</Badge>
+															}
+														/>
+													)}
+													{reasoning.summary && (
+														<LogEntryDetailsView
+															className="w-full"
+															label="Summary"
+															value={
+																<Badge variant="secondary" className="uppercase">
+																	{reasoning.summary}
+																</Badge>
+															}
+														/>
+													)}
+													{reasoning.generate_summary && (
+														<LogEntryDetailsView
+															className="w-full"
+															label="Generate Summary"
+															value={
+																<Badge variant="secondary" className="uppercase">
+																	{reasoning.generate_summary}
+																</Badge>
+															}
+														/>
+													)}
+													{reasoning.max_tokens != null && (
+														<LogEntryDetailsView className="w-full" label="Max Tokens" value={reasoning.max_tokens} />
+													)}
+												</div>
+											</div>
+										</>
+									);
+								})()}
+								{batchDebug && (
+									<>
+										<DottedSeparator />
+										<div className="space-y-4">
+											<BlockHeader title="Batch Details" />
+											{batchDebug.batch_id && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Batch ID"
+													value={
+														<span className="flex items-center gap-1">
+															<code className="font-mono text-xs">{batchDebug.batch_id}</code>
+															<CopyInlineButton text={batchDebug.batch_id} testId="logdetails-copy-batch-id-button" />
+														</span>
+													}
+												/>
+											)}
+											{(batchDebug.request_counts || batchDebug.accounting?.cost != null) && (
+												<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
+													{batchDebug.request_counts && (
+														<>
+															<LogEntryDetailsView
+																className="w-full"
+																label="Total Requests"
+																value={String(batchDebug.request_counts.total)}
+															/>
+															{batchRequestStates(batchDebug.request_counts).map(([label, count]) => (
+																<LogEntryDetailsView key={label} className="w-full" label={label} value={String(count)} />
+															))}
+														</>
+													)}
+													{batchDebug.accounting?.cost != null && (
+														<LogEntryDetailsView className="w-full" label="Batch Cost" value={formatCost(batchDebug.accounting.cost)} />
+													)}
+												</div>
+											)}
+										</div>
+									</>
+								)}
+
+								{videoDebug && (
+									<>
+										<DottedSeparator />
+										<div className="space-y-4">
+											<BlockHeader title="Video Details" />
+											{videoDebug.video_id && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Video ID"
+													value={
+														<span className="flex items-center gap-1">
+															<code className="font-mono text-xs">{videoDebug.video_id}</code>
+															<CopyInlineButton text={videoDebug.video_id} testId="logdetails-copy-video-id-button" />
+														</span>
+													}
+												/>
+											)}
+											{videoAccounting && (
+												<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
+													{videoAccounting.seconds != null && (
+														<LogEntryDetailsView className="w-full" label="Billed Seconds" value={String(videoAccounting.seconds)} />
+													)}
+													{videoAccounting.size && (
+														<LogEntryDetailsView className="w-full" label="Resolution" value={videoAccounting.size} />
+													)}
+													{videoAccounting.output_count != null && (
+														<LogEntryDetailsView className="w-full" label="Clips Billed" value={String(videoAccounting.output_count)} />
+													)}
+												</div>
+											)}
+											{videoAccounting?.incomplete && (
+												<p className="text-muted-foreground text-xs">
+													Priced with no published rate, or from dimensions the provider never confirmed, so this cost may be short.
+												</p>
+											)}
+										</div>
+									</>
+								)}
+
+								{log.cache_debug && (
+									<>
+										<DottedSeparator />
+										<div className="space-y-4">
+											<BlockHeader title={`Caching Details (${log.cache_debug.cache_hit ? "Hit" : "Miss"})`} />
+											<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
+												{log.cache_debug.cache_hit ? (
+													<>
+														<LogEntryDetailsView
+															className="w-full"
+															label="Cache Type"
+															value={
+																<Badge variant="secondary" className="uppercase">
+																	{log.cache_debug.hit_type}
+																</Badge>
+															}
+														/>
+														{log.cache_debug.hit_type === "semantic" && (
+															<>
+																{log.cache_debug.provider_used && (
+																	<LogEntryDetailsView
+																		className="w-full"
+																		label="Embedding Provider"
+																		value={
+																			<Badge variant="secondary" className="uppercase">
+																				{log.cache_debug.provider_used}
+																			</Badge>
+																		}
+																	/>
+																)}
+																{log.cache_debug.model_used && (
+																	<LogEntryDetailsView className="w-full" label="Embedding Model" value={log.cache_debug.model_used} />
+																)}
+																{log.cache_debug.threshold && (
+																	<LogEntryDetailsView className="w-full" label="Threshold" value={log.cache_debug.threshold || "-"} />
+																)}
+																{log.cache_debug.similarity && (
+																	<LogEntryDetailsView
+																		className="w-full"
+																		label="Similarity Score"
+																		value={log.cache_debug.similarity?.toFixed(2) || "-"}
+																	/>
+																)}
+																{log.cache_debug.input_tokens && (
+																	<LogEntryDetailsView
+																		className="w-full"
+																		label="Embedding Input Tokens"
+																		value={log.cache_debug.input_tokens}
+																	/>
+																)}
+															</>
+														)}
+													</>
+												) : (
+													<>
+														{log.cache_debug.provider_used && (
+															<LogEntryDetailsView
+																className="w-full"
+																label="Embedding Provider"
+																value={
+																	<Badge variant="secondary" className="uppercase">
+																		{log.cache_debug.provider_used}
+																	</Badge>
+																}
+															/>
+														)}
+														{log.cache_debug.model_used && (
+															<LogEntryDetailsView className="w-full" label="Embedding Model" value={log.cache_debug.model_used} />
+														)}
+														{log.cache_debug.input_tokens && (
+															<LogEntryDetailsView className="w-full" label="Embedding Input Tokens" value={log.cache_debug.input_tokens} />
+														)}
+													</>
+												)}
+											</div>
+										</div>
+									</>
+								)}
+							</>
+						)}
+						{!isContainer && !isPassthrough && log.guardrail_debug?.judge_calls && log.guardrail_debug.judge_calls.length > 0 && (
+							<>
+								<DottedSeparator />
+								<div className="space-y-4">
+									<BlockHeader title="Guardrail Details" />
+									<div className="space-y-4">
+										{log.guardrail_debug.judge_calls.map((call, index) => (
+											<div
+												key={`${call.rule_id ?? call.rule_name ?? "guardrail"}-${call.guardrail_name ?? "judge"}-${index}`}
+												className={cn("grid w-full grid-cols-1 gap-4 md:grid-cols-3", index > 0 && "border-border border-t pt-4")}
+											>
+												{call.rule_name && <LogEntryDetailsView className="w-full" label="Rule" value={call.rule_name} />}
+												{call.phase && (
+													<LogEntryDetailsView
+														className="w-full"
+														label="Phase"
+														value={
+															<Badge variant="secondary" className="uppercase">
+																{call.phase}
+															</Badge>
+														}
+													/>
+												)}
+												{call.action && (
+													<LogEntryDetailsView
+														className="w-full"
+														label="Action"
+														value={
+															<Badge variant={call.action === "GUARDRAIL_INTERVENED" ? "destructive" : "success"}>
+																{call.action === "GUARDRAIL_INTERVENED" ? "Blocked" : "Allowed"}
+															</Badge>
+														}
+													/>
+												)}
+												{call.guardrail_name && <LogEntryDetailsView className="w-full" label="Guardrail" value={call.guardrail_name} />}
+												{call.guardrail_provider && (
+													<LogEntryDetailsView className="w-full" label="Guardrail Provider" value={call.guardrail_provider} />
+												)}
+												{call.judge_provider && (
+													<LogEntryDetailsView
+														className="w-full"
+														label="Judge Provider"
+														value={
+															<Badge variant="secondary" className="uppercase">
+																{call.judge_provider}
+															</Badge>
+														}
+													/>
+												)}
+												{call.judge_model && <LogEntryDetailsView className="w-full" label="Judge Model" value={call.judge_model} />}
+												<LogEntryDetailsView className="w-full" label="Prompt Tokens" value={call.prompt_tokens ?? 0} />
+												<LogEntryDetailsView className="w-full" label="Completion Tokens" value={call.completion_tokens ?? 0} />
+												<LogEntryDetailsView className="w-full" label="Total Tokens" value={call.total_tokens ?? 0} />
+												{call.reason && <LogEntryDetailsView className="w-full md:col-span-3" label="Reason" value={call.reason} />}
+											</div>
+										))}
+									</div>
+								</div>
+							</>
+						)}
+						{!isContainer && !isPassthrough && log.routing_metadata?.calls && log.routing_metadata.calls.length > 0 && (
+							<>
+								<DottedSeparator />
+								<div className="space-y-4">
+									<BlockHeader title="Routing Classification Details" />
+									<div className="space-y-4">
+										{log.routing_metadata.calls.map((call, index) => (
+											<div
+												key={`${call.provider_used ?? "routing"}-${call.model_used ?? "call"}-${index}`}
+												className={cn("grid w-full grid-cols-1 gap-4 md:grid-cols-3", index > 0 && "border-border border-t pt-4")}
+											>
+												<LogEntryDetailsView
+													className="w-full"
+													label="Mechanism"
+													value={
+														<Badge variant="secondary" className="uppercase">
+															{call.request_type === "decisions"
+																? "Decision Model Classification"
+																: call.output_tokens != null
+																	? "LLM Classification"
+																	: "Embedding"}
+														</Badge>
+													}
+												/>
+												{call.provider_used && (
+													<LogEntryDetailsView
+														className="w-full"
+														label="Provider"
+														value={
+															<Badge variant="secondary" className="uppercase">
+																{call.provider_used}
+															</Badge>
+														}
+													/>
+												)}
+												{call.model_used && <LogEntryDetailsView className="w-full" label="Model" value={call.model_used} />}
+												<LogEntryDetailsView className="w-full" label="Input Tokens" value={call.input_tokens ?? 0} />
+												{call.output_tokens != null && (
+													<LogEntryDetailsView className="w-full" label="Output Tokens" value={call.output_tokens} />
+												)}
+											</div>
+										))}
+									</div>
+								</div>
+							</>
+						)}
+						{!isContainer &&
+							!isPassthrough &&
+							log.metadata &&
+							Object.keys(log.metadata).some((k) => isShownMetadataKey(k, isRealtimeTurn)) && (
+								<>
+									<DottedSeparator />
+									<div className="space-y-4">
+										<BlockHeader title="Metadata" />
+										<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
+											{Object.entries(log.metadata)
+												.filter(([key]) => isShownMetadataKey(key, isRealtimeTurn))
+												.map(([key, value]) => (
+													<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
+												))}
+										</div>
+									</div>
+								</>
+							)}
+					</div>
+				</details>
+				<Tabs key={log.id} value={activeTab} onValueChange={setTabParam} className="gap-2">
+					<TabsList className="bg-muted/60 h-10 w-fit">
+						{showBatchDetailsTab && (
+							<TabsTrigger value="details" className="px-3">
+								Details
+								{batchInlineRequests.length + batchResultItems.length ? (
+									<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+										{batchInlineRequests.length + batchResultItems.length}
+									</span>
+								) : null}
+							</TabsTrigger>
+						)}
+						{showTabs && !isBatch && (
+							<TabsTrigger value="messages" className="px-3">
+								Messages
+								{log.input_history?.length ? (
+									<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+										{log.input_history.length + (log.output_message ? 1 : 0)}
+									</span>
+								) : null}
+							</TabsTrigger>
+						)}
+
+						{showTabs && !isPassthrough && !log.list_models_output && !isBatch && !isEmbedding && (
+							<TabsTrigger value="tools" className="px-3">
+								Tools
+								{declaredTools.length ? (
+									<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+										{declaredTools.length}
+									</span>
+								) : null}
+							</TabsTrigger>
+						)}
+						{showTabs && (
+							<TabsTrigger value="routing" className="px-3">
+								Routing
+								{log.routing_engine_logs ? (
+									<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+										{log.routing_engine_logs.split("\n").filter(Boolean).length}
+									</span>
+								) : null}
+							</TabsTrigger>
+						)}
+						<TabsTrigger value="plugins" className="px-3">
+							Plugin Logs
+							{pluginLogCount > 0 ? (
+								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+									{pluginLogCount}
+								</span>
+							) : null}
+						</TabsTrigger>
+						{!isPassthrough && (
+							<TabsTrigger value="raw" className="px-3">
+								Raw JSON
+							</TabsTrigger>
+						)}
+					</TabsList>
+
+					{showBatchDetailsTab && (
+						<TabsContent value="details" className="space-y-4">
+							{(batchId || batchStatus || (batchInlineRequests.length === 0 && batchInputFileId)) && (
+								<div className="bg-card space-y-4 rounded-sm border p-5">
+									{batchId && (
+										<LogEntryDetailsView
+											label="Batch ID"
+											value={
+												<span className="flex items-center gap-1">
+													<code className="font-mono text-xs">{batchId}</code>
+													<CopyInlineButton text={batchId} testId="logdetails-details-copy-batch-id-button" />
+												</span>
+											}
+										/>
+									)}
+									{batchInlineRequests.length === 0 && batchInputFileId && (
+										<LogEntryDetailsView
+											label="Input File ID"
+											value={
+												<span className="flex items-center gap-1">
+													<code className="font-mono text-xs">{batchInputFileId}</code>
+													<CopyInlineButton text={batchInputFileId} testId="logdetails-copy-input-file-id-button" />
+												</span>
+											}
+										/>
+									)}
+									{batchStatus && (
+										<LogEntryDetailsView
+											label="Status"
+											value={
+												<Badge
+													variant="outline"
+													className={cn(
+														"rounded-sm px-2 py-0.5 font-medium uppercase",
+														batchStatusBadgeStyles[batchStatus] ?? batchStatusBadgeDefault,
+													)}
+												>
+													{batchStatus.replace(/_/g, " ")}
+												</Badge>
+											}
+										/>
+									)}
+								</div>
+							)}
+							<div className="bg-card rounded-sm border">
+								{batchInlineRequests.length > 0 ? (
+									<div className="px-5 pt-5 pb-2">
+										<div className="text-muted-foreground mb-1 text-[10.5px] font-semibold tracking-wider uppercase">
+											Batch Requests ({batchInlineRequests.length})
+										</div>
+										<Accordion type="multiple" className="w-full">
+											{batchInlineRequests.map((request, index) => (
+												<AccordionItem key={`${request.customId}-${index}`} value={`${request.customId}-${index}`}>
+													<AccordionTrigger className="text-[13px]">
+														<span className="flex items-center gap-2">
+															<code className="font-mono text-xs">{request.customId}</code>
+															{request.model && (
+																<Badge variant="secondary" className="rounded-sm px-1.5 py-0 text-[10.5px] font-normal">
+																	{request.model}
+																</Badge>
+															)}
+															<span className="text-muted-foreground text-[11px]">
+																{request.messages.length} message{request.messages.length === 1 ? "" : "s"}
+															</span>
+														</span>
+													</AccordionTrigger>
+													<AccordionContent className="space-y-3 pb-2">
+														{request.messages.map((message: any, msgIndex: number) => {
+															const role = ((message?.role as string) || "user") as MessageRole;
+															const text = extractMessageText(message);
 															return (
-																<MessageRow role={role} last>
+																<MessageRow key={msgIndex} role={role} last={msgIndex === request.messages.length - 1}>
 																	{text ? (
 																		<CollapsibleCode text={text} preview={3} mono={false} />
 																	) : (
@@ -2881,358 +2540,306 @@ export function LogDetailView({
 																	)}
 																</MessageRow>
 															);
-														})()
-													) : result.rawFallback ? (
-														<div>
-															<div className="text-muted-foreground mb-1 text-[10.5px]">
-																Unrecognized result shape — showing the raw response body
+														})}
+													</AccordionContent>
+												</AccordionItem>
+											))}
+										</Accordion>
+									</div>
+								) : batchResultItems.length > 0 ? (
+									<div className="px-5 pt-5 pb-2">
+										<div className="text-muted-foreground mb-1 text-[10.5px] font-semibold tracking-wider uppercase">
+											Batch Results ({batchResultItems.length})
+										</div>
+										<Accordion type="multiple" className="w-full">
+											{batchResultItems.map((result, index) => (
+												<AccordionItem key={`${result.customId}-${index}`} value={`${result.customId}-${index}`}>
+													<AccordionTrigger className="text-[13px]">
+														<span className="flex items-center gap-2">
+															<code className="font-mono text-xs">{result.customId}</code>
+															{result.model && (
+																<Badge variant="secondary" className="rounded-sm px-1.5 py-0 text-[10.5px] font-normal">
+																	{result.model}
+																</Badge>
+															)}
+															{result.errorMessage && <span className="text-[11px] text-red-600 dark:text-red-400">Failed</span>}
+														</span>
+													</AccordionTrigger>
+													<AccordionContent className="space-y-3 pb-2">
+														{result.errorMessage ? (
+															<div className="rounded-sm border border-red-200 bg-red-50/70 p-3 text-[12.5px] text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-400">
+																{result.errorMessage}
 															</div>
-															<CollapsibleCode text={result.rawFallback} preview={5} lang="json" />
-														</div>
-													) : (
-														<span className="text-muted-foreground text-xs">Empty result</span>
-													)}
-												</AccordionContent>
-											</AccordionItem>
-										))}
-									</Accordion>
-								</div>
-							) : (
-								<div className="text-muted-foreground p-5 text-center text-sm">
-									No batch request or result details were captured for this row.
-								</div>
-							)}
-						</div>
-					</TabsContent>
-				)}
-
-				<TabsContent value="messages" className="space-y-4">
-					{log.content_hidden && (
-						<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
-							Content logging has been disabled for this request.
-						</div>
+														) : result.message ? (
+															(() => {
+																const role = ((result.message?.role as string) || "assistant") as MessageRole;
+																const text = extractMessageText(result.message);
+																return (
+																	<MessageRow role={role} last>
+																		{text ? (
+																			<CollapsibleCode text={text} preview={3} mono={false} />
+																		) : (
+																			<span className="text-muted-foreground text-xs">Empty message</span>
+																		)}
+																	</MessageRow>
+																);
+															})()
+														) : result.rawFallback ? (
+															<div>
+																<div className="text-muted-foreground mb-1 text-[10.5px]">
+																	Unrecognized result shape — showing the raw response body
+																</div>
+																<CollapsibleCode text={result.rawFallback} preview={5} lang="json" />
+															</div>
+														) : (
+															<span className="text-muted-foreground text-xs">Empty result</span>
+														)}
+													</AccordionContent>
+												</AccordionItem>
+											))}
+										</Accordion>
+									</div>
+								) : (
+									<div className="text-muted-foreground p-5 text-center text-sm">
+										No batch request or result details were captured for this row.
+									</div>
+								)}
+							</div>
+						</TabsContent>
 					)}
-                    {/* Passthrough just renders the raw json, so there's nothing to filter */}
-					<div className={cn("flex justify-end", (log.content_hidden || isPassthrough) && "hidden")}>
-						<DropdownMenu>
-							<DropdownMenuTrigger asChild>
-								<button
-									type="button"
-									className={cn(
-										"inline-flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-[11.5px] font-medium transition",
-										visibleRoles.size < allRoles.length
-											? "bg-muted text-foreground border-border"
-											: "text-muted-foreground hover:text-foreground border-transparent hover:border-border",
-									)}
-								>
-									Messages
-									{visibleRoles.size < allRoles.length && (
-										<span className="bg-primary text-primary-foreground rounded-sm px-1 py-0.5 text-[10px] tabular-nums">
-											{visibleRoles.size}/{allRoles.length}
-										</span>
-									)}
-									<ChevronDown className="h-3 w-3" />
-								</button>
-							</DropdownMenuTrigger>
-							<DropdownMenuContent align="end" className="w-48">
-								<DropdownMenuCheckboxItem
-									checked={visibleRoles.size === allRoles.length}
-									onCheckedChange={(checked) => setVisibleRoles(checked ? new Set(allRoles) : new Set())}
-								>
-									Show all messages
-								</DropdownMenuCheckboxItem>
-								<DropdownMenuSeparator />
-								{(
-									[
-										["system", "System"],
-										["user", "User"],
-										["assistant", "Assistant"],
-										["tool", "Tool"],
-										["reasoning", "Reasoning"],
-									] as [MessageRole, string][]
-								).map(([role, label]) => (
-									<DropdownMenuCheckboxItem
-										key={role}
-										checked={visibleRoles.has(role)}
-										onCheckedChange={(checked) =>
-											setVisibleRoles((prev) => {
-												const next = new Set(prev);
-												checked ? next.add(role) : next.delete(role);
-												return next;
-											})
-										}
+
+					<TabsContent value="messages" className="space-y-4">
+						{log.content_hidden && (
+							<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
+								Content logging has been disabled for this request.
+							</div>
+						)}
+						{/* Passthrough just renders the raw json, so there's nothing to filter */}
+						<div className={cn("flex justify-end", (log.content_hidden || isPassthrough || isEmbedding) && "hidden")}>
+							<DropdownMenu>
+								<DropdownMenuTrigger asChild>
+									<button
+										type="button"
+										className={cn(
+											"inline-flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-[11.5px] font-medium transition",
+											visibleRoles.size < allRoles.length
+												? "bg-muted text-foreground border-border"
+												: "text-muted-foreground hover:text-foreground border-transparent hover:border-border",
+										)}
 									>
-										<span className={cn("mr-1.5 inline-block h-2 w-2 rounded-sm", messageDotClass[role])} />
-										{label}
+										Messages
+										{visibleRoles.size < allRoles.length && (
+											<span className="bg-primary text-primary-foreground rounded-sm px-1 py-0.5 text-[10px] tabular-nums">
+												{visibleRoles.size}/{allRoles.length}
+											</span>
+										)}
+										<ChevronDown className="h-3 w-3" />
+									</button>
+								</DropdownMenuTrigger>
+								<DropdownMenuContent align="end" className="w-48">
+									<DropdownMenuCheckboxItem
+										checked={visibleRoles.size === allRoles.length}
+										onCheckedChange={(checked) => setVisibleRoles(checked ? new Set(allRoles) : new Set())}
+									>
+										Show all messages
 									</DropdownMenuCheckboxItem>
-								))}
-								<DropdownMenuSeparator />
-								<DropdownMenuItem onClick={() => setVisibleRoles(new Set())} className="text-muted-foreground justify-center text-[12px]">
-									Clear all
-								</DropdownMenuItem>
-							</DropdownMenuContent>
-						</DropdownMenu>
-					</div>
-					{(log.ocr_input || log.ocr_output) && <OCRView ocrInput={log.ocr_input} ocrOutput={log.ocr_output} />}
-					{(log.speech_input || log.speech_output) && (
-						<SpeechView speechInput={log.speech_input} speechOutput={log.speech_output} isStreaming={log.stream} />
-					)}
-					{(log.transcription_input || log.transcription_output) && (
-						<TranscriptionView
-							transcriptionInput={log.transcription_input}
-							transcriptionOutput={log.transcription_output}
-							isStreaming={log.stream}
-						/>
-					)}
-					{(log.image_generation_input || log.image_edit_input || log.image_variation_input || log.image_generation_output) && (
-						<ImageView
-							imageInput={log.image_generation_input}
-							imageEditInput={log.image_edit_input}
-							imageVariationInput={log.image_variation_input}
-							imageOutput={log.image_generation_output}
-							requestType={log.object}
-						/>
-					)}
-					{(log.video_generation_input || videoOutput || videoListOutput) && (
-						<VideoView
-							videoInput={log.video_generation_input}
-							videoOutput={videoOutput}
-							videoListOutput={videoListOutput}
-							requestType={log.object}
-						/>
-					)}
+									<DropdownMenuSeparator />
+									{(
+										[
+											["system", "System"],
+											["user", "User"],
+											["assistant", "Assistant"],
+											["tool", "Tool"],
+											["reasoning", "Reasoning"],
+										] as [MessageRole, string][]
+									).map(([role, label]) => (
+										<DropdownMenuCheckboxItem
+											key={role}
+											checked={visibleRoles.has(role)}
+											onCheckedChange={(checked) =>
+												setVisibleRoles((prev) => {
+													const next = new Set(prev);
+													checked ? next.add(role) : next.delete(role);
+													return next;
+												})
+											}
+										>
+											<span className={cn("mr-1.5 inline-block h-2 w-2 rounded-sm", messageDotClass[role])} />
+											{label}
+										</DropdownMenuCheckboxItem>
+									))}
+									<DropdownMenuSeparator />
+									<DropdownMenuItem onClick={() => setVisibleRoles(new Set())} className="text-muted-foreground justify-center text-[12px]">
+										Clear all
+									</DropdownMenuItem>
+								</DropdownMenuContent>
+							</DropdownMenu>
+						</div>
+						{(log.ocr_input || log.ocr_output) && <OCRView ocrInput={log.ocr_input} ocrOutput={log.ocr_output} />}
+						{(log.speech_input || log.speech_output) && (
+							<SpeechView speechInput={log.speech_input} speechOutput={log.speech_output} isStreaming={log.stream} />
+						)}
+						{(log.transcription_input || log.transcription_output) && (
+							<TranscriptionView
+								transcriptionInput={log.transcription_input}
+								transcriptionOutput={log.transcription_output}
+								isStreaming={log.stream}
+							/>
+						)}
+						{(log.image_generation_input || log.image_edit_input || log.image_variation_input || log.image_generation_output) && (
+							<ImageView
+								imageInput={log.image_generation_input}
+								imageEditInput={log.image_edit_input}
+								imageVariationInput={log.image_variation_input}
+								imageOutput={log.image_generation_output}
+								requestType={log.object}
+							/>
+						)}
+						{(log.video_generation_input || videoOutput || videoListOutput) && (
+							<VideoView
+								videoInput={log.video_generation_input}
+								videoOutput={videoOutput}
+								videoListOutput={videoListOutput}
+								requestType={log.object}
+							/>
+						)}
+						{log.live_session && <LiveSessionView session={log.live_session} mapping={activeOutputRevealMapping} />}
 
-					{isPassthrough && passthroughRequestBody && (
-						<CollapsibleBox
-							title="Request Body"
-							onCopy={() => {
-								try {
-									return JSON.stringify(JSON.parse(passthroughRequestBody || ""), null, 2);
-								} catch {
-									return passthroughRequestBody || "";
-								}
-							}}
-						>
-							<CodeEditor
-								className="z-0 w-full"
-								shouldAdjustInitialHeight={true}
-								maxHeight={450}
-								wrap={true}
-								code={(() => {
+						{isPassthrough && passthroughRequestBody && (
+							<CollapsibleBox
+								title="Request Body"
+								onCopy={() => {
 									try {
 										return JSON.stringify(JSON.parse(passthroughRequestBody || ""), null, 2);
 									} catch {
 										return passthroughRequestBody || "";
 									}
-								})()}
-								lang="json"
-								readonly={true}
-								options={{
-									collapsibleBlocks: true,
-									showVerticalScrollbar: true,
-									scrollBeyondLastLine: false,
-									lineNumbers: "off",
-									alwaysConsumeMouseWheel: false,
 								}}
-							/>
-						</CollapsibleBox>
-					)}
-					{isPassthrough && passthroughResponseBody && log.status !== "processing" && (
-						<CollapsibleBox
-							title="Response Body"
-							onCopy={() => {
-								try {
-									return JSON.stringify(JSON.parse(passthroughResponseBody || ""), null, 2);
-								} catch {
-									return passthroughResponseBody || "";
-								}
-							}}
-						>
-							<CodeEditor
-								className="z-0 w-full"
-								shouldAdjustInitialHeight={true}
-								maxHeight={450}
-								wrap={true}
-								code={(() => {
+							>
+								<CodeEditor
+									className="z-0 w-full"
+									shouldAdjustInitialHeight={true}
+									maxHeight={450}
+									wrap={true}
+									code={(() => {
+										try {
+											return JSON.stringify(JSON.parse(passthroughRequestBody || ""), null, 2);
+										} catch {
+											return passthroughRequestBody || "";
+										}
+									})()}
+									lang="json"
+									readonly={true}
+									options={{
+										collapsibleBlocks: true,
+										showVerticalScrollbar: true,
+										scrollBeyondLastLine: false,
+										lineNumbers: "off",
+										alwaysConsumeMouseWheel: false,
+									}}
+								/>
+							</CollapsibleBox>
+						)}
+						{isPassthrough && passthroughResponseBody && log.status !== "processing" && (
+							<CollapsibleBox
+								title="Response Body"
+								onCopy={() => {
 									try {
 										return JSON.stringify(JSON.parse(passthroughResponseBody || ""), null, 2);
 									} catch {
 										return passthroughResponseBody || "";
 									}
-								})()}
-								lang="json"
-								readonly={true}
-								options={{
-									collapsibleBlocks: true,
-									showVerticalScrollbar: true,
-									scrollBeyondLastLine: false,
-									lineNumbers: "off",
-									alwaysConsumeMouseWheel: false,
 								}}
-							/>
-						</CollapsibleBox>
-					)}
+							>
+								<CodeEditor
+									className="z-0 w-full"
+									shouldAdjustInitialHeight={true}
+									maxHeight={450}
+									wrap={true}
+									code={(() => {
+										try {
+											return JSON.stringify(JSON.parse(passthroughResponseBody || ""), null, 2);
+										} catch {
+											return passthroughResponseBody || "";
+										}
+									})()}
+									lang="json"
+									readonly={true}
+									options={{
+										collapsibleBlocks: true,
+										showVerticalScrollbar: true,
+										scrollBeyondLastLine: false,
+										lineNumbers: "off",
+										alwaysConsumeMouseWheel: false,
+									}}
+								/>
+							</CollapsibleBox>
+						)}
 
-					{!isPassthrough &&
-						((log.input_history && log.input_history.length > 0) ||
-							(log.output_message && !log.error_details?.error.message) ||
-							log.stop_reason === "refusal" ||
-							log.stop_reason === "content_filter" ||
-							log.stop_reason === "safety") && (
-							<div className="bg-card rounded-sm border p-5">
-								{(visibleRoles.size < allRoles.length
-									? log.input_history?.filter((m) => {
-										if (!m) return false;
-										const mainRole = ((m.role as string) || "user") as MessageRole;
-										const hasReasoning = !!extractChatReasoning(m);
-										return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
-									})
-									: log.input_history?.filter(Boolean)
-								)?.flatMap((message, index) => {
-									const role = ((message.role as string) || "user") as MessageRole;
-									const text = extractMessageText(message, activeInputRevealMapping);
-									const reasoningText = extractChatReasoning(message, activeInputRevealMapping);
-									const showAll = visibleRoles.size === allRoles.length;
-									const showMain = showAll || visibleRoles.has(role);
-									const showReasoning = !!reasoningText && (showAll || visibleRoles.has("reasoning"));
-									const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
-									const isOverallLast =
-										index === (log.input_history?.length ?? 0) - 1 && !log.output_message && !log.error_details?.error.message;
-									const lineCount = text ? text.split("\n").length : 0;
-									const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
-									const reasoningTokens = reasoningText ? Math.max(1, Math.round(reasoningText.length / 4)) : 0;
-									const meta = text
-										? role === "system" || role === "tool"
-											? `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-											: `${lineCount} line${lineCount === 1 ? "" : "s"}`
-										: hasToolCalls
-											? `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`
-											: undefined;
-									const usePlainText = role === "user" || role === "assistant";
-									const rows: ReactNode[] = [];
-									if (showReasoning) {
-										rows.push(
-											<MessageRow
-												key={`${index}-reasoning`}
-												role="reasoning"
-												meta={`~${reasoningTokens} tokens`}
-												last={isOverallLast && !showMain}
-											>
-												<CollapsibleCode text={reasoningText} preview={3} mono={false} />
-											</MessageRow>,
-										);
-									}
-									if (showMain) {
-										rows.push(
-											<MessageRow key={index} role={role} meta={meta} last={isOverallLast}>
-												{text ? (
-													usePlainText && isJson(text) ? (
-														<CodeEditor
-															wrap
-															code={(() => {
-																try {
-																	return JSON.stringify(JSON.parse(text), null, 2);
-																} catch {
-																	return text;
-																}
-															})()}
-															lang="json"
-															readonly
-															autoResize
-															options={{
-																collapsibleBlocks: true,
-																showIndentLines: false,
-																disableHover: true,
-															}}
-														/>
-													) : usePlainText ? (
-														<CollapsibleCode text={text} preview={3} mono={false} />
-													) : (
-														<CollapsibleCode text={text} preview={3} lang={role === "system" ? "xml" : undefined} />
-													)
-												) : (
-													<LogChatMessageView message={message} audioFormat={audioFormat} />
-												)}
-												{text &&
-													Array.isArray(message.content) &&
-													(message.content as ContentBlock[])
-														.filter((b) => b.type === "image_url")
-														.map((b, i) => {
-															const src = b.image_url?.url;
-															if (!src) return null;
-															return <img key={`${i}-${src}`} src={src} alt="Attached image" className="mt-2 max-w-full rounded border" />;
-														})}
-												{text &&
-													Array.isArray(message.content) &&
-													(message.content as ContentBlock[])
-														.filter((b) => b.type === "file" && b.file)
-														.map((b, i) => (
-															<LogChatFileBlockView
-																key={`${i}-${b.file?.filename || b.file?.file_id || "file"}`}
-																block={b}
-																className="mt-2"
-															/>
-														))}
-												{hasToolCalls && text ? (
-													<div className="text-muted-foreground mt-2 text-[11px]">
-														{message
-															.tool_calls!.map((tc) => tc.function?.name)
-															.filter(Boolean)
-															.join(", ") || `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`}
-													</div>
-												) : null}
-											</MessageRow>,
-										);
-									}
-									return rows;
-								})}
-								{log.output_message &&
-									!log.error_details?.error.message &&
-									(() => {
-										const reasoningText = extractChatReasoning(log.output_message, activeOutputRevealMapping);
-										const showReasoning = !!reasoningText && (visibleRoles.size === allRoles.length || visibleRoles.has("reasoning"));
-										const showAssistant = visibleRoles.has("assistant");
-										if (!showReasoning && !showAssistant) return null;
-										const text = extractMessageText(log.output_message, activeOutputRevealMapping);
-										const refusalText = applyRedactionMapping(log.output_message.refusal, activeOutputRevealMapping);
-										const isStopReasonRefusal =
-											log.stop_reason === "refusal" || log.stop_reason === "content_filter" || log.stop_reason === "safety";
-										const showRefusal = refusalText || (!text && isStopReasonRefusal);
-										const lineCount = text ? text.split("\n").length : 0;
-										const tokenMeta = log.token_usage?.completion_tokens ? `${log.token_usage.completion_tokens} tokens` : undefined;
-										const meta = text
-											? tokenMeta
-												? `${lineCount} line${lineCount === 1 ? "" : "s"} · ${tokenMeta}`
-												: `${lineCount} line${lineCount === 1 ? "" : "s"}`
-											: showRefusal
-												? "refusal"
-												: tokenMeta;
-										const reasoningTokens = reasoningText
-											? log.token_usage?.completion_tokens_details?.reasoning_tokens || Math.max(1, Math.round(reasoningText.length / 4))
-											: 0;
-										return (
-											<>
-												{showReasoning ? (
-													<MessageRow role="reasoning" meta={`~${reasoningTokens} tokens`} last={!showAssistant}>
+						{(() => {
+							const questions = decisionQuestions(log.object, log.params);
+							return questions ? (
+								<DecisionQuestionsBox value={applyRedactionMappingToValue(questions.value, activeInputRevealMapping)} count={questions.count} />
+							) : null;
+						})()}
+
+						{!isPassthrough &&
+							!log.live_session &&
+							((log.input_history && log.input_history.length > 0) ||
+								(log.output_message && !log.error_details?.error.message) ||
+								log.stop_reason === "refusal" ||
+								log.stop_reason === "content_filter" ||
+								log.stop_reason === "safety") && (
+								<div className="bg-card rounded-sm border p-5">
+									{(() => {
+										const historyMessages =
+											(visibleRoles.size < allRoles.length
+												? log.input_history?.filter((m) => {
+														if (!m) return false;
+														const mainRole = ((m.role as string) || "user") as MessageRole;
+														const hasReasoning = !!extractChatReasoning(m);
+														return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
+													})
+												: log.input_history?.filter(Boolean)) ?? [];
+										const messageRows = historyMessages.map((message, index) => {
+											const role = ((message.role as string) || "user") as MessageRole;
+											const text = extractMessageText(message, activeInputRevealMapping);
+											const reasoningText = extractChatReasoning(message, activeInputRevealMapping);
+											const showAll = visibleRoles.size === allRoles.length;
+											const showMain = showAll || visibleRoles.has(role);
+											const showReasoning = !!reasoningText && (showAll || visibleRoles.has("reasoning"));
+											const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+											const isOverallLast =
+												index === (log.input_history?.length ?? 0) - 1 && !log.output_message && !log.error_details?.error.message;
+											const lineCount = text ? text.split("\n").length : 0;
+											const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
+											const reasoningTokens = reasoningText ? Math.max(1, Math.round(reasoningText.length / 4)) : 0;
+											const meta = text
+												? role === "system" || role === "tool"
+													? `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
+													: `${lineCount} line${lineCount === 1 ? "" : "s"}`
+												: hasToolCalls
+													? `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`
+													: undefined;
+											const usePlainText = role === "user" || role === "assistant";
+											const rows: ReactNode[] = [];
+											if (showReasoning) {
+												rows.push(
+													<MessageRow
+														key={`${index}-reasoning`}
+														role="reasoning"
+														meta={`~${reasoningTokens} tokens`}
+														last={isOverallLast && !showMain}
+													>
 														<CollapsibleCode text={reasoningText} preview={3} mono={false} />
-													</MessageRow>
-												) : null}
-												{showAssistant ? (
-													<MessageRow role="assistant" meta={meta} last>
-														{showRefusal ? (
-															<div className="rounded-sm border border-red-200 bg-red-50/70 p-3 dark:border-red-900 dark:bg-red-950/30">
-																<div className="flex items-center gap-2 text-red-700 dark:text-red-400">
-																	<AlertCircle className="h-4 w-4 shrink-0" />
-																	<span className="text-[12.5px] font-semibold">Refusal</span>
-																</div>
-																{refusalText && (
-																	<div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
-																		{refusalText}
-																	</div>
-																)}
-															</div>
-														) : text ? (
-															isJson(text) ? (
+													</MessageRow>,
+												);
+											}
+											if (showMain) {
+												rows.push(
+													<MessageRow key={index} role={role} meta={meta} last={isOverallLast} label={decisionRoleLabel(log.object, role)}>
+														{text ? (
+															usePlainText && isJson(text) ? (
 																<CodeEditor
 																	wrap
 																	code={(() => {
@@ -3251,475 +2858,483 @@ export function LogDetailView({
 																		disableHover: true,
 																	}}
 																/>
-															) : (
+															) : usePlainText ? (
 																<CollapsibleCode text={text} preview={3} mono={false} />
+															) : (
+																<CollapsibleCode text={text} preview={3} lang={role === "system" ? "xml" : undefined} />
 															)
 														) : (
-															<LogChatMessageView message={log.output_message} audioFormat={audioFormat} />
+															<LogChatMessageView message={message} audioFormat={audioFormat} />
 														)}
-													</MessageRow>
-												) : null}
+														{text &&
+															Array.isArray(message.content) &&
+															(message.content as ContentBlock[])
+																.filter((b) => b.type === "image_url")
+																.map((b, i) => {
+																	const src = b.image_url?.url;
+																	if (!src) return null;
+																	return <img key={`${i}-${src}`} src={src} alt="Attachment" className="mt-2 max-w-full rounded border" />;
+																})}
+														{text &&
+															Array.isArray(message.content) &&
+															(message.content as ContentBlock[])
+																.filter((b) => b.type === "file" && b.file)
+																.map((b, i) => (
+																	<LogChatFileBlockView
+																		key={`${i}-${b.file?.filename || b.file?.file_id || "file"}`}
+																		block={b}
+																		className="mt-2"
+																	/>
+																))}
+														{hasToolCalls && text ? (
+															<div className="text-muted-foreground mt-2 text-[11px]">
+																{message
+																	.tool_calls!.map((tc) => tc.function?.name)
+																	.filter(Boolean)
+																	.join(", ") || `${message.tool_calls!.length} tool call${message.tool_calls!.length === 1 ? "" : "s"}`}
+															</div>
+														) : null}
+													</MessageRow>,
+												);
+											}
+											return rows;
+										});
+										// Show only the last two turns; everything earlier collapses
+										// behind an expandable history toggle.
+										const visibleTail = 2;
+										const splitAt = Math.max(0, messageRows.length - visibleTail);
+										const earlier = messageRows.slice(0, splitAt);
+										const tail = messageRows.slice(splitAt);
+										const earlierCount = earlier.filter((r) => r.length > 0).length;
+										return (
+											<>
+												{earlierCount > 0 && <MessageHistoryCollapse count={earlierCount}>{earlier}</MessageHistoryCollapse>}
+												{tail}
 											</>
 										);
 									})()}
-								{!log.output_message &&
-									!log.error_details?.error.message &&
-									(log.stop_reason === "refusal" || log.stop_reason === "content_filter" || log.stop_reason === "safety") && (
-										<MessageRow role="assistant" meta="refusal" last>
-											<div className="rounded-sm border border-red-200 bg-red-50/70 p-3 dark:border-red-900 dark:bg-red-950/30">
-												<div className="flex items-center gap-2 text-red-700 dark:text-red-400">
-													<AlertCircle className="h-4 w-4 shrink-0" />
-													<span className="text-[12.5px] font-semibold">Refusal</span>
+									{log.output_message &&
+										!log.error_details?.error.message &&
+										(() => {
+											const reasoningText = extractChatReasoning(log.output_message, activeOutputRevealMapping);
+											const showReasoning = !!reasoningText && (visibleRoles.size === allRoles.length || visibleRoles.has("reasoning"));
+											const showAssistant = visibleRoles.has("assistant");
+											if (!showReasoning && !showAssistant) return null;
+											const text = extractMessageText(log.output_message, activeOutputRevealMapping);
+											const refusalText = applyRedactionMapping(log.output_message.refusal, activeOutputRevealMapping);
+											const isStopReasonRefusal =
+												log.stop_reason === "refusal" || log.stop_reason === "content_filter" || log.stop_reason === "safety";
+											const showRefusal = refusalText || (!text && isStopReasonRefusal);
+											const lineCount = text ? text.split("\n").length : 0;
+											const tokenMeta = log.token_usage?.completion_tokens ? `${log.token_usage.completion_tokens} tokens` : undefined;
+											const meta = text
+												? tokenMeta
+													? `${lineCount} line${lineCount === 1 ? "" : "s"} · ${tokenMeta}`
+													: `${lineCount} line${lineCount === 1 ? "" : "s"}`
+												: showRefusal
+													? "refusal"
+													: tokenMeta;
+											const reasoningTokens = reasoningText
+												? log.token_usage?.completion_tokens_details?.reasoning_tokens || Math.max(1, Math.round(reasoningText.length / 4))
+												: 0;
+											return (
+												<>
+													{showReasoning ? (
+														<MessageRow role="reasoning" meta={`~${reasoningTokens} tokens`} last={!showAssistant}>
+															<CollapsibleCode text={reasoningText} preview={3} mono={false} />
+														</MessageRow>
+													) : null}
+													{showAssistant ? (
+														<MessageRow role="assistant" meta={meta} last label={decisionRoleLabel(log.object, "assistant")}>
+															{showRefusal ? (
+																<div className="rounded-sm border border-red-200 bg-red-50/70 p-3 dark:border-red-900 dark:bg-red-950/30">
+																	<div className="flex items-center gap-2 text-red-700 dark:text-red-400">
+																		<AlertCircle className="h-4 w-4 shrink-0" />
+																		<span className="text-[12.5px] font-semibold">Refusal</span>
+																	</div>
+																	{refusalText && (
+																		<div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
+																			{refusalText}
+																		</div>
+																	)}
+																</div>
+															) : text ? (
+																isJson(text) ? (
+																	<CodeEditor
+																		wrap
+																		code={(() => {
+																			try {
+																				return JSON.stringify(JSON.parse(text), null, 2);
+																			} catch {
+																				return text;
+																			}
+																		})()}
+																		lang="json"
+																		readonly
+																		autoResize
+																		options={{
+																			collapsibleBlocks: true,
+																			showIndentLines: false,
+																			disableHover: true,
+																		}}
+																	/>
+																) : (
+																	<CollapsibleCode text={text} preview={3} mono={false} />
+																)
+															) : (
+																<LogChatMessageView message={log.output_message} audioFormat={audioFormat} />
+															)}
+														</MessageRow>
+													) : null}
+												</>
+											);
+										})()}
+									{!log.output_message &&
+										!log.error_details?.error.message &&
+										(log.stop_reason === "refusal" || log.stop_reason === "content_filter" || log.stop_reason === "safety") && (
+											<MessageRow role="assistant" meta="refusal" last>
+												<div className="rounded-sm border border-red-200 bg-red-50/70 p-3 dark:border-red-900 dark:bg-red-950/30">
+													<div className="flex items-center gap-2 text-red-700 dark:text-red-400">
+														<AlertCircle className="h-4 w-4 shrink-0" />
+														<span className="text-[12.5px] font-semibold">Refusal</span>
+													</div>
 												</div>
-											</div>
-										</MessageRow>
-									)}
+											</MessageRow>
+										)}
+								</div>
+							)}
+
+						{(() => {
+							const rawInput = log.responses_input_history ?? [];
+							const inputMsgs =
+								visibleRoles.size < allRoles.length ? rawInput.filter((m) => visibleRoles.has(getResponsesRole(m))) : rawInput;
+							const rawOutput = log.status !== "processing" && !log.error_details?.error.message ? (log.responses_output ?? []) : [];
+							const outputMsgs =
+								visibleRoles.size < allRoles.length ? rawOutput.filter((m) => visibleRoles.has(getResponsesRole(m))) : rawOutput;
+							const all: Array<{ msg: ResponsesMessage; mapping?: Record<string, string>; fromOutput: boolean }> = [
+								...coalesceResponsesMessages(inputMsgs).map((msg) => ({ msg, mapping: activeInputRevealMapping, fromOutput: false })),
+								...coalesceResponsesMessages(outputMsgs).map((msg) => ({ msg, mapping: activeOutputRevealMapping, fromOutput: true })),
+							];
+							if (all.length === 0) return null;
+							// The link to the request carrying the results goes under the last call
+							// the caller has to run, once, however many calls the response made.
+							const lastClientCallIndex = onOpenLog && log.session_id ? findLastPendingClientCallIndex(all) : -1;
+							return (
+								<div className="bg-card rounded-sm border p-5">
+									{all.map(({ msg, mapping }, index) => (
+										<ResponsesItemRow key={index} msg={msg} mapping={mapping} last={index === all.length - 1}>
+											{index === lastClientCallIndex && onOpenLog ? <NextSessionRequestLink log={log} onOpenLog={onOpenLog} /> : null}
+										</ResponsesItemRow>
+									))}
+								</div>
+							);
+						})()}
+
+						{log.is_large_payload_request &&
+							!log.input_history?.length &&
+							!log.responses_input_history?.length &&
+							!log.embedding_input?.length && (
+								<div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+									Large payload request: input content was streamed directly to the provider and is not available for display.
+									{log.raw_request && " A truncated preview is available in the Raw JSON tab."}
+								</div>
+							)}
+						{log.is_large_payload_response && !log.output_message && !log.responses_output?.length && log.status !== "processing" && (
+							<div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+								Large payload response: response content was streamed directly to the client and is not available for display.
+								{log.raw_response && " A truncated preview is available in the Raw JSON tab."}
 							</div>
 						)}
 
-					{(() => {
-						const rawInput = log.responses_input_history ?? [];
-						const inputMsgs =
-							visibleRoles.size < allRoles.length ? rawInput.filter((m) => visibleRoles.has(getResponsesRole(m))) : rawInput;
-						const rawOutput = log.status !== "processing" && !log.error_details?.error.message ? (log.responses_output ?? []) : [];
-						const outputMsgs =
-							visibleRoles.size < allRoles.length ? rawOutput.filter((m) => visibleRoles.has(getResponsesRole(m))) : rawOutput;
-						const all: Array<{ msg: ResponsesMessage; mapping?: Record<string, string> }> = [
-							...coalesceResponsesMessages(inputMsgs).map((msg) => ({ msg, mapping: activeInputRevealMapping })),
-							...coalesceResponsesMessages(outputMsgs).map((msg) => ({ msg, mapping: activeOutputRevealMapping })),
-						];
-						if (all.length === 0) return null;
-						return (
-							<div className="bg-card rounded-sm border p-5">
-								{all.map(({ msg, mapping }, index) => {
-									const role = getResponsesRole(msg);
-									const isLast = index === all.length - 1;
-									const reasoningParts = role === "reasoning" ? extractReasoningParts(msg, mapping) : null;
-									const reasoningHasAny =
-										!!reasoningParts &&
-										(reasoningParts.summaries.length > 0 ||
-											!!reasoningParts.encrypted ||
-											!!reasoningParts.contentText ||
-											reasoningParts.signatures.length > 0);
-									const text = role === "reasoning" ? "" : extractResponsesText(msg, mapping);
-									// Whatever the item carries outside the fields rendered below — a server tool's `action`,
-									// a custom_tool_call's `input`, a compaction item's `encrypted_content`.
-									const itemPayload = extractResponsesItemPayload(msg);
-									const lineCount = text ? text.split("\n").length : 0;
-									const approxTokens = text ? Math.max(1, Math.round(text.length / 4)) : 0;
-									let meta: string | undefined;
-									if (role === "reasoning" && reasoningParts) {
-										const totalLen =
-											reasoningParts.summaries.reduce((acc, s) => acc + s.length, 0) +
-											(reasoningParts.contentText?.length ?? 0) +
-											(reasoningParts.encrypted?.length ?? 0);
-										const totalApprox = totalLen ? Math.max(1, Math.round(totalLen / 4)) : 0;
-										const hasOpaqueOnly =
-											(!!reasoningParts.encrypted || reasoningParts.signatures.length > 0) &&
-											reasoningParts.summaries.length === 0 &&
-											!reasoningParts.contentText;
-										meta = totalApprox
-											? `~${totalApprox} tokens${hasOpaqueOnly ? " · encrypted" : ""}`
-											: hasOpaqueOnly
-												? "encrypted"
-												: undefined;
-									} else {
-										meta = text
-											? role === "system" || role === "tool"
-												? msg.name
-													? `${msg.name} · ${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-													: `${lineCount} line${lineCount === 1 ? "" : "s"} · ~${approxTokens} tokens`
-												: `${lineCount} line${lineCount === 1 ? "" : "s"}`
-											: msg.name
-												? msg.name
-												: msg.type === "function_call_output" && msg.call_id
-													? msg.call_id
-													: Array.isArray(msg.tools)
-														? (() => {
-															const callable = flattenDeclaredTools(msg.tools).length;
-															return callable !== msg.tools.length
-																? `${msg.type} · ${msg.tools.length} declarations · ${callable} callable tools`
-																: `${msg.type} · ${msg.tools.length} tool${msg.tools.length === 1 ? "" : "s"}`;
-														})()
-														: [msg.type, summarizeResponsesToolCall(msg, mapping)].filter(Boolean).join(" · ") || undefined;
-									}
-									const usePlainText = role === "user" || role === "assistant";
-									return (
-										<MessageRow key={index} role={role} meta={meta} last={isLast}>
-											{role === "reasoning" ? (
-												reasoningHasAny && reasoningParts ? (
-													<div className="space-y-3">
-														{reasoningParts.contentText ? (
-															<CollapsibleCode text={reasoningParts.contentText} preview={3} mono={false} />
-														) : null}
-														{reasoningParts.summaries.map((s, i) => (
-															<div key={`s-${i}`} className="space-y-1">
-																{reasoningParts.summaries.length > 1 ? (
-																	<div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">
-																		Summary {i + 1}
-																	</div>
-																) : null}
-																<CollapsibleCode text={s} preview={3} mono={false} />
-															</div>
-														))}
-														{reasoningParts.encrypted ? (
-															<div className="space-y-1">
-																<div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">Encrypted</div>
-																<CollapsibleCode text={reasoningParts.encrypted} preview={2} />
-															</div>
-														) : null}
-														{reasoningParts.signatures.length > 0 ? (
-															<EncryptedReveal
-																text={reasoningParts.signatures.join("\n\n")}
-																label={reasoningParts.signatures.length > 1 ? "Encrypted signatures" : "Encrypted signature"}
-															/>
-														) : null}
-													</div>
-												) : (
-													<div className="text-muted-foreground text-[12px] italic">No reasoning content available</div>
-												)
-											) : text ? (
-												usePlainText ? (
-													<CollapsibleCode text={text} preview={3} mono={false} />
-												) : (
-													<CollapsibleCode text={text} preview={3} lang={role === "system" ? "xml" : undefined} />
-												)
-											) : msg.output !== undefined ? (
-												<CollapsibleCode
-													text={
-														typeof msg.output === "string"
-															? applyRedactionMapping(msg.output, mapping)
-															: JSON.stringify(applyRedactionMappingToValue(msg.output, mapping), null, 2)
-													}
-													preview={3}
-												/>
-											) : Array.isArray(msg.tools) && msg.tools.length > 0 ? (
-												<CollapsibleCode text={JSON.stringify(msg.tools, null, 2)} preview={3} />
-											) : Array.isArray(msg.tools) ? (
-												<div className="text-muted-foreground text-[12px] italic">No tools declared</div>
-											) : itemPayload ? (
-												<CollapsibleCode text={JSON.stringify(applyRedactionMappingToValue(itemPayload, mapping), null, 2)} preview={3} />
-											) : (
-												<div className="text-muted-foreground text-[12px] italic">No content</div>
-											)}
-											{Array.isArray(msg.content) &&
-												msg.content
-													.filter((b) => b?.type === "input_image" && b.image_url)
-													.map((b, i) => (
-														<img
-															key={`${i}-${b.image_url}`}
-															src={b.image_url}
-															alt="Attached image"
-															className="mt-2 max-w-full rounded border"
-														/>
-													))}
-										</MessageRow>
-									);
-								})}
-							</div>
-						);
-					})()}
+						{log.embedding_input && log.embedding_input.length > 0 && (
+							<EmbeddingJsonBox title="Input" value={applyRedactionMappingToValue(log.embedding_input, activeInputRevealMapping)} />
+						)}
+						{log.status !== "processing" &&
+							log.embedding_output &&
+							log.embedding_output.length > 0 &&
+							!log.error_details?.error.message && (
+								<EmbeddingJsonBox title="Embedding" value={log.embedding_output.map((embedding) => embedding.embedding)} />
+							)}
+						{log.status !== "processing" && log.rerank_output && !log.error_details?.error.message && (
+							<CollapsibleBox
+								title={`Rerank Output (${log.rerank_output.length})`}
+								onCopy={() => JSON.stringify(log.rerank_output, null, 2)}
+							>
+								<CodeEditor
+									className="z-0 w-full"
+									shouldAdjustInitialHeight={true}
+									maxHeight={450}
+									wrap={true}
+									code={JSON.stringify(log.rerank_output, null, 2)}
+									lang="json"
+									readonly={true}
+									options={{
+										collapsibleBlocks: true,
+										showVerticalScrollbar: true,
+										scrollBeyondLastLine: false,
+										lineNumbers: "off",
+										alwaysConsumeMouseWheel: false,
+									}}
+								/>
+							</CollapsibleBox>
+						)}
 
-					{log.is_large_payload_request && !log.input_history?.length && !log.responses_input_history?.length && (
-						<div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
-							Large payload request: input content was streamed directly to the provider and is not available for display.
-							{log.raw_request && " A truncated preview is available in the Raw JSON tab."}
-						</div>
-					)}
-					{log.is_large_payload_response && !log.output_message && !log.responses_output?.length && log.status !== "processing" && (
-						<div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
-							Large payload response: response content was streamed directly to the client and is not available for display.
-							{log.raw_response && " A truncated preview is available in the Raw JSON tab."}
-						</div>
-					)}
+						{log.list_models_output && (
+							<CollapsibleBox
+								title={`List Models Output (${log.list_models_output.length})`}
+								onCopy={() => JSON.stringify(log.list_models_output, null, 2)}
+							>
+								<CodeEditor
+									className="z-0 w-full"
+									shouldAdjustInitialHeight={true}
+									maxHeight={450}
+									wrap={true}
+									code={JSON.stringify(log.list_models_output, null, 2)}
+									lang="json"
+									readonly={true}
+									options={{
+										collapsibleBlocks: true,
+										showVerticalScrollbar: true,
+										scrollBeyondLastLine: false,
+										lineNumbers: "off",
+										alwaysConsumeMouseWheel: false,
+									}}
+								/>
+							</CollapsibleBox>
+						)}
 
-					{log.status !== "processing" && log.embedding_output && log.embedding_output.length > 0 && !log.error_details?.error.message && (
-						<div className="bg-card space-y-3 rounded-sm border p-5">
-							<div className="text-sm font-medium">Embedding</div>
-							<LogChatMessageView
-								message={{
-									role: "assistant",
-									content: JSON.stringify(
-										log.embedding_output.map((embedding) => embedding.embedding),
-										null,
-										2,
-									),
-								}}
-							/>
-						</div>
-					)}
-					{log.status !== "processing" && log.rerank_output && !log.error_details?.error.message && (
-						<CollapsibleBox title={`Rerank Output (${log.rerank_output.length})`} onCopy={() => JSON.stringify(log.rerank_output, null, 2)}>
-							<CodeEditor
-								className="z-0 w-full"
-								shouldAdjustInitialHeight={true}
-								maxHeight={450}
-								wrap={true}
-								code={JSON.stringify(log.rerank_output, null, 2)}
-								lang="json"
-								readonly={true}
-								options={{
-									collapsibleBlocks: true,
-									showVerticalScrollbar: true,
-									scrollBeyondLastLine: false,
-									lineNumbers: "off",
-									alwaysConsumeMouseWheel: false,
-								}}
-							/>
-						</CollapsibleBox>
-					)}
-
-					{log.list_models_output && (
-						<CollapsibleBox
-							title={`List Models Output (${log.list_models_output.length})`}
-							onCopy={() => JSON.stringify(log.list_models_output, null, 2)}
-						>
-							<CodeEditor
-								className="z-0 w-full"
-								shouldAdjustInitialHeight={true}
-								maxHeight={450}
-								wrap={true}
-								code={JSON.stringify(log.list_models_output, null, 2)}
-								lang="json"
-								readonly={true}
-								options={{
-									collapsibleBlocks: true,
-									showVerticalScrollbar: true,
-									scrollBeyondLastLine: false,
-									lineNumbers: "off",
-									alwaysConsumeMouseWheel: false,
-								}}
-							/>
-						</CollapsibleBox>
-					)}
-
-					{(log.error_details?.error.message || log.error_details?.error.error != null) && (
-						<div className="rounded-sm border border-red-200 bg-red-50/70 p-5 dark:border-red-900 dark:bg-red-950/30">
-							<div className="flex items-center gap-2 text-red-700 dark:text-red-400">
-								<AlertCircle className="h-4 w-4 shrink-0" />
-								<span className="text-[12.5px] font-semibold">Error</span>
-								{log.error_details?.error.message ? <CopyInlineButton text={log.error_details.error.message} /> : null}
-							</div>
-							{log.error_details?.error.message ? (
-								<div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
-									{log.error_details.error.message}
+						{(displayErrorMessage || log.error_details?.error.error != null || log.status === "error") && (
+							<div className="rounded-sm border border-red-200 bg-red-50/70 p-5 dark:border-red-900 dark:bg-red-950/30">
+								<div className="flex items-center gap-2 text-red-700 dark:text-red-400">
+									<AlertCircle className="h-4 w-4 shrink-0" />
+									<span className="text-[12.5px] font-semibold">Error</span>
+									{displayErrorMessage ? <CopyInlineButton text={displayErrorMessage} /> : null}
 								</div>
-							) : null}
-							{log.error_details?.error.error != null ? (
-								<details className="group mt-3 rounded-sm border border-red-200/70 bg-white/40 dark:border-red-900/70 dark:bg-red-950/40">
-									<summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-[12px] text-red-700 hover:bg-red-50/80 dark:text-red-400 dark:hover:bg-red-950/60">
-										<span className="font-medium">Details</span>
-										<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
-									</summary>
-									<div className="custom-scrollbar max-h-[400px] overflow-y-auto border-t border-red-200/70 px-3 py-2 font-mono text-[11.5px] leading-[1.6] break-words whitespace-pre-wrap text-red-900 dark:border-red-900/70 dark:text-red-300">
-										{typeof log.error_details.error.error === "string"
-											? log.error_details.error.error
-											: JSON.stringify(log.error_details.error.error, null, 2)}
-									</div>
-								</details>
-							) : null}
-						</div>
-					)}
-				</TabsContent>
-
-				<TabsContent value="tools" className="space-y-3">
-					{toolsParameter ? (
-						<div className="bg-card rounded-sm border p-5">
-							<div className="text-muted-foreground mb-3 text-[12px]">
-								{declaredTools.length} tools exposed to the model
-								{inputDeclaredTools.length ? (
-									<>
-										{" "}
-										· {inputDeclaredTools.length} via input items
-										{inputDeclaredTools.length !== inputDeclaredToolEntries.length ? " (namespaces expanded)" : ""}
-									</>
-								) : null}
-								{(log.params as any)?.tool_choice != null ? (
-									<>
-										{" "}
-										· tool_choice ={" "}
-										<span className="text-foreground font-mono break-all">{formatToolChoice((log.params as any).tool_choice)}</span>
-									</>
+								<div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
+									{displayErrorMessage ??
+										(statusCode
+											? `The provider returned an error (HTTP ${statusCode}) without a message.`
+											: "The provider returned an error without a message.")}
+								</div>
+								{log.error_details?.error.error != null ? (
+									<details className="group mt-3 rounded-sm border border-red-200/70 bg-white/40 dark:border-red-900/70 dark:bg-red-950/40">
+										<summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-[12px] text-red-700 hover:bg-red-50/80 dark:text-red-400 dark:hover:bg-red-950/60">
+											<span className="font-medium">Details</span>
+											<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+										</summary>
+										<div className="custom-scrollbar max-h-[400px] overflow-y-auto border-t border-red-200/70 px-3 py-2 font-mono text-[11.5px] leading-[1.6] break-words whitespace-pre-wrap text-red-900 dark:border-red-900/70 dark:text-red-300">
+											{typeof log.error_details.error.error === "string"
+												? log.error_details.error.error
+												: JSON.stringify(log.error_details.error.error, null, 2)}
+										</div>
+									</details>
 								) : null}
 							</div>
-							<div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-								{declaredTools.map((tool, i) => {
-									const name = tool?.name ?? tool?.function?.name ?? `tool_${i}`;
-									const description = tool?.function?.description ?? tool?.description ?? "";
-									const schema = tool?.function?.parameters ?? tool?.input_schema ?? tool?.parameters ?? null;
-									const schemaJson = schema != null ? JSON.stringify(schema, null, 2) : "";
-									return (
-										<details key={i} className="group bg-card rounded-sm border">
-											<summary className="hover:bg-muted/30 flex cursor-pointer list-none items-start gap-2 p-3 transition">
-												<div className="grid h-7 w-7 shrink-0 place-items-center rounded-sm border border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-400">
-													<Wrench className="h-3 w-3" strokeWidth={1.5} />
-												</div>
-												<div className="min-w-0 flex-1">
-													<div className="text-foreground truncate font-mono text-[12.5px] font-medium">{name}</div>
-													{description ? <div className="text-muted-foreground mt-0.5 line-clamp-2 text-[12px]">{description}</div> : null}
-												</div>
-												<ChevronDown
-													className={cn(
-														"text-muted-foreground mt-1 h-3.5 w-3.5 shrink-0 transition-transform",
-														"group-open:rotate-180",
-														!schemaJson && "opacity-30",
-													)}
-												/>
-											</summary>
-											{schemaJson ? (
-												<div className="border-t">
-													<div className="text-muted-foreground flex items-center justify-between px-3 py-1.5 text-[10.5px] tracking-wider uppercase">
-														<span className="font-semibold">Parameters</span>
-														<CopyInlineButton text={schemaJson} />
+						)}
+					</TabsContent>
+
+					<TabsContent value="tools" className="space-y-3">
+						{toolsParameter ? (
+							<div className="bg-card rounded-sm border p-5">
+								<div className="text-muted-foreground mb-3 text-[12px]">
+									{declaredTools.length} tools exposed to the model
+									{inputDeclaredTools.length ? (
+										<>
+											{" "}
+											· {inputDeclaredTools.length} via input items
+											{inputDeclaredTools.length !== inputDeclaredToolEntries.length ? " (namespaces expanded)" : ""}
+										</>
+									) : null}
+									{(log.params as any)?.tool_choice != null ? (
+										<>
+											{" "}
+											· tool_choice ={" "}
+											<span className="text-foreground font-mono break-all">{formatToolChoice((log.params as any).tool_choice)}</span>
+										</>
+									) : null}
+								</div>
+								<div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+									{declaredTools.map((tool, i) => {
+										const name = tool?.name ?? tool?.function?.name ?? `tool_${i}`;
+										const description = tool?.function?.description ?? tool?.description ?? "";
+										const schema = tool?.function?.parameters ?? tool?.input_schema ?? tool?.parameters ?? null;
+										const schemaJson = schema != null ? JSON.stringify(schema, null, 2) : "";
+										return (
+											<details key={i} className="group bg-card rounded-sm border">
+												<summary className="hover:bg-muted/30 flex cursor-pointer list-none items-start gap-2 p-3 transition">
+													<div className="grid h-7 w-7 shrink-0 place-items-center rounded-sm border border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-400">
+														<Wrench className="h-3 w-3" strokeWidth={1.5} />
 													</div>
-													<pre className="custom-scrollbar max-h-[300px] overflow-auto border-t px-3 py-2 font-mono text-[11.5px] leading-[1.6] whitespace-pre">
-														{schemaJson}
-													</pre>
-												</div>
-											) : (
-												<div className="text-muted-foreground border-t px-3 py-2 text-[11.5px]">No parameter schema.</div>
-											)}
-										</details>
-									);
-								})}
+													<div className="min-w-0 flex-1">
+														<div className="text-foreground truncate font-mono text-[12.5px] font-medium">{name}</div>
+														{description ? (
+															<div className="text-muted-foreground mt-0.5 line-clamp-2 text-[12px]">{description}</div>
+														) : null}
+													</div>
+													<ChevronDown
+														className={cn(
+															"text-muted-foreground mt-1 h-3.5 w-3.5 shrink-0 transition-transform",
+															"group-open:rotate-180",
+															!schemaJson && "opacity-30",
+														)}
+													/>
+												</summary>
+												{schemaJson ? (
+													<div className="border-t">
+														<div className="text-muted-foreground flex items-center justify-between px-3 py-1.5 text-[10.5px] tracking-wider uppercase">
+															<span className="font-semibold">Parameters</span>
+															<CopyInlineButton text={schemaJson} />
+														</div>
+														<pre className="custom-scrollbar max-h-[300px] overflow-auto border-t px-3 py-2 font-mono text-[11.5px] leading-[1.6] whitespace-pre">
+															{schemaJson}
+														</pre>
+													</div>
+												) : (
+													<div className="text-muted-foreground border-t px-3 py-2 text-[11.5px]">No parameter schema.</div>
+												)}
+											</details>
+										);
+									})}
+								</div>
 							</div>
-						</div>
-					) : null}
-					{log.params?.instructions && (
-						<CollapsibleBox title="Instructions" onCopy={() => log.params?.instructions || ""}>
-							<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-4 py-2 font-mono text-xs break-words whitespace-pre-wrap md:px-6">
-								{log.params.instructions}
+						) : null}
+						{log.params?.instructions && (
+							<CollapsibleBox title="Instructions" onCopy={() => log.params?.instructions || ""}>
+								<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-4 py-2 font-mono text-xs break-words whitespace-pre-wrap md:px-6">
+									{log.params.instructions}
+								</div>
+							</CollapsibleBox>
+						)}
+						{!toolsParameter && !log.params?.instructions && (
+							<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
+								No tools or instructions on this request.
 							</div>
-						</CollapsibleBox>
-					)}
-					{!toolsParameter && !log.params?.instructions && (
-						<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
-							No tools or instructions on this request.
-						</div>
-					)}
-				</TabsContent>
+						)}
+					</TabsContent>
 
-				<TabsContent value="routing" className="space-y-3">
-					{log.attempt_trail && log.attempt_trail.length > 1 && (
-						<CollapsibleBox
-							title={`Attempt Trail (${log.attempt_trail.length} attempts)`}
-							onCopy={() => JSON.stringify(log.attempt_trail, null, 2)}
-						>
-							<div className="overflow-x-auto px-4 py-3 md:px-6">
-								<table className="w-full border-collapse text-xs">
-									<thead>
-										<tr className="border-border text-muted-foreground border-b">
-											<th className="py-1 pr-6 text-left font-medium">#</th>
-											<th className="py-1 pr-6 text-left font-medium">Key</th>
-											<th className="py-1 text-left font-medium">Result</th>
-										</tr>
-									</thead>
-									<tbody>
-										{log.attempt_trail.map((record) => (
-											<tr key={record.attempt} className="border-border/50 border-b last:border-0">
-												<td className="text-muted-foreground py-1.5 pr-6 tabular-nums">{record.attempt + 1}</td>
-												<td className="py-1.5 pr-6 font-mono">{record.key_name || record.key_id}</td>
-												<td className="py-1.5">
-													{record.fail_reason ? (
-														<span className="text-destructive">{record.fail_reason}</span>
-													) : (
-														<span className="text-green-600 dark:text-green-400">success</span>
-													)}
-												</td>
+					<TabsContent value="routing" className="space-y-3">
+						{RoutingPanel && <RoutingPanel log={log} />}
+						{log.attempt_trail && log.attempt_trail.length > 1 && (
+							<CollapsibleBox
+								title={`Attempt Trail (${log.attempt_trail.length} attempts)`}
+								onCopy={() => JSON.stringify(log.attempt_trail, null, 2)}
+							>
+								<div className="overflow-x-auto px-4 py-3 md:px-6">
+									<table className="w-full border-collapse text-xs">
+										<thead>
+											<tr className="border-border text-muted-foreground border-b">
+												<th className="py-1 pr-6 text-left font-medium">#</th>
+												<th className="py-1 pr-6 text-left font-medium">Key</th>
+												<th className="py-1 text-left font-medium">Result</th>
 											</tr>
-										))}
-									</tbody>
-								</table>
-							</div>
-						</CollapsibleBox>
-					)}
-					{log.routing_engine_logs ? (
-						<RoutingDecisionLogs logs={log.routing_engine_logs} />
-					) : (
-						<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
-							No routing logs for this request.
-						</div>
-					)}
-				</TabsContent>
-
-				<TabsContent value="plugins" className="space-y-3">
-					{log.plugin_logs ? (
-						<PluginLogsView pluginLogs={log.plugin_logs} />
-					) : (
-						<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
-							No plugin logs for this request.
-						</div>
-					)}
-				</TabsContent>
-
-				<TabsContent value="raw" className="space-y-3">
-					{rawRequest && (
-						<>
-							<div className="text-muted-foreground text-[12px]">
-								Raw Request sent to <span className="text-foreground font-medium capitalize">{log.provider}</span>
-								{log.is_large_payload_request && (
-									<span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">(truncated preview)</span>
-								)}
-							</div>
-							<CollapsibleBox
-								title={log.is_large_payload_request ? "Raw Request (Truncated)" : "Raw Request"}
-								onCopy={() => formatJsonSafe(rawRequest)}
-							>
-								<CodeEditor
-									className="z-0 w-full"
-									shouldAdjustInitialHeight={true}
-									maxHeight={450}
-									wrap={true}
-									code={formatJsonSafe(rawRequest)}
-									lang="json"
-									readonly={true}
-									options={{
-										collapsibleBlocks: true,
-										showVerticalScrollbar: true,
-										scrollBeyondLastLine: false,
-										lineNumbers: "off",
-										alwaysConsumeMouseWheel: false,
-									}}
-								/>
+										</thead>
+										<tbody>
+											{log.attempt_trail.map((record) => (
+												<tr key={record.attempt} className="border-border/50 border-b last:border-0">
+													<td className="text-muted-foreground py-1.5 pr-6 tabular-nums">{record.attempt + 1}</td>
+													<td className="py-1.5 pr-6 font-mono">{record.key_name || record.key_id}</td>
+													<td className="py-1.5">
+														{record.fail_reason ? (
+															<span className="text-destructive">{record.fail_reason}</span>
+														) : (
+															<span className="text-chart-success-ink">success</span>
+														)}
+													</td>
+												</tr>
+											))}
+										</tbody>
+									</table>
+								</div>
 							</CollapsibleBox>
-						</>
-					)}
-					{rawResponse && log.status !== "processing" && (
-						<>
-							<div className="text-muted-foreground pt-4 text-[12px]">
-								Raw Response from <span className="text-foreground font-medium capitalize">{log.provider}</span>
-								{log.is_large_payload_response && (
-									<span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">(truncated preview)</span>
-								)}
+						)}
+						{log.routing_engine_logs ? (
+							<RoutingDecisionLogs logs={log.routing_engine_logs} />
+						) : (
+							<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
+								No routing logs for this request.
 							</div>
-							<CollapsibleBox
-								title={log.is_large_payload_response ? "Raw Response (Truncated)" : "Raw Response"}
-								onCopy={() => formatJsonSafe(rawResponse)}
-							>
-								<CodeEditor
-									className="z-0 w-full"
-									shouldAdjustInitialHeight={true}
-									maxHeight={450}
-									wrap={true}
-									code={formatJsonSafe(rawResponse)}
-									lang="json"
-									readonly={true}
-									options={{
-										collapsibleBlocks: true,
-										showVerticalScrollbar: true,
-										scrollBeyondLastLine: false,
-										lineNumbers: "off",
-										alwaysConsumeMouseWheel: false,
-									}}
-								/>
-							</CollapsibleBox>
-						</>
-					)}
-					{!rawRequest && !rawResponse && !passthroughRequestBody && !passthroughResponseBody && (
-						<RawJsonUnavailableNotice provider={log.provider} />
-					)}
-				</TabsContent>
-			</Tabs>
+						)}
+					</TabsContent>
+
+					<TabsContent value="plugins" className="space-y-3">
+						{log.plugin_logs ? (
+							<PluginLogsView pluginLogs={log.plugin_logs} />
+						) : (
+							<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
+								No plugin logs for this request.
+							</div>
+						)}
+					</TabsContent>
+
+					<TabsContent value="raw" className="space-y-3">
+						{rawRequest && (
+							<>
+								<div className="text-muted-foreground text-[12px]">
+									Raw Request sent to <span className="text-foreground font-medium capitalize">{log.provider}</span>
+									{log.is_large_payload_request && (
+										<span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">(truncated preview)</span>
+									)}
+								</div>
+								<CollapsibleBox
+									title={log.is_large_payload_request ? "Raw Request (Truncated)" : "Raw Request"}
+									onCopy={() => formatJsonSafe(rawRequest)}
+								>
+									<CodeEditor
+										className="z-0 w-full"
+										shouldAdjustInitialHeight={true}
+										maxHeight={450}
+										wrap={true}
+										code={formatJsonSafe(rawRequest)}
+										lang="json"
+										readonly={true}
+										options={{
+											collapsibleBlocks: true,
+											showVerticalScrollbar: true,
+											scrollBeyondLastLine: false,
+											lineNumbers: "off",
+											alwaysConsumeMouseWheel: false,
+										}}
+									/>
+								</CollapsibleBox>
+							</>
+						)}
+						{rawResponse && log.status !== "processing" && (
+							<>
+								<div className="text-muted-foreground pt-4 text-[12px]">
+									Raw Response from <span className="text-foreground font-medium capitalize">{log.provider}</span>
+									{log.is_large_payload_response && (
+										<span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">(truncated preview)</span>
+									)}
+								</div>
+								<CollapsibleBox
+									title={log.is_large_payload_response ? "Raw Response (Truncated)" : "Raw Response"}
+									onCopy={() => formatJsonSafe(rawResponse)}
+								>
+									<CodeEditor
+										className="z-0 w-full"
+										shouldAdjustInitialHeight={true}
+										maxHeight={450}
+										wrap={true}
+										code={formatJsonSafe(rawResponse)}
+										lang="json"
+										readonly={true}
+										options={{
+											collapsibleBlocks: true,
+											showVerticalScrollbar: true,
+											scrollBeyondLastLine: false,
+											lineNumbers: "off",
+											alwaysConsumeMouseWheel: false,
+										}}
+									/>
+								</CollapsibleBox>
+							</>
+						)}
+						{!rawRequest && !rawResponse && !passthroughRequestBody && !passthroughResponseBody && (
+							<RawJsonUnavailableNotice provider={log.provider} />
+						)}
+					</TabsContent>
+				</Tabs>
+			</div>
 		</>
 	);
 }
@@ -3731,7 +3346,7 @@ const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<vo
 		const isRealtimeTurn = log.object === "realtime.turn";
 		const isSpeech = log.object === "audio.speech" || log.object === "audio.speech.chunk";
 		const isTextCompletion = log.object === "text.completion" || log.object === "text.completion.chunk";
-		const isEmbedding = log.object === "list";
+		const isEmbedding = log.object === "embedding";
 
 		const extractTextFromMessage = (message: any): string => {
 			if (!message || !message.content) {
@@ -3795,7 +3410,10 @@ const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<vo
 			if (prompt) {
 				requestBody.prompt = prompt;
 			}
+		} else if (log.object === "embedding" && log.embedding_input && log.embedding_input.length > 0) {
+			requestBody.input = log.embedding_input;
 		} else if (isEmbedding && log.input_history && log.input_history.length > 0) {
+			// Fallback for logs written before embedding_input existed.
 			const texts: string[] = [];
 			for (const message of log.input_history) {
 				const messageTexts = extractTextsFromMessage(message);

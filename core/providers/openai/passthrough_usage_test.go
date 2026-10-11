@@ -290,3 +290,17 @@ func mustLLM(t *testing.T, u *schemas.BifrostPassthroughUsage, prompt, completio
 			u.LLMUsage.PromptTokens, u.LLMUsage.CompletionTokens, u.LLMUsage.TotalTokens, prompt, completion, total)
 	}
 }
+
+func TestExtractOpenAIPassthroughUsage_ResponsesTopLevelToolUsage(t *testing.T) {
+	for name, body := range map[string]string{
+		"non-streaming":      `{"tool_usage":{"web_search":{"num_requests":3}},"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`,
+		"response.completed": `{"type":"response.completed","response":{"tool_usage":{"web_search":{"num_requests":3}},"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			u := openai.ExtractOpenAIPassthroughUsage("POST", "/v1/responses", nil, []byte(body))
+			if u == nil || u.LLMUsage == nil || u.LLMUsage.ToolUsage == nil || u.LLMUsage.ToolUsage.WebSearch == nil || u.LLMUsage.ToolUsage.WebSearch.NumRequests != 3 {
+				t.Fatalf("tool_usage web search = %+v, want 3", u)
+			}
+		})
+	}
+}

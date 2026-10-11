@@ -12,6 +12,7 @@ The LiteLLM compatibility plugin provides two transformations:
 2. **Chat-to-Responses Conversion** - Automatically converts chat completion requests to responses format for models that only support responses APIs
 3. **Drop Unsupported Params** - Automatically drops unsupported parameters if the model doesn't support them
 4. **Unsupported Parameter Conversion** - Automatically converts unsupported parameters to their supported equivalents
+5. **Reasoning-Only Models to Responses** - Routes chat completion requests to the Responses API for models that cannot reason alongside tool calls on chat completions
 
 When either transformation is applied, responses include `extra_fields.converted_request_type: <transformed_request_type>`. If request parameters are dropped, the keys are added in `extra_fields.dropped_compat_plugin_params`.
 
@@ -88,6 +89,20 @@ C --> G[Chat Completion Response]
 F --> G
 ```
 
+## 3. Reasoning-Only Models to Responses
+
+Some models (for example several GPT-5 series models) do not support reasoning together with tool calls on the chat completions API. Their datasheet entry sets `supports_reasoning_with_tool_calls: false`. For any chat completion request on such a model, with or without tools, Bifrost:
+
+1. Calls the Responses API instead, where reasoning and tools work together
+2. Transforms the response back to chat completion format
+
+With `force_reasoning_only_models_to_responses` off, the request stays on chat completions. What happens to reasoning then depends on `should_drop_params`:
+
+- **`should_drop_params` on**: when the request carries tools, reasoning is turned off (dropped, or set to `none` when the model supports it).
+- **`should_drop_params` off**: the request is sent with its reasoning setting unchanged.
+
+Controlled by `force_reasoning_only_models_to_responses` (on by default).
+
 ## Enabling LiteLLM Compatibility
 
 <Tabs group="litellm-compat">
@@ -100,8 +115,9 @@ F --> G
    - **Convert Text to Chat** - converts text completion requests to chat for models that only support chat
    - **Convert Chat to Responses** - converts chat completion requests to responses for models that only support responses
    - **Drop Unsupported Params** - drops unsupported parameters based on model catalog allowlist
-   - **Convert Unsupported Params Values** - converts unsupported parameters values to their supported equivalents. See the list of [supported parameters](#supported-parameters) below.
+   - **Convert Unsupported Params Values** - converts parameter values the model cannot accept, such as a token cap above the model limit, to values it can. See the list of [supported parameters](#supported-parameters) below.
    - **Azure DeepSeek** - converts Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses
+   - **Reasoning-only models to Responses** - routes chat completion requests to the Responses API for models that cannot reason with tool calls on chat completions
 4. Save your configuration
 
 ![Compatibility Settings](../media/compatibility-settings.png)
@@ -118,7 +134,8 @@ F --> G
       "convert_chat_to_responses": true,
       "should_drop_params": true,
       "should_convert_params": true,
-      "azure_deepseek": true
+      "azure_deepseek": true,
+      "force_reasoning_only_models_to_responses": true
     }
   }
 }
@@ -130,12 +147,18 @@ F --> G
 
 ## Supported Parameters
 
-The following parameters are converted to their supported equivalents:
+The following parameter values are converted to values the model accepts:
 
 | Parameter | Original Value | Transformed Value | Provider |
 |-----------|----------------|-------------------|----------|
-| messages.role | developer | system | Gemini, Vertex, Bedrock |
-| tools | namespace-scoped tools | flattened top-level tools list | Non-openai |
+| `max_completion_tokens` / `max_tokens` (chat), `max_output_tokens` (responses), `max_tokens` (text) | Above the model's `max_output_tokens` | The model's `max_output_tokens` | Every provider whose model has `max_output_tokens` in the model catalog |
+| `reasoning.max_tokens` | At or above a token cap that was just lowered | One below the lowered cap | Same as above |
+
+The limit comes from the model catalog datasheet, per model and provider. Values are only lowered, never raised or added. A model with no `max_output_tokens` in the catalog is left untouched. Each conversion is logged as a warning on the request, for example `max_output_tokens: 1000000 -> 65536`.
+
+`developer` role messages are mapped to `system` by the Gemini, Vertex and Bedrock providers themselves, so that works without this setting.
+
+Namespace-scoped tools are no longer handled by this plugin. Bifrost core flattens them for every provider whose wire does not support the `namespace` tool type, renames each nested function to `<namespace>__<function>` so names stay unique, and maps returned `function_call` items back to the original `name` plus `namespace`.
 
 ## Supported Providers
 
@@ -208,7 +231,7 @@ When errors occur on transformed requests:
 
 To enable compat plugins per request, you can use `x-bf-compat` header:
 - When `x-bf-compat: true` or `x-bf-compat: ["*"]`, enables all compat plugins options
-- When `x-bf-compat: ["<setting1>","<setting2>"]`, enables the specified settings (available settings: `convert_text_to_chat`, `convert_chat_to_responses`, `should_drop_params`, `should_convert_params`, `azure_deepseek`)
+- When `x-bf-compat: ["<setting1>","<setting2>"]`, enables the specified settings (available settings: `convert_text_to_chat`, `convert_chat_to_responses`, `should_drop_params`, `should_convert_params`, `azure_deepseek`, `force_reasoning_only_models_to_responses`)
 
 ## What's Preserved
 

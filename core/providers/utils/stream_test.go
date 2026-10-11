@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -712,5 +713,383 @@ func TestCheckFirstStreamChunk_BufferedChunkWinsOverCancelledCtx(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("closed source failed to drain")
+	}
+}
+
+// withAttemptAbort returns a context carrying a first-token deadline of d, the
+// way executeRequestWithRetries arms one stream attempt.
+func withAttemptAbort(t *testing.T, d time.Duration) (context.Context, *AttemptAbort) {
+	t.Helper()
+	abort := NewAttemptAbort(d)
+	t.Cleanup(func() { abort.Disarm() })
+	return context.WithValue(context.Background(), schemas.BifrostContextKeyStreamAttemptAbort, abort), abort
+}
+
+func assertFirstTokenTimeoutError(t *testing.T, err *schemas.BifrostError) {
+	t.Helper()
+	if err == nil || err.Error == nil {
+		t.Fatalf("expected a TTFT timeout error, got %v", err)
+	}
+	if err.StatusCode == nil || *err.StatusCode != 504 {
+		t.Fatalf("status = %v, want 504", err.StatusCode)
+	}
+	if err.Error.Type == nil || *err.Error.Type != schemas.RequestTimedOut {
+		t.Fatalf("type = %v, want %s", err.Error.Type, schemas.RequestTimedOut)
+	}
+	if err.Error.Code == nil || *err.Error.Code != schemas.FirstTokenTimeoutErrorCode {
+		t.Fatalf("code = %v, want %s", err.Error.Code, schemas.FirstTokenTimeoutErrorCode)
+	}
+	if !strings.Contains(err.Error.Message, "TTFT") {
+		t.Fatalf("message %q must name TTFT", err.Error.Message)
+	}
+	if !err.IsBifrostError {
+		t.Fatal("a TTFT miss must skip same-provider retries (IsBifrostError)")
+	}
+	if err.AllowFallbacks != nil && !*err.AllowFallbacks {
+		t.Fatal("a TTFT miss must allow fallbacks")
+	}
+	if !errors.Is(err.Error.Error, ErrStreamFirstTokenTimeout) {
+		t.Fatalf("wrapped error = %v, want ErrStreamFirstTokenTimeout", err.Error.Error)
+	}
+}
+
+func preambleChunk() *schemas.BifrostStreamChunk {
+	return &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "preamble"}}
+}
+
+func contentChunk() *schemas.BifrostStreamChunk {
+	return &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "content"}}
+}
+
+func isTestPreamble(chunk *schemas.BifrostStreamChunk) bool {
+	return chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.ID == "preamble"
+}
+
+func TestAttemptAbort_NilIsInert(t *testing.T) {
+	var abort *AttemptAbort
+	if NewAttemptAbort(0) != nil || NewAttemptAbort(-time.Second) != nil {
+		t.Fatal("a non-positive deadline must not arm an abort")
+	}
+	if abort.Done() != nil || abort.Stopped() != nil || abort.Fired() || !abort.Disarm() || abort.Timeout() != 0 {
+		t.Fatal("a nil abort must never fire and always disarm")
+	}
+	if AttemptAbortFromContext(context.Background()) != nil {
+		t.Fatal("a context without an abort must return nil")
+	}
+}
+
+// Expire fires an armed deadline at once, and never flips one the first token
+// already disarmed: that stream has committed and must not be cut.
+func TestAttemptAbort_Expire(t *testing.T) {
+	armed := NewAttemptAbort(time.Hour)
+	armed.Expire()
+	select {
+	case <-armed.Done():
+	default:
+		t.Fatal("Expire did not fire an armed deadline")
+	}
+	if !armed.Fired() || armed.Disarm() {
+		t.Fatal("an expired deadline must read as fired and refuse to disarm")
+	}
+	armed.Expire() // idempotent
+
+	disarmed := NewAttemptAbort(time.Hour)
+	if !disarmed.Disarm() {
+		t.Fatal("setup: disarm failed")
+	}
+	disarmed.Expire()
+	if disarmed.Fired() {
+		t.Fatal("Expire fired a deadline the first token had already disarmed")
+	}
+	var nilAbort *AttemptAbort
+	nilAbort.Expire()
+}
+
+// Exactly one of "deadline fired" and "first token arrived" wins, however
+// close together they land.
+func TestAttemptAbort_FireAndDisarmHaveOneWinner(t *testing.T) {
+	for i := 0; i < 2000; i++ {
+		abort := NewAttemptAbort(time.Microsecond)
+		disarmed := abort.Disarm()
+		if disarmed == abort.Fired() {
+			t.Fatalf("iteration %d: disarmed=%v fired=%v, want exactly one", i, disarmed, abort.Fired())
+		}
+		if disarmed {
+			select {
+			case <-abort.Stopped():
+			default:
+				t.Fatal("Disarm won but Stopped is open")
+			}
+			select {
+			case <-abort.Done():
+				t.Fatal("Disarm won but Done closed")
+			default:
+			}
+		} else {
+			<-abort.Done()
+		}
+		if abort.Disarm() != disarmed {
+			t.Fatal("Disarm is not idempotent")
+		}
+	}
+}
+
+// A provider that sends only startup events and then stalls is cut off at the
+// deadline, and its source still drains once the provider closes it.
+func TestCheckStreamPreamble_FirstTokenDeadlineCutsOffStartupOnlyStream(t *testing.T) {
+	ctx, abort := withAttemptAbort(t, 100*time.Millisecond)
+	source := make(chan *schemas.BifrostStreamChunk, 1)
+	closeSource := sync.OnceFunc(func() { close(source) })
+	defer closeSource()
+	source <- preambleChunk()
+
+	start := time.Now()
+	wrapped, done, err := CheckStreamPreambleForError(ctx, t.Name(), source, isTestPreamble)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("deadline took %v to fire", elapsed)
+	}
+	if wrapped != nil {
+		t.Fatal("a cut-off attempt must not return a stream")
+	}
+	assertFirstTokenTimeoutError(t, err)
+	if !abort.Fired() {
+		t.Fatal("abort did not record the miss")
+	}
+	closeSource()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cut-off stream failed to drain")
+	}
+}
+
+// bigPreambleChunk is a startup event the size of response.created or
+// response.in_progress echoing a large request's instructions and tools.
+func bigPreambleChunk(size int) *schemas.BifrostStreamChunk {
+	return &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
+		ID:    "preamble",
+		Model: strings.Repeat("x", size),
+	}}
+}
+
+// Two startup events that together pass the byte cap must not commit the
+// stream while a TTFT deadline is armed: that would disarm the deadline with
+// no output, and a stall after them would never be cut off.
+func TestCheckStreamPreamble_ByteOverflowKeepsFirstTokenDeadline(t *testing.T) {
+	ctx, abort := withAttemptAbort(t, 100*time.Millisecond)
+	source := make(chan *schemas.BifrostStreamChunk, 2)
+	closeSource := sync.OnceFunc(func() { close(source) })
+	defer closeSource()
+	source <- bigPreambleChunk(150 * 1024)
+	source <- bigPreambleChunk(150 * 1024)
+
+	wrapped, done, err := CheckStreamPreambleForError(ctx, t.Name(), source, isTestPreamble)
+	if wrapped != nil {
+		t.Fatal("oversized startup events committed the stream and disarmed the TTFT deadline")
+	}
+	assertFirstTokenTimeoutError(t, err)
+	if !abort.Fired() {
+		t.Fatal("abort did not record the miss")
+	}
+	closeSource()
+	<-done
+}
+
+// A full preamble buffer under an armed deadline ends the attempt as an early
+// TTFT miss: it must neither commit the stream (the deadline would be lost)
+// nor keep buffering (memory would be unbounded). Both caps are covered, and
+// the long deadline proves the cap, not the timer, ended the attempt.
+func TestCheckStreamPreamble_FullBufferUnderDeadlineIsAnEarlyMiss(t *testing.T) {
+	for name, chunks := range map[string][]*schemas.BifrostStreamChunk{
+		"chunk cap": func() []*schemas.BifrostStreamChunk {
+			out := make([]*schemas.BifrostStreamChunk, maxStreamPreambleChunks)
+			for i := range out {
+				out[i] = preambleChunk()
+			}
+			return out
+		}(),
+		"byte budget": func() []*schemas.BifrostStreamChunk {
+			out := make([]*schemas.BifrostStreamChunk, 5)
+			for i := range out {
+				out[i] = bigPreambleChunk(1024 * 1024)
+			}
+			return out
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, abort := withAttemptAbort(t, 5*time.Second)
+			source := make(chan *schemas.BifrostStreamChunk, len(chunks))
+			closeSource := sync.OnceFunc(func() { close(source) })
+			defer closeSource()
+			for _, chunk := range chunks {
+				source <- chunk
+			}
+
+			start := time.Now()
+			wrapped, done, err := CheckStreamPreambleForError(ctx, t.Name(), source, isTestPreamble)
+			if wrapped != nil {
+				t.Fatal("a full preamble buffer committed the stream and disarmed the TTFT deadline")
+			}
+			if elapsed := time.Since(start); elapsed > time.Second {
+				t.Fatalf("attempt ended after %v: the buffer limit did not end it, the deadline did", elapsed)
+			}
+			assertFirstTokenTimeoutError(t, err)
+			if !abort.Fired() {
+				t.Fatal("the abort must fire so the socket watchers cut the attempt")
+			}
+			closeSource()
+			<-done
+		})
+	}
+}
+
+// Without a TTFT deadline the byte cap still bounds the buffer: an oversized
+// startup event commits the stream and every event replays in order.
+func TestCheckStreamPreamble_ByteOverflowCommitsWithoutDeadline(t *testing.T) {
+	source := make(chan *schemas.BifrostStreamChunk, 2)
+	first, second := bigPreambleChunk(150*1024), bigPreambleChunk(150*1024)
+	source <- first
+	source <- second
+	close(source)
+
+	wrapped, done, err := CheckStreamPreambleForError(context.Background(), t.Name(), source, isTestPreamble)
+	if err != nil || wrapped == nil {
+		t.Fatalf("expected a committed stream, got wrapped=%v err=%v", wrapped, err)
+	}
+	var got []*schemas.BifrostStreamChunk
+	for chunk := range wrapped {
+		got = append(got, chunk)
+	}
+	<-done
+	if len(got) != 2 || got[0] != first || got[1] != second {
+		t.Fatalf("replayed %d chunks, want both startup events in order", len(got))
+	}
+}
+
+// Output before the deadline commits the stream: startup events replay in
+// order ahead of it and the abort is disarmed for good.
+func TestCheckStreamPreamble_ContentBeforeDeadlineCommits(t *testing.T) {
+	ctx, abort := withAttemptAbort(t, time.Second)
+	source := make(chan *schemas.BifrostStreamChunk, 3)
+	source <- preambleChunk()
+	source <- contentChunk()
+	close(source)
+
+	wrapped, done, err := CheckStreamPreambleForError(ctx, t.Name(), source, isTestPreamble)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var ids []string
+	for chunk := range wrapped {
+		ids = append(ids, chunk.BifrostChatResponse.ID)
+	}
+	<-done
+	if strings.Join(ids, ",") != "preamble,content" {
+		t.Fatalf("replayed %v, want [preamble content]", ids)
+	}
+	select {
+	case <-abort.Stopped():
+	default:
+		t.Fatal("the first content chunk must disarm the abort")
+	}
+	if abort.Fired() {
+		t.Fatal("abort fired after the stream committed")
+	}
+}
+
+// A chunk that arrives after the deadline fired loses: the attempt is still a
+// TTFT miss, so a fallback never races a half-committed stream.
+func TestCheckFirstStreamChunk_ChunkAfterFiredDeadlineIsAMiss(t *testing.T) {
+	ctx, abort := withAttemptAbort(t, time.Millisecond)
+	<-abort.Done()
+	source := make(chan *schemas.BifrostStreamChunk, 1)
+	source <- contentChunk()
+	close(source)
+
+	wrapped, done, err := CheckFirstStreamChunkForError(ctx, source)
+	if wrapped != nil {
+		t.Fatal("a stream past its deadline must not be committed")
+	}
+	assertFirstTokenTimeoutError(t, err)
+	<-done
+}
+
+// Cutting the socket at the deadline can make the provider close its channel
+// with nothing sent. That close must not read as an empty success: the
+// attempt is a TTFT miss, or the fallback never runs.
+func TestCheckFirstStreamChunk_EmptyCloseAfterFiredDeadlineIsAMiss(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		ctx, abort := withAttemptAbort(t, time.Millisecond)
+		<-abort.Done()
+		source := make(chan *schemas.BifrostStreamChunk)
+		close(source)
+
+		wrapped, done, err := CheckFirstStreamChunkForError(ctx, source)
+		if wrapped != nil {
+			t.Fatalf("iteration %d: a stream past its deadline must not be committed", i)
+		}
+		assertFirstTokenTimeoutError(t, err)
+		<-done
+	}
+}
+
+// Same race on the preamble path, whether the source closed empty or after
+// startup events only. The select sees the fired abort and the closed source
+// together, so repeat until both orders have been taken.
+func TestCheckStreamPreamble_CloseAfterFiredDeadlineIsAMiss(t *testing.T) {
+	for _, withPreamble := range []bool{false, true} {
+		for i := 0; i < 200; i++ {
+			ctx, abort := withAttemptAbort(t, time.Millisecond)
+			<-abort.Done()
+			source := make(chan *schemas.BifrostStreamChunk, 1)
+			if withPreamble {
+				source <- preambleChunk()
+			}
+			close(source)
+
+			wrapped, done, err := CheckStreamPreambleForError(ctx, t.Name(), source, isTestPreamble)
+			if wrapped != nil {
+				t.Fatalf("withPreamble=%v iteration %d: a stream past its deadline must not be committed", withPreamble, i)
+			}
+			assertFirstTokenTimeoutError(t, err)
+			<-done
+		}
+	}
+}
+
+func TestCheckFirstStreamChunk_FirstTokenDeadlineCutsOffSilentStream(t *testing.T) {
+	ctx, _ := withAttemptAbort(t, 50*time.Millisecond)
+	source := make(chan *schemas.BifrostStreamChunk)
+	closeSource := sync.OnceFunc(func() { close(source) })
+	defer closeSource()
+
+	wrapped, done, err := CheckFirstStreamChunkForError(ctx, source)
+	if wrapped != nil {
+		t.Fatal("a silent stream past its deadline must not be committed")
+	}
+	assertFirstTokenTimeoutError(t, err)
+	closeSource()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cut-off stream failed to drain")
+	}
+}
+
+func TestCheckFirstStreamChunk_FirstChunkBeforeDeadlineDisarms(t *testing.T) {
+	ctx, abort := withAttemptAbort(t, time.Second)
+	source := make(chan *schemas.BifrostStreamChunk, 1)
+	source <- contentChunk()
+	close(source)
+
+	wrapped, done, err := CheckFirstStreamChunkForError(ctx, source)
+	if err != nil || wrapped == nil {
+		t.Fatalf("expected a committed stream, got wrapped=%v err=%v", wrapped, err)
+	}
+	for range wrapped {
+	}
+	<-done
+	if abort.Fired() || !abort.Disarm() {
+		t.Fatal("the first chunk must disarm the abort")
 	}
 }

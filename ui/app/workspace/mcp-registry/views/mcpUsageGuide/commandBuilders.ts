@@ -1,34 +1,29 @@
 import type { CoreConfig } from "@/lib/types/config";
-import type { VirtualKey } from "@/lib/types/governance";
 import type { MCPClient } from "@/lib/types/mcp";
 import type { ClaudeScope } from "./types";
-import { encodeBase64, getExternalBaseUrl, getIncludeClients, getRegistrationName, quoteShellValue, quoteTomlString } from "./utils";
+import { encodeBase64, getExternalBaseUrl, getRegistrationName, quoteShellValue, quoteTomlString } from "./utils";
+
+/**
+ * Shared shape of every builder. `headers` is already resolved by the caller from
+ * the chosen authentication method and server scope, and is empty when the client
+ * authenticates through the OAuth consent flow.
+ */
+interface BuildArgs {
+	clientConfig?: CoreConfig;
+	headers: Record<string, string>;
+	selectedServers?: MCPClient[];
+}
 
 // ── Claude Code ────────────────────────────────────────────────────────
 
-export function buildClaudeCodeCommand({
-	clientConfig,
-	scope,
-	selectedServers,
-	virtualKey,
-}: {
-	clientConfig?: CoreConfig;
-	scope: ClaudeScope;
-	selectedServers?: MCPClient[];
-	virtualKey: VirtualKey;
-}): string {
+export function buildClaudeCodeCommand({ clientConfig, headers, scope, selectedServers }: BuildArgs & { scope: ClaudeScope }): string {
 	const gatewayUrl = `${getExternalBaseUrl(clientConfig)}/mcp`;
 	const registrationName = getRegistrationName(selectedServers);
 
-	const lines = [
-		`claude mcp add --transport http ${quoteShellValue(registrationName)} --scope ${scope} ${quoteShellValue(gatewayUrl)} \\`,
-		`  --header ${quoteShellValue(`x-bf-vk: ${virtualKey.value}`)}`,
-	];
-
-	const includeClients = getIncludeClients(selectedServers);
-	if (includeClients) {
+	const lines = [`claude mcp add --transport http ${quoteShellValue(registrationName)} --scope ${scope} ${quoteShellValue(gatewayUrl)}`];
+	for (const [name, value] of Object.entries(headers)) {
 		lines[lines.length - 1] += " \\";
-		lines.push(`  --header ${quoteShellValue(`x-bf-mcp-include-clients: ${includeClients}`)}`);
+		lines.push(`  --header ${quoteShellValue(`${name}: ${value}`)}`);
 	}
 
 	return lines.join("\n");
@@ -36,55 +31,34 @@ export function buildClaudeCodeCommand({
 
 // ── Codex ──────────────────────────────────────────────────────────────
 
-export function buildCodexConfig({
-	clientConfig,
-	selectedServers,
-	virtualKey,
-}: {
-	clientConfig?: CoreConfig;
-	selectedServers?: MCPClient[];
-	virtualKey: VirtualKey;
-}): string {
+export function buildCodexConfig({ clientConfig, headers, selectedServers }: BuildArgs): string {
 	const gatewayUrl = `${getExternalBaseUrl(clientConfig)}/mcp`;
 	const registrationName = getRegistrationName(selectedServers);
-	const includeClients = getIncludeClients(selectedServers);
 
-	const headerEntries = [`"x-bf-vk" = ${quoteTomlString(virtualKey.value)}`];
-	if (includeClients) {
-		headerEntries.push(`"x-bf-mcp-include-clients" = ${quoteTomlString(includeClients)}`);
+	const lines = [`[mcp_servers.${quoteTomlString(registrationName)}]`, `url = ${quoteTomlString(gatewayUrl)}`];
+
+	const headerEntries = Object.entries(headers).map(([name, value]) => `${quoteTomlString(name)} = ${quoteTomlString(value)}`);
+	if (headerEntries.length > 0) {
+		lines.push(`http_headers = { ${headerEntries.join(", ")} }`);
 	}
 
-	return [
-		`[mcp_servers.${quoteTomlString(registrationName)}]`,
-		`url = ${quoteTomlString(gatewayUrl)}`,
-		`http_headers = { ${headerEntries.join(", ")} }`,
-	].join("\n");
+	return lines.join("\n");
 }
 
 // ── Cursor ─────────────────────────────────────────────────────────────
 
-function buildCursorServer({
-	clientConfig,
-	selectedServers,
-	virtualKey,
-}: {
-	clientConfig?: CoreConfig;
-	selectedServers?: MCPClient[];
-	virtualKey: VirtualKey;
-}): { name: string; server: { url: string; headers: Record<string, string> } } {
+function buildCursorServer({ clientConfig, headers, selectedServers }: BuildArgs): {
+	name: string;
+	server: { url: string; headers?: Record<string, string> };
+} {
 	const gatewayUrl = `${getExternalBaseUrl(clientConfig)}/mcp`;
-	const registrationName = getRegistrationName(selectedServers);
-	const headers: Record<string, string> = { "x-bf-vk": virtualKey.value };
-
-	const includeClients = getIncludeClients(selectedServers);
-	if (includeClients) {
-		headers["x-bf-mcp-include-clients"] = includeClients;
-	}
-
-	return { name: registrationName, server: { url: gatewayUrl, headers } };
+	return {
+		name: getRegistrationName(selectedServers),
+		server: { url: gatewayUrl, ...(hasHeaders(headers) ? { headers } : {}) },
+	};
 }
 
-export function buildCursorConfig(args: { clientConfig?: CoreConfig; selectedServers?: MCPClient[]; virtualKey: VirtualKey }): string {
+export function buildCursorConfig(args: BuildArgs): string {
 	const { name, server } = buildCursorServer(args);
 	return JSON.stringify({ mcpServers: { [name]: server } }, null, 2);
 }
@@ -93,7 +67,7 @@ export function buildCursorConfig(args: { clientConfig?: CoreConfig; selectedSer
  * Cursor deeplink encodes the inner server config (not wrapped in `mcpServers`) as base64.
  * See https://cursor.com/docs/mcp.md (MCP Install Links).
  */
-export function buildCursorDeeplink(args: { clientConfig?: CoreConfig; selectedServers?: MCPClient[]; virtualKey: VirtualKey }): string {
+export function buildCursorDeeplink(args: BuildArgs): string {
 	const { name, server } = buildCursorServer(args);
 	const encodedConfig = encodeBase64(JSON.stringify(server));
 	if (!encodedConfig) return "";
@@ -102,30 +76,16 @@ export function buildCursorDeeplink(args: { clientConfig?: CoreConfig; selectedS
 
 // ── Windsurf ───────────────────────────────────────────────────────────
 
-export function buildWindsurfConfig({
-	clientConfig,
-	selectedServers,
-	virtualKey,
-}: {
-	clientConfig?: CoreConfig;
-	selectedServers?: MCPClient[];
-	virtualKey: VirtualKey;
-}): string {
+export function buildWindsurfConfig({ clientConfig, headers, selectedServers }: BuildArgs): string {
 	const gatewayUrl = `${getExternalBaseUrl(clientConfig)}/mcp`;
 	const registrationName = getRegistrationName(selectedServers);
-	const headers: Record<string, string> = { "x-bf-vk": virtualKey.value };
-
-	const includeClients = getIncludeClients(selectedServers);
-	if (includeClients) {
-		headers["x-bf-mcp-include-clients"] = includeClients;
-	}
 
 	return JSON.stringify(
 		{
 			mcpServers: {
 				[registrationName]: {
 					serverUrl: gatewayUrl,
-					headers,
+					...(hasHeaders(headers) ? { headers } : {}),
 				},
 			},
 		},
@@ -136,28 +96,18 @@ export function buildWindsurfConfig({
 
 // ── VS Code ────────────────────────────────────────────────────────────
 
-function buildVSCodeServer({
-	clientConfig,
-	selectedServers,
-	virtualKey,
-}: {
-	clientConfig?: CoreConfig;
-	selectedServers?: MCPClient[];
-	virtualKey: VirtualKey;
-}): { name: string; server: { type: "http"; url: string; headers: Record<string, string> } } {
+function buildVSCodeServer({ clientConfig, headers, selectedServers }: BuildArgs): {
+	name: string;
+	server: { type: "http"; url: string; headers?: Record<string, string> };
+} {
 	const gatewayUrl = `${getExternalBaseUrl(clientConfig)}/mcp`;
-	const registrationName = getRegistrationName(selectedServers);
-	const headers: Record<string, string> = { "x-bf-vk": virtualKey.value };
-
-	const includeClients = getIncludeClients(selectedServers);
-	if (includeClients) {
-		headers["x-bf-mcp-include-clients"] = includeClients;
-	}
-
-	return { name: registrationName, server: { type: "http", url: gatewayUrl, headers } };
+	return {
+		name: getRegistrationName(selectedServers),
+		server: { type: "http", url: gatewayUrl, ...(hasHeaders(headers) ? { headers } : {}) },
+	};
 }
 
-export function buildVSCodeConfig(args: { clientConfig?: CoreConfig; selectedServers?: MCPClient[]; virtualKey: VirtualKey }): string {
+export function buildVSCodeConfig(args: BuildArgs): string {
 	const { name, server } = buildVSCodeServer(args);
 	return JSON.stringify({ servers: { [name]: server } }, null, 2);
 }
@@ -167,7 +117,7 @@ export function buildVSCodeConfig(args: { clientConfig?: CoreConfig; selectedSer
  * in `servers`) as a URL-encoded JSON string.
  * See https://code.visualstudio.com/api/extension-guides/ai/mcp#create-an-mcp-installation-url
  */
-export function buildVSCodeDeeplink(args: { clientConfig?: CoreConfig; selectedServers?: MCPClient[]; virtualKey: VirtualKey }): string {
+export function buildVSCodeDeeplink(args: BuildArgs): string {
 	const { name, server } = buildVSCodeServer(args);
 	return `vscode:mcp/install?${encodeURIComponent(JSON.stringify({ name, ...server }))}`;
 }
@@ -179,23 +129,9 @@ export function buildVSCodeDeeplink(args: { clientConfig?: CoreConfig; selectedS
  * with `url` and `headers`. Config lives in `opencode.json`.
  * See https://opencode.ai/docs/mcp-servers.md
  */
-export function buildOpenCodeConfig({
-	clientConfig,
-	selectedServers,
-	virtualKey,
-}: {
-	clientConfig?: CoreConfig;
-	selectedServers?: MCPClient[];
-	virtualKey: VirtualKey;
-}): string {
+export function buildOpenCodeConfig({ clientConfig, headers, selectedServers }: BuildArgs): string {
 	const gatewayUrl = `${getExternalBaseUrl(clientConfig)}/mcp`;
 	const registrationName = getRegistrationName(selectedServers);
-	const headers: Record<string, string> = { "x-bf-vk": virtualKey.value };
-
-	const includeClients = getIncludeClients(selectedServers);
-	if (includeClients) {
-		headers["x-bf-mcp-include-clients"] = includeClients;
-	}
 
 	return JSON.stringify(
 		{
@@ -205,7 +141,7 @@ export function buildOpenCodeConfig({
 					type: "remote",
 					url: gatewayUrl,
 					enabled: true,
-					headers,
+					...(hasHeaders(headers) ? { headers } : {}),
 				},
 			},
 		},
@@ -216,34 +152,25 @@ export function buildOpenCodeConfig({
 
 // ── Antigravity ────────────────────────────────────────────────────────
 
-export function buildAntigravityConfig({
-	clientConfig,
-	selectedServers,
-	virtualKey,
-}: {
-	clientConfig?: CoreConfig;
-	selectedServers?: MCPClient[];
-	virtualKey: VirtualKey;
-}): string {
+export function buildAntigravityConfig({ clientConfig, headers, selectedServers }: BuildArgs): string {
 	const gatewayUrl = `${getExternalBaseUrl(clientConfig)}/mcp`;
 	const registrationName = getRegistrationName(selectedServers);
-	const headers: Record<string, string> = { "x-bf-vk": virtualKey.value };
-
-	const includeClients = getIncludeClients(selectedServers);
-	if (includeClients) {
-		headers["x-bf-mcp-include-clients"] = includeClients;
-	}
 
 	return JSON.stringify(
 		{
 			mcpServers: {
 				[registrationName]: {
 					serverUrl: gatewayUrl,
-					headers,
+					...(hasHeaders(headers) ? { headers } : {}),
 				},
 			},
 		},
 		null,
 		2,
 	);
+}
+
+/** Omit the `headers` key entirely rather than emitting an empty object. */
+function hasHeaders(headers: Record<string, string>): boolean {
+	return Object.keys(headers).length > 0;
 }

@@ -128,15 +128,19 @@ func (h *PluginsHandler) buildPluginResponseWithStatuses(plugin *configstoreTabl
 		Status: schemas.PluginStatusUninitialized,
 		Logs:   []string{},
 	}
-	if !plugin.Enabled {
-		pluginStatus.Status = schemas.PluginStatusDisabled
-	} else {
-		for _, status := range pluginStatuses {
-			if plugin.Name == status.Name {
-				pluginStatus = status
-				break
-			}
+	// Report the runtime status even when the row says disabled, so a plugin that
+	// loaded against its row shows as enabled=false/status=active instead of being
+	// masked as disabled. Absent from the runtime set means it really is not loaded.
+	loaded := false
+	for _, status := range pluginStatuses {
+		if plugin.Name == status.Name {
+			pluginStatus = status
+			loaded = true
+			break
 		}
+	}
+	if !loaded && !plugin.Enabled {
+		pluginStatus.Status = schemas.PluginStatusDisabled
 	}
 	config := plugin.Config
 	if configMap, ok := plugin.Config.(map[string]any); ok {
@@ -625,11 +629,15 @@ func restoreRedactedValue(incoming, existing any) any {
 		}
 		out := make([]any, len(val))
 		for i, item := range val {
-			if i < len(existingSlice) {
-				out[i] = restoreRedactedValue(item, existingSlice[i])
-			} else {
+			// A plain string inside an array is a list entry (header pattern, excluded
+			// attribute, broker), never a redacted scalar: no plugin config stores secrets
+			// as array elements. Restoring them swapped a lone "*" header pattern for the
+			// stored one, because IsRedacted treats an all-asterisk string as a placeholder.
+			if _, isString := item.(string); isString || i >= len(existingSlice) {
 				out[i] = item
+				continue
 			}
+			out[i] = restoreRedactedValue(item, existingSlice[i])
 		}
 		return out
 	case string:

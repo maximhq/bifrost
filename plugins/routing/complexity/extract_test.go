@@ -686,10 +686,11 @@ func TestBuildInputWithDisposition(t *testing.T) {
 	userRole := schemas.ResponsesInputMessageRoleUser
 	assistantRole := schemas.ResponsesInputMessageRoleAssistant
 	tests := []struct {
-		name string
-		ctx  *schemas.BifrostContext
-		req  *schemas.BifrostRequest
-		want InputDisposition
+		name     string
+		ctx      *schemas.BifrostContext
+		req      *schemas.BifrostRequest
+		want     InputDisposition
+		wantText string
 	}{
 		{
 			name: "human turn is classifiable",
@@ -716,6 +717,20 @@ func TestBuildInputWithDisposition(t *testing.T) {
 				}},
 			},
 			want: InputClassifiable,
+		},
+		{
+			name: "chat textless user fragment does not hide earlier human turn",
+			req: &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("Inspect the attached image")},
+					{Role: schemas.ChatMessageRoleUser, Content: complexityChatBlocks(
+						schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeImage},
+					)},
+				}},
+			},
+			want:     InputContinuation,
+			wantText: "Inspect the attached image",
 		},
 		{
 			name: "claude code text and image in one turn is classifiable",
@@ -751,7 +766,8 @@ func TestBuildInputWithDisposition(t *testing.T) {
 					{Role: schemas.ChatMessageRoleTool, Content: complexityChatString("Tests passed")},
 				}},
 			},
-			want: InputContinuation,
+			want:     InputContinuation,
+			wantText: "Run the tests",
 		},
 		{
 			name: "responses replay followed by tool output is a continuation",
@@ -765,7 +781,8 @@ func TestBuildInputWithDisposition(t *testing.T) {
 					}},
 				}
 			}(),
-			want: InputContinuation,
+			want:     InputContinuation,
+			wantText: "Run the tests",
 		},
 		{
 			name: "unsupported operation bypasses session state",
@@ -789,8 +806,11 @@ func TestBuildInputWithDisposition(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, got := BuildInputWithDisposition(tt.ctx, tt.req)
+			input, got := BuildInputWithDisposition(tt.ctx, tt.req)
 			assert.Equal(t, tt.want, got)
+			if tt.wantText != "" {
+				assert.Equal(t, tt.wantText, input.LastUserText)
+			}
 		})
 	}
 }

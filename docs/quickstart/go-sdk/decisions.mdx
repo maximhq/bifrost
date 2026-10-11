@@ -1,0 +1,168 @@
+---
+title: "Decisions"
+description: "Ask questions about some input and get typed answers with Bifrost Go SDK using client.DecisionRequest."
+icon: "scale-balanced"
+---
+
+Use the Go SDK to get structured judgments - probabilities, choices, and rubric scores - from judgment models like TypeSafe's jev family.
+
+Provider/model examples:
+- TypeSafe: `Provider: schemas.Typesafe`, `Model: "jev-1.13.0"` (aliases: `jev-latest`, `jev-preview`)
+
+## Basic Example
+
+The account must serve keys for `schemas.Typesafe` - the OpenAI-only account from the setup guide returns "provider not supported" for this example. A minimal TypeSafe-capable account:
+
+```go
+type MyAccount struct{}
+
+func (a *MyAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Typesafe}, nil
+}
+
+func (a *MyAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{
+		{
+			Value:  *schemas.NewSecretVar("env.TYPESAFE_API_KEY"),
+			Models: []string{"*"},
+			Weight: 1.0,
+		},
+	}, nil
+}
+
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return &schemas.ProviderConfig{}, nil
+}
+```
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+func main() {
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: &MyAccount{},
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer client.Shutdown()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	input := "Customer message: I was double charged and nobody replied. I want a refund today."
+	response, bifrostErr := client.DecisionRequest(ctx, &schemas.BifrostDecisionRequest{
+		Provider: schemas.Typesafe,
+		Model:    "jev-1.13.0",
+		Input:    schemas.DecisionInput{Text: &input},
+		Questions: []schemas.DecisionQuestion{
+			{
+				Type:         schemas.DecisionTypePredicate,
+				Name:         schemas.Ptr("is_frustrated"),
+				Instructions: schemas.NewDecisionText("Is the customer frustrated?"),
+			},
+			{
+				Type:         schemas.DecisionTypeChoice,
+				Name:         schemas.Ptr("category"),
+				Instructions: schemas.NewDecisionText("Pick the ticket category"),
+				Choices: []schemas.DecisionChoice{
+					{Value: schemas.DecisionScalar{Str: schemas.Ptr("billing")}, Description: schemas.NewDecisionText("charges and refunds")},
+					{Value: schemas.DecisionScalar{Str: schemas.Ptr("bug")}, Description: schemas.NewDecisionText("product defects")},
+					{Value: schemas.DecisionScalar{Str: schemas.Ptr("other")}, Description: schemas.NewDecisionText("anything else")},
+				},
+			},
+			{
+				Type:         schemas.DecisionTypeScore,
+				Name:         schemas.Ptr("urgency"),
+				Instructions: schemas.NewDecisionText("Rate how urgently this needs a human reply"),
+				Levels: []schemas.DecisionLevel{
+					{Label: "low", Description: schemas.NewDecisionText("can wait a week")},
+					{Label: "medium", Description: schemas.NewDecisionText("should be answered soon")},
+					{Label: "high", Description: schemas.NewDecisionText("needs a reply today")},
+				},
+			},
+		},
+	})
+	if bifrostErr != nil {
+		panic(bifrostErr.Error.Message)
+	}
+
+	for _, answer := range response.Answers {
+		// Name is unset for an unnamed question; a refusal carries no value.
+		name := "(unnamed)"
+		if answer.Name != nil {
+			name = *answer.Name
+		}
+		switch {
+		case answer.Type == schemas.DecisionTypeRefusal:
+			fmt.Printf("%s: refused\n", name)
+		case answer.Probability != nil:
+			fmt.Printf("%s: %v\n", name, *answer.Probability)
+		case answer.Choice != nil:
+			// A choice is a string or a boolean; Key renders either.
+			choice, _ := answer.Choice.Key()
+			fmt.Printf("%s: %s\n", name, choice)
+		case answer.Score != nil:
+			fmt.Printf("%s: %v\n", name, *answer.Score)
+		}
+	}
+}
+```
+
+## Request
+
+| Field | Meaning |
+|-------|---------|
+| `Input` | The evidence: `Text`, `Messages` (text and image parts; an image's `ImageURL` is a base64 data URL or an HTTP(S) URL, with an optional `Detail`), or `Structured` (an object or array, passed to TypeSafe-based models as their state). Leave it empty to send a `null` state |
+| `Questions[].Type` | `DecisionTypePredicate` (TypeSafe's `noul`), `DecisionTypeChoice`, or `DecisionTypeScore` |
+| `Questions[].Name` | Optional; answers carry it back |
+| `Questions[].Instructions` | `*schemas.DecisionText`: text (`schemas.NewDecisionText("...")`), or a structured value (`&schemas.DecisionText{Structured: map[string]interface{}{...}}`) that TypeSafe-based models receive as given and other models as JSON text |
+| `Questions[].Criteria` | Predicate only: `*schemas.DecisionCriteria` with optional `True` and `False` descriptions, read by TypeSafe-based models |
+| `Questions[].Choices` | Choice only: each choice's value (string or boolean) and description |
+| `Questions[].Levels` | Score only: the ordered levels, each with a label and description |
+| `SafetyIdentifier` | Stable end-user identifier, forwarded to models that accept one |
+
+A model that cannot read part of a request (an image or any other non-text part sent to a TypeSafe or chat model) rejects that attempt with a 400, so a fallback can serve it. Fallbacks work like every other request type via the `Fallbacks` field.
+
+## Answers
+
+`response.Answers` follows the order of the questions. Each `schemas.DecisionAnswer` carries:
+
+| Field | Meaning |
+|-------|---------|
+| `Type` | The question's type, or `DecisionTypeRefusal` when the model declined to answer |
+| `Name` | The question's name, when it had one |
+| `Probability` | Predicate answers: probability in [0,1] that the condition is true |
+| `Choice` | Choice answers: the chosen value |
+| `Score` | Score answers: probability-weighted level index, which may fall between levels |
+| `Confidence` | Model confidence, when supplied |
+| `Probabilities` | Distribution over choices or levels, in question order, when supplied |
+| `Legend` | Level index to description map for score answers, when supplied |
+
+`Probabilities` entries carry each option's `Value`, its `Label` for score levels, and its `Probability`. For Laya's extra answer fields, see [Provider-Specific Fields](/quickstart/gateway/decisions#provider-specific-fields).
+
+An array in `Input.Structured` is sent to TypeSafe-based models as a JSON array state. Over HTTP, though, an array `input` always reads as messages, so send structured arrays from the Go SDK, or wrap them in an object.
+
+## Migrating from the Map Form
+
+Earlier versions keyed questions and answers by name. The HTTP map form is still served at `/v1/decisions`, but the Go types changed:
+
+| Before | Now |
+|--------|-----|
+| `State interface{}` | `Input schemas.DecisionInput`: `Text` for a string, `Structured` for an object or array |
+| `Questions map[string]DecisionQuestion` | `Questions []DecisionQuestion`, each with an optional `Name` |
+| `DecisionQuestion.Kind`: `DecisionKindNoul`, `DecisionKindChoice`, `DecisionKindScore` | `DecisionQuestion.Type`: `DecisionTypePredicate`, `DecisionTypeChoice`, `DecisionTypeScore` |
+| `Instructions interface{}` | `Instructions *DecisionText` |
+| `Criteria interface{}` for noul (`true`/`false` map), choice (option → description map), and score (description list) | `Criteria *DecisionCriteria` (predicate), `Choices []DecisionChoice` (choice), `Levels []DecisionLevel` (score) |
+| `Answers map[string]DecisionAnswer` | `Answers []DecisionAnswer`, in question order |
+| `DecisionAnswer.Kind` and `Value interface{}` | `DecisionAnswer.Type` and `Probability`, `Choice`, or `Score` by type |
+| `Probabilities map[string]float64` | `Probabilities []DecisionProbability` |
+
+Score levels are identified by their position in `Levels`, as the earlier criteria list was: a `Probabilities` entry's `Value` is the level index.

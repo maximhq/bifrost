@@ -137,6 +137,9 @@ func TestToBifrostChatResponse_Citations(t *testing.T) {
 		if bifrostResp.Usage.CompletionTokensDetails.NumSearchQueries == nil || *bifrostResp.Usage.CompletionTokensDetails.NumSearchQueries != 2 {
 			t.Error("expected num_search_queries to be 2")
 		}
+		if bifrostResp.Usage.ToolUsage.WebSearch.NumRequests != 2 {
+			t.Error("expected tool_usage.web_search.num_requests to be 2")
+		}
 	})
 
 	t.Run("nil citations remain nil", func(t *testing.T) {
