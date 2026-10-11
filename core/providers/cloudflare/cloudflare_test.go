@@ -418,6 +418,50 @@ func TestDecision_SendsBareClefNameInURLAndBody(t *testing.T) {
 	}
 }
 
+func TestDecision_PreservesProviderResponseHeaders(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cf-Ray", "ray-123")
+				w.Header().Set("Connection", "close")
+				if status == http.StatusTooManyRequests {
+					w.Header().Set("Retry-After", "7")
+					w.WriteHeader(status)
+					_, _ = fmt.Fprint(w, `{"success":false,"errors":[{"code":1015,"message":"rate limited"}]}`)
+					return
+				}
+				_, _ = fmt.Fprint(w, clefDecisionResponseBody)
+			}))
+			defer server.Close()
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp, bifrostErr := newTestProvider(t, server.URL).Decision(ctx, newTestKey("acct-1"), newDecisionRequest("clef-flash", schemas.DecisionInput{Text: schemas.Ptr("red apple")}))
+			if status == http.StatusOK {
+				if bifrostErr != nil {
+					t.Fatalf("Decision: %v", bifrostErr)
+				}
+				if got := resp.ExtraFields.ProviderResponseHeaders["Cf-Ray"]; got != "ray-123" {
+					t.Errorf("response Cf-Ray = %q, want ray-123", got)
+				}
+			} else if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != status {
+				t.Fatalf("Decision error = %v, want status %d", bifrostErr, status)
+			}
+
+			headers, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
+			if got := headers["Cf-Ray"]; got != "ray-123" {
+				t.Errorf("context Cf-Ray = %q, want ray-123", got)
+			}
+			if status == http.StatusTooManyRequests && headers["Retry-After"] != "7" {
+				t.Errorf("Retry-After = %q, want 7", headers["Retry-After"])
+			}
+			if _, ok := headers["Connection"]; ok {
+				t.Error("hop-by-hop Connection header must be filtered")
+			}
+		})
+	}
+}
+
 func TestDecision_ResolvedAliasUsesTheClefTarget(t *testing.T) {
 	var capturedPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

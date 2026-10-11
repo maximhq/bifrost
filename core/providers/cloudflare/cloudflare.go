@@ -314,6 +314,9 @@ func (provider *CloudflareProvider) Decision(ctx *schemas.BifrostContext, key sc
 		return nil, bifrostErr
 	}
 
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+
 	if resp.StatusCode() != fasthttp.StatusOK {
 		return nil, providerUtils.EnrichError(ctx, parseCloudflareError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
@@ -339,6 +342,7 @@ func (provider *CloudflareProvider) Decision(ctx *schemas.BifrostContext, key sc
 	}
 
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResp.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 	if sendBackRawRequest {
 		bifrostResp.ExtraFields.RawRequest = rawRequest
 	}

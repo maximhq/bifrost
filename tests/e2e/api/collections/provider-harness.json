@@ -250981,6 +250981,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('Clef answers a text decision', function () {",
+                  "  pm.expect(pm.response.headers.get('cf-ray'), 'Cloudflare request ID missing: ' + pm.response.text()).to.be.a('string').and.not.empty;",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
                   "  var a = pm.response.json().answers;",
                   "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
@@ -251110,6 +251111,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('a remote image URL comes back as the Clef 422', function () {",
+                  "  pm.expect(pm.response.headers.get('cf-ray'), 'Cloudflare request ID missing: ' + pm.response.text()).to.be.a('string').and.not.empty;",
                   "  pm.expect(pm.response.code, 'expected 422, got: ' + pm.response.text()).to.eql(422);",
                   "  pm.expect(pm.response.text()).to.include('embedded base64');",
                   "});"
@@ -251178,6 +251180,60 @@
                 "typesafe",
                 "v1",
                 "systemone"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "199. Clef decision emulation provider scope",
+      "description": "A Clef name alone must not imply native decisions outside Cloudflare. With compat emulation enabled, an OpenAI request with native images extensions reaches the emulation prevalidation and fails locally with its specific 400, without an upstream model call. Before the fix it incorrectly takes OpenAI's native decision path. Existing Cloudflare Clef cases also pin forwarding cf-ray on success and upstream errors.",
+      "item": [
+        {
+          "name": "[EXPECT-400] /v1/decisions - Clef name outside Cloudflare uses emulation - openai/clef-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a Clef name outside Cloudflare enters decision emulation', function () {",
+                  "  pm.expect(pm.response.code, 'expected emulation refusal, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('decision emulation cannot honor native request extensions (images)');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/clef-flash\",\n  \"input\": \"The sky is blue.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_blue\",\n      \"instructions\": \"Is the sky blue?\"\n    }\n  ],\n  \"images\": []\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
               ]
             }
           }
