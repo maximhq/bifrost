@@ -635,6 +635,34 @@ Every cached or cache-checked response carries debug metadata so you can confirm
 On a streamed response, only the **final** chunk carries the full `cache_debug` payload.
 </Note>
 
+### Response headers
+
+Every inference response the cache looked up also carries the same fields as `x-bifrost-cache-*` response headers, on every route. They are the only way to read them where the response body has no `extra_fields`: the Anthropic, GenAI, Bedrock and Cohere SDK routes (the Anthropic route includes `extra_fields` only when raw capture is on), and streams on those routes. Requests the cache did not look up, and error responses, carry no cache headers.
+
+| Header | `cache_debug` field | Sent when |
+|--------|---------------------|-----------|
+| `x-bifrost-cache-hit` | `cache_hit` | the cache ran a lookup (`true` or `false`) |
+| `x-bifrost-cache-id` | `cache_id` | the cache ran a lookup |
+| `x-bifrost-cache-hit-type` | `hit_type` | on hit |
+| `x-bifrost-cache-hit-latency-ms` | `cache_hit_latency` | on hit |
+| `x-bifrost-cache-requested-provider` | `requested_provider` | on hit |
+| `x-bifrost-cache-requested-model` | `requested_model` | on hit |
+| `x-bifrost-cache-similarity` | `similarity` | on semantic hit |
+| `x-bifrost-cache-threshold` | `threshold` | on semantic hit |
+| `x-bifrost-cache-provider-used` | `provider_used` | when semantic search ran |
+| `x-bifrost-cache-model-used` | `model_used` | when semantic search ran |
+| `x-bifrost-cache-input-tokens` | `input_tokens` | when semantic search ran |
+
+A stream sends its headers before the first chunk, so they report the lookup as it was recorded. They match the final chunk's `cache_debug` except `x-bifrost-cache-hit-latency-ms`, which is measured when the lookup outcome is recorded, before the first chunk.
+
+```bash
+curl -si http://localhost:8080/anthropic/v1/messages \
+  -H "x-bf-cache-key: session-123" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "claude-haiku-4-5", "max_tokens": 64, "messages": [{"role": "user", "content": "Hi"}]}' \
+  | grep -i '^x-bifrost-cache-'
+```
+
 Cache outcomes also surface in **Logs** without inspecting the raw response:
 
 ![Log detail sheet showing the Semantic Cache badge and Caching Details block](../media/ui-semantic-cache-log-details.png)

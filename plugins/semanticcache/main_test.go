@@ -442,6 +442,133 @@ func TestIdentityScopeSemanticSearchFilters(t *testing.T) {
 	}
 }
 
+// TestPreLLMHookRecordsCacheLookup pins the lookup outcome the plugin records for response
+// headers. It is recorded during the lookup, before any response exists, because a stream's
+// headers are sent before any chunk carries cache metadata; and it must agree with what
+// cache_debug reports for the same request.
+func TestPreLLMHookRecordsCacheLookup(t *testing.T) {
+	const prompt = "Name the smallest planet in the solar system."
+	anonymous := identityRef{}
+
+	t.Run("a miss records the id the entry will be written under", func(t *testing.T) {
+		plugin := identityScopeTestPlugin(t, newObservableStore(), "")
+		ctx := identityContext(t, keyForTest(t, ""), anonymous)
+		if _, sc, err := plugin.PreLLMHook(ctx, identityTestChatRequest(prompt, nil)); err != nil || sc != nil {
+			t.Fatalf("expected a miss, got short-circuit %v err %v", sc, err)
+		}
+		lookup, ok := schemas.CacheLookupFromContext(ctx)
+		if !ok {
+			t.Fatal("expected the lookup outcome recorded during PreLLMHook")
+		}
+		if lookup.CacheHit || lookup.HitType != nil || lookup.CacheID == nil {
+			t.Fatalf("expected a miss with a cache id and no hit type, got %+v", lookup)
+		}
+
+		res := identityTestChatResponse("answer")
+		if _, _, err := plugin.PostLLMHook(ctx, res, nil); err != nil {
+			t.Fatalf("PostLLMHook: %v", err)
+		}
+		plugin.WaitForPendingOperations()
+		debug := res.ChatResponse.ExtraFields.CacheDebug
+		if debug == nil || debug.CacheHit || debug.CacheID == nil || *debug.CacheID != *lookup.CacheID {
+			t.Fatalf("cache_debug %+v does not name the entry the lookup recorded (%s)", debug, *lookup.CacheID)
+		}
+	})
+
+	t.Run("a hit records what cache_debug reports", func(t *testing.T) {
+		plugin := identityScopeTestPlugin(t, newObservableStore(), "")
+		key := keyForTest(t, "")
+		writeThroughCache(t, plugin, identityContext(t, key, anonymous), identityTestChatRequest(prompt, nil))
+
+		ctx := identityContext(t, key, anonymous)
+		_, sc, err := plugin.PreLLMHook(ctx, identityTestChatRequest(prompt, nil))
+		if err != nil || sc == nil || sc.Response == nil {
+			t.Fatalf("expected a hit, got short-circuit %v err %v", sc, err)
+		}
+		lookup, ok := schemas.CacheLookupFromContext(ctx)
+		if !ok {
+			t.Fatal("expected the lookup outcome recorded during PreLLMHook")
+		}
+		debug := sc.Response.ChatResponse.ExtraFields.CacheDebug
+		if !lookup.CacheHit || lookup.HitType == nil || *lookup.HitType != string(CacheTypeDirect) {
+			t.Fatalf("expected a direct hit, got %+v", lookup)
+		}
+		if *lookup.CacheID != *debug.CacheID || *lookup.RequestedProvider != *debug.RequestedProvider || *lookup.RequestedModel != *debug.RequestedModel {
+			t.Fatalf("lookup %+v disagrees with cache_debug %+v", lookup, debug)
+		}
+		if lookup.CacheHitLatency == nil {
+			t.Fatal("expected the hit latency recorded")
+		}
+	})
+
+	t.Run("a stream hit is recorded before any chunk is read", func(t *testing.T) {
+		store := newObservableStore()
+		plugin := identityScopeTestPlugin(t, store, "")
+		key := keyForTest(t, "")
+		streamRequest := func() *schemas.BifrostRequest {
+			return newCrossProviderChatRequest(schemas.OpenAI, "gpt-4o-mini", schemas.ChatCompletionStreamRequest, prompt)
+		}
+
+		seed := identityContext(t, key, anonymous)
+		if _, sc, err := plugin.PreLLMHook(seed, streamRequest()); err != nil || sc != nil {
+			t.Fatalf("expected a miss, got short-circuit %v err %v", sc, err)
+		}
+		entryID := plugin.getCacheState(seed.Value(schemas.BifrostContextKeyRequestID).(string)).DirectCacheID
+		chunk, err := json.Marshal(identityTestChatResponse("streamed answer"))
+		if err != nil {
+			t.Fatalf("marshal chunk: %v", err)
+		}
+		store.mu.Lock()
+		store.chunks[entryID] = vectorstore.SearchResult{ID: entryID, Properties: map[string]interface{}{
+			"stream_chunks": []interface{}{string(chunk)},
+			"expires_at":    time.Now().Add(time.Hour).Unix(),
+		}}
+		store.mu.Unlock()
+
+		ctx := identityContext(t, key, anonymous)
+		_, sc, err := plugin.PreLLMHook(ctx, streamRequest())
+		if err != nil || sc == nil || sc.Stream == nil {
+			t.Fatalf("expected a stream replay, got short-circuit %v err %v", sc, err)
+		}
+		lookup, ok := schemas.CacheLookupFromContext(ctx)
+		for range sc.Stream {
+		}
+		if !ok || !lookup.CacheHit || lookup.HitType == nil || *lookup.HitType != string(CacheTypeDirect) || *lookup.CacheID != entryID {
+			t.Fatalf("expected a direct hit on %s recorded before the replay was read, got %+v (recorded=%v)", entryID, lookup, ok)
+		}
+	})
+
+	t.Run("a semantic search records its embedding usage", func(t *testing.T) {
+		store := &semanticFilterStore{observableStore: newObservableStore()}
+		plugin := identityScopeTestPlugin(t, store, `{"provider": "openai", "embedding_model": "text-embedding-3-small", "dimension": 3}`)
+		plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+			return &schemas.BifrostEmbeddingResponse{
+				Data:  []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1, 0.2, 0.3}}}},
+				Usage: &schemas.BifrostLLMUsage{TotalTokens: 7},
+			}, nil
+		})
+		ctx := identityContext(t, keyForTest(t, ""), anonymous)
+		if _, sc, err := plugin.PreLLMHook(ctx, identityTestChatRequest(prompt, nil)); err != nil || sc != nil {
+			t.Fatalf("expected a miss, got short-circuit %v err %v", sc, err)
+		}
+		lookup, ok := schemas.CacheLookupFromContext(ctx)
+		if !ok || lookup.ProviderUsed == nil || *lookup.ProviderUsed != "openai" || lookup.ModelUsed == nil || lookup.InputTokens == nil || *lookup.InputTokens != 7 {
+			t.Fatalf("expected the embedding provider, model and tokens recorded, got %+v (recorded=%v)", lookup, ok)
+		}
+	})
+
+	t.Run("no lookup, nothing recorded", func(t *testing.T) {
+		plugin := identityScopeTestPlugin(t, newObservableStore(), "")
+		ctx := withTestRequestID(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+		if _, sc, err := plugin.PreLLMHook(ctx, identityTestChatRequest(prompt, nil)); err != nil || sc != nil {
+			t.Fatalf("expected the cache to be skipped, got short-circuit %v err %v", sc, err)
+		}
+		if _, ok := schemas.CacheLookupFromContext(ctx); ok {
+			t.Fatal("a request without a cache key ran no lookup, so none should be recorded")
+		}
+	})
+}
+
 // TestMain drops the shared test namespace BEFORE the run starts (in case a
 // previous run was interrupted and left stale entries) AND once after — both
 // matter: tests share one namespace + one cache_key prefix per t.Name(),
