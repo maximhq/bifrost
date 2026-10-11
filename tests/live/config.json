@@ -44,6 +44,29 @@
         "base_url": "http://127.0.0.1:9411",
         "default_request_timeout_in_seconds": 60
       }
+    },
+    "openai-nolive": {
+      "keys": [
+        {
+          "name": "nolive-key",
+          "value": "sk-fake-nolive",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "allowed_requests": {
+          "chat_completion": true,
+          "chat_completion_stream": true,
+          "responses": true,
+          "responses_stream": true
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:9411",
+        "default_request_timeout_in_seconds": 60
+      }
     }
   },
   "config_store": {
