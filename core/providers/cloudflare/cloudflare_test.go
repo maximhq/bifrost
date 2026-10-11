@@ -243,10 +243,10 @@ func TestListModels_PagesFiltersTasksAndListsClef(t *testing.T) {
 	if _, ok := byID["cloudflare/@cf/baai/bge-large-en-v1.5"]; !ok {
 		t.Fatal("embedding model missing")
 	}
-	if _, ok := byID["cloudflare/clef-flash"]; !ok {
-		t.Fatal("clef-flash must be listed by its bare name")
+	if _, ok := byID["cloudflare/@cf/cloudflare/clef-flash"]; !ok {
+		t.Fatal("clef-flash must be listed under its Cloudflare ID")
 	}
-	for _, excluded := range []string{"cloudflare/@cf/cloudflare/clef-flash", "cloudflare/@cf/cloudflare/clef-omni", "cloudflare/clef-omni", "cloudflare/@cf/black-forest-labs/flux-1-schnell"} {
+	for _, excluded := range []string{"cloudflare/clef-flash", "cloudflare/@cf/cloudflare/clef-omni", "cloudflare/@cf/black-forest-labs/flux-1-schnell"} {
 		if _, ok := byID[excluded]; ok {
 			t.Errorf("%s must not be listed", excluded)
 		}
@@ -539,5 +539,27 @@ func TestListModels_DecodesCompressedPages(t *testing.T) {
 	}
 	if len(resp.Data) != 1 || resp.Data[0].ID != "cloudflare/@cf/baai/bge-large-en-v1.5" {
 		t.Fatalf("models = %+v, want the one embedding model", resp.Data)
+	}
+}
+
+// TestListModels_MatchesAllowListAgainstCloudflareIDs pins that a key whose allow-list is
+// written in Cloudflare's IDs still lists Clef, since listing keeps those IDs unchanged.
+func TestListModels_MatchesAllowListAgainstCloudflareIDs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"success":true,"errors":[],"result":[{"name":"@cf/cloudflare/clef-flash","task":{"name":"Text Generation"}},{"name":"@cf/baai/bge-large-en-v1.5","task":{"name":"Text Embeddings"}}]}`)
+	}))
+	defer server.Close()
+
+	key := newTestKey("acct-1")
+	key.Models = []string{"regex:^@cf/cloudflare/.*"}
+	provider := newTestProvider(t, server.URL)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.ListModels(ctx, []schemas.Key{key}, &schemas.BifrostListModelsRequest{Provider: schemas.Cloudflare})
+	if bifrostErr != nil {
+		t.Fatalf("ListModels: %v", bifrostErr.Error.Message)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != "cloudflare/@cf/cloudflare/clef-flash" {
+		t.Fatalf("models = %+v, want only Clef under its Cloudflare ID", resp.Data)
 	}
 }

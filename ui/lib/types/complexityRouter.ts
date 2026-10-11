@@ -248,7 +248,7 @@ export const OPENAI_DECISION_MODEL = "gpt-6-luna";
 
 // CLOUDFLARE_DECISION_MODEL is the model a newly selected Cloudflare provider starts on.
 // The picker lists the Clef models Cloudflare Workers AI serves.
-export const CLOUDFLARE_DECISION_MODEL = "clef-flash";
+export const CLOUDFLARE_DECISION_MODEL = "@cf/cloudflare/clef-flash";
 
 // DEFAULT_DECISION_CONFIG supplies the model, history window, and timeout for decision-model requests.
 export const DEFAULT_DECISION_CONFIG: Required<Pick<DecisionConfig, "provider" | "model" | "previous_message_count" | "timeout">> = {

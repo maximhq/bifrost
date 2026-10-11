@@ -588,7 +588,7 @@ describe("decision model providers", () => {
 		expect(defaultDecisionModel(typesafe)).toBe("jev-latest");
 		expect(defaultDecisionModel(openrouter)).toBe("~typesafe/jev-latest");
 		expect(defaultDecisionModel(openai)).toBe("gpt-6-luna");
-		expect(defaultDecisionModel(cloudflare)).toBe("clef-flash");
+		expect(defaultDecisionModel(cloudflare)).toBe("@cf/cloudflare/clef-flash");
 		expect(defaultDecisionModel(clefFlash)).toBe("clef-flash");
 		expect(defaultDecisionModel(laya)).toBe("english");
 		expect(defaultDecisionModel(custom("nimble-gpu"))).toBe("nimble-latest");

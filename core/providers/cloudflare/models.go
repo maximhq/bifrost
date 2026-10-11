@@ -19,8 +19,8 @@ var cloudflareListedTasks = map[string]bool{
 const cloudflareDecisionModelPrefix = cloudflareModelNamespace + "clef"
 
 // ToBifrostListModelsResponse converts the Workers AI model search response into
-// Bifrost's list models shape. The Clef models Bifrost serves are listed by their bare
-// names ("clef-flash"); other Clef variants are left out.
+// Bifrost's list models shape, keeping Cloudflare's model IDs as they are. Clef variants
+// other than the ones Bifrost serves are left out.
 func (response *CloudflareListModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
@@ -48,14 +48,10 @@ func (response *CloudflareListModelsResponse) ToBifrostListModelsResponse(allowe
 		if !cloudflareListedTasks[model.Task.Name] {
 			continue
 		}
-		name := model.Name
-		if strings.HasPrefix(name, cloudflareDecisionModelPrefix) {
-			if !schemas.IsClefModel(name) {
-				continue
-			}
-			name = clefModelName(name)
+		if strings.HasPrefix(model.Name, cloudflareDecisionModelPrefix) && !schemas.IsClefModel(model.Name) {
+			continue
 		}
-		for _, result := range pipeline.FilterModel(name) {
+		for _, result := range pipeline.FilterModel(model.Name) {
 			entry := schemas.Model{
 				ID:          string(schemas.Cloudflare) + "/" + result.ResolvedID,
 				Description: schemas.Ptr(model.Description),

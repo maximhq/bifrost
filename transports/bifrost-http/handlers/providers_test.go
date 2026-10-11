@@ -1338,14 +1338,14 @@ func TestListModels_DecisionsCloudflareListsClef(t *testing.T) {
 
 	notDecisions := false
 	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
-		if model == "clef" {
+		if model == "@cf/cloudflare/clef" {
 			return &schemas.ModelCapabilities{SupportsDecisions: &notDecisions}
 		}
 		return nil
 	})
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 
-	models := []string{"clef", "clef-flash", "@cf/meta/llama-4-scout-17b-16e-instruct", "@cf/baai/bge-large-en-v1.5"}
+	models := []string{"@cf/cloudflare/clef", "@cf/cloudflare/clef-flash", "@cf/meta/llama-4-scout-17b-16e-instruct", "@cf/baai/bge-large-en-v1.5"}
 	h := providerHandlerForTest(schemas.Cloudflare, []schemas.Key{{ID: "key-a"}}, models, models)
 
 	ctx := &fasthttp.RequestCtx{}
@@ -1364,7 +1364,7 @@ func TestListModels_DecisionsCloudflareListsClef(t *testing.T) {
 	for _, model := range resp.Models {
 		names = append(names, model.Name)
 	}
-	if want := []string{"clef-flash"}; !slices.Equal(names, want) {
+	if want := []string{"@cf/cloudflare/clef-flash"}; !slices.Equal(names, want) {
 		t.Fatalf("expected %v, got %v", want, names)
 	}
 }

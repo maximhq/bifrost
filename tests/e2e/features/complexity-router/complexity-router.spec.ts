@@ -98,8 +98,8 @@ test.describe('Complexity Router', () => {
       // Cloudflare's catalog is mostly chat and embedding models; only Clef is offered.
       {
         provider: 'cloudflare',
-        saved: 'clef-flash',
-        decisions: ['clef', 'clef-flash'],
+        saved: '@cf/cloudflare/clef-flash',
+        decisions: ['@cf/cloudflare/clef', '@cf/cloudflare/clef-flash'],
         chat: ['@cf/meta/llama-4-scout-17b-16e-instruct'],
       },
     ]
