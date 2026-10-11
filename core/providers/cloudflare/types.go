@@ -17,19 +17,12 @@ type CloudflareModelTask struct {
 	Name string `json:"name"`
 }
 
-// CloudflareModelProperty is one property of a Workers AI model, such as context_window.
-type CloudflareModelProperty struct {
-	PropertyID string      `json:"property_id"`
-	Value      interface{} `json:"value"`
-}
-
 // CloudflareModel is one model in the Workers AI model search response.
 type CloudflareModel struct {
-	ID          string                    `json:"id"`
-	Name        string                    `json:"name"`
-	Description string                    `json:"description"`
-	Task        CloudflareModelTask       `json:"task"`
-	Properties  []CloudflareModelProperty `json:"properties"`
+	ID          string              `json:"id"`
+	Name        string              `json:"name"`
+	Description string              `json:"description"`
+	Task        CloudflareModelTask `json:"task"`
 }
 
 // CloudflareListModelsResponse is the response of GET /accounts/{account_id}/ai/models/search.

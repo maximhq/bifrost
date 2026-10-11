@@ -1,7 +1,6 @@
 package cloudflare
 
 import (
-	"strconv"
 	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -50,9 +49,8 @@ func (response *CloudflareListModelsResponse) ToBifrostListModelsResponse(allowe
 		}
 		for _, result := range pipeline.FilterModel(model.Name) {
 			entry := schemas.Model{
-				ID:            string(schemas.Cloudflare) + "/" + result.ResolvedID,
-				Description:   schemas.Ptr(model.Description),
-				ContextLength: model.contextWindow(),
+				ID:          string(schemas.Cloudflare) + "/" + result.ResolvedID,
+				Description: schemas.Ptr(model.Description),
 			}
 			if result.AliasValue != "" {
 				entry.Alias = schemas.Ptr(result.AliasValue)
@@ -66,24 +64,4 @@ func (response *CloudflareListModelsResponse) ToBifrostListModelsResponse(allowe
 		pipeline.BackfillModels(included)...)
 
 	return bifrostResponse
-}
-
-// contextWindow returns the model's context_window property, or nil when it is
-// absent or not a number.
-func (model CloudflareModel) contextWindow() *int {
-	for _, property := range model.Properties {
-		if property.PropertyID != "context_window" {
-			continue
-		}
-		value, ok := property.Value.(string)
-		if !ok {
-			return nil
-		}
-		window, err := strconv.Atoi(value)
-		if err != nil {
-			return nil
-		}
-		return &window
-	}
-	return nil
 }

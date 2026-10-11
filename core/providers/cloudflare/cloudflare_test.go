@@ -1,6 +1,8 @@
 package cloudflare_test
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"net/http"
@@ -192,7 +194,7 @@ func TestListModels_PagesAndFiltersTasks(t *testing.T) {
 		firstPage = append(firstPage, fmt.Sprintf(`{"name":"@cf/test/chat-%d","task":{"name":"Text Generation"}}`, i))
 	}
 	secondPage := []string{
-		`{"name":"@cf/baai/bge-large-en-v1.5","description":"embeddings","task":{"name":"Text Embeddings"},"properties":[{"property_id":"context_window","value":"512"}]}`,
+		`{"name":"@cf/baai/bge-large-en-v1.5","description":"embeddings","task":{"name":"Text Embeddings"}}`,
 		`{"name":"@cf/cloudflare/clef-flash","task":{"name":"Text Generation"}}`,
 		`{"name":"@cf/black-forest-labs/flux-1-schnell","task":{"name":"Text-to-Image"}}`,
 	}
@@ -230,16 +232,38 @@ func TestListModels_PagesAndFiltersTasks(t *testing.T) {
 	for _, model := range resp.Data {
 		byID[model.ID] = model
 	}
-	embedding, ok := byID["cloudflare/@cf/baai/bge-large-en-v1.5"]
-	if !ok {
+	if _, ok := byID["cloudflare/@cf/baai/bge-large-en-v1.5"]; !ok {
 		t.Fatal("embedding model missing")
-	}
-	if embedding.ContextLength == nil || *embedding.ContextLength != 512 {
-		t.Errorf("context length = %v, want 512", embedding.ContextLength)
 	}
 	for _, excluded := range []string{"cloudflare/@cf/cloudflare/clef-flash", "cloudflare/@cf/black-forest-labs/flux-1-schnell"} {
 		if _, ok := byID[excluded]; ok {
 			t.Errorf("%s must not be listed", excluded)
 		}
+	}
+}
+
+// TestListModels_DecodesCompressedPages pins that a gzip-encoded model page is decoded
+// before it is parsed, as the other response paths do.
+func TestListModels_DecodesCompressedPages(t *testing.T) {
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	_, _ = writer.Write([]byte(`{"success":true,"errors":[],"result":[{"name":"@cf/baai/bge-large-en-v1.5","task":{"name":"Text Embeddings"}}]}`))
+	_ = writer.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(compressed.Bytes())
+	}))
+	defer server.Close()
+
+	provider := newTestProvider(t, server.URL)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.ListModels(ctx, []schemas.Key{newTestKey("acct-1")}, &schemas.BifrostListModelsRequest{Provider: schemas.Cloudflare})
+	if bifrostErr != nil {
+		t.Fatalf("ListModels: %v", bifrostErr.Error.Message)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != "cloudflare/@cf/baai/bge-large-en-v1.5" {
+		t.Fatalf("models = %+v, want the one embedding model", resp.Data)
 	}
 }

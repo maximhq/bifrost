@@ -125,11 +125,15 @@ func (provider *CloudflareProvider) listModelsByKey(ctx *schemas.BifrostContext,
 			return nil, bifrostErr
 		}
 
-		var pageResponse CloudflareListModelsResponse
-		_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(append([]byte(nil), resp.Body()...), &pageResponse, nil, false, sendBackRawResponse)
+		body, err := providerUtils.CheckAndDecodeBody(resp)
 		wait()
 		fasthttp.ReleaseRequest(req)
 		fasthttp.ReleaseResponse(resp)
+		if err != nil {
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), totalLatency)
+		}
+		var pageResponse CloudflareListModelsResponse
+		_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &pageResponse, nil, false, sendBackRawResponse)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
