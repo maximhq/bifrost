@@ -9830,7 +9830,8 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 
 // convertContentBlockToAnthropicWithCaps is convertContentBlockToAnthropic with the model
 // caps, which a tool_definition inside a tool_addition needs to normalize dated tool types
-// the way a tools[] entry is.
+// the way a tools[] entry is. A compaction block keeps its signature unchanged, since the
+// upstream rejects an adopted signed block that does not match its signature.
 func convertContentBlockToAnthropicWithCaps(caps schemas.ModelCaps, block schemas.ResponsesMessageContentBlock) *AnthropicContentBlock {
 	switch block.Type {
 	case schemas.ResponsesInputMessageContentBlockTypeToolAddition, schemas.ResponsesInputMessageContentBlockTypeToolRemoval:
