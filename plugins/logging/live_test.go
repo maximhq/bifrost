@@ -227,6 +227,44 @@ func TestLiveSessionEndingOnARefusalKeepsItsRow(t *testing.T) {
 	assert.Empty(t, root.LiveSessionParsed.Delegations)
 }
 
+func TestLiveSessionRowStaysSuccessfulWhenADelegationFails(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+
+	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-5", "unit-1", "voice", true, false), liveStartRequest("gpt-live-1"))
+	require.NoError(t, err)
+	refused := &schemas.BifrostError{
+		StatusCode: new(400),
+		Error:      &schemas.ErrorField{Message: "The model gpt-6-does-not-exist does not exist"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.LiveRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-6-does-not-exist",
+		},
+	}
+	// The provider refused to run the delegation: its backend unit closes with the error while
+	// the session goes on and ends normally.
+	failedCtx := liveUnitCtx("bfsess-5", "unit-2", "backend", false, false)
+	failedCtx.SetValue(schemas.BifrostContextKeyLiveDelegationFailed, true)
+	_, _, err = plugin.PostLLMHook(failedCtx, nil, refused)
+	require.NoError(t, err)
+	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-5", "unit-1", "voice", false, true), liveVoiceResponse(20, nil), nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	root, err := store.FindByID(context.Background(), "bfsess-5")
+	require.NoError(t, err)
+	assert.Equal(t, logStatusSuccess, root.Status)
+	assert.Nil(t, root.ErrorDetailsParsed)
+	require.NotNil(t, root.LiveSessionParsed)
+	assert.Equal(t, 20.0, root.LiveSessionParsed.VoiceSeconds)
+	require.Len(t, root.LiveSessionParsed.Delegations, 1)
+	assert.Equal(t, "gpt-6-does-not-exist", root.LiveSessionParsed.Delegations[0].Model)
+	assert.Equal(t, "The model gpt-6-does-not-exist does not exist", root.LiveSessionParsed.Delegations[0].Error)
+	assert.Nil(t, root.LiveSessionParsed.Delegations[0].Usage)
+}
+
 func TestLiveSessionPendingEntryOutlivesIdleEviction(t *testing.T) {
 	store := newTestStore(t)
 	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
