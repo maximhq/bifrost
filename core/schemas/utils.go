@@ -2233,6 +2233,10 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		}
 		copy.ResponsesOutputMessageContentCompaction = copyCompaction
 	}
+	// A tool_reference without its name cannot be expanded by the provider.
+	if original.ToolName != nil {
+		copy.ToolName = new(*original.ToolName)
+	}
 	// The tool target of a tool_addition / tool_removal block is what the provider acts on;
 	// without it the block is dropped on egress. The definition is copied by value (its nested
 	// schema pointers are shared, as no transform mutates a tool definition in place).
