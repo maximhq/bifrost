@@ -2412,6 +2412,16 @@ func IsTypesafeModel(model string) bool {
 	return strings.HasPrefix(strings.TrimPrefix(strings.ToLower(model), "~"), "typesafe/")
 }
 
+// clefModels are the Clef decision models Cloudflare Workers AI serves, by bare name.
+var clefModels = map[string]bool{"clef": true, "clef-flash": true}
+
+// IsClefModel checks if the model is a Clef decision model on Cloudflare Workers AI,
+// by its bare name ("clef-flash") or Cloudflare's full ID ("@cf/cloudflare/clef-flash").
+// Names match exactly, as Cloudflare does.
+func IsClefModel(model string) bool {
+	return clefModels[strings.TrimPrefix(model, "@cf/cloudflare/")]
+}
+
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {

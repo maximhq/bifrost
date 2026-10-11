@@ -33,3 +33,12 @@ func parseCloudflareError(resp *fasthttp.Response) *schemas.BifrostError {
 
 	return bifrostErr
 }
+
+// parseCloudflareEnvelopeFailure builds the error for a 200 whose envelope carries no
+// result: success:false, or a missing or null result. The upstream status says "ok", so it
+// is reported as 502 Bad Gateway: the provider answered, but not with a result.
+func parseCloudflareEnvelopeFailure(resp *fasthttp.Response) *schemas.BifrostError {
+	bifrostErr := parseCloudflareError(resp)
+	bifrostErr.StatusCode = schemas.Ptr(fasthttp.StatusBadGateway)
+	return bifrostErr
+}

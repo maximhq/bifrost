@@ -1,5 +1,7 @@
 package cloudflare
 
+import "github.com/maximhq/bifrost/core/providers/typesafe"
+
 // CloudflareErrorDetail is one entry of the errors array in a Cloudflare API envelope.
 type CloudflareErrorDetail struct {
 	Code    interface{} `json:"code,omitempty"` // numeric for API errors, a string for request validation errors
@@ -28,4 +30,18 @@ type CloudflareModel struct {
 // CloudflareListModelsResponse is the response of GET /accounts/{account_id}/ai/models/search.
 type CloudflareListModelsResponse struct {
 	Result []CloudflareModel `json:"result"`
+}
+
+// CloudflareDecisionRequest is the body of POST /ai/run/@cf/cloudflare/{model}: Typesafe's
+// systemone request plus Clef's images. It is only ever encoded; decoding it would run
+// Typesafe's UnmarshalJSON on the embedded pointer and fail.
+type CloudflareDecisionRequest struct {
+	*typesafe.TypesafeDecisionRequest
+	Images []string `json:"images,omitempty"` // base64 data URLs
+}
+
+// CloudflareDecisionResponse is the Workers AI envelope around a Clef decision.
+type CloudflareDecisionResponse struct {
+	Result  *typesafe.TypesafeDecisionResponse `json:"result"`
+	Success bool                               `json:"success"`
 }

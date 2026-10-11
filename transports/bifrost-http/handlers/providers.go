@@ -1128,7 +1128,8 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 // of a Typesafe-based provider (Typesafe, or a custom provider on its base
 // serving Laya, Nimble, or Clef), and otherwise a model the datasheet marks
 // supports_decisions, or without a row the provider's name-based fallback (a
-// TypeSafe System One model on OpenRouter, the gpt-6-luna family elsewhere). A
+// TypeSafe System One model on OpenRouter, a Clef model on Cloudflare, the
+// gpt-6-luna family elsewhere). A
 // key alias is checked as the model it points at, as the request path checks it.
 func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, model string) bool {
 	custom := h.customProviderConfig(provider)
@@ -1140,8 +1141,11 @@ func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, mode
 	}
 	model = h.aliasTarget(provider, model)
 	fallback := schemas.DefaultSupportsDecisions(model)
-	if provider == schemas.OpenRouter {
+	switch provider {
+	case schemas.OpenRouter:
 		fallback = schemas.IsTypesafeModel(model)
+	case schemas.Cloudflare:
+		fallback = schemas.IsClefModel(model)
 	}
 	return schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback)
 }
