@@ -454,3 +454,51 @@ func TestLiveSessionSetupFailureKeepsBilledUsage(t *testing.T) {
 	require.NotNil(t, row.TokenUsageParsed.AudioSeconds)
 	assert.Equal(t, 15.0, *row.TokenUsageParsed.AudioSeconds)
 }
+
+func TestLiveSessionTerminalBackendFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		usage     *schemas.ResponsesResponseUsage
+		failure   *schemas.ResponsesResponseError
+		wantError string
+	}{
+		{name: "with usage", usage: &schemas.ResponsesResponseUsage{InputTokens: 8, OutputTokens: 2, TotalTokens: 10}, failure: &schemas.ResponsesResponseError{Code: "server_error", Message: "backend execution failed"}, wantError: "backend execution failed"},
+		{name: "without usage", failure: &schemas.ResponsesResponseError{Code: "server_error", Message: "backend execution failed"}, wantError: "backend execution failed"},
+		{name: "without error details", wantError: "backend response failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+			require.NoError(t, err)
+			_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-failed", "voice-1", "voice", true, false), liveStartRequest("gpt-live-1"))
+			require.NoError(t, err)
+			response := liveBackendResponse("resp_failed", nil, tc.usage)
+			response.ResponsesResponse.Status = new(schemas.ResponsesResponseStatusFailed)
+			response.ResponsesResponse.Error = tc.failure
+			_, _, err = plugin.PostLLMHook(liveDelegationCtx("bfsess-failed", "backend-1", "delegation_failed", 100), response, nil)
+			require.NoError(t, err)
+			_, _, err = plugin.PostLLMHook(liveDelegationCtx("bfsess-failed", "backend-2", "delegation_recovered", 200), liveBackendResponse("resp_recovered", nil, &schemas.ResponsesResponseUsage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5}), nil)
+			require.NoError(t, err)
+			_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-failed", "voice-2", "voice", false, true), liveVoiceResponse(3, nil), nil)
+			require.NoError(t, err)
+			require.NoError(t, plugin.Cleanup())
+			row, err := store.FindByID(context.Background(), "bfsess-failed")
+			require.NoError(t, err)
+			assert.Equal(t, logStatusSuccess, row.Status, "the voice session recovered from the backend failure")
+			assert.Nil(t, row.ErrorDetailsParsed)
+			require.NotNil(t, row.LiveSessionParsed)
+			require.Len(t, row.LiveSessionParsed.Delegations, 2)
+			failed := row.LiveSessionParsed.Delegations[0]
+			assert.Equal(t, tc.wantError, failed.Error)
+			assert.Equal(t, []string{"resp_failed"}, failed.ResponseIDs)
+			assert.Equal(t, "delegation_failed", failed.DelegationID)
+			if tc.usage == nil {
+				assert.Nil(t, failed.Usage, "no tokens are invented for a failed response")
+			} else {
+				require.NotNil(t, failed.Usage)
+				assert.Equal(t, tc.usage.TotalTokens, failed.Usage.TotalTokens)
+			}
+			assert.Empty(t, row.LiveSessionParsed.Delegations[1].Error)
+		})
+	}
+}
