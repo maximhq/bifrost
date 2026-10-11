@@ -357,3 +357,88 @@ func TestReregisterMCPClient_StatusSaysWhoseProblemItIs(t *testing.T) {
 		assert.Empty(t, f.cache.evictedClients, "nothing rotated, so nothing may be invalidated")
 	})
 }
+
+// =============================================================================
+// POST /api/mcp/client with auth_type oauth against an OAuth-protected MCP
+// server on loopback, with the production OAuth dialer.
+// =============================================================================
+
+// newLoopbackOAuthMCPServer serves the RFC 8414 discovery document and RFC 7591
+// registration an OAuth-protected MCP server on the operator's own host
+// exposes (the shape of examples/mcps/oauth-demo-server).
+func newLoopbackOAuthMCPServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	var server *httptest.Server
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                 server.URL,
+			"authorization_endpoint": server.URL + "/authorize",
+			"token_endpoint":         server.URL + "/token",
+			"registration_endpoint":  server.URL + "/register",
+		})
+	})
+	mux.HandleFunc("/register", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"client_id": "loopback-client"})
+	})
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	server = httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+// TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist pins the fix for MCP
+// OAuth servers on localhost: once the OAuth chain was put behind the
+// public-only dialer, an authenticated admin could not add one at all. With
+// the server's host on mcp_oauth_private_allowlist the admin's registration
+// discovers, registers and returns an authorize URL; without it the chain is
+// still refused, and a caller with auth bypassed is refused regardless.
+func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
+	oauth2.SetDiscoveryDialContextForTests(nil)
+	t.Cleanup(func() {
+		oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+		require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(nil))
+	})
+
+	for _, tc := range []struct {
+		name         string
+		allow        []string
+		authBypassed bool
+		wantStatus   int
+		wantBody     string
+	}{
+		{name: "authenticated, loopback allowlisted", allow: []string{"127.0.0.1"}, wantStatus: fasthttp.StatusOK, wantBody: "authorize_url"},
+		{name: "authenticated, no allowlist", wantStatus: fasthttp.StatusInternalServerError, wantBody: "blocked connection to non-public address"},
+		{name: "auth bypassed, loopback allowlisted", allow: []string{"127.0.0.1"}, authBypassed: true, wantStatus: fasthttp.StatusForbidden, wantBody: "unauthenticated callers cannot register MCP clients"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(tc.allow))
+			server := newLoopbackOAuthMCPServer(t)
+			store := newRealOAuth2Store(t)
+			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
+			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}
+
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			req.Header.SetHost("bifrost.example.com")
+			req.SetBodyString(`{"name":"local_oauth","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"oauth","oauth_config":{}}`)
+			ctx := initCtx(&req)
+			if tc.authBypassed {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
+			h.addMCPClient(ctx)
+
+			body := string(ctx.Response.Body())
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), body)
+			assert.Contains(t, body, tc.wantBody)
+		})
+	}
+}

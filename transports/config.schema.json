@@ -368,6 +368,13 @@
           "$ref": "#/$defs/mcp_code_mode_limits",
           "description": "Per-execution code mode limits, as stored and served by the config API. In config.json prefer mcp.tool_manager_config.code_mode_limits, which takes precedence when both are set."
         },
+        "mcp_oauth_private_allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Hostnames, IP addresses, or CIDR ranges (no schemes or ports) that the MCP OAuth chain (discovery, dynamic client registration, token requests) may reach even when they resolve to a loopback or private address. Applies only to MCP clients registered by an authenticated admin or declared in config.json; clients registered while dashboard auth was off stay public-only. Link-local and cloud metadata addresses are always refused and cannot be listed. As stored and served by the config API; changing it over the API requires an authenticated admin session. In config.json prefer mcp.tool_manager_config.oauth_private_allowlist, which takes precedence when both are set."
+        },
         "mcp_enable_temp_token_auth": {
           "type": "boolean",
           "description": "When true, Bifrost mints and accepts scoped temp tokens for MCP per-user OAuth and per-user-headers auth pages so anonymous browser visitors can complete the flow without a dashboard session. User-mode flows are never minted regardless of this setting \u2014 they always require SSO login.",
@@ -8510,6 +8517,13 @@
         },
         "code_mode_limits": {
           "$ref": "#/$defs/mcp_code_mode_limits"
+        },
+        "oauth_private_allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Hostnames, IP addresses, or CIDR ranges (no schemes or ports) that the MCP OAuth chain (discovery, dynamic client registration, token requests) may reach even when they resolve to a loopback or private address. Applies only to MCP clients registered by an authenticated admin or declared in config.json; clients registered while dashboard auth was off stay public-only. Link-local and cloud metadata addresses are always refused and cannot be listed. Example: [\"localhost\", \"127.0.0.1\", \"10.20.0.0/16\"]."
         }
       }
     },

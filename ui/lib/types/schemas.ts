@@ -1089,6 +1089,7 @@ export const coreConfigSchema = z.object({
 		})
 		.optional(),
 	mcp_enable_temp_token_auth: z.boolean().default(false),
+	mcp_oauth_private_allowlist: z.array(z.string()).optional(),
 });
 
 // Bifrost config schema

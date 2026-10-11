@@ -110,6 +110,7 @@ type ClientConfig struct {
 	MCPMaxInstructionsPerClient           int                                   `json:"mcp_max_instructions_per_client"`             // Byte bound on one server's forwarded instructions; 0 is the default
 	MCPMaxInstructionsTotal               int                                   `json:"mcp_max_instructions_total"`                  // Byte bound on the whole forwarded aggregate; 0 is the default
 	MCPCodeModeLimits                     *schemas.MCPCodeModeLimits            `json:"mcp_code_mode_limits,omitempty"`              // Per-execution code mode limits; nil or zero fields use the defaults
+	MCPOAuthPrivateAllowlist              []string                              `json:"mcp_oauth_private_allowlist,omitempty"`       // Private hosts, IPs and CIDRs the MCP OAuth chain may reach for clients registered with admin auth
 	MCPToolExecutionTimeout               int                                   `json:"mcp_tool_execution_timeout"`                  // The timeout for individual tool execution in seconds
 	MCPCodeModeBindingLevel               string                                `json:"mcp_code_mode_binding_level"`                 // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval                   int                                   `json:"mcp_tool_sync_interval"`                      // Global tool sync interval in minutes (default: 10, 0 = built-in default)
@@ -338,6 +339,17 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write(data)
 	}
 
+	// Only hash when present to avoid legacy config hash churn on upgrade. An explicit
+	// empty list is present: it revokes every host, so it must read as a file change.
+	if c.MCPOAuthPrivateAllowlist != nil {
+		data, err := sortedStringsJSON(c.MCPOAuthPrivateAllowlist)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("mcpOAuthPrivateAllowlist:"))
+		hash.Write(data)
+	}
+
 	// Only hash when present to avoid legacy config hash churn on upgrade.
 	if c.WebhookConfig != nil {
 		data, err := sonic.Marshal(c.WebhookConfig)
@@ -552,7 +564,25 @@ func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPTo
 		h.Write([]byte("toolMgrCodeModeLimits:"))
 		h.Write(data)
 	}
+	// Same presence rule as mcpOAuthPrivateAllowlist in GenerateClientConfigHash.
+	if tm.OAuthPrivateAllowlist != nil {
+		data, err := sortedStringsJSON(tm.OAuthPrivateAllowlist)
+		if err != nil {
+			return "", err
+		}
+		h.Write([]byte("toolMgrOAuthPrivateAllowlist:"))
+		h.Write(data)
+	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// sortedStringsJSON marshals a sorted copy of values, so a list's hash does
+// not depend on the order its entries were written in.
+func sortedStringsJSON(values []string) ([]byte, error) {
+	sorted := make([]string, len(values))
+	copy(sorted, values)
+	sort.Strings(sorted)
+	return sonic.Marshal(sorted)
 }
 
 // Redacted returns a copy of ClientConfig with any env-backed SecretVar fields masked.
