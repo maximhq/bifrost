@@ -215,3 +215,27 @@ func TestBilling_ClientLeavingStillClosesUpstreamAndBills(t *testing.T) {
 		assert.Equal(t, 20.0, row.Get("token_usage.audio_seconds").Float(), "the final usage OpenAI sent on close")
 	})
 }
+
+func TestBilling_WebRTCSetupFailureKeepsInitializationCharge(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	budget := 1.0
+	vk := createVirtualKey(t, virtualKeySpec{budgetUSD: &budget})
+	instructions := marker(t) + invalidWebRTCAnswerMarker
+	failure := openRefused(t, webrtcTransport, clientOptions{
+		headers: vkHeaders(vk),
+		session: sessionFor(t, voiceModel, backendModel, map[string]any{"instructions": instructions}),
+	})
+	assert.Contains(t, errorMessage(failure), "invalid upstream SDP answer")
+	s := fake.WaitSession(t, instructions)
+	row := findLiveLog(t, s.ID())
+	assert.Equal(t, "error", row.Get("status").Str)
+	assert.Contains(t, row.Get("error_details.error.message").Str, "invalid upstream SDP answer")
+	assert.Equal(t, "webrtc", row.Get("live_session.transport").Str)
+	assert.Equal(t, 15.0, row.Get("live_session.voice_seconds").Float())
+	assert.Equal(t, 15.0, row.Get("token_usage.audio_seconds").Float())
+	assert.InDelta(t, 15*fakeVoiceCostPerSecond, row.Get("live_session.voice_cost").Float(), 1e-9)
+	assert.InDelta(t, 15*fakeVoiceCostPerSecond, row.Get("cost").Float(), 1e-9)
+	assert.Empty(t, row.Get("live_session.delegations").Array(), "no backend call ran during setup")
+	waitBudgetUsage(t, vk.BudgetID, 15*fakeVoiceCostPerSecond)
+}

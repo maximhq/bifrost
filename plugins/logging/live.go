@@ -95,7 +95,7 @@ func (p *LoggerPlugin) postLiveUnit(ctx *schemas.BifrostContext, kind string, re
 	}
 	contentLoggingEnabled := p.contentLoggingEnabled(ctx)
 	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
-	cost := p.liveUnitCost(ctx, pending, result)
+	cost := p.liveUnitCost(ctx, pending, result, bifrostErr)
 
 	state.mu.Lock()
 	switch kind {
@@ -103,6 +103,8 @@ func (p *LoggerPlugin) postLiveUnit(ctx *schemas.BifrostContext, kind string, re
 		state.voiceCost += cost
 		if result != nil && result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil && result.ResponsesResponse.Usage.AudioSeconds != nil {
 			state.voiceSeconds += *result.ResponsesResponse.Usage.AudioSeconds
+		} else if result == nil && bifrostErr != nil && bifrostErr.ExtraFields.BilledUsage != nil && bifrostErr.ExtraFields.BilledUsage.AudioSeconds != nil {
+			state.voiceSeconds += *bifrostErr.ExtraFields.BilledUsage.AudioSeconds
 		}
 	case "backend":
 		// A backend lane's open unit closes empty at session end; only calls that ran are delegations.
@@ -139,13 +141,21 @@ func (p *LoggerPlugin) postLiveUnit(ctx *schemas.BifrostContext, kind string, re
 
 // liveUnitCost prices one unit the way its request type is priced: voice seconds for a window,
 // Responses tokens for a delegation.
-func (p *LoggerPlugin) liveUnitCost(ctx *schemas.BifrostContext, pending *PendingLogData, result *schemas.BifrostResponse) float64 {
-	if p.pricingManager == nil || result == nil {
+func (p *LoggerPlugin) liveUnitCost(ctx *schemas.BifrostContext, pending *PendingLogData, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) float64 {
+	if p.pricingManager == nil {
 		return 0
 	}
 	scopes := modelcatalog.PricingLookupScopesFromContext(ctx, pending.InitialData.Provider)
-	if breakdown := p.pricingManager.CalculateCostBreakdown(result, scopes); breakdown != nil {
-		return breakdown.TotalCost
+	if result != nil {
+		if breakdown := p.pricingManager.CalculateCostBreakdown(result, scopes); breakdown != nil {
+			return breakdown.TotalCost
+		}
+	} else if bifrostErr != nil && bifrostErr.ExtraFields.BilledUsage != nil {
+		requestType, provider, requestedModel, resolvedModel := bifrost.GetResponseFields(nil, bifrostErr)
+		if resolvedModel == "" {
+			resolvedModel = requestedModel
+		}
+		return p.pricingManager.CalculateCostForUsage(bifrostErr.ExtraFields.BilledUsage, provider, resolvedModel, requestType, scopes)
 	}
 	return 0
 }
