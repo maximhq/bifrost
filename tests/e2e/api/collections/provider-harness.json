@@ -251187,6 +251187,190 @@
       ]
     },
     {
+      "name": "200. Perplexity decisions (perplexity-decisions)",
+      "description": "The perplexity provider serves its decider models (pplx-decider-*) natively on POST {base}/v1/decisions, in Typesafe's systemone shape. Perplexity's body carries no id, so Bifrost takes it from the x-request-id response header. input_image parts are sent as {\"type\":\"image_url\"} items in the state array, after the text of their message. With convert_decision_to_responses on, a decider name on Perplexity is still served natively rather than emulated. Perplexity's own validation (remote image URLs) comes back as its 400.\n\nThe image case sends a solid red square and asserts the decider reads it as mostly red, which a text-only answer does not.",
+      "item": [
+        {
+          "name": "/v1/decisions - mixed kinds return typed answers and an id - perplexity/pplx-decider-v1.1-27b",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the decider answers every kind natively, with the x-request-id as id', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.id, 'id missing: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.id).to.eql(pm.response.headers.get('x-request-id'));",
+                  "  var a = body.answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(3);",
+                  "  pm.expect(a.map(function (x) { return x.type; })).to.eql(['predicate', 'choice', 'score']);",
+                  "  pm.expect(a[0].probability).to.be.within(0, 1);",
+                  "  pm.expect(['billing', 'bug', 'other']).to.include(a[1].choice);",
+                  "  pm.expect(a[2].score).to.be.a('number');",
+                  "  pm.expect(body.usage.prompt_tokens, 'usage: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"perplexity/pplx-decider-v1.1-27b\",\n  \"input\": \"Customer: I was double charged last month and nobody answered my two emails. Refund me today or I cancel.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges, refunds, invoices\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\",\n          \"description\": \"anything else\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"Rate how urgently this ticket needs a human reply\",\n      \"levels\": [\n        {\n          \"label\": \"0\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"1\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"2\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - input_image reaches the decider - perplexity/pplx-decider-v1.1-27b",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an input_image part is sent to the decider as an image_url state item', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].probability, 'a solid red image must read as mostly red: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"perplexity/pplx-decider-v1.1-27b\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is the screenshot.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - decider stays native with decision emulation on - perplexity/pplx-decider-v1.1-27b",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a decider on Perplexity is not emulated through Responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.id, 'native responses carry the x-request-id: ' + pm.response.text()).to.eql(pm.response.headers.get('x-request-id'));",
+                  "  pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(body.answers[0].probability).to.be.within(0, 0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"perplexity/pplx-decider-v1.1-27b\",\n  \"input\": \"The sky is clear and blue today.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] /v1/decisions - remote image URL rejected by Perplexity - perplexity/pplx-decider-v1.1-27b",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a remote image URL comes back as the Perplexity 400', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('base64');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"perplexity/pplx-decider-v1.1-27b\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"https://example.com/screenshot.png\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "199. Clef decision emulation provider scope",
       "description": "A Clef name alone must not imply native decisions outside Cloudflare. With compat emulation enabled, an OpenAI request with native images extensions reaches the emulation prevalidation and fails locally with its specific 400, without an upstream model call. Before the fix it incorrectly takes OpenAI's native decision path. Existing Cloudflare Clef cases also pin forwarding cf-ray on success and upstream errors.",
       "item": [

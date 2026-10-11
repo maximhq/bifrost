@@ -4091,3 +4091,102 @@ func TestCompleteDeferredSpan_LeavesSpanOpenWhileStreamTurnPending(t *testing.T)
 		t.Error("the span completes once no turn is pending")
 	}
 }
+
+func decisionUserMessage(parts ...schemas.DecisionInputPart) schemas.DecisionInputMessage {
+	return schemas.DecisionInputMessage{Role: "user", Content: schemas.DecisionInputContent{Parts: parts}}
+}
+
+func decisionTextPart(text string) schemas.DecisionInputPart {
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr(text)}
+}
+
+func decisionImagePart(url string, detail *string) schemas.DecisionInputPart {
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr(url), Detail: detail}
+}
+
+// TestExtractDecisionImages_LeavesImageFreeInputsAlone pins that an input without images
+// comes back unchanged with a nil state, so callers keep the state they already send.
+func TestExtractDecisionImages_LeavesImageFreeInputsAlone(t *testing.T) {
+	for name, input := range map[string]schemas.DecisionInput{
+		"empty":      {},
+		"text":       {Text: schemas.Ptr("The sky is blue.")},
+		"structured": {Structured: map[string]any{"ticket": "A-4021"}},
+		"messages":   {Messages: []schemas.DecisionInputMessage{decisionUserMessage(decisionTextPart("hi"))}},
+	} {
+		textOnly, state, err := ExtractDecisionImages(input)
+		if err != nil {
+			t.Fatalf("%s: unexpected error %v", name, err)
+		}
+		if state != nil {
+			t.Errorf("%s: state = %#v, want nil", name, state)
+		}
+		want, _ := json.Marshal(input)
+		got, _ := json.Marshal(textOnly)
+		if string(got) != string(want) {
+			t.Errorf("%s: input = %s, want it unchanged %s", name, got, want)
+		}
+	}
+}
+
+// TestExtractDecisionImages_PlacesImagesAfterTheirMessage pins the state layout: each
+// message's text, then its images in order, and an image-only message as images alone.
+func TestExtractDecisionImages_PlacesImagesAfterTheirMessage(t *testing.T) {
+	second := "data:image/jpeg;base64,/9j/4AAQ"
+	input := schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+		decisionUserMessage(decisionTextPart("Compare these"), decisionImagePart("data:image/png;base64,iVBORw0KGgo=", schemas.Ptr("high"))),
+		{Role: "assistant", Content: schemas.DecisionInputContent{Text: schemas.Ptr("Send the next one")}},
+		decisionUserMessage(decisionImagePart(second, nil)),
+	}}
+	before, _ := json.Marshal(input)
+
+	textOnly, state, err := ExtractDecisionImages(input)
+	if err != nil {
+		t.Fatalf("unexpected error %v", err)
+	}
+
+	gotState, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantState := `[{"role":"user","content":[{"type":"input_text","text":"Compare these"}]},` +
+		`{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo=","detail":"high"}},` +
+		`{"role":"assistant","content":"Send the next one"},` +
+		`{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,/9j/4AAQ"}}]`
+	if string(gotState) != wantState {
+		t.Errorf("state =\n%s\nwant\n%s", gotState, wantState)
+	}
+	gotText, _ := json.Marshal(textOnly)
+	wantText := `[{"role":"user","content":[{"type":"input_text","text":"Compare these"}]},{"role":"assistant","content":"Send the next one"}]`
+	if string(gotText) != wantText {
+		t.Errorf("text-only input =\n%s\nwant\n%s", gotText, wantText)
+	}
+	after, _ := json.Marshal(input)
+	if string(before) != string(after) {
+		t.Errorf("extraction modified the input:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// TestExtractDecisionImages_ForwardsURLsForTheProviderToJudge pins that only a missing
+// image_url is rejected locally; a remote URL is passed on for the provider to accept or not.
+func TestExtractDecisionImages_ForwardsURLsForTheProviderToJudge(t *testing.T) {
+	_, state, err := ExtractDecisionImages(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+		decisionUserMessage(decisionImagePart("https://example.com/red.png", nil)),
+	}})
+	if err != nil {
+		t.Fatalf("remote URL: unexpected error %v", err)
+	}
+	got, _ := json.Marshal(state)
+	if want := `[{"type":"image_url","image_url":{"url":"https://example.com/red.png"}}]`; string(got) != want {
+		t.Errorf("state = %s, want %s", got, want)
+	}
+
+	for name, part := range map[string]schemas.DecisionInputPart{
+		"nil image_url":   {Type: schemas.DecisionInputPartTypeImage},
+		"empty image_url": {Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("")},
+	} {
+		_, _, err := ExtractDecisionImages(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{decisionUserMessage(decisionTextPart("hi"), part)}})
+		if _, ok := AsBifrostBadRequestError(err); !ok {
+			t.Errorf("%s: err = %v, want a 400 invalid-request error", name, err)
+		}
+	}
+}

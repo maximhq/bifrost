@@ -256,7 +256,7 @@ func TestConfigForceReasoningOnlyModelsToResponsesDefaultsOn(t *testing.T) {
 // on (config or x-bf-compat override), the compat plugin marks a decision for
 // emulation unless the model catalog lists the model as a native decisions model:
 // a supports_decisions row decides in either direction, and without a row the
-// gpt-6-luna, Typesafe and Clef on Cloudflare are native. Typesafe and other request types
+// gpt-6-luna, Typesafe, Clef on Cloudflare and deciders on Perplexity are native. Typesafe and other request types
 // are never marked.
 func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 	rows := map[string]bool{"microsoft/decision-1": true, "typesafe/jev-router": false, "clef": false}
@@ -308,6 +308,10 @@ func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 		{name: "true row overrides provider-scoped clef fallback", enabled: true, req: decision(schemas.Ollama, "clef")},
 		{name: "chat model on cloudflare marked", enabled: true, req: decision(schemas.Cloudflare, "@cf/meta/llama-4-scout-17b-16e-instruct"), wantConverted: true},
 		{name: "false row overrides the clef name", enabled: true, req: decision(schemas.Cloudflare, "clef"), wantConverted: true},
+		{name: "decider on perplexity is native", enabled: true, req: decision(schemas.Perplexity, "pplx-decider-v1.1-27b")},
+		{name: "dated decider on perplexity is native", enabled: true, req: decision(schemas.Perplexity, "pplx-decider-v1.1-27b-20261006")},
+		{name: "chat model on perplexity marked", enabled: true, req: decision(schemas.Perplexity, "sonar-pro"), wantConverted: true},
+		{name: "decider on openai marked", enabled: true, req: decision(schemas.OpenAI, "pplx-decider-v1.1-27b"), wantConverted: true},
 		{name: "typesafe provider never marked", enabled: true, req: decision(schemas.Typesafe, "jev-latest")},
 		{name: "chat request untouched", enabled: true, req: chat},
 	}

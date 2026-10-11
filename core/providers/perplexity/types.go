@@ -1,6 +1,9 @@
 package perplexity
 
-import "github.com/maximhq/bifrost/core/schemas"
+import (
+	"github.com/maximhq/bifrost/core/providers/typesafe"
+	"github.com/maximhq/bifrost/core/schemas"
+)
 
 // PerplexityChatRequest represents a Perplexity chat completion request
 type PerplexityChatRequest struct {
@@ -140,4 +143,17 @@ func (c *perplexityCost) toBifrostCost() *schemas.BifrostCost {
 		}
 	}
 	return bc
+}
+
+// PerplexityDecisionRequest is the body of POST /v1/decisions: Typesafe's systemone
+// request, with images sent as image_url items in the state. It is only ever encoded;
+// decoding it would run Typesafe's UnmarshalJSON on the embedded pointer and fail.
+type PerplexityDecisionRequest struct {
+	*typesafe.TypesafeDecisionRequest
+}
+
+// PerplexityDecisionResponse is the response of POST /v1/decisions: Typesafe's systemone
+// response. Perplexity sends no id in the body; Decision takes it from x-request-id.
+type PerplexityDecisionResponse struct {
+	typesafe.TypesafeDecisionResponse
 }

@@ -2419,6 +2419,13 @@ func IsClefModel(model string) bool {
 	return strings.HasPrefix(strings.TrimPrefix(model, "@cf/cloudflare/"), "clef")
 }
 
+// IsPerplexityDeciderModel checks if the model is one of Perplexity's decider models
+// ("pplx-decider-v1.1-27b"), served on its decisions endpoint rather than chat. Dated
+// snapshots share the prefix.
+func IsPerplexityDeciderModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "pplx-decider")
+}
+
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {

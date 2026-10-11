@@ -285,7 +285,7 @@ func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider s
 // Responses API unless the model catalog lists the model as a native decisions
 // model: its supports_decisions row, or without a row the decisions model
 // families the providers recognize by name (gpt-6-luna, Typesafe's typesafe/
-// models, Clef on Cloudflare). Typesafe serves every model natively, so it is never marked. Custom
+// models, Clef on Cloudflare, deciders on Perplexity). Typesafe serves every model natively, so it is never marked. Custom
 // providers have no catalog rows, so one serving a decisions model under an
 // unrecognized name would be emulated; the docs ask users to leave the setting
 // off for them.
@@ -294,7 +294,8 @@ func (p *CompatPlugin) markDecisionForEmulation(ctx *schemas.BifrostContext, pro
 		return
 	}
 	fallback := schemas.DefaultSupportsDecisions(model) || schemas.IsTypesafeModel(model) ||
-		(provider == schemas.Cloudflare && schemas.IsClefModel(model))
+		(provider == schemas.Cloudflare && schemas.IsClefModel(model)) ||
+		(provider == schemas.Perplexity && schemas.IsPerplexityDeciderModel(model))
 	if schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback) {
 		return
 	}
