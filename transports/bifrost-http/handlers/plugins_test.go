@@ -3,11 +3,18 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
@@ -553,5 +560,358 @@ func TestRestoreRedactedValueStillRestoresObjectElements(t *testing.T) {
 	}
 	if m["value"] != "real-secret" {
 		t.Errorf("value = %v, want the stored secret preserved", m["value"])
+	}
+}
+
+// rollbackPluginsStore records every row the handler writes to the plugin table, so a test can see
+// what an update wrote and what it restored afterwards. failCreate makes every CreatePlugin call
+// fail, which is how a restore fails.
+type rollbackPluginsStore struct {
+	configstore.ConfigStore
+	existing   *configstoreTables.TablePlugin
+	updates    []configstoreTables.TablePlugin
+	created    []configstoreTables.TablePlugin
+	deleted    []string
+	failCreate bool
+}
+
+func (s *rollbackPluginsStore) GetPlugin(_ context.Context, name string) (*configstoreTables.TablePlugin, error) {
+	if s.existing != nil && s.existing.Name == name {
+		return s.existing, nil
+	}
+	return nil, configstore.ErrNotFound
+}
+
+func (s *rollbackPluginsStore) CreatePlugin(_ context.Context, plugin *configstoreTables.TablePlugin, _ ...*gorm.DB) error {
+	if s.failCreate {
+		return errors.New("database is unavailable")
+	}
+	created := *plugin
+	s.created = append(s.created, created)
+	s.existing = &created
+	return nil
+}
+
+func (s *rollbackPluginsStore) ExecuteTransaction(_ context.Context, fn func(tx *gorm.DB) error) error {
+	return fn(nil)
+}
+
+func (s *rollbackPluginsStore) UpdatePlugin(_ context.Context, plugin *configstoreTables.TablePlugin, _ ...*gorm.DB) error {
+	s.updates = append(s.updates, *plugin)
+	return nil
+}
+
+func (s *rollbackPluginsStore) DeletePlugin(_ context.Context, name string, _ ...*gorm.DB) error {
+	s.deleted = append(s.deleted, name)
+	return nil
+}
+
+// failingReloadLoader refuses to load any plugin with err, as a plugin whose Init fails does.
+type failingReloadLoader struct {
+	noopPluginsLoader
+	err error
+}
+
+func (l failingReloadLoader) ReloadPlugin(_ context.Context, _ string, _ *string, _ any, _ *schemas.PluginPlacement, _ *int) error {
+	return l.err
+}
+
+// errorRecordingLogger keeps every Error log line so a test can assert on what was reported.
+type errorRecordingLogger struct {
+	mockLogger
+	errors []string
+}
+
+func (l *errorRecordingLogger) Error(format string, args ...any) {
+	l.errors = append(l.errors, fmt.Sprintf(format, args...))
+}
+
+// errNamespaceDimensionMismatch is what the semantic cache plugin's Init returns when its
+// namespace already holds vectors of another size.
+var errNamespaceDimensionMismatch = fmt.Errorf("failed to create namespace for semantic cache: %w",
+	fmt.Errorf("%w: namespace %q already exists with dimension 1536 but config requires 3072", vectorstore.ErrDimensionMismatch, "Cache"))
+
+func semanticCacheRow() *configstoreTables.TablePlugin {
+	return &configstoreTables.TablePlugin{
+		Name:    "semantic_cache",
+		Enabled: true,
+		Config:  map[string]any{"provider": "openai", "embedding_model": "text-embedding-3-small", "dimension": 1536},
+	}
+}
+
+func semanticCacheUpdateRequest(t *testing.T) *fasthttp.RequestCtx {
+	t.Helper()
+	ctx := buildUpdateRequest(t, map[string]any{
+		"enabled": true,
+		"config":  map[string]any{"provider": "openai", "embedding_model": "text-embedding-3-large", "dimension": 3072},
+	})
+	ctx.SetUserValue("name", "semantic_cache")
+	return ctx
+}
+
+// A plugin update the plugin cannot load with must leave the saved row as it was, so the saved
+// config always describes the instance still running; and a configuration the store rejects is the
+// caller's mistake, answered with 400 rather than 500.
+func TestUpdatePlugin_LoadFailureRestoresPreviousRow(t *testing.T) {
+	cases := []struct {
+		name       string
+		loadErr    error
+		wantStatus int
+	}{
+		{"store failure answers 500", errors.New("vector store unreachable"), fasthttp.StatusInternalServerError},
+		{"dimension mismatch answers 400", errNamespaceDimensionMismatch, fasthttp.StatusBadRequest},
+		{"refused config answers 400", fmt.Errorf("%w: semantic_cache plugin requires 'embedding_model' when 'provider' is set", lib.ErrInvalidPluginConfig), fasthttp.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			previous := semanticCacheRow()
+			store := &rollbackPluginsStore{existing: previous}
+			h := &PluginsHandler{pluginsLoader: failingReloadLoader{err: tc.loadErr}, configStore: store}
+
+			ctx := semanticCacheUpdateRequest(t)
+			h.updatePlugin(ctx)
+
+			if got := ctx.Response.StatusCode(); got != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", got, tc.wantStatus, ctx.Response.Body())
+			}
+			var body struct {
+				Error struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(ctx.Response.Body(), &body); err != nil {
+				t.Fatalf("decode error response %s: %v", ctx.Response.Body(), err)
+			}
+			if !strings.Contains(body.Error.Message, tc.loadErr.Error()) {
+				t.Errorf("error message %q does not carry the load error %q", body.Error.Message, tc.loadErr)
+			}
+			if len(store.updates) != 1 {
+				t.Fatalf("expected one write of the new row, got %d", len(store.updates))
+			}
+			if got := fmt.Sprint(store.updates[0].Config.(map[string]any)["dimension"]); got != "3072" {
+				t.Fatalf("first write dimension = %s, want the requested 3072", got)
+			}
+			if len(store.deleted) != 1 || len(store.created) != 1 {
+				t.Fatalf("expected the new row replaced by the previous one, got deletes %v and %d creates", store.deleted, len(store.created))
+			}
+			restored := store.created[0]
+			if restored.Enabled != previous.Enabled || fmt.Sprint(restored.Config.(map[string]any)["dimension"]) != "1536" {
+				t.Fatalf("restored row = enabled %v dimension %v, want the previous enabled %v dimension 1536",
+					restored.Enabled, restored.Config.(map[string]any)["dimension"], previous.Enabled)
+			}
+		})
+	}
+}
+
+// A failed update must leave the row exactly as it was. Restoring through UpdatePlugin cannot: it
+// reads a nil placement or order as "keep the current value", so an update that added one would
+// survive its own failure and take effect on the next restart or reload.
+func TestUpdatePlugin_LoadFailureRestoresTheExactPreviousRow(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: t.TempDir() + "/config.db"},
+	}, &mockLogger{})
+	if err != nil {
+		t.Fatalf("failed to open config store: %v", err)
+	}
+	if err := store.CreatePlugin(ctx, semanticCacheRow()); err != nil {
+		t.Fatalf("failed to seed the plugin row: %v", err)
+	}
+	h := &PluginsHandler{pluginsLoader: failingReloadLoader{err: errNamespaceDimensionMismatch}, configStore: store}
+
+	req := initedUpdateRequest(t, "semantic_cache", map[string]any{
+		"enabled":   true,
+		"config":    map[string]any{"provider": "openai", "embedding_model": "text-embedding-3-large", "dimension": 3072},
+		"placement": "pre_builtin",
+		"order":     5,
+	})
+	h.updatePlugin(req)
+
+	if got := req.Response.StatusCode(); got != fasthttp.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", got, req.Response.Body())
+	}
+	row, err := store.GetPlugin(ctx, "semantic_cache")
+	if err != nil {
+		t.Fatalf("failed to read the plugin row: %v", err)
+	}
+	if row.Placement != nil {
+		t.Fatalf("restored row kept the failed update's placement %q, want it unset", *row.Placement)
+	}
+	if row.Order != nil {
+		t.Fatalf("restored row kept the failed update's order %d, want it unset", *row.Order)
+	}
+	if got := fmt.Sprint(row.Config.(map[string]any)["dimension"]); got != "1536" {
+		t.Fatalf("restored row dimension = %s, want the previous 1536", got)
+	}
+}
+
+// initedUpdateRequest builds a PUT for the named plugin initialised the way a server does, so a
+// handler backed by a real store can use it as its request context.
+func initedUpdateRequest(t *testing.T, name string, body any) *fasthttp.RequestCtx {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+	var httpReq fasthttp.Request
+	httpReq.Header.SetMethod("PUT")
+	httpReq.SetBody(raw)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&httpReq, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+	ctx.SetUserValue("name", name)
+	return ctx
+}
+
+// gatedReloadLoader holds the load of a semantic_cache config at dimension 3072 until release is
+// closed and then refuses it, as a namespace of another size does; every other config loads.
+type gatedReloadLoader struct {
+	noopPluginsLoader
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (l *gatedReloadLoader) ReloadPlugin(_ context.Context, _ string, _ *string, cfg any, _ *schemas.PluginPlacement, _ *int) error {
+	if fmt.Sprint(cfg.(map[string]any)["dimension"]) != "3072" {
+		return nil
+	}
+	close(l.entered)
+	<-l.release
+	return errNamespaceDimensionMismatch
+}
+
+// A failed update restores the row it found, so it must not interleave with another save of the
+// same plugin: a second update that saves and loads while the first is still loading would have
+// its saved config overwritten by the first one's restore, leaving the database describing a
+// config that no longer runs.
+func TestUpdatePlugin_ConcurrentSavesOfOnePluginDoNotInterleave(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: t.TempDir() + "/config.db"},
+	}, &mockLogger{})
+	if err != nil {
+		t.Fatalf("failed to open config store: %v", err)
+	}
+	if err := store.CreatePlugin(ctx, semanticCacheRow()); err != nil {
+		t.Fatalf("failed to seed the plugin row: %v", err)
+	}
+	loader := &gatedReloadLoader{entered: make(chan struct{}), release: make(chan struct{})}
+	h := &PluginsHandler{pluginsLoader: loader, configStore: store}
+
+	failing := initedUpdateRequest(t, "semantic_cache", map[string]any{
+		"enabled": true,
+		"config":  map[string]any{"provider": "openai", "embedding_model": "text-embedding-3-large", "dimension": 3072},
+	})
+	failingDone := make(chan struct{})
+	go func() {
+		defer close(failingDone)
+		h.updatePlugin(failing)
+	}()
+	<-loader.entered
+
+	succeeding := initedUpdateRequest(t, "semantic_cache", map[string]any{
+		"enabled": true,
+		"config":  map[string]any{"provider": "openai", "embedding_model": "text-embedding-3-small", "dimension": 512},
+	})
+	succeedingDone := make(chan struct{})
+	go func() {
+		defer close(succeedingDone)
+		h.updatePlugin(succeeding)
+	}()
+	// Unserialized, the second save finishes while the first is still loading. Serialized, it
+	// waits for the first, so give it a moment either way before letting the first fail.
+	select {
+	case <-succeedingDone:
+	case <-time.After(500 * time.Millisecond):
+	}
+	close(loader.release)
+	<-failingDone
+	<-succeedingDone
+
+	if got := failing.Response.StatusCode(); got != fasthttp.StatusBadRequest {
+		t.Fatalf("failing update status = %d, want 400: %s", got, failing.Response.Body())
+	}
+	if got := succeeding.Response.StatusCode(); got != fasthttp.StatusOK {
+		t.Fatalf("succeeding update status = %d, want 200: %s", got, succeeding.Response.Body())
+	}
+	row, err := store.GetPlugin(ctx, "semantic_cache")
+	if err != nil {
+		t.Fatalf("failed to read the plugin row: %v", err)
+	}
+	if got := fmt.Sprint(row.Config.(map[string]any)["dimension"]); got != "512" {
+		t.Fatalf("saved dimension = %s, want 512 from the update that loaded", got)
+	}
+}
+
+// An update that created the row itself (no row existed) removes it again when the plugin fails to
+// load, so a failed first save leaves nothing behind.
+func TestUpdatePlugin_LoadFailureWithoutPreviousRowRemovesIt(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := &rollbackPluginsStore{}
+	h := &PluginsHandler{pluginsLoader: failingReloadLoader{err: errNamespaceDimensionMismatch}, configStore: store}
+
+	ctx := semanticCacheUpdateRequest(t)
+	h.updatePlugin(ctx)
+
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", got, ctx.Response.Body())
+	}
+	if len(store.deleted) != 1 || store.deleted[0] != "semantic_cache" {
+		t.Fatalf("expected the row the update created to be deleted, got deletes %v", store.deleted)
+	}
+}
+
+// When the previous row cannot be restored, the saved config no longer matches the running
+// instance; that must reach the server log as an error naming the plugin.
+func TestUpdatePlugin_LogsErrorWhenRestoreFails(t *testing.T) {
+	logger := &errorRecordingLogger{}
+	SetLogger(logger)
+	store := &rollbackPluginsStore{existing: semanticCacheRow(), failCreate: true}
+	h := &PluginsHandler{pluginsLoader: failingReloadLoader{err: errNamespaceDimensionMismatch}, configStore: store}
+
+	ctx := semanticCacheUpdateRequest(t)
+	h.updatePlugin(ctx)
+
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", got, ctx.Response.Body())
+	}
+	var logged bool
+	for _, line := range logger.errors {
+		if strings.Contains(line, "restore") && strings.Contains(line, "semantic_cache") && strings.Contains(line, "database is unavailable") {
+			logged = true
+		}
+	}
+	if !logged {
+		t.Fatalf("expected an error log naming the plugin and the failed restore, got %q", logger.errors)
+	}
+}
+
+// A create whose config the store rejects is the caller's mistake too: 400, and the row is removed.
+func TestCreatePlugin_DimensionMismatchAnswers400(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := &rollbackPluginsStore{}
+	h := &PluginsHandler{pluginsLoader: failingReloadLoader{err: errNamespaceDimensionMismatch}, configStore: store}
+
+	ctx := buildCreateRequest(t, map[string]any{
+		"name":    "semantic_cache",
+		"enabled": true,
+		"config":  map[string]any{"provider": "openai", "embedding_model": "text-embedding-3-large", "dimension": 3072},
+	})
+	h.createPlugin(ctx)
+
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", got, ctx.Response.Body())
+	}
+	if !strings.Contains(string(ctx.Response.Body()), "already exists with dimension 1536 but config requires 3072") {
+		t.Errorf("response %s does not carry the mismatch", ctx.Response.Body())
+	}
+	if len(store.deleted) != 1 || store.deleted[0] != "semantic_cache" {
+		t.Fatalf("expected the created row to be removed, got deletes %v", store.deleted)
 	}
 }

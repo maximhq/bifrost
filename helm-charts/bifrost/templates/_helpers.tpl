@@ -1694,6 +1694,9 @@ false
 {{- if hasKey $inputConfig "cache_tool_call_responses" }}
 {{- $_ := set $scConfig "cache_tool_call_responses" $inputConfig.cache_tool_call_responses }}
 {{- end }}
+{{- if hasKey $inputConfig "disable_identity_scoping" }}
+{{- $_ := set $scConfig "disable_identity_scoping" $inputConfig.disable_identity_scoping }}
+{{- end }}
 {{- $plugin := dict "enabled" true "name" "semantic_cache" "config" $scConfig }}
 {{- if hasKey .Values.bifrost.plugins.semanticCache "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.semanticCache.version | int) }}{{- end }}
 {{- $plugins = append $plugins $plugin }}

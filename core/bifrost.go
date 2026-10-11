@@ -5767,8 +5767,6 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	preReqPipeline := bifrost.getPluginPipeline()
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
-	// A key the caller pinned brings the provider that has it to the front of the chain.
-	bifrost.resolveCallerKeyPin(ctx, requested, req)
 	// The session has the last word on the chain the hooks produced.
 	bifrost.resolveSessionRoute(ctx, requested, req)
 	bifrost.endCoreSpan(setupSpan)
@@ -5938,8 +5936,6 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	preReqPipeline := bifrost.getPluginPipeline()
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
-	// A key the caller pinned brings the provider that has it to the front of the chain.
-	bifrost.resolveCallerKeyPin(ctx, requested, req)
 	// The session has the last word on the chain the hooks produced.
 	bifrost.resolveSessionRoute(ctx, requested, req)
 	// "miscellaneous" phase: pre-dispatch glue (field re-read + validation) on no other
@@ -6811,6 +6807,58 @@ func isFirstTokenTimeoutError(err *schemas.BifrostError) bool {
 	return err != nil && err.Error != nil && err.Error.Code != nil && *err.Error.Code == schemas.FirstTokenTimeoutErrorCode
 }
 
+// stampEndedAttempt labels the trail record of an attempt Bifrost itself ended: a timeout (the
+// provider's, the request's deadline or a TTFT miss) or the caller cancelling. The retry loop
+// stops on these before it classifies, so without this their record says nothing about why the
+// attempt ended. A timeout carries FailReason request_timed_out (a TTFT miss keeps the
+// ttft_timeout settleAttemptAbort wrote). A cancellation carries none: FailReason is what
+// consumers read as "this key failed" (a load balancer counts it against the key, telemetry
+// marks the key down), and a caller leaving says nothing about the key. Any other
+// error, and a record already classified, is left alone.
+func stampEndedAttempt(ctx *schemas.BifrostContext, bifrostError *schemas.BifrostError) {
+	class := ClassifyFailure(bifrostError)
+	status := 0
+	switch class {
+	case schemas.FailureClassTimeout:
+		status = 504
+	case schemas.FailureClassCancelled:
+		status = 499
+	default:
+		return
+	}
+	trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
+	if !ok || len(trail) == 0 {
+		return
+	}
+	last := &trail[len(trail)-1]
+	if last.FailureClass != "" {
+		return
+	}
+	last.FailureClass = class
+	if bifrostError.StatusCode != nil {
+		status = *bifrostError.StatusCode
+	}
+	last.StatusCode = &status
+	if class == schemas.FailureClassTimeout && last.FailReason == nil {
+		reason := schemas.RequestTimedOut
+		last.FailReason = &reason
+	}
+	ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, trail)
+}
+
+// stampEndedStreamAttempt labels the record of a stream attempt that ends after the retry loop has
+// returned it: a caller leaving or the request deadline passing once output has flowed reaches only
+// the stream's post-hooks, which logging and telemetry read the trail in. While the attempt's TTFT
+// abort is still armed the retry loop owns the record: a TTFT cut can surface here first as the
+// closed socket's cancellation, and labelling it would freeze it as cancelled before
+// settleAttemptAbort calls it the ttft_timeout it is.
+func stampEndedStreamAttempt(ctx *schemas.BifrostContext, bifrostError *schemas.BifrostError) {
+	if ctx.Value(schemas.BifrostContextKeyStreamAttemptAbort) != nil {
+		return
+	}
+	stampEndedAttempt(ctx, bifrostError)
+}
+
 func executeRequestWithRetries[T any](
 	ctx *schemas.BifrostContext,
 	config *schemas.ProviderConfig,
@@ -7350,6 +7398,12 @@ func executeRequestWithRetries[T any](
 		if bifrostError == nil ||
 			bifrostError.IsBifrostError ||
 			(bifrostError.Error != nil && bifrostError.Error.Type != nil && *bifrostError.Error.Type == schemas.RequestCancelled) {
+			// A timeout or a cancellation ends the attempt here, before the classification
+			// below would stamp its record, so it is labelled now. Keyless providers keep no
+			// trail of their own, and the last record may be another provider's.
+			if keyProvider != nil {
+				stampEndedAttempt(ctx, bifrostError)
+			}
 			break
 		}
 		// An attempt that ran a provider-injected tool is not retried: the retry would
@@ -7552,6 +7606,37 @@ func disableAnthropicPassthrough(ctx *schemas.BifrostContext) {
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
+}
+
+// clearGenAIPassthroughForNonGoogleProvider disables GenAI raw-body passthrough when a request
+// from the GenAI integration is attempted on a provider outside Google's API family. The
+// integration forwards the caller's Gemini body verbatim when the request names gemini/ (or
+// sends x-model-provider: gemini), and a fallback to, say, OpenAI would otherwise receive that
+// body and refuse it ("Missing required parameter: 'model'"); with passthrough off it converts
+// the request like any other. Gemini keeps it. Vertex keeps it for the models it serves with a
+// Google body (Gemini, Gemma, Imagen, Veo and numeric tuned endpoints), for batch jobs, whose body
+// is the job definition and which Vertex runs for Claude and Llama too, and for file and
+// cached-content requests, which name no model or a Gemini one; a Claude, Mistral or other Model
+// Garden model on Vertex is sent an Anthropic or OpenAI body, so it is converted. Call
+// this only after key-level alias resolution: the family predicates read the resolved alias.
+// Re-runs per attempt, so a fallback after a Gemini primary is caught. No-op outside the GenAI
+// integration.
+func clearGenAIPassthroughForNonGoogleProvider(ctx *schemas.BifrostContext, baseProvider schemas.ModelProvider, requestType schemas.RequestType, model string) {
+	if integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); integrationType != "genai" {
+		return
+	}
+	if baseProvider == schemas.Gemini {
+		return
+	}
+	if baseProvider == schemas.Vertex &&
+		(isBatchRequestType(requestType) || isFileRequestType(requestType) || isCachedContentRequestType(requestType) ||
+			schemas.IsGeminiModelFamily(ctx, model) || schemas.IsGemmaModelFamily(ctx, model) ||
+			schemas.IsImagenModelFamily(ctx, model) || schemas.IsVeoModelFamily(ctx, model) ||
+			schemas.IsAllDigitsASCII(model)) {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+	ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
 }
 
 // clearAnthropicPassthroughForUnsupportedStructuredOutput disables Anthropic raw-body passthrough
@@ -7963,6 +8048,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
 				// Disable it too when this attempt's provider has no native structured outputs.
 				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
+				// Disable GenAI raw-body passthrough when this attempt's provider isn't Google's.
+				clearGenAIPassthroughForNonGoogleProvider(req.Context, baseProvider, req.RequestType, resolvedModel)
 				injectedTools := bifrost.injectedToolsForAttempt(req.Context, config, req.RequestType)
 				injectedTools = clearAnthropicPassthroughForInjectedTools(req.Context, injectedTools, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
@@ -8005,6 +8092,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					if err != nil {
 						err.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						err.PopulateRoutingInfo(perAttemptRoutingInfo)
+						// Keyless providers keep no trail of their own, as in the retry loop.
+						if keyProvider != nil {
+							stampEndedStreamAttempt(ctx, err)
+						}
 					}
 					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
 					if IsFinalChunk(ctx) {
@@ -8070,6 +8161,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
 				// Disable it too when this attempt's provider has no native structured outputs.
 				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
+				// Disable GenAI raw-body passthrough when this attempt's provider isn't Google's.
+				clearGenAIPassthroughForNonGoogleProvider(req.Context, baseProvider, req.RequestType, resolvedModel)
 				injectedTools := bifrost.injectedToolsForAttempt(req.Context, config, req.RequestType)
 				injectedTools = clearAnthropicPassthroughForInjectedTools(req.Context, injectedTools, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
