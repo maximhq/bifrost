@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/maximhq/bifrost/plugins/otel"
+	"math"
 	"net"
 	"strings"
 	"testing"
@@ -16,7 +16,9 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
@@ -28,6 +30,8 @@ type capturePluginsStore struct {
 	existingPlugin  *configstoreTables.TablePlugin
 	capturedConfig  map[string]any
 	capturedEnabled bool
+	capturedPlugin  *configstoreTables.TablePlugin
+	createCalls     int
 }
 
 func (s *capturePluginsStore) GetPlugin(_ context.Context, name string) (*configstoreTables.TablePlugin, error) {
@@ -37,15 +41,27 @@ func (s *capturePluginsStore) GetPlugin(_ context.Context, name string) (*config
 	return nil, configstore.ErrNotFound
 }
 
+// UpdatePlugin captures the handler's write and exposes it to subsequent readback assertions.
 func (s *capturePluginsStore) UpdatePlugin(_ context.Context, plugin *configstoreTables.TablePlugin, _ ...*gorm.DB) error {
 	if cfg, ok := plugin.Config.(map[string]any); ok {
 		s.capturedConfig = cfg
 	}
 	s.capturedEnabled = plugin.Enabled
+	s.capturedPlugin = plugin
+	s.existingPlugin = plugin
 	return nil
 }
 
+// GetPlugins returns the fixture row without normalizing its stored ordering metadata.
+func (s *capturePluginsStore) GetPlugins(_ context.Context) ([]*configstoreTables.TablePlugin, error) {
+	if s.existingPlugin == nil {
+		return nil, nil
+	}
+	return []*configstoreTables.TablePlugin{s.existingPlugin}, nil
+}
+
 func (s *capturePluginsStore) CreatePlugin(_ context.Context, plugin *configstoreTables.TablePlugin, _ ...*gorm.DB) error {
+	s.createCalls++
 	s.existingPlugin = plugin
 	return nil
 }
@@ -67,6 +83,316 @@ func (noopPluginsLoader) NormalizePluginConfig(_ string, _ map[string]any) (map[
 
 func (noopPluginsLoader) ExpandPluginConfigForAPI(_ string, _ map[string]any) (map[string]any, error) {
 	return nil, nil
+}
+
+type orderingPluginsLoader struct {
+	noopPluginsLoader
+	reloaded  bool
+	removed   bool
+	configErr error
+	placement *schemas.PluginPlacement
+	order     *int
+}
+
+// ReloadPlugin records the ordering forwarded to the loader without loading a real plugin.
+func (l *orderingPluginsLoader) ReloadPlugin(_ context.Context, _ string, _ *string, _ any, placement *schemas.PluginPlacement, order *int) error {
+	l.reloaded = true
+	l.placement = placement
+	l.order = order
+	return nil
+}
+
+func (l *orderingPluginsLoader) RemovePlugin(_ context.Context, _ string) error {
+	l.removed = true
+	return nil
+}
+
+func (l *orderingPluginsLoader) NormalizePluginConfig(_ string, _ map[string]any) (map[string]any, error) {
+	return nil, l.configErr
+}
+
+// TestPluginsHandler_PersistsEffectiveOrder pins the ordering metadata passed to
+// storage, hot reload, and API responses for both create and update requests.
+func TestPluginsHandler_PersistsEffectiveOrder(t *testing.T) {
+	SetLogger(&mockLogger{})
+	tests := []struct {
+		name          string
+		plugin        string
+		placement     *schemas.PluginPlacement
+		order         *int
+		wantPlacement *schemas.PluginPlacement
+		wantOrder     *int
+	}{
+		{"builtin_override", "telemetry", schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(99), schemas.Ptr(schemas.PluginPlacementBuiltin), schemas.Ptr(1)},
+		{"routing_override", "routing", schemas.Ptr(schemas.PluginPlacementPreBuiltin), schemas.Ptr(-1), schemas.Ptr(schemas.PluginPlacementBuiltin), schemas.Ptr(5)},
+		{"builtin_round_trip", "otel", schemas.Ptr(schemas.PluginPlacementBuiltin), schemas.Ptr(6), schemas.Ptr(schemas.PluginPlacementBuiltin), schemas.Ptr(6)},
+		{"builtin_omitted", "maxim", nil, nil, schemas.Ptr(schemas.PluginPlacementBuiltin), schemas.Ptr(9)},
+		{"resolver_override", "model-catalog-resolver", schemas.Ptr(schemas.PluginPlacementPreBuiltin), schemas.Ptr(-1), schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(math.MaxInt)},
+		{"resolver_builtin_override", "model-catalog-resolver", schemas.Ptr(schemas.PluginPlacementBuiltin), schemas.Ptr(99), schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(math.MaxInt)},
+		{"custom_explicit", "custom-order-test", schemas.Ptr(schemas.PluginPlacementPreBuiltin), schemas.Ptr(99), schemas.Ptr(schemas.PluginPlacementPreBuiltin), schemas.Ptr(99)},
+		{"custom_omitted", "custom-order-test", nil, nil, nil, nil},
+	}
+	for _, operation := range []string{"create", "update", "update_missing"} {
+		for _, enabled := range []bool{true, false} {
+			state := "enabled"
+			if !enabled {
+				state = "disabled"
+			}
+			for _, tt := range tests {
+				t.Run(operation+"/"+state+"/"+tt.name, func(t *testing.T) {
+					store := &capturePluginsStore{}
+					if operation == "update" {
+						store.existingPlugin = &configstoreTables.TablePlugin{Name: tt.plugin}
+					}
+					loader := &orderingPluginsLoader{}
+					h := &PluginsHandler{configStore: store, pluginsLoader: loader}
+					var ctx *fasthttp.RequestCtx
+					if operation == "create" {
+						ctx = buildCreateRequest(t, CreatePluginRequest{Name: tt.plugin, Enabled: enabled, Placement: tt.placement, Order: tt.order})
+						h.createPlugin(ctx)
+						require.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), "%s", ctx.Response.Body())
+					} else {
+						ctx = buildUpdateRequest(t, UpdatePluginRequest{Enabled: enabled, Placement: tt.placement, Order: tt.order})
+						ctx.SetUserValue("name", tt.plugin)
+						h.updatePlugin(ctx)
+						require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "%s", ctx.Response.Body())
+						require.NotNil(t, store.capturedPlugin)
+					}
+					require.NotNil(t, store.existingPlugin)
+					require.Equal(t, tt.wantPlacement, store.existingPlugin.Placement, "stored placement")
+					require.Equal(t, tt.wantOrder, store.existingPlugin.Order, "stored order")
+					require.Equal(t, enabled, loader.reloaded)
+					if enabled {
+						require.Equal(t, tt.wantPlacement, loader.placement, "reload placement")
+						require.Equal(t, tt.wantOrder, loader.order, "reload order")
+					}
+					var response struct {
+						Plugin PluginResponse `json:"plugin"`
+					}
+					require.NoError(t, json.Unmarshal(ctx.Response.Body(), &response))
+					require.Equal(t, tt.wantPlacement, response.Plugin.Placement, "response placement")
+					require.Equal(t, tt.wantOrder, response.Plugin.Order, "response order")
+				})
+			}
+		}
+	}
+}
+
+// TestPluginsHandler_ReturnsEffectiveOrder covers legacy persisted values in
+// both GET endpoints without mutating the row while constructing a response.
+func TestPluginsHandler_ReturnsEffectiveOrder(t *testing.T) {
+	SetLogger(&mockLogger{})
+	tests := []struct {
+		name          string
+		wantPlacement schemas.PluginPlacement
+		wantOrder     int
+	}{
+		{"telemetry", schemas.PluginPlacementBuiltin, 1},
+		{"routing", schemas.PluginPlacementBuiltin, 5},
+		{"model-catalog-resolver", schemas.PluginPlacementPostBuiltin, math.MaxInt},
+		{"custom-order-test", schemas.PluginPlacementPostBuiltin, 99},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			row := &configstoreTables.TablePlugin{
+				Name: tt.name, Enabled: true,
+				Placement: schemas.Ptr(schemas.PluginPlacementPostBuiltin), Order: schemas.Ptr(99),
+			}
+			h := &PluginsHandler{configStore: &capturePluginsStore{existingPlugin: row}, pluginsLoader: noopPluginsLoader{}}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("name", tt.name)
+			h.getPlugin(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "%s", ctx.Response.Body())
+			var single PluginResponse
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &single))
+			require.Equal(t, schemas.Ptr(tt.wantPlacement), single.Placement)
+			require.Equal(t, schemas.Ptr(tt.wantOrder), single.Order)
+
+			listCtx := &fasthttp.RequestCtx{}
+			h.getPlugins(listCtx)
+			require.Equal(t, fasthttp.StatusOK, listCtx.Response.StatusCode(), "%s", listCtx.Response.Body())
+			var list struct {
+				Plugins []PluginResponse `json:"plugins"`
+			}
+			require.NoError(t, json.Unmarshal(listCtx.Response.Body(), &list))
+			require.Len(t, list.Plugins, 1)
+			require.Equal(t, single.Placement, list.Plugins[0].Placement)
+			require.Equal(t, single.Order, list.Plugins[0].Order)
+			require.Equal(t, schemas.Ptr(schemas.PluginPlacementPostBuiltin), row.Placement, "GET must not mutate storage")
+			require.Equal(t, schemas.Ptr(99), row.Order, "GET must not mutate storage")
+		})
+	}
+}
+
+// JSON clients commonly decode numbers as float64. In particular, JavaScript
+// rounds the resolver's MaxInt order above the range accepted by Go's int.
+func TestPluginsHandler_ResolverOrderJSONRoundTrip(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, operation := range []string{"create", "update"} {
+		t.Run(operation, func(t *testing.T) {
+			store := &capturePluginsStore{existingPlugin: &configstoreTables.TablePlugin{
+				Name: "model-catalog-resolver", Enabled: true,
+				Placement: schemas.Ptr(schemas.PluginPlacementPostBuiltin), Order: schemas.Ptr(math.MaxInt),
+			}}
+			loader := &orderingPluginsLoader{}
+			h := &PluginsHandler{configStore: store, pluginsLoader: loader}
+			getCtx := &fasthttp.RequestCtx{}
+			getCtx.SetUserValue("name", "model-catalog-resolver")
+			h.getPlugin(getCtx)
+			require.Equal(t, fasthttp.StatusOK, getCtx.Response.StatusCode())
+			var body map[string]any
+			require.NoError(t, json.Unmarshal(getCtx.Response.Body(), &body))
+			if operation == "create" {
+				store.existingPlugin = nil
+				ctx := buildCreateRequest(t, body)
+				h.createPlugin(ctx)
+				require.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), "%s", ctx.Response.Body())
+			} else {
+				ctx := buildUpdateRequest(t, body)
+				ctx.SetUserValue("name", "model-catalog-resolver")
+				h.updatePlugin(ctx)
+				require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "%s", ctx.Response.Body())
+			}
+			require.Equal(t, schemas.Ptr(math.MaxInt), store.existingPlugin.Order)
+			require.Equal(t, schemas.Ptr(schemas.PluginPlacementPostBuiltin), store.existingPlugin.Placement)
+			require.True(t, loader.reloaded)
+			require.Equal(t, schemas.Ptr(math.MaxInt), loader.order)
+		})
+	}
+}
+
+// TestPluginsHandler_ValidatesOnlyCustomOrder rejects invalid custom order values
+// before persistence while ignoring the same values for loader-managed ordering.
+func TestPluginsHandler_ValidatesOnlyCustomOrder(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, operation := range []string{"create", "update", "update_missing"} {
+		for _, rawOrder := range []string{"9223372036854776000", "1.5", `"invalid"`} {
+			for _, name := range []string{"telemetry", "custom-order-test"} {
+				t.Run(operation+"/"+name+"/"+rawOrder, func(t *testing.T) {
+					store := &capturePluginsStore{}
+					if operation == "update" {
+						store.existingPlugin = &configstoreTables.TablePlugin{Name: name}
+					}
+					h := &PluginsHandler{configStore: store, pluginsLoader: noopPluginsLoader{}}
+					body := map[string]any{"name": name, "enabled": false, "order": json.RawMessage(rawOrder)}
+					var ctx *fasthttp.RequestCtx
+					wantStatus := fasthttp.StatusOK
+					if operation == "create" {
+						ctx = buildCreateRequest(t, body)
+						h.createPlugin(ctx)
+						wantStatus = fasthttp.StatusCreated
+					} else {
+						ctx = buildUpdateRequest(t, body)
+						ctx.SetUserValue("name", name)
+						h.updatePlugin(ctx)
+					}
+					if name == "custom-order-test" {
+						wantStatus = fasthttp.StatusBadRequest
+						require.Zero(t, store.createCalls, "invalid custom order must not create a row")
+						require.Nil(t, store.capturedPlugin, "invalid custom order must not be saved")
+						if operation != "update" {
+							require.Nil(t, store.existingPlugin)
+						}
+					} else {
+						require.NotNil(t, store.existingPlugin)
+						require.Equal(t, schemas.Ptr(1), store.existingPlugin.Order)
+					}
+					require.Equal(t, wantStatus, ctx.Response.StatusCode(), "%s", ctx.Response.Body())
+					if name == "custom-order-test" && operation == "update_missing" {
+						createCtx := buildCreateRequest(t, CreatePluginRequest{Name: name, Order: schemas.Ptr(99)})
+						h.createPlugin(createCtx)
+						require.Equal(t, fasthttp.StatusCreated, createCtx.Response.StatusCode(), "%s", createCtx.Response.Body())
+						require.Equal(t, schemas.Ptr(99), store.existingPlugin.Order)
+					}
+				})
+			}
+		}
+	}
+}
+
+// Rejected updates must neither reserve a missing name nor change an existing row
+// or runtime plugin, regardless of which request validation rejects them.
+func TestUpdatePlugin_RejectsInvalidRequestBeforePersistence(t *testing.T) {
+	SetLogger(&mockLogger{})
+	tests := []struct {
+		name       string
+		body       string
+		authBypass bool
+		configErr  error
+		wantStatus int
+	}{
+		{"malformed_json", `{"enabled":`, false, nil, fasthttp.StatusBadRequest},
+		{"invalid_field_type", `{"enabled":"yes"}`, false, nil, fasthttp.StatusBadRequest},
+		{"invalid_placement", `{"placement":"invalid"}`, false, nil, fasthttp.StatusBadRequest},
+		{"reserved_placement", `{"placement":"builtin"}`, false, nil, fasthttp.StatusBadRequest},
+		{"unauthenticated_path", `{"path":"/tmp/custom.so"}`, true, nil, fasthttp.StatusForbidden},
+		{"invalid_config", `{"config":{"changed":true}}`, false, errors.New("invalid plugin config"), fasthttp.StatusBadRequest},
+	}
+	for _, existing := range []bool{false, true} {
+		for _, tt := range tests {
+			t.Run(fmt.Sprintf("existing=%t/%s", existing, tt.name), func(t *testing.T) {
+				const name = "custom-order-test"
+				store := &capturePluginsStore{}
+				if existing {
+					store.existingPlugin = &configstoreTables.TablePlugin{
+						Name: name, Enabled: true, IsCustom: true,
+						Config: map[string]any{"keep": true}, Order: schemas.Ptr(7),
+					}
+				}
+				before, err := json.Marshal(store.existingPlugin)
+				require.NoError(t, err)
+				loader := &orderingPluginsLoader{configErr: tt.configErr}
+				h := &PluginsHandler{configStore: store, pluginsLoader: loader}
+				ctx := &fasthttp.RequestCtx{}
+				ctx.SetUserValue("name", name)
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, tt.authBypass)
+				ctx.Request.SetBodyString(tt.body)
+				h.updatePlugin(ctx)
+
+				require.Equal(t, tt.wantStatus, ctx.Response.StatusCode(), "%s", ctx.Response.Body())
+				require.Zero(t, store.createCalls, "rejected update must not create a row")
+				require.Nil(t, store.capturedPlugin, "rejected update must not write a row")
+				after, err := json.Marshal(store.existingPlugin)
+				require.NoError(t, err)
+				require.JSONEq(t, string(before), string(after), "stored state must be unchanged")
+				require.False(t, loader.reloaded, "rejected update must not reload the plugin")
+				require.False(t, loader.removed, "rejected update must not stop the plugin")
+				if !existing {
+					_, err := store.GetPlugin(context.Background(), name)
+					require.ErrorIs(t, err, configstore.ErrNotFound)
+					loader.configErr = nil
+					createCtx := buildCreateRequest(t, CreatePluginRequest{Name: name})
+					h.createPlugin(createCtx)
+					require.Equal(t, fasthttp.StatusCreated, createCtx.Response.StatusCode(), "%s", createCtx.Response.Body())
+				}
+			})
+		}
+	}
+}
+
+// TestPluginsHandler_RejectsCustomBuiltinPlacement reserves the builtin group
+// for loader-managed plugins and rejects custom writes before touching storage.
+func TestPluginsHandler_RejectsCustomBuiltinPlacement(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, operation := range []string{"create", "update"} {
+		t.Run(operation, func(t *testing.T) {
+			store := &capturePluginsStore{}
+			h := &PluginsHandler{configStore: store, pluginsLoader: noopPluginsLoader{}}
+			var ctx *fasthttp.RequestCtx
+			if operation == "create" {
+				ctx = buildCreateRequest(t, CreatePluginRequest{Name: "custom-order-test", Placement: schemas.Ptr(schemas.PluginPlacementBuiltin)})
+				h.createPlugin(ctx)
+				require.Nil(t, store.existingPlugin)
+			} else {
+				store.existingPlugin = &configstoreTables.TablePlugin{Name: "custom-order-test"}
+				ctx = buildUpdateRequest(t, UpdatePluginRequest{Placement: schemas.Ptr(schemas.PluginPlacementBuiltin)})
+				ctx.SetUserValue("name", "custom-order-test")
+				h.updatePlugin(ctx)
+				require.Nil(t, store.capturedPlugin)
+			}
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "%s", ctx.Response.Body())
+		})
+	}
 }
 
 // buildUpdateRequest creates a PUT /api/plugins/{name} fasthttp context.

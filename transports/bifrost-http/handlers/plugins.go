@@ -81,6 +81,22 @@ type UpdatePluginRequest struct {
 	Order     *int                     `json:"order,omitempty"`
 }
 
+// decodePluginOrder defers integer validation until the plugin is known. Fixed
+// orders ignore caller input, including MaxInt rounded by a JSON number client.
+// Custom plugins retain the usual integer validation and nil defaults.
+func decodePluginOrder(name string, raw json.RawMessage) (*int, error) {
+	if _, fixedOrder := lib.NormalizePluginOrderInfo(name, nil, nil); fixedOrder != nil {
+		return fixedOrder, nil
+	}
+	var order *int
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &order); err != nil {
+			return nil, err
+		}
+	}
+	return order, nil
+}
+
 // normalizePluginConfig calls the loaded plugin's MarshalConfigForStorage if it
 // implements ConfigMarshallerPlugin. Returns config unchanged if the plugin is not
 // loaded or does not implement the interface. Returns an error if marshalling fails.
@@ -169,6 +185,7 @@ func (h *PluginsHandler) buildPluginResponseWithStatuses(plugin *configstoreTabl
 			config = redacted
 		}
 	}
+	placement, order := lib.NormalizePluginOrderInfo(plugin.Name, plugin.Placement, plugin.Order)
 	return PluginResponse{
 		Name:       plugin.Name,
 		ActualName: pluginStatus.Name,
@@ -176,8 +193,8 @@ func (h *PluginsHandler) buildPluginResponseWithStatuses(plugin *configstoreTabl
 		Config:     config,
 		IsCustom:   plugin.IsCustom,
 		Path:       plugin.Path,
-		Placement:  plugin.Placement,
-		Order:      plugin.Order,
+		Placement:  placement,
+		Order:      order,
 		Status:     pluginStatus,
 	}
 }
@@ -303,7 +320,11 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	var request CreatePluginRequest
-	if err := json.Unmarshal(ctx.PostBody(), &request); err != nil {
+	wireRequest := struct {
+		*CreatePluginRequest
+		Order json.RawMessage `json:"order"`
+	}{CreatePluginRequest: &request}
+	if err := json.Unmarshal(ctx.PostBody(), &wireRequest); err != nil {
 		logger.Error("failed to unmarshal create plugin request: %v", err)
 		SendError(ctx, 400, "Invalid request body")
 		return
@@ -313,16 +334,26 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Plugin name is required")
 		return
 	}
-	// Validate placement value
+	order, err := decodePluginOrder(request.Name, wireRequest.Order)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request body")
+		return
+	}
+	request.Order = order
+	isBuiltin := lib.IsBuiltinPlugin(request.Name)
+	fixedPlacement, _ := lib.NormalizePluginOrderInfo(request.Name, nil, nil)
+	// Reserve builtin input for loader-managed plugins, including the resolver.
 	if request.Placement != nil && *request.Placement != "" &&
 		*request.Placement != schemas.PluginPlacementPreBuiltin &&
-		*request.Placement != schemas.PluginPlacementPostBuiltin {
+		*request.Placement != schemas.PluginPlacementPostBuiltin &&
+		!(fixedPlacement != nil && *request.Placement == schemas.PluginPlacementBuiltin) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid placement value. Must be 'pre_builtin' or 'post_builtin'")
 		return
 	}
 	if request.Placement != nil && *request.Placement == "" {
 		request.Placement = nil
 	}
+	request.Placement, request.Order = lib.NormalizePluginOrderInfo(request.Name, request.Placement, request.Order)
 	// Normalize empty path to nil (treat empty string as built-in plugin)
 	if request.Path != nil && *request.Path == "" {
 		request.Path = nil
@@ -334,8 +365,6 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusConflict, "Plugin already exists")
 		return
 	}
-	// Determine if this is a built-in or custom plugin
-	isBuiltin := lib.IsBuiltinPlugin(request.Name)
 	// Built-in plugins should not have a path
 	if isBuiltin && request.Path != nil {
 		request.Path = nil
@@ -447,27 +476,38 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 
 	// Unmarshalling the request body
 	var request UpdatePluginRequest
-	if err := json.Unmarshal(ctx.PostBody(), &request); err != nil {
+	wireRequest := struct {
+		*UpdatePluginRequest
+		Order json.RawMessage `json:"order"`
+	}{UpdatePluginRequest: &request}
+	if err := json.Unmarshal(ctx.PostBody(), &wireRequest); err != nil {
 		logger.Error("failed to unmarshal update plugin request: %v", err)
 		SendError(ctx, 400, "Invalid request body")
 		return
 	}
-	// Validate placement value
+	request.Order, err = decodePluginOrder(name, wireRequest.Order)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request body")
+		return
+	}
+	isBuiltin := lib.IsBuiltinPlugin(name)
+	fixedPlacement, _ := lib.NormalizePluginOrderInfo(name, nil, nil)
+	// Reserve builtin input for loader-managed plugins, including the resolver.
 	if request.Placement != nil && *request.Placement != "" &&
 		*request.Placement != schemas.PluginPlacementPreBuiltin &&
-		*request.Placement != schemas.PluginPlacementPostBuiltin {
+		*request.Placement != schemas.PluginPlacementPostBuiltin &&
+		!(fixedPlacement != nil && *request.Placement == schemas.PluginPlacementBuiltin) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid placement value. Must be 'pre_builtin' or 'post_builtin'")
 		return
 	}
 	if request.Placement != nil && *request.Placement == "" {
 		request.Placement = nil
 	}
+	request.Placement, request.Order = lib.NormalizePluginOrderInfo(name, request.Placement, request.Order)
 	// Normalize empty path to nil (treat empty string as built-in plugin)
 	if request.Path != nil && *request.Path == "" {
 		request.Path = nil
 	}
-	// Determine if this is a built-in plugin
-	isBuiltin := lib.IsBuiltinPlugin(name)
 	// Built-in plugins should not have a path
 	if isBuiltin && request.Path != nil {
 		request.Path = nil

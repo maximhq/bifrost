@@ -246213,6 +246213,363 @@
       ]
     },
     {
+      "name": "231. Builtin plugin ordering (#7157 / PR #7158)",
+      "description": "Isolated management-API regressions for fixed plugin placement/order; no LLM calls. Run with runners/run-builtin-plugin-ordering.mjs --binary <built-bifrost-http>. The runner creates a fresh gateway and SQLite store, supplies builtinPluginOrderingFixture=1 plus a dedicated loopback URL and setup token, and discards the store after success, failure or interruption. Skipped in shared harness runs. Require fixture rows to be absent initially, attempt post_builtin/99, read the persisted result, send a JavaScript-rounded MaxInt order, and normalize builtin placement on resolver create/update. Reject a missing custom plugin update with fractional order, verify no row was created, then create the same name successfully. Never DELETE plugins on a reused gateway. The openai/gpt-4o-mini names are filter keywords only.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('builtinPluginOrderingFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var fixtureUrl = pm.variables.get('builtinPluginOrderingBaseUrl');",
+              "  var fixtureToken = pm.variables.get('builtinPluginOrderingSetupToken');",
+              "  if (!new RegExp('^http://127[.]0[.]0[.]1:[0-9]+$').test(fixtureUrl || '') || !fixtureToken) {",
+              "    pm.test('215: disposable plugin-ordering fixture is configured', function () {",
+              "      throw new Error('Use the disposable plugin-ordering runner; fixture URL and token are required');",
+              "    });",
+              "    pm.execution.skipRequest();",
+              "  } else {",
+              "    pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: fixtureToken });",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini builtin plugin ordering - snapshot telemetry enablement - #7157",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{builtinPluginOrderingBaseUrl}}/api/plugins"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('builtinPluginOriginalEnabled');",
+                  "pm.collectionVariables.unset('builtinPluginOrderWrite');",
+                  "pm.collectionVariables.unset('builtinPluginResolverCreated');",
+                  "pm.collectionVariables.unset('builtinPluginCustomAbsent');",
+                  "pm.collectionVariables.unset('builtinPluginCustomRejected');",
+                  "pm.collectionVariables.unset('builtinPluginCustomStillAbsent');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('231.1: fresh store has no telemetry row; its startup default is enabled', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var plugins = pm.response.json().plugins;",
+                  "  pm.expect(plugins, 'missing plugins: ' + pm.response.text()).to.be.an('array');",
+                  "  pm.expect(plugins.some(function (plugin) { return plugin.name === 'telemetry'; }), 'expected a fresh disposable store').to.equal(false);",
+                  "  pm.expect(plugins.some(function (plugin) { return plugin.name === 'model-catalog-resolver'; }), 'resolver row must not be preseeded').to.equal(false);",
+                  "  pm.expect(plugins.some(function (plugin) { return plugin.name === 'builtin-order-rejected-custom'; }), 'custom row must not be preseeded').to.equal(false);",
+                  "  pm.collectionVariables.set('builtinPluginCustomAbsent', true);",
+                  "  pm.collectionVariables.set('builtinPluginOriginalEnabled', true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-4o-mini builtin plugin ordering - ignore post_builtin/99 on update - #7157",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": {{builtinPluginOriginalEnabled}},\n  \"placement\": \"post_builtin\",\n  \"order\": 99\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{builtinPluginOrderingBaseUrl}}/api/plugins/telemetry"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('231.2: fixed telemetry ordering and unchanged enablement', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var plugin = pm.response.json().plugin;",
+                  "  pm.expect(plugin, 'missing plugin: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(plugin.name).to.equal('telemetry');",
+                  "  pm.expect(plugin.placement, 'caller placement must not override builtin').to.equal('builtin');",
+                  "  pm.expect(plugin.order, 'caller order must not override builtin').to.equal(1);",
+                  "  pm.expect(plugin.enabled).to.equal(pm.collectionVariables.get('builtinPluginOriginalEnabled'));",
+                  "  pm.collectionVariables.set('builtinPluginOrderWrite', true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-4o-mini builtin plugin ordering - read canonical persisted order - #7157",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{builtinPluginOrderingBaseUrl}}/api/plugins/telemetry"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('231.3: ordering update completed', function () {",
+                  "  pm.expect(pm.collectionVariables.get('builtinPluginOrderWrite'), 'ordering update prerequisite failed').to.equal(true);",
+                  "});",
+                  "pm.test('231.3: fixed telemetry ordering and unchanged enablement', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var plugin = pm.response.json();",
+                  "  pm.expect(plugin, 'missing plugin: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(plugin.name).to.equal('telemetry');",
+                  "  pm.expect(plugin.placement, 'caller placement must not override builtin').to.equal('builtin');",
+                  "  pm.expect(plugin.order, 'caller order must not override builtin').to.equal(1);",
+                  "  pm.expect(plugin.enabled).to.equal(pm.collectionVariables.get('builtinPluginOriginalEnabled'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-4o-mini builtin plugin ordering - ignore JavaScript-rounded MaxInt - #7157",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": {{builtinPluginOriginalEnabled}},\n  \"placement\": \"builtin\",\n  \"order\": 9223372036854776000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{builtinPluginOrderingBaseUrl}}/api/plugins/telemetry"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('231.4: fixed telemetry ordering and unchanged enablement', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var plugin = pm.response.json().plugin;",
+                  "  pm.expect(plugin, 'missing plugin: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(plugin.name).to.equal('telemetry');",
+                  "  pm.expect(plugin.placement, 'caller placement must not override builtin').to.equal('builtin');",
+                  "  pm.expect(plugin.order, 'caller order must not override builtin').to.equal(1);",
+                  "  pm.expect(plugin.enabled).to.equal(pm.collectionVariables.get('builtinPluginOriginalEnabled'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-4o-mini builtin plugin ordering - normalize resolver builtin placement on create [EXPECT-201] - #7157",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"model-catalog-resolver\",\n  \"enabled\": false,\n  \"placement\": \"builtin\",\n  \"order\": 99\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{builtinPluginOrderingBaseUrl}}/api/plugins"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('231.5: resolver create ignores builtin placement and caller order', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(201);",
+                  "  var plugin = pm.response.json().plugin;",
+                  "  pm.expect(plugin, 'missing plugin: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(plugin.name).to.equal('model-catalog-resolver');",
+                  "  pm.expect(plugin.placement).to.equal('post_builtin');",
+                  "  pm.expect(plugin.order === 2147483647 || plugin.order === 9223372036854776000, 'resolver order must be the platform MaxInt').to.equal(true);",
+                  "  pm.expect(plugin.enabled).to.equal(false);",
+                  "  pm.collectionVariables.set('builtinPluginResolverCreated', true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-4o-mini builtin plugin ordering - normalize resolver builtin placement on update - #7157",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false,\n  \"placement\": \"builtin\",\n  \"order\": 99\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{builtinPluginOrderingBaseUrl}}/api/plugins/model-catalog-resolver"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('231.6: resolver create completed', function () {",
+                  "  pm.expect(pm.collectionVariables.get('builtinPluginResolverCreated'), 'resolver create prerequisite failed').to.equal(true);",
+                  "});",
+                  "pm.test('231.6: resolver update ignores builtin placement and caller order', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var plugin = pm.response.json().plugin;",
+                  "  pm.expect(plugin, 'missing plugin: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(plugin.name).to.equal('model-catalog-resolver');",
+                  "  pm.expect(plugin.placement).to.equal('post_builtin');",
+                  "  pm.expect(plugin.order === 2147483647 || plugin.order === 9223372036854776000, 'resolver order must be the platform MaxInt').to.equal(true);",
+                  "  pm.expect(plugin.enabled).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-4o-mini builtin plugin ordering - reject missing custom plugin fractional order [EXPECT-400] - #7157",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false,\n  \"placement\": \"post_builtin\",\n  \"order\": 1.5\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{builtinPluginOrderingBaseUrl}}/api/plugins/builtin-order-rejected-custom"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('231.7: missing custom plugin rejects fractional order', function () {",
+                  "  pm.expect(pm.collectionVariables.get('builtinPluginCustomAbsent'), 'fresh-store prerequisite failed').to.equal(true);",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.json().error.message, 'wrong rejection: ' + pm.response.text()).to.equal('Invalid request body');",
+                  "  pm.collectionVariables.set('builtinPluginCustomRejected', true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-4o-mini builtin plugin ordering - rejected custom update leaves no row [EXPECT-404] - #7157",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{builtinPluginOrderingBaseUrl}}/api/plugins/builtin-order-rejected-custom"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('231.8: rejected custom update did not create a row', function () {",
+                  "  pm.expect(pm.collectionVariables.get('builtinPluginCustomRejected'), 'invalid update prerequisite failed').to.equal(true);",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
+                  "  pm.expect(pm.response.json().error.message, 'wrong not-found response: ' + pm.response.text()).to.equal('Plugin not found');",
+                  "  pm.collectionVariables.set('builtinPluginCustomStillAbsent', true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-4o-mini builtin plugin ordering - create custom after rejected update [EXPECT-201] - #7157",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"builtin-order-rejected-custom\",\n  \"enabled\": false,\n  \"placement\": \"post_builtin\",\n  \"order\": 99\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{builtinPluginOrderingBaseUrl}}/api/plugins"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('231.9: rejected custom update does not reserve its name', function () {",
+                  "  pm.expect(pm.collectionVariables.get('builtinPluginCustomStillAbsent'), 'absent-row readback prerequisite failed').to.equal(true);",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(201);",
+                  "  var plugin = pm.response.json().plugin;",
+                  "  pm.expect(plugin, 'missing plugin: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(plugin.name).to.equal('builtin-order-rejected-custom');",
+                  "  pm.expect(plugin.placement).to.equal('post_builtin');",
+                  "  pm.expect(plugin.order).to.equal(99);",
+                  "  pm.expect(plugin.enabled).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "188. Plugin config round-trip keeps a lone \"*\" header pattern (PR #8228)",
       "description": "A lone \"*\" is a legitimate request_headers pattern, but restoreRedactedValue treated any all-asterisk string as the UI's redaction placeholder and substituted the stored value, so request_headers: [\"*\"] silently became whatever was saved before and captured nothing. The cases run in order: seed a disabled otel row with a distinct pattern, update it to [\"*\"], read it back, then delete the row so a rerun starts clean. The plugin is created disabled so nothing loads and no exporter is started; only the config round-trip is under test. The folder first checks that the gateway has no otel row of its own: if it does, the mutating cases skip instead of overwriting and deleting a configuration this run did not create.",
       "item": [
