@@ -9,6 +9,34 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
+// TestIsEmptyModelCapabilities distinguishes empty containers from explicit scalar overrides.
+func TestIsEmptyModelCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		data  string
+		empty bool
+	}{
+		{"zero value", `{}`, true},
+		{"empty containers", `{"supported_endpoints":[],"server_tools":{},"reasoning_budget":{}}`, true},
+		{"empty nested elements", `{"model_parameters":[{},null,{"id":""}]}`, true},
+		{"explicit false", `{"supports_function_calling":false}`, false},
+		{"explicit zero", `{"min_output_tokens":0}`, false},
+		{"explicit empty string", `{"synthetic_structured_output_tool_prefix":""}`, false},
+		{"map entry", `{"unsupported_fields":{"temperature":false}}`, false},
+		{"endpoint", `{"supported_endpoints":["/v1/responses"]}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var caps schemas.ModelCapabilities
+			if err := json.Unmarshal([]byte(tc.data), &caps); err != nil {
+				t.Fatal(err)
+			}
+			if got := IsEmptyModelCapabilities(&caps); got != tc.empty {
+				t.Fatalf("IsEmptyModelCapabilities(%s) = %t, want %t", tc.data, got, tc.empty)
+			}
+		})
+	}
+}
+
 func TestGetCapabilityEntry_PrefersChatThenResponsesThenCompletion(t *testing.T) {
 	contextLengthChat := 128000
 	maxInputTokensChat := 64000
