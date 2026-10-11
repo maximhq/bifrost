@@ -1357,12 +1357,10 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 
 		if isDisabled {
 			setThinkingBudgetZeroIfSupported(&config, caps)
-		} else if supportsLevel && hasEffort {
+		} else if supportsLevel && hasEffort && effortToThinkingLevel(caps, *params.Reasoning.Effort) != "" {
 			// Gemini 3.0+ - use thinkingLevel (more native), including when cross-provider
 			// converters populate both Effort and MaxTokens.
-			if level := effortToThinkingLevel(caps, *params.Reasoning.Effort); level != "" {
-				config.ThinkingConfig.ThinkingLevel = &level
-			}
+			config.ThinkingConfig.ThinkingLevel = schemas.Ptr(effortToThinkingLevel(caps, *params.Reasoning.Effort))
 		} else if hasMaxTokens {
 			budget := *params.Reasoning.MaxTokens
 			switch budget {
