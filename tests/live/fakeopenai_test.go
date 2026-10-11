@@ -39,16 +39,17 @@ type fakeOpenAI struct {
 // fakeSession is one live session on the fake: its connections (primary and sidebands) and
 // every frame Bifrost sent it.
 type fakeSession struct {
-	fake      *fakeOpenAI
-	id        string
-	transport string
-	marker    string
-	model     string
-	backend   string
-	client    bool // client delegation: the app runs the backend itself
-	store     bool
-	auth      string
-	createdAt time.Time
+	fake         *fakeOpenAI
+	id           string
+	transport    string
+	marker       string
+	model        string
+	backend      string
+	client       bool // client delegation: the app runs the backend itself
+	store        bool
+	clientConfig json.RawMessage
+	auth         string
+	createdAt    time.Time
 
 	mu      sync.Mutex
 	conns   []fakeConn
@@ -89,13 +90,29 @@ func (c *wsFakeConn) hangUp() {
 }
 
 type dcFakeConn struct {
-	dc *webrtc.DataChannel
-	pc *webrtc.PeerConnection
+	dc           *webrtc.DataChannel
+	pc           *webrtc.PeerConnection
+	serverEvents gjson.Result
 }
 
-func (c *dcFakeConn) send(frame []byte) error { return c.dc.SendText(string(frame)) }
-func (c *dcFakeConn) close()                  { _ = c.pc.Close() }
-func (c *dcFakeConn) hangUp()                 { _ = c.pc.Close() }
+func (c *dcFakeConn) send(frame []byte) error {
+	if c.serverEvents.Exists() && !(c.serverEvents.Type == gjson.String && c.serverEvents.Str == "all") {
+		allowed := false
+		kind := gjson.GetBytes(frame, "type").Str
+		for _, selector := range c.serverEvents.Array() {
+			if selector.Get("type").Str == kind && (kind != "response.event" || selector.Get("response_event").Str == gjson.GetBytes(frame, "event.type").Str) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return nil
+		}
+	}
+	return c.dc.SendText(string(frame))
+}
+func (c *dcFakeConn) close()  { _ = c.pc.Close() }
+func (c *dcFakeConn) hangUp() { _ = c.pc.Close() }
 
 func startFakeOpenAI(addr string) (*fakeOpenAI, error) {
 	f := &fakeOpenAI{
@@ -153,16 +170,17 @@ func (f *fakeOpenAI) newSession(transport, auth string, session gjson.Result) *f
 	defer f.mu.Unlock()
 	f.nextID++
 	s := &fakeSession{
-		fake:      f,
-		id:        fmt.Sprintf("live_fake_%s_%d", f.run, f.nextID),
-		transport: transport,
-		marker:    session.Get("instructions").Str,
-		model:     session.Get("model").Str,
-		backend:   session.Get("delegation.responses.model").Str,
-		client:    session.Get("delegation.type").Str == "client",
-		store:     session.Get("store").Bool(),
-		auth:      auth,
-		createdAt: time.Now(),
+		fake:         f,
+		id:           fmt.Sprintf("live_fake_%s_%d", f.run, f.nextID),
+		transport:    transport,
+		marker:       session.Get("instructions").Str,
+		model:        session.Get("model").Str,
+		backend:      session.Get("delegation.responses.model").Str,
+		client:       session.Get("delegation.type").Str == "client",
+		store:        session.Get("store").Bool(),
+		clientConfig: json.RawMessage(session.Get("client").Raw),
+		auth:         auth,
+		createdAt:    time.Now(),
 	}
 	f.sessions[s.id] = s
 	if ch, ok := f.waiters[s.marker]; ok {
@@ -305,7 +323,7 @@ func (f *fakeOpenAI) serveWebRTCCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
-		c := &dcFakeConn{dc: dc, pc: pc}
+		c := &dcFakeConn{dc: dc, pc: pc, serverEvents: gjson.GetBytes(body.Session, "client.data_channel.allowed_server_events")}
 		dc.OnOpen(func() {
 			s.addConn(c)
 			_ = c.send(s.startedFrame())
@@ -482,6 +500,9 @@ func (s *fakeSession) sessionFrameLocked(typ string) []byte {
 // sessionObjectLocked is the resolved session as OpenAI echoes it on started, updated and closed.
 func (s *fakeSession) sessionObjectLocked() map[string]any {
 	session := map[string]any{"id": s.id, "model": s.model, "expires_at": s.createdAt.Add(time.Hour).Unix(), "instructions": s.marker, "store": s.store}
+	if len(s.clientConfig) > 0 {
+		session["client"] = s.clientConfig
+	}
 	if s.client {
 		session["delegation"] = map[string]any{"type": "client"}
 	} else if s.backend != "" {
