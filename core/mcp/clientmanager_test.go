@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -1239,4 +1240,55 @@ func TestBuildTLSHTTPClientUsesGlobalProxy(t *testing.T) {
 	_, err = httpClient.Do(req)
 	require.Error(t, err, "a metadata address must be refused")
 	proxytest.AssertRoute(t, set, proxytest.Direct, "", nil)
+}
+
+// TestConnectToMCPClient_AcceptsProtocolVersion20251125 pins that Bifrost can
+// complete the MCP handshake with a server that answers initialize with
+// protocol version 2025-11-25. mcp-go v0.43.2 only knew up to 2025-06-18, so
+// the client rejected the reply with "unsupported protocol version" and such
+// servers (e.g. Discourse) could never connect.
+func TestConnectToMCPClient_AcceptsProtocolVersion20251125(t *testing.T) {
+	// Claude Sonnet 5.5 10/11/2026: minimal streamable-HTTP upstream. The real
+	// mcp-go server cannot be used here because it negotiates down to the
+	// versions it supports, which would hide the client-side rejection.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if len(req.ID) == 0 {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		result := map[string]any{}
+		switch req.Method {
+		case "initialize":
+			result = map[string]any{
+				"protocolVersion": "2025-11-25",
+				"capabilities":    map[string]any{"tools": map[string]any{}},
+				"serverInfo":      map[string]any{"name": "protocol-20251125", "version": "1.0.0"},
+			}
+		case "tools/list":
+			result = map[string]any{"tools": []any{}}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+	}))
+	t.Cleanup(ts.Close)
+
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	config := newMakeBeforeBreakConfig("protocol-20251125", ts.URL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	require.NoError(t, m.connectToMCPClient(ctx, config), "a server speaking protocol 2025-11-25 must be accepted")
+
+	state, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, state.State)
 }
