@@ -42998,7 +42998,7 @@
             }
           },
           "403": {
-            "description": "A key endpoint field was set, changed, or removed and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
+            "description": "A key endpoint field or the Vertex credential JSON (vertex_key_config.auth_credentials) was set, changed, or removed and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
           },
           "404": {
             "description": "Provider not found",
@@ -43185,7 +43185,7 @@
             }
           },
           "403": {
-            "description": "A key endpoint field was set, changed, or removed and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
+            "description": "A key endpoint field or the Vertex credential JSON (vertex_key_config.auth_credentials) was set, changed, or removed and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
           },
           "404": {
             "description": "Provider or key not found",
