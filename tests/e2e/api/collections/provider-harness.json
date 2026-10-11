@@ -259106,6 +259106,114 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "221. Built-in plugin endpoints and secret references need a genuine credential check (plugin-config-dial-targets) [SERIAL]",
+      "description": "Management-plane regression for the default harness profile (tests/integrations/python/config.json: dashboard auth unconfigured, setup lock active with a configured setup token). An update of the built-in otel plugin naming a collector URL and a header whose value is an env. reference would make the plugin resolve that variable from the gateway's environment and post it to the collector on every export. Under this profile no request reaches the plugins handler without a credential check: a request without the setup token is refused at the setup lock with 401, and the plugin's stored config shows no trace of it. The handler's own 403 for a request admitted without any check (auth bypassed or a whitelisted route), and the admission of a genuinely authenticated change, cannot be reached here without rewriting the shared server's otel config; both are pinned by TestPluginConfigDialTargetsRequireGenuineAuth and TestPluginConfigDialTargetsCompareNormalizedStoredConfig in plugins_test.go.",
+      "item": [
+        {
+          "name": "[EXPECT-401] openai plugin-config-dial-targets: an otel config naming a collector and an env header is refused without the setup token",
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The collection pre-request adds the setup token to every request; this one must carry no credential at all.",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The collector is where every trace export goes and the env. header is what goes with it, resolved",
+                  "// from the gateway's own environment. With no credential the setup lock answers before the handler:",
+                  "// 401, never a 200 that would mean the config was stored and the plugin reloaded.",
+                  "pm.test('plugin-config-dial-targets: otel update with a collector and an env header without the setup token is 401', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/otel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "otel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false,\n  \"config\": {\n    \"service_name\": \"harness-plugin-guard\",\n    \"collector_url\": \"https://harness-plugin-guard.example.invalid/v1/traces\",\n    \"headers\": {\n      \"x-harness-leak\": \"env.HARNESS_PLUGIN_GUARD_MARKER\"\n    }\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "openai plugin-config-dial-targets: the refused collector and header were not stored",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('plugin-config-dial-targets: the plugin list answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "pm.test('plugin-config-dial-targets: no trace of the refused config is stored', function () {",
+                  "  pm.expect(txt, 'collector stored: ' + txt.slice(0, 400)).to.not.include('https://harness-plugin-guard.example.invalid/v1/traces');",
+                  "  pm.expect(txt, 'env header stored: ' + txt.slice(0, 400)).to.not.include('HARNESS_PLUGIN_GUARD_MARKER');",
+                  "  pm.expect(txt, 'service name stored: ' + txt.slice(0, 400)).to.not.include('harness-plugin-guard');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
