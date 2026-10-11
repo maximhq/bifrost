@@ -189,3 +189,48 @@ func TestGetProviderObjectsByObjectIDSuffixesMatchTheLastSegmentWhole(t *testing
 	require.NoError(t, err)
 	assert.Nil(t, objects, "no suffixes match nothing")
 }
+
+// A provider object is found by its kind and provider-side id under every provider name it was
+// recorded under, including one no longer configured, and only rows of that kind and id are read.
+func TestGetProviderObjectsByObjectIDSpansProviders(t *testing.T) {
+	store := setupProviderObjectTestStore(t)
+	ctx := context.Background()
+	seed := func(kind, provider, objectID, vk string) {
+		require.NoError(t, store.UpsertProviderObject(ctx, &tables.TableProviderObject{
+			ID: tables.ProviderObjectID(kind, provider, objectID), Kind: kind, Provider: provider, ObjectID: objectID, VirtualKeyID: vk,
+		}))
+	}
+	seed(tables.ProviderObjectKindLiveSession, "custom-live", "live_1", "vk-a")
+	seed(tables.ProviderObjectKindLiveSession, "openai", "live_1", "vk-a")
+	seed(tables.ProviderObjectKindLiveSession, "openai", "live_2", "vk-b")
+	seed(tables.ProviderObjectKindFile, "openai", "live_1", "vk-c")
+
+	objects, err := store.GetProviderObjectsByObjectID(ctx, tables.ProviderObjectKindLiveSession, "live_1")
+	require.NoError(t, err)
+	providers := make([]string, 0, len(objects))
+	for _, object := range objects {
+		assert.Equal(t, "live_1", object.ObjectID)
+		assert.Equal(t, tables.ProviderObjectKindLiveSession, object.Kind)
+		providers = append(providers, object.Provider)
+	}
+	assert.ElementsMatch(t, []string{"custom-live", "openai"}, providers, "every provider name the session was recorded under, and no other kind")
+
+	objects, err = store.GetProviderObjectsByObjectID(ctx, tables.ProviderObjectKindLiveSession, "")
+	require.NoError(t, err)
+	assert.Empty(t, objects, "an empty id matches nothing")
+}
+
+// The ownership check on a live session's control routes looks rows up by kind and object id
+// across providers; an index on that pair keeps it off a scan of every recorded session. The
+// rollback drops only that index.
+func TestProviderObjectsObjectIDIndexMigration(t *testing.T) {
+	store := setupProviderObjectTestStore(t)
+	db := store.DB()
+	require.NoError(t, migrationAddProviderObjectsObjectIDIndex(context.Background(), db, testMigrationLogger))
+	require.True(t, indexExists(t, db, "provider_objects", "idx_provider_objects_kind_object_id"), "the (kind, object_id) index is created")
+	require.NoError(t, migrationAddProviderObjectsObjectIDIndex(context.Background(), db, testMigrationLogger), "running it again is a no-op")
+
+	require.NoError(t, providerObjectsObjectIDIndexMigration(context.Background(), "add_provider_objects_object_id_index").Rollback(db))
+	require.False(t, indexExists(t, db, "provider_objects", "idx_provider_objects_kind_object_id"), "the rollback drops the index")
+	require.True(t, db.Migrator().HasTable("provider_objects"), "and keeps the table")
+}

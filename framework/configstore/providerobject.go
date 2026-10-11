@@ -85,6 +85,22 @@ func (s *RDBConfigStore) GetProviderObjectsByObjectIDSuffixes(ctx context.Contex
 	return objects, nil
 }
 
+// GetProviderObjectsByObjectID returns the provider objects of kind recorded for objectID under
+// any provider name, in no particular order. An id carries its provider in the stable key, so a
+// lookup by the stable key misses a row recorded under a provider name that is no longer
+// configured; this one does not. The kind leads the composite index, so only rows of that kind
+// are read.
+func (s *RDBConfigStore) GetProviderObjectsByObjectID(ctx context.Context, kind, objectID string) ([]*tables.TableProviderObject, error) {
+	if kind == "" || objectID == "" {
+		return nil, nil
+	}
+	var objects []*tables.TableProviderObject
+	if err := s.DB().WithContext(ctx).Where("kind = ? AND object_id = ?", kind, objectID).Find(&objects).Error; err != nil {
+		return nil, err
+	}
+	return objects, nil
+}
+
 // DeleteProviderObject forgets a provider object's creator once the object itself
 // is gone. Deleting an id with no row is not an error.
 func (s *RDBConfigStore) DeleteProviderObject(ctx context.Context, id string) error {
