@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { TagInput } from "@/components/ui/tagInput";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig, MCPCodeModeLimits } from "@/lib/types/config";
@@ -20,6 +21,8 @@ import { CodeModeLimitsSection } from "./codeModeLimitsSection";
 
 const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 	(a?.value ?? "") === (b?.value ?? "") && (a?.ref ?? "") === (b?.ref ?? "") && (a?.type ?? "plain_text") === (b?.type ?? "plain_text");
+
+const stringListEquals = (a?: string[], b?: string[]) => (a ?? []).join("\n") === (b ?? []).join("\n");
 
 export default function MCPView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
@@ -87,6 +90,7 @@ export default function MCPView() {
 			!codeModeLimitsEqual(localConfig.mcp_code_mode_limits, config.mcp_code_mode_limits) ||
 			localConfig.mcp_disable_auto_tool_inject !== (config.mcp_disable_auto_tool_inject ?? false) ||
 			localConfig.mcp_enable_temp_token_auth !== (config.mcp_enable_temp_token_auth ?? false) ||
+			!stringListEquals(localConfig.mcp_oauth_private_allowlist, config.mcp_oauth_private_allowlist) ||
 			clientURLChanged ||
 			(localConfig.mcp_server_auth_mode ?? "headers") !== (config.mcp_server_auth_mode ?? "headers") ||
 			issuerURLChanged ||
@@ -165,6 +169,10 @@ export default function MCPView() {
 			...prev,
 			mcp_enable_temp_token_auth: checked,
 		}));
+	}, []);
+
+	const handleOAuthPrivateAllowlistChange = useCallback((value: string[]) => {
+		setLocalConfig((prev) => ({ ...prev, mcp_oauth_private_allowlist: value }));
 	}, []);
 
 	const handleClientURLChange = useCallback((value: SecretVar) => {
@@ -414,6 +422,30 @@ export default function MCPView() {
 						onCheckedChange={handleTempTokenAuthChange}
 						disabled={!hasSettingsUpdateAccess}
 						data-testid="mcp-enable-temp-token-auth-switch"
+					/>
+				</div>
+
+				{/* OAuth Private Network Allowlist */}
+				<div className="space-y-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="mcp-oauth-private-allowlist" className="text-sm font-medium">
+							OAuth Private Network Allowlist
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Hosts, IP addresses, or CIDR ranges (no scheme or port) that OAuth discovery, client registration, and token requests for MCP
+							servers may reach when they resolve to a loopback or private address, e.g. <code className="text-xs">localhost</code>,{" "}
+							<code className="text-xs">127.0.0.1</code>, or <code className="text-xs">10.20.0.0/16</code>. Applies to MCP servers added
+							with dashboard authentication enabled; changing it requires dashboard authentication. Link-local and cloud metadata addresses
+							are always blocked.
+						</p>
+					</div>
+					<TagInput
+						id="mcp-oauth-private-allowlist"
+						data-testid="mcp-oauth-private-allowlist-input"
+						placeholder="Add host, IP, or CIDR (Enter or comma)"
+						value={localConfig.mcp_oauth_private_allowlist ?? []}
+						onValueChange={handleOAuthPrivateAllowlistChange}
+						readOnly={!hasSettingsUpdateAccess}
 					/>
 				</div>
 

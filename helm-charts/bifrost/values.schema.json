@@ -952,6 +952,13 @@
                       "description": "Maximum nesting depth of values crossing the tool boundary. 0 uses the default of 64."
                     }
                   }
+                },
+                "oauthPrivateAllowlist": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Hostnames, IP addresses, or CIDR ranges (no scheme or port) the MCP OAuth chain (discovery, dynamic client registration, token requests) may reach when they resolve to a loopback or private address. Applies only to MCP servers added by an authenticated admin or declared in config. Link-local and cloud metadata addresses are always refused and cannot be listed. Renders into mcp.tool_manager_config.oauth_private_allowlist."
                 }
               }
             },

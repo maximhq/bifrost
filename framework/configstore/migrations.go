@@ -564,6 +564,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_compat_convert_decision_to_responses_column"}, run: migrationAddCompatConvertDecisionToResponsesColumn},
 	{IDs: []string{"add_cloudflare_key_config_columns"}, run: migrationAddCloudflareKeyConfigColumns},
 	{IDs: []string{"move_config_json_vk_limits_to_model_configs"}, run: migrationMoveConfigJSONVKLimitsToModelConfigs},
+	{IDs: []string{"add_mcp_oauth_private_allowlist_column"}, run: migrationAddMCPOAuthPrivateAllowlistColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -15472,6 +15473,27 @@ func migrationAddMCPCodeModeLimitsClientColumn(ctx context.Context, db *gorm.DB,
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running mcp code mode limits client column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPOAuthPrivateAllowlistColumn adds the mcp_oauth_private_allowlist_json
+// column to config_client.
+func migrationAddMCPOAuthPrivateAllowlistColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_oauth_private_allowlist_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "mcp_oauth_private_allowlist_json")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "mcp_oauth_private_allowlist_json")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp oauth private allowlist column migration: %s", err.Error())
 	}
 	return nil
 }

@@ -2,6 +2,9 @@
   "$schema": "https://www.getbifrost.ai/schema",
   "setup_token": "bifrost-e2e-setup-token",
   "mcp": {
+    "tool_manager_config": {
+      "oauth_private_allowlist": ["localhost", "127.0.0.1", "::1"]
+    },
     "client_configs": [
       {
         "name": "sse_mcp",

@@ -80,4 +80,50 @@ test.describe('MCP Settings', () => {
       expect(saved?.max_value_bytes ?? 0).toBe(0)
     })
   })
+
+  test.describe('OAuth Private Network Allowlist', () => {
+    // Every test here rewrites the shared mcp_oauth_private_allowlist, so they must not interleave.
+    test.describe.configure({ mode: 'serial' })
+    let originalAllowlist: string[]
+
+    test.beforeEach(async ({ request }) => {
+      originalAllowlist = ((await coreConfigApi.get(request)).client_config.mcp_oauth_private_allowlist as string[] | undefined) ?? []
+    })
+
+    test.afterEach(async ({ request }) => {
+      await coreConfigApi.updateClientConfig(request, { mcp_oauth_private_allowlist: originalAllowlist })
+    })
+
+    test('should add an allowlist entry and persist it', async ({ mcpSettingsPage, request }) => {
+      const entry = '10.20.0.0/16'
+      await coreConfigApi.updateClientConfig(request, { mcp_oauth_private_allowlist: originalAllowlist.filter((e) => e !== entry) })
+      await mcpSettingsPage.goto()
+
+      await mcpSettingsPage.oauthPrivateAllowlistInput.fill(entry)
+      await mcpSettingsPage.oauthPrivateAllowlistInput.press('Enter')
+      await expect(mcpSettingsPage.oauthPrivateAllowlistEntry(entry)).toBeVisible()
+      await expect(mcpSettingsPage.saveBtn).toBeEnabled()
+      await mcpSettingsPage.saveBtn.click()
+      await mcpSettingsPage.waitForSuccessToast()
+
+      const saved = (await coreConfigApi.get(request)).client_config.mcp_oauth_private_allowlist as string[] | undefined
+      expect(saved).toContain(entry)
+
+      await mcpSettingsPage.goto()
+      await expect(mcpSettingsPage.oauthPrivateAllowlistEntry(entry)).toBeVisible()
+      await expect(mcpSettingsPage.saveBtn).toBeDisabled()
+    })
+
+    test('should reject a link-local entry without saving', async ({ mcpSettingsPage, request }) => {
+      await mcpSettingsPage.goto()
+
+      await mcpSettingsPage.oauthPrivateAllowlistInput.fill('169.254.169.254')
+      await mcpSettingsPage.oauthPrivateAllowlistInput.press('Enter')
+      await mcpSettingsPage.saveBtn.click()
+      await expect(mcpSettingsPage.getToast('error')).toContainText('mcp_oauth_private_allowlist')
+
+      const saved = (await coreConfigApi.get(request)).client_config.mcp_oauth_private_allowlist as string[] | undefined
+      expect(saved ?? []).toEqual(originalAllowlist)
+    })
+  })
 })

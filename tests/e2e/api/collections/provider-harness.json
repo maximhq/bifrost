@@ -251658,6 +251658,108 @@
           ]
         }
       ]
+    },
+    {
+      "name": "207. MCP OAuth server on localhost follows the private allowlist (mcp-oauth-private-allowlist)",
+      "description": "Management-endpoint checks with no live provider involved. The MCP OAuth chain (discovery, dynamic client registration, token requests) dials through a public-only guard, so an OAuth-protected MCP server on localhost could not be added by anyone, not even an authenticated admin. Hosts on mcp_oauth_private_allowlist (config.json mcp.tool_manager_config.oauth_private_allowlist) are now reachable for MCP clients registered by an authenticated caller; link-local and metadata addresses stay blocked and clients registered with auth bypassed stay public-only. The harness profile allowlists localhost, 127.0.0.1 and ::1, and every row carries the setup token, so these rows run as an authenticated caller.\n\nPrerequisite: examples/mcps/oauth-demo-server listening on localhost:3003 (cd examples/mcps/oauth-demo-server && go run .). Nothing in the harness runners starts it, so the second row is [PREVIEW]-tagged: run FEATURE=\"mcp-oauth-private-allowlist\" INCLUDE_PREVIEW=1 once the server is up. The first row reads the allowlist back from the store; the second registers an OAuth MCP client against the demo server and expects the pending_oauth response carrying the demo server's authorize URL. The consent is never completed, so no MCP client row is created; the pending OAuth config it leaves behind is inert.",
+      "item": [
+        {
+          "name": "GET /api/config · mcp_oauth_private_allowlist from config.json reaches the store",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The profile declares mcp.tool_manager_config.oauth_private_allowlist; config.json loading must",
+                  "// persist it so the dashboard and the OAuth client both see it.",
+                  "pm.test('config read is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('allowlist from config.json is stored', function () {",
+                  "  var cc = pm.response.json().client_config || {};",
+                  "  pm.expect(cc.mcp_oauth_private_allowlist, pm.response.text()).to.be.an('array');",
+                  "  pm.expect(cc.mcp_oauth_private_allowlist).to.include.members(['localhost', '127.0.0.1']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] POST /api/mcp/client · OAuth MCP server on localhost returns an authorize URL",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before the allowlist existed this was a 500: 'OAuth discovery failed: ... blocked connection",
+                  "// to non-public address 127.0.0.1'. Discovery, dynamic client registration and the flow setup",
+                  "// must now reach the demo server on localhost.",
+                  "pm.test('registration starts the OAuth flow (200)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('no SSRF refusal on the OAuth chain', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('blocked connection');",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "pm.test('pending_oauth with the demo server authorize URL', function () {",
+                  "  pm.expect(body.status, pm.response.text()).to.eql('pending_oauth');",
+                  "  pm.expect(String(body.authorize_url || ''), pm.response.text()).to.match(/^http:\\/\\/localhost:3003\\/authorize\\?/);",
+                  "  pm.expect(String(body.authorize_url || '')).to.include('code_challenge=');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_oauth_loopback_{{$timestamp}}\",\n  \"connection_type\": \"http\",\n  \"connection_string\": \"http://localhost:3003/mcp\",\n  \"auth_type\": \"oauth\",\n  \"oauth_config\": {}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

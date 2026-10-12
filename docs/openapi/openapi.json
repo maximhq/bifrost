@@ -39216,7 +39216,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Settings:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update configuration",
-        "description": "Updates the Bifrost configuration. Supports hot-reloading of certain settings\nlike drop_excess_requests. Some settings may require a restart to take effect.\nCreating the very first admin account requires auth_config.setup_token. When an\nadmin account already exists but dashboard authentication is disabled, a request\nthat re-enables it or changes admin_username / admin_password must carry either\nauth_config.current_password (the stored admin password) or a valid\nauth_config.setup_token; otherwise it is refused with 403. A genuinely\nauthenticated session needs neither.\n",
+        "description": "Updates the Bifrost configuration. Supports hot-reloading of certain settings\nlike drop_excess_requests. Some settings may require a restart to take effect.\nCreating the very first admin account requires auth_config.setup_token. When an\nadmin account already exists but dashboard authentication is disabled, a request\nthat re-enables it or changes admin_username / admin_password must carry either\nauth_config.current_password (the stored admin password) or a valid\nauth_config.setup_token; otherwise it is refused with 403. A genuinely\nauthenticated session needs neither. Changing\nclient_config.mcp_oauth_private_allowlist also requires an authenticated\nadmin session and is refused with 403 while dashboard authentication is off.\n",
         "tags": [
           "Configuration"
         ],
@@ -39260,7 +39260,7 @@
             }
           },
           "403": {
-            "description": "auth_config was changed without the required proof: the first admin account needs a valid setup_token, and re-enabling authentication or changing the admin credentials while dashboard authentication is disabled needs current_password or a valid setup_token"
+            "description": "auth_config was changed without the required proof: the first admin account needs a valid setup_token, and re-enabling authentication or changing the admin credentials while dashboard authentication is disabled needs current_password or a valid setup_token; or client_config.mcp_oauth_private_allowlist was changed without an authenticated admin session"
           },
           "500": {
             "description": "Internal server error",
@@ -115221,6 +115221,13 @@
                 "default": 0,
                 "description": "Byte bound on the whole forwarded aggregate across every MCP server the caller can see. This rides on every MCP-bearing request that carries tools, so raising it raises per-request tokens. 0 uses the built-in default of 16384.\n"
               },
+              "mcp_oauth_private_allowlist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Hostnames, IP addresses, or CIDR ranges (no scheme or port) that the MCP OAuth chain (discovery, dynamic client registration, token requests) may reach when they resolve to a loopback or private address. Applies only to MCP clients registered by an authenticated admin or declared in config.json. Link-local and cloud metadata addresses are always refused and cannot be listed. Omit to keep the current list; send [] to clear it. Changing it requires an authenticated admin session.\n"
+              },
               "mcp_code_mode_limits": {
                 "type": "object",
                 "description": "Limits applied to each code mode (executeToolCode) execution. Omit the object to keep the current limits; send {} to reset every limit to its default. Any field omitted or set to 0 uses its default. There is no limit on concurrent executions.\n",
@@ -115651,6 +115658,13 @@
                 "minimum": 0,
                 "default": 0,
                 "description": "Byte bound on the whole forwarded aggregate across every MCP server the caller can see. This rides on every MCP-bearing request that carries tools, so raising it raises per-request tokens. 0 uses the built-in default of 16384.\n"
+              },
+              "mcp_oauth_private_allowlist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Hostnames, IP addresses, or CIDR ranges (no scheme or port) that the MCP OAuth chain (discovery, dynamic client registration, token requests) may reach when they resolve to a loopback or private address. Applies only to MCP clients registered by an authenticated admin or declared in config.json. Link-local and cloud metadata addresses are always refused and cannot be listed. Omit to keep the current list; send [] to clear it. Changing it requires an authenticated admin session.\n"
               },
               "mcp_code_mode_limits": {
                 "type": "object",

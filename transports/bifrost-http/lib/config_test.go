@@ -23145,6 +23145,187 @@ func TestCodeModeLimitsFromConfigFile(t *testing.T) {
 	assert.Equal(t, fromToolManager, mcpCfg.ToolManagerConfig.CodeModeLimits, "bifrost.Init must receive the configured limits")
 }
 
+// TestOAuthPrivateAllowlistFromConfigFile pins how the MCP OAuth private-target
+// allowlist flows from config.json: tool_manager_config.oauth_private_allowlist
+// wins when set and an omitted one keeps client_config's, the value round-trips
+// through the store into bifrost.Init's tool manager config, it is part of the
+// reconciliation hash, and an entry the policy can never honor stops startup.
+func TestOAuthPrivateAllowlistFromConfigFile(t *testing.T) {
+	fromClientConfig := []string{"10.0.0.0/8"}
+	fromToolManager := []string{"localhost", "127.0.0.1"}
+
+	cc := &configstore.ClientConfig{MCPOAuthPrivateAllowlist: fromClientConfig}
+	applyToolManagerToClientConfig(cc, &schemas.MCPToolManagerConfig{MaxAgentDepth: 5})
+	assert.Equal(t, fromClientConfig, cc.MCPOAuthPrivateAllowlist, "a tool_manager_config without oauth_private_allowlist must keep client_config's")
+
+	applyToolManagerToClientConfig(cc, &schemas.MCPToolManagerConfig{MaxAgentDepth: 5, OAuthPrivateAllowlist: fromToolManager})
+	assert.Equal(t, fromToolManager, cc.MCPOAuthPrivateAllowlist, "tool_manager_config.oauth_private_allowlist must win when set")
+
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	require.NoError(t, store.UpdateClientConfig(ctx, cc))
+	persisted, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, fromToolManager, persisted.MCPOAuthPrivateAllowlist, "the allowlist must round-trip through the store")
+	mcpFromStore, err := store.GetMCPConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, mcpFromStore.ToolManagerConfig)
+	assert.Equal(t, fromToolManager, mcpFromStore.ToolManagerConfig.OAuthPrivateAllowlist)
+
+	cfg := &Config{ConfigStore: store, ClientConfig: cc}
+	mcpCfg := &schemas.MCPConfig{}
+	applyMCPGlobalSettingsToClientConfig(ctx, cfg, mcpCfg, false)
+	require.NotNil(t, mcpCfg.ToolManagerConfig)
+	assert.Equal(t, fromToolManager, mcpCfg.ToolManagerConfig.OAuthPrivateAllowlist)
+
+	base := &configstore.ClientConfig{}
+	baseHash, err := base.GenerateClientConfigHashWithToolManager(&schemas.MCPToolManagerConfig{})
+	require.NoError(t, err)
+	listedHash, err := base.GenerateClientConfigHashWithToolManager(&schemas.MCPToolManagerConfig{OAuthPrivateAllowlist: fromToolManager})
+	require.NoError(t, err)
+	reorderedHash, err := base.GenerateClientConfigHashWithToolManager(&schemas.MCPToolManagerConfig{OAuthPrivateAllowlist: []string{"127.0.0.1", "localhost"}})
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, listedHash, "editing the allowlist in config.json must re-sync it")
+	assert.Equal(t, listedHash, reorderedHash, "entry order must not churn the hash")
+	clientHash, err := (&configstore.ClientConfig{MCPOAuthPrivateAllowlist: fromClientConfig}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	emptyHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, emptyHash, clientHash)
+
+	require.NoError(t, validateClientConfig(&configstore.ClientConfig{MCPOAuthPrivateAllowlist: fromToolManager}))
+	for _, entry := range []string{"169.254.169.254", "0.0.0.0/0", "http://localhost:3000"} {
+		err := validateClientConfig(&configstore.ClientConfig{MCPOAuthPrivateAllowlist: []string{entry}})
+		require.Error(t, err, entry)
+		assert.Contains(t, err.Error(), "mcp_oauth_private_allowlist")
+	}
+}
+
+// TestLoadClientConfig_ToolManagerOnlyFileReconciles pins reconciliation for a
+// config.json with an mcp.tool_manager_config but no client section once the
+// store already holds client settings: an edited tool_manager_config (the OAuth
+// allowlist included, shrinking it too) reaches the store on the next start,
+// while an unchanged one keeps what the dashboard saved.
+func TestLoadClientConfig_ToolManagerOnlyFileReconciles(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	start := func(tm *schemas.MCPToolManagerConfig) *configstore.ClientConfig {
+		t.Helper()
+		cfg := &Config{ConfigStore: store}
+		require.NoError(t, loadClientConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ToolManagerConfig: tm}}))
+		stored, err := store.GetClientConfig(ctx)
+		require.NoError(t, err)
+		return stored
+	}
+
+	first := start(&schemas.MCPToolManagerConfig{MaxAgentDepth: 5, OAuthPrivateAllowlist: []string{"localhost", "127.0.0.1"}})
+	assert.Equal(t, 5, first.MCPAgentDepth)
+	assert.Equal(t, []string{"localhost", "127.0.0.1"}, first.MCPOAuthPrivateAllowlist)
+
+	edited := start(&schemas.MCPToolManagerConfig{MaxAgentDepth: 7, OAuthPrivateAllowlist: []string{"10.0.0.0/8"}})
+	assert.Equal(t, 7, edited.MCPAgentDepth, "an edited tool_manager_config must reach the store")
+	assert.Equal(t, []string{"10.0.0.0/8"}, edited.MCPOAuthPrivateAllowlist, "removing hosts from the file must remove them from the store")
+
+	// A dashboard edit, then a restart with the same file: the edit survives.
+	edited.MCPAgentDepth = 9
+	require.NoError(t, store.UpdateClientConfig(ctx, edited))
+	unchanged := start(&schemas.MCPToolManagerConfig{MaxAgentDepth: 7, OAuthPrivateAllowlist: []string{"10.0.0.0/8"}})
+	assert.Equal(t, 9, unchanged.MCPAgentDepth, "an unchanged file must keep dashboard edits")
+}
+
+// TestLoadClientConfig_InvalidAllowlistIsNeverPersisted pins that client config
+// reconciliation validates before it writes: an invalid oauth_private_allowlist
+// in config.json fails startup without reaching the store, so fixing the file
+// (here by deleting the key, which keeps the stored list) recovers on the next start.
+func TestLoadClientConfig_InvalidAllowlistIsNeverPersisted(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	start := func(store configstore.ConfigStore, tm *schemas.MCPToolManagerConfig) error {
+		t.Helper()
+		return loadClientConfig(ctx, &Config{ConfigStore: store}, &ConfigData{MCP: &schemas.MCPConfig{ToolManagerConfig: tm}})
+	}
+	invalid := &schemas.MCPToolManagerConfig{MaxAgentDepth: 5, OAuthPrivateAllowlist: []string{"169.254.169.254"}}
+
+	// Fresh store: nothing is written.
+	fresh := createTestSQLiteConfigStore(t, t.TempDir())
+	err := start(fresh, invalid)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mcp_oauth_private_allowlist")
+	freshStored, err := fresh.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, freshStored, "an invalid file must not create a client config row")
+
+	// Existing store: the stored list is kept, and deleting the key from the file recovers.
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	require.NoError(t, start(store, &schemas.MCPToolManagerConfig{MaxAgentDepth: 5, OAuthPrivateAllowlist: []string{"localhost"}}))
+	require.Error(t, start(store, invalid))
+	stored, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"localhost"}, stored.MCPOAuthPrivateAllowlist, "a rejected file must not overwrite the stored allowlist")
+	require.NoError(t, start(store, &schemas.MCPToolManagerConfig{MaxAgentDepth: 6}), "deleting the bad key from the file must let startup recover")
+	recovered, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 6, recovered.MCPAgentDepth)
+	assert.Equal(t, []string{"localhost"}, recovered.MCPOAuthPrivateAllowlist)
+}
+
+// TestOAuthPrivateAllowlistExplicitEmptyIsAFileChange pins that writing an
+// explicit empty allowlist into config.json revokes hosts the dashboard added:
+// [] must hash differently from an omitted list (which keeps the legacy hash),
+// in the tool_manager_config and in the client section alike.
+func TestOAuthPrivateAllowlistExplicitEmptyIsAFileChange(t *testing.T) {
+	decodeTM := func(raw string) *schemas.MCPToolManagerConfig {
+		t.Helper()
+		var tm schemas.MCPToolManagerConfig
+		require.NoError(t, json.Unmarshal([]byte(raw), &tm))
+		return &tm
+	}
+	omittedTM := decodeTM(`{"max_agent_depth":5}`)
+	emptyTM := decodeTM(`{"max_agent_depth":5,"oauth_private_allowlist":[]}`)
+	legacyTM := &schemas.MCPToolManagerConfig{MaxAgentDepth: 5}
+	base := &configstore.ClientConfig{}
+	omittedHash, err := base.GenerateClientConfigHashWithToolManager(omittedTM)
+	require.NoError(t, err)
+	legacyHash, err := base.GenerateClientConfigHashWithToolManager(legacyTM)
+	require.NoError(t, err)
+	emptyHash, err := base.GenerateClientConfigHashWithToolManager(emptyTM)
+	require.NoError(t, err)
+	assert.Equal(t, legacyHash, omittedHash, "an omitted allowlist must keep the legacy hash")
+	assert.NotEqual(t, omittedHash, emptyHash, "an explicit [] in tool_manager_config must change the hash")
+
+	decodeClient := func(raw string) *configstore.ClientConfig {
+		t.Helper()
+		var cc configstore.ClientConfig
+		require.NoError(t, json.Unmarshal([]byte(raw), &cc))
+		return &cc
+	}
+	omittedClientHash, err := decodeClient(`{"log_retention_days":7}`).GenerateClientConfigHash()
+	require.NoError(t, err)
+	emptyClientHash, err := decodeClient(`{"log_retention_days":7,"mcp_oauth_private_allowlist":[]}`).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, omittedClientHash, emptyClientHash, "an explicit [] in the client section must change the hash")
+
+	// End to end: the file omits the list, the dashboard adds hosts, then the
+	// operator writes [] into the file and restarts.
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	start := func(tm *schemas.MCPToolManagerConfig) *configstore.ClientConfig {
+		t.Helper()
+		require.NoError(t, loadClientConfig(ctx, &Config{ConfigStore: store}, &ConfigData{MCP: &schemas.MCPConfig{ToolManagerConfig: tm}}))
+		stored, err := store.GetClientConfig(ctx)
+		require.NoError(t, err)
+		return stored
+	}
+	stored := start(decodeTM(`{"max_agent_depth":5}`))
+	stored.MCPOAuthPrivateAllowlist = []string{"localhost"}
+	require.NoError(t, store.UpdateClientConfig(ctx, stored))
+	revoked := start(decodeTM(`{"max_agent_depth":5,"oauth_private_allowlist":[]}`))
+	assert.Empty(t, revoked.MCPOAuthPrivateAllowlist, "an explicit [] in config.json must revoke hosts the dashboard added")
+}
+
 // TestGetMCPConfig_CarriesGlobalToolSyncInterval pins that the MCP config
 // loaded from the store carries the client-config-backed global tool sync
 // interval, so a boot without an mcp section in config.json still hands
