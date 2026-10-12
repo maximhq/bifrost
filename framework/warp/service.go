@@ -95,10 +95,23 @@ type Service struct {
 // topicLister returns the topic reader as the tool interface, or a nil
 // interface when there is none - a typed nil would pass the tool's nil check.
 func (s *Service) topicLister() TopicLister {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.topics == nil {
 		return nil
 	}
 	return s.topics
+}
+
+// buildTopicReader returns a reader over the log store's topic tables, or
+// nil when the reader Warp has cannot reach them. Callers must hold s.mu, or
+// be the constructor.
+func (s *Service) buildTopicReader() *TopicReader {
+	topics := topicStoreOf(s.logs)
+	if s.store == nil || topics == nil {
+		return nil
+	}
+	return NewTopicReader(s.store, topics)
 }
 
 // Option configures a Service.
@@ -209,9 +222,7 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 	for _, opt := range opts {
 		opt(service)
 	}
-	if service.store != nil && service.vectorStore != nil {
-		service.topics = NewTopicReader(service.store, service.vectorStore)
-	}
+	service.topics = service.buildTopicReader()
 	if service.store != nil && service.vectorStore != nil && service.embed != nil {
 		service.indexer = NewLogIndexer(service.store, service.vectorStore, service.embed, service.logger)
 		if service.logs != nil {
@@ -326,7 +337,9 @@ func (s *Service) SetLogReader(logs LogReader) {
 	// rebuilding it left semantic search hydrating through the reader this
 	// service no longer uses - or absent entirely on a deployment that enabled
 	// logging after startup, which is exactly the case SetLogReader exists for.
+	// The topic reader reads through the same reader's store, so it follows.
 	s.semantic = s.buildSemanticSearcher()
+	s.topics = s.buildTopicReader()
 }
 
 // buildSemanticSearcher returns a searcher for the current dependencies, or nil

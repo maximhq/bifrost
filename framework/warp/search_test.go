@@ -21,6 +21,13 @@ type semanticLogReader struct {
 	sawIDs     []string
 	// allIDs accumulates across calls; sawIDs is the last call only.
 	allIDs []string
+	// topics is the topic tables the reader offers, when a test gave it some.
+	topics logstore.WarpTopicStore
+}
+
+// TopicStore hands out the topic tables, or nil when the test gave none.
+func (r *semanticLogReader) TopicStore() logstore.WarpTopicStore {
+	return r.topics
 }
 
 func (r *semanticLogReader) GetLogsByIDs(ctx context.Context, ids []string) ([]logstore.Log, error) {

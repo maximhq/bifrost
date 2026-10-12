@@ -205,6 +205,16 @@ func (p *PluginLogManager) GetLog(ctx context.Context, id string) (*logstore.Log
 	return p.plugin.GetLog(ctx, id)
 }
 
+// LogStore returns the store the plugin writes to, for readers that need a
+// surface the manager does not adapt, such as Warp's topic tables. Nil when
+// the plugin has none.
+func (p *PluginLogManager) LogStore() logstore.LogStore {
+	if p == nil || p.plugin == nil {
+		return nil
+	}
+	return p.plugin.store
+}
+
 func (p *PluginLogManager) Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
 	if filters == nil || pagination == nil {
 		return nil, fmt.Errorf("filters and pagination cannot be nil")
