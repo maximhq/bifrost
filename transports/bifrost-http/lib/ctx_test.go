@@ -1665,7 +1665,7 @@ func newGateway(t *testing.T, u *gwUpstream, setup gwSetup) *gateway {
 		config.Providers[provider] = configstore.ProviderConfig{
 			Keys: keys,
 			NetworkConfig: &schemas.NetworkConfig{
-				BaseURL:                        u.URL,
+				BaseURL:                        schemas.NewSecretVar(u.URL),
 				DefaultRequestTimeoutInSeconds: 30,
 				MaxRetries:                     maxRetries,
 				RetryBackoffInitial:            time.Millisecond,
