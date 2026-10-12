@@ -2,6 +2,7 @@
 package anthropic
 
 import (
+	"github.com/maximhq/bifrost/core/jsonx"
 	"bytes"
 	"context"
 	"errors"
@@ -156,7 +157,7 @@ func setAnthropicRequestBody(ctx *schemas.BifrostContext, req *fasthttp.Request,
 }
 
 func extractAnthropicResponsesUsageFromPrefetch(data []byte) *schemas.ResponsesResponseUsage {
-	node, err := sonic.Get(data, "usage")
+	node, err := jsonx.Get(data, "usage")
 	if err != nil {
 		return nil
 	}

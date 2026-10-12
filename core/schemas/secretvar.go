@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"github.com/maximhq/bifrost/core/jsonx"
 	"database/sql/driver"
 	"fmt"
 	"os"
@@ -49,11 +50,11 @@ func parseSecretRef(value string) *SecretVar {
 		val = unquoted
 	}
 	if sonic.Valid([]byte(value)) {
-		valueNode, _ := sonic.Get([]byte(val), "value")
-		refNode, _ := sonic.Get([]byte(val), "ref")
-		typeNode, _ := sonic.Get([]byte(val), "type")
-		envVarNode, _ := sonic.Get([]byte(val), "env_var")
-		fromEnvNode, _ := sonic.Get([]byte(val), "from_env")
+		valueNode, _ := jsonx.Get([]byte(val), "value")
+		refNode, _ := jsonx.Get([]byte(val), "ref")
+		typeNode, _ := jsonx.Get([]byte(val), "type")
+		envVarNode, _ := jsonx.Get([]byte(val), "env_var")
+		fromEnvNode, _ := jsonx.Get([]byte(val), "from_env")
 		isSecretVarJSON := valueNode.Exists() ||
 			(refNode.Exists() && typeNode.Exists()) ||
 			(envVarNode.Exists() && fromEnvNode.Exists())
@@ -332,11 +333,11 @@ func (e *SecretVar) UnmarshalJSON(data []byte) error {
 		val = unquoted
 	}
 	if sonic.Valid(data) {
-		valueNode, _ := sonic.Get(data, "value")
-		refNode, _ := sonic.Get(data, "ref")
-		typeNode, _ := sonic.Get(data, "type")
-		envVarNode, _ := sonic.Get(data, "env_var")
-		fromEnvNode, _ := sonic.Get(data, "from_env")
+		valueNode, _ := jsonx.Get(data, "value")
+		refNode, _ := jsonx.Get(data, "ref")
+		typeNode, _ := jsonx.Get(data, "type")
+		envVarNode, _ := jsonx.Get(data, "env_var")
+		fromEnvNode, _ := jsonx.Get(data, "from_env")
 		isSecretVarJSON := valueNode.Exists() ||
 			(refNode.Exists() && typeNode.Exists()) ||
 			(envVarNode.Exists() && fromEnvNode.Exists())
