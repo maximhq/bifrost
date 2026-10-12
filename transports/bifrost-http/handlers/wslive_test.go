@@ -207,6 +207,50 @@ func TestLiveRelayClosesUpstreamWhenClientLeaves(t *testing.T) {
 	assert.Equal(t, []float64{12}, f.voiceSeconds(t), "the final usage is still billed")
 }
 
+// TestLiveRelayWaitsForTheClientsCloseReply: a client that reads session.closed and the close
+// frame together may fail its close reply if the socket is already gone, and some libraries then
+// discard the frames read with it. The relay keeps the socket until the client has answered.
+func TestLiveRelayWaitsForTheClientsCloseReply(t *testing.T) {
+	t.Parallel()
+	f := startLiveRelay(t, fakeLiveModels{allowed: true}, "")
+	// Hold the close reply instead of answering as soon as the frame arrives.
+	f.app.SetCloseHandler(func(int, string) error { return nil })
+
+	closed := `{"type":"session.closed","reason":"close_requested","usage":{"seconds":3}}`
+	sendFrame(t, f.openai, closed)
+	assert.Equal(t, closed, readFrame(t, f.app))
+	require.NoError(t, f.app.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, _, err := f.app.ReadMessage()
+	var closeErr *ws.CloseError
+	require.ErrorAs(t, err, &closeErr)
+	assert.Equal(t, ws.CloseNormalClosure, closeErr.Code)
+
+	select {
+	case <-f.done:
+		t.Fatal("the relay dropped the connection before the client answered the close frame")
+	case <-time.After(300 * time.Millisecond):
+	}
+	require.NoError(t, f.app.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, ""), time.Now().Add(time.Second)))
+	f.waitDone(t)
+}
+
+func TestLiveRelayReleasesAClientThatNeverAnswersClose(t *testing.T) {
+	t.Parallel()
+	f := startLiveRelay(t, fakeLiveModels{allowed: true}, "")
+	f.app.SetCloseHandler(func(int, string) error { return nil })
+
+	sendFrame(t, f.openai, `{"type":"session.closed","reason":"close_requested","usage":{"seconds":3}}`)
+	readFrame(t, f.app)
+	require.NoError(t, f.app.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, _, err := f.app.ReadMessage()
+	var closeErr *ws.CloseError
+	require.ErrorAs(t, err, &closeErr)
+
+	started := time.Now()
+	f.waitDone(t)
+	assert.GreaterOrEqual(t, time.Since(started), liveCloseHandshakeGrace/2, "the handshake is given its grace before the socket is dropped")
+}
+
 func TestLiveRelayEndsSessionWhenBudgetRunsOut(t *testing.T) {
 	t.Parallel()
 	f := startLiveRelay(t, fakeLiveModels{allowed: true}, "")

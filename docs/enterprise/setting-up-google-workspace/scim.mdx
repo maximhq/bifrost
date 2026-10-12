@@ -17,8 +17,8 @@ Google Workspace does not natively push SCIM to external endpoints. Instead, Bif
 
 | Method | Trigger | Use case |
 | --- | --- | --- |
-| **Directory API background sync** | Every 24 hours | Reconciles all users, roles, and group memberships |
-| **OIDC session refresh** | Every 15 minutes | Detects deactivated users between syncs |
+| **Directory API background sync** | Every **Directory sync interval** (default 24 hours) | Reconciles all users, roles, and group memberships |
+| **OIDC session refresh** | When a user's session expires | Detects deactivated users between syncs |
 
 The Directory API sync is configured as part of the [OIDC setup](./oidc#step-3-create-a-service-account-for-directory-api-access-optional) - no additional steps are required here if you already configured a service account.
 
@@ -100,7 +100,7 @@ The provider configuration includes a **Provisioning source** setting that contr
 
 Choose **SCIM only** when provisioning must be fully controlled by your IdP's SCIM app and login-time claim changes should never alter membership. Leave it on the default **SCIM and login claims** if users are also provisioned just-in-time on first login.
 
-This maps to the `claimsSyncMode` config key (`both` or `scim`) and is inert when SCIM is disabled - claims always sync then.
+This maps to the `claimsSyncMode` config key (`both` or `scim`) and is inert when SCIM Provisioning is disabled - claims always sync then.
 
 ---
 
@@ -110,7 +110,7 @@ This maps to the `claimsSyncMode` config key (`both` or `scim`) and is inert whe
 
 <Step title="Run a manual import">
 
-To sync users immediately without waiting for the 24-hour cycle, go to **Governance** → **User Provisioning** → **Import Users**.
+To sync users immediately without waiting for the next background sync, go to **Governance** → **User Provisioning** → **Import Users**.
 
 Filter by a Google Workspace group, click **Preview**, and confirm the expected users appear.
 
@@ -140,9 +140,9 @@ After the sync or import:
 
 **OIDC provisioning** - users are provisioned in Bifrost on their first successful login. Role and team assignments are derived from the JWT claims at login time.
 
-**Background reconciliation** - every 24 hours, Bifrost reconciles all users in the directory against the current state in Google Workspace. This catches deactivations, group membership changes, and new users who have not yet logged in.
+**Background reconciliation** - every **Directory sync interval** (default 24 hours), Bifrost reconciles all users in the directory against the current state in Google Workspace. This catches deactivations, group membership changes, and new users who have not yet logged in.
 
-**Session refresh** - every 15 minutes, Bifrost attempts to refresh active OIDC sessions. If a user's Google account has been suspended or deleted, their Bifrost session is terminated at the next refresh cycle.
+**Session refresh** - when a user's session expires, Bifrost refreshes it with Google. If the user's Google account has been suspended or deleted, the refresh fails and Bifrost removes the user.
 
 ---
 
