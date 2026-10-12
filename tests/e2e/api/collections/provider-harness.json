@@ -258050,6 +258050,760 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "218. Passthrough bodies are checked against the key's allowed models (passthrough-model-visibility) [SERIAL]",
+      "description": "A virtual key allowed one Runware model sends raw task arrays through the passthrough route, whose tasks each name the model Runware runs. An array naming another model, an array mixing the allowed model with another, and an array naming no model at all are each refused with 403 model_blocked before anything reaches Runware, while an array naming only the allowed model still runs one 512x512 image. Red before the change: the three refused arrays ran on the operator's key, since the request model was read only from a JSON object body. The key is deleted at the end. A GenAI passthrough body names its model as a resource (models/<id>); a key allowed that model by its bare id still runs it, since the body is read under the same name the router hands up.",
+      "item": [
+        {
+          "name": "runware passthrough-model-visibility setup: create a virtual key allowed one model",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('pmvVkId');",
+                  "  pm.collectionVariables.unset('pmvVkValue');",
+                  "  pm.collectionVariables.set('pmvVkName', 'harness-passthrough-model-visibility-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleVkId = pm.collectionVariables.get('pmvVkId');",
+                  "if (!staleVkId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleVkId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('passthrough-model-visibility: the retained virtual key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleVkId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleVkId + ' not deleted: ' + response.text()).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.collectionVariables.unset('pmvVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-model-visibility: virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('passthrough-model-visibility: virtual key has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('pmvVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('pmvVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{pmvVkName}}\",\"provider_configs\":[{\"provider\":\"runware\",\"allowed_models\":[\"runware:100@1\"],\"key_ids\":[\"*\"],\"weight\":1}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-403] runware passthrough-model-visibility: an array naming another model is refused under a key allowed one model",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without the key there is nothing to govern; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('pmvVkValue')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The single task's model is the request model and is outside the allowlist.",
+                  "// Governance refuses before anything reaches Runware: a 403 naming model_blocked, never a 2xx that",
+                  "// would mean the tasks ran on the operator's key, and never a 400/401/500 from another cause.",
+                  "pm.test('passthrough-model-visibility: an array naming another model is 403', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(403);",
+                  "});",
+                  "pm.test('passthrough-model-visibility: the refusal is model_blocked', function () {",
+                  "  pm.expect(txt, 'unexpected body: ' + txt.slice(0, 400)).to.include('model_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pmvVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "[{\"taskType\":\"imageInference\",\"taskUUID\":\"{{$guid}}\",\"model\":\"runware:101@1\",\"positivePrompt\":\"a red ceramic teapot on a wooden table\",\"width\":512,\"height\":512,\"numberResults\":1,\"outputType\":\"URL\"}]",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/runware_passthrough/v1"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-403] runware passthrough-model-visibility: an array mixing the allowed model with another is refused under a key allowed one model",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without the key there is nothing to govern; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('pmvVkValue')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Tasks naming different models leave no single request model; every model the body names is checked.",
+                  "// Governance refuses before anything reaches Runware: a 403 naming model_blocked, never a 2xx that",
+                  "// would mean the tasks ran on the operator's key, and never a 400/401/500 from another cause.",
+                  "pm.test('passthrough-model-visibility: an array mixing the allowed model with another is 403', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(403);",
+                  "});",
+                  "pm.test('passthrough-model-visibility: the refusal is model_blocked', function () {",
+                  "  pm.expect(txt, 'unexpected body: ' + txt.slice(0, 400)).to.include('model_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pmvVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "[{\"taskType\":\"imageInference\",\"taskUUID\":\"{{$guid}}\",\"model\":\"runware:100@1\",\"positivePrompt\":\"a red ceramic teapot on a wooden table\",\"width\":512,\"height\":512,\"numberResults\":1,\"outputType\":\"URL\"},{\"taskType\":\"imageInference\",\"taskUUID\":\"{{$guid}}\",\"model\":\"runware:101@1\",\"positivePrompt\":\"a red ceramic teapot on a wooden table\",\"width\":512,\"height\":512,\"numberResults\":1,\"outputType\":\"URL\"}]",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/runware_passthrough/v1"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-403] runware passthrough-model-visibility: an array naming no model is refused under a key allowed one model",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without the key there is nothing to govern; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('pmvVkValue')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Nothing names a model, so a key that restricts models has nothing to check and is not skipped.",
+                  "// Governance refuses before anything reaches Runware: a 403 naming model_blocked, never a 2xx that",
+                  "// would mean the tasks ran on the operator's key, and never a 400/401/500 from another cause.",
+                  "pm.test('passthrough-model-visibility: an array naming no model is 403', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(403);",
+                  "});",
+                  "pm.test('passthrough-model-visibility: the refusal is model_blocked', function () {",
+                  "  pm.expect(txt, 'unexpected body: ' + txt.slice(0, 400)).to.include('model_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pmvVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "[{\"taskType\":\"getResponse\",\"taskUUID\":\"{{$guid}}\"}]",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/runware_passthrough/v1"
+          },
+          "response": []
+        },
+        {
+          "name": "runware passthrough-model-visibility: a task array naming only the allowed model still runs",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without the key there is nothing to govern; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('pmvVkValue')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The allowed model is read from the task array, so the key's one model keeps working through passthrough.",
+                  "pm.test('passthrough-model-visibility: a task array naming the allowed model is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('passthrough-model-visibility: Runware answered the task', function () {",
+                  "  pm.expect(j.data, 'no data: ' + txt.slice(0, 400)).to.be.an('array').with.lengthOf.at.least(1);",
+                  "  pm.expect(j.data[0].taskType, 'wrong task: ' + txt.slice(0, 400)).to.eql('imageInference');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pmvVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "[{\"taskType\":\"imageInference\",\"taskUUID\":\"{{$guid}}\",\"model\":\"runware:100@1\",\"positivePrompt\":\"a red ceramic teapot on a wooden table\",\"width\":512,\"height\":512,\"numberResults\":1,\"outputType\":\"URL\"}]",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/runware_passthrough/v1"
+          },
+          "response": []
+        },
+        {
+          "name": "runware passthrough-model-visibility setup: create a virtual key allowed both models for the model-limit case",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "pm.collectionVariables.unset('pmvLimVkId');",
+                  "pm.collectionVariables.unset('pmvLimVkValue');",
+                  "pm.collectionVariables.unset('pmvLimMcId');",
+                  "pm.collectionVariables.set('pmvLimVkName', 'harness-passthrough-model-limits-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-model-visibility: the model-limit virtual key is created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('passthrough-model-visibility: the model-limit virtual key has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('pmvLimVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('pmvLimVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{pmvLimVkName}}\",\"provider_configs\":[{\"provider\":\"runware\",\"allowed_models\":[\"runware:100@1\",\"runware:101@1\"],\"key_ids\":[\"*\"],\"weight\":1}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          },
+          "response": []
+        },
+        {
+          "name": "runware passthrough-model-visibility setup: give one of the key's models a rate limit of its own",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('pmvLimVkId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-model-visibility: the key-scoped model config is created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var mc = {};",
+                  "try { mc = pm.response.json().model_config || {}; } catch (e) { mc = {}; }",
+                  "pm.test('passthrough-model-visibility: the key-scoped model config has an id', function () {",
+                  "  pm.expect(mc.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (mc.id) { pm.collectionVariables.set('pmvLimMcId', mc.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model_name\":\"runware:101@1\",\"provider\":\"runware\",\"scope\":\"virtual_key\",\"scope_id\":\"{{pmvLimVkId}}\",\"rate_limit\":{\"request_max_limit\":1000,\"request_reset_duration\":\"1h\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/model-configs"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] runware passthrough-model-visibility: a mixed array is refused when one of its models has a rate limit of its own",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without the key and its model limit there is nothing to compare; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('pmvLimVkValue') || !pm.collectionVariables.get('pmvLimMcId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Both models are allowed, but runware:101@1 has a rate limit of its own. A mixed array is charged as one",
+                  "// request with no model, so that limit would be checked and never counted: governance refuses before",
+                  "// anything reaches Runware, a 400 naming the model, never a 2xx that would run the tasks uncounted.",
+                  "pm.test('passthrough-model-visibility: a mixed array with a model-scoped limit is 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('passthrough-model-visibility: the refusal is model_limits_unattributable and names the limited model', function () {",
+                  "  pm.expect(txt, 'unexpected body: ' + txt.slice(0, 400)).to.include('model_limits_unattributable');",
+                  "  pm.expect(txt, 'unexpected body: ' + txt.slice(0, 400)).to.include('runware:101@1');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pmvLimVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "[{\"taskType\":\"imageInference\",\"taskUUID\":\"{{$guid}}\",\"model\":\"runware:100@1\",\"positivePrompt\":\"a red ceramic teapot on a wooden table\",\"width\":512,\"height\":512,\"numberResults\":1,\"outputType\":\"URL\"},{\"taskType\":\"imageInference\",\"taskUUID\":\"{{$guid}}\",\"model\":\"runware:101@1\",\"positivePrompt\":\"a red ceramic teapot on a wooden table\",\"width\":512,\"height\":512,\"numberResults\":1,\"outputType\":\"URL\"}]",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/runware_passthrough/v1"
+          },
+          "response": []
+        },
+        {
+          "name": "runware passthrough-model-visibility cleanup: delete the key-scoped model config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('pmvLimMcId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-model-visibility: key-scoped model config deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code === 200 || pm.response.code === 404) { pm.collectionVariables.unset('pmvLimMcId'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/model-configs/{{pmvLimMcId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "runware passthrough-model-visibility cleanup: delete the model-limit virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('pmvLimVkId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-model-visibility: model-limit virtual key deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('pmvLimVkId');",
+                  "  pm.collectionVariables.unset('pmvLimVkValue');",
+                  "  pm.collectionVariables.unset('pmvLimVkName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{pmvLimVkId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "runware passthrough-model-visibility cleanup: delete the virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('pmvVkId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-model-visibility: virtual key deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('pmvVkId');",
+                  "  pm.collectionVariables.unset('pmvVkValue');",
+                  "  pm.collectionVariables.unset('pmvVkName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{pmvVkId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "gemini passthrough-model-visibility setup: create a virtual key allowed one gemini model by its bare id",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('pmvgVkId');",
+                  "  pm.collectionVariables.unset('pmvgVkValue');",
+                  "  pm.collectionVariables.set('pmvgVkName', 'harness-passthrough-model-visibility-gemini-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleVkId = pm.collectionVariables.get('pmvgVkId');",
+                  "if (!staleVkId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleVkId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('passthrough-model-visibility: the retained gemini virtual key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleVkId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleVkId + ' not deleted: ' + response.text()).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.collectionVariables.unset('pmvgVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-model-visibility: gemini virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('passthrough-model-visibility: gemini virtual key has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('pmvgVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('pmvgVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{pmvgVkName}}\",\"provider_configs\":[{\"provider\":\"gemini\",\"allowed_models\":[\"gemini-embedding-001\"],\"key_ids\":[\"*\"],\"weight\":1}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          },
+          "response": []
+        },
+        {
+          "name": "gemini passthrough-model-visibility: a body naming the allowed model as a resource still runs",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without the key there is nothing to govern; the failed setup request already reports why.",
+                  "if (!pm.collectionVariables.get('pmvgVkValue')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The key allows gemini-embedding-001 by its bare id and the body names it as models/gemini-embedding-001.",
+                  "// The body is read under the name the router hands up, so the key's one model keeps working: a 200 with",
+                  "// an embedding, never a 403 model_blocked for the resource spelling of the same model.",
+                  "pm.test('passthrough-model-visibility: a body naming the allowed model as a resource is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('passthrough-model-visibility: Gemini answered with an embedding', function () {",
+                  "  pm.expect(j.embedding && j.embedding.values, 'no embedding: ' + txt.slice(0, 400)).to.be.an('array').with.lengthOf.at.least(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pmvgVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"models/gemini-embedding-001\",\"content\":{\"parts\":[{\"text\":\"a red ceramic teapot\"}]}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/genai_passthrough/v1beta/models/gemini-embedding-001:embedContent"
+          },
+          "response": []
+        },
+        {
+          "name": "gemini passthrough-model-visibility cleanup: delete the gemini virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('pmvgVkId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-model-visibility: gemini virtual key deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('pmvgVkId');",
+                  "  pm.collectionVariables.unset('pmvgVkValue');",
+                  "  pm.collectionVariables.unset('pmvgVkName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{pmvgVkId}}"
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

@@ -539,7 +539,8 @@
         {
           "name": "Runware API Key",
           "value": "env.RUNWARE_API_KEY",
-          "weight": 1
+          "weight": 1,
+          "models": ["*"]
         }
       ],
       "network_config": {
