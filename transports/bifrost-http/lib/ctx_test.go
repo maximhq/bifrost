@@ -2691,6 +2691,31 @@ func TestGatewayPinOutsideKeyIDsIsRefused(t *testing.T) {
 	requireGWHits(t, u, map[string]int{"sk-a1": 0, "sk-a2": 0})
 }
 
+// A caller's pin outside the virtual key's key_ids, on a request that carries a fallback: the pin
+// is refused on A without an upstream call, the fallback does not carry the pin, and B serves on
+// b2, the only B key vk1 allows, so key_ids still apply on the fallback (plan row KH-10).
+func TestGatewayPinOutsideKeyIDsFallsBackOnAnAllowedKey(t *testing.T) {
+	u := newGWUpstream(t)
+	g := newGateway(t, u, gwSetup{
+		keys: map[schemas.ModelProvider][]schemas.Key{
+			gwA: {gwKey("a1", 1), gwKey("a2", 1)},
+			gwB: {gwKey("b1", 1), gwKey("b2", 1)},
+		},
+		governance: configstore.GovernanceConfig{VirtualKeys: []configstoreTables.TableVirtualKey{gwVK("vk1",
+			onlyKeys(gwVKProvider(gwA, schemas.Ptr(1.0)), "a1"),
+			onlyKeys(gwVKProvider(gwB, schemas.Ptr(1.0)), "b2"),
+		)}},
+	})
+	headers := vkHeaders("vk1", "")
+	headers["x-bf-api-key-id"] = "a2"
+	r := g.send(gwCall{model: "gw-a/m", fallbacks: []string{"gw-b/m"}, headers: headers})
+	requireServedBy(t, r, gwB)
+	if !r.info.IsFallback || r.info.Key != "b2" {
+		t.Fatalf("B should serve as the fallback on b2, the only B key vk1 allows, routing info %+v", r.info)
+	}
+	requireGWHits(t, u, map[string]int{"sk-a1": 0, "sk-a2": 0, "sk-b1": 0, "sk-b2": 1})
+}
+
 // A governance refusal drops the binding the refused turn followed. vk1 weights A=1, B=0 and allows
 // two requests: turn 1 binds the session to A; with the weights then moved to A=0, B=1, turn 2
 // still follows the binding to A against routing's proposal of B. The third turn finds vk1's request
