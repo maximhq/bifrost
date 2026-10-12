@@ -1238,7 +1238,9 @@ func TestProviderObjectOwnersReadBatchRowsOnlyForUnrecordedFiles(t *testing.T) {
 	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), providerObjectRequests("file-unknown")[schemas.FileRetrieveRequest])
 	require.NoError(t, err)
 	require.Nil(t, shortCircuit)
-	assert.Equal(t, [][]string{{"file-unknown"}}, store.fileLookups, "an unrecorded file is looked up in the batch rows")
+	require.Len(t, store.fileLookups, 1, "an unrecorded file is looked up in the batch rows once")
+	assert.Contains(t, store.fileLookups[0], "file-unknown")
+	assert.NotContains(t, store.fileLookups[0], "file-own", "only the unrecorded file is looked up, under every form the provider accepts")
 }
 
 // A creator write that fails is tried once more before it is given up on and logged: the object
@@ -1314,6 +1316,401 @@ func BenchmarkPreLLMHookProviderObjectChecks(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
 				if _, _, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), build()); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// newResourceNameTestPlugin is newProviderJobTestPlugin with the key also allowed on Gemini and
+// Vertex, the providers that address objects by resource name.
+func newResourceNameTestPlugin(t *testing.T) (*GovernancePlugin, configstore.ConfigStore) {
+	t.Helper()
+	configStore := newProviderObjectConfigStore(t)
+	vk := buildVKForMCPStamping(nil)
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("gemini", []string{"*"}), buildProviderConfig("vertex", []string{"*"}))
+	plugin := newAccessTestPlugin(t, vk, nil)
+	plugin.configStore = configStore
+	return plugin, configStore
+}
+
+// resourceRequest builds a request of requestType addressing id on provider, for the request
+// types Gemini and Vertex answer by resource name.
+func resourceRequest(requestType schemas.RequestType, provider schemas.ModelProvider, id string) *schemas.BifrostRequest {
+	req := &schemas.BifrostRequest{RequestType: requestType}
+	switch requestType {
+	case schemas.BatchRetrieveRequest:
+		req.BatchRetrieveRequest = &schemas.BifrostBatchRetrieveRequest{Provider: provider, BatchID: id}
+	case schemas.BatchCancelRequest:
+		req.BatchCancelRequest = &schemas.BifrostBatchCancelRequest{Provider: provider, BatchID: id}
+	case schemas.BatchResultsRequest:
+		req.BatchResultsRequest = &schemas.BifrostBatchResultsRequest{Provider: provider, BatchID: id}
+	case schemas.BatchDeleteRequest:
+		req.BatchDeleteRequest = &schemas.BifrostBatchDeleteRequest{Provider: provider, BatchID: id}
+	case schemas.FileContentRequest:
+		req.FileContentRequest = &schemas.BifrostFileContentRequest{Provider: provider, FileID: id}
+	case schemas.CachedContentRetrieveRequest:
+		req.CachedContentRetrieveRequest = &schemas.BifrostCachedContentRetrieveRequest{Provider: provider, Name: id}
+	case schemas.CachedContentDeleteRequest:
+		req.CachedContentDeleteRequest = &schemas.BifrostCachedContentDeleteRequest{Provider: provider, Name: id}
+	}
+	return req
+}
+
+// Gemini and Vertex address an object by a resource name and accept its short forms: a Gemini
+// batch is "batches/<id>" or "<id>", a Vertex batch is its full resource name or its job number,
+// and files and cached contents follow suit. The row carries the name the create response
+// returned; every form the provider accepts resolves to that row, including the job rows the
+// logging plugin wrote before ownership rows existed.
+func TestPreLLMHookBindsResourceNamesUnderEveryForm(t *testing.T) {
+	plugin, store := newResourceNameTestPlugin(t)
+	own := "vk-mcp-stamp"
+	other := "vk-someone-else"
+	batch := configstoreTables.ProviderObjectKindBatch
+	file := configstoreTables.ProviderObjectKindFile
+	cached := configstoreTables.ProviderObjectKindCachedContent
+	const vertexBatch = "projects/p-1/locations/us-central1/batchPredictionJobs/4242"
+	const vertexCached = "projects/p-1/locations/us-central1/cachedContents/9797"
+	seedProviderObject(t, store, batch, "gemini", "batches/g-other", other)
+	seedProviderObject(t, store, batch, "gemini", "batches/g-own", own)
+	seedProviderObject(t, store, file, "gemini", "files/f-other", other)
+	seedProviderObject(t, store, cached, "gemini", "cachedContents/c-other", other)
+	// Rows keyed by a short form directly (written before full names were resolved by suffix) still count.
+	for _, id := range []string{vertexBatch, "4242"} {
+		seedProviderObject(t, store, batch, "vertex", id, other)
+	}
+	for _, id := range []string{vertexCached, "cachedContents/9797", "9797"} {
+		seedProviderObject(t, store, cached, "vertex", id, other)
+	}
+	seedProviderJob(t, store, "gemini", "batches/g-job", &other)
+	seedProviderJob(t, store, "vertex", "projects/p-1/locations/us-central1/batchPredictionJobs/5151", &other)
+
+	refused := []struct {
+		name string
+		req  *schemas.BifrostRequest
+		id   string
+	}{
+		{"gemini batch retrieve by bare id", resourceRequest(schemas.BatchRetrieveRequest, schemas.Gemini, "g-other"), "g-other"},
+		{"gemini batch cancel by bare id", resourceRequest(schemas.BatchCancelRequest, schemas.Gemini, "g-other"), "g-other"},
+		{"gemini batch results by bare id", resourceRequest(schemas.BatchResultsRequest, schemas.Gemini, "g-other"), "g-other"},
+		{"gemini batch retrieve by full name", resourceRequest(schemas.BatchRetrieveRequest, schemas.Gemini, "batches/g-other"), "batches/g-other"},
+		{"gemini file content by bare id", resourceRequest(schemas.FileContentRequest, schemas.Gemini, "f-other"), "f-other"},
+		{"gemini cached content retrieve by bare id", resourceRequest(schemas.CachedContentRetrieveRequest, schemas.Gemini, "c-other"), "c-other"},
+		{"vertex batch retrieve by job number", resourceRequest(schemas.BatchRetrieveRequest, schemas.Vertex, "4242"), "4242"},
+		{"vertex batch results by full name", resourceRequest(schemas.BatchResultsRequest, schemas.Vertex, vertexBatch), vertexBatch},
+		{"vertex cached content retrieve by short name", resourceRequest(schemas.CachedContentRetrieveRequest, schemas.Vertex, "cachedContents/9797"), "cachedContents/9797"},
+		{"vertex cached content delete by bare id", resourceRequest(schemas.CachedContentDeleteRequest, schemas.Vertex, "9797"), "9797"},
+		{"gemini batch retrieve by bare id through the job row", resourceRequest(schemas.BatchRetrieveRequest, schemas.Gemini, "g-job"), "g-job"},
+		{"vertex batch retrieve by job number through the job row", resourceRequest(schemas.BatchRetrieveRequest, schemas.Vertex, "5151"), "5151"},
+	}
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), tc.req)
+			require.NoError(t, err)
+			require.NotNil(t, shortCircuit, "another key's object is refused in every form")
+			require.NotNil(t, shortCircuit.Error.StatusCode)
+			assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+			assert.Contains(t, shortCircuit.Error.Error.Message, "'"+tc.id+"'", "the message names the id as the caller wrote it")
+		})
+	}
+
+	for _, id := range []string{"g-own", "batches/g-own"} {
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), resourceRequest(schemas.BatchRetrieveRequest, schemas.Gemini, id))
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit, "the creating key reaches its batch as %q", id)
+	}
+
+	// A job number is matched whole: 5151 is not reached as 151.
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), resourceRequest(schemas.BatchRetrieveRequest, schemas.Vertex, "151"))
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "a job number that is only a suffix of another is not that job")
+}
+
+// A full resource name is recorded as the provider returned it and nothing else: a Vertex job
+// number is scoped to a project and region, so a row keyed by the bare number would be shared by
+// every project's job of that number. A short-form request is resolved against the full names
+// instead (see TestPreLLMHookResolvesShortResourceNamesThroughFullNameRows), and a delete by the
+// short form forgets only the deleter's own full-name rows.
+func TestPostLLMHookRecordsFullResourceNamesOnceAndForgetsOnlyTheDeletersRows(t *testing.T) {
+	plugin, store := newResourceNameTestPlugin(t)
+	const vertexBatch = "projects/p-1/locations/us-central1/batchPredictionJobs/4242"
+	const otherProjectBatch = "projects/p-2/locations/us-central1/batchPredictionJobs/4242"
+	batch := configstoreTables.ProviderObjectKindBatch
+	fullRow := configstoreTables.ProviderObjectID(batch, "vertex", vertexBatch)
+	bareRow := configstoreTables.ProviderObjectID(batch, "vertex", "4242")
+	otherRow := configstoreTables.ProviderObjectID(batch, "vertex", otherProjectBatch)
+
+	ctx := presentCtx(mcpTestVKValue)
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.Vertex}})
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{BatchCreateResponse: &schemas.BifrostBatchCreateResponse{ID: vertexBatch,
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.BatchCreateRequest, Provider: schemas.Vertex}}}, nil)
+	require.NoError(t, err)
+
+	rows, err := store.GetProviderObjectsByIDs(context.Background(), []string{fullRow, bareRow})
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "only the full name is recorded; a bare job number is not one project's to claim")
+	assert.Equal(t, vertexBatch, rows[0].ObjectID)
+	assert.Equal(t, "vk-mcp-stamp", rows[0].VirtualKeyID)
+
+	// Another project's job with the same number, created by another key, survives this key's
+	// delete. The delete is admitted by the full name, which is one project's; the provider then
+	// echoes the job number.
+	seedProviderObject(t, store, batch, "vertex", otherProjectBatch, "vk-someone-else")
+	ctx = presentCtx(mcpTestVKValue)
+	_, shortCircuit, err = plugin.PreLLMHook(ctx, resourceRequest(schemas.BatchDeleteRequest, schemas.Vertex, vertexBatch))
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{BatchDeleteResponse: &schemas.BifrostBatchDeleteResponse{ID: "4242",
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.BatchDeleteRequest, Provider: schemas.Vertex}}}, nil)
+	require.NoError(t, err)
+	rows, err = store.GetProviderObjectsByIDs(context.Background(), []string{fullRow, otherRow})
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "a delete by job number forgets the deleter's full name and nobody else's")
+	assert.Equal(t, otherProjectBatch, rows[0].ObjectID)
+}
+
+// A short form of a Google resource name is resolved against the full names on record, not only
+// against rows keyed by the short form itself: a cached content recorded as its full name before
+// short forms were understood, or a batch recorded by its create, is still another key's when
+// asked for as "9797" or "cachedContents/9797".
+func TestPreLLMHookResolvesShortResourceNamesThroughFullNameRows(t *testing.T) {
+	plugin, store := newResourceNameTestPlugin(t)
+	other := "vk-someone-else"
+	batch := configstoreTables.ProviderObjectKindBatch
+	cached := configstoreTables.ProviderObjectKindCachedContent
+	seedProviderObject(t, store, cached, "vertex", "projects/p-1/locations/us-central1/cachedContents/9797", other)
+	seedProviderObject(t, store, batch, "vertex", "projects/p-1/locations/us-central1/batchPredictionJobs/4242", other)
+	seedProviderObject(t, store, cached, "vertex", "projects/p-1/locations/us-central1/cachedContents/7777", "vk-mcp-stamp")
+
+	for _, tc := range []struct {
+		name string
+		req  *schemas.BifrostRequest
+		id   string
+	}{
+		{"cached content by bare id", resourceRequest(schemas.CachedContentRetrieveRequest, schemas.Vertex, "9797"), "9797"},
+		{"cached content by short name", resourceRequest(schemas.CachedContentRetrieveRequest, schemas.Vertex, "cachedContents/9797"), "cachedContents/9797"},
+		{"cached content delete by bare id", resourceRequest(schemas.CachedContentDeleteRequest, schemas.Vertex, "9797"), "9797"},
+		{"batch by job number", resourceRequest(schemas.BatchRetrieveRequest, schemas.Vertex, "4242"), "4242"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), tc.req)
+			require.NoError(t, err)
+			require.NotNil(t, shortCircuit, "another key's object is refused through its full-name row")
+			require.NotNil(t, shortCircuit.Error.StatusCode)
+			assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+			assert.Contains(t, shortCircuit.Error.Error.Message, "'"+tc.id+"'")
+		})
+	}
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), resourceRequest(schemas.CachedContentRetrieveRequest, schemas.Vertex, "7777"))
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "the creating key reaches its own cached content by the bare id")
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), resourceRequest(schemas.CachedContentRetrieveRequest, schemas.Vertex, "797"))
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "a bare id that is only a suffix of another is not that object")
+}
+
+// A bare Vertex id names one job per project and region, which governance cannot tell apart before
+// a key is chosen. When the full names on record for a job number belong to more than one virtual
+// key, the request is refused as ambiguous instead of guessing, and the caller is told to use the
+// full resource name; a list hides such an item. Full names are never ambiguous.
+func TestPreLLMHookRefusesAmbiguousShortResourceNames(t *testing.T) {
+	plugin, store := newResourceNameTestPlugin(t)
+	batch := configstoreTables.ProviderObjectKindBatch
+	const own = "projects/p-1/locations/us-central1/batchPredictionJobs/4242"
+	const theirs = "projects/p-2/locations/us-central1/batchPredictionJobs/4242"
+	seedProviderObject(t, store, batch, "vertex", own, "vk-mcp-stamp")
+	seedProviderObject(t, store, batch, "vertex", theirs, "vk-someone-else")
+
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), resourceRequest(schemas.BatchRetrieveRequest, schemas.Vertex, "4242"))
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "a job number recorded under two keys is refused")
+	require.NotNil(t, shortCircuit.Error.StatusCode)
+	assert.Equal(t, 400, *shortCircuit.Error.StatusCode)
+	assert.Contains(t, shortCircuit.Error.Error.Message, "'4242'")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "full resource name")
+
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), resourceRequest(schemas.BatchRetrieveRequest, schemas.Vertex, own))
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "the full name is one project's and reaches the key's own job")
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), resourceRequest(schemas.BatchRetrieveRequest, schemas.Vertex, theirs))
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit)
+	assert.Equal(t, 404, *shortCircuit.Error.StatusCode, "the other project's full name is another key's")
+
+	ctx := presentCtx(mcpTestVKValue)
+	_, shortCircuit, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.BatchListRequest, BatchListRequest: &schemas.BifrostBatchListRequest{Provider: schemas.Vertex}})
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	list := &schemas.BifrostResponse{BatchListResponse: &schemas.BifrostBatchListResponse{Data: []schemas.BifrostBatchRetrieveResponse{{ID: "4242"}, {ID: own}, {ID: "unrecorded"}},
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.BatchListRequest, Provider: schemas.Vertex}}}
+	_, _, err = plugin.PostLLMHook(ctx, list, nil)
+	require.NoError(t, err)
+	ids := make([]string, 0, 3)
+	for _, item := range list.BatchListResponse.Data {
+		ids = append(ids, item.ID)
+	}
+	assert.Equal(t, []string{own, "unrecorded"}, ids, "an ambiguous short id is hidden from the page; the full name and unbound items stay")
+}
+
+// A bare Vertex id can be answered by two sources: the full-name rows that end in it and an exact
+// job row under the bare id itself. When they name different keys the id is ambiguous, refused
+// with 400 and hidden from lists, whichever source answered first.
+func TestPreLLMHookRefusesABareIDWhoseSourcesDisagree(t *testing.T) {
+	plugin, store := newResourceNameTestPlugin(t)
+	batch := configstoreTables.ProviderObjectKindBatch
+	seedProviderObject(t, store, batch, "vertex", "projects/p-1/locations/us-central1/batchPredictionJobs/4242", "vk-mcp-stamp")
+	other := "vk-someone-else"
+	seedProviderJob(t, store, "vertex", "4242", &other)
+
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), resourceRequest(schemas.BatchRetrieveRequest, schemas.Vertex, "4242"))
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "a bare id whose full-name row and exact job row name different keys is refused")
+	require.NotNil(t, shortCircuit.Error.StatusCode)
+	assert.Equal(t, 400, *shortCircuit.Error.StatusCode)
+}
+
+// A bare Vertex number can match the deleting key's own jobs in two projects. Vertex deleted one of
+// them and echoes only the number, so which one is unknown: both bindings are kept rather than the
+// surviving job left unbound. With a single match, that one is forgotten.
+func TestPostLLMHookKeepsBindingsWhenABareDeleteIsAmbiguous(t *testing.T) {
+	plugin, store := newResourceNameTestPlugin(t)
+	batch := configstoreTables.ProviderObjectKindBatch
+	const p1 = "projects/p-1/locations/us-central1/batchPredictionJobs/4242"
+	const p2 = "projects/p-2/locations/us-central1/batchPredictionJobs/4242"
+	const single = "projects/p-1/locations/us-central1/batchPredictionJobs/5151"
+	for _, id := range []string{p1, p2, single} {
+		seedProviderObject(t, store, batch, "vertex", id, "vk-mcp-stamp")
+	}
+	deleteBare := func(id string) {
+		ctx := presentCtx(mcpTestVKValue)
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, resourceRequest(schemas.BatchDeleteRequest, schemas.Vertex, id))
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit, "the key's own jobs may be deleted")
+		_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{BatchDeleteResponse: &schemas.BifrostBatchDeleteResponse{ID: id,
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.BatchDeleteRequest, Provider: schemas.Vertex}}}, nil)
+		require.NoError(t, err)
+	}
+	rowIDs := func(ids ...string) []string {
+		out := make([]string, 0, len(ids))
+		for _, id := range ids {
+			out = append(out, configstoreTables.ProviderObjectID(batch, "vertex", id))
+		}
+		return out
+	}
+
+	deleteBare("4242")
+	rows, err := store.GetProviderObjectsByIDs(context.Background(), rowIDs(p1, p2))
+	require.NoError(t, err)
+	assert.Len(t, rows, 2, "neither binding is forgotten when the bare number matched two of the key's jobs")
+
+	deleteBare("5151")
+	rows, err = store.GetProviderObjectsByIDs(context.Background(), rowIDs(single))
+	require.NoError(t, err)
+	assert.Empty(t, rows, "a bare number that matched one job forgets it")
+}
+
+// A delete admitted through one provider name forgets the object's rows under every name that
+// reaches the same upstream, so a binding recorded through another alias does not linger.
+func TestPostLLMHookForgetsDeletedObjectsUnderEveryAlias(t *testing.T) {
+	store := newProviderObjectConfigStore(t)
+	vk := buildVKForMCPStamping(nil)
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("my-openai", []string{"*"}))
+	plugin := newAccessTestPlugin(t, vk, nil)
+	plugin.configStore = store
+	plugin.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {},
+		"my-openai":    {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}},
+	}}
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-aliased", "vk-mcp-stamp")
+
+	ctx := presentCtx(mcpTestVKValue)
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.FileDeleteRequest, FileDeleteRequest: &schemas.BifrostFileDeleteRequest{Provider: "my-openai", FileID: "file-aliased"}})
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{FileDeleteResponse: &schemas.BifrostFileDeleteResponse{ID: "file-aliased", Deleted: true,
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.FileDeleteRequest, Provider: "my-openai"}}}, nil)
+	require.NoError(t, err)
+	rows, err := store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindFile, "openai", "file-aliased")})
+	require.NoError(t, err)
+	assert.Empty(t, rows, "the binding recorded under openai is forgotten by a delete through my-openai")
+}
+
+// suffixCountingStore is the real store with the suffix lookups observed.
+type suffixCountingStore struct {
+	configstore.ConfigStore
+	objectSuffixes [][]string
+	jobSuffixes    [][]string
+}
+
+func (s *suffixCountingStore) GetProviderObjectsByObjectIDSuffixes(ctx context.Context, kind, provider string, suffixes []string) ([]*configstoreTables.TableProviderObject, error) {
+	s.objectSuffixes = append(s.objectSuffixes, append([]string(nil), suffixes...))
+	return s.ConfigStore.GetProviderObjectsByObjectIDSuffixes(ctx, kind, provider, suffixes)
+}
+
+func (s *suffixCountingStore) GetProviderJobsByJobIDSuffixes(ctx context.Context, kind, provider string, suffixes []string) ([]*configstoreTables.TableProviderJob, error) {
+	s.jobSuffixes = append(s.jobSuffixes, append([]string(nil), suffixes...))
+	return s.ConfigStore.GetProviderJobsByJobIDSuffixes(ctx, kind, provider, suffixes)
+}
+
+// A list page of Vertex batches resolves its short ids against the full names in one query, for
+// the ids the exact rows did not answer only: an id whose row was found is not scanned for again,
+// and the remaining ids are deduplicated into a single lookup.
+func TestProviderObjectOwnersScanSuffixesOnceForUnresolvedShortIDs(t *testing.T) {
+	plugin, real := newResourceNameTestPlugin(t)
+	store := &suffixCountingStore{ConfigStore: real}
+	plugin.configStore = store
+	batch := configstoreTables.ProviderObjectKindBatch
+	seedProviderObject(t, real, batch, "vertex", "4242", "vk-mcp-stamp")
+	seedProviderObject(t, real, batch, "vertex", "5151", "vk-mcp-stamp")
+
+	ctx := presentCtx(mcpTestVKValue)
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.BatchListRequest, BatchListRequest: &schemas.BifrostBatchListRequest{Provider: schemas.Vertex}})
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	list := &schemas.BifrostResponse{BatchListResponse: &schemas.BifrostBatchListResponse{Data: []schemas.BifrostBatchRetrieveResponse{{ID: "4242"}, {ID: "5151"}, {ID: "6161"}, {ID: "6161"}},
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.BatchListRequest, Provider: schemas.Vertex}}}
+	_, _, err = plugin.PostLLMHook(ctx, list, nil)
+	require.NoError(t, err)
+	assert.Len(t, list.BatchListResponse.Data, 4, "nothing on the page is another key's")
+	assert.Equal(t, [][]string{{"6161"}}, store.objectSuffixes, "one ownership suffix lookup, for the unresolved id only")
+	assert.Equal(t, [][]string{{"6161"}}, store.jobSuffixes, "one job suffix lookup, for the unresolved id only")
+}
+
+// BenchmarkPreLLMHookResourceNameLookup measures the governance pre-hook for batch requests that
+// address an object by a short form of its resource name, against a real SQLite config store: a
+// Gemini batch by its bare id, and a Vertex batch by its job number, which is resolved against
+// the full names on record.
+func BenchmarkPreLLMHookResourceNameLookup(b *testing.B) {
+	store, err := configstore.NewConfigStore(context.Background(), &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: b.TempDir() + "/bench.db"},
+	}, NewMockLogger())
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer store.Close(context.Background())
+	vk := buildVKForMCPStamping(nil)
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("gemini", []string{"*"}), buildProviderConfig("vertex", []string{"*"}))
+	plugin := newAccessTestPlugin(b, vk, nil)
+	plugin.configStore = store
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		id       string
+	}{
+		{"gemini_batch_bare_id", schemas.Gemini, "g-bench"},
+		{"vertex_batch_job_number", schemas.Vertex, "4242"},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				req := &schemas.BifrostRequest{RequestType: schemas.BatchRetrieveRequest, BatchRetrieveRequest: &schemas.BifrostBatchRetrieveRequest{Provider: tc.provider, BatchID: tc.id}}
+				if _, _, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req); err != nil {
 					b.Fatal(err)
 				}
 			}

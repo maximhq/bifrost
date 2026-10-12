@@ -1031,13 +1031,25 @@ type ConfigStore interface {
 	// GetProviderJobsByFileIDs returns the provider jobs on provider whose input,
 	// output or error file is one of fileIDs.
 	GetProviderJobsByFileIDs(ctx context.Context, provider string, fileIDs []string) ([]*tables.TableProviderJob, error)
+	// GetProviderJobsByJobIDSuffixes returns the provider jobs of kind on provider
+	// whose provider-side id ends in "/"+one of suffixes: full resource names
+	// addressed by their last segment.
+	GetProviderJobsByJobIDSuffixes(ctx context.Context, kind, provider string, suffixes []string) ([]*tables.TableProviderJob, error)
 
 	// Provider objects - which virtual key created a provider-side object
 	UpsertProviderObject(ctx context.Context, object *tables.TableProviderObject) error
 	// GetProviderObjectsByIDs returns the provider objects among the given stable
 	// ids that exist; ids with no row are simply absent from the result.
 	GetProviderObjectsByIDs(ctx context.Context, ids []string) ([]*tables.TableProviderObject, error)
+	// GetProviderObjectsByObjectIDSuffixes returns the provider objects of kind on
+	// provider whose provider-side id ends in "/"+one of suffixes: full resource
+	// names addressed by their last segment.
+	GetProviderObjectsByObjectIDSuffixes(ctx context.Context, kind, provider string, suffixes []string) ([]*tables.TableProviderObject, error)
 	DeleteProviderObject(ctx context.Context, id string) error
+	// DeleteProviderObjectsByObjectIDSuffix forgets the provider objects of kind on
+	// provider that virtualKeyID created and whose provider-side id ends in
+	// "/"+suffix: a full resource name addressed by its last segment.
+	DeleteProviderObjectsByObjectIDSuffix(ctx context.Context, kind, provider, suffix, virtualKeyID string) error
 
 	// Webhook Endpoints
 	GetWebhookEndpoints(ctx context.Context) ([]tables.TableWebhookEndpoint, error)

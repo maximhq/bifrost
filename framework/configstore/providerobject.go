@@ -3,6 +3,7 @@ package configstore
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm/clause"
@@ -38,6 +39,47 @@ func (s *RDBConfigStore) GetProviderObjectsByIDs(ctx context.Context, ids []stri
 	}
 	var objects []*tables.TableProviderObject
 	if err := s.DB().WithContext(ctx).Where("id IN ?", ids).Find(&objects).Error; err != nil {
+		return nil, err
+	}
+	return objects, nil
+}
+
+// DeleteProviderObjectsByObjectIDSuffix forgets the provider objects of kind on
+// provider that virtualKeyID created and whose provider-side id ends in "/"+suffix:
+// a full resource name such as "projects/<p>/locations/<l>/batchPredictionJobs/<n>"
+// that a delete named by its last segment alone. A job number is scoped to a project
+// and region, so another key's job of the same number in another project is not the
+// deleter's to forget. The suffix matches whole, at a path boundary, with LIKE
+// metacharacters taken literally.
+func (s *RDBConfigStore) DeleteProviderObjectsByObjectIDSuffix(ctx context.Context, kind, provider, suffix, virtualKeyID string) error {
+	if kind == "" || provider == "" || suffix == "" || virtualKeyID == "" {
+		return fmt.Errorf("provider object kind, provider, id suffix and virtual key id are required")
+	}
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(suffix)
+	return s.DB().WithContext(ctx).
+		Where(`kind = ? AND provider = ? AND virtual_key_id = ? AND object_id LIKE ? ESCAPE '\'`, kind, provider, virtualKeyID, "%/"+escaped).
+		Delete(&tables.TableProviderObject{}).Error
+}
+
+// GetProviderObjectsByObjectIDSuffixes returns the provider objects of kind on provider
+// whose provider-side id ends in "/"+one of suffixes, in no particular order: full
+// resource names such as "projects/<p>/locations/<l>/cachedContents/<n>" addressed by
+// their last segment alone. Each suffix matches whole, at a path boundary, with LIKE
+// metacharacters taken literally; empty suffixes are ignored.
+func (s *RDBConfigStore) GetProviderObjectsByObjectIDSuffixes(ctx context.Context, kind, provider string, suffixes []string) ([]*tables.TableProviderObject, error) {
+	patterns := suffixLikePatterns(suffixes)
+	if kind == "" || provider == "" || len(patterns) == 0 {
+		return nil, nil
+	}
+	suffixWhere := s.DB()
+	for _, pattern := range patterns {
+		suffixWhere = suffixWhere.Or(`object_id LIKE ? ESCAPE '\'`, pattern)
+	}
+	var objects []*tables.TableProviderObject
+	if err := s.DB().WithContext(ctx).
+		Where("kind = ? AND provider = ?", kind, provider).
+		Where(suffixWhere).
+		Find(&objects).Error; err != nil {
 		return nil, err
 	}
 	return objects, nil
