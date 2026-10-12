@@ -7,7 +7,10 @@
 #
 # Safe to run repeatedly, from cron or the systemd timer next to this script:
 # it obtains a certificate the first time, renews it only when due, and only
-# touches the installed files when the certificate actually changed.
+# touches the installed files when the certificate actually changed. Runs are
+# serialized by a lock, and each new pair is installed as a whole: tls.crt and
+# tls.key are links into a generation directory, switched by a single rename,
+# so the pair on disk always matches even if a run is interrupted.
 #
 #   bifrost-cert.sh install-lego            # optional: fetch a verified lego binary
 #   CF_DNS_API_TOKEN=... bifrost-cert.sh -d llm.example.com
@@ -29,7 +32,9 @@ Options:
   -d, --domain NAME     Domain to certify; repeat for more names (first is the
                         primary). [BIFROST_CERT_DOMAINS, comma-separated]
   -m, --email EMAIL     Optional contact address for the ACME account, which
-                        the CA may use for account and policy notices.
+                        the CA may use for account and policy notices. Keep it
+                        the same across runs: lego keys accounts by it, and a
+                        different account cannot renew the existing certificate.
                         [BIFROST_CERT_EMAIL]
       --dns PROVIDER    Solve DNS-01 with a lego DNS provider (default:
                         cloudflare). Works for hosts that are not reachable
@@ -157,13 +162,25 @@ primary="${domains[0]}"
 # replaced by an underscore.
 name="${primary/#\*/_}"
 
-args=(run --accept-tos --server "$server" --path "$state")
+# --force-cert-domains: a changed domain list gets a new certificate now rather
+# than at the next renewal.
+args=(run --accept-tos --force-cert-domains --server "$server" --path "$state")
 [ -n "$email" ] && args+=(--email "$email")
 for d in "${domains[@]}"; do args+=(--domains "$d"); done
 if [ -n "$dns" ]; then args+=(--dns "$dns"); else args+=(--http --http.address "$http"); fi
 
 umask 077
 install -d -m 0700 "$state"
+# One run at a time: a manual run overlapping the timer must not interleave
+# with it in lego's state or the install directory.
+if command -v flock >/dev/null 2>&1; then
+  exec 9> "$state/.bifrost-cert.lock"
+  flock -w 900 9 || die "another bifrost-cert run has held the lock for 15 minutes"
+else
+  mkdir "$state/.bifrost-cert.lock.d" 2>/dev/null \
+    || die "another bifrost-cert run is active (remove $state/.bifrost-cert.lock.d if it is not)"
+  trap 'rmdir "$state/.bifrost-cert.lock.d" 2>/dev/null' EXIT
+fi
 log "obtaining or renewing ${domains[*]} via ${dns:+DNS-01 ($dns)}${http:+HTTP-01 ($http)} from $server"
 "$lego" "${args[@]}" "${extra[@]+"${extra[@]}"}" || die "lego could not obtain or renew the certificate; the installed pair, if any, is unchanged"
 
@@ -175,27 +192,50 @@ key="$state/certificates/$name.key"
 pub_of_crt="$(openssl x509 -in "$crt" -noout -pubkey | openssl pkey -pubin -outform DER | sha256 | awk '{print $1}')"
 pub_of_key="$(openssl pkey -in "$key" -pubout -outform DER | sha256 | awk '{print $1}')"
 [ "$pub_of_crt" = "$pub_of_key" ] || die "the key does not match the certificate"
-sans="$(openssl x509 -in "$crt" -noout -ext subjectAltName 2>/dev/null)"
+# One "DNS:name" per line, compared whole, so llm.example.com is not taken as
+# covered by a certificate for llm.example.com.au.
+sans="$(openssl x509 -in "$crt" -noout -ext subjectAltName 2>/dev/null | tail -n +2 | tr ',' '\n' | sed 's/^[[:space:]]*//')"
 for d in "${domains[@]}"; do
-  grep -qF "DNS:$d" <<< "$sans" || die "the certificate does not cover $d"
+  grep -qxF "DNS:$d" <<< "$sans" || die "the certificate does not cover $d"
 done
 openssl x509 -in "$crt" -noout -checkend 86400 >/dev/null || die "the certificate expires within a day"
 
+# Replace link $2 with one pointing at $1, atomically (rename over the old link).
+swap_link() {
+  ln -sfn "$1" "$2.new.$$"
+  mv -T "$2.new.$$" "$2" 2>/dev/null || mv -fh "$2.new.$$" "$2"
+}
+# Owner and modes are reapplied on every run, so adding --owner later takes
+# effect without waiting for a new certificate.
+apply_owner() {
+  [ -n "$owner" ] || return 0
+  chown "$owner" "$1/tls.key" "$1/tls.crt"
+  chmod 0640 "$1/tls.key"
+}
+
 install -d -m 0755 "$out"
 if cmp -s "$crt" "$out/tls.crt" && cmp -s "$key" "$out/tls.key"; then
+  [ -L "$out/.live" ] && apply_owner "$out/.live"
   log "installed certificate is current (expires $(openssl x509 -in "$out/tls.crt" -noout -enddate | cut -d= -f2))"
   exit 0
 fi
 
-# Stage next to the targets so the renames are atomic, then swap the key first
-# and the certificate second: Bifrost keeps serving the old pair until the two
-# files match again.
-install -m 0600 "$key" "$out/.tls.key.new"
-install -m 0644 "$crt" "$out/.tls.crt.new"
-if [ -n "$owner" ]; then
-  chown "$owner" "$out/.tls.key.new" "$out/.tls.crt.new"
-  chmod 0640 "$out/.tls.key.new"
-fi
-mv -f "$out/.tls.key.new" "$out/tls.key"
-mv -f "$out/.tls.crt.new" "$out/tls.crt"
+# Write the new pair into its own generation directory, then switch the .live
+# link to it in one rename. tls.crt and tls.key are fixed links into .live, so
+# both files change at the same instant and Bifrost never sees a mixed pair.
+gen=".gen-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+install -d -m 0755 "$out/$gen"
+install -m 0600 "$key" "$out/$gen/tls.key"
+install -m 0644 "$crt" "$out/$gen/tls.crt"
+apply_owner "$out/$gen"
+swap_link "$gen" "$out/.live"
+# First run, or an install from before generations: turn the files into links.
+for f in tls.key tls.crt; do
+  [ "$(readlink "$out/$f" 2>/dev/null)" = ".live/$f" ] || swap_link ".live/$f" "$out/$f"
+done
+# Keep the live generation and the one before it, for recovery.
+current="$(readlink "$out/.live")"
+find "$out" -maxdepth 1 -name '.gen-*' -type d | sort -r | tail -n +3 | while read -r old; do
+  [ "$(basename "$old")" = "$current" ] || rm -rf "$old"
+done
 log "installed $out/tls.crt and $out/tls.key (expires $(openssl x509 -in "$out/tls.crt" -noout -enddate | cut -d= -f2)); Bifrost picks them up within a minute"

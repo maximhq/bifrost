@@ -25,6 +25,7 @@ sudo install -D -m 0600 cert.env.example /etc/bifrost/cert.env    # set domain a
 sudo install -m 0644 systemd/bifrost-cert.service systemd/bifrost-cert.timer /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl start bifrost-cert.service
 sudo systemctl enable --now bifrost-cert.timer
+# Keeps plain HTTP on the service's -port: firewall it, or serve HTTPS only (see the guide)
 sudo install -D -m 0644 systemd/bifrost-tls.conf /etc/systemd/system/bifrost.service.d/tls.conf
 sudo systemctl daemon-reload && sudo systemctl restart bifrost
 ```

@@ -19,7 +19,7 @@ spec:
           cloudflare:
             apiTokenSecretRef:
               # kubectl -n cert-manager create secret generic cloudflare-api-token \
-              #   --from-literal=api-token=<token with Zone > DNS > Edit>
+              #   --from-literal=api-token=<token with Zone > DNS > Edit and Zone > Zone > Read>
               name: cloudflare-api-token
               key: api-token
 ---
