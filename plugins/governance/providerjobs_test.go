@@ -1345,6 +1345,27 @@ func TestProviderObjectOwnersReadBatchRowsOnlyForUnrecordedFiles(t *testing.T) {
 	assert.NotContains(t, store.fileLookups[0], "file-own", "only the unrecorded file is looked up, under every form the provider accepts")
 }
 
+// A list page whose ids, across every form, outnumber the bind-parameter limit (a 10,000-item
+// file page under an openai provider that eight custom providers share reaches it) still has its
+// ownership read: another key's file is hidden and the lookup does not fail the page.
+func TestHiddenProviderObjectsReadsAPageOverTheBindParameterLimit(t *testing.T) {
+	plugin, store := newProviderJobTestPlugin(t)
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-other", "vk-someone-else")
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-own", "vk-mcp-stamp")
+	ids := make([]string, 0, 40002)
+	for i := range 40000 {
+		ids = append(ids, fmt.Sprintf("file-unrecorded-%05d", i))
+	}
+	ids = append(ids, "file-other", "file-own")
+
+	hidden, err := plugin.hiddenProviderObjects(presentCtx(mcpTestVKValue), configstoreTables.ProviderObjectKindFile, "openai", "vk-mcp-stamp", ids)
+	require.NoError(t, err)
+	require.NotNil(t, hidden)
+	assert.True(t, hidden("file-other"), "another key's file is hidden")
+	assert.False(t, hidden("file-own"))
+	assert.False(t, hidden("file-unrecorded-00001"), "an unrecorded file stays shared")
+}
+
 // A creator write that fails is tried once more before it is given up on and logged: the object
 // exists at the provider either way, and a bound object beats an unbound one.
 func TestPostLLMHookRetriesAFailedCreatorWriteOnce(t *testing.T) {
