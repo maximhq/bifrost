@@ -3405,6 +3405,42 @@ func TestToolResultToolReferenceSurvivesConversion(t *testing.T) {
 	assertToolReferenceRoundTrips(t, msgs)
 }
 
+// A client may put its cache breakpoint on the tool_reference itself when it is the
+// last block of the turn (ToolReferenceBlockParam accepts cache_control). Losing it
+// moves the breakpoint, so every following turn misses the cache.
+func TestToolResultToolReferenceKeepsCacheControl(t *testing.T) {
+	converters := map[string]func([]AnthropicContentBlock) []schemas.ResponsesMessage{
+		"grouped": func(blocks []AnthropicContentBlock) []schemas.ResponsesMessage {
+			role := schemas.ResponsesInputMessageRoleUser
+			return convertAnthropicContentBlocksToResponsesMessagesGrouped(blocks, &role, false)
+		},
+		"ordered": func(blocks []AnthropicContentBlock) []schemas.ResponsesMessage {
+			role := schemas.ResponsesInputMessageRoleUser
+			return convertAnthropicContentBlocksToResponsesMessages(nil, blocks, &role, false, "")
+		},
+	}
+	for name, convert := range converters {
+		t.Run(name, func(t *testing.T) {
+			blocks := toolResultWithToolReference()
+			blocks[0].Content.ContentBlocks[0].CacheControl = &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+
+			var back *AnthropicContentBlock
+			for _, msg := range convert(blocks) {
+				if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCallOutput {
+					back = convertBifrostFunctionCallOutputToAnthropicToolResultBlock(&msg)
+					break
+				}
+			}
+			if back == nil || back.Content == nil || len(back.Content.ContentBlocks) != 1 {
+				t.Fatalf("tool_result lost its content on the way back to Anthropic: %+v", back)
+			}
+			if cc := back.Content.ContentBlocks[0].CacheControl; cc == nil || cc.Type != schemas.CacheControlTypeEphemeral {
+				t.Fatalf("tool_reference lost its cache_control: got %+v", cc)
+			}
+		})
+	}
+}
+
 func toolResultWithText() []AnthropicContentBlock {
 	return []AnthropicContentBlock{
 		{

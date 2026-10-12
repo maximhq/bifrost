@@ -6642,8 +6642,9 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 							// the model never sees the tool it just loaded.
 							if contentBlock.ToolName != nil {
 								toolMsgContentBlocks = append(toolMsgContentBlocks, schemas.ResponsesMessageContentBlock{
-									Type:     schemas.ResponsesInputMessageContentBlockTypeToolReference,
-									ToolName: contentBlock.ToolName,
+									Type:         schemas.ResponsesInputMessageContentBlockTypeToolReference,
+									ToolName:     contentBlock.ToolName,
+									CacheControl: contentBlock.CacheControl,
 								})
 							}
 						}
@@ -7439,8 +7440,9 @@ func convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx *schemas.Bifros
 							// the model never sees the tool it just loaded.
 							if contentBlock.ToolName != nil {
 								toolMsgContentBlocks = append(toolMsgContentBlocks, schemas.ResponsesMessageContentBlock{
-									Type:     schemas.ResponsesInputMessageContentBlockTypeToolReference,
-									ToolName: contentBlock.ToolName,
+									Type:         schemas.ResponsesInputMessageContentBlockTypeToolReference,
+									ToolName:     contentBlock.ToolName,
+									CacheControl: contentBlock.CacheControl,
 								})
 							}
 						}
@@ -9903,8 +9905,9 @@ func convertContentBlockToAnthropicWithCaps(caps schemas.ModelCaps, block schema
 	case schemas.ResponsesInputMessageContentBlockTypeToolReference:
 		if block.ToolName != nil {
 			return &AnthropicContentBlock{
-				Type:     AnthropicContentBlockTypeToolReference,
-				ToolName: block.ToolName,
+				Type:         AnthropicContentBlockTypeToolReference,
+				ToolName:     block.ToolName,
+				CacheControl: block.CacheControl,
 			}
 		}
 	case schemas.ResponsesInputMessageContentBlockTypeContainer:
