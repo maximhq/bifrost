@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { cleanNumericInput, titleCaseFromSnakeCase, trimFields } from "./strings";
+import { cleanNumericInput, isSentinelValue, titleCaseFromSnakeCase, trimFields } from "./strings";
 
 // Simulate what onChange does: clean → Number()
 function simulateOnChange(raw: string): { display: string; value: number | undefined } {
@@ -237,5 +237,18 @@ describe("trimFields", () => {
 	test("returns the same object", () => {
 		const obj = { a: " x " };
 		expect(trimFields(obj, "a")).toBe(obj);
+	});
+});
+describe("isSentinelValue", () => {
+	test("matches double-underscore placeholders", () => {
+		expect(isSentinelValue("__none__")).toBe(true);
+		expect(isSentinelValue("__all__")).toBe(true);
+	});
+
+	test("leaves real values alone", () => {
+		expect(isSentinelValue("openai")).toBe(false);
+		expect(isSentinelValue("all")).toBe(false);
+		expect(isSentinelValue("____")).toBe(false);
+		expect(isSentinelValue("__none")).toBe(false);
 	});
 });
