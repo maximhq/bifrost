@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -52,10 +51,7 @@ func NewCloudflareProvider(config *schemas.ProviderConfig, logger schemas.Logger
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.cloudflare.com/client/v4"
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "https://api.cloudflare.com/client/v4")
 
 	return &CloudflareProvider{
 		logger:              logger,
@@ -82,7 +78,7 @@ func (provider *CloudflareProvider) accountURLOrError(key schemas.Key) (string, 
 	if bifrostErr != nil {
 		return "", bifrostErr
 	}
-	return provider.networkConfig.BaseURL + "/accounts/" + accountID, nil
+	return provider.networkConfig.BaseURL.GetValue() + "/accounts/" + accountID, nil
 }
 
 // listModelsByKey lists the models of a single key's Cloudflare account, reading every

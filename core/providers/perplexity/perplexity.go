@@ -326,7 +326,7 @@ func (provider *PerplexityProvider) Decision(ctx *schemas.BifrostContext, key sc
 	bifrostResponse, bifrostErr := typesafe.HandleTypesafeDecisionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, perplexityDecisionPath),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, perplexityDecisionPath),
 		request,
 		ToPerplexityDecisionRequest,
 		authHeaders,
