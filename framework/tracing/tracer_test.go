@@ -1297,3 +1297,127 @@ func TestTracer_SetTraceRequestHeadersRedactsVirtualKey(t *testing.T) {
 		t.Errorf("x-app = %q, want it preserved", got)
 	}
 }
+
+// A trace-level dashboard reads the root span, where a failure marked only on the
+// llm.call span leaves nothing but an HTTP status.
+func TestTracer_PopulateLLMResponseAttributesPropagatesErrorToRootSpan(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+
+	traceID := tracer.CreateTrace("")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+
+	// The HTTP span is created first so it becomes the root, making the llm.call
+	// span below a distinct child: the shape the transport produces.
+	_, rootHandle := tracer.StartSpan(ctx, "/v1/chat/completions", schemas.SpanKindHTTPRequest)
+	_, llmHandle := tracer.StartSpan(ctx, "chat gpt-4o-mini", schemas.SpanKindLLMCall)
+	tracer.SpanFromHandle(llmHandle).SetAttribute(schemas.AttrLegacyRequestType, string(schemas.ChatCompletionRequest))
+
+	status := 503
+	tracer.PopulateLLMResponseAttributes(ctx, llmHandle, nil, &schemas.BifrostError{
+		StatusCode: &status,
+		Error: &schemas.ErrorField{
+			Message: "upstream connect error",
+			Type:    schemas.Ptr("connection_error"),
+			Code:    schemas.Ptr("502"),
+		},
+	})
+
+	root := tracer.SpanFromHandle(rootHandle)
+	if root.SpanID == tracer.SpanFromHandle(llmHandle).SpanID {
+		t.Fatal("root and llm.call resolved to the same span, so this would pass without any propagation")
+	}
+	for key, want := range map[string]any{
+		schemas.AttrError:         "upstream connect error",
+		schemas.AttrErrorTypeSpec: "connection_error",
+		schemas.AttrErrorCode:     "502",
+	} {
+		if got, _ := root.GetAttribute(key); got != want {
+			t.Errorf("root span %s = %v, want %v", key, got, want)
+		}
+	}
+	if got, _ := root.GetAttribute(schemas.AttrBifrostErrorType); got != string(schemas.ErrorTypeProviderOverloaded) {
+		t.Errorf("root span %s = %v, want %q", schemas.AttrBifrostErrorType, got, schemas.ErrorTypeProviderOverloaded)
+	}
+	// Same failure, same classification on both spans.
+	llmType, _ := tracer.SpanFromHandle(llmHandle).GetAttribute(schemas.AttrBifrostErrorType)
+	rootType, _ := root.GetAttribute(schemas.AttrBifrostErrorType)
+	if llmType != rootType {
+		t.Errorf("llm.call and root disagree on %s: %v vs %v", schemas.AttrBifrostErrorType, llmType, rootType)
+	}
+}
+
+// A successful response must not leave error attributes on the root span.
+func TestTracer_PopulateLLMResponseAttributesLeavesRootSpanCleanOnSuccess(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+
+	traceID := tracer.CreateTrace("")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	_, rootHandle := tracer.StartSpan(ctx, "/v1/chat/completions", schemas.SpanKindHTTPRequest)
+	_, llmHandle := tracer.StartSpan(ctx, "chat gpt-4o-mini", schemas.SpanKindLLMCall)
+
+	tracer.PopulateLLMResponseAttributes(ctx, llmHandle, nil, nil)
+
+	root := tracer.SpanFromHandle(rootHandle)
+	for _, key := range []string{schemas.AttrError, schemas.AttrErrorTypeSpec, schemas.AttrBifrostErrorType} {
+		if got, ok := root.GetAttribute(key); ok {
+			t.Errorf("root span carries %s = %v on a successful response", key, got)
+		}
+	}
+}
+
+// The end-to-end TTFT must cover the whole client wait, not just the provider's
+// share, and must land on the root span where dashboards read it.
+func TestTracer_StampsTimeToFirstTokenFromRequestReceipt(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+
+	traceID := tracer.CreateTrace("")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	_, rootHandle := tracer.StartSpan(ctx, "/v1/chat/completions", schemas.SpanKindHTTPRequest)
+	_, llmHandle := tracer.StartSpan(ctx, "chat gpt-4o-mini", schemas.SpanKindLLMCall)
+
+	// Gateway work before stream setup, which time_to_first_chunk starts after.
+	gatewayWork := 25 * time.Millisecond
+	time.Sleep(gatewayWork)
+	tracer.StoreDeferredSpan(traceID, llmHandle)
+
+	tracer.AddStreamingChunk(traceID, &schemas.BifrostResponse{})
+
+	root := tracer.SpanFromHandle(rootHandle)
+	raw, ok := root.GetAttribute(schemas.AttrBifrostTimeToFirstTokenMs)
+	if !ok {
+		t.Fatalf("root span is missing %s", schemas.AttrBifrostTimeToFirstTokenMs)
+	}
+	ms, isFloat := raw.(float64)
+	if !isFloat {
+		t.Fatalf("%s = %T, want float64", schemas.AttrBifrostTimeToFirstTokenMs, raw)
+	}
+	// Must include the pre-dispatch wait, which is the whole point of the attribute.
+	if ms < float64(gatewayWork.Milliseconds()) {
+		t.Errorf("%s = %vms, want >= %vms: the gateway wait before stream setup was excluded",
+			schemas.AttrBifrostTimeToFirstTokenMs, ms, gatewayWork.Milliseconds())
+	}
+	// The llm.call span carries it too, next to time_to_first_chunk.
+	if _, ok := tracer.SpanFromHandle(llmHandle).GetAttribute(schemas.AttrBifrostTimeToFirstTokenMs); !ok {
+		t.Errorf("llm.call span is missing %s", schemas.AttrBifrostTimeToFirstTokenMs)
+	}
+
+	// Later chunks must not restamp it: TTFT is the first chunk, not the last.
+	before, _ := root.GetAttribute(schemas.AttrBifrostTimeToFirstTokenMs)
+	time.Sleep(10 * time.Millisecond)
+	tracer.AddStreamingChunk(traceID, &schemas.BifrostResponse{})
+	if after, _ := root.GetAttribute(schemas.AttrBifrostTimeToFirstTokenMs); after != before {
+		t.Errorf("%s moved from %v to %v on a later chunk", schemas.AttrBifrostTimeToFirstTokenMs, before, after)
+	}
+}
