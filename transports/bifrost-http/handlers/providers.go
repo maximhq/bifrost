@@ -441,9 +441,6 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	if requireGenuineAuthForInterception(ctx, configstore.ProviderConfig{}, config) {
 		return
 	}
-	if requireGenuineAuthForInterception(ctx, configstore.ProviderConfig{}, config) {
-		return
-	}
 	// Validate custom provider configuration before persisting
 	if err := lib.ValidateCustomProvider(config, payload.Provider); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid custom provider config: %v", err))

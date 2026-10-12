@@ -5121,12 +5121,6 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 	if bifrostResp.Status != nil && *bifrostResp.Status == schemas.ResponsesResponseStatusIncomplete {
 		schemas.MarkTruncatedOutputItem(bifrostResp.Output)
 	}
-	// Surface truncation/refusal per the Responses contract; without Status a
-	// max_tokens turn is indistinguishable from a complete one.
-	bifrostResp.Status, bifrostResp.IncompleteDetails = anthropicResponsesStatus(bifrostResp.StopReason)
-	if bifrostResp.Status != nil && *bifrostResp.Status == schemas.ResponsesResponseStatusIncomplete {
-		schemas.MarkTruncatedOutputItem(bifrostResp.Output)
-	}
 	bifrostResp.StopDetails = stopDetailsToBifrost(response.StopDetails)
 
 	if response.Usage != nil && response.Usage.ServiceTier != nil {
