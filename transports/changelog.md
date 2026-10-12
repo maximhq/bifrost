@@ -1,3 +1,4 @@
+[feat]: add migrate-offload maintenance command [@qixiangyang](https://github.com/qixiangyang)
 [fix]: apply saved log retention to the running cleaner without a restart (#8212) [@Constantine3](https://github.com/Constantine3)
 
 ## ✨ Features

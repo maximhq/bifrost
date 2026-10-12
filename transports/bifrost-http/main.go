@@ -66,6 +66,7 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/bifrost-http/offload"
 	"github.com/maximhq/bifrost/transports/bifrost-http/profiling"
 	bifrostServer "github.com/maximhq/bifrost/transports/bifrost-http/server"
 )
@@ -112,6 +113,12 @@ func init() {
 
 // main is the entry point of the application.
 func main() {
+	// Subcommand dispatch: `bifrost migrate-offload ...` runs the one-time
+	// backfill tool and exits; any other invocation starts the gateway.
+	if len(os.Args) > 1 && os.Args[1] == "migrate-offload" {
+		os.Exit(offload.RunMigrateOffload(os.Args[2:]))
+	}
+
 	// Parse command line flags
 	flag.Parse()
 
