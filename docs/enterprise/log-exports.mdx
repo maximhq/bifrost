@@ -238,7 +238,10 @@ already set, and honors both `object_storage_exclude_fields` and
 
 Run the dry-run first. For a live deployment, use an `--older-than` window that
 is safely beyond the maximum request/update lifetime, or pause writers while the
-backfill runs. Re-running the command is safe after interruption.
+backfill runs. An online update can leave `has_object` unset, so the backfill may
+still overwrite newer payload fields from its stale snapshot. If the upload
+succeeds but the row rewrite fails, an unreferenced object can remain in the
+bucket. Re-running the command is safe after interruption.
 
 ## Retention policy
 
