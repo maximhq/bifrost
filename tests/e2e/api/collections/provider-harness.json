@@ -261211,6 +261211,411 @@
           }
         }
       ]
+    },
+    {
+      "name": "226. MCP agent loop keeps earlier turns, the turn-1 route and caller cache points (mcp-agent-continuation)",
+      "description": "Requests that opt into the sse_mcp client (x-bf-mcp-include-clients) run Bifrost's MCP agent loop: the model calls the auto-executed echo tool, Bifrost runs it and sends a follow-up turn. Three regressions on that loop are pinned here.\n\n1. Earlier-turn content: the loop returned only the last turn's response, so text and thinking produced on the tool-calling turn were dropped (Claude's turn 2 is often empty) while usage still billed their tokens. The chat and responses cases require the reasoning of the tool-calling turn on the final response and no echo call handed back.\n\n2. Turn-1 route: each follow-up turn re-entered request handling and re-ran routing, re-stamping routing_info.requested_model with the already-rewritten model and sending the turn back to a primary that turn 1 had fallen back from (404). The requested-route and provider-only-fallback cases repeat the existing folder 128 / #7538 assertions with the agent loop engaged.\n\n3. #6180 cache points: anthropic_pc_* injection points and the auto marker were resolved after the gateway prepended the MCP server instructions as a system message, shifting every index and putting the auto marker on <mcp_server ...>. The two prompt-cache cases assert the instructions are on the wire but carry no marker, and the configured points resolve on the caller's transcript.",
+      "item": [
+        {
+          "name": "[EXPECT-200] anthropic claude-sonnet-4-6 chat mcp-agent-continuation: thinking from the tool-calling turn reaches the client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('the agent loop completes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "var choice = (body.choices || [])[0] || {};",
+                  "var message = choice.message || {};",
+                  "pm.test('the final message is not empty', function () {",
+                  "  var content = message.content;",
+                  "  var joined = typeof content === 'string' ? content : (content || []).map(function (b) { return b.text || ''; }).join('');",
+                  "  pm.expect(joined, 'content: ' + text).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "pm.test('the thinking turn 1 produced (and was billed for) is in the response', function () {",
+                  "  var reasoning = message.reasoning || message.reasoning_content || '';",
+                  "  var details = message.reasoning_details || [];",
+                  "  pm.expect(reasoning.length > 0 || details.length > 0, 'no reasoning on the final message: ' + text).to.equal(true);",
+                  "});",
+                  "pm.test('the auto-executed echo call is not handed back to the client', function () {",
+                  "  var calls = (message.tool_calls || []).filter(function (c) { return ((c.function || {}).name || '').indexOf('echo') !== -1; });",
+                  "  pm.expect(calls.length, 'tool_calls: ' + text).to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "sse_mcp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_tokens\": 2048,\n  \"reasoning\": {\n    \"max_tokens\": 1024\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call the echo tool exactly once with the message \\\"1706.03762\\\". After it returns, reply with one short sentence that includes 1706.03762.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude-sonnet-4-6 responses mcp-agent-continuation: reasoning item from the tool-calling turn reaches the client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('the agent loop completes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "var output = (pm.response.json() || {}).output || [];",
+                  "var types = output.map(function (o) { return o.type; });",
+                  "pm.test('a reasoning item comes before the answer', function () {",
+                  "  var r = types.indexOf('reasoning');",
+                  "  var m = types.lastIndexOf('message');",
+                  "  pm.expect(r, 'output types: ' + JSON.stringify(types) + ' body: ' + text).to.be.at.least(0);",
+                  "  pm.expect(m, 'output types: ' + JSON.stringify(types) + ' body: ' + text).to.be.above(r);",
+                  "});",
+                  "pm.test('the auto-executed echo call is not handed back to the client', function () {",
+                  "  var calls = output.filter(function (o) { return o.type === 'function_call' && (o.name || '').indexOf('echo') !== -1; });",
+                  "  pm.expect(calls.length, 'output: ' + text).to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "sse_mcp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_output_tokens\": 2048,\n  \"reasoning\": {\n    \"effort\": \"low\",\n    \"max_tokens\": 1024\n  },\n  \"input\": \"Call the echo tool exactly once with the message \\\"1706.03762\\\". After it returns, reply with one short sentence that includes 1706.03762.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai gpt-4o-mini requested-route mcp-agent-continuation: a tool turn keeps reporting the requested model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('the rewritten request is served across the tool turn', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('headers report the routed model and the model the caller sent', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model'), 'routed model header: ' + text).to.equal('gpt-4o-mini');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-model'), 'requested model header: ' + text).to.equal('harness-requested-route-alias');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-provider'), 'requested provider header: ' + text).to.equal('openai');",
+                  "});",
+                  "pm.test('routing_info carries the requested route next to the routed model', function () {",
+                  "  var ri = ((pm.response.json() || {}).extra_fields || {}).routing_info || {};",
+                  "  pm.expect(ri.model, 'routing_info.model: ' + text).to.eql('gpt-4o-mini');",
+                  "  pm.expect(ri.requested_model, 'routing_info.requested_model: ' + text).to.eql('harness-requested-route-alias');",
+                  "  pm.expect(pm.response.json().choices).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-requested-route",
+                "value": "rewrite"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "sse_mcp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/harness-requested-route-alias\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call the echo tool exactly once with the message \\\"1706.03762\\\". After it returns, reply with one short sentence that includes 1706.03762.\"\n    }\n  ],\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai gpt-4o-mini custom provider-only fallback mcp-agent-continuation: the tool turn stays on the serving fallback",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('the fallback serves every turn of the agent loop', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'is-fallback header: ' + text).to.equal('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'fallback-index header: ' + text).to.equal('1');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'routing provider header: ' + text).to.equal('openai_pc_auto');",
+                  "});",
+                  "pm.test('the provider-only fallback keeps the incoming model and answers', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model'), 'routing model header: ' + text).to.equal('gpt-4o-mini');",
+                  "  pm.expect(pm.response.json().choices).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-custom-fallback",
+                "value": "boot-provider-only"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "sse_mcp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call the echo tool exactly once with the message \\\"1706.03762\\\". After it returns, reply with one short sentence that includes 1706.03762.\"\n    }\n  ],\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] anthropic_pc_auto claude-sonnet-4-6 chat mcp-agent-continuation: the auto marker skips the gateway MCP instructions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('auto: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "var marked = [];",
+                  "if (rr) { JSON.stringify(rr, function (k, v) { if (v && typeof v === 'object' && v.cache_control) { marked.push(String(v.text || '')); } return v; }); }",
+                  "var markedStr = marked.join(' || ');",
+                  "pm.test('auto: raw_request captured and carries the gateway MCP instructions', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text).to.be.an('object');",
+                  "  pm.expect(rawStr, 'the sse_mcp opt-in injected no server instructions, so nothing is pinned: ' + rawStr.slice(0, 1200)).to.include('mcp_server');",
+                  "});",
+                  "pm.test('auto: no cache point lands on the gateway MCP instructions', function () {",
+                  "  pm.expect(markedStr, 'marked: ' + markedStr).to.not.include('mcp_server');",
+                  "});",
+                  "pm.test('auto: the single marker anchors the caller system prompt', function () {",
+                  "  pm.expect(marked.length, 'marked: ' + markedStr + ' raw_request: ' + rawStr.slice(0, 1200)).to.equal(1);",
+                  "  pm.expect(markedStr, 'marked: ' + markedStr).to.include('bf-mcp-pc caller-sys');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "sse_mcp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic_pc_auto/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-mcp-pc caller-sys] Answer in one word. Never call tools.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"[bf-mcp-pc caller-user] Is the sky blue?\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] anthropic_pc_edge claude-sonnet-4-6 chat mcp-agent-continuation: index points count the caller messages, not the gateway MCP instructions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('points: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rawStr = rr ? JSON.stringify(rr) : '';",
+                  "var marked = [];",
+                  "if (rr) { JSON.stringify(rr, function (k, v) { if (v && typeof v === 'object' && v.cache_control) { marked.push(String(v.text || '')); } return v; }); }",
+                  "var markedStr = marked.join(' || ');",
+                  "pm.test('points: raw_request captured and carries the gateway MCP instructions', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text).to.be.an('object');",
+                  "  pm.expect(rawStr, 'the sse_mcp opt-in injected no server instructions, so nothing is pinned: ' + rawStr.slice(0, 1200)).to.include('mcp_server');",
+                  "});",
+                  "pm.test('points: no cache point lands on the gateway MCP instructions', function () {",
+                  "  pm.expect(markedStr, 'marked: ' + markedStr).to.not.include('mcp_server');",
+                  "});",
+                  "pm.test('points: index -1 and role user + index 1 resolve on the caller transcript', function () {",
+                  "  pm.expect(markedStr, 'marked: ' + markedStr).to.include('ed-last');",
+                  "  pm.expect(markedStr, 'marked: ' + markedStr).to.include('ed-idx1-user');",
+                  "  pm.expect(marked.length, 'marked: ' + markedStr).to.equal(2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "sse_mcp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic_pc_edge/claude-sonnet-4-6\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"[bf-mcp-pc ed-sys] Answer in one word. Never call tools.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"[bf-mcp-pc ed-idx1-user] Hello.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Hi.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"[bf-mcp-pc ed-last] Is the sky blue?\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

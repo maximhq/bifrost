@@ -619,6 +619,9 @@ func (m *ToolsManager) addServerInstructionsToRequest(ctx *schemas.BifrostContex
 			Role:    schemas.ChatMessageRoleSystem,
 			Content: &schemas.ChatMessageContent{ContentStr: &instructions},
 		}}, req.ChatRequest.Input...)
+		// Recorded so prompt-cache placement can tell this message from the caller's and
+		// resolve its points against the caller's transcript (see promptCacheChatRequest).
+		ctx.SetValue(schemas.BifrostContextKeyMCPInstructionsText, &instructions)
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
 		if req.ResponsesRequest.Params == nil {
 			req.ResponsesRequest.Params = &schemas.ResponsesParameters{}
