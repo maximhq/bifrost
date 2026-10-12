@@ -1675,3 +1675,77 @@ func TestReplicateSystemPromptReadsDatasheet(t *testing.T) {
 		require.NotNil(t, result.Input.SystemPrompt, "the version suffix must be stripped before lookup")
 	})
 }
+
+// Client-side tool search (Claude Code's ToolSearch) answers with tool_reference blocks
+// inside the tool_result. Only Anthropic can expand them, and gpt-5-structured takes the
+// Responses input list as-is, so they must not reach Replicate: the text sibling stays,
+// and a reference-only output goes out like an output with no blocks.
+func TestToReplicateResponsesRequestDropsToolReferenceBlocks(t *testing.T) {
+	toolReference := schemas.ResponsesMessageContentBlock{
+		Type:     schemas.ResponsesInputMessageContentBlockTypeToolReference,
+		ToolName: schemas.Ptr("get_weather"),
+	}
+	build := func(t *testing.T, blocks []schemas.ResponsesMessageContentBlock) (*schemas.BifrostResponsesRequest, string) {
+		t.Helper()
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Replicate,
+			Model:    "openai/gpt-5-structured",
+			Input: []schemas.ResponsesMessage{{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("toolu_search"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: blocks},
+				},
+			}},
+		}
+		out, err := replicate.ToReplicateResponsesRequest(req)
+		require.NoError(t, err)
+		raw, err := schemas.MarshalSorted(out)
+		require.NoError(t, err)
+		return req, string(raw)
+	}
+
+	t.Run("text sibling kept", func(t *testing.T) {
+		text := schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Loaded 1 tool")}
+		req, raw := build(t, []schemas.ResponsesMessageContentBlock{text, toolReference})
+		assert.NotContains(t, raw, "tool_reference")
+		assert.Contains(t, raw, "Loaded 1 tool")
+		assert.Len(t, req.Input[0].ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks, 2, "the caller's request must not be mutated")
+	})
+
+	t.Run("reference only matches an output with no blocks", func(t *testing.T) {
+		_, got := build(t, []schemas.ResponsesMessageContentBlock{toolReference})
+		_, want := build(t, nil)
+		assert.Equal(t, want, got)
+	})
+}
+
+// BenchmarkToReplicateResponsesRequest measures a gpt-5-structured turn whose tool output
+// carries text only, the common case the tool_reference drop must leave allocation-free.
+func BenchmarkToReplicateResponsesRequest(b *testing.B) {
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Replicate,
+		Model:    "openai/gpt-5-structured",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("weather in Tokyo?")},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("toolu_1"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Sunny, 22C")},
+					}},
+				},
+			},
+		},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := replicate.ToReplicateResponsesRequest(req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

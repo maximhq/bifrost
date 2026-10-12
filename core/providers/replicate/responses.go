@@ -2,11 +2,44 @@ package replicate
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// responsesInputWithoutToolReferences drops the Anthropic tool_reference blocks (client-side
+// tool search) from function_call_output items. gpt-5-structured takes the Responses input
+// list as-is, so nothing else strips them before the wire, and only Anthropic can expand
+// them. The input is copied only when a reference is present; a reference-only output goes
+// back to the empty output it had before tool_reference was carried at all.
+func responsesInputWithoutToolReferences(msgs []schemas.ResponsesMessage) []schemas.ResponsesMessage {
+	var out []schemas.ResponsesMessage
+	for i := range msgs {
+		toolMsg := msgs[i].ResponsesToolMessage
+		if toolMsg == nil || toolMsg.Output == nil {
+			continue
+		}
+		blocks := toolMsg.Output.ResponsesFunctionToolCallOutputBlocks
+		kept := schemas.ResponsesBlocksWithoutToolReferences(blocks)
+		if len(kept) == len(blocks) {
+			continue
+		}
+		if out == nil {
+			out = slices.Clone(msgs)
+		}
+		outputCopy := *toolMsg.Output
+		outputCopy.ResponsesFunctionToolCallOutputBlocks = kept
+		toolMsgCopy := *toolMsg
+		toolMsgCopy.Output = &outputCopy
+		out[i].ResponsesToolMessage = &toolMsgCopy
+	}
+	if out == nil {
+		return msgs
+	}
+	return out
+}
 
 func ToReplicateResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*ReplicatePredictionRequest, error) {
 	if bifrostReq == nil {
@@ -18,7 +51,7 @@ func ToReplicateResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*
 	if strings.HasPrefix(bifrostReq.Model, "openai/") && strings.Contains(bifrostReq.Model, "gpt-5-structured") {
 		// handle responses style request
 		if len(bifrostReq.Input) > 0 {
-			input.InputItemList = bifrostReq.Input
+			input.InputItemList = responsesInputWithoutToolReferences(bifrostReq.Input)
 		}
 		if bifrostReq.Params != nil {
 			if bifrostReq.Params.Instructions != nil {
