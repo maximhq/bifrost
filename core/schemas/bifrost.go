@@ -734,10 +734,16 @@ type LargePayloadMetadata struct {
 //* Request Structs
 
 // Fallback represents a fallback model to be used if the primary model is not available.
+//
+// Inferred marks a fallback Bifrost added on its own (the model-catalog resolver promoting
+// every other provider that serves an unprefixed model), as opposed to one the caller or a
+// routing config named. It is never read from or written to the wire. See
+// Bifrost.shouldTryFallbacks for what it changes.
 type Fallback struct {
 	Provider ModelProvider `json:"provider"`
 	Model    string        `json:"model"`
 	KeyID    string        `json:"key_id,omitempty"` // pins a provider key for this attempt; empty means normal key selection
+	Inferred bool          `json:"-"`                // added by Bifrost, not named by the caller or a routing config
 }
 
 // BifrostRequest is the request struct for all bifrost requests.

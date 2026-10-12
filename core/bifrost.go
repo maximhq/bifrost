@@ -5544,7 +5544,17 @@ func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) sche
 // CORE INTERNAL LOGIC
 
 // shouldTryFallbacks handles the primary error and returns true if we should proceed with fallbacks, false if we should return immediately
-func (bifrost *Bifrost) shouldTryFallbacks(req *schemas.BifrostRequest, primaryErr *schemas.BifrostError) bool {
+//
+// A chain Bifrost inferred on its own (Fallback.Inferred, set by the model-catalog resolver
+// when it promotes every other provider serving a bare model) does not run after a primary
+// error classed as FailureClassCallerFault: a 400/409/413/415/422 with a provider error body,
+// or a 404 naming a request field. That error says the request itself is malformed, so the
+// caller gets it back instead of an answer from a provider nobody asked for. A model this
+// provider cannot reach (FailureClassModelAccess, e.g. 404 model_not_found), a rejected key,
+// a rate limit, a 5xx or a network failure still falls back, since another provider can
+// succeed. Chains the caller or a routing config named keep falling back on any error.
+// The extra cost is one bool load on the first fallback, and classification only on that path.
+func (bifrost *Bifrost) shouldTryFallbacks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, primaryErr *schemas.BifrostError) bool {
 	// If no primary error, we succeeded
 	if primaryErr == nil {
 		bifrost.logger.Debug("no primary error, we should not try fallbacks")
@@ -5568,6 +5578,14 @@ func (bifrost *Bifrost) shouldTryFallbacks(req *schemas.BifrostRequest, primaryE
 	_, _, fallbacks := req.GetRequestFields()
 	if len(fallbacks) == 0 {
 		bifrost.logger.Debug("no fallbacks configured, we should not try fallbacks")
+		return false
+	}
+
+	if fallbacks[0].Inferred && ClassifyFailure(primaryErr) == schemas.FailureClassCallerFault {
+		bifrost.logger.Debug("primary refused the request itself, not trying %d inferred fallbacks", len(fallbacks))
+		if ctx != nil {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Primary refused the request itself (%s); skipping %d model-catalog fallback(s) the caller did not name", routingErrorSummary(primaryErr), len(fallbacks)))
+		}
 		return false
 	}
 
@@ -5846,7 +5864,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	// Check if we should proceed with fallbacks
-	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)
+	shouldTryFallbacks := bifrost.shouldTryFallbacks(ctx, req, primaryErr)
 	if !shouldTryFallbacks {
 		if primaryErr == nil {
 			served = &schemas.Route{Provider: provider, Model: model}
@@ -6068,7 +6086,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	}
 
 	// Check if we should proceed with fallbacks
-	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)
+	shouldTryFallbacks := bifrost.shouldTryFallbacks(ctx, req, primaryErr)
 	if !shouldTryFallbacks {
 		if primaryErr == nil {
 			served = &schemas.Route{Provider: provider, Model: model}

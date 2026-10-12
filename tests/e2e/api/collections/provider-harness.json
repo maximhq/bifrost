@@ -197464,6 +197464,100 @@
           ]
         },
         {
+          "name": "157.2b [EXPECT-4XX] gemini-2.5-flash pinned to its provider keeps logprobs on the raw path, so Google rejects a value above the allowed range (response logprobs)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseLogprobs\": true,\n    \"logprobs\": 99,\n    \"maxOutputTokens\": 16,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-2.5-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Google rejects the out-of-range logprobs with a 4xx', function () { pm.expect(pm.response.code, 'want a 4xx from Google (a 200 means logprobs were stripped before the call): ' + pm.response.text().slice(0, 600)).to.be.within(400, 499); });",
+                  "pm.test('the rejection names logprobs', function () { pm.expect(pm.response.text(), 'rejection does not mention logprobs: ' + pm.response.text().slice(0, 600)).to.match(/logprob/i); });",
+                  "var served = pm.response.headers.get('X-Bifrost-Provider');",
+                  "pm.test('no other provider answered', function () { if (served) { pm.expect(served, 'served by another provider: ' + pm.response.text().slice(0, 400)).to.equal('gemini'); } });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "157.3b [PREVIEW] gemini-2.5-flash pinned to its provider keeps responseLogprobs on the raw path and returns logprobsResult (response logprobs)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseLogprobs\": true,\n    \"logprobs\": 3,\n    \"maxOutputTokens\": 16,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-2.5-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 600)).to.equal(200); });",
+                  "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "var cand = (j.candidates && j.candidates[0]) || {};",
+                  "pm.test('candidate carries logprobsResult with top candidates', function () { pm.expect(cand.logprobsResult, 'no logprobsResult (responseLogprobs stripped on the raw path?): ' + pm.response.text().slice(0, 600)).to.be.an('object'); pm.expect((cand.logprobsResult.topCandidates || []).length, pm.response.text().slice(0, 600)).to.be.above(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "157.4a [PREVIEW] azure batch create with inline requests returns a batch (azure batch create)",
           "request": {
             "method": "POST",

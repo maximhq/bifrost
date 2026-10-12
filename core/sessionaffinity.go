@@ -349,9 +349,11 @@ func (bifrost *Bifrost) resolveSessionRoute(ctx *schemas.BifrostContext, request
 	req.SetModel(resolved[0].Model)
 	// A demoted primary keeps its pin as a fallback pin, which the fallback loop re-applies
 	// after clearing the previous attempt's context; a promoted fallback brings its own.
+	// The session only reorders the chain the hooks produced, so a chain Bifrost inferred stays inferred.
+	inferred := len(fallbacks) > 0 && fallbacks[0].Inferred
 	next := make([]schemas.Fallback, 0, len(resolved)-1)
 	for _, route := range resolved[1:] {
-		next = append(next, schemas.Fallback{Provider: route.Provider, Model: route.Model, KeyID: route.KeyID})
+		next = append(next, schemas.Fallback{Provider: route.Provider, Model: route.Model, KeyID: route.KeyID, Inferred: inferred})
 	}
 	req.SetFallbacks(next)
 	if resolved[0].KeyID == primaryKeyPin {
