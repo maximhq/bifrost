@@ -254382,6 +254382,235 @@
           }
         }
       ]
+    },
+    {
+      "name": "211. Encrypted Reasoning Fail-Soft Clears Paired Item IDs (failsoft-paired-ids)",
+      "description": "Bifrost's encrypted-reasoning fail-soft (core/encryptedreasoning.go) strips the replayed reasoning after a 400 and retries once on the same key.\nIt used to keep every other item's id. The upstream ties a stored turn's fc_/msg_ ids to that turn's reasoning item, so the retry still\nfailed with 400 \"Item 'fc_..' of type 'function_call' was provided without its required 'reasoning' item\" (seen from Warp on\nopenai/gpt-5.6-luna, and from Azure keys load-balanced across resources). The strip now clears those ids and keeps call_id.\n\nThe first case mints a stored turn (store left at its default) and captures its function_call. The replay cases send that call by its\nid without its reasoning item, next to a synthetic reasoning payload the upstream cannot verify, which is what makes the strip fire.\nBefore the fix the retry carried the call id and got the 400 above; after it, the id is cleared and the turn completes.\n\nFIXTURE CONSTRAINT: the replay must omit the captured turn's own reasoning item. Replaying it lets the upstream pair the call, and the\ncase passes without the strip clearing anything. Leave tool_choice unset on turn 1: forcing the call makes the model skip\nthe reasoning item, so nothing pairs with the call.\n\nThe Anthropic cases pin the other side: Anthropic builds server_tool_use and mcp_tool_use ids from the item id, so a retry to any target\noutside OpenAI's Responses API keeps item ids. Their web_search_call carries a Claude-shaped srvtoolu_ id, since Anthropic rejects any\nother, and the synthetic reasoning item is what makes the strip fire. Before the gate the retry answered 400 \"server_tool_use.id: Field required\".",
+      "item": [
+        {
+          "name": "openai/gpt-5.4-mini /v1/responses turn 1 mints a stored tool call + capture - failsoft-paired-ids",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('turn 1 returns a reasoning item and the tool call it pairs with', function () {",
+                  "  pm.expect(pm.response.code, 'turn 1 failed: ' + pm.response.text()).to.equal(200);",
+                  "  var types = (pm.response.json().output || []).map(function (o) { return o.type; });",
+                  "  pm.expect(types, 'no reasoning item for the call to pair with: ' + JSON.stringify(types)).to.include('reasoning');",
+                  "  pm.expect(types, 'no function_call to replay: ' + JSON.stringify(types)).to.include('function_call');",
+                  "});",
+                  "pm.collectionVariables.unset('failsoftPairedIdsCall');",
+                  "pm.collectionVariables.unset('failsoftPairedIdsCallId');",
+                  "try {",
+                  "  var output = pm.response.json().output || [];",
+                  "  var fc = output.filter(function (o) { return o.type === 'function_call' && o.id; })[0];",
+                  "  var paired = output.some(function (o) { return o.type === 'reasoning'; });",
+                  "  if (fc && paired) {",
+                  "    pm.collectionVariables.set('failsoftPairedIdsCall', JSON.stringify({ type: 'function_call', id: fc.id, call_id: fc.call_id, name: fc.name, arguments: fc.arguments }));",
+                  "    pm.collectionVariables.set('failsoftPairedIdsCallId', fc.call_id);",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.4-mini\",\"input\":[{\"role\":\"user\",\"content\":\"Order D-4004 never arrived. Look it up with the tool.\"}],\"tools\":[{\"type\":\"function\",\"name\":\"lookup_order\",\"description\":\"Look up an order by id and return its status.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"order_id\":{\"type\":\"string\"}},\"required\":[\"order_id\"],\"additionalProperties\":false},\"strict\":true}],\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":1024}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.4-mini /v1/responses replayed stored tool call without its reasoning heals on the stripped retry - failsoft-paired-ids",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stripped retry drops the stored call id instead of replaying it unpaired', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the retry kept the call id whose reasoning item the strip dropped').to.not.include(\"required 'reasoning' item\");",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  pm.expect(pm.response.json().output, 'no output after the stripped retry').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.4-mini\",\"input\":[{\"role\":\"user\",\"content\":\"Order D-4004 never arrived. Look it up with the tool.\"},{{failsoftPairedIdsCall}},{\"type\":\"function_call_output\",\"call_id\":\"{{failsoftPairedIdsCallId}}\",\"output\":\"{\\\"status\\\":\\\"lost_in_transit\\\"}\"},{\"type\":\"reasoning\",\"id\":\"rs_bfharness0000000000000000000000000000000000201\",\"summary\":[],\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"},{\"type\":\"message\",\"id\":\"msg_bfharness201\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Order D-4004 is lost in transit.\"}]},{\"role\":\"user\",\"content\":\"What should I do next? Answer in one line.\"}],\"tools\":[{\"type\":\"function\",\"name\":\"lookup_order\",\"description\":\"Look up an order by id and return its status.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"order_id\":{\"type\":\"string\"}},\"required\":[\"order_id\"],\"additionalProperties\":false},\"strict\":true}],\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":512}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.4-mini /openai/v1/responses streaming replayed stored tool call without its reasoning heals on the stripped retry - failsoft-paired-ids",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streaming stripped retry drops the stored call id instead of replaying it unpaired', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the retry kept the call id whose reasoning item the strip dropped').to.not.include(\"required 'reasoning' item\");",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + body).to.equal(200);",
+                  "  pm.expect(body, 'stream never completed').to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.4-mini\",\"input\":[{\"role\":\"user\",\"content\":\"Order D-4004 never arrived. Look it up with the tool.\"},{{failsoftPairedIdsCall}},{\"type\":\"function_call_output\",\"call_id\":\"{{failsoftPairedIdsCallId}}\",\"output\":\"{\\\"status\\\":\\\"lost_in_transit\\\"}\"},{\"type\":\"reasoning\",\"id\":\"rs_bfharness0000000000000000000000000000000000201\",\"summary\":[],\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"},{\"type\":\"message\",\"id\":\"msg_bfharness201\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Order D-4004 is lost in transit.\"}]},{\"role\":\"user\",\"content\":\"What should I do next? Answer in one line.\"}],\"tools\":[{\"type\":\"function\",\"name\":\"lookup_order\",\"description\":\"Look up an order by id and return its status.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"order_id\":{\"type\":\"string\"}},\"required\":[\"order_id\"],\"additionalProperties\":false},\"strict\":true}],\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":512,\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/responses replayed web_search_call keeps its server_tool_use id on the stripped retry - failsoft-paired-ids",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stripped retry to Claude keeps the server_tool_use id', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the retry cleared the web_search_call id Anthropic builds server_tool_use from').to.not.include('server_tool_use.id');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  pm.expect(pm.response.json().output, 'no output after the stripped retry').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"input\":[{\"role\":\"user\",\"content\":\"Search the web for the capital of France.\"},{\"type\":\"reasoning\",\"id\":\"rs_bfharness0000000000000000000000000000000000202\",\"summary\":[],\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"},{\"type\":\"web_search_call\",\"id\":\"srvtoolu_01bfharness00000000000202\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"query\":\"capital of France\"}},{\"type\":\"message\",\"id\":\"msg_bfharness202\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"The capital of France is Paris.\"}]},{\"role\":\"user\",\"content\":\"Reply with just the word OK.\"}],\"reasoning\":{\"max_tokens\":1024},\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /openai/v1/responses streaming replayed web_search_call keeps its server_tool_use id on the stripped retry - failsoft-paired-ids",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streaming stripped retry to Claude keeps the server_tool_use id', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the retry cleared the web_search_call id Anthropic builds server_tool_use from').to.not.include('server_tool_use.id');",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + body).to.equal(200);",
+                  "  pm.expect(body, 'stream never completed').to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"input\":[{\"role\":\"user\",\"content\":\"Search the web for the capital of France.\"},{\"type\":\"reasoning\",\"id\":\"rs_bfharness0000000000000000000000000000000000202\",\"summary\":[],\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"},{\"type\":\"web_search_call\",\"id\":\"srvtoolu_01bfharness00000000000202\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"query\":\"capital of France\"}},{\"type\":\"message\",\"id\":\"msg_bfharness202\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"The capital of France is Paris.\"}]},{\"role\":\"user\",\"content\":\"Reply with just the word OK.\"}],\"reasoning\":{\"max_tokens\":1024},\"max_output_tokens\":256,\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
