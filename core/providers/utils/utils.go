@@ -21,6 +21,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -4372,6 +4373,71 @@ func SendStreamTruncatedError(
 
 	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 	ProcessAndSendBifrostError(ctx, postHookRunner, truncatedErr, responseChan, logger, postHookSpanFinalizer)
+}
+
+// SendStreamUndecodableChunkError surfaces a stream in which at least one SSE
+// chunk failed to decode. The chunk is dropped, so what the caller received is
+// missing whatever that frame carried - a text delta, a tool-call delta, or the
+// trailing usage frame - while every surrounding frame arrived intact.
+//
+// This is the sibling of SendStreamTruncatedError, and the two are deliberately
+// not interchangeable. Truncation is detected by the *absence* of a terminal
+// marker; a dropped chunk invalidates that test instead, because a [DONE] or a
+// finish_reason arriving either side of the hole makes the stream look complete.
+// Without this the caller gets a successful, clean, silently short stream: no
+// error, no metric, HTTP 200. Reusing ErrProviderStreamTruncated would also be
+// factually wrong, since the connection typically did not end mid-stream.
+//
+// cause is the decoder error for the first dropped chunk; carrying it through
+// keeps the offending frame's failure mode (e.g. a JSON syntax error at a given
+// byte offset) visible downstream instead of collapsing to a generic message.
+//
+// The error shape matches SendStreamTruncatedError for the same reason: a
+// retryable upstream connection failure (502, IsBifrostError=false) so that a
+// drop on the very first chunk still becomes a synchronous error that
+// executeRequestWithRetries can retry or fall back on, rather than breaking the
+// retry loop (see #4496).
+func SendStreamUndecodableChunkError(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	responseChan chan *schemas.BifrostStreamChunk,
+	logger schemas.Logger,
+	postHookSpanFinalizer func(context.Context),
+	jsonBody []byte,
+	cause error,
+) {
+	cause = undecodableChunkCause(cause)
+	if logger != nil {
+		logger.Warn("Stream contained an undecodable chunk; delivering the stream as incomplete: %v", cause)
+	}
+
+	undecodableErr := NewBifrostUpstreamConnectionError(schemas.ErrProviderStreamChunkUndecodable, cause)
+
+	if ShouldSendBackRawRequest(ctx, false) && len(jsonBody) > 0 {
+		undecodableErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
+	}
+
+	// Bill for tokens the provider already produced before the chunk was dropped.
+	attachBilledUsageFromContext(ctx, undecodableErr)
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	ProcessAndSendBifrostError(ctx, postHookRunner, undecodableErr, responseChan, logger, postHookSpanFinalizer)
+}
+
+// undecodableChunkCause keeps the decoder's position and reason but drops the
+// excerpt of the chunk that sonic appends after the first line (its syntax
+// errors are %q-quoted), so stream content does not reach the error returned to
+// the caller or the logs store.
+func undecodableChunkCause(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if unquoted, unquoteErr := strconv.Unquote(msg); unquoteErr == nil {
+		msg = unquoted
+	}
+	msg, _, _ = strings.Cut(msg, "\n")
+	return errors.New(strings.TrimSpace(msg))
 }
 
 // CreateBifrostTextCompletionChunkResponse creates a bifrost text completion chunk response.
