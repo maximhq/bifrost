@@ -78,7 +78,7 @@ type LLMSpanData struct {
 
 	// Request inputs that live on the request rather than its params.
 	TextPrompt     *TextCompletionInput
-	EmbeddingInput *EmbeddingInput
+	EmbeddingInput EmbeddingInput
 	SpeechInput    *SpeechInput
 
 	// ExtraParams, x-bf-dim-* dimensions, and cold-path families. Anything with

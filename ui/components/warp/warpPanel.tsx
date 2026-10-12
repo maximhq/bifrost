@@ -5,17 +5,19 @@ import { ScrollArea } from "@/components/ui/scrollArea";
 import { useWarpAutoScroll } from "@/components/warp/useWarpAutoScroll";
 import { useWarpStream } from "@/components/warp/useWarpStream";
 import WarpComposer from "@/components/warp/warpComposer";
+import { resolveWarpModel, warpModelForRequest, warpModelKey, warpModels } from "@/components/warp/warpComposer.utils";
 import WarpHistory from "@/components/warp/warpHistory";
 import { WarpMessage, WarpStreamingMessage } from "@/components/warp/warpMessage";
 import WarpQuestionCard from "@/components/warp/warpQuestion";
 import { indexStatusLabel, pendingWarpQuestion, shouldDrainQueue, turnsFromStoredMessages } from "@/components/warp/warpStream.utils";
-import { useWarp, type WarpTurn } from "@/lib/contexts/warpContext";
+import { useWarp } from "@/lib/contexts/warpContext";
 import { useGetWarpConfigQuery, useGetWarpLogIndexStatusQuery, useLazyGetWarpConversationQuery } from "@/lib/store/apis/warpApi";
 import type { WarpConversation } from "@/lib/types/warp";
 import { cn } from "@/lib/utils";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
-import { ArrowDown, Database, History, Loader2, SquarePen, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ArrowDown, Clock, Database, History, Loader2, SquarePen, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 const STARTERS = [
 	"What did I spend on each provider in the last 7 days?",
@@ -43,21 +45,17 @@ export default function WarpPanel() {
 		// Saving settings refetches config; without isFetching a stale `configured: false` shows "not set up".
 		isFetching: isConfigFetching,
 		isError: isConfigError,
-	} = useGetWarpConfigQuery();
+		refetch: refetchConfig,
+		// Refetched each time the dock opens, so models an administrator added or removed since show up.
+	} = useGetWarpConfigQuery(undefined, { refetchOnMountOrArgChange: true });
+	// Changing Warp's settings is Warp Update; everyone else gets the panel without the routes into them.
+	const canConfigure = useRbac(RbacResource.Warp, RbacOperation.Update);
 
 	// The launcher unmounts when the dock opens, so focus would otherwise fall back to the body.
 	const closeRef = useRef<HTMLButtonElement>(null);
 	useEffect(() => {
 		if (warp?.isOpen) closeRef.current?.focus();
 	}, [warp?.isOpen]);
-
-	const appendTurn = warp?.appendTurn;
-	const onTurnComplete = useCallback(
-		(turn: WarpTurn) => {
-			if (turn.content || turn.error) appendTurn?.(turn);
-		},
-		[appendTurn],
-	);
 
 	const {
 		streamingText,
@@ -71,7 +69,7 @@ export default function WarpPanel() {
 		discard,
 		resetConversation,
 		openConversation,
-	} = useWarpStream({ onTurnComplete });
+	} = useWarpStream();
 
 	const { containerRef, contentRef, isPinned, scrollToBottom } = useWarpAutoScroll();
 
@@ -80,6 +78,19 @@ export default function WarpPanel() {
 	const [loadConversation] = useLazyGetWarpConversationQuery();
 
 	const isConfigured = config?.configured ?? false;
+
+	const models = useMemo(() => warpModels(config), [config]);
+	const selectedModel = resolveWarpModel(models, warp?.selectedModelKey ?? null);
+	const requestModel = warpModelForRequest(models, selectedModel);
+	// A turn that named a model and failed may have named one an administrator
+	// just removed. Rereading the config drops the switcher back to what is
+	// still exposed, so the retry does not repeat the same refusal.
+	const sentModelRef = useRef(false);
+	useEffect(() => {
+		if (!error || !sentModelRef.current) return;
+		sentModelRef.current = false;
+		void refetchConfig();
+	}, [error, refetchConfig]);
 
 	const [indexPollMs, setIndexPollMs] = useState(30000);
 	const { data: indexStatus, isError: isIndexStatusError } = useGetWarpLogIndexStatusQuery(undefined, {
@@ -93,7 +104,9 @@ export default function WarpPanel() {
 	// A missing chip reads as "all fine", so a failed status request shows an explicit notice instead.
 	const indexStatusUnavailable = !indexChip && isIndexStatusError;
 
-	const [queue, setQueue] = useState<string[]>([]);
+	// Ids, not positions: removing or draining one must not remount, and so re-animate, the rest.
+	const [queue, setQueue] = useState<{ id: number; text: string }[]>([]);
+	const nextQueueId = useRef(0);
 	// Blocks the drain during a stored load, or a follow-up is filed under the thread being left.
 	const [isOpeningStored, setIsOpeningStored] = useState(false);
 	// ask closes over the transcript, so the drain effect reads it via a ref to avoid rerunning every render.
@@ -114,7 +127,7 @@ export default function WarpPanel() {
 		if (!drain) return;
 		const [next, ...rest] = queue;
 		setQueue(rest);
-		askRef.current?.(next);
+		askRef.current?.(next.text);
 	}, [isStreaming, queue, question, error, isOpeningStored]);
 
 	if (!warp) return null;
@@ -156,7 +169,8 @@ export default function WarpPanel() {
 		clearQuestion();
 		// Sending re-pins the transcript, or the new message lands off-screen.
 		scrollToBottom();
-		void send(history, text);
+		sentModelRef.current = !!requestModel;
+		void send(history, text, requestModel);
 	};
 	askRef.current = ask;
 
@@ -165,7 +179,7 @@ export default function WarpPanel() {
 		const [next, ...rest] = queue;
 		if (next === undefined) return;
 		setQueue(rest);
-		askRef.current?.(next);
+		askRef.current?.(next.text);
 	};
 
 	return (
@@ -238,7 +252,9 @@ export default function WarpPanel() {
 				</div>
 			</header>
 
-			{isConfigLoading || isConfigFetching ? (
+			{/* A refetch only replaces the view while the cached config says "not set up": that is the
+			    stale answer worth hiding. A configured Warp keeps its transcript and composer on screen. */}
+			{isConfigLoading || (isConfigFetching && !isConfigured) ? (
 				// An undefined config reads as unconfigured, so without this the setup prompt flashes on open.
 				<div className="flex min-h-0 flex-1 items-center justify-center px-6" data-testid="warp-config-loading">
 					<p className="text-muted-foreground text-xs">Loading Warp...</p>
@@ -270,12 +286,20 @@ export default function WarpPanel() {
 						<WarpIcon className="size-5" />
 					</span>
 					<p className="text-sm font-medium">{isDisabledButComplete ? "Warp is turned off" : "Warp isn't set up yet"}</p>
-					<p className="text-muted-foreground text-xs">
-						{isDisabledButComplete ? "Switch Enable Warp on to start asking questions." : "Choose a model for Warp to run on."}
-					</p>
-					<Button asChild size="sm" className="mt-1" data-testid="warp-configure-link">
-						<Link to="/workspace/config/warp">{isDisabledButComplete ? "Open Warp settings" : "Configure Warp"}</Link>
-					</Button>
+					{canConfigure ? (
+						<>
+							<p className="text-muted-foreground text-xs">
+								{isDisabledButComplete ? "Switch Enable Warp on to start asking questions." : "Choose a model for Warp to run on."}
+							</p>
+							<Button asChild size="sm" className="mt-1" data-testid="warp-configure-link">
+								<Link to="/workspace/config/warp">{isDisabledButComplete ? "Open Warp settings" : "Configure Warp"}</Link>
+							</Button>
+						</>
+					) : (
+						<p className="text-muted-foreground text-xs" data-testid="warp-ask-admin">
+							Ask an administrator to {isDisabledButComplete ? "turn Warp on" : "set Warp up"}.
+						</p>
+					)}
 				</div>
 			) : (
 				<div className="relative flex min-h-0 flex-1 flex-col">
@@ -311,24 +335,27 @@ export default function WarpPanel() {
 												Resume queued messages
 											</Button>
 										)}
-										<ul className="space-y-2" data-testid="warp-queued">
-											{queue.map((text, index) => (
-												<li
-													key={`${index}-${text}`}
-													className="flex items-start gap-2 rounded-md border border-dashed px-3 py-2 text-sm"
-													data-testid="warp-queued-item"
-												>
-													<span className="text-muted-foreground min-w-0 flex-1 whitespace-pre-wrap">{text}</span>
-													<span className="text-muted-foreground shrink-0 text-[10px] tracking-wide uppercase">Queued</span>
-													<button
-														type="button"
-														aria-label="Remove queued message"
-														data-testid="warp-queued-remove"
-														onClick={() => setQueue((current) => current.filter((_, position) => position !== index))}
-														className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer"
-													>
-														<X className="size-3" />
-													</button>
+										{/* Drawn as the message it will become, dimmed until it sends, with a status line under it like a chat app's. */}
+										<ul className="space-y-3" data-testid="warp-queued">
+											{queue.map((item, index) => (
+												<li key={item.id} className="warp-message-send space-y-1" data-testid="warp-queued-item">
+													<div className="bg-muted/20 text-muted-foreground rounded-md border px-3 py-2 text-sm break-words whitespace-pre-wrap">
+														{item.text}
+													</div>
+													<div className="text-muted-foreground flex items-center justify-end gap-1.5 text-[11px]">
+														<Clock aria-hidden="true" className="size-3 shrink-0" />
+														<span>{index === 0 && isStreaming ? "Sends when this answer finishes" : "Queued"}</span>
+														<span aria-hidden="true">·</span>
+														<button
+															type="button"
+															aria-label="Remove queued message"
+															data-testid="warp-queued-remove"
+															onClick={() => setQueue((current) => current.filter((queued) => queued.id !== item.id))}
+															className="hover:text-foreground cursor-pointer rounded-sm px-1 py-0.5 transition-colors"
+														>
+															Remove
+														</button>
+													</div>
 												</li>
 											))}
 										</ul>
@@ -337,24 +364,27 @@ export default function WarpPanel() {
 							</div>
 						</ScrollArea>
 
-						{!isPinned && (
-							<Button
-								type="button"
-								size="icon"
-								variant="secondary"
-								onClick={scrollToBottom}
-								aria-label="Jump to latest"
-								data-testid="warp-jump-to-latest"
-								// Measured offset: a pending question makes the controls taller than any fixed value.
-								style={{ bottom: controlsHeight + 16 }}
-								className="absolute left-1/2 size-7 -translate-x-1/2 rounded-full shadow-md"
-							>
-								<ArrowDown className="size-3.5" />
-							</Button>
-						)}
+						{/* Always mounted so it can scale out as well as in; invisible takes it out of the tab order and hit testing. */}
+						<Button
+							type="button"
+							size="icon"
+							variant="secondary"
+							onClick={scrollToBottom}
+							aria-label="Jump to latest"
+							aria-hidden={isPinned}
+							data-testid="warp-jump-to-latest"
+							// Measured offset: a pending question makes the controls taller than any fixed value.
+							style={{ bottom: controlsHeight + 16 }}
+							className={cn(
+								"absolute left-1/2 size-7 -translate-x-1/2 rounded-full shadow-md transition-[opacity,scale,visibility] duration-200 ease-out motion-reduce:transition-none",
+								isPinned && "invisible scale-75 opacity-0",
+							)}
+						>
+							<ArrowDown className="size-3.5" />
+						</Button>
 					</div>
 
-					<div className="absolute inset-x-0 bottom-0 bg-card" ref={setControlsNode}>
+					<div className="bg-card absolute inset-x-0 bottom-0" ref={setControlsNode}>
 						{question && !isStreaming && (
 							<div className="px-3 pt-3 pb-2">
 								<WarpQuestionCard
@@ -378,10 +408,12 @@ export default function WarpPanel() {
 									warp.clear();
 								}
 							}}
-							provider={config?.provider}
-							model={config?.model}
+							models={models}
+							selectedModel={selectedModel}
+							onSelectModel={(model) => warp.selectModel(warpModelKey(model))}
+							canConfigure={canConfigure}
 							onSend={ask}
-							onQueue={(text) => setQueue((current) => [...current, text])}
+							onQueue={(text) => setQueue((current) => [...current, { id: nextQueueId.current++, text }])}
 							// Stopping also drops queued follow-ups so they don't fire right after the cut.
 							onStop={() => {
 								setQueue([]);

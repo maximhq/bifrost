@@ -7,7 +7,11 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1047,3 +1051,373 @@ func (p *rawDemandStub) GetName() string                                  { retu
 func (p *rawDemandStub) Inject(_ context.Context, _ *schemas.Trace) error { return nil }
 func (p *rawDemandStub) Cleanup() error                                   { return nil }
 func (p *rawDemandStub) ConsumesRawPayloads() bool                        { return p.wants }
+
+// A failed request whose provider is set to ignore_provider_cost must not fall
+// back to the provider-reported BilledUsage.Cost when the catalog cannot price
+// the model: that figure is exactly what the operator chose to discard (e.g.
+// Cortecs credits read as dollars).
+func TestPopulateLLMResponseAttributes_ErrorPathHonorsIgnoreProviderCost(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		ignore   bool
+		wantCost bool
+	}{
+		{name: "provider cost trusted", ignore: false, wantCost: true},
+		{name: "provider cost ignored", ignore: true, wantCost: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog := modelcatalog.NewTestCatalog(nil)
+			catalog.SetIgnoreProviderCost("cortecs", tc.ignore)
+			tracer := NewTracer(NewTraceStore(time.Hour, nil), catalog, nil)
+
+			_, ctx := newHandleTestCtx(tracer)
+			_, handle := tracer.StartSpanID(ctx, "llm", schemas.SpanKindLLMCall)
+			span := tracer.SpanFromHandle(handle)
+			require.NotNil(t, span)
+			span.LLM = &schemas.LLMSpanData{RequestType: schemas.ChatCompletionRequest}
+
+			bifrostErr := &schemas.BifrostError{}
+			bifrostErr.ExtraFields.Provider = "cortecs"
+			bifrostErr.ExtraFields.OriginalModelRequested = "unpriced-model"
+			bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionRequest
+			bifrostErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{
+				PromptTokens: 100,
+				TotalTokens:  100,
+				Cost:         &schemas.BifrostCost{TotalCost: 1067},
+			}
+
+			tracer.PopulateLLMResponseAttributes(schemas.NewBifrostContext(ctx, time.Now()), handle, nil, bifrostErr)
+
+			got, ok := span.GetAttribute(schemas.AttrUsageCost)
+			if tc.wantCost {
+				require.True(t, ok, "trusted provider cost should be recorded")
+				require.Equal(t, 1067.0, got)
+			} else {
+				require.False(t, ok, "ignored provider cost leaked into the trace: %v", got)
+			}
+		})
+	}
+}
+
+// streamProviderCostChunks feeds a two-chunk chat stream for an uncatalogued model
+// whose final chunk reports usage.cost in the provider's own units, and returns the
+// accumulated result for the final chunk.
+func streamProviderCostChunks(t *testing.T, tracer *Tracer, ctx *schemas.BifrostContext) *schemas.StreamAccumulatorResult {
+	t.Helper()
+	traceID := "trace-stream-provider-cost"
+	tracer.GetAccumulator().CreateStreamAccumulator(traceID, time.Now())
+	t.Cleanup(func() { tracer.ForceCleanupStreamAccumulator(traceID) })
+
+	extra := schemas.BifrostResponseExtraFields{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		RoutingInfo: schemas.RoutingInfo{Provider: "cortecs", Model: "unpriced-model"},
+	}
+	content := "hi"
+	first := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{{ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+			Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &content},
+		}}},
+		ExtraFields: extra,
+	}}
+	tracer.ProcessStreamingChunk(ctx, traceID, false, first, nil)
+
+	extra.ChunkIndex = 1
+	last := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{
+			PromptTokens:     1000,
+			CompletionTokens: 500,
+			TotalTokens:      1500,
+			Cost:             &schemas.BifrostCost{TotalCost: 1067},
+		},
+		ExtraFields: extra,
+	}}
+	result := tracer.ProcessStreamingChunk(ctx, traceID, true, last, nil)
+	require.NotNil(t, result)
+	return result
+}
+
+// When the catalog cannot price a streamed model, the accumulated result falls back
+// to the provider's reported cost, unless the provider is configured with
+// ignore_provider_cost.
+func TestProcessStreamingChunk_HonorsIgnoreProviderCost(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		ignore   bool
+		wantCost bool
+	}{
+		{name: "provider cost trusted", ignore: false, wantCost: true},
+		{name: "provider cost ignored", ignore: true, wantCost: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog := modelcatalog.NewTestCatalog(nil)
+			catalog.SetIgnoreProviderCost("cortecs", tc.ignore)
+			tracer := NewTracer(NewTraceStore(time.Hour, nil), catalog, bifrost.NewNoOpLogger())
+
+			result := streamProviderCostChunks(t, tracer, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+
+			if tc.wantCost {
+				require.NotNil(t, result.Cost)
+				require.Equal(t, 1067.0, *result.Cost)
+			} else if result.Cost != nil {
+				require.Zero(t, *result.Cost, "ignored provider cost leaked into the accumulated stream cost")
+			}
+		})
+	}
+}
+
+// The accumulated stream cost must be priced with the same scopes as the request,
+// so a user-scoped pricing override applies to the streamed total just as it does
+// to the per-category breakdown the logging plugin computes from the real context.
+// The user comes from the request's grant; the deprecated context key still works
+// for contexts built without one.
+func TestProcessStreamingChunk_PricesWithRequestUserScope(t *testing.T) {
+	const userID = "user-stream-pricing"
+	for _, tc := range []struct {
+		name     string
+		identify func(ctx *schemas.BifrostContext)
+	}{
+		{
+			name: "grant identity",
+			identify: func(ctx *schemas.BifrostContext) {
+				g := grant.New()
+				g.SetIdentity(grant.NewIdentity(schemas.Credential{}, &schemas.UserRef{ID: userID}, nil, nil, nil, nil, nil))
+				require.True(t, ctx.SetGrant(g))
+			},
+		},
+		{
+			name: "deprecated user id key",
+			identify: func(ctx *schemas.BifrostContext) {
+				ctx.SetValue(schemas.BifrostContextKeyUserID, userID)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog := modelcatalog.NewTestCatalog(nil)
+			catalog.SetIgnoreProviderCost("cortecs", true)
+			uid := userID
+			require.NoError(t, catalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
+				ID:               "user-scoped-override",
+				ScopeKind:        "user",
+				UserID:           &uid,
+				MatchType:        "exact",
+				Pattern:          "unpriced-model",
+				RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest},
+				PricingPatchJSON: `{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002}`,
+			}}))
+			tracer := NewTracer(NewTraceStore(time.Hour, nil), catalog, bifrost.NewNoOpLogger())
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			tc.identify(ctx)
+			result := streamProviderCostChunks(t, tracer, ctx)
+
+			// 1000*0.000001 + 500*0.000002
+			require.NotNil(t, result.Cost)
+			require.InDelta(t, 0.002, *result.Cost, 1e-12)
+		})
+	}
+}
+
+// The streamed total is billed at the request's start time, not the moment the
+// stream finishes, so an off-peak request keeps its discount however late its
+// final chunk lands.
+func TestProcessStreamingChunk_PricesAtRequestStartTime(t *testing.T) {
+	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog.SetIgnoreProviderCost("cortecs", true)
+	providerID := "cortecs"
+	// Peak covers every day except the 6-hour gap from 00:00 to 06:00 UTC, so
+	// "now" is only off-peak during that gap.
+	require.NoError(t, catalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
+		ID:           "off-peak-override",
+		ScopeKind:    "provider",
+		ProviderID:   &providerID,
+		MatchType:    "exact",
+		Pattern:      "unpriced-model",
+		RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002,` +
+			`"off_peak_cost_multiplier":0.5,` +
+			`"peak_hours":{"timezone":"UTC","windows":[{"days":[0,1,2,3,4,5,6],"start":"06:00","end":"00:00"}]}}`,
+	}}))
+	tracer := NewTracer(NewTraceStore(time.Hour, nil), catalog, bifrost.NewNoOpLogger())
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	// 03:00 UTC is inside the off-peak gap.
+	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, time.Date(2026, 8, 17, 3, 0, 0, 0, time.UTC))
+	result := streamProviderCostChunks(t, tracer, ctx)
+
+	// (1000*0.000001 + 500*0.000002) * 0.5
+	require.NotNil(t, result.Cost)
+	require.InDelta(t, 0.001, *result.Cost, 1e-12)
+}
+
+// headerCapturingObservabilityPlugin opts into request-header capture with the given patterns.
+type headerCapturingObservabilityPlugin struct {
+	testRealtimeObservabilityPlugin
+	patterns []string
+}
+
+func (p *headerCapturingObservabilityPlugin) RequestHeaderPatterns() []string { return p.patterns }
+
+// TestTracer_SetTraceRequestHeadersRedactsVirtualKey pins the single capture point: under a
+// connector's "*" pattern the virtual key header is stored with its value redacted, so no
+// connector reading trace.RequestHeaders can export it, while neutral headers keep their value.
+func TestTracer_SetTraceRequestHeadersRedactsVirtualKey(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	plugin := &headerCapturingObservabilityPlugin{
+		testRealtimeObservabilityPlugin: testRealtimeObservabilityPlugin{injected: make(chan *schemas.Trace, 1)},
+		patterns:                        []string{"*"},
+	}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
+	if !tracer.ShouldCaptureRequestHeaders() {
+		t.Fatal("a '*' pattern must turn header capture on")
+	}
+
+	traceID := tracer.CreateTrace("")
+	tracer.SetTraceRequestHeaders(traceID, map[string]string{
+		"x-bf-vk":       "sk-bf-secret",
+		"authorization": "Bearer sk-bf-secret",
+		"x-app":         "cli",
+	})
+
+	trace := tracer.store.GetTrace(traceID)
+	if trace == nil {
+		t.Fatal("trace not found")
+	}
+	headers := trace.SnapshotForExport().RequestHeaders
+	if got := headers["x-bf-vk"]; got != schemas.RedactedAttrValue {
+		t.Errorf("x-bf-vk = %q, want %q", got, schemas.RedactedAttrValue)
+	}
+	if got := headers["authorization"]; got != schemas.RedactedAttrValue {
+		t.Errorf("authorization = %q, want %q", got, schemas.RedactedAttrValue)
+	}
+	if got := headers["x-app"]; got != "cli" {
+		t.Errorf("x-app = %q, want it preserved", got)
+	}
+}
+
+// A trace-level dashboard reads the root span, where a failure marked only on the
+// llm.call span leaves nothing but an HTTP status.
+func TestTracer_PopulateLLMResponseAttributesPropagatesErrorToRootSpan(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+
+	traceID := tracer.CreateTrace("")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+
+	// The HTTP span is created first so it becomes the root, making the llm.call
+	// span below a distinct child: the shape the transport produces.
+	_, rootHandle := tracer.StartSpan(ctx, "/v1/chat/completions", schemas.SpanKindHTTPRequest)
+	_, llmHandle := tracer.StartSpan(ctx, "chat gpt-4o-mini", schemas.SpanKindLLMCall)
+	tracer.SpanFromHandle(llmHandle).SetAttribute(schemas.AttrLegacyRequestType, string(schemas.ChatCompletionRequest))
+
+	status := 503
+	tracer.PopulateLLMResponseAttributes(ctx, llmHandle, nil, &schemas.BifrostError{
+		StatusCode: &status,
+		Error: &schemas.ErrorField{
+			Message: "upstream connect error",
+			Type:    schemas.Ptr("connection_error"),
+			Code:    schemas.Ptr("502"),
+		},
+	})
+
+	root := tracer.SpanFromHandle(rootHandle)
+	if root.SpanID == tracer.SpanFromHandle(llmHandle).SpanID {
+		t.Fatal("root and llm.call resolved to the same span, so this would pass without any propagation")
+	}
+	for key, want := range map[string]any{
+		schemas.AttrError:         "upstream connect error",
+		schemas.AttrErrorTypeSpec: "connection_error",
+		schemas.AttrErrorCode:     "502",
+	} {
+		if got, _ := root.GetAttribute(key); got != want {
+			t.Errorf("root span %s = %v, want %v", key, got, want)
+		}
+	}
+	if got, _ := root.GetAttribute(schemas.AttrBifrostErrorType); got != string(schemas.ErrorTypeProviderOverloaded) {
+		t.Errorf("root span %s = %v, want %q", schemas.AttrBifrostErrorType, got, schemas.ErrorTypeProviderOverloaded)
+	}
+	// Same failure, same classification on both spans.
+	llmType, _ := tracer.SpanFromHandle(llmHandle).GetAttribute(schemas.AttrBifrostErrorType)
+	rootType, _ := root.GetAttribute(schemas.AttrBifrostErrorType)
+	if llmType != rootType {
+		t.Errorf("llm.call and root disagree on %s: %v vs %v", schemas.AttrBifrostErrorType, llmType, rootType)
+	}
+}
+
+// A successful response must not leave error attributes on the root span.
+func TestTracer_PopulateLLMResponseAttributesLeavesRootSpanCleanOnSuccess(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+
+	traceID := tracer.CreateTrace("")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	_, rootHandle := tracer.StartSpan(ctx, "/v1/chat/completions", schemas.SpanKindHTTPRequest)
+	_, llmHandle := tracer.StartSpan(ctx, "chat gpt-4o-mini", schemas.SpanKindLLMCall)
+
+	tracer.PopulateLLMResponseAttributes(ctx, llmHandle, nil, nil)
+
+	root := tracer.SpanFromHandle(rootHandle)
+	for _, key := range []string{schemas.AttrError, schemas.AttrErrorTypeSpec, schemas.AttrBifrostErrorType} {
+		if got, ok := root.GetAttribute(key); ok {
+			t.Errorf("root span carries %s = %v on a successful response", key, got)
+		}
+	}
+}
+
+// The end-to-end TTFT must cover the whole client wait, not just the provider's
+// share, and must land on the root span where dashboards read it.
+func TestTracer_StampsTimeToFirstTokenFromRequestReceipt(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+
+	traceID := tracer.CreateTrace("")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	_, rootHandle := tracer.StartSpan(ctx, "/v1/chat/completions", schemas.SpanKindHTTPRequest)
+	_, llmHandle := tracer.StartSpan(ctx, "chat gpt-4o-mini", schemas.SpanKindLLMCall)
+
+	// Gateway work before stream setup, which time_to_first_chunk starts after.
+	gatewayWork := 25 * time.Millisecond
+	time.Sleep(gatewayWork)
+	tracer.StoreDeferredSpan(traceID, llmHandle)
+
+	tracer.AddStreamingChunk(traceID, &schemas.BifrostResponse{})
+
+	root := tracer.SpanFromHandle(rootHandle)
+	raw, ok := root.GetAttribute(schemas.AttrBifrostTimeToFirstTokenMs)
+	if !ok {
+		t.Fatalf("root span is missing %s", schemas.AttrBifrostTimeToFirstTokenMs)
+	}
+	ms, isFloat := raw.(float64)
+	if !isFloat {
+		t.Fatalf("%s = %T, want float64", schemas.AttrBifrostTimeToFirstTokenMs, raw)
+	}
+	// Must include the pre-dispatch wait, which is the whole point of the attribute.
+	if ms < float64(gatewayWork.Milliseconds()) {
+		t.Errorf("%s = %vms, want >= %vms: the gateway wait before stream setup was excluded",
+			schemas.AttrBifrostTimeToFirstTokenMs, ms, gatewayWork.Milliseconds())
+	}
+	// The llm.call span carries it too, next to time_to_first_chunk.
+	if _, ok := tracer.SpanFromHandle(llmHandle).GetAttribute(schemas.AttrBifrostTimeToFirstTokenMs); !ok {
+		t.Errorf("llm.call span is missing %s", schemas.AttrBifrostTimeToFirstTokenMs)
+	}
+
+	// Later chunks must not restamp it: TTFT is the first chunk, not the last.
+	before, _ := root.GetAttribute(schemas.AttrBifrostTimeToFirstTokenMs)
+	time.Sleep(10 * time.Millisecond)
+	tracer.AddStreamingChunk(traceID, &schemas.BifrostResponse{})
+	if after, _ := root.GetAttribute(schemas.AttrBifrostTimeToFirstTokenMs); after != before {
+		t.Errorf("%s moved from %v to %v on a later chunk", schemas.AttrBifrostTimeToFirstTokenMs, before, after)
+	}
+}

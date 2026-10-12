@@ -154,12 +154,17 @@ export interface MCPClientConfig {
 	// clients — pre-existing clients were backfilled to true). SSE and STDIO
 	// always behave as sticky regardless of this field.
 	needs_session_stickiness?: boolean;
+	// Server-set, read-only: true when the client was registered without an
+	// admin credential check, so every connection to it must resolve to a
+	// public address. Never cleared once set.
+	require_public_target?: boolean;
 	tool_pricing?: Record<string, number>;
 	// Per-client override (0 = use global). API returns NANOSECONDS
 	// (Go time.Duration), while updates send minutes — convert with
 	// toolSyncIntervalToMinutes before showing or resending this value.
 	tool_sync_interval?: number;
 	tool_execution_timeout?: string | number; // Per-client tool execution timeout; API returns string e.g. "30s", UI sends integer seconds (0 = use global)
+	max_instructions_length?: number; // Per-client cap on forwarded instructions in bytes (0 = use global)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 	allow_by_default?: boolean; // When true, available to every caller not assigned this server explicitly, with all tools allowed; an explicit assignment overrides this
 	disabled?: boolean; // When true, connection/workers are shut down; tools are unavailable until re-enabled
@@ -253,6 +258,8 @@ export interface CreateMCPClientRequest {
 	// Only meaningful when connection_type === "http". See MCPClientConfig's
 	// field doc for the full contract.
 	needs_session_stickiness?: boolean;
+	// Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
+	allowed_extra_headers?: string[];
 }
 
 export interface OAuthFlowResponse {
@@ -304,6 +311,7 @@ export interface UpdateMCPClientRequest {
 	tool_pricing?: Record<string, number>;
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global)
 	tool_execution_timeout?: number; // Per-client tool execution timeout in seconds (0 = use global)
+	max_instructions_length?: number; // Per-client cap on forwarded instructions in bytes (0 = use global)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 	allow_by_default?: boolean; // When true, available to every caller not assigned this server explicitly, with all tools allowed; an explicit assignment overrides this
 	disabled?: boolean; // Set to true to shut down connection/workers; false to reconnect

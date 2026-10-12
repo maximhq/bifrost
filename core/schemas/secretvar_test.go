@@ -3,6 +3,7 @@ package schemas
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -874,4 +875,70 @@ func TestSecretVar_RedactedIfSecret(t *testing.T) {
 			t.Errorf("original Val mutated to %q", e.Val)
 		}
 	})
+}
+
+// TestSecretVar_VertexAWSWorkloadIdentityRoundTrip pins the nested aws_workload_identity block:
+// env.-prefixed references resolve on unmarshal, plain identifiers stay literal, and marshaling
+// back keeps the field names the config schema and UI rely on.
+func TestSecretVar_VertexAWSWorkloadIdentityRoundTrip(t *testing.T) {
+	os.Setenv("TEST_WIF_ROLE_ARN", "arn:aws:iam::123456789012:role/VertexHop")
+	defer os.Unsetenv("TEST_WIF_ROLE_ARN")
+
+	jsonInput := `{
+		"project_id": "my-project",
+		"region": "us-central1",
+		"aws_workload_identity": {
+			"audience": "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/aws",
+			"service_account_email": "caller@my-project.iam.gserviceaccount.com",
+			"token_lifetime_seconds": 1800,
+			"aws_region": "us-east-1",
+			"aws_role_arn": "env.TEST_WIF_ROLE_ARN"
+		}
+	}`
+
+	var config VertexKeyConfig
+	if err := json.Unmarshal([]byte(jsonInput), &config); err != nil {
+		t.Fatalf("Failed to unmarshal: %v", err)
+	}
+	wi := config.AWSWorkloadIdentity
+	if !wi.IsSet() {
+		t.Fatal("expected aws_workload_identity to be set")
+	}
+	if got := wi.Audience.GetValue(); got != "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/aws" {
+		t.Errorf("unexpected audience %q", got)
+	}
+	if got := wi.ServiceAccountEmail.GetValue(); got != "caller@my-project.iam.gserviceaccount.com" {
+		t.Errorf("unexpected service_account_email %q", got)
+	}
+	if wi.TokenLifetimeSeconds != 1800 {
+		t.Errorf("unexpected token_lifetime_seconds %d", wi.TokenLifetimeSeconds)
+	}
+	if got := wi.AWSRegion.GetValue(); got != "us-east-1" {
+		t.Errorf("unexpected aws_region %q", got)
+	}
+	if got := wi.AWSRoleARN.GetValue(); got != "arn:aws:iam::123456789012:role/VertexHop" {
+		t.Errorf("expected aws_role_arn to resolve from env, got %q", got)
+	}
+	if !wi.AWSRoleARN.IsFromEnv() {
+		t.Error("expected aws_role_arn.IsFromEnv()=true")
+	}
+
+	out, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	for _, want := range []string{`"aws_workload_identity":{`, `"audience":`, `"service_account_email":`, `"token_lifetime_seconds":1800`, `"aws_region":`, `"aws_role_arn":`} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("marshaled config missing %s: %s", want, out)
+		}
+	}
+
+	// A key without the block must not emit it, so existing configs serialize byte-for-byte as before.
+	plain, err := json.Marshal(VertexKeyConfig{ProjectID: *NewSecretVar("p"), Region: *NewSecretVar("r")})
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	if strings.Contains(string(plain), "aws_workload_identity") {
+		t.Errorf("aws_workload_identity must be omitted when unset: %s", plain)
+	}
 }

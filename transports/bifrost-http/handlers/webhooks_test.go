@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/fasthttp/router"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -464,4 +465,111 @@ func TestWebhookHandlerHeaders(t *testing.T) {
 	reservedCtx := newWebhookRequestCtx(`{"name":"h2","url":"https://93.184.216.34/hook","events":["async_job.completed"],"headers":{"webhook-signature":"x"}}`, nil)
 	handler.createWebhookEndpoint(reservedCtx)
 	assert.Equal(t, fasthttp.StatusBadRequest, reservedCtx.Response.StatusCode())
+}
+
+// TestWebhookHandlerTestDeliveryRequiresAuthForPrivateEndpoints: a caller let
+// through because dashboard auth is unconfigured (BifrostContextKeyAuthBypassed)
+// cannot test-fire an endpoint registered with allow_private_network, since
+// the response reports the private receiver's status. The same caller may
+// still test a public endpoint, and an authenticated caller is unaffected
+// (TestWebhookHandlerTestDelivery).
+func TestWebhookHandlerTestDeliveryRequiresAuthForPrivateEndpoints(t *testing.T) {
+	handler, _ := newWebhookTestHandler(t)
+
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("private receiver must not be contacted for an unauthenticated test fire")
+	}))
+	defer receiver.Close()
+
+	body := fmt.Sprintf(`{"name":"private-fire","url":%q,"events":["async_job.completed"],"allow_private_network":true}`, receiver.URL)
+	createCtx := newWebhookRequestCtx(body, nil)
+	handler.createWebhookEndpoint(createCtx)
+	require.Equal(t, fasthttp.StatusCreated, createCtx.Response.StatusCode(), "body: %s", createCtx.Response.Body())
+	id := decodeJSONResponse(t, createCtx)["endpoint"].(map[string]any)["id"].(string)
+
+	testCtx := newWebhookRequestCtx("", map[string]string{"id": id})
+	testCtx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	handler.testWebhookEndpoint(testCtx)
+	require.Equal(t, fasthttp.StatusForbidden, testCtx.Response.StatusCode(), "body: %s", testCtx.Response.Body())
+	assert.NotContains(t, string(testCtx.Response.Body()), "receiver_status_code")
+
+	// A public endpoint is still testable without auth. The receiver is a
+	// blackholed TEST-NET-1 address with a one-second attempt budget, so the
+	// fire fails quickly, but it is not refused.
+	publicBody := `{"name":"public-fire","url":"https://192.0.2.1/hook","events":["async_job.completed"],"attempt_timeout_seconds":1}`
+	publicCreateCtx := newWebhookRequestCtx(publicBody, nil)
+	handler.createWebhookEndpoint(publicCreateCtx)
+	require.Equal(t, fasthttp.StatusCreated, publicCreateCtx.Response.StatusCode(), "body: %s", publicCreateCtx.Response.Body())
+	publicID := decodeJSONResponse(t, publicCreateCtx)["endpoint"].(map[string]any)["id"].(string)
+	publicCtx := newWebhookRequestCtx("", map[string]string{"id": publicID})
+	publicCtx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	handler.testWebhookEndpoint(publicCtx)
+	assert.Equal(t, fasthttp.StatusOK, publicCtx.Response.StatusCode(), "body: %s", publicCtx.Response.Body())
+}
+
+// TestWebhookHandlerPrivateEndpointRegistrationRequiresAuth: the same bypassed
+// caller cannot register or re-point an endpoint that allows private-network
+// delivery (create, update, redeliver), while public endpoints and edits that
+// keep a stored private URL stay open to it. An authenticated caller is
+// unaffected.
+func TestWebhookHandlerPrivateEndpointRegistrationRequiresAuth(t *testing.T) {
+	handler, config := newWebhookTestHandler(t)
+	bypassed := func(body string, params map[string]string) *fasthttp.RequestCtx {
+		ctx := newWebhookRequestCtx(body, params)
+		ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		return ctx
+	}
+	private := `{"name":"private","url":"http://127.0.0.1:9/hook","events":["async_job.completed"],"allow_private_network":true}`
+
+	// Create: refused for the bypassed caller, nothing persisted.
+	createCtx := bypassed(private, nil)
+	handler.createWebhookEndpoint(createCtx)
+	require.Equal(t, fasthttp.StatusForbidden, createCtx.Response.StatusCode(), "body: %s", createCtx.Response.Body())
+	_, exists := config.WebhookEndpointByName("private")
+	assert.False(t, exists)
+
+	// A public endpoint is still creatable without auth...
+	publicCtx := bypassed(`{"name":"public","url":"https://93.184.216.34/hook","events":["async_job.completed"]}`, nil)
+	handler.createWebhookEndpoint(publicCtx)
+	require.Equal(t, fasthttp.StatusCreated, publicCtx.Response.StatusCode(), "body: %s", publicCtx.Response.Body())
+	publicID := decodeJSONResponse(t, publicCtx)["endpoint"].(map[string]any)["id"].(string)
+
+	// ...but cannot be flipped to a private receiver on update.
+	flipCtx := bypassed(`{"name":"public","url":"http://10.0.0.5/hook","events":["async_job.completed"],"allow_private_network":true}`, map[string]string{"id": publicID})
+	handler.updateWebhookEndpoint(flipCtx)
+	require.Equal(t, fasthttp.StatusForbidden, flipCtx.Response.StatusCode(), "body: %s", flipCtx.Response.Body())
+	stored, ok := config.WebhookEndpointByID(publicID)
+	require.True(t, ok)
+	assert.False(t, stored.AllowPrivateNetwork)
+	assert.Equal(t, "https://93.184.216.34/hook", stored.URL)
+
+	// An authenticated admin registers the private endpoint as before.
+	adminCtx := newWebhookRequestCtx(private, nil)
+	handler.createWebhookEndpoint(adminCtx)
+	require.Equal(t, fasthttp.StatusCreated, adminCtx.Response.StatusCode(), "body: %s", adminCtx.Response.Body())
+	privateID := decodeJSONResponse(t, adminCtx)["endpoint"].(map[string]any)["id"].(string)
+
+	// The bypassed caller may still edit non-destination fields of that
+	// endpoint while it keeps the stored private URL...
+	keepCtx := bypassed(`{"name":"private","url":"http://127.0.0.1:9/hook","events":["async_job.failed"],"allow_private_network":true}`, map[string]string{"id": privateID})
+	handler.updateWebhookEndpoint(keepCtx)
+	require.Equal(t, fasthttp.StatusOK, keepCtx.Response.StatusCode(), "body: %s", keepCtx.Response.Body())
+
+	// ...but cannot re-point it at a different internal address.
+	moveCtx := bypassed(`{"name":"private","url":"http://127.0.0.1:9/other","events":["async_job.failed"],"allow_private_network":true}`, map[string]string{"id": privateID})
+	handler.updateWebhookEndpoint(moveCtx)
+	require.Equal(t, fasthttp.StatusForbidden, moveCtx.Response.StatusCode(), "body: %s", moveCtx.Response.Body())
+	stored, ok = config.WebhookEndpointByID(privateID)
+	require.True(t, ok)
+	assert.Equal(t, "http://127.0.0.1:9/hook", stored.URL)
+
+	// Redelivery to the private endpoint is refused for the bypassed caller
+	// and nothing is queued.
+	seedWebhookDelivery(t, config, "d-private", "wh-private", privateID, time.Now().UTC())
+	redeliverCtx := bypassed("", map[string]string{"id": "d-private"})
+	handler.redeliverWebhook(redeliverCtx)
+	require.Equal(t, fasthttp.StatusForbidden, redeliverCtx.Response.StatusCode(), "body: %s", redeliverCtx.Response.Body())
+	due, err := config.ConfigStore.ListDueWebhookJobs(context.Background(), 0)
+	require.NoError(t, err)
+	assert.Empty(t, due)
 }

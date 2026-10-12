@@ -150,10 +150,10 @@ Click **Add**.
 
 ---
 
-### Step 5: Configure API permissions (optional - bulk sync only)
+### Step 5: Configure API permissions (optional - bulk and background sync)
 
 <Note>
-  This step is only required if you plan to use **bulk user sync** (importing users via the User Provisioning page). For standard OIDC login, skip this step - role and team mappings are evaluated from the JWT at login time.
+  This step is only required if you plan to use **bulk user sync** (importing users via the User Provisioning page) or [background sync](#how-background-sync-works). For OIDC login alone, skip this step - role and team mappings are evaluated from the JWT at login time.
 </Note>
 
 <Steps>
@@ -380,9 +380,9 @@ Review your configuration on the final screen, then click **Enable**.
 
 ## How background sync works
 
-Bifrost uses the app credentials from this setup to sync users in the background every **24 hours**. During that sync, Bifrost reconciles imported users, role mappings, team mappings, and business-unit mappings from Entra.
+If you granted the API permissions in Step 5, Bifrost uses them to sync users in the background every **Directory sync interval** (default 24 hours). During that sync, Bifrost reconciles imported users, role mappings, team mappings, and business-unit mappings from Entra. Background sync is turned off while SCIM Provisioning is on, because your IdP pushes changes instead.
 
-Every **15 minutes**, Bifrost also refreshes active OIDC sessions. If a session cannot be refreshed, Bifrost checks with Entra whether the user is still active; if Entra reports the user as inactive, Bifrost decommissions that user locally.
+Bifrost also refreshes each OIDC session when it expires (sessions last at least 30 minutes). If a session cannot be refreshed, Bifrost checks with Entra whether the user is still active; if Entra reports the user as inactive, Bifrost decommissions that user locally.
 
 ---
 

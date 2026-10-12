@@ -112,7 +112,7 @@ AuditEvent:
       description: Unique identifier for this event (UUID).
     typeURI:
       type: string
-      description: Event type URI (e.g., "http://schemas.bifrost.io/audit/api/v1").
+      description: Event type URI (e.g., "https://getbifrost.ai/schemas/auditlog.json").
     eventType:
       $ref: '#/AuditEventType'
     eventTime:

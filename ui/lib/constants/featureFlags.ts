@@ -3,6 +3,6 @@
  * Go (transports/bifrost-http/lib/config.go, registerFeatureFlags).
  */
 export const FEATURE_FLAGS = {
-	/** Warp, the in-dashboard agent. Off by default. */
+	/** Warp, the in-dashboard agent. On by default in OSS, off in enterprise. */
 	warp: "warp",
 } as const;

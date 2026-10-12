@@ -178,6 +178,51 @@ func TestToChatMessages_AttachesReasoningToToolCallAssistantMessage(t *testing.T
 	}
 }
 
+func TestToChatMessages_MapsOutputTextInMultiPartAssistantMessage(t *testing.T) {
+	messages := []ResponsesMessage{
+		{
+			Role: Ptr(ResponsesInputMessageRoleUser),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("hi")},
+				},
+			},
+		},
+		{
+			Role: Ptr(ResponsesInputMessageRoleAssistant),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesOutputMessageContentTypeText, Text: Ptr("a")},
+					{Type: ResponsesOutputMessageContentTypeText, Text: Ptr("b")},
+				},
+			},
+		},
+	}
+
+	chatMessages := ToChatMessages(messages)
+	if len(chatMessages) != 2 {
+		t.Fatalf("expected 2 chat messages, got %d", len(chatMessages))
+	}
+
+	assistant := chatMessages[1]
+	if assistant.Content == nil || len(assistant.Content.ContentBlocks) != 2 {
+		t.Fatalf("expected 2 content blocks on the assistant turn, got %#v", assistant.Content)
+	}
+	for i, block := range assistant.Content.ContentBlocks {
+		// "output_text" is not a chat-completions content part: a block left with
+		// the Responses spelling is rejected downstream as an unknown variant.
+		if block.Type != ChatContentBlockTypeText {
+			t.Fatalf("block %d: expected type %q, got %q", i, ChatContentBlockTypeText, block.Type)
+		}
+	}
+	if assistant.Content.ContentBlocks[0].Text == nil || *assistant.Content.ContentBlocks[0].Text != "a" {
+		t.Fatalf("expected first block text %q, got %#v", "a", assistant.Content.ContentBlocks[0].Text)
+	}
+	if assistant.Content.ContentBlocks[1].Text == nil || *assistant.Content.ContentBlocks[1].Text != "b" {
+		t.Fatalf("expected second block text %q, got %#v", "b", assistant.Content.ContentBlocks[1].Text)
+	}
+}
+
 func TestToResponsesMessages_EmitsReasoningMessageBeforeToolCalls(t *testing.T) {
 	reasoning := "I should call Bash to list the directory."
 	cm := &ChatMessage{
@@ -1795,5 +1840,271 @@ func TestNormalizedUsageDerivesTotalWhenReportedZero(t *testing.T) {
 				t.Errorf("TotalTokens = %d, want %d", u.TotalTokens, tc.wantTotal)
 			}
 		})
+	}
+}
+
+// reasoning.type must survive the chat<->responses conversion used when a
+// provider only implements one of the two APIs.
+func TestReasoningTypeSurvivesChatResponsesConversion(t *testing.T) {
+	chat := &BifrostChatRequest{
+		Model:  "claude-sonnet-5-5",
+		Params: &ChatParameters{Reasoning: &ChatReasoning{Type: Ptr("between_tools")}},
+	}
+	responses := chat.ToResponsesRequest()
+	if responses.Params == nil || responses.Params.Reasoning == nil || responses.Params.Reasoning.Type == nil ||
+		*responses.Params.Reasoning.Type != "between_tools" {
+		t.Fatalf("chat->responses dropped reasoning.type: %+v", responses.Params)
+	}
+	back := responses.ToChatRequest()
+	if back.Params == nil || back.Params.Reasoning == nil || back.Params.Reasoning.Type == nil ||
+		*back.Params.Reasoning.Type != "between_tools" {
+		t.Fatalf("responses->chat dropped reasoning.type: %+v", back.Params)
+	}
+}
+
+// reasoning.mode must survive the chat<->responses conversion: a chat request that
+// sets it is served by the Responses API, and a mode-only reasoning object must not
+// be dropped by the "anything set?" guard.
+func TestReasoningModeSurvivesChatResponsesConversion(t *testing.T) {
+	chat := &BifrostChatRequest{
+		Model:  "gpt-6-luna",
+		Params: &ChatParameters{Reasoning: &ChatReasoning{Mode: Ptr("pro")}},
+	}
+	responses := chat.ToResponsesRequest()
+	if responses.Params == nil || responses.Params.Reasoning == nil || responses.Params.Reasoning.Mode == nil ||
+		*responses.Params.Reasoning.Mode != "pro" {
+		t.Fatalf("chat->responses dropped reasoning.mode: %+v", responses.Params)
+	}
+	back := responses.ToChatRequest()
+	if back.Params == nil || back.Params.Reasoning == nil || back.Params.Reasoning.Mode == nil ||
+		*back.Params.Reasoning.Mode != "pro" {
+		t.Fatalf("responses->chat dropped reasoning.mode: %+v", back.Params)
+	}
+}
+
+// TestGuardContentMarkerSurvivesChatResponsesMux: the Bedrock guard marker crosses the
+// chat <-> responses bridge in both directions, like cache_control does.
+func TestGuardContentMarkerSurvivesChatResponsesMux(t *testing.T) {
+	marker := &GuardContent{Qualifiers: []string{"query"}}
+	chat := ChatMessage{
+		Role: ChatMessageRoleUser,
+		Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{
+			{Type: ChatContentBlockTypeText, Text: Ptr("context")},
+			{Type: ChatContentBlockTypeText, Text: Ptr("question"), GuardContent: marker},
+		}},
+	}
+	responses := chat.ToResponsesMessages()
+	if len(responses) != 1 || responses[0].Content == nil || len(responses[0].Content.ContentBlocks) != 2 {
+		t.Fatalf("unexpected responses shape: %+v", responses)
+	}
+	if responses[0].Content.ContentBlocks[0].GuardContent != nil {
+		t.Error("unmarked block gained a guard marker")
+	}
+	if responses[0].Content.ContentBlocks[1].GuardContent != marker {
+		t.Fatal("guard marker dropped on chat -> responses")
+	}
+
+	back := ToChatMessages(responses)
+	if len(back) != 1 || back[0].Content == nil || len(back[0].Content.ContentBlocks) != 2 {
+		t.Fatalf("unexpected chat shape: %+v", back)
+	}
+	if back[0].Content.ContentBlocks[1].GuardContent != marker {
+		t.Fatal("guard marker dropped on responses -> chat")
+	}
+}
+
+// OpenAI pairs a reasoning item's id with its encrypted_content, and rejects a
+// replay whose id does not match the token. The chat shape must therefore carry
+// the id out on reasoning_details and hand the same id back when it is replayed.
+func TestReasoningItemIDSurvivesChatRoundTrip(t *testing.T) {
+	encrypted := "gAAAA-encrypted-token"
+	items := []ResponsesMessage{
+		{
+			ID:   Ptr("rs_openai_original"),
+			Type: Ptr(ResponsesMessageTypeReasoning),
+			ResponsesReasoning: &ResponsesReasoning{
+				Summary:          []ResponsesReasoningSummary{{Type: ResponsesReasoningContentBlockTypeSummaryText, Text: "thought about it"}},
+				EncryptedContent: &encrypted,
+			},
+		},
+		{
+			Role:    Ptr(ResponsesInputMessageRoleAssistant),
+			Content: &ResponsesMessageContent{ContentStr: Ptr("answer")},
+		},
+	}
+
+	chat := ToChatMessages(items)
+	var assistant *ChatMessage
+	for i := range chat {
+		if chat[i].Role == ChatMessageRoleAssistant && chat[i].ChatAssistantMessage != nil {
+			assistant = &chat[i]
+		}
+	}
+	if assistant == nil || len(assistant.ChatAssistantMessage.ReasoningDetails) == 0 {
+		t.Fatalf("expected reasoning_details on the assistant message, got %#v", chat)
+	}
+	for _, d := range assistant.ChatAssistantMessage.ReasoningDetails {
+		if d.ID == nil || *d.ID != "rs_openai_original" {
+			t.Fatalf("reasoning_details[%d] (%s) lost the reasoning item id: %#v", d.Index, d.Type, d.ID)
+		}
+	}
+
+	replayed := assistant.ToResponsesMessages()
+	if len(replayed) == 0 || replayed[0].Type == nil || *replayed[0].Type != ResponsesMessageTypeReasoning {
+		t.Fatalf("expected a reasoning item first, got %#v", replayed)
+	}
+	if replayed[0].ID == nil || *replayed[0].ID != "rs_openai_original" {
+		t.Fatalf("replay minted a new id instead of reusing the original: %#v", replayed[0].ID)
+	}
+
+	t.Run("no recorded id still mints a fresh rs_ id", func(t *testing.T) {
+		cm := &ChatMessage{
+			Role: ChatMessageRoleAssistant,
+			ChatAssistantMessage: &ChatAssistantMessage{
+				ReasoningDetails: []ChatReasoningDetails{{Index: 0, Type: BifrostReasoningDetailsTypeEncrypted, Data: &encrypted}},
+			},
+		}
+		out := cm.ToResponsesMessages()
+		if len(out) == 0 || out[0].ID == nil || !strings.HasPrefix(*out[0].ID, "rs_") || len(*out[0].ID) <= len("rs_") {
+			t.Fatalf("expected a freshly minted rs_ id, got %#v", out)
+		}
+	})
+
+	t.Run("the encrypted detail's id wins when several reasoning items merge", func(t *testing.T) {
+		cm := &ChatMessage{
+			Role: ChatMessageRoleAssistant,
+			ChatAssistantMessage: &ChatAssistantMessage{
+				ReasoningDetails: []ChatReasoningDetails{
+					{ID: Ptr("rs_summary_only"), Index: 0, Type: BifrostReasoningDetailsTypeSummary, Summary: Ptr("s")},
+					{ID: Ptr("rs_with_token"), Index: 1, Type: BifrostReasoningDetailsTypeEncrypted, Data: &encrypted},
+				},
+			},
+		}
+		out := cm.ToResponsesMessages()
+		if len(out) == 0 || out[0].ID == nil || *out[0].ID != "rs_with_token" {
+			t.Fatalf("expected the id paired with the encrypted token, got %#v", out[0].ID)
+		}
+	})
+}
+
+// The id sent with a reasoning item must be the one its encrypted token was issued with. When the
+// token's own detail carries no id, borrowing another detail's id would pair the token with an id it
+// was never issued with (OpenAI rejects that), so a fresh id is minted instead.
+func TestReasoningIDIsTakenFromTheEncryptedDetailThatIsEmitted(t *testing.T) {
+	tokenA, tokenB := "token-A", "token-B"
+	replay := func(details ...ChatReasoningDetails) ResponsesMessage {
+		t.Helper()
+		out := (&ChatMessage{Role: ChatMessageRoleAssistant, ChatAssistantMessage: &ChatAssistantMessage{ReasoningDetails: details}}).ToResponsesMessages()
+		if len(out) == 0 || out[0].Type == nil || *out[0].Type != ResponsesMessageTypeReasoning {
+			t.Fatalf("expected a reasoning item first, got %#v", out)
+		}
+		return out[0]
+	}
+
+	t.Run("an encrypted detail without an id does not borrow a neighbour's id", func(t *testing.T) {
+		item := replay(
+			ChatReasoningDetails{ID: Ptr("rs_summary_only"), Index: 0, Type: BifrostReasoningDetailsTypeSummary, Summary: Ptr("s")},
+			ChatReasoningDetails{Index: 1, Type: BifrostReasoningDetailsTypeEncrypted, Data: &tokenA},
+		)
+		if item.ResponsesReasoning == nil || item.ResponsesReasoning.EncryptedContent == nil || *item.ResponsesReasoning.EncryptedContent != tokenA {
+			t.Fatalf("the encrypted token must still be replayed, got %#v", item.ResponsesReasoning)
+		}
+		if item.ID == nil || *item.ID == "rs_summary_only" {
+			t.Fatalf("the token was paired with an unrelated id: %#v", item.ID)
+		}
+		if !strings.HasPrefix(*item.ID, "rs_") || len(*item.ID) <= len("rs_") {
+			t.Fatalf("expected a freshly minted rs_ id, got %q", *item.ID)
+		}
+	})
+
+	t.Run("with two encrypted details the one whose token is emitted decides the id", func(t *testing.T) {
+		item := replay(
+			ChatReasoningDetails{ID: Ptr("rs_a"), Index: 0, Type: BifrostReasoningDetailsTypeEncrypted, Data: &tokenA},
+			ChatReasoningDetails{ID: Ptr("rs_b"), Index: 1, Type: BifrostReasoningDetailsTypeEncrypted, Data: &tokenB},
+		)
+		if item.ResponsesReasoning == nil || item.ResponsesReasoning.EncryptedContent == nil || *item.ResponsesReasoning.EncryptedContent != tokenB {
+			t.Fatalf("expected the last token to be emitted, got %#v", item.ResponsesReasoning)
+		}
+		if item.ID == nil || *item.ID != "rs_b" {
+			t.Fatalf("expected the id paired with the emitted token (rs_b), got %#v", item.ID)
+		}
+	})
+
+	t.Run("with no token to pair, the first recorded id is kept", func(t *testing.T) {
+		item := replay(
+			ChatReasoningDetails{ID: Ptr("rs_summary_only"), Index: 0, Type: BifrostReasoningDetailsTypeSummary, Summary: Ptr("s")},
+			ChatReasoningDetails{ID: Ptr("rs_later"), Index: 1, Type: BifrostReasoningDetailsTypeSummary, Summary: Ptr("t")},
+		)
+		if item.ID == nil || *item.ID != "rs_summary_only" {
+			t.Fatalf("expected the first recorded id, got %#v", item.ID)
+		}
+	})
+}
+
+// reasoning.summary sent on a chat request must reach the Responses request the
+// mux builds, including when it is the only reasoning field set.
+func TestReasoningSummarySurvivesChatResponsesConversion(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"reasoning":{"summary":"auto"}}`:                     "auto",
+		`{"reasoning":{"effort":"high","summary":"detailed"}}`: "detailed",
+	} {
+		var params ChatParameters
+		if err := Unmarshal([]byte(body), &params); err != nil {
+			t.Fatalf("decode %s: %v", body, err)
+		}
+		chat := &BifrostChatRequest{Model: "gpt-6-astra", Params: &params}
+		responses := chat.ToResponsesRequest()
+		if responses.Params == nil || responses.Params.Reasoning == nil || responses.Params.Reasoning.Summary == nil {
+			t.Fatalf("%s: chat->responses dropped reasoning.summary: %+v", body, responses.Params)
+		}
+		if *responses.Params.Reasoning.Summary != want {
+			t.Fatalf("%s: summary = %q, want %q", body, *responses.Params.Reasoning.Summary, want)
+		}
+		back := responses.ToChatRequest().ToResponsesRequest()
+		if back.Params == nil || back.Params.Reasoning == nil || back.Params.Reasoning.Summary == nil ||
+			*back.Params.Reasoning.Summary != want {
+			t.Fatalf("%s: responses->chat dropped reasoning.summary: %+v", body, back.Params)
+		}
+	}
+}
+
+// TestToChatMessages_DropsToolChangeBlocks: Responses-to-Chat is the fallback that
+// OpenAI-compatible providers (Groq, Nebius, ...) take. Chat has no tool_addition /
+// tool_removal content part, so the blocks are dropped: text siblings stay, a system message
+// left with nothing is skipped rather than sent as an empty content array.
+func TestToChatMessages_DropsToolChangeBlocks(t *testing.T) {
+	removal := &ResponsesToolChangeTarget{Type: ResponsesToolChangeTargetTypeToolReference, Name: Ptr("get_weather")}
+	chat := ToChatMessages([]ResponsesMessage{
+		{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("What's the weather in Paris?")}},
+		{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+			{Type: ResponsesInputMessageContentBlockTypeToolRemoval, ToolChange: removal},
+			{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("Weather lookups are disabled.")},
+		}}},
+		{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+			{Type: ResponsesInputMessageContentBlockTypeToolRemoval, ToolChange: removal},
+		}}},
+	})
+	if len(chat) != 2 {
+		t.Fatalf("chat messages = %d, want 2 (the tool-change-only system message must be dropped): %+v", len(chat), chat)
+	}
+	sys := chat[1]
+	if sys.Role != ChatMessageRoleSystem || sys.Content == nil {
+		t.Fatalf("chat[1] = %+v, want the system message with content", sys)
+	}
+	var blocks []ChatContentBlock
+	if sys.Content.ContentBlocks != nil {
+		blocks = sys.Content.ContentBlocks
+	}
+	for _, b := range blocks {
+		if string(b.Type) == string(ResponsesInputMessageContentBlockTypeToolRemoval) || string(b.Type) == string(ResponsesInputMessageContentBlockTypeToolAddition) {
+			t.Fatalf("tool-change block forwarded as an unknown chat content part: %+v", blocks)
+		}
+	}
+	if sys.Content.ContentStr != nil {
+		if *sys.Content.ContentStr != "Weather lookups are disabled." {
+			t.Errorf("system text = %q, want the text sibling", *sys.Content.ContentStr)
+		}
+	} else if len(blocks) != 1 || blocks[0].Text == nil || *blocks[0].Text != "Weather lookups are disabled." {
+		t.Errorf("system content = %+v, want only the text sibling", blocks)
 	}
 }

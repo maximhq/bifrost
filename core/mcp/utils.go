@@ -30,7 +30,7 @@ import (
 // iteration order; errors are treated as "never matches" (marshal failure
 // on these plain data types isn't expected, but must never panic or block
 // a genuine discovery result from being recorded).
-func computeToolsHash(tools map[string]schemas.ChatTool, toolNameMapping map[string]string) string {
+func computeToolsHash(tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) string {
 	h := sha256.New()
 	if data, err := json.Marshal(tools); err == nil {
 		h.Write(data)
@@ -39,6 +39,11 @@ func computeToolsHash(tools map[string]schemas.ChatTool, toolNameMapping map[str
 	if data, err := json.Marshal(toolNameMapping); err == nil {
 		h.Write(data)
 	}
+	// Instructions ride the same hash so a server that rewrote only its instructions
+	// still counts as a change: without this the callback never fires and the new text
+	// is never persisted or re-served.
+	h.Write([]byte{0})
+	h.Write([]byte(instructions))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -237,6 +242,42 @@ func (m *MCPManager) GetClientByName(clientName string) *schemas.MCPClientState 
 	}
 	m.logger.Debug("%s Client '%s' not found", MCPLogPrefix, clientName)
 	return nil
+}
+
+// GetInjectedTool resolves a provider-injected tool by client name and unprefixed tool
+// name, returning a copy whose function name carries the "<client>-" prefix.
+//
+// It deliberately skips tools_to_execute and the request include lists that
+// GetToolPerClient applies: the provider config is the authorization. Only a client
+// that is missing or disabled, or a tool the client does not expose, is refused.
+func (m *MCPManager) GetInjectedTool(clientName, toolName string) (schemas.ChatTool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, client := range m.clientMap {
+		if client.ExecutionConfig == nil || client.ExecutionConfig.Name != clientName {
+			continue
+		}
+		if client.State == schemas.MCPConnectionStateDisabled {
+			return schemas.ChatTool{}, fmt.Errorf("mcp client %q is disabled", clientName)
+		}
+		tool, ok := client.ToolMap[clientName+"-"+toolName]
+		if !ok {
+			return schemas.ChatTool{}, fmt.Errorf("mcp client %q does not expose tool %q", clientName, toolName)
+		}
+		// A deep copy: the caller owns the returned schema, and an edit to it must never
+		// reach the stored definition every later request is built from.
+		return schemas.DeepCopyChatTool(tool), nil
+	}
+	return schemas.ChatTool{}, fmt.Errorf("mcp client %q not found", clientName)
+}
+
+// GetMaxAgentDepth returns the configured cap on model turns in a tool loop
+// (mcp_agent_depth), shared by agent mode and provider-injected tools.
+func (m *MCPManager) GetMaxAgentDepth() int {
+	if m.toolsManager == nil {
+		return schemas.DefaultMaxAgentDepth
+	}
+	return int(m.toolsManager.maxAgentDepth.Load())
 }
 
 // isTransientError determines if an error is transient and should be retried.

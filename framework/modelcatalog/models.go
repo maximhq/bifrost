@@ -22,6 +22,14 @@ var providersWithPartialListModels = map[schemas.ModelProvider]bool{
 	schemas.Runware:    true,
 }
 
+// providersWithListModelsOnly enumerates providers whose unfiltered model list
+// is their own /models response alone. The datasheet carries Cloudflare's models
+// under several ID shapes (@cf/..., workers-ai/@cf/..., bare clef), so unioning
+// it with the live list shows the same model more than once.
+var providersWithListModelsOnly = map[schemas.ModelProvider]bool{
+	schemas.Cloudflare: true,
+}
+
 // GetModelsForProvider returns the effective allowed model set for the
 // provider. Filtered live entries are authoritative when present (they were
 // pre-gated by ListModelsPipeline against the key's allow/block/aliases);
@@ -129,6 +137,9 @@ func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []stri
 // applied): union of live unfiltered entries and the datasheet view.
 func (mc *ModelCatalog) GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string {
 	liveModels := mc.live.UnfilteredModelsForProvider(provider)
+	if providersWithListModelsOnly[provider] {
+		return liveModels
+	}
 	datasheetModels := mc.datasheet.DatasheetModelsForProvider(provider)
 	if len(liveModels) == 0 {
 		return datasheetModels
@@ -175,6 +186,7 @@ func (mc *ModelCatalog) catalogGeneration() uint64 {
 func (mc *ModelCatalog) initCaches() {
 	mc.providersForModel = newProvidersForModelCache(mc)
 	mc.modelsForProvider = newModelsForProviderCache(mc)
+	mc.maxOutputTokens = gencache.New[int](mc.catalogGeneration, catalogMemoMaxEntries)
 }
 
 // Clone-on-return: the resolver sorts the result in place.

@@ -109,6 +109,9 @@ func (s *Span) EnsureEnrichment() *SpanEnrichment {
 	if s == nil {
 		return nil
 	}
+	// Under the lock: Reset nils Enrichment on pool release, which races this.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.Enrichment == nil {
 		s.Enrichment = &SpanEnrichment{}
 	}

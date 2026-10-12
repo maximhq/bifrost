@@ -20,7 +20,7 @@ import { RbacProvider, useRbacContext } from "@enterprise/lib/contexts/rbacConte
 import { useLocation, useMatches } from "@tanstack/react-router";
 import { RefreshCw, WifiOff } from "lucide-react";
 import { NuqsAdapter } from "nuqs/adapters/tanstack-router";
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { CookiesProvider } from "react-cookie";
 import { toast, Toaster } from "sonner";
 
@@ -46,8 +46,8 @@ function AppContent({ children }: { children: React.ReactNode }) {
 	// Routes can declare `staticData: { tempTokenScoped: true }` to advertise that
 	// they're reachable via a server-emitted, temp-token-bearing URL by visitors
 	// without a dashboard session. The actual layout choice is made per-visitor:
-	// an authenticated admin still sees the full dashboard chrome, while an
-	// anonymous visitor arriving with `#t=<token>` gets a stripped MinimalShell.
+	// an authenticated admin still sees the full dashboard chrome, while a
+	// signed-out visitor gets a stripped MinimalShell.
 	// The auth-via-temp-token half lives in <TempTokenScope>.
 	const matches = useMatches();
 	const tempTokenScoped = matches.some((m) => (m.staticData as { tempTokenScoped?: boolean } | undefined)?.tempTokenScoped === true);
@@ -61,17 +61,9 @@ function AppContent({ children }: { children: React.ReactNode }) {
 	// (no 401 risk) and returns whether the current cookie is a valid session.
 	const { data: authState, isLoading: authLoading } = useIsAuthEnabledQuery(undefined, { skip: !tempTokenScoped });
 
-	// Snapshot fragment presence at mount: TempTokenScope strips the fragment
-	// shortly after, so re-reading window.location.hash would flip false on
-	// re-render. Only fragment-bearing arrivals are MinimalShell candidates.
-	const [hadFragmentTempToken] = useState(() => {
-		if (typeof window === "undefined") return false;
-		const fragment = window.location.hash;
-		if (!fragment || fragment.length < 2) return false;
-		return !!new URLSearchParams(fragment.slice(1)).get("t");
-	});
-
-	const useMinimalShell = tempTokenScoped && !!authState?.is_auth_enabled && !authState?.has_valid_token && hadFragmentTempToken;
+	// Not gated on a `#t=` fragment: it's gone after a /login round-trip, and
+	// dashboard chrome for a signed-out visitor fires protected fetches that 401.
+	const useMinimalShell = tempTokenScoped && !!authState?.is_auth_enabled && !authState?.has_valid_token;
 
 	const {
 		data: bifrostConfig,

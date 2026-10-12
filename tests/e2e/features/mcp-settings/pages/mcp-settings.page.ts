@@ -7,6 +7,8 @@ export class MCPSettingsPage extends BasePage {
   readonly saveBtn: Locator
   readonly maxAgentDepthInput: Locator
   readonly toolTimeoutInput: Locator
+  readonly codeModeLimits: Locator
+  readonly oauthPrivateAllowlistInput: Locator
 
   constructor(page: Page) {
     super(page)
@@ -15,6 +17,18 @@ export class MCPSettingsPage extends BasePage {
     this.saveBtn = page.getByTestId('mcp-settings-save-btn')
     this.maxAgentDepthInput = page.getByTestId('mcp-agent-depth-input').or(page.locator('#mcp-agent-depth'))
     this.toolTimeoutInput = page.getByTestId('mcp-tool-timeout-input').or(page.locator('#mcp-tool-execution-timeout'))
+    this.codeModeLimits = page.getByTestId('mcp-code-mode-limits')
+    this.oauthPrivateAllowlistInput = page.getByTestId('mcp-oauth-private-allowlist-input')
+  }
+
+  /** The remove button of one OAuth private allowlist entry, present while the entry is listed. */
+  oauthPrivateAllowlistEntry(entry: string): Locator {
+    return this.page.getByRole('button', { name: `Remove ${entry}`, exact: true })
+  }
+
+  /** Input for one code mode limit, keyed by its config field (e.g. 'max_tool_calls'). */
+  codeModeLimitInput(field: string): Locator {
+    return this.page.getByTestId(`mcp-code-mode-${field.replace(/_/g, '-')}-input`)
   }
 
   async goto(): Promise<void> {

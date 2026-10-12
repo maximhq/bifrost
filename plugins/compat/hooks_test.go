@@ -173,3 +173,187 @@ func TestPluginDroppedParamsClearedBetweenAttempts(t *testing.T) {
 		t.Errorf("dropped_compat_plugin_params = %v, want empty - the fallback attempt dropped nothing", got)
 	}
 }
+
+// TestReasoningWithToolsResponsesRouting covers routing chat requests to
+// Responses for models whose datasheet sets supports_reasoning_with_tool_calls false,
+// and the reasoning-off fallback when the toggle is off.
+func TestReasoningWithToolsResponsesRouting(t *testing.T) {
+	newPlugin := func(t *testing.T, enabled bool) *CompatPlugin {
+		t.Helper()
+		ds := datasheet.NewTestStore(nil)
+		ds.SetSupportedParamsForTest(map[string][]string{
+			"no-reasoning-with-tools": {"reasoning", "tools"},
+			"reasoning-with-tools":    {"reasoning", "tools", "reasoning_with_tool_calls"},
+		})
+		p, err := Init(Config{ShouldDropParams: true, ForceReasoningOnlyModelsToResponses: enabled}, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds))
+		if err != nil {
+			t.Fatalf("Init: %v", err)
+		}
+		return p
+	}
+	newChatRequest := func(model string, requestType schemas.RequestType, withTools bool) *schemas.BifrostRequest {
+		params := &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("high")}}
+		if withTools {
+			params.Tools = []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "lookup"}}}
+		}
+		return &schemas.BifrostRequest{
+			RequestType: requestType,
+			ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: model, Params: params},
+		}
+	}
+
+	tests := []struct {
+		name          string
+		enabled       bool
+		override      bool
+		model         string
+		requestType   schemas.RequestType
+		withTools     bool
+		wantConverted bool
+		wantReasoning bool
+	}{
+		{name: "flag false with tools", enabled: true, model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionRequest, withTools: true, wantConverted: true, wantReasoning: true},
+		{name: "flag false with tools stream", enabled: true, model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionStreamRequest, withTools: true, wantConverted: true, wantReasoning: true},
+		{name: "flag false without tools", enabled: true, model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionRequest, wantConverted: true, wantReasoning: true},
+		{name: "reasoning with tools supported", enabled: true, model: "reasoning-with-tools", requestType: schemas.ChatCompletionRequest, withTools: true, wantReasoning: true},
+		{name: "no datasheet entry", enabled: true, model: "unknown", requestType: schemas.ChatCompletionRequest, withTools: true, wantReasoning: true},
+		{name: "toggle off forces reasoning off", model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionRequest, withTools: true},
+		{name: "header override", override: true, model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionRequest, withTools: true, wantConverted: true, wantReasoning: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := newTestContext()
+			if tt.override {
+				ctx.SetValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses, true)
+			}
+			got, _, err := newPlugin(t, tt.enabled).PreLLMHook(ctx, newChatRequest(tt.model, tt.requestType, tt.withTools))
+			if err != nil {
+				t.Fatalf("PreLLMHook: %v", err)
+			}
+			changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
+			converted := ok && changeType == schemas.ResponsesRequest
+			if converted != tt.wantConverted {
+				t.Errorf("converted to responses = %v, want %v", converted, tt.wantConverted)
+			}
+			if hasReasoning := got.ChatRequest.Params.Reasoning != nil; hasReasoning != tt.wantReasoning {
+				t.Errorf("reasoning preserved = %v, want %v", hasReasoning, tt.wantReasoning)
+			}
+		})
+	}
+}
+
+func TestConfigForceReasoningOnlyModelsToResponsesDefaultsOn(t *testing.T) {
+	var c Config
+	if err := c.UnmarshalJSON([]byte(`{}`)); err != nil {
+		t.Fatalf("UnmarshalJSON: %v", err)
+	}
+	if !c.ForceReasoningOnlyModelsToResponses {
+		t.Error("force_reasoning_only_models_to_responses should default to true when absent")
+	}
+}
+
+// TestDecisionToResponsesEmulationOptIn pins that, with convert_decision_to_responses
+// on (config or x-bf-compat override), the compat plugin marks a decision for
+// emulation unless the model catalog lists the model as a native decisions model:
+// a supports_decisions row decides in either direction, and without a row the
+// gpt-6-luna outside OpenRouter, Typesafe, Clef on Cloudflare, deciders on Perplexity and System One models on Ollama are native. Typesafe and other request types
+// are never marked.
+func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
+	rows := map[string]bool{"microsoft/decision-1": true, "typesafe/jev-router": false, "clef": false}
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider == schemas.Groq && model == "clef" {
+			return &schemas.ModelCapabilities{SupportsDecisions: schemas.Ptr(true)}
+		}
+		if supports, ok := rows[model]; ok {
+			return &schemas.ModelCapabilities{SupportsDecisions: &supports}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	decision := func(provider schemas.ModelProvider, model string) func() *schemas.BifrostRequest {
+		return func() *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{
+				RequestType:     schemas.DecisionRequest,
+				DecisionRequest: &schemas.BifrostDecisionRequest{Provider: provider, Model: model},
+			}
+		}
+	}
+	chat := func() *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"},
+		}
+	}
+
+	tests := []struct {
+		name          string
+		enabled       bool
+		override      bool
+		req           func() *schemas.BifrostRequest
+		wantConverted bool
+	}{
+		{name: "off by default", req: decision(schemas.OpenAI, "gpt-4o")},
+		{name: "chat model marked", enabled: true, req: decision(schemas.OpenAI, "gpt-4o"), wantConverted: true},
+		{name: "header override", override: true, req: decision(schemas.OpenAI, "gpt-4o"), wantConverted: true},
+		{name: "gpt-6-luna family is native", enabled: true, req: decision(schemas.OpenAI, "gpt-6-luna")},
+		{name: "gpt-6-luna chat model on openrouter marked", enabled: true, req: decision(schemas.OpenRouter, "openai/gpt-6-luna-pro"), wantConverted: true},
+		{name: "typesafe model on openrouter is native", enabled: true, req: decision(schemas.OpenRouter, "~typesafe/jev-latest")},
+		{name: "true row is native", enabled: true, req: decision(schemas.OpenRouter, "microsoft/decision-1")},
+		{name: "false row overrides the typesafe name", enabled: true, req: decision(schemas.OpenRouter, "typesafe/jev-router"), wantConverted: true},
+		{name: "clef on cloudflare is native", enabled: true, req: decision(schemas.Cloudflare, "clef-flash")},
+		{name: "clef full id on cloudflare is native", enabled: true, req: decision(schemas.Cloudflare, "@cf/cloudflare/clef-flash")},
+		{name: "clef on groq marked", enabled: true, req: decision(schemas.Groq, "clef-flash"), wantConverted: true},
+		{name: "clef full id on groq marked", enabled: true, req: decision(schemas.Groq, "@cf/cloudflare/clef-flash"), wantConverted: true},
+		{name: "clef on openai marked by header", override: true, req: decision(schemas.OpenAI, "clef-flash"), wantConverted: true},
+		{name: "true row overrides provider-scoped clef fallback", enabled: true, req: decision(schemas.Groq, "clef")},
+		{name: "chat model on cloudflare marked", enabled: true, req: decision(schemas.Cloudflare, "@cf/meta/llama-4-scout-17b-16e-instruct"), wantConverted: true},
+		{name: "false row overrides the clef name", enabled: true, req: decision(schemas.Cloudflare, "clef"), wantConverted: true},
+		{name: "decider on perplexity is native", enabled: true, req: decision(schemas.Perplexity, "pplx-decider-v1.1-27b")},
+		{name: "dated decider on perplexity is native", enabled: true, req: decision(schemas.Perplexity, "pplx-decider-v1.1-27b-20261006")},
+		{name: "chat model on perplexity marked", enabled: true, req: decision(schemas.Perplexity, "sonar-pro"), wantConverted: true},
+		{name: "decider on openai marked", enabled: true, req: decision(schemas.OpenAI, "pplx-decider-v1.1-27b"), wantConverted: true},
+		{name: "system one model on ollama is native", enabled: true, req: decision(schemas.Ollama, "nimble")},
+		{name: "tagged system one model on ollama is native", enabled: true, req: decision(schemas.Ollama, "tev1:0.8b")},
+		{name: "clef on ollama is native", enabled: true, req: decision(schemas.Ollama, "clef-flash")},
+		{name: "chat model on ollama marked", enabled: true, req: decision(schemas.Ollama, "llama3.1:latest"), wantConverted: true},
+		{name: "typesafe provider never marked", enabled: true, req: decision(schemas.Typesafe, "jev-latest")},
+		{name: "chat request untouched", enabled: true, req: chat},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, err := Init(Config{ConvertDecisionToResponses: tt.enabled}, bifrost.NewNoOpLogger(), nil)
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			ctx := newTestContext()
+			if tt.override {
+				ctx.SetValue(schemas.BifrostContextKeyCompatConvertDecisionToResponses, true)
+			}
+			if _, _, err := p.PreLLMHook(ctx, tt.req()); err != nil {
+				t.Fatalf("PreLLMHook: %v", err)
+			}
+			changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
+			converted := ok && changeType == schemas.ResponsesRequest
+			if converted != tt.wantConverted {
+				t.Errorf("converted to responses = %v, want %v", converted, tt.wantConverted)
+			}
+		})
+	}
+}
+
+func TestConfigConvertDecisionToResponsesDefaultsOff(t *testing.T) {
+	var c Config
+	if err := c.UnmarshalJSON([]byte(`{}`)); err != nil {
+		t.Fatalf("UnmarshalJSON: %v", err)
+	}
+	if c.ConvertDecisionToResponses {
+		t.Error("convert_decision_to_responses should default to false when absent")
+	}
+	if err := c.UnmarshalJSON([]byte(`{"convert_decision_to_responses": true}`)); err != nil {
+		t.Fatalf("UnmarshalJSON: %v", err)
+	}
+	if !c.ConvertDecisionToResponses {
+		t.Error("convert_decision_to_responses should be true when set")
+	}
+}

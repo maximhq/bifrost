@@ -6,6 +6,7 @@ import {
 	replaceModels,
 	resolveWildcardSelection,
 	splitModelAccess,
+	summarizeGrantModelAccess,
 	summarizeModelAccess,
 	validateModelRegex,
 } from "./utils";
@@ -89,6 +90,19 @@ describe("summaries and placeholders", () => {
 		expect(summarizeModelAccess([], "block")).toBe("No blocked models");
 		expect(summarizeModelAccess(["a", "b", "regex:x"], "allow")).toBe("2 models, 1 pattern");
 		expect(summarizeModelAccess(["regex:x", "regex:y"], "block")).toBe("2 patterns");
+	});
+
+	it("reflects blocked models in the combined grant summary (#7634)", () => {
+		expect(summarizeGrantModelAccess(["*"], [])).toBe("All models");
+		expect(summarizeGrantModelAccess(["*"], ["a", "b"])).toBe("All models · 2 models blocked");
+		expect(summarizeGrantModelAccess(["*"], ["a", "regex:^x"])).toBe("All models · 1 model, 1 pattern blocked");
+		expect(summarizeGrantModelAccess(["a", "b", "c"], ["a"])).toBe("3 models · 1 model blocked");
+		// The block list wins over the allow list, so a blocked "*" denies everything.
+		expect(summarizeGrantModelAccess(["*"], ["*"])).toBe("All models blocked");
+		expect(summarizeGrantModelAccess(["a"], ["*"])).toBe("All models blocked");
+		// An empty allow list already denies everything; the block list adds nothing.
+		expect(summarizeGrantModelAccess([], ["a"])).toBe("Deny all");
+		expect(summarizeGrantModelAccess(["*"], undefined)).toBe("All models");
 	});
 
 	it("keeps the placeholder wording per mode", () => {

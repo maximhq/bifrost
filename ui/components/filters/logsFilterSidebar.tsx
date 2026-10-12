@@ -8,7 +8,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { RequestTypeLabels, RequestTypes, RoutingEngineUsedLabels, Statuses } from "@/lib/constants/logs";
-import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
+import {
+	getMetadataFilterGroups,
+	listedOptions,
+	type LabelledMetadataFilterGroup,
+	type RecordedMetadataValues,
+} from "@/lib/registries/logs";
+import { useGetAgentsQuery, useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
 import {
 	COMPLEXITY_MECHANISM_LABELS,
 	COMPLEXITY_MECHANISM_VALUES,
@@ -17,6 +23,8 @@ import {
 } from "@/lib/types/complexityRouter";
 import type { LogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
+import { getRangeForPeriod } from "@/lib/utils/timeRange";
+import "@enterprise/lib/registrations/logs";
 import { ChevronDown, LoaderCircle, PanelLeftClose, Plus, RotateCcw, Search } from "lucide-react";
 import { Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -114,9 +122,14 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<AliasesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingEnginesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingRulesFilter filters={filters} onFiltersChange={onFiltersChange} />
+					{getMetadataFilterGroups().map((group) => (
+						<LabelledMetadataFilter key={group.title} group={group} filters={filters} onFiltersChange={onFiltersChange} />
+					))}
 					<ComplexityTierFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<ComplexityMechanismFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<AgentFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RequestSessionFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<AgentCorrelationFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<LocalCachingFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<UserFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<TeamFilter filters={filters} onFiltersChange={onFiltersChange} />
@@ -512,7 +525,6 @@ function AppFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPro
 		() => [...new Set([...availableApps, ...(filters.apps || [])])].sort().map((name) => ({ key: name, label: name })),
 		[availableApps, filters.apps],
 	);
-
 	if (!isUninitialized && !isLoading && availableApps.length === 0 && !hasActive && !opened) return null;
 
 	const selectedSet = new Set(filters.apps || []);
@@ -993,6 +1005,38 @@ function ComplexityMechanismFilter({ filters, onFiltersChange, defaultOpen }: Fi
 // RequestSessionFilter
 // ---------------------------------------------------------------------------
 
+function AgentFilter({ filters, onFiltersChange }: FilterComponentProps) {
+	const selected = filters.agent_names ?? [];
+	const hasActive = selected.length > 0;
+	const [opened, setOpened] = useState(hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const { data, isLoading } = useGetAgentsQuery(undefined, { skip: !opened && !hasActive });
+	const items = useMemo(
+		() =>
+			[...new Set([...(data?.agents.map((agent) => agent.name) ?? []), ...(filters.agent_names ?? [])])]
+				.sort()
+				.map((name) => ({ key: name, label: name })),
+		[data?.agents, filters.agent_names],
+	);
+
+	return (
+		<FilterSection title="Agent" defaultOpen={hasActive} loading={isLoading} onOpenChange={setOpened} testId="agent-filter-toggle">
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search agents"
+				items={items}
+				isSelected={(name) => selected.includes(name)}
+				onToggle={(name) => {
+					const next = selected.includes(name) ? selected.filter((agentName) => agentName !== name) : [...selected, name];
+					onFiltersChange({ ...filters, agent_names: next.length > 0 ? next : undefined });
+				}}
+				testIdPrefix="agent-filter"
+				normalizeTestIdKey
+			/>
+		</FilterSection>
+	);
+}
+
 function RequestSessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
 	const hasActive = !!filters.session_id;
 	return (
@@ -1005,6 +1049,24 @@ function RequestSessionFilter({ filters, onFiltersChange, defaultOpen }: FilterC
 					placeholder="Exact session ID"
 					className="h-8 border-0 pl-8 text-sm"
 					data-testid="request-session-id-filter-input"
+				/>
+			</div>
+		</FilterSection>
+	);
+}
+
+function AgentCorrelationFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = !!filters.agent_correlation_id;
+	return (
+		<FilterSection title="Agent correlation ID" defaultOpen={defaultOpen || hasActive} testId="agent-correlation-filter-toggle">
+			<div className="relative">
+				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+				<Input
+					value={filters.agent_correlation_id || ""}
+					onChange={(event) => onFiltersChange({ ...filters, agent_correlation_id: event.target.value })}
+					placeholder="Exact Agent correlation ID"
+					className="h-8 border-0 pl-8 text-sm"
+					data-testid="agent-correlation-id-filter-input"
 				/>
 			</div>
 		</FilterSection>
@@ -1369,11 +1431,94 @@ function LocalCachingFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 }
 
 // ---------------------------------------------------------------------------
+// LabelledMetadataFilter – a registered group of metadata keys under readable names
+// ---------------------------------------------------------------------------
+
+// setMetadataFilter sets one metadata key's filter value, or clears it when value is undefined.
+function setMetadataFilter(filters: LogFilters, key: string, value: string | undefined): LogFilters {
+	const current = { ...(filters.metadata_filters || {}) };
+	if (value === undefined) {
+		delete current[key];
+	} else {
+		current[key] = value;
+	}
+	return { ...filters, metadata_filters: Object.keys(current).length > 0 ? current : undefined };
+}
+
+// Keys a registered group offers under readable names; the generic Metadata section leaves them to it.
+function labelledMetadataKeys(): Set<string> {
+	return new Set(getMetadataFilterGroups().flatMap((group) => group.fields.map((field) => field.key)));
+}
+
+// useNoRecordedValues stands in for a group that cannot say which values rows hold: it lists every option.
+function useNoRecordedValues(): RecordedMetadataValues {
+	return { values: undefined, isLoading: false };
+}
+
+// LabelledMetadataFilter draws a registered group: each field's values under its label, one value
+// per key, as the metadata filter holds them. A group that can read which values rows in the time
+// range hold lists only those, and a field with none is left out.
+function LabelledMetadataFilter({
+	group,
+	filters,
+	onFiltersChange,
+	defaultOpen,
+}: FilterComponentProps & { group: LabelledMetadataFilterGroup }) {
+	const hasActive = group.fields.some((field) => filters.metadata_filters?.[field.key] !== undefined);
+	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	// The page's time range: a custom one as it is, a relative period (which carries no start or end)
+	// resolved against now when the period changes or the group opens, so the read's arguments hold
+	// still between renders but an open reads the window the page shows, not the one at mount.
+	const range = useMemo(() => {
+		if (!filters.period) return { startTime: filters.start_time, endTime: filters.end_time };
+		const { from, to } = getRangeForPeriod(filters.period);
+		return { startTime: from.toISOString(), endTime: to.toISOString() };
+		// opened is read only to re-resolve a relative period on each open.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [filters.period, filters.start_time, filters.end_time, opened]);
+	// A group's hook is fixed when it is registered, so the same hook runs on every render.
+	const useRecordedValues = group.useRecordedValues ?? useNoRecordedValues;
+	const recorded = useRecordedValues(range, { skip: !opened && !hasActive });
+	const fields = group.fields
+		.map((field) => ({ field, options: listedOptions(field, recorded.values, filters.metadata_filters?.[field.key]) }))
+		.filter(({ options }) => options.length > 0);
+	return (
+		<FilterSection
+			title={group.title}
+			defaultOpen={defaultOpen || hasActive}
+			loading={recorded.isLoading}
+			onOpenChange={setOpened}
+			testId={`labelled-metadata-${group.title}-filter-toggle`}
+		>
+			{fields.length === 0 && <div className="text-muted-foreground px-3 py-2 text-xs">Nothing recorded in this time range</div>}
+			{fields.map(({ field, options }) => (
+				<div key={field.key} data-testid={`labelled-metadata-${field.key}-filter-group`}>
+					<div className="text-muted-foreground px-3 pt-2 pb-1 text-xs font-medium">{field.label}</div>
+					{options.map((option) => {
+						const checked = filters.metadata_filters?.[field.key] === option.value;
+						return (
+							<CheckboxFilterItem
+								key={option.value}
+								label={option.label}
+								checked={checked}
+								onCheckedChange={() => onFiltersChange(setMetadataFilter(filters, field.key, checked ? undefined : option.value))}
+								testId={`labelled-metadata-${field.key}-filter-checkbox-${option.value}`}
+							/>
+						);
+					})}
+				</div>
+			))}
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
 // MetadataFilters – fetches metadata keys internally
 // ---------------------------------------------------------------------------
 
 function MetadataFilters({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
-	const hasActive = !!filters.metadata_filters && Object.keys(filters.metadata_filters).length > 0;
+	const labelled = labelledMetadataKeys();
+	const hasActive = Object.keys(filters.metadata_filters || {}).some((key) => !labelled.has(key));
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const [searchQuery, setSearchQuery] = useState("");
 	const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -1393,18 +1538,7 @@ function MetadataFilters({ filters, onFiltersChange, defaultOpen }: FilterCompon
 	const [customInputs, setCustomInputs] = useState<Record<string, string>>({});
 
 	const handleChange = useCallback(
-		(metadataKey: string, value: string | undefined) => {
-			const current = { ...(filters.metadata_filters || {}) };
-			if (value === undefined) {
-				delete current[metadataKey];
-			} else {
-				current[metadataKey] = value;
-			}
-			onFiltersChange({
-				...filters,
-				metadata_filters: Object.keys(current).length > 0 ? current : undefined,
-			});
-		},
+		(metadataKey: string, value: string | undefined) => onFiltersChange(setMetadataFilter(filters, metadataKey, value)),
 		[filters, onFiltersChange],
 	);
 

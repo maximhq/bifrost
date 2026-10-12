@@ -77,29 +77,6 @@ func defaultEffortControl(model string) *schemas.EffortControl {
 	return &schemas.EffortControl{Levels: supportedThinkingLevels(model)}
 }
 
-// geminiBudgetRanges are the published thinking-budget limits. Longest prefix
-// first, since "gemini-2.5-flash" also prefixes "gemini-2.5-flash-lite".
-var geminiBudgetRanges = []struct {
-	prefix   string
-	min, max int
-}{
-	{"gemini-2.5-flash-lite", 512, 24576},
-	{"gemini-2.5-pro", 128, 32768},
-	{"gemini-2.5-flash", 0, 24576},
-}
-
-// defaultBudgetControl returns the published thinking-budget range, or nil when
-// the model publishes none and validation should be skipped.
-func defaultBudgetControl(model string) *schemas.BudgetControl {
-	modelLower := strings.ToLower(model)
-	for _, entry := range geminiBudgetRanges {
-		if strings.Contains(modelLower, entry.prefix) {
-			return &schemas.BudgetControl{Min: new(entry.min), Max: new(entry.max)}
-		}
-	}
-	return nil
-}
-
 // NormalizeRawGenerateContentRequestForCompatibility applies the same
 // provider-compatibility cleanup expected by the typed conversion path, while
 // preserving JSON key order with gjson/sjson-style byte edits.
@@ -339,7 +316,7 @@ func effortToThinkingLevel(caps schemas.ModelCaps, effort string) string {
 }
 
 func getThinkingBudgetRange(caps schemas.ModelCaps, defaultMaxTokens int) thinkingBudgetRange {
-	min, max, _ := caps.ReasoningBudgetRange(defaultMaxTokens, defaultBudgetControl(caps.Model()))
+	min, max, _ := caps.ReasoningBudgetRange(defaultMaxTokens, providerUtils.KnownGeminiReasoningBudget(caps.Model()))
 	return thinkingBudgetRange{Min: min, Max: max}
 }
 
@@ -360,7 +337,7 @@ func validateThinkingBudget(caps schemas.ModelCaps, budget int) error {
 	if budget < 0 {
 		return fmt.Errorf("thinking budget %d is invalid; only 0 and -1 are supported special values", budget)
 	}
-	min, max, ok := caps.ReasoningBudgetRange(0, defaultBudgetControl(caps.Model()))
+	min, max, ok := caps.ReasoningBudgetRange(0, providerUtils.KnownGeminiReasoningBudget(caps.Model()))
 	if !ok {
 		return nil // skip validation
 	}
@@ -869,6 +846,18 @@ func ConvertGeminiFinishReasonToBifrost(providerReason FinishReason) string {
 		return bifrostReason
 	}
 	return string(providerReason)
+}
+
+// geminiResponsesStatus derives the Responses status and incomplete_details from a
+// stop reason already converted by ConvertGeminiFinishReasonToBifrost. Error finish
+// reasons are handled by the callers (status "failed") before this is consulted.
+func geminiResponsesStatus(stopReason string) (*string, *schemas.ResponsesResponseIncompleteDetails) {
+	status, details, mapped := schemas.ResponsesStatusFromFinishReason(stopReason)
+	if !mapped {
+		// A finish reason with no Responses equivalent is not a confirmed clean finish.
+		return schemas.Ptr(schemas.ResponsesResponseStatusIncomplete), nil
+	}
+	return &status, details
 }
 
 // ConvertBifrostFinishReasonToGemini converts Bifrost canonical finish reasons back to Gemini format.
@@ -1950,6 +1939,7 @@ func applyGeminiSearchQueryChatUsage(usage *schemas.BifrostLLMUsage, metadata *G
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
 	}
 	usage.CompletionTokensDetails.NumSearchQueries = count
+	usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *count}}
 }
 
 // applyGeminiSearchQueryResponsesUsage is the Responses-shaped counterpart of
@@ -1963,6 +1953,7 @@ func applyGeminiSearchQueryResponsesUsage(usage *schemas.ResponsesResponseUsage,
 		usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
 	}
 	usage.OutputTokensDetails.NumSearchQueries = count
+	usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *count}}
 }
 
 // applyServerSideToolInvocations opts the request into Gemini's tool combination mode,
@@ -2162,14 +2153,15 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 				}
 			}
 
-			// Try to use raw JSON if it's a valid JSON object (Gemini requires Struct/object)
+			// Try to use raw JSON if it's a valid JSON object (Gemini requires Struct/object).
+			// An object carrying a "$ref" key anywhere is wrapped instead: see containsJSONRefKey.
 			if contentStr != "" {
 				var buf bytes.Buffer
-				if err := json.Compact(&buf, []byte(contentStr)); err == nil && buf.Len() > 0 && buf.Bytes()[0] == '{' {
-					// Valid JSON object — use raw bytes directly
+				if err := json.Compact(&buf, []byte(contentStr)); err == nil && buf.Len() > 0 && buf.Bytes()[0] == '{' && !containsJSONRefKey(buf.Bytes()) {
+					// Valid JSON object without reserved keys — use raw bytes directly
 					responseData = json.RawMessage(buf.Bytes())
 				} else {
-					// Not valid JSON or not an object — wrap to preserve content
+					// Not valid JSON, not an object, or holds "$ref" — wrap to preserve content
 					responseData, _ = providerUtils.MarshalSorted(map[string]any{
 						"content": contentStr,
 					})
@@ -3033,6 +3025,45 @@ func extractSchemaMapFromResponseFormat(responseFormat *interface{}) interface{}
 	return nil
 }
 
+// containsJSONRefKey reports whether any object nested anywhere in raw carries a "$ref" key.
+//
+// Gemini reads {"$ref": "<displayName>"} inside function_response.response as a pointer to a
+// multimodal part in function_response.parts and rejects the whole request with 400 ("does not
+// match to a display_name") when no such part exists. Tool output uses "$ref" for ordinary
+// reasons (JSON Schema, OpenAPI), so the converters send such a result as opaque text instead of
+// a structured object (#7694). There is deliberately no byte-level pre-check: JSON lets any
+// character of a key be written as a \uXXXX escape, and only the parser walk, which compares the
+// unescaped key, catches every spelling.
+func containsJSONRefKey(raw []byte) bool {
+	found := false
+	var walk func(v gjson.Result)
+	walk = func(v gjson.Result) {
+		isObject := v.IsObject()
+		v.ForEach(func(key, value gjson.Result) bool {
+			if isObject && key.String() == "$ref" {
+				found = true
+				return false
+			}
+			if value.IsObject() || value.IsArray() {
+				walk(value)
+			}
+			return !found
+		})
+	}
+	walk(gjson.ParseBytes(raw))
+	return found
+}
+
+// geminiFunctionOutputValue returns a function result for embedding under a key of
+// function_response.response: raw JSON when output is valid JSON with no "$ref" key at any
+// depth, otherwise the string itself so Gemini treats it as opaque text (#7694).
+func geminiFunctionOutputValue(output string) any {
+	if json.Valid([]byte(output)) && !containsJSONRefKey([]byte(output)) {
+		return json.RawMessage(output)
+	}
+	return output
+}
+
 // extractFunctionResponseOutput extracts the output text from a FunctionResponse.
 // It first tries to extract the "output" field if present, otherwise marshals the entire response.
 // Returns an empty string if the response is nil or extraction fails.
@@ -3312,4 +3343,8 @@ func resultNeedsGeminiNormalization(result gjson.Result) bool {
 		})
 	}
 	return needs
+}
+
+func ptrEqual[T comparable](a, b *T) bool {
+	return a == b || (a != nil && b != nil && *a == *b)
 }

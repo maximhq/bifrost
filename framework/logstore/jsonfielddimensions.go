@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/maximhq/bifrost/framework/queryscope"
 )
 
 // JSON-extracted ranking dimensions: labels that live inside a JSON blob
@@ -82,15 +84,26 @@ type jsonFieldDimensionShape struct {
 	// TotalAttributedRequests can then exceed TotalActualRequests, the same
 	// as the existing team/customer/business-unit fan-out.
 	fannedOut bool
+	// failedOnly marks a dimension whose value only exists on failed requests
+	// (error_details is written only when a request ends in error or
+	// cancelled; see plugins/logging logStatusForError). The ranking scans
+	// then filter on failedLogStatuses instead of every terminal status, so
+	// idx_logs_status_timestamp bounds them to failed rows and the JSON is
+	// parsed only where it can hold a value. Results are unchanged.
+	failedOnly bool
 }
 
+// failedLogStatuses are the terminal statuses a request can end in when it did
+// not succeed. Both carry error_details; success rows never do.
+var failedLogStatuses = []string{"error", "cancelled"}
+
 var jsonFieldDimensions = map[RankingDimension]jsonFieldDimensionShape{
-	RankingDimensionErrorType:       {column: "error_details", nestedUnder: "error", field: "type"},
-	RankingDimensionErrorCode:       {column: "error_details", nestedUnder: "error", field: "code"},
+	RankingDimensionErrorType:       {column: "error_details", nestedUnder: "error", field: "type", failedOnly: true},
+	RankingDimensionErrorCode:       {column: "error_details", nestedUnder: "error", field: "code", failedOnly: true},
 	RankingDimensionFailReason:      {column: "attempt_trail", field: "fail_reason", fannedOut: true},
 	RankingDimensionGuardrailRule:   {column: "guardrail_debug", arrayField: "judge_calls", field: "rule_name", fannedOut: true},
 	RankingDimensionGuardrailAction: {column: "guardrail_debug", arrayField: "judge_calls", field: "action", fannedOut: true},
-	RankingDimensionStatusCode:      {column: "error_details", field: "status_code", number: true},
+	RankingDimensionStatusCode:      {column: "error_details", field: "status_code", number: true, failedOnly: true},
 }
 
 // jsonFieldDimensionSource resolves a JSON-extracted dimension to a
@@ -313,6 +326,13 @@ func (s *RDBLogStore) GetJSONFieldDimensionRankings(ctx context.Context, filters
 	}
 	groupExpr := src.IDExpr
 	notEmpty := fmt.Sprintf("%s IS NOT NULL AND %s != ''", groupExpr, groupExpr)
+	// Rows that can carry this dimension. failedLogStatuses is a subset of
+	// terminalLogStatuses, so narrowing to it drops only rows whose value is
+	// always empty and the rankings are identical.
+	valueStatuses := terminalLogStatuses
+	if jsonFieldDimensions[dimension].failedOnly {
+		valueStatuses = failedLogStatuses
+	}
 
 	selectClause := fmt.Sprintf(`
 		%s as id,
@@ -324,7 +344,7 @@ func (s *RDBLogStore) GetJSONFieldDimensionRankings(ctx context.Context, filters
 
 	currentQuery := src.base(s.ScopedDB(ctx))
 	currentQuery = s.applyFilters(currentQuery, filters)
-	currentQuery = currentQuery.Where("status IN ?", terminalLogStatuses)
+	currentQuery = currentQuery.Where("status IN ?", valueStatuses)
 	currentQuery = currentQuery.Where(notEmpty)
 
 	var currentResults []struct {
@@ -371,7 +391,7 @@ func (s *RDBLogStore) GetJSONFieldDimensionRankings(ctx context.Context, filters
 	{
 		attributedQuery := src.base(s.ScopedDB(ctx))
 		attributedQuery = s.applyFilters(attributedQuery, filters)
-		attributedQuery = attributedQuery.Where("status IN ?", terminalLogStatuses)
+		attributedQuery = attributedQuery.Where("status IN ?", valueStatuses)
 		attributedQuery = attributedQuery.Where(notEmpty)
 		var attributed int64
 		if err := attributedQuery.Count(&attributed).Error; err != nil {
@@ -392,14 +412,16 @@ func (s *RDBLogStore) GetJSONFieldDimensionRankings(ctx context.Context, filters
 
 		prevQuery := src.base(s.ScopedDB(ctx))
 		prevQuery = s.applyFilters(prevQuery, prevFilters)
-		prevQuery = prevQuery.Where("status IN ?", terminalLogStatuses)
+		prevQuery = prevQuery.Where("status IN ?", valueStatuses)
 		prevQuery = prevQuery.Where(notEmpty)
 
 		ids := make([]string, len(currentResults))
 		for i, r := range currentResults {
 			ids[i] = r.ID
 		}
-		prevQuery = prevQuery.Where(fmt.Sprintf("%s IN ?", groupExpr), ids)
+		// Export mode can list every value seen in the current period, so the set
+		// binds as one argument instead of one parameter per value.
+		prevQuery = prevQuery.Where(queryscope.InStrings(prevQuery, groupExpr, ids))
 
 		var prevResults []struct {
 			ID            string          `gorm:"column:id"`

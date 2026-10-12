@@ -1041,3 +1041,42 @@ func TestChatStreamingFinishReasonOnTerminalChunk(t *testing.T) {
 		t.Fatalf("accumulated finish_reason = %q, want %q", *processed.Data.FinishReason, "stop")
 	}
 }
+
+// A retried stream attempt reuses its request's accumulator, and its chunk indexes
+// restart at 0. Reset must drop the failed attempt's chunks so the retry's are not
+// discarded as duplicates, and keep the accumulator alive for the plugins that own it.
+func TestResetStreamAccumulatorKeepsRetryChunks(t *testing.T) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	requestID := "retried-request"
+	acc := accumulator.CreateStreamAccumulator(requestID, time.Now())
+	add := func(index int, content string) {
+		t.Helper()
+		chunk := &ChatStreamChunk{
+			ChunkIndex: index,
+			Timestamp:  time.Now(),
+			Delta:      &schemas.ChatStreamResponseChoiceDelta{Content: new(content)},
+		}
+		if err := accumulator.addChatStreamChunk(requestID, StreamTypeChat, chunk, false); err != nil {
+			t.Fatalf("failed to add chunk %d: %v", index, err)
+		}
+	}
+
+	add(0, "failed-attempt")
+	accumulator.ResetStreamAccumulator(requestID)
+	add(0, "he")
+	add(1, "llo")
+
+	if current, _ := accumulator.streamAccumulators.Load(requestID); current != acc {
+		t.Fatal("reset replaced the accumulator instead of clearing it")
+	}
+	if got := acc.refCount.Load(); got != 1 {
+		t.Fatalf("refCount = %d, want 1: reset must keep the owners' references", got)
+	}
+	var content []string
+	for _, chunk := range acc.ChatStreamChunks {
+		content = append(content, *chunk.Delta.Content)
+	}
+	if len(content) != 2 || content[0] != "he" || content[1] != "llo" {
+		t.Fatalf("accumulated chunks = %q, want the retry's [he llo]", content)
+	}
+}

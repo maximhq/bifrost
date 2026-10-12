@@ -22,6 +22,9 @@ interface Props {
 
 export default function FirstPartyProviderAvailableDialog({ show, customProviderName, knownProvider, onDismiss, onProceed }: Props) {
 	const label = ProviderLabels[knownProvider];
+	// The exact name now belongs to the first-party provider, which the backend enforces: a custom
+	// provider holding it can no longer be updated, and config.json skips it.
+	const nameReserved = customProviderName.trim().toLowerCase() === knownProvider;
 
 	return (
 		<AlertDialog open={show}>
@@ -31,11 +34,20 @@ export default function FirstPartyProviderAvailableDialog({ show, customProvider
 						<RenderProviderIcon provider={knownProvider as ProviderIconType} size="sm" className="h-5 w-5 shrink-0" />
 						Official {label} integration available
 					</AlertDialogTitle>
-					<AlertDialogDescription>
-						We noticed you have a custom provider named <span className="text-foreground font-medium">{customProviderName}</span>. Bifrost
-						now supports {label} natively. You can delete the custom provider and add the official {label} integration from{" "}
-						<span className="text-foreground font-medium">Add Provider</span>, or keep using your custom provider as is.
-					</AlertDialogDescription>
+					{nameReserved ? (
+						<AlertDialogDescription data-testid="first-party-provider-name-reserved">
+							Bifrost now supports {label} natively, and the name <span className="text-foreground font-medium">{customProviderName}</span>{" "}
+							belongs to the official provider. Your custom provider keeps serving requests, but its settings can no longer be saved and
+							config.json entries for it are skipped. Recreate it as a custom provider under another name (for example{" "}
+							<span className="text-foreground font-medium">{knownProvider}-custom</span>), then delete this one.
+						</AlertDialogDescription>
+					) : (
+						<AlertDialogDescription>
+							We noticed you have a custom provider named <span className="text-foreground font-medium">{customProviderName}</span>. Bifrost
+							now supports {label} natively. You can delete the custom provider and add the official {label} integration from{" "}
+							<span className="text-foreground font-medium">Add Provider</span>, or keep using your custom provider as is.
+						</AlertDialogDescription>
+					)}
 				</AlertDialogHeader>
 				<AlertDialogFooter>
 					<AlertDialogCancel onClick={onDismiss}>Keep custom provider</AlertDialogCancel>

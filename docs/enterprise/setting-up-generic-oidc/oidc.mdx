@@ -284,7 +284,7 @@ Review your full configuration - connection details, attribute mappings, and SCI
 
 ## How background sync works
 
-Bifrost refreshes active OIDC sessions every **15 minutes**. If a session cannot be refreshed, Bifrost checks with your IdP whether the user is still active; if the IdP reports the user as inactive, Bifrost decommissions that user locally.
+Bifrost refreshes each OIDC session when it expires (sessions last at least 30 minutes). If a session cannot be refreshed, Bifrost checks with your IdP whether the user is still active; if the IdP reports the user as inactive, Bifrost decommissions that user locally.
 
 For providers that support it, see [SCIM with Generic OIDC](./scim) to enable real-time user and group provisioning.
 

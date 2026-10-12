@@ -386,6 +386,8 @@ interface ComboboxSelectBaseProps {
 	optionTestId?: (value: string) => string;
 	// Forwarded to the trigger button so a form label (FormControl / htmlFor) can target it.
 	id?: string;
+	// Accessible name for the trigger when no visible label is associated with it.
+	"aria-label"?: string;
 }
 
 interface ComboboxCreatableProps {
@@ -537,6 +539,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 		searchPlaceholder,
 		optionTestId,
 		id,
+		"aria-label": ariaLabel,
 	} = props;
 
 	const [open, setOpen] = React.useState(false);
@@ -576,6 +579,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 						aria-expanded={open}
 						disabled={disabled}
 						id={id}
+						aria-label={ariaLabel}
 						data-testid={dataTestId}
 						className={cn(
 							"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
@@ -682,6 +686,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 					aria-expanded={open}
 					disabled={disabled}
 					id={id}
+					aria-label={ariaLabel}
 					data-testid={dataTestId}
 					className={cn(
 						"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",

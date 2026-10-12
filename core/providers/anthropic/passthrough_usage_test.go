@@ -50,7 +50,8 @@ func TestExtractAnthropicPassthroughUsage(t *testing.T) {
 			check: func(t *testing.T, u *schemas.BifrostPassthroughUsage) {
 				if u == nil || u.LLMUsage == nil || u.LLMUsage.CompletionTokensDetails == nil ||
 					u.LLMUsage.CompletionTokensDetails.NumSearchQueries == nil ||
-					*u.LLMUsage.CompletionTokensDetails.NumSearchQueries != 2 {
+					*u.LLMUsage.CompletionTokensDetails.NumSearchQueries != 2 ||
+					u.LLMUsage.ToolUsage.WebSearch.NumRequests != 2 {
 					t.Fatalf("web search requests = %+v, want 2", u)
 				}
 			},
@@ -129,7 +130,8 @@ func TestAnthropicPassthroughStreamUsage(t *testing.T) {
 		u := acc.ObserveEvent([]byte(`{"type":"message_delta","usage":{"output_tokens":4,"server_tool_use":{"web_search_requests":3}}}`))
 		if u == nil || u.LLMUsage == nil || u.LLMUsage.CompletionTokensDetails == nil ||
 			u.LLMUsage.CompletionTokensDetails.NumSearchQueries == nil ||
-			*u.LLMUsage.CompletionTokensDetails.NumSearchQueries != 3 {
+			*u.LLMUsage.CompletionTokensDetails.NumSearchQueries != 3 ||
+			u.LLMUsage.ToolUsage.WebSearch.NumRequests != 3 {
 			t.Fatalf("web search requests = %+v, want 3", u)
 		}
 	})

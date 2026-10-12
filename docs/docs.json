@@ -5,10 +5,6 @@
     "dark": "/media/bifrost-logo-dark.png",
     "light": "/media/bifrost-logo.png"
   },
-  "banner": {
-    "content": "Try Bifrost Enterprise free for 14 days. [Explore now](https://www.getmaxim.ai/bifrost/enterprise)",
-    "dismissible": true
-  },
   "theme": "mint",
   "colors": {
     "primary": "#0C3B43",
@@ -29,12 +25,16 @@
         "label": "GitHub",
         "href": "https://github.com/maximhq/bifrost",
         "icon": "github"
+      },
+      {
+        "label": "Request License",
+        "href": "https://www.getmaxim.ai/enterprise#free-license"
       }
     ],
     "primary": {
       "type": "button",
       "label": "Book a demo",
-      "href": "https://www.getmaxim.ai/bifrost/book-a-demo"
+      "href": "https://www.getmaxim.ai/book-a-demo"
     }
   },
   "navigation": {
@@ -134,6 +134,7 @@
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/bedrock-mantle",
                   "providers/supported-providers/cerebras",
+                  "providers/supported-providers/cloudflare",
                   "providers/supported-providers/cohere",
                   "providers/supported-providers/databricks",
                   "providers/supported-providers/deepseek",
@@ -170,6 +171,7 @@
               "providers/reasoning",
               "providers/performance",
               "providers/custom-providers",
+              "providers/self-hosted-decision-models",
               "providers/custom-pricing",
               "providers/request-options",
               "providers/test-harness-coverage"
@@ -226,6 +228,7 @@
             "pages": [
               "features/drop-in-replacement",
               "features/retries-and-fallbacks",
+              "features/complexity-router",
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
@@ -239,8 +242,7 @@
                   "features/governance/budget-and-limits",
                   "features/governance/model-limits",
                   "features/governance/mcp-tools",
-                  "features/governance/required-headers",
-                  "features/governance/complexity-router"
+                  "features/governance/required-headers"
                 ]
               },
               "features/telemetry",
@@ -303,6 +305,7 @@
             "pages": [
               "enterprise/user-provisioning",
               "enterprise/how-identity-sync-works",
+              "enterprise/teams-business-units-customers",
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
@@ -332,7 +335,8 @@
                       "integrations/guardrails/patronus-ai",
                       "integrations/guardrails/checkpoint",
                       "integrations/guardrails/repello-argus",
-                      "integrations/guardrails/singulr-ai"
+                      "integrations/guardrails/singulr-ai",
+                      "integrations/guardrails/a10"
                     ]
                   }
                 ]
@@ -552,7 +556,8 @@
               "integrations/guardrails/patronus-ai",
               "integrations/guardrails/checkpoint",
               "integrations/guardrails/repello-argus",
-              "integrations/guardrails/singulr-ai"
+              "integrations/guardrails/singulr-ai",
+              "integrations/guardrails/a10"
             ]
           },
           {
@@ -872,6 +877,7 @@
                   "POST /openai/v1/responses/compact",
                   "POST /openai/v1/embeddings",
                   "POST /openai/openai/deployments/{deployment-id}/embeddings",
+                  "POST /openai/v1/decisions",
                   "POST /openai/v1/audio/speech",
                   "POST /openai/openai/deployments/{deployment-id}/audio/speech",
                   "POST /openai/v1/audio/transcriptions",
@@ -1170,6 +1176,7 @@
                   "POST /api/mcp/client/{id}/complete-oauth",
                   "POST /api/mcp/client/{id}/initiate-verification",
                   "POST /api/mcp/client/{id}/reauthorize",
+                  "POST /api/mcp/client/{id}/reregister",
                   "POST /api/mcp/client/{id}/verify-headers",
                   "POST /api/mcp/client/{id}/verify-exchange",
                   "GET /api/mcp/sessions",
@@ -1181,7 +1188,20 @@
                 ]
               },
               {
-                "group": "MCP Tool Groups",
+                "group": "Virtual MCPs",
+                "expanded": false,
+                "pages": [
+                  "GET /api/mcp/virtual-mcps",
+                  "POST /api/mcp/virtual-mcps",
+                  "GET /api/mcp/virtual-mcps/{id}",
+                  "PUT /api/mcp/virtual-mcps/{id}",
+                  "DELETE /api/mcp/virtual-mcps/{id}",
+                  "POST /api/mcp/virtual-mcps/{id}/virtual-keys/{vkId}",
+                  "DELETE /api/mcp/virtual-mcps/{id}/virtual-keys/{vkId}"
+                ]
+              },
+              {
+                "group": "MCP Tool Groups (deprecated)",
                 "expanded": false,
                 "pages": [
                   "GET /api/mcp/tool-groups",
@@ -1764,12 +1784,20 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v2.2.3",
-              "changelogs/v2.2.2",
-              "changelogs/v2.2.1",
-              "changelogs/v2.2.0",
-              "changelogs/v2.1.1",
-              "changelogs/v2.1.0",
+              "changelogs/v2.2.6",
+              "changelogs/v2.2.5",
+              {
+                "group": "September 2026",
+                "pages": [
+                  "changelogs/v2.2.4",
+                  "changelogs/v2.2.3",
+                  "changelogs/v2.2.2",
+                  "changelogs/v2.2.1",
+                  "changelogs/v2.2.0",
+                  "changelogs/v2.1.1",
+                  "changelogs/v2.1.0"
+                ]
+              },
               {
                 "group": "August 2026",
                 "pages": [
@@ -1984,13 +2012,21 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
-              "changelogs/ent-v2.2.3",
-              "changelogs/ent-v2.2.2",
-              "changelogs/ent-v2.2.1",
-              "changelogs/ent-v2.2.0",
-              "changelogs/ent-v2.1.1",
-              "changelogs/ent-v2.1.0",
-              "changelogs/ent-v2.0.1",
+              "changelogs/ent-v2.2.6",
+              "changelogs/ent-v2.2.5",
+              {
+                "group": "September 2026",
+                "pages": [
+                  "changelogs/ent-v2.2.4",
+                  "changelogs/ent-v2.2.3",
+                  "changelogs/ent-v2.2.2",
+                  "changelogs/ent-v2.2.1",
+                  "changelogs/ent-v2.2.0",
+                  "changelogs/ent-v2.1.1",
+                  "changelogs/ent-v2.1.0",
+                  "changelogs/ent-v2.0.1"
+                ]
+              },
               {
                 "group": "August 2026",
                 "pages": [
@@ -2081,10 +2117,17 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
-              "changelogs/edge-v0.9.0",
-              "changelogs/edge-v0.8.0",
-              "changelogs/edge-v0.7.0",
-              "changelogs/edge-v0.6.0",
+              "changelogs/edge-v0.9.2",
+              {
+                "group": "September 2026",
+                "pages": [
+                  "changelogs/edge-v0.9.1",
+                  "changelogs/edge-v0.9.0",
+                  "changelogs/edge-v0.8.0",
+                  "changelogs/edge-v0.7.0",
+                  "changelogs/edge-v0.6.0"
+                ]
+              },
               {
                 "group": "August 2026",
                 "pages": ["changelogs/edge-v0.5.6", "changelogs/edge-v0.4.0"]
@@ -2123,6 +2166,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.44",
               "changelogs/helm-v2.1.43",
               "changelogs/helm-v2.1.42",
               "changelogs/helm-v2.1.41",
@@ -2225,6 +2269,10 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/features/governance/complexity-router",
+      "destination": "/features/complexity-router"
+    },
     {
       "source": "/integrations/guardrails/lakera",
       "destination": "/integrations/guardrails/checkpoint"
@@ -2440,9 +2488,123 @@
   ],
   "footer": {
     "socials": {
-      "x": "https://x.com/getmaximai",
-      "github": "https://github.com/maximhq/bifrost",
-      "linkedin": "https://linkedin.com/company/maxim-ai"
-    }
+      "x": "https://x.com/getbifrost",
+      "linkedin": "https://linkedin.com/company/maxim-ai",
+      "github": "https://github.com/maximhq/bifrost"
+    },
+    "links": [
+      {
+        "header": "Company",
+        "items": [
+          {
+            "label": "Book a Demo",
+            "href": "https://www.getmaxim.ai/book-a-demo?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Partner Program",
+            "href": "https://www.getmaxim.ai/partners-program?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Careers",
+            "href": "https://www.getmaxim.ai/careers?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Contact Us",
+            "href": "mailto:contact@getmaxim.ai"
+          },
+          {
+            "label": "Security",
+            "href": "https://docs.getbifrost.ai/security"
+          },
+          {
+            "label": "Trust Center",
+            "href": "https://trust.getmaxim.ai/"
+          },
+          {
+            "label": "Terms of Service",
+            "href": "https://www.getmaxim.ai/terms-of-service?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Privacy Policy",
+            "href": "https://www.getmaxim.ai/privacy-policy?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          }
+        ]
+      },
+      {
+        "header": "Products",
+        "items": [
+          {
+            "label": "LLM Gateway",
+            "href": "https://www.getmaxim.ai/llm-gateway?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "MCP Gateway",
+            "href": "https://www.getmaxim.ai/mcp-gateway?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Governance",
+            "href": "https://www.getmaxim.ai/ai-governance?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Guardrails",
+            "href": "https://www.getmaxim.ai/ai-guardrails?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Observability",
+            "href": "https://www.getmaxim.ai/ai-observability?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Bifrost Edge",
+            "href": "https://www.getmaxim.ai/edge?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          }
+        ]
+      },
+      {
+        "header": "Resources",
+        "items": [
+          {
+            "label": "Bifrost Enterprise",
+            "href": "https://www.getmaxim.ai/enterprise?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Performance Benchmarks",
+            "href": "https://www.getmaxim.ai/bifrost/resources/benchmarks?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "LLM Gateway Buyer's Guide",
+            "href": "https://www.getmaxim.ai/bifrost/resources/buyers-guide?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Claude Code Integration",
+            "href": "https://www.getmaxim.ai/bifrost/resources/claude-code?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Migrating from LiteLLM",
+            "href": "https://www.getmaxim.ai/bifrost/resources/migrating-from-litellm?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Blogs",
+            "href": "https://www.getmaxim.ai/bifrost/blog?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          }
+        ]
+      },
+      {
+        "header": "For LLMs",
+        "items": [
+          {
+            "label": "llms-full.txt",
+            "href": "https://docs.getbifrost.ai/llms-full.txt"
+          },
+          {
+            "label": "llms.txt",
+            "href": "https://docs.getbifrost.ai/llms.txt"
+          },
+          {
+            "label": "llm-info",
+            "href": "https://www.getmaxim.ai/llm-info?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          }
+        ]
+      }
+    ]
   }
 }

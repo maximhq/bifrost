@@ -17,13 +17,16 @@ export const warpApi = baseApi.injectEndpoints({
 		}),
 		updateWarpConfig: builder.mutation<WarpConfig, WarpConfigInput>({
 			query: (body) => ({ url: "/warp/config", method: "PUT", body }),
-			invalidatesTags: ["WarpConfig"],
+			// The status read hides a finished backfill whose embedding space is no
+			// longer the configured one, so a save has to trigger a fresh read.
+			invalidatesTags: ["WarpConfig", "WarpBackfillStatus"],
 		}),
 		startWarpBackfill: builder.mutation<WarpBackfillStatus, WarpBackfillInput>({
 			query: (body) => ({ url: "/warp/log-index/backfill", method: "POST", body }),
 		}),
 		getWarpBackfillStatus: builder.query<WarpBackfillStatus, { id?: string } | void>({
 			query: (arg) => ({ url: "/warp/log-index/backfill/status", params: arg?.id ? { id: arg.id } : {} }),
+			providesTags: ["WarpBackfillStatus"],
 		}),
 		cancelWarpBackfill: builder.mutation<WarpBackfillStatus, { id?: string } | void>({
 			query: (body) => ({ url: "/warp/log-index/backfill/cancel", method: "POST", body: body ?? {} }),

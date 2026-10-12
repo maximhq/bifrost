@@ -898,3 +898,206 @@ func TestChatCachePoint_StrippedForPrimaryKeptForBedrockFallback(t *testing.T) {
 	assert.Contains(t, bedrockBodies[0], "cachePoint", "fallback lost the caller's cachePoint")
 	assert.Len(t, req.Input[0].Content.ContentBlocks, 2, "caller's request was mutated")
 }
+
+// TestChatReasoningModeDispatch: reasoning.mode only exists on the OpenAI Responses
+// API, so a chat request that sets it must reach Responses on OpenAI/Azure wires
+// (custom providers resolve through their base type) and stay on chat everywhere
+// else, where the drop is reported through the compat dropped-params list.
+func TestChatReasoningModeDispatch(t *testing.T) {
+	cases := []struct {
+		name          string
+		key           schemas.ModelProvider
+		base          schemas.ModelProvider
+		mode          *string
+		wantResponses bool
+		wantDropped   bool
+	}{
+		{name: "openai with mode", key: schemas.OpenAI, mode: new("pro"), wantResponses: true},
+		{name: "azure with mode", key: schemas.Azure, mode: new("pro"), wantResponses: true},
+		{name: "custom openai with mode", key: "my-openai", base: schemas.OpenAI, mode: new("pro"), wantResponses: true},
+		{name: "openai without mode", key: schemas.OpenAI},
+		{name: "anthropic with mode", key: schemas.Anthropic, mode: new("pro"), wantDropped: true},
+		{name: "anthropic without mode", key: schemas.Anthropic},
+	}
+	for _, tc := range cases {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, stream), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if tc.base != "" {
+					ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, tc.base)
+				}
+				prior := []string{"service_tier"}
+				ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParams, prior)
+				req := &schemas.BifrostChatRequest{
+					Provider: tc.key,
+					Model:    "gpt-6-luna",
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("Reply with OK.")}}},
+					Params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: new("low"), Mode: tc.mode}},
+				}
+				message := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: req}}
+				provider := &billingHeaderCaptureProvider{stubProvider: stubProvider{key: tc.key}}
+				client := &Bifrost{}
+				if stream {
+					message.RequestType = schemas.ChatCompletionStreamRequest
+					_, bifrostErr := client.handleProviderStreamRequest(provider, nil, message, schemas.Key{}, nil, nil)
+					require.Nil(t, bifrostErr)
+				} else {
+					_, bifrostErr := client.handleProviderRequest(provider, nil, message, schemas.Key{}, nil)
+					require.Nil(t, bifrostErr)
+				}
+
+				changeType, _ := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
+				if tc.wantResponses {
+					require.NotNil(t, provider.responses, "reasoning.mode must route the chat request to the Responses API")
+					assert.Nil(t, provider.chat)
+					require.NotNil(t, provider.responses.Params)
+					require.NotNil(t, provider.responses.Params.Reasoning)
+					require.NotNil(t, provider.responses.Params.Reasoning.Mode)
+					assert.Equal(t, "pro", *provider.responses.Params.Reasoning.Mode)
+					assert.Equal(t, schemas.ResponsesRequest, changeType)
+				} else {
+					require.NotNil(t, provider.chat)
+					assert.Nil(t, provider.responses)
+					assert.Empty(t, changeType)
+				}
+
+				dropped, _ := ctx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string)
+				if tc.wantDropped {
+					assert.Equal(t, []string{"service_tier", "reasoning.mode"}, dropped)
+				} else {
+					assert.Equal(t, []string{"service_tier"}, dropped)
+				}
+				assert.Equal(t, []string{"service_tier"}, prior, "the caller's dropped slice must not be mutated in place")
+			})
+		}
+	}
+
+	// The Responses API has no n, so a mode request asking for several choices on
+	// OpenAI/Azure is rejected instead of silently returning one.
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("openai with mode and n=2/stream=%t", stream), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-6-luna",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("Reply with OK.")}}},
+				Params:   &schemas.ChatParameters{N: new(2), Reasoning: &schemas.ChatReasoning{Mode: new("pro")}},
+			}
+			message := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: req}}
+			provider := &billingHeaderCaptureProvider{stubProvider: stubProvider{key: schemas.OpenAI}}
+			client := &Bifrost{}
+			var bifrostErr *schemas.BifrostError
+			if stream {
+				message.RequestType = schemas.ChatCompletionStreamRequest
+				_, bifrostErr = client.handleProviderStreamRequest(provider, nil, message, schemas.Key{}, nil, nil)
+			} else {
+				_, bifrostErr = client.handleProviderRequest(provider, nil, message, schemas.Key{}, nil)
+			}
+			require.NotNil(t, bifrostErr, "mode with n=2 must be rejected, not served as one choice")
+			require.NotNil(t, bifrostErr.StatusCode)
+			assert.Equal(t, 400, *bifrostErr.StatusCode)
+			assert.Contains(t, bifrostErr.Error.Message, "n > 1")
+			assert.Nil(t, provider.responses)
+			assert.Nil(t, provider.chat)
+		})
+	}
+
+	// Chat parameters with no Responses equivalent would be dropped silently by the
+	// conversion, so a mode request that sets any of them is rejected, naming each one.
+	unsupported := []struct {
+		name   string
+		want   []string
+		params schemas.ChatParameters
+	}{
+		{name: "stop", want: []string{"stop"}, params: schemas.ChatParameters{Stop: []string{"END"}}},
+		{name: "seed", want: []string{"seed"}, params: schemas.ChatParameters{Seed: new(7)}},
+		{name: "logit_bias", want: []string{"logit_bias"}, params: schemas.ChatParameters{LogitBias: &map[string]float64{"50256": -100}}},
+		{name: "presence_penalty", want: []string{"presence_penalty"}, params: schemas.ChatParameters{PresencePenalty: new(0.5)}},
+		{name: "frequency_penalty", want: []string{"frequency_penalty"}, params: schemas.ChatParameters{FrequencyPenalty: new(0.5)}},
+		{name: "logprobs", want: []string{"logprobs"}, params: schemas.ChatParameters{LogProbs: new(true)}},
+		{name: "audio modality", want: []string{"audio"}, params: schemas.ChatParameters{Modalities: []string{"text", "audio"}}},
+		{name: "prediction", want: []string{"prediction"}, params: schemas.ChatParameters{Prediction: &schemas.ChatPrediction{Type: "content", Content: "x"}}},
+		{name: "web_search_options", want: []string{"web_search_options"}, params: schemas.ChatParameters{WebSearchOptions: &schemas.ChatWebSearchOptions{}}},
+		{name: "several at once", want: []string{"n > 1", "stop", "seed"}, params: schemas.ChatParameters{N: new(3), Stop: []string{"END"}, Seed: new(1)}},
+	}
+	for _, tc := range unsupported {
+		t.Run("openai with mode and "+tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			params := tc.params
+			params.Reasoning = &schemas.ChatReasoning{Mode: new("pro")}
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-6-luna",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("Reply with OK.")}}},
+				Params:   &params,
+			}
+			message := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: req}}
+			provider := &billingHeaderCaptureProvider{stubProvider: stubProvider{key: schemas.OpenAI}}
+			_, bifrostErr := (&Bifrost{}).handleProviderRequest(provider, nil, message, schemas.Key{}, nil)
+			require.NotNil(t, bifrostErr, "%s must be rejected, not dropped by the Responses conversion", tc.name)
+			require.NotNil(t, bifrostErr.StatusCode)
+			assert.Equal(t, 400, *bifrostErr.StatusCode)
+			for _, field := range tc.want {
+				assert.Contains(t, bifrostErr.Error.Message, field)
+			}
+			assert.Nil(t, provider.responses)
+			assert.Nil(t, provider.chat)
+		})
+	}
+
+	// Values the conversion keeps or that ask for nothing must still route.
+	t.Run("openai with mode and harmless chat params", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-6-luna",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("Reply with OK.")}}},
+			Params: &schemas.ChatParameters{
+				N: new(1), LogProbs: new(false), Modalities: []string{"text"}, Stop: []string{},
+				Reasoning: &schemas.ChatReasoning{Mode: new("pro")},
+			},
+		}
+		message := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: req}}
+		provider := &billingHeaderCaptureProvider{stubProvider: stubProvider{key: schemas.OpenAI}}
+		_, bifrostErr := (&Bifrost{}).handleProviderRequest(provider, nil, message, schemas.Key{}, nil)
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, provider.responses)
+	})
+
+	// A raw-body request is sent upstream byte for byte, so it is never converted (the
+	// chat body would reach /responses), never rejected for n, and never reported as
+	// dropping a mode its body still carries.
+	for _, key := range []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s raw body with mode and n=2/stream=%t", key, stream), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+				ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParams, []string{"service_tier"})
+				req := &schemas.BifrostChatRequest{
+					Provider:       key,
+					Model:          "gpt-6-luna",
+					Input:          []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("Reply with OK.")}}},
+					Params:         &schemas.ChatParameters{N: new(2), Reasoning: &schemas.ChatReasoning{Mode: new("pro")}},
+					RawRequestBody: []byte(`{"model":"gpt-6-luna","n":2,"reasoning":{"mode":"pro"},"messages":[{"role":"user","content":"Reply with OK."}]}`),
+				}
+				message := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: req}}
+				provider := &billingHeaderCaptureProvider{stubProvider: stubProvider{key: key}}
+				client := &Bifrost{}
+				var bifrostErr *schemas.BifrostError
+				if stream {
+					message.RequestType = schemas.ChatCompletionStreamRequest
+					_, bifrostErr = client.handleProviderStreamRequest(provider, nil, message, schemas.Key{}, nil, nil)
+				} else {
+					_, bifrostErr = client.handleProviderRequest(provider, nil, message, schemas.Key{}, nil)
+				}
+				require.Nil(t, bifrostErr, "a raw-body request must not be rejected or rewritten")
+				require.NotNil(t, provider.chat, "a raw-body chat request must stay on the chat endpoint")
+				assert.Nil(t, provider.responses)
+				changeType, _ := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
+				assert.Empty(t, changeType)
+				dropped, _ := ctx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string)
+				assert.Equal(t, []string{"service_tier"}, dropped, "the raw body still carries reasoning.mode")
+			})
+		}
+	}
+}

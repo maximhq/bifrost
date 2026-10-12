@@ -170,7 +170,8 @@ export function turnsFromStoredMessages(messages: WarpStoredMessage[]): WarpTurn
 				textOffset: call.text_offset,
 			}));
 		}
-		if (message.error) turn.error = message.error;
+		// Encoded like a live turn's error, so a stored message's own colon is never read as a code.
+		if (message.error) turn.error = encodeTurnError(message.error_code || undefined, message.error);
 		if (isPartialAnswer(message.finish_reason)) turn.partial = true;
 		// Must be marked as a question, or the server counts the reply as a fresh question on replay.
 		if (isWarpQuestionFinish(message.finish_reason)) {
@@ -368,6 +369,52 @@ export function warpErrorDetail(code: string | undefined, message: string | unde
 				],
 				raw,
 			};
+		case "access_denied":
+			return {
+				summary: "Your account doesn't have access to Warp's model.",
+				cause:
+					"This deployment's governance rules refused the request before it reached the provider. Warp's model calls count as yours, so they need the same access any of your requests would.",
+				suggestions: [
+					"Ask an administrator to give your account model access, such as an access profile that allows Warp's model.",
+					"If you do have access, the details below say which rule refused it.",
+				],
+				raw,
+			};
+		case "budget_exceeded":
+			return {
+				summary: "You've used up your budget.",
+				cause:
+					"A budget that covers your account is spent for this cycle, so governance refused Warp's model call. Warp's model calls count as yours, so they spend the same budget as any of your requests.",
+				suggestions: [
+					"Wait for the budget to reset at the start of the next cycle.",
+					"Ask an administrator to raise the limit if you need more this cycle.",
+					"The details below say which budget refused it.",
+				],
+				raw,
+			};
+		case "rate_limited":
+			return {
+				summary: "You've hit a rate limit.",
+				cause:
+					"Your account sent more requests or tokens than a rate limit allows in its window, so governance refused Warp's model call. Warp's model calls count as yours, so they share the same limits.",
+				suggestions: [
+					"Wait a moment and ask again.",
+					"Ask an administrator to raise the limit if it keeps happening.",
+					"The details below say which limit refused it.",
+				],
+				raw,
+			};
+		case "model_blocked":
+			return {
+				summary: "Warp's model isn't allowed for your account.",
+				cause:
+					"This deployment's governance rules block the model or provider Warp is set to use for your account, so the request was refused before it reached the provider.",
+				suggestions: [
+					"Ask an administrator to allow Warp's model for your account.",
+					"Or set Warp to a model your account is allowed to use in Warp settings.",
+				],
+				raw,
+			};
 		case "tool_error":
 			return {
 				summary: "A query failed.",
@@ -391,7 +438,18 @@ export function encodeTurnError(code: string | undefined, message: string): stri
 	return `${code ?? ""}:${message}`;
 }
 
-const WARP_ERROR_CODES = new Set(["not_configured", "upstream_error", "tool_error", "max_iterations", "timeout", "cancelled"]);
+const WARP_ERROR_CODES = new Set([
+	"not_configured",
+	"upstream_error",
+	"access_denied",
+	"budget_exceeded",
+	"rate_limited",
+	"model_blocked",
+	"tool_error",
+	"max_iterations",
+	"timeout",
+	"cancelled",
+]);
 
 /** Checks against known codes, since plain messages often contain colons ("TypeError: Failed to fetch"). */
 export function isEncodedTurnError(error: string): boolean {
@@ -423,6 +481,22 @@ export function splitWarpAnswer(content: string): WarpAnswerParts {
 	const provenance = match[1].trim();
 	if (provenance === "") return { answer: content };
 	return { answer: content.slice(0, match.index).trimEnd(), provenance };
+}
+
+const WARP_PROVENANCE_OPEN = "```warp-scope";
+
+/**
+ * Streaming counterpart of splitWarpAnswer: drops the scope block, closed or not, so it never renders
+ * as a code block that vanishes into the provenance toggle when the turn finishes. A trailing partial
+ * fence line ("```w") is held too; a bare "```" is not, since it may close an ordinary code block.
+ */
+export function holdWarpProvenance(text: string): string {
+	const open = text.lastIndexOf("\n" + WARP_PROVENANCE_OPEN);
+	if (open !== -1 || text.startsWith(WARP_PROVENANCE_OPEN)) return text.slice(0, Math.max(open, 0)).trimEnd();
+	const lineStart = text.lastIndexOf("\n") + 1;
+	const tail = text.slice(lineStart);
+	if (tail.length > 3 && WARP_PROVENANCE_OPEN.startsWith(tail)) return text.slice(0, lineStart).trimEnd();
+	return text;
 }
 
 /** Formats a turn's token and cost usage, or null when there is nothing to report. */
@@ -510,6 +584,37 @@ export function parseWarpChartSpec(raw: string): WarpChartSpec | null {
 		window: spec.window && typeof spec.window === "object" ? (spec.window as WarpChartSpec["window"]) : undefined,
 		link: typeof spec.link === "string" ? spec.link : undefined,
 	};
+}
+
+const TABLE_DELIMITER_CELL = /^\s*:?-+:?\s*$/;
+
+/** Cells of a pipe table row; an escaped pipe stays inside its cell. */
+function tableRowCells(line: string): string[] {
+	return line
+		.trim()
+		.replace(/^\|/, "")
+		.replace(/(?<!\\)\|$/, "")
+		.split(/(?<!\\)\|/);
+}
+
+/**
+ * Drops a trailing pipe table that has no complete delimiter row yet. Until that row arrives the
+ * header renders as a line of raw pipes, which then snaps into a table a few tokens later.
+ */
+export function holdPartialWarpTable(text: string): string {
+	const lines = text.split("\n");
+	let end = lines.length;
+	if (end > 0 && lines[end - 1].trim() === "") end--;
+	let start = end;
+	while (start > 0 && lines[start - 1].trimStart().startsWith("|")) start--;
+	if (start === end) return text;
+	const before = lines.slice(0, start);
+	// Pipes inside an open code fence are code, not a table.
+	if (before.filter((line) => line.trimStart().startsWith("```")).length % 2 === 1) return text;
+	const header = tableRowCells(lines[start]);
+	const delimiter = start + 1 < end ? tableRowCells(lines[start + 1]) : [];
+	if (delimiter.length === header.length && delimiter.every((cell) => TABLE_DELIMITER_CELL.test(cell))) return text;
+	return before.join("\n");
 }
 
 /** Splits answer text around chart blocks; an unclosed block is pending while streaming, invalid once finished. */

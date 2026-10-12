@@ -19,16 +19,16 @@ func TestComputeToolsHash_StableAcrossMapIterationOrder(t *testing.T) {
 	toolsB := map[string]schemas.ChatTool{"a": {Type: "function"}, "b": {Type: "function"}}
 	mapping := map[string]string{"a": "a-orig", "b": "b-orig"}
 
-	assert.Equal(t, computeToolsHash(toolsA, mapping), computeToolsHash(toolsB, mapping))
+	assert.Equal(t, computeToolsHash(toolsA, mapping, ""), computeToolsHash(toolsB, mapping, ""))
 }
 
 // TestComputeToolsHash_DiffersOnContentChange confirms the hash actually
 // reflects content, not just key sets — a change to a tool's own fields
 // (not just which names are present) must produce a different hash.
 func TestComputeToolsHash_DiffersOnContentChange(t *testing.T) {
-	base := computeToolsHash(map[string]schemas.ChatTool{"echo": {Type: "function"}}, map[string]string{"echo": "echo-orig"})
-	changedType := computeToolsHash(map[string]schemas.ChatTool{"echo": {Type: "custom"}}, map[string]string{"echo": "echo-orig"})
-	changedMapping := computeToolsHash(map[string]schemas.ChatTool{"echo": {Type: "function"}}, map[string]string{"echo": "renamed"})
+	base := computeToolsHash(map[string]schemas.ChatTool{"echo": {Type: "function"}}, map[string]string{"echo": "echo-orig"}, "")
+	changedType := computeToolsHash(map[string]schemas.ChatTool{"echo": {Type: "custom"}}, map[string]string{"echo": "echo-orig"}, "")
+	changedMapping := computeToolsHash(map[string]schemas.ChatTool{"echo": {Type: "function"}}, map[string]string{"echo": "renamed"}, "")
 
 	assert.NotEqual(t, base, changedType)
 	assert.NotEqual(t, base, changedMapping)
@@ -49,20 +49,20 @@ func TestSetClientTools_UnchangedTools_DoesNotFireCallback(t *testing.T) {
 	mapping := map[string]string{"echo": "echo-server"}
 
 	callCount := 0
-	m.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
+	m.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, _ string) {
 		callCount++
 	})
 
-	m.SetClientTools(config.ID, tools, mapping)
+	m.SetClientTools(config.ID, tools, mapping, "")
 	require.Equal(t, 1, callCount, "the first discovery must always fire")
 
 	// Re-set with the exact same content (a fresh map literal, so this isn't
 	// just testing pointer equality).
-	m.SetClientTools(config.ID, map[string]schemas.ChatTool{"echo": {Type: "function"}}, map[string]string{"echo": "echo-server"})
+	m.SetClientTools(config.ID, map[string]schemas.ChatTool{"echo": {Type: "function"}}, map[string]string{"echo": "echo-server"}, "")
 	assert.Equal(t, 1, callCount, "an unchanged rediscovery must not re-fire the callback")
 
 	// A genuine change must still fire.
-	m.SetClientTools(config.ID, map[string]schemas.ChatTool{"echo": {Type: "function"}, "new-tool": {Type: "function"}}, map[string]string{"echo": "echo-server", "new-tool": "new-tool-server"})
+	m.SetClientTools(config.ID, map[string]schemas.ChatTool{"echo": {Type: "function"}, "new-tool": {Type: "function"}}, map[string]string{"echo": "echo-server", "new-tool": "new-tool-server"}, "")
 	assert.Equal(t, 2, callCount, "a genuine content change must fire")
 }
 
@@ -78,20 +78,20 @@ func TestWriteBackTools_UnchangedTools_DoesNotFireCallback(t *testing.T) {
 	manager.clientMap[config.ID] = state
 
 	callCount := 0
-	manager.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
+	manager.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, _ string) {
 		callCount++
 	})
 
 	tools := map[string]schemas.ChatTool{"echo": {Type: "function"}}
 	mapping := map[string]string{"echo": "echo-server"}
 
-	manager.writeBackDiscoveredTools(config.ID, 0, tools, mapping)
+	manager.writeBackDiscoveredTools(config.ID, 0, tools, mapping, nil)
 	require.Equal(t, 1, callCount)
 
-	manager.writeBackDiscoveredTools(config.ID, 0, map[string]schemas.ChatTool{"echo": {Type: "function"}}, map[string]string{"echo": "echo-server"})
+	manager.writeBackDiscoveredTools(config.ID, 0, map[string]schemas.ChatTool{"echo": {Type: "function"}}, map[string]string{"echo": "echo-server"}, nil)
 	assert.Equal(t, 1, callCount, "an unchanged tick must not re-fire")
 
-	manager.writeBackDiscoveredTools(config.ID, 0, map[string]schemas.ChatTool{}, map[string]string{})
+	manager.writeBackDiscoveredTools(config.ID, 0, map[string]schemas.ChatTool{}, map[string]string{}, nil)
 	assert.Equal(t, 2, callCount, "the server legitimately losing all its tools is still a genuine change")
 }
 
@@ -106,7 +106,7 @@ func TestAddClient_RestoreFromConfig_SeedsHashSoSubsequentIdenticalDiscoveryNoOp
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 
 	callCount := 0
-	m.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
+	m.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, _ string) {
 		callCount++
 	})
 
@@ -128,6 +128,6 @@ func TestAddClient_RestoreFromConfig_SeedsHashSoSubsequentIdenticalDiscoveryNoOp
 	// Simulate the periodic checker rediscovering the exact same tools right
 	// after boot — must not fire, since nothing actually changed from what
 	// was restored.
-	m.SetClientTools(config.ID, map[string]schemas.ChatTool{"tool-a": {Type: "function"}}, map[string]string{"tool-a": "tool-a-orig"})
+	m.SetClientTools(config.ID, map[string]schemas.ChatTool{"tool-a": {Type: "function"}}, map[string]string{"tool-a": "tool-a-orig"}, "")
 	assert.Equal(t, 0, callCount, "rediscovering the exact tools that were just restored must not fire")
 }

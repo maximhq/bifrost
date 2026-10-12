@@ -94,6 +94,20 @@ func (s *Service) RegisterBackfill(runner *sidekiq.Runner) {
 		return
 	}
 	runner.Register(BackfillJobKind, s.RunBackfillJob)
+	runner.RegisterSummarizer(BackfillJobKind, SummarizeBackfillMeta)
+}
+
+// SummarizeBackfillMeta reports a backfill job's scan progress for generic job views.
+// Malformed metadata yields an empty summary rather than an error.
+func SummarizeBackfillMeta(metadata string) sidekiq.JobSummary {
+	var meta struct {
+		Total   int64 `json:"total"`
+		Scanned int64 `json:"scanned"`
+	}
+	if sonic.Unmarshal([]byte(metadata), &meta) != nil {
+		return sidekiq.JobSummary{}
+	}
+	return sidekiq.JobSummary{Done: meta.Scanned, Total: meta.Total}
 }
 
 // BuildBackfillJobMeta freezes the selected window and embedding space, and
@@ -141,6 +155,29 @@ func (s *Service) BuildBackfillJobMeta(ctx context.Context, start, end time.Time
 	}
 	meta := BackfillJobMeta{StartTime: start, EndTime: end, ConfigSignature: signature, Namespace: config.EffectiveLogVectorStoreNamespace(), Total: total}
 	return marshalBackfillMeta(meta)
+}
+
+// BackfillMatchesConfig reports whether a backfill job's checkpoint was frozen
+// against the embedding space the deployment is configured with now.
+//
+// A finished job is only the current state of the index while the space it
+// ran under is still the configured one: after the embedding model, dimension
+// or namespace is changed, its counters describe rows that the new space will
+// never search, so the settings page reports idle rather than a completed run
+// nothing has actually done. A job with no signature (never written by this
+// code) and a configuration that cannot be read both count as a match: neither
+// is evidence the job is stale, and hiding a failed run's cause on a guess is
+// worse than showing an old one.
+func (s *Service) BackfillMatchesConfig(ctx context.Context, metadata string) bool {
+	var meta BackfillJobMeta
+	if sonic.Unmarshal([]byte(metadata), &meta) != nil || meta.ConfigSignature == "" {
+		return true
+	}
+	config, err := s.Config(ctx)
+	if err != nil {
+		return true
+	}
+	return meta.ConfigSignature == embeddingConfigSignature(config)
 }
 
 // resumableBackfillMeta looks for the most recent backfill job that stopped

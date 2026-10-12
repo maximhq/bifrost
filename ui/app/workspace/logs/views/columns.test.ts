@@ -5,6 +5,22 @@ import type { LogEntry } from "@/lib/types/logs";
 import { getMessage } from "./columns";
 
 describe("getMessage", () => {
+	it("shows N/A for a successful model retrieve, which has no message body", () => {
+		const log = { object: "model_retrieve", status: "success" } as unknown as LogEntry;
+
+		expect(getMessage(log)).toBe("N/A");
+	});
+
+	it("keeps the error summary for a failed model retrieve", () => {
+		const log = {
+			object: "model_retrieve",
+			status: "error",
+			content_summary: "invalid model: path delimiters and percent-encoding are not allowed",
+		} as unknown as LogEntry;
+
+		expect(getMessage(log)).toBe("invalid model: path delimiters and percent-encoding are not allowed");
+	});
+
 	it("returns EI realtime text from input history", () => {
 		const log = {
 			object: "realtime.turn",

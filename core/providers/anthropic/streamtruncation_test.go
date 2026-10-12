@@ -461,3 +461,29 @@ func TestAnthropicEgressFailedEmitsErrorEvent(t *testing.T) {
 		t.Error("error event must carry the upstream failure message")
 	}
 }
+
+// An SSE error event rides a committed HTTP 200, so the error carries no status of its
+// own. Left nil it reached metrics as a caller 400, and ClassifyFailure had nothing to
+// act on — an overloaded_error mid-stream was neither retried nor rotated away from.
+func TestStreamErrorStatusMapsAnthropicErrorTypes(t *testing.T) {
+	cases := []struct {
+		errType string
+		want    int
+	}{
+		{"overloaded_error", 529}, // Anthropic's own; already in the transient retry set
+		{"api_error", 500},
+		{"rate_limit_error", 429},
+		{"request_too_large", 413},
+		{"invalid_request_error", 400},
+		{"authentication_error", 401},
+		{"permission_error", 403},
+		{"not_found_error", 404},
+		{"some_future_type", 502}, // unknown: upstream failed and gave nothing to go on
+		{"", 502},
+	}
+	for _, tc := range cases {
+		if got := streamErrorStatus(tc.errType); got != tc.want {
+			t.Errorf("streamErrorStatus(%q) = %d, want %d", tc.errType, got, tc.want)
+		}
+	}
+}

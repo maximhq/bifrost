@@ -163,6 +163,7 @@ export function MCPServerSelector({
 									"hover:bg-accent",
 									props.isSelected && "bg-accent dark:!bg-card",
 								)}
+								role="presentation"
 								onClick={() => props.selectOption(props.data)}
 							>
 								<div className="flex items-center gap-2">

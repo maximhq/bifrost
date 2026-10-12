@@ -39,13 +39,13 @@ func (m *fakeUpdateCredsMCPManager) CloseAndMarkNeedsReauth(_ context.Context, _
 }
 func (m *fakeUpdateCredsMCPManager) DisableMCPClient(_ context.Context, _ string) error { return nil }
 func (m *fakeUpdateCredsMCPManager) EnableMCPClient(_ context.Context, _ string) error  { return nil }
-func (m *fakeUpdateCredsMCPManager) VerifyPerUserOAuthConnection(_ context.Context, _ *schemas.MCPClientConfig, _ string) (map[string]schemas.ChatTool, map[string]string, error) {
-	return nil, nil, nil
+func (m *fakeUpdateCredsMCPManager) VerifyPerUserOAuthConnection(_ context.Context, _ *schemas.MCPClientConfig, _ string) (map[string]schemas.ChatTool, map[string]string, string, error) {
+	return nil, nil, "", nil
 }
-func (m *fakeUpdateCredsMCPManager) VerifyHeadersConnection(_ context.Context, _ *schemas.MCPClientConfig, _ map[string]string) (map[string]schemas.ChatTool, map[string]string, error) {
-	return nil, nil, nil
+func (m *fakeUpdateCredsMCPManager) VerifyHeadersConnection(_ context.Context, _ *schemas.MCPClientConfig, _ map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error) {
+	return nil, nil, "", nil
 }
-func (m *fakeUpdateCredsMCPManager) SetClientTools(_ string, _ map[string]schemas.ChatTool, _ map[string]string) {
+func (m *fakeUpdateCredsMCPManager) SetClientTools(_ string, _ map[string]schemas.ChatTool, _ map[string]string, _ string) {
 }
 func (m *fakeUpdateCredsMCPManager) RequiresPerCallConnection(_ *schemas.MCPClientConfig) bool {
 	return false

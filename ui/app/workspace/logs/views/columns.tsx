@@ -22,8 +22,8 @@ import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { ColumnDef } from "@tanstack/react-table";
 import { format, formatDistanceToNow } from "date-fns";
-import { ArrowUpDown, ChevronRight, CornerDownRight, Loader2, MoreHorizontal, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { ArrowUpDown, ChevronRight, Loader2, MoreHorizontal, Trash2 } from "lucide-react";
+import { type ReactNode, useState } from "react";
 
 // Passed to useReactTable({ meta }) by the logs page so the expander column can
 // read/toggle chain expansion without threading props through column factories.
@@ -150,6 +150,10 @@ export function getMessage(log?: LogEntry) {
 	if (log?.object === "list_models") {
 		return "N/A";
 	}
+	// A metadata lookup has no message body; keep the error summary when it failed.
+	if (log?.object === "model_retrieve") {
+		return log.content_summary || "N/A";
+	}
 	if (log?.object === "realtime.turn") {
 		const messages = getRealtimeTurnMessages(log);
 		const parts = [
@@ -264,6 +268,103 @@ export function LogMessageCell({
 	);
 }
 
+// The grouped view's first column says what each group is in words, since the
+// two groupings look alike but mean different things: a session is separate
+// requests sharing a session_id (counted as turns), a chain is one request's
+// fallback attempts linked by parent_request_id. A settled batch or video nests
+// its cost row the same way, so a chain under one is "linked", not "fallbacks".
+function chainSummary(log: LogEntry, count: number): string {
+	if (log.batch_debug || log.video_debug) return `${count} linked`;
+	return `${count} fallback${count === 1 ? "" : "s"}`;
+}
+
+function nestedRowLabel(log: DisplayLogEntry): string {
+	if (log.__rowKind === "session-member") return `turn ${log.__turn ?? ""}`.trim();
+	if (log.batch_debug?.accounting || log.video_debug?.accounting) return "settled cost";
+	return log.fallback_index > 0 ? `fallback ${log.fallback_index}` : "linked";
+}
+
+// Tree geometry, in px from the cell's left edge. The trunk sits under the
+// top-level chevron; a session member's own chain hangs from a second trunk
+// under that member's chevron.
+const TREE_TRUNK_X = [11, 22] as const;
+
+// Draws the branch for a nested row: the trunk at its depth (cut at the middle
+// on the last sibling), a tick out to the label, and, under a session member
+// that is not last, the outer trunk carried through. Positioned against the
+// cell, which the logs table makes relative, so lines meet across rows.
+function TreeBranch({ log, opensChildren }: { log: DisplayLogEntry; opensChildren: boolean }) {
+	const depth = log.__depth ?? 1;
+	const x = TREE_TRUNK_X[depth - 1];
+	const line = "bg-border absolute";
+	return (
+		<>
+			{depth === 2 && !log.__parentIsLast && <span className={cn(line, "inset-y-0 w-px")} style={{ left: TREE_TRUNK_X[0] }} />}
+			<span className={cn(line, "top-0 w-px", log.__isLast ? "h-1/2" : "bottom-0")} style={{ left: x }} />
+			<span className={cn(line, "top-1/2 h-px w-1.5")} style={{ left: x }} />
+			{opensChildren && <span className={cn(line, "bottom-0 w-px")} style={{ left: TREE_TRUNK_X[1], top: "calc(50% + 9px)" }} />}
+		</>
+	);
+}
+
+function GroupToggle({
+	testId,
+	label,
+	ariaLabel,
+	tooltip,
+	isExpanded,
+	isLoading,
+	onToggle,
+	className,
+	stubX,
+}: {
+	stubX?: number;
+	testId: string;
+	label: ReactNode;
+	ariaLabel: string;
+	tooltip: string;
+	isExpanded: boolean;
+	isLoading: boolean;
+	onToggle: () => void;
+	className?: string;
+}) {
+	return (
+		<>
+			{/* Stub from under a top-level chevron down to its first child's branch. */}
+			{stubX != null && isExpanded && !isLoading && (
+				<span className="bg-border absolute bottom-0 w-px" style={{ left: stubX, top: "calc(50% + 9px)" }} />
+			)}
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<button
+						type="button"
+						data-testid={testId}
+						aria-label={ariaLabel}
+						aria-expanded={isExpanded}
+						className={cn(
+							"hover:text-foreground relative flex h-full w-full cursor-pointer items-center gap-1 overflow-hidden text-[11px] whitespace-nowrap transition-colors",
+							isExpanded ? "text-foreground" : "text-muted-foreground",
+							className,
+						)}
+						onClick={(event) => {
+							event.stopPropagation();
+							onToggle();
+						}}
+					>
+						{isLoading ? (
+							<Loader2 className="size-3.5 shrink-0 animate-spin" />
+						) : (
+							<ChevronRight className={cn("size-3.5 shrink-0 transition-transform duration-150", isExpanded && "rotate-90")} />
+						)}
+						{label}
+					</button>
+				</TooltipTrigger>
+				<TooltipContent>{tooltip}</TooltipContent>
+			</Tooltip>
+		</>
+	);
+}
+
 export const createColumns = (
 	onDelete: (log: LogEntry) => void,
 	hasDeleteAccess = true,
@@ -274,83 +375,99 @@ export const createColumns = (
 ): ColumnDef<LogEntry>[] => {
 	// Expander for the grouped view. The control fills the cell, and the cell
 	// itself toggles rather than opening the sheet (see the logs page's
-	// onRowClick), so the whole column reads as one hit target. Child rows get a
-	// corner connector instead so the hierarchy stays readable in any column order.
+	// onRowClick), so the whole column reads as one hit target.
 	const expandColumn: ColumnDef<LogEntry>[] = groupedView
 		? [
 				{
 					id: "expand",
 					header: "",
-					size: 52,
+					size: 90,
 					cell: ({ row, table }) => {
 						const meta = table.options.meta as LogsTableMeta | undefined;
 						const log = row.original as DisplayLogEntry;
-						// A session member keeps its own chain chevron, so the tree can be
-						// walked a level deeper. Every other nested row is a leaf.
-						if (log.__chainChild && !(log.__rowKind === "session-member" && (log.child_count ?? 0) > 0)) {
+						if (log.__chainChild) {
+							const isSessionMember = log.__rowKind === "session-member";
+							const kindTestId = isSessionMember ? "log-row-kind-session" : "log-row-kind-chain";
+							const childCount = log.child_count ?? 0;
+							// A session member keeps its own chain toggle, so the tree can be
+							// walked a level deeper. Every other nested row is a leaf.
+							if (isSessionMember && childCount > 0 && meta) {
+								const isExpanded = meta.expandedChainIds.has(log.id);
+								return (
+									<div data-testid={kindTestId} className="h-full w-full">
+										<TreeBranch log={log} opensChildren={isExpanded && !meta.loadingChainIds.has(log.id)} />
+										<GroupToggle
+											testId="log-chain-expand-btn"
+											className="pl-[15px]"
+											label={
+												<span className="truncate">
+													{nestedRowLabel(log)}
+													<span className="text-muted-foreground/70 ml-1 tabular-nums">+{childCount}</span>
+												</span>
+											}
+											ariaLabel={isExpanded ? "Collapse linked rows" : `Expand ${chainSummary(log, childCount)} of this turn`}
+											tooltip={`${nestedRowLabel(log)} of this session, with ${chainSummary(log, childCount)} (same parent_request_id)`}
+											isExpanded={isExpanded}
+											isLoading={meta.loadingChainIds.has(log.id)}
+											onToggle={() => meta.onToggleChain(log)}
+										/>
+									</div>
+								);
+							}
+							const depth = log.__depth ?? 1;
 							return (
-								<div className="flex h-full w-full items-center justify-center">
-									<CornerDownRight className="text-muted-foreground/70 size-3.5 shrink-0" />
+								<div
+									data-testid={kindTestId}
+									className="text-muted-foreground flex h-full w-full items-center overflow-hidden text-[11px] whitespace-nowrap"
+									style={{ paddingLeft: TREE_TRUNK_X[depth - 1] + 8 }}
+								>
+									<TreeBranch log={log} opensChildren={false} />
+									<span className="truncate">{nestedRowLabel(log)}</span>
 								</div>
 							);
 						}
-						// Session grouping wins on a top-level row: the session chevron
+						if (!meta) return null;
+						// Session grouping wins on a top-level row: the session toggle
 						// lists the session's other requests and this row's own attempts
 						// together, so nothing becomes unreachable by taking this branch.
 						const sessionCount = log.session_child_count ?? 0;
-						if (!log.__chainChild && sessionCount > 0 && meta) {
+						if (sessionCount > 0) {
 							const isExpanded = meta.expandedSessionIds.has(log.id);
-							const isLoading = meta.loadingSessionIds.has(log.id) || meta.loadingChainIds.has(log.id);
+							const others = `${sessionCount} more request${sessionCount === 1 ? "" : "s"}`;
 							return (
-								<button
-									type="button"
-									data-testid="log-session-expand-btn"
-									aria-label={
-										isExpanded
-											? "Collapse this session"
-											: `Expand ${sessionCount} more request${sessionCount === 1 ? "" : "s"} in this session`
-									}
-									aria-expanded={isExpanded}
-									className="text-muted-foreground hover:text-foreground flex h-full w-full cursor-pointer items-center justify-center gap-1 transition-colors"
-									onClick={(event) => {
-										event.stopPropagation();
-										meta.onToggleSession(log);
-									}}
-								>
-									{isLoading ? (
-										<Loader2 className="size-3.5 shrink-0 animate-spin" />
-									) : (
-										<ChevronRight className={cn("size-3.5 shrink-0 transition-transform", isExpanded && "rotate-90")} />
-									)}
-									<span className="shrink-0 font-mono text-[10.5px] tabular-nums">{sessionCount}</span>
-								</button>
+								<GroupToggle
+									testId="log-session-expand-btn"
+									className="pl-1"
+									stubX={TREE_TRUNK_X[0]}
+									label={<span className="truncate tabular-nums">{sessionCount + 1} turns</span>}
+									ariaLabel={isExpanded ? "Collapse this session" : `Expand ${others} in this session`}
+									tooltip={`Session of ${sessionCount + 1} requests sharing a session_id. Expand to see the other ${others.replace("more ", "")}.`}
+									isExpanded={isExpanded}
+									isLoading={meta.loadingSessionIds.has(log.id) || meta.loadingChainIds.has(log.id)}
+									onToggle={() => meta.onToggleSession(log)}
+								/>
 							);
 						}
 						const childCount = log.child_count ?? 0;
-						if (!childCount || !meta) return null;
+						if (!childCount) return null;
 						const isExpanded = meta.expandedChainIds.has(log.id);
-						const isLoading = meta.loadingChainIds.has(log.id);
+						const summary = chainSummary(log, childCount);
 						return (
-							<button
-								type="button"
-								data-testid="log-chain-expand-btn"
-								// Not always a fallback chain: a settled async job nests its cost row
-								// here too, and calling that an "attempt" misreads what it is.
-								aria-label={isExpanded ? "Collapse linked rows" : `Expand ${childCount} linked row${childCount === 1 ? "" : "s"}`}
-								aria-expanded={isExpanded}
-								className="text-muted-foreground hover:text-foreground flex h-full w-full cursor-pointer items-center justify-center gap-1 transition-colors"
-								onClick={(event) => {
-									event.stopPropagation();
-									meta.onToggleChain(log);
-								}}
-							>
-								{isLoading ? (
-									<Loader2 className="size-3.5 shrink-0 animate-spin" />
-								) : (
-									<ChevronRight className={cn("size-3.5 shrink-0 transition-transform", isExpanded && "rotate-90")} />
-								)}
-								<span className="shrink-0 font-mono text-[10.5px] tabular-nums">{childCount}</span>
-							</button>
+							<GroupToggle
+								testId="log-chain-expand-btn"
+								className="pl-1"
+								stubX={TREE_TRUNK_X[0]}
+								label={<span className="truncate tabular-nums">{summary}</span>}
+								ariaLabel={isExpanded ? "Collapse linked rows" : `Expand ${summary}`}
+								tooltip={
+									log.batch_debug || log.video_debug
+										? `${summary} row${childCount === 1 ? "" : "s"}: the settled cost (same parent_request_id)`
+										: `${summary} of this request (same parent_request_id)`
+								}
+								isExpanded={isExpanded}
+								isLoading={meta.loadingChainIds.has(log.id)}
+								onToggle={() => meta.onToggleChain(log)}
+							/>
 						);
 					},
 				},
@@ -384,11 +501,19 @@ export const createColumns = (
 				if (!isValid) {
 					return <div className="truncate text-xs">N/A</div>;
 				}
+				// The row opens the detail sheet on click, which a keyboard can't do. This
+				// button is that entry point: it has no handler of its own, so Enter and
+				// Space fire a click that bubbles to the cell's onRowClick.
 				return (
-					<div className="flex flex-col leading-tight">
+					<button
+						type="button"
+						data-testid="logs-row-open-btn"
+						aria-label={`${format(date, "MMM dd HH:mm:ss")} ${formatDistanceToNow(date, { addSuffix: true })}, open log details`}
+						className="focus-visible:ring-ring flex cursor-pointer flex-col rounded-sm text-left leading-tight focus-visible:ring-2 focus-visible:outline-none"
+					>
 						<span className="font-mono text-xs tabular-nums">{format(date, "MMM dd  HH:mm:ss")}</span>
 						<span className="text-muted-foreground text-[10.5px] tabular-nums">{formatDistanceToNow(date, { addSuffix: true })}</span>
-					</div>
+					</button>
 				);
 			},
 		},

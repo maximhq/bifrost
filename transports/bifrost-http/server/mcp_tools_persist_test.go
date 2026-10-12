@@ -21,16 +21,17 @@ type recordingToolsConfigStore struct {
 }
 
 type toolsUpdateCall struct {
-	clientID string
-	tools    map[string]schemas.ChatTool
-	mapping  map[string]string
+	clientID     string
+	tools        map[string]schemas.ChatTool
+	mapping      map[string]string
+	instructions string
 }
 
-func (s *recordingToolsConfigStore) UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) error {
+func (s *recordingToolsConfigStore) UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) error {
 	if s.failErr != nil {
 		return s.failErr
 	}
-	s.calls = append(s.calls, toolsUpdateCall{clientID: clientID, tools: tools, mapping: toolNameMapping})
+	s.calls = append(s.calls, toolsUpdateCall{clientID: clientID, tools: tools, mapping: toolNameMapping, instructions: instructions})
 	return nil
 }
 
@@ -44,12 +45,15 @@ func TestPersistMCPClientTools_WritesThroughConfigStore(t *testing.T) {
 
 	tools := map[string]schemas.ChatTool{"echo": {Type: "function"}}
 	mapping := map[string]string{"echo": "echo-server"}
-	s.PersistMCPClientTools(context.Background(), "client-1", tools, mapping)
+	s.PersistMCPClientTools(context.Background(), "client-1", tools, mapping, "Use me carefully.")
 
 	require.Len(t, store.calls, 1)
 	assert.Equal(t, "client-1", store.calls[0].clientID)
 	assert.Equal(t, tools, store.calls[0].tools)
 	assert.Equal(t, mapping, store.calls[0].mapping)
+	// The instructions must ride the same write: a per-call client holds no connection to
+	// re-read them from, so if they are dropped here they are lost across a restart.
+	assert.Equal(t, "Use me carefully.", store.calls[0].instructions)
 }
 
 // TestPersistMCPClientTools_NilConfigStore_NoOp confirms the nil-guard
@@ -58,7 +62,7 @@ func TestPersistMCPClientTools_WritesThroughConfigStore(t *testing.T) {
 func TestPersistMCPClientTools_NilConfigStore_NoOp(t *testing.T) {
 	s := &BifrostHTTPServer{Config: &lib.Config{ConfigStore: nil}}
 	assert.NotPanics(t, func() {
-		s.PersistMCPClientTools(context.Background(), "client-1", map[string]schemas.ChatTool{}, map[string]string{})
+		s.PersistMCPClientTools(context.Background(), "client-1", map[string]schemas.ChatTool{}, map[string]string{}, "")
 	})
 }
 
@@ -75,7 +79,7 @@ func TestPersistMCPClientTools_StoreErrorLogsAndDoesNotPanic(t *testing.T) {
 	s := &BifrostHTTPServer{Config: &lib.Config{ConfigStore: store}}
 
 	assert.NotPanics(t, func() {
-		s.PersistMCPClientTools(context.Background(), "client-1", map[string]schemas.ChatTool{}, map[string]string{})
+		s.PersistMCPClientTools(context.Background(), "client-1", map[string]schemas.ChatTool{}, map[string]string{}, "")
 	})
 	assert.Empty(t, store.calls)
 }

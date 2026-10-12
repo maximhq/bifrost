@@ -1,0 +1,136 @@
+---
+title: "v2.2.6"
+description: "v2.2.6 changelog - 2026-10-06"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v2.2.6
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v2.2.6
+    docker run -p 8080:8080 maximhq/bifrost:v2.2.6
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="2.2.6">
+## ✨ Features
+
+- **OSS Management API Setup Lock** - While dashboard auth is not active (no admin account, or auth disabled), every non-public `/api` call on OSS Bifrost now needs the setup token, sent as the `X-Bifrost-Setup-Token` header or as the `bifrost_setup_session` cookie the dashboard gets from `POST /api/session/setup`. A missing token returns `401`. A wrong token, or no token set on the server, returns `403`. `/health`, `/api/version`, the session login routes, `/.well-known/*` and whitelisted routes stay public. The lock lifts as soon as an enabled admin is saved (#8010)
+  <Warning>
+  Migration: set `setup_token` in config.json (or `BIFROST_SETUP_TOKEN`) and restart. Then either enable dashboard auth, or send `X-Bifrost-Setup-Token` from scripts and API clients that call `/api` with auth off. Enterprise is not affected by the lock.
+  </Warning>
+- **Inference Auth On by Default** - `enforce_auth_on_inference` now defaults to `true` for fresh deployments when config.json leaves it out, file-only deployments included. Creating the first enabled admin also turns inference auth on unless the request sets it explicitly. Inference without a credential then returns `401`. A stored database value always wins, and an explicit `false` is always kept. This also applies to Bifrost Enterprise (#8010, #7864)
+  <Warning>
+  Migration: to keep unauthenticated inference, set `"enforce_auth_on_inference": false` in config.json, or send it explicitly when creating the first admin.
+  </Warning>
+- **OAuth Discovery Requires issuer_url** - When `mcp_server_auth_mode` is `oauth` or `both`, `oauth2_server_config.issuer_url` must be set to a non-empty value. Config load fails and `PUT /api/config` rejects the save otherwise. The issuer is never derived from the request `Host` header any more, and discovery responses carry `Cache-Control: no-store` (#7863)
+  <Warning>
+  Migration: set `oauth2_server_config.issuer_url` (env syntax `env.MY_VAR` works) before upgrading any deployment that has MCP OAuth discovery enabled, or the server will not start.
+  </Warning>
+- **Provider Dial Target and Proxy Changes Need Real Auth** - With dashboard auth off, these changes now return `403` unless the request carries a genuine admin credential (a session, or the OSS setup token): provider `base_url`, `allow_private_network`, key endpoint URLs (Ollama, SGL, vLLM, Azure, etc.), provider proxy, custom CA certs, skipped TLS verification, absolute `request_path_overrides`, and enabling the global proxy with a URL (#7865, #7867)
+- **Private Framework Config URLs Rejected** - `pricing_url`, `model_parameters_url` and `mcp_library_url` are now checked at save time and at dial time against private, link-local and CGNAT addresses, and redirects are not followed. Air-gapped setups should use `file://` URLs (#7861)
+- **Semantic Cache Scoped per Virtual Key** - Cache buckets are now partitioned by virtual key, so a shared `cache_key` or `default_cache_key` no longer serves one virtual key's cached response to another. Entries written before the upgrade under a virtual key are not reused, so expect a cold cache. Unscoped cache keys that start with `vk:` are moved to `raw:vk:`. A per-request threshold override can only raise the configured threshold, and is capped at 1.0 (#7862)
+- **zstd Decoder Window Cap** - zstd-compressed bodies whose frame header asks for a window above 100 MiB are rejected before any allocation (#7859)
+- **Dashboard Setup Session** - The login page has a new setup screen that trades the setup token for a 12-hour `HttpOnly; SameSite=Strict` cookie. The cookie is signed with a key derived from the token, so the browser never stores the token itself. A sidebar card flags missing dashboard auth until an admin exists. `GET /api/session/is-auth-enabled` now reports `setup_required` and `setup_token_configured`, and `PUT /api/config` accepts a setup-token request as first-admin proof (#8010)
+- **Compat: Clamp Over-Limit Output Tokens** - With `should_convert_params` on (UI: Convert Unsupported Param Values, or `x-bf-compat: ["should_convert_params"]`), a `max_output_tokens`, `max_completion_tokens` or `max_tokens` above the model's `max_output_tokens` in the model catalog is lowered to that limit instead of being rejected by the provider. This works for every provider whose model has a limit in the catalog. A thinking budget at or above the lowered cap is moved just below it. Values are never raised, and models with no catalog limit are left alone. Each change is logged as a warning on the request. The setting did nothing before this release. A config.json whose `client_config` has no `compat` block turns it on by default
+- **Datasheet Control for Per-Message Effort** - Per-message effort support can now be set per provider and model with the datasheet field `supports_mid_conversation_output_config`, so a surface that ships the feature can be enabled without a release. With no datasheet value the current behaviour applies (Anthropic direct on Fable 5.1, Opus 5+ and Sonnet 5.5). On a provider other than Anthropic, also allow the beta header with `beta_header_overrides: {"mid-conversation-output-config-": true}` in that provider's network config
+- **Per-Message Effort Override** - A per-turn effort override sent as an effort-only system message (`{"role":"system","content":[],"output_config":{"effort":"low"}}`) now reaches Anthropic instead of being dropped, with the `mid-conversation-output-config-2026-07-01` beta added. Models without per-turn effort, and OpenAI-shaped providers, drop it instead of returning an error (#7714)
+- **Claude Code Per-Message Effort on Vertex and Other Cloud Surfaces** - Claude Code requests to Opus 5.5, Fable 5.1 and Sonnet 5.5 on Vertex no longer fail with `messages.1.output_config: Extra inputs are not permitted`. The per-message `output_config` is now removed for every provider and model without per-message effort (Vertex, Bedrock, Bedrock Mantle, Azure, DeepSeek, Fireworks, vLLM, SGL). The system message text and the top-level effort are kept
+
+
+## 🐞 Fixed
+
+- **Claude Tool-Call Argument Streaming on Bedrock and Vertex** - Claude tool arguments now stream incrementally, so a long Write call no longer arrives as one burst after minutes of silence and Claude Code no longer aborts with "Stream idle timeout". `eager_input_streaming` defaults on for custom tools that leave it unset (every Claude model on Vertex; Sonnet 4.6, Sonnet 5+, Opus 4.7+ and Fable on Bedrock). An explicit `false` is kept. Converse carries `fine-grained-tool-streaming-2025-05-14` in `additionalModelRequestFields` (#8009)
+- **Tool-Result Cache Markers for gpt-5.6+** - Anthropic `cache_control` markers on tool results (as Claude Code sends them) now become `prompt_cache_breakpoint` on both Chat Completions and Responses for gpt-5.6+ on OpenAI, Azure, Bedrock and Bedrock Mantle, so caching keeps advancing past the first tool turn. Responses also marks `input_image` and `input_file` parts. At most four breakpoints are kept, the latest ones (#8012)
+- **Handler Panic Recovery** - A panic in a request handler now returns a `500` and logs a server-side stack trace instead of crashing the process (#7866)
+- **Secret Redaction in Config Responses** - Env and vault-resolved values in provider alias configs (region, project ID, Azure endpoint, Vertex project, Bedrock inference profile ARN) and in Bedrock endpoint overrides are now masked in management API responses (#7858)
+- **Admin Password Autofill** - The Security page's admin fields carry `autoComplete="username"` and `"new-password"`, so password managers no longer fill a saved host password into the new admin's password field (#8010)
+
+## 🗄️ Database Migrations
+
+- No new database migrations in this release.
+
+</Update>
+<Update label="Core" description="1.11.2">
+- [fix]: Claude tool-call arguments stream incrementally on Bedrock and Vertex. Without fine-grained tool streaming Claude emits tool input one complete JSON value at a time, so a long argument (a Write call's content) arrived as one burst after minutes of silence and Claude Code aborted with "Stream idle timeout - no chunks received". Claude Code only opts in (eager_input_streaming) when it talks to Bedrock or Vertex directly, and sends nothing to a gateway, so Bifrost now defaults eager_input_streaming on custom tools that leave it unset for every Claude model on Vertex and for Sonnet 4.6, Sonnet 5+, Opus 4.7+ and Fable on Bedrock, keeping an explicit false. Bedrock Converse, which has no per-tool slot and whose edge drops the outer anthropic-beta header, now carries fine-grained-tool-streaming-2025-05-14 in additionalModelRequestFields.anthropic_beta; the Bedrock invoke ingress keeps eager_input_streaming and the legacy anthropic_beta opt-in instead of dropping them [@akshaydeo](https://github.com/akshaydeo)
+- fix: translate Anthropic cache_control markers on tool results into prompt_cache_breakpoint for gpt-5.6+ on OpenAI, Azure, Bedrock and Bedrock Mantle, on both Chat Completions and Responses; Responses also marks input_image and input_file parts, and at most four breakpoints are kept (the latest ones) (#8012)
+- fix: cap the zstd decoder window at 100 MiB so an oversized frame header is rejected before any allocation (#7859)
+  <Warning>
+  zstd-compressed bodies whose frame header asks for a window above 100 MiB are now rejected.
+  </Warning>
+- fix: mask env/vault-resolved values in provider alias configs and Bedrock endpoint overrides when they are redacted for API responses (#7858)
+- [fix]: Anthropic per-message effort is carried end to end. An effort-only `role:"system"` message (`content: []` with `output_config.effort`) was dropped on ingress, so a per-turn effort override never reached Anthropic. AnthropicMessage and the neutral ResponsesMessage now carry the per-message `output_config`, Anthropic direct re-emits it on Fable 5.1, Opus 5+ and Sonnet 5.5 with the `mid-conversation-output-config-2026-07-01` beta injected, and other models and the OpenAI-shaped egress drop it fail-soft (#7714) [@akshaydeo](https://github.com/akshaydeo)
+- [fix]: Per-message `output_config` is stripped wherever per-message effort is unsupported. Claude Code 2.1.285 sends `output_config` on a text-bearing `role:"system"` message, and the raw passthrough forwarded it to Vertex, which rejected it with `messages.1.output_config: Extra inputs are not permitted`. The raw-body strip now removes `messages[].output_config` off Anthropic direct and on models without per-turn effort (Vertex, Bedrock invoke, Bedrock Mantle, Azure, DeepSeek, Fireworks, vLLM, SGL), keep the message text and the top-level `output_config.effort`, and drop effort-only system messages whole [@akshaydeo](https://github.com/akshaydeo)
+- [feat]: Per-message effort support is datasheet-overridable via `supports_mid_conversation_output_config` (`ModelCapabilities.SupportsMidConvOutputConfig`). A record set for a (provider, model) pair decides the raw-body strip, the conversion and the beta injection. Without a record the hardcoded gate applies (Anthropic direct on the documented models) [@akshaydeo](https://github.com/akshaydeo)
+- [fix]: The Anthropic raw-body strip no longer copies every message on each request to providers without server-side fallback or prompt-caching scope (Vertex, Bedrock, Azure and others). Byte prefilters skip the fallback-block, `cache_control.scope` and per-message `output_config` walks when no message can need them, and the walks use gjson ForEach instead of materialising arrays. A 400-message, 800 KB conversation to Vertex dropped from 4.6 MB allocated and 4.4 ms to 32 B and 2.4 ms per strip [@akshaydeo](https://github.com/akshaydeo)
+- [fix]: A system item that carries both text and a per-message `output_config.effort` keeps its effort on the hoist and inline fallbacks. The text goes to the top-level system block or an inlined `<system-reminder>` turn as before, and the override is emitted as a separate effort-only system message, which Anthropic exempts from placement rules [@akshaydeo](https://github.com/akshaydeo)
+
+</Update>
+<Update label="Framework" description="1.8.1">
+- feat: ModelCatalog.GetMaxOutputTokens returns a model's datasheet max_output_tokens, memoized per catalog generation (misses included) so a model missing from the sheet no longer pays a full-sheet scan per call
+- fix: oauth2_server_config.issuer_url is required when mcp_server_auth_mode is oauth or both; the issuer is never derived from the request Host header (#7863)
+  <Warning>
+  Set oauth2_server_config.issuer_url before upgrading any deployment with MCP OAuth discovery enabled, or config load fails.
+  </Warning>
+- fix: track whether enforce_auth_on_inference was set explicitly so creating the first admin can default inference auth on (#7864)
+- fix: redact secret-bearing alias and Bedrock endpoint values in client config responses (#7858)
+- chore: upgraded core to v1.11.2
+
+</Update>
+<Update label="compat" description="0.3.6">
+- feat: should_convert_params now lowers max_output_tokens / max_completion_tokens / max_tokens above the model's datasheet max_output_tokens to that limit, and keeps reasoning.max_tokens below the lowered cap
+- chore: upgraded core to v1.11.2 and framework to v1.8.1
+
+</Update>
+<Update label="governance" description="1.8.6">
+- chore: upgraded core to v1.11.2 and framework to v1.8.1
+
+</Update>
+<Update label="jsonparser" description="1.6.9">
+- chore: upgraded core to v1.11.2 and framework to v1.8.1
+
+</Update>
+<Update label="logging" description="1.8.6">
+- chore: upgraded core to v1.11.2 and framework to v1.8.1
+
+</Update>
+<Update label="maxim" description="1.7.9">
+- chore: upgraded core to v1.11.2 and framework to v1.8.1
+
+</Update>
+<Update label="mocker" description="1.6.9">
+- chore: upgraded core to v1.11.2 and framework to v1.8.1
+
+</Update>
+<Update label="modelcatalogresolver" description="1.1.9">
+- chore: upgraded core to v1.11.2 and framework to v1.8.1
+
+</Update>
+<Update label="otel" description="1.5.9">
+- chore: upgraded core to v1.11.2 and framework to v1.8.1
+
+</Update>
+<Update label="prompts" description="1.1.9">
+- chore: upgraded core to v1.11.2 and framework to v1.8.1
+
+</Update>
+<Update label="routing" description="1.1.6">
+- chore: upgraded core to v1.11.2 and framework to v1.8.1
+
+</Update>
+<Update label="semanticcache" description="1.6.9">
+- fix: scope cache keys per virtual key so a shared cache_key or default_cache_key never serves one virtual key's response to another; the vk: namespace is reserved and per-request threshold overrides are floored at the configured value and capped at 1.0 (#7862)
+  <Warning>
+  Entries written before the upgrade under a virtual key are not reused, so expect a cold cache. Unscoped cache keys starting with vk: are moved to raw:vk:. A per-request threshold can only raise the configured threshold.
+  </Warning>
+- chore: upgraded core to v1.11.2 and framework to v1.8.1
+
+</Update>
+<Update label="telemetry" description="1.8.5">
+- chore: upgraded core to v1.11.2 and framework to v1.8.1
+
+</Update>
