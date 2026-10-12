@@ -1,0 +1,24 @@
+# Obtains or renews Bifrost's TLS certificate. Run by bifrost-cert.timer.
+# Settings and DNS provider credentials live in /etc/bifrost/cert.env
+# (start from cert.env.example in this directory).
+[Unit]
+Description=Obtain or renew the Bifrost TLS certificate
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/bifrost/cert.env
+ExecStart=/usr/local/bin/bifrost-cert.sh
+# systemd creates both directories before starting the job:
+# /var/lib/bifrost-cert (lego's state) and /etc/bifrost/tls (what Bifrost reads).
+# If you change BIFROST_CERT_OUT or BIFROST_CERT_STATE, change these to match.
+StateDirectory=bifrost-cert
+StateDirectoryMode=0700
+ConfigurationDirectory=bifrost/tls
+ConfigurationDirectoryMode=0755
+# Hardening: the job only needs the network and the two directories above.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true

@@ -237,7 +237,7 @@ func (h *SessionHandler) login(ctx *fasthttp.RequestCtx) {
 	cookie.SetHTTPOnly(true)
 	cookie.SetSameSite(fasthttp.CookieSameSiteLaxMode)
 	// Check if source is https then set secure
-	if string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
+	if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
 		cookie.SetSecure(true)
 	}
 	ctx.Response.Header.SetCookie(cookie)
@@ -272,7 +272,7 @@ func (h *SessionHandler) logout(ctx *fasthttp.RequestCtx) {
 	cookie.SetHTTPOnly(true)
 	cookie.SetSameSite(fasthttp.CookieSameSiteLaxMode)
 	// Check if source is https then set secure
-	if string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
+	if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
 		cookie.SetSecure(true)
 	}
 	ctx.Response.Header.SetCookie(cookie)

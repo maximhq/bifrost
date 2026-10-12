@@ -1,0 +1,32 @@
+# Bifrost serving HTTPS itself, with the certificate kept current by
+# bifrost-cert.sh running on the host (cron or the systemd timer in ../systemd).
+#
+# Issue the first certificate before starting, with files readable by the
+# container user:
+#   CF_DNS_API_TOKEN=... ../bifrost-cert.sh -d llm.example.com -m ops@example.com \
+#     --out ./tls --state ./cert-state --owner 1000:0
+services:
+  bifrost:
+    image: maximhq/bifrost:latest
+    container_name: bifrost
+    ports:
+      # The container runs as a non-root user, so it listens on 8443 and the
+      # host maps 443 to it.
+      - "443:8443"
+      # Plain HTTP; publish only on loopback, or drop it if nothing needs it.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data:/app/data
+      # Mount the directory, not the two files: renewals replace the files by
+      # rename, which a single-file bind mount would not see.
+      - ./tls:/etc/bifrost/tls:ro
+    environment:
+      - APP_PORT=8080
+      - APP_HOST=0.0.0.0
+      # The entrypoint passes no extra flags, so TLS is configured here.
+      # BIFROST_TLS_PORT keeps APP_PORT on plain HTTP, which the image's
+      # health check uses.
+      - BIFROST_TLS_CERT=/etc/bifrost/tls/tls.crt
+      - BIFROST_TLS_KEY=/etc/bifrost/tls/tls.key
+      - BIFROST_TLS_PORT=8443
+    restart: unless-stopped

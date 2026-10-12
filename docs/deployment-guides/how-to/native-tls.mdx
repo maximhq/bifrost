@@ -1,0 +1,216 @@
+---
+title: "Serve HTTPS directly"
+description: "Let bifrost-http terminate TLS itself, and keep its certificate renewed with Let's Encrypt"
+icon: "lock"
+---
+
+Bifrost can serve HTTPS itself, without a reverse proxy in front of it. This suits a single host where a proxy would only be there to hold the certificate.
+
+<Note>
+A [reverse proxy](/deployment-guides/how-to/nginx-reverse-proxy) is still the recommended setup for anything internet-facing or multi-replica. That is also where security headers, request limits, load balancing and HTTP/2 belong. Use this page when those don't apply.
+</Note>
+
+---
+
+## How it works
+
+Pass a PEM certificate and key, and Bifrost serves HTTPS with them:
+
+```bash
+bifrost-http -host 0.0.0.0 -port 443 \
+  -tls-cert /etc/bifrost/tls/tls.crt -tls-key /etc/bifrost/tls/tls.key
+```
+
+| Flag | Environment variable | Description |
+|------|----------------------|-------------|
+| `-tls-cert` | `BIFROST_TLS_CERT` | PEM certificate, including intermediates (the "full chain"). |
+| `-tls-key` | `BIFROST_TLS_KEY` | PEM private key for the certificate. |
+| `-tls-port` | `BIFROST_TLS_PORT` | Optional. Serve HTTPS on this port and keep plain HTTP on `-port`, for local callers and health checks. Without it, `-port` serves HTTPS only. |
+
+- **Startup check:** Bifrost checks the pair at startup and refuses to start if it can't load it.
+- **Renewals:** Bifrost checks the files about every 30 seconds and reloads them when they change, so a renewed certificate takes effect without a restart or dropped streams. If a pair doesn't load (for example, halfway through a renewal), Bifrost skips it and keeps serving the current one.
+- **Protocol:** connections use TLS 1.2 or newer, over HTTP/1.1. A client must complete the TLS handshake within 10 seconds; after that the connection has no time limit, so long streams are unaffected.
+
+### Keeping plain HTTP for local callers
+
+With `-tls-port`, Bifrost serves HTTPS on that port and keeps plain HTTP on `-port`, bound to the same `-host`:
+
+```bash
+bifrost-http -host 0.0.0.0 -port 8080 -tls-port 443 \
+  -tls-cert /etc/bifrost/tls/tls.crt -tls-key /etc/bifrost/tls/tls.key
+```
+
+<Warning>
+The plain port serves the full API, not just health checks. Anyone who can reach it can send credentials, virtual keys and prompts unencrypted. Restrict it to the machines that need it, for example with a firewall:
+
+```bash
+# ufw: HTTPS from anywhere, plain HTTP only from this host and the local network
+sudo ufw allow 443/tcp
+sudo ufw allow from 10.0.0.0/8 to any port 8080 proto tcp
+sudo ufw deny 8080/tcp
+```
+
+```bash
+# nftables equivalent, in an inet filter input chain: allow, then drop the rest (IPv4 and IPv6)
+tcp dport 8080 ip saddr { 127.0.0.0/8, 10.0.0.0/8 } accept
+tcp dport 8080 ip6 saddr ::1 accept
+tcp dport 8080 drop
+```
+
+If nothing needs plain HTTP, leave out `-tls-port` and serve HTTPS only.
+</Warning>
+
+All Bifrost needs is two files. The rest of this page covers getting a certificate and keeping it renewed.
+
+---
+
+## Getting a certificate
+
+| Situation | Approach |
+|-----------|----------|
+| Your domain's DNS is at Cloudflare, Route 53, DigitalOcean, Google Cloud DNS, Azure, Hetzner, Porkbun, OVH, GoDaddy or [another supported provider](https://go-acme.github.io/lego/dns/) | **DNS-01 with Let's Encrypt (recommended).** Works for hosts on a private network, needs no open inbound ports, and only needs an API token for your DNS. |
+| The host is reachable from the internet on port 80, and you can't use DNS-01 | HTTP-01 with Let's Encrypt. |
+| Your organisation runs its own CA, or you already have a certificate | Install the files you're given at the same paths. |
+| Kubernetes | [cert-manager](#kubernetes-with-cert-manager). |
+| Local testing | [mkcert](https://github.com/FiloSottile/mkcert) or a self-signed pair. |
+
+Let's Encrypt certificates last 90 days. Whatever obtains them must also renew them, and the helper below does both.
+
+### The `bifrost-cert.sh` helper
+
+[`examples/tls/bifrost-cert.sh`](https://github.com/maximhq/bifrost/blob/main/examples/tls/bifrost-cert.sh) wraps [lego](https://go-acme.github.io/lego/), a single-binary ACME client, and installs the result where Bifrost reads it. You can run it repeatedly:
+- The first run obtains a certificate.
+- Later runs renew it only when it's due (with a third of its lifetime left).
+- It replaces the installed files only when the certificate actually changed.
+- Before installing, it checks that the key matches, that every name is covered, and that the certificate isn't about to expire.
+- It installs each new pair as a whole. `tls.crt` and `tls.key` are links into a generation directory, switched by a single rename, so the files on disk always match, even if a run is interrupted. The previous generation is kept for recovery.
+- Runs are serialized by a lock, so a manual run can overlap the timer safely.
+- A changed domain list gets a new certificate on the next run, instead of at the next renewal.
+
+<Steps>
+<Step title="Install the helper and lego">
+```bash
+sudo curl -fsSL -o /usr/local/bin/bifrost-cert.sh \
+  https://raw.githubusercontent.com/maximhq/bifrost/main/examples/tls/bifrost-cert.sh
+sudo chmod 0755 /usr/local/bin/bifrost-cert.sh
+# Downloads lego from its GitHub release and verifies it against the published checksums.
+sudo bifrost-cert.sh install-lego
+```
+</Step>
+<Step title="Create a DNS API token">
+With **Cloudflare**, create an API token (not the global API key) under **My Profile → API Tokens**. Start from the **Edit zone DNS** template, add a second permission, **Zone → Zone → Read** (lego uses it to look up the zone), and limit the token to the zone that holds your hostname. For other providers, `lego dnshelp -c <provider>` lists the variables to set, for example `route53`, `digitalocean`, `gcloud`, `azuredns`, `hetzner` or `porkbun`.
+</Step>
+<Step title="Obtain a staging certificate first">
+Let's Encrypt staging issues untrusted certificates but has generous rate limits. Use it to check that your token and settings work:
+```bash
+sudo CF_DNS_API_TOKEN=<token> bifrost-cert.sh --staging \
+  --domain llm.example.com --dns cloudflare
+```
+</Step>
+<Step title="Obtain the real certificate">
+Run the same command without `--staging`. The files land in `/etc/bifrost/tls/tls.crt` and `/etc/bifrost/tls/tls.key`.
+</Step>
+</Steps>
+
+Useful options (each also has an environment variable, listed in `bifrost-cert.sh --help`):
+
+- `--domain` can be repeated for more names. Wildcards such as `*.example.com` need DNS-01.
+- `--email` sets an optional contact address on the ACME account.
+- `--http [ADDR]` uses HTTP-01 instead, listening on `:80` by default.
+- `--owner 1000:0` makes the files readable by a Bifrost that doesn't run as root. The Docker image runs as `1000:0`.
+- `--out`, `--state` and `--server` change the install directory, lego's state directory (`/var/lib/bifrost-cert`, which holds your ACME account key, so back it up) and the CA.
+- Anything after `--` is passed to `lego run`, for example `-- --key-type RSA2048`.
+
+### Keeping it renewed
+
+**systemd.** [`examples/tls/systemd`](https://github.com/maximhq/bifrost/tree/main/examples/tls/systemd) has a service and timer that run the helper twice a day, plus a drop-in that points a `bifrost.service` at the certificate. From a copy of `examples/tls`:
+
+```bash
+sudo install -D -m 0600 cert.env.example /etc/bifrost/cert.env   # then fill it in
+sudo install -m 0644 systemd/bifrost-cert.service systemd/bifrost-cert.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start bifrost-cert.service        # first run; check: journalctl -u bifrost-cert
+sudo systemctl enable --now bifrost-cert.timer
+```
+
+The service runs with `ProtectSystem=strict`, so it can only write lego's state directory and `/etc/bifrost/tls`.
+
+**cron.** Without systemd, run it twice a day from `/etc/cron.d/bifrost-cert`, using the same environment file:
+
+```cron
+17 3,15 * * * root sh -c 'set -a; . /etc/bifrost/cert.env; exec /usr/local/bin/bifrost-cert.sh' >> /var/log/bifrost-cert.log 2>&1
+```
+
+Bifrost picks up each renewal within a minute, without a restart. Let's Encrypt no longer emails expiry reminders, so monitor renewal yourself: alert when the job fails (`systemctl --failed`, or the script's non-zero exit), or on the served certificate's expiry date (see [Checking it](#checking-it)).
+
+**Other ACME clients.** certbot, acme.sh and Caddy work too. Have them install the full chain and key at the paths you give Bifrost, and Bifrost reloads them the same way. For example, with acme.sh:
+
+```bash
+acme.sh --install-cert -d llm.example.com \
+  --fullchain-file /etc/bifrost/tls/tls.crt --key-file /etc/bifrost/tls/tls.key
+```
+
+---
+
+## Running Bifrost with TLS
+
+### systemd
+
+Add the drop-in from [`examples/tls/systemd/bifrost-tls.conf`](https://github.com/maximhq/bifrost/blob/main/examples/tls/systemd/bifrost-tls.conf) as `/etc/systemd/system/bifrost.service.d/tls.conf`, then restart Bifrost once. It sets the three `BIFROST_TLS_*` variables. It also grants `CAP_NET_BIND_SERVICE`, so a non-root service user can bind port 443. It keeps plain HTTP on the service's `-port`, so [restrict that port](#keeping-plain-http-for-local-callers), or remove `BIFROST_TLS_PORT` and set the service's `-port` to 443 to serve HTTPS only.
+
+### Docker
+
+The image's entrypoint passes only its standard flags, so configure TLS with the environment variables. The container runs as a non-root user, so listen on a high port and map 443 to it:
+
+```yaml
+services:
+  bifrost:
+    image: maximhq/bifrost:latest
+    ports:
+      - "443:8443"
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./tls:/etc/bifrost/tls:ro
+    environment:
+      - BIFROST_TLS_CERT=/etc/bifrost/tls/tls.crt
+      - BIFROST_TLS_KEY=/etc/bifrost/tls/tls.key
+      - BIFROST_TLS_PORT=8443
+```
+
+<Warning>
+Mount the directory, not the two files. Renewals replace the files by rename, and a single-file bind mount keeps showing the old file.
+</Warning>
+
+Keep `BIFROST_TLS_PORT` set: the image's health check calls plain HTTP on `APP_PORT`. Run `bifrost-cert.sh` on the host with `--out ./tls --owner 1000:0`. The full example is in [`examples/tls/docker`](https://github.com/maximhq/bifrost/tree/main/examples/tls/docker).
+
+### Kubernetes with cert-manager
+
+Most clusters terminate TLS at an Ingress or Gateway, and that remains the simpler option. To expose Bifrost directly (for example through a `LoadBalancer` Service), let cert-manager write the certificate to a Secret and mount it:
+
+```yaml
+env:
+  - {name: BIFROST_TLS_CERT, value: /etc/bifrost/tls/tls.crt}
+  - {name: BIFROST_TLS_KEY, value: /etc/bifrost/tls/tls.key}
+  - {name: BIFROST_TLS_PORT, value: "8443"}
+volumeMounts:
+  - {name: tls, mountPath: /etc/bifrost/tls, readOnly: true}
+volumes:
+  - name: tls
+    secret:
+      secretName: bifrost-tls
+```
+
+Kubelet updates the mounted files when cert-manager renews the Secret, and Bifrost reloads them. Don't mount with `subPath`, because those mounts never update. [`examples/tls/k8s/certificate.yaml`](https://github.com/maximhq/bifrost/blob/main/examples/tls/k8s/certificate.yaml) includes a Cloudflare DNS-01 `ClusterIssuer` and `Certificate`.
+
+---
+
+## Checking it
+
+```bash
+curl -v https://llm.example.com/health 2>&1 | grep -E "subject:|expire date:|HTTP/"
+echo | openssl s_client -connect llm.example.com:443 -servername llm.example.com 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -enddate
+```
+
+Bifrost logs `reloaded TLS certificate from ...` when it picks up a renewal. It logs a warning, and keeps serving the current pair, if a new one fails to load.

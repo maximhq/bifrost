@@ -86,6 +86,8 @@ var server *bifrostServer.BifrostHTTPServer
 //   - app-dir: Application data directory (default: current directory)
 //   - log-level: Logger level (debug, info, warn, error). Default is info.
 //   - log-style: Logger output type (json or pretty). Default is JSON.
+//   - tls-cert, tls-key: serve HTTPS with this certificate and key (default: off).
+//   - tls-port: serve HTTPS on this port and keep plain HTTP on -port.
 
 func init() {
 	if Version == "" {
@@ -108,6 +110,9 @@ func init() {
 	flag.StringVar(&server.AppDir, "app-dir", bifrostServer.DefaultAppDir, "Application data directory (contains config.json and logs)")
 	flag.StringVar(&server.LogLevel, "log-level", defaultLogLevel, "Logger level (debug, info, warn, error). Default is info.")
 	flag.StringVar(&server.LogOutputStyle, "log-style", bifrostServer.DefaultLogOutputStyle, "Logger output type (json or pretty). Default is JSON.")
+	flag.StringVar(&server.TLSCertFile, "tls-cert", os.Getenv("BIFROST_TLS_CERT"), "PEM certificate (chain) to serve HTTPS with, reloaded when the file changes (override with BIFROST_TLS_CERT env var)")
+	flag.StringVar(&server.TLSKeyFile, "tls-key", os.Getenv("BIFROST_TLS_KEY"), "PEM private key for -tls-cert (override with BIFROST_TLS_KEY env var)")
+	flag.StringVar(&server.TLSPort, "tls-port", os.Getenv("BIFROST_TLS_PORT"), "Serve HTTPS on this port and keep plain HTTP on -port. Without it, -port serves HTTPS (override with BIFROST_TLS_PORT env var)")
 }
 
 // main is the entry point of the application.
