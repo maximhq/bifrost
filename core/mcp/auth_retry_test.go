@@ -203,6 +203,8 @@ func (m *authRetryClientManager) GetToolPerClient(_ context.Context) map[string]
 	return nil
 }
 
+func (m *authRetryClientManager) InstructionCaps() InstructionCaps { return InstructionCaps{} }
+
 func (m *authRetryClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
 	return nil
 }

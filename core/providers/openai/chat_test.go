@@ -1,8 +1,12 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -2337,9 +2341,10 @@ func TestToOpenAIChatRequest_GPT56CacheBreakpoint(t *testing.T) {
 			_, present = part(t, m, 1, 1, raw)["prompt_cache_breakpoint"]
 			require.Falsef(t, present, "unmarked text part must not receive a breakpoint; raw=%s", raw)
 
-			opts, ok := m["prompt_cache_options"].(map[string]any)
-			require.Truef(t, ok, "a translated breakpoint must switch the request to explicit mode; raw=%s", raw)
-			require.Equalf(t, "explicit", opts["mode"], "raw=%s", raw)
+			// Explicit-only mode drops the implicit lookback over earlier message
+			// endings, so a rolling per-turn marker would never be read back.
+			_, present = m["prompt_cache_options"]
+			require.Falsef(t, present, "a translated breakpoint must not switch the request to explicit mode; raw=%s", raw)
 
 			// Copy-on-write: the caller's input must still carry its own markers only.
 			require.Nil(t, req.Input[0].Content.ContentBlocks[0].PromptCacheBreakpoint, "caller's input was mutated")
@@ -2376,7 +2381,7 @@ func TestToOpenAIChatRequest_GPT56CacheBreakpoint(t *testing.T) {
 		require.Falsef(t, present, "raw=%s", raw)
 	})
 
-	t.Run("more than four markers keeps the latest four", func(t *testing.T) {
+	overMarked := func() *schemas.BifrostChatRequest {
 		req := mkReq(schemas.OpenAI, "gpt-5.6-sol")
 		var extra []schemas.ChatMessage
 		for i := 0; i < 4; i++ {
@@ -2385,7 +2390,9 @@ func TestToOpenAIChatRequest_GPT56CacheBreakpoint(t *testing.T) {
 			}}})
 		}
 		req.Input = append(req.Input, extra...) // 6 markers in total: system, tool, 4 turns
-		m, raw := marshal(t, req)
+		return req
+	}
+	countBreakpoints := func(m map[string]any) int {
 		count := 0
 		msgs, _ := m["messages"].([]any)
 		for _, mm := range msgs {
@@ -2396,9 +2403,50 @@ func TestToOpenAIChatRequest_GPT56CacheBreakpoint(t *testing.T) {
 				}
 			}
 		}
-		require.Equalf(t, 4, count, "raw=%s", raw)
+		return count
+	}
+
+	t.Run("implicit mode keeps the latest three markers", func(t *testing.T) {
+		// The implicit breakpoint takes one of the four cache-write slots.
+		m, raw := marshal(t, overMarked())
+		require.Equalf(t, 3, countBreakpoints(m), "raw=%s", raw)
 		_, present := part(t, m, 0, 0, raw)["prompt_cache_breakpoint"]
 		require.Falsef(t, present, "the earliest marker (system) must be the one dropped; raw=%s", raw)
+	})
+
+	t.Run("caller explicit mode keeps the latest four markers", func(t *testing.T) {
+		req := overMarked()
+		req.Params.PromptCacheOptions = &schemas.PromptCacheOptions{Mode: schemas.Ptr("explicit")}
+		m, raw := marshal(t, req)
+		require.Equalf(t, 4, countBreakpoints(m), "raw=%s", raw)
+		opts, _ := m["prompt_cache_options"].(map[string]any)
+		require.Equalf(t, "explicit", opts["mode"], "raw=%s", raw)
+	})
+
+	t.Run("caller options without a mode keep the latest three markers", func(t *testing.T) {
+		req := overMarked()
+		req.Params.PromptCacheOptions = &schemas.PromptCacheOptions{TTL: schemas.Ptr("30m")}
+		m, raw := marshal(t, req)
+		require.Equalf(t, 3, countBreakpoints(m), "raw=%s", raw)
+	})
+
+	t.Run("passthrough explicit mode keeps the latest four markers", func(t *testing.T) {
+		// Passthrough extra params are merged into the wire body after serialization,
+		// so this prompt_cache_options is what the provider sees.
+		req := overMarked()
+		req.Params.ExtraParams = map[string]interface{}{
+			"prompt_cache_options": map[string]interface{}{"mode": "explicit"},
+		}
+		ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+		defer cancel()
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		out := ToOpenAIChatRequest(ctx, req)
+		require.NotNil(t, out)
+		b, err := out.MarshalJSON()
+		require.NoError(t, err)
+		var m map[string]any
+		require.NoError(t, sonic.Unmarshal(b, &m), string(b))
+		require.Equalf(t, 4, countBreakpoints(m), "raw=%s", string(b))
 	})
 }
 
@@ -2422,5 +2470,179 @@ func TestOpenAIInbound_ReasoningSummaryIsNotForwarded(t *testing.T) {
 	}
 	if responses.Params.Reasoning.Summary != nil {
 		t.Fatalf("reasoning.summary leaked through the openai integration: %q", *responses.Params.Reasoning.Summary)
+	}
+}
+
+// oauthTokenStub answers every token request with one fixed bearer and counts hits.
+func oauthTokenStub(t testing.TB) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var hits atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"minted-token","token_type":"Bearer","expires_in":3600}`))
+	}))
+	t.Cleanup(server.Close)
+	return server, &hits
+}
+
+func oauthTestProvider(t testing.TB) *OpenAIProvider {
+	t.Helper()
+	return NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: "https://llm.example", DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, nil)
+}
+
+func oauthKey(name, tokenURL string) schemas.Key {
+	return schemas.Key{Name: name, Models: []string{"*"}, OAuthKeyConfig: &schemas.OAuthKeyConfig{
+		GrantType:    schemas.OAuthGrantClientCredentials,
+		TokenURL:     *schemas.NewSecretVar(tokenURL),
+		ClientID:     schemas.NewSecretVar(name + "-id"),
+		ClientSecret: schemas.NewSecretVar(name + "-secret"),
+	}}
+}
+
+// TestFileListCursorSelectsTheKeyByPosition pins that a serial pagination cursor keeps
+// addressing the key it was issued for. The cursor stores a position, so a failed mint on an
+// earlier key must not shift the later keys: the cursor for key 2 queries key 2.
+func TestFileListCursorSelectsTheKeyByPosition(t *testing.T) {
+	stub, _ := oauthTokenStub(t)
+	var authSeen atomic.Value
+	files := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authSeen.Store(r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"file-1","object":"file","bytes":1,"created_at":1,"filename":"a.txt","purpose":"assistants"}],"has_more":false}`))
+	}))
+	t.Cleanup(files.Close)
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: files.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, nil)
+	keys := []schemas.Key{
+		oauthKey("down", "http://127.0.0.1:1/token"),
+		oauthKey("up", stub.URL+"/token"),
+	}
+	cursor := schemas.EncodeSerialCursor(schemas.NewSerialCursor(1, ""))
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bErr := provider.FileList(ctx, keys, &schemas.BifrostFileListRequest{After: &cursor})
+	if bErr != nil {
+		t.Fatalf("the cursor names the working key, so the list must succeed: %v", bErr.Error.Message)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != "file-1" {
+		t.Fatalf("data = %+v, want the second key's one file", resp.Data)
+	}
+	if got, _ := authSeen.Load().(string); got != "Bearer minted-token" {
+		t.Fatalf("Authorization = %q, want the second key's minted bearer", got)
+	}
+
+	// The cursor for the failed key surfaces that key's error instead of silently serving a
+	// different key's files.
+	cursor = schemas.EncodeSerialCursor(schemas.NewSerialCursor(0, ""))
+	_, bErr = provider.FileList(ctx, keys, &schemas.BifrostFileListRequest{After: &cursor})
+	if bErr == nil {
+		t.Fatal("the cursor for the key whose mint fails must return that failure")
+	}
+}
+
+// TestDecisionMintsOAuthBearer pins that the native decisions path resolves an OAuth key: the
+// single-key method must carry the minted bearer, not the key's empty static value.
+func TestDecisionMintsOAuthBearer(t *testing.T) {
+	stub, _ := oauthTokenStub(t)
+	var authSeen atomic.Value
+	decisions := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authSeen.Store(r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"dec_1","model":"gpt-6-luna","answers":[{"type":"predicate","probability":0.9}],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}`))
+	}))
+	t.Cleanup(decisions.Close)
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: decisions.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, nil)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bErr := provider.Decision(ctx, oauthKey("dec", stub.URL+"/token"), &schemas.BifrostDecisionRequest{
+		Provider:  schemas.OpenAI,
+		Model:     "gpt-6-luna",
+		Input:     schemas.DecisionInput{Text: schemas.Ptr("this is unacceptable")},
+		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("angry")}},
+	})
+	if bErr != nil {
+		t.Fatalf("decision failed: %v", bErr.Error.Message)
+	}
+	if len(resp.Answers) != 1 {
+		t.Fatalf("answers = %+v, want one", resp.Answers)
+	}
+	if got, _ := authSeen.Load().(string); got != "Bearer minted-token" {
+		t.Fatalf("Authorization = %q, want the minted bearer", got)
+	}
+
+	// A key whose token endpoint is down fails the request with the mint error, not a bare 401.
+	_, bErr = provider.Decision(ctx, oauthKey("down", "http://127.0.0.1:1/token"), &schemas.BifrostDecisionRequest{
+		Provider:  schemas.OpenAI,
+		Model:     "gpt-6-luna",
+		Input:     schemas.DecisionInput{Text: schemas.Ptr("x")},
+		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("angry")}},
+	})
+	if bErr == nil || !strings.Contains(bErr.Error.Message, "oauth token") {
+		t.Fatalf("want the token mint failure, got %+v", bErr)
+	}
+}
+
+// TestWebSocketHeadersMintOAuthBearer pins that the native WebSocket path carries the minted
+// bearer for an OAuth key instead of dialing with an empty Authorization header.
+func TestWebSocketHeadersMintOAuthBearer(t *testing.T) {
+	stub, hits := oauthTokenStub(t)
+	provider := oauthTestProvider(t)
+	key := oauthKey("ws", stub.URL+"/token")
+
+	headers := provider.WebSocketHeaders(key)
+	if headers["Authorization"] != "Bearer minted-token" {
+		t.Fatalf("Authorization = %q, want the minted bearer", headers["Authorization"])
+	}
+	headers = provider.WebSocketHeaders(key)
+	if headers["Authorization"] != "Bearer minted-token" || hits.Load() != 1 {
+		t.Fatalf("second call: Authorization = %q, mints = %d, want the cached bearer and one mint", headers["Authorization"], hits.Load())
+	}
+
+	// A key whose endpoint is down keeps today's behaviour: no Authorization header, so the
+	// transport falls back to the HTTP bridge.
+	headers = provider.WebSocketHeaders(oauthKey("down", "http://127.0.0.1:1/token"))
+	if _, ok := headers["Authorization"]; ok {
+		t.Fatalf("a failed mint must not send an Authorization header, got %q", headers["Authorization"])
+	}
+	if provider.WebSocketHeaders(schemas.Key{Value: *schemas.NewSecretVar("sk")})["Authorization"] != "Bearer sk" {
+		t.Fatal("a static key is unchanged")
+	}
+}
+
+// BenchmarkResolveKeyOAuthWarm is the per-request cost of an OAuth key once its token is
+// cached: the cache-key hash, the warm cache lookup and the SecretVar copy. The token is
+// minted once before the timer.
+func BenchmarkResolveKeyOAuthWarm(b *testing.B) {
+	stub, _ := oauthTokenStub(b)
+	provider := oauthTestProvider(b)
+	key := oauthKey("bench", stub.URL+"/token")
+	if _, bErr := provider.resolveKey(context.Background(), key); bErr != nil {
+		b.Fatal(bErr.Error.Message)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, bErr := provider.resolveKey(context.Background(), key); bErr != nil {
+			b.Fatal(bErr.Error.Message)
+		}
+	}
+}
+
+// BenchmarkResolveKeyStatic is the cost every OpenAI request now pays at method entry when
+// the key carries a value: it must stay at two comparisons and zero allocations.
+func BenchmarkResolveKeyStatic(b *testing.B) {
+	provider := &OpenAIProvider{}
+	key := schemas.Key{Value: *schemas.NewSecretVar("sk-static")}
+	b.ReportAllocs()
+	for range b.N {
+		if _, bErr := provider.resolveKey(context.Background(), key); bErr != nil {
+			b.Fatal(bErr)
+		}
 	}
 }

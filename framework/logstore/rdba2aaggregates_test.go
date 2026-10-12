@@ -345,3 +345,89 @@ func TestListAgentLogHistoryEventTypeKeepsOnlyMatchingEvents(t *testing.T) {
 	}
 	require.ElementsMatch(t, []string{"search-parent", "search-event"}, ids)
 }
+
+// TestAgentSessionGrouping pins context roots, filtered counts and pagination.
+func TestAgentSessionGrouping(t *testing.T) {
+	store, now := newAgentAggregateFixture(t)
+	ctx := context.Background()
+	require.NoError(t, store.db.Model(&AgentLog{}).Where("id IN ?", []string{"a-1", "a-2", "a-3", "b-1", "search-event"}).UpdateColumn("context_id", "shared-context").Error)
+	// Timestamp ties resolve by ID, independently of display order.
+	require.NoError(t, store.db.Model(&AgentLog{}).Where("id = ?", "a-2").UpdateColumn("timestamp", now).Error)
+	emptyContext := ""
+	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{
+		{ID: "empty-context-1", Timestamp: now.Add(6 * time.Minute), RecordKind: "request", Operation: "SendMessage", AgentName: "alpha", RequestID: "empty-1", ContextID: &emptyContext, Status: "success"},
+		{ID: "empty-context-2", Timestamp: now.Add(7 * time.Minute), RecordKind: "request", Operation: "SendMessage", AgentName: "alpha", RequestID: "empty-2", ContextID: &emptyContext, Status: "success"},
+	})))
+	filter := agentWindow(now)
+	filter.GroupSessions = true
+
+	t.Run("groups before pagination and preserves missing contexts", func(t *testing.T) {
+		result, err := store.ListAgentLogHistory(ctx, filter, PaginationOptions{Limit: 2, Order: "asc"})
+		require.NoError(t, err)
+		require.EqualValues(t, 4, result.Pagination.TotalCount)
+		require.Len(t, result.Logs, 2)
+		require.Equal(t, "a-1", result.Logs[0].ID)
+		require.EqualValues(t, 3, result.Logs[0].SessionChildCount)
+		require.Equal(t, "search-parent", result.Logs[1].ID)
+		require.Zero(t, result.Logs[1].SessionChildCount)
+		next, err := store.ListAgentLogHistory(ctx, filter, PaginationOptions{Limit: 2, Offset: 2, Order: "asc"})
+		require.NoError(t, err)
+		require.Equal(t, "empty-context-1", next.Logs[0].ID)
+		require.Equal(t, "empty-context-2", next.Logs[1].ID)
+	})
+
+	t.Run("promotes earliest matching operation and counts only matches", func(t *testing.T) {
+		filtered := filter
+		filtered.Status = []string{"error"}
+		result, err := store.ListAgentLogHistory(ctx, filtered, PaginationOptions{Limit: 10})
+		require.NoError(t, err)
+		require.Len(t, result.Logs, 1)
+		require.Equal(t, "a-2", result.Logs[0].ID)
+		require.Zero(t, result.Logs[0].SessionChildCount)
+		filtered = filter
+		start := now.Add(time.Minute)
+		filtered.StartTime = &start
+		result, err = store.ListAgentLogHistory(ctx, filtered, PaginationOptions{Limit: 10, Order: "asc"})
+		require.NoError(t, err)
+		require.Equal(t, "a-3", result.Logs[0].ID)
+		require.EqualValues(t, 1, result.Logs[0].SessionChildCount)
+	})
+
+	t.Run("access scope also applies to roots and counts", func(t *testing.T) {
+		scoped := queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB { return db.Where("agent_name = ?", "beta") })
+		result, err := store.ListAgentLogHistory(scoped, filter, PaginationOptions{Limit: 10})
+		require.NoError(t, err)
+		require.Len(t, result.Logs, 1)
+		require.Equal(t, "b-1", result.Logs[0].ID)
+		require.Zero(t, result.Logs[0].SessionChildCount)
+	})
+
+	t.Run("context searches expand and flat mode remains unchanged", func(t *testing.T) {
+		filtered := filter
+		filtered.ContextID = "shared-context"
+		filtered.RecordKind = []string{"request"}
+		result, err := store.ListAgentLogHistory(ctx, filtered, PaginationOptions{Limit: 10})
+		require.NoError(t, err)
+		require.Len(t, result.Logs, 4)
+		filtered.ContextID = ""
+		filtered.GroupSessions = false
+		result, err = store.ListAgentLogHistory(ctx, filtered, PaginationOptions{Limit: 10})
+		require.NoError(t, err)
+		require.EqualValues(t, 7, result.Pagination.TotalCount)
+	})
+
+	t.Run("grouping does not collapse operation statistics", func(t *testing.T) {
+		filtered := filter
+		filtered.RecordKind = []string{"request"}
+		stats, err := store.GetAgentLogStats(ctx, filtered)
+		require.NoError(t, err)
+		require.EqualValues(t, 7, stats.TotalEntries)
+	})
+
+	t.Run("hydrated roots retain the expansion count", func(t *testing.T) {
+		result, err := store.ListAgentLogOperations(ctx, filter, PaginationOptions{Limit: 10, Order: "asc"})
+		require.NoError(t, err)
+		require.Equal(t, "a-1", result.Logs[0].ID)
+		require.EqualValues(t, 3, result.Logs[0].SessionChildCount)
+	})
+}

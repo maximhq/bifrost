@@ -636,6 +636,58 @@ func (s *ClickHouseLogStore) BulkUpdateCost(ctx context.Context, updates map[str
 	return nil
 }
 
+// BatchUpdate overlays each entry's non-zero fields onto its existing row via
+// read-modify-write and re-insert, one chunk at a time under the RMW locks.
+// It overrides the embedded RDB implementation, whose GORM UPDATE would be a
+// heavyweight mutation here and would bypass rmwLocks. Several entries for one
+// id are applied in batch order, as the RDB store applies them. Missing ids are
+// skipped, matching the RDB semantics. content_summary is left as the row has
+// it: the entry's own serialization would regenerate it from output only.
+func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) error {
+	byID := make(map[string][]*Log, len(entries))
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil || entry.ID == "" {
+			continue
+		}
+		if _, seen := byID[entry.ID]; !seen {
+			ids = append(ids, entry.ID)
+		}
+		byID[entry.ID] = append(byID[entry.ID], entry)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	st, err := chParseSchema(s.db, &Log{})
+	if err != nil {
+		return err
+	}
+	return forEachRMWChunk(ids, func(chunk []string) error {
+		defer s.lockRMWBatch("logs", chunk)()
+		var rows []*Log
+		if err := s.db.WithContext(ctx).Where("id IN ?", chunk).Find(&rows).Error; err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		for _, r := range rows {
+			for _, src := range byID[r.ID] {
+				if err := src.SerializeFields(); err != nil {
+					return err
+				}
+				src.ContentSummary = ""
+				if err := chApplyStructUpdate(ctx, st, reflect.ValueOf(r).Elem(), reflect.ValueOf(src).Elem()); err != nil {
+					return err
+				}
+				// The overlay skips zero values; the final visibility is always written.
+				r.ContentHidden = src.ContentHidden
+			}
+		}
+		return s.chReinsert(ctx, &rows)
+	})
+}
+
 // UpdateAgentLog applies an update to an Agent log row via read-modify-write.
 func (s *ClickHouseLogStore) UpdateAgentLog(ctx context.Context, id string, entry any) error {
 	st, err := chParseSchema(s.db, &AgentLog{})

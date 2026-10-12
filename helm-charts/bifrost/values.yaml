@@ -322,6 +322,7 @@ bifrost:
       shouldConvertParams: false
       azureDeepseek: false
       # forceReasoningOnlyModelsToResponses: true  # Route chat requests to responses for models that cannot reason with tool calls, so reasoning is kept (default true)
+      # convertDecisionToResponses: false  # Emulate decision requests through the model's Responses API when it has no native decisions endpoint (default false)
     prometheusLabels: []
     # Header filtering configuration for x-bf-eh-* headers forwarded to LLM providers
     headerFilterConfig:
@@ -517,6 +518,15 @@ bifrost:
   #         # client_id: "env.DATABRICKS_CLIENT_ID"          # OAuth M2M service principal; set with client_secret
   #         # client_secret: "env.DATABRICKS_CLIENT_SECRET"  # and leave value empty
   #         # forward_gateway_tags: false         # Send Bifrost governance labels as Databricks-Ai-Gateway-Request-Tags
+  #
+  # # Cloudflare Workers AI example (requires cloudflare_key_config)
+  # cloudflare:
+  #   keys:
+  #     - name: "cloudflare-key"
+  #       value: "env.CLOUDFLARE_API_TOKEN"       # API token with Workers AI permission
+  #       weight: 1
+  #       cloudflare_key_config:
+  #         account_id: "env.CLOUDFLARE_ACCOUNT_ID"   # Required
 
   # Provider secrets - use existing Kubernetes secrets for provider API keys
   # These will be injected as environment variables that can be referenced in providers config
@@ -660,6 +670,10 @@ bifrost:
       #   maxToolCalls: 64           # nested MCP tool calls
       #   maxValueBytes: 1048576     # each tool payload / converted result; 0 or at least 1024
       #   maxNestingDepth: 64        # value nesting depth; at most 1000
+      # bifrost.mcp.toolManagerConfig.oauthPrivateAllowlist -- hosts, IPs or CIDRs (no scheme or port) the MCP OAuth
+      # chain (discovery, client registration, token requests) may reach on loopback or private addresses, for MCP
+      # servers added by an authenticated admin or declared here. Link-local and cloud metadata are always refused.
+      # oauthPrivateAllowlist: ["localhost", "127.0.0.1"]
 
   # Plugins configuration
   plugins:

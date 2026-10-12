@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Structural invariants for the split OpenAPI sources. Run directly: `python3 spec_invariants_test.py`.
+Needs PyYAML and jsonschema: `pip install pyyaml jsonschema`.
 
 No test framework needed (docs/openapi has no test runner configured). These guard the
 kinds of drift that survive a successful bundle: the bundler resolves whatever `$ref`s it
@@ -10,6 +11,7 @@ produce a clean `openapi.json` that documents the wrong surface.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -788,32 +790,35 @@ def test_injected_tools_contract_matches_config_schema():
     import json
 
     defs = json.loads((REPO_ROOT / "transports" / "config.schema.json").read_text(encoding="utf-8"))["$defs"]
-    ref_def = defs["injected_tool_ref"]
+    ref_def = defs["injected_tool"]
     expected_fields = sorted(ref_def["required"])
     problems = []
 
     def check_ref(where, ref):
         if not isinstance(ref, dict):
-            problems.append(f"{where}: web_search is not an object schema")
+            problems.append(f"{where}: items is not an object schema")
             return
         if sorted(ref.get("required") or []) != expected_fields:
             problems.append(f"{where}: required {ref.get('required')} != {expected_fields}")
         if ref.get("additionalProperties") is not ref_def["additionalProperties"]:
-            problems.append(f"{where}: web_search additionalProperties is {ref.get('additionalProperties')!r}")
+            problems.append(f"{where}: items additionalProperties is {ref.get('additionalProperties')!r}")
         for field in expected_fields:
-            got = (ref.get("properties") or {}).get(field, {}).get("minLength")
-            want = ref_def["properties"][field]["minLength"]
-            if got != want:
-                problems.append(f"{where}: {field}.minLength is {got!r}, config.schema.json says {want}")
+            got_prop = (ref.get("properties") or {}).get(field, {})
+            want_prop = ref_def["properties"][field]
+            for constraint in ("minLength", "pattern"):
+                if got_prop.get(constraint) != want_prop.get(constraint):
+                    problems.append(
+                        f"{where}: {field}.{constraint} is {got_prop.get(constraint)!r}, config.schema.json says {want_prop.get(constraint)!r}"
+                    )
 
     def check_tools(where, tools, resolve):
-        # An update request wraps the block as oneOf [block, null]; check the block.
+        # An update request wraps the list as oneOf [list, null]; check the list.
         for alt in tools.get("oneOf") or []:
             if isinstance(alt, dict) and alt.get("type") != "null":
                 tools = resolve(alt)
-        if tools.get("additionalProperties") is not defs["injected_tools"]["additionalProperties"]:
-            problems.append(f"{where}: injected_tools additionalProperties is {tools.get('additionalProperties')!r}")
-        check_ref(where, resolve((tools.get("properties") or {}).get("web_search")))
+        if tools.get("type") != defs["injected_tools"]["type"]:
+            problems.append(f"{where}: injected_tools type is {tools.get('type')!r}, config.schema.json says {defs['injected_tools']['type']!r}")
+        check_ref(where, resolve(tools.get("items")))
 
     source = load(HERE / "schemas" / "management" / "providers.yaml")
     resolve_yaml = lambda node: source[node["$ref"].split("/")[-1]] if isinstance(node, dict) and "$ref" in node else node
@@ -836,7 +841,7 @@ def test_injected_tools_contract_matches_config_schema():
     assert found, "openapi.json has no injected_tools property"
     for i, tools in enumerate(found):
         check_tools(f"openapi.json injected_tools copy {i + 1}", tools, lambda node: node)
-    # PUT clears a saved block with an explicit null, so the update request must allow it.
+    # PUT clears the saved list with an explicit null, so the update request must allow it.
     def allows_null(prop):
         return isinstance(prop, dict) and any(
             isinstance(alt, dict) and alt.get("type") == "null" for alt in (prop.get("oneOf") or prop.get("anyOf") or [])
@@ -868,6 +873,80 @@ def test_injected_tools_contract_matches_config_schema():
     assert not problems, "injected_tools drifts from config.schema.json:\n    " + "\n    ".join(problems)
 
 
+
+def test_oauth_key_config_contract_matches_server_validation():
+    """OAuthKeyConfig.Validate (core/schemas/account.go) requires client_id and client_secret
+    for client_credentials and private_key, issuer and audience for jwt_bearer, and
+    transports/config.schema.json rejects unknown OAuth fields. The published OpenAPI schema
+    must say the same, or generated clients accept blocks the server rejects on save."""
+    import copy
+
+    try:
+        import jsonschema
+    except ImportError as exc:  # keep the run going; the other checks need only PyYAML
+        raise AssertionError("needs the jsonschema package: pip install jsonschema") from exc
+
+    schema = copy.deepcopy(load(HERE / "schemas" / "management" / "providers.yaml")["OAuthKeyConfig"])
+
+    def inline_envvar(node):
+        if isinstance(node, dict):
+            if node.get("$ref", "").endswith("common.yaml#/EnvVar"):
+                node.pop("$ref")
+                node["type"] = ["string", "object"]
+            for value in node.values():
+                inline_envvar(value)
+        elif isinstance(node, list):
+            for value in node:
+                inline_envvar(value)
+
+    inline_envvar(schema)
+    validator = jsonschema.Draft202012Validator(schema)
+    token_url = "https://idp.example/oauth2/token"
+    cases = [
+        ("client_credentials with both credentials", {"grant_type": "client_credentials", "token_url": token_url, "client_id": "id", "client_secret": "s"}, True),
+        ("client_credentials without client_secret", {"grant_type": "client_credentials", "token_url": token_url, "client_id": "id"}, False),
+        ("client_credentials without client_id", {"grant_type": "client_credentials", "token_url": token_url, "client_secret": "s"}, False),
+        ("jwt_bearer with key, issuer and audience", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "issuer": "i", "audience": "a"}, True),
+        ("jwt_bearer without audience", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "issuer": "i"}, False),
+        ("jwt_bearer without issuer", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "audience": "a"}, False),
+        ("jwt_bearer without private_key", {"grant_type": "jwt_bearer", "token_url": token_url, "issuer": "i", "audience": "a"}, False),
+        # Validate trims and rejects a blank issuer or audience; config.schema.json says minLength 1.
+        ("jwt_bearer with an empty audience", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "issuer": "i", "audience": ""}, False),
+        ("jwt_bearer with an empty issuer", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "issuer": "", "audience": "a"}, False),
+        ("an unknown field", {"grant_type": "client_credentials", "token_url": token_url, "client_id": "id", "client_secret": "s", "client_secrett": "s"}, False),
+        # Validate accepts 0 as "use the default lifetime" and bounds the rest at 3600.
+        ("assertion_lifetime_seconds 0 means the default", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": 0}, True),
+        ("a negative assertion lifetime", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": -1}, False),
+        ("an assertion lifetime above an hour", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": 3601}, False),
+    ]
+    problems = [
+        f"{name}: OpenAPI says {'valid' if validator.is_valid(block) else 'invalid'}, server says {'valid' if want else 'invalid'}"
+        for name, block, want in cases
+        if validator.is_valid(block) != want
+    ]
+    assert not problems, "OAuthKeyConfig drifts from server validation:\n    " + "\n    ".join(problems)
+
+
+
+def test_oauth_token_url_descriptions_state_the_server_rules():
+    """OAuthKeyConfig.Validate accepts plain http for loopback hosts only and rejects a token_url
+    carrying userinfo, a query or a fragment (extra parameters go in extra_params). Every
+    published description of token_url must say so, or an operator reads "https URL", cannot
+    configure a local token endpoint, and discovers the query rule only on save."""
+    sources = {
+        "docs/openapi providers.yaml OAuthKeyConfig.token_url": load(HERE / "schemas" / "management" / "providers.yaml")["OAuthKeyConfig"]["properties"]["token_url"]["description"],
+        "transports/config.schema.json base_key.oauth_key_config.token_url": json.loads((REPO_ROOT / "transports" / "config.schema.json").read_text(encoding="utf-8"))["$defs"]["base_key"]["properties"]["oauth_key_config"]["properties"]["token_url"]["description"],
+        "helm values.schema.json providerKey.oauth_key_config.token_url": json.loads((REPO_ROOT / "helm-charts" / "bifrost" / "values.schema.json").read_text(encoding="utf-8"))["$defs"]["providerKey"]["properties"]["oauth_key_config"]["properties"]["token_url"]["description"],
+    }
+    problems = []
+    for where, description in sources.items():
+        text = description.lower()
+        for needle in ("https", "loopback", "userinfo", "query", "fragment", "extra_params"):
+            if needle not in text:
+                problems.append(f"{where}: description does not mention {needle!r}: {description!r}")
+    assert not problems, "token_url descriptions drift from OAuthKeyConfig.Validate:\n    " + "\n    ".join(problems)
+
+
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
 check("secret-capable values accept bare strings (EnvVar oneOf)", test_secret_capable_values_accept_bare_strings)
 check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws_workload_identity_contract)
@@ -881,6 +960,8 @@ check("warp unconfigured response satisfies its own schema", test_warp_unconfigu
 check("warp config input models its enabled-state contract", test_warp_config_input_models_the_enabled_contract)
 check("every operation declares its own security", test_every_operation_declares_security)
 check("injected_tools schemas match config.schema.json", test_injected_tools_contract_matches_config_schema)
+check("oauth_key_config grant rules match server validation", test_oauth_key_config_contract_matches_server_validation)
+check("oauth token_url descriptions state the loopback and URL-part rules", test_oauth_token_url_descriptions_state_the_server_rules)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

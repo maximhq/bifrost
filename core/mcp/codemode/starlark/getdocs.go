@@ -131,13 +131,13 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	}
 
 	// Generate detailed documentation using generateTypeDefinitions
-	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true)
+	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true, s.serverInstructionsComment(matchedClientName))
 
 	return createToolResponseMessage(toolCall, docContent, false), nil
 }
 
 // generateTypeDefinitions generates Python documentation with docstrings from ChatTool schemas.
-func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isToolLevel bool) string {
+func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isToolLevel bool, instructions string) string {
 	var sb strings.Builder
 
 	// Write comprehensive header
@@ -171,6 +171,10 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 	sb.WriteString("#\n")
 	sb.WriteString("# Common error: \"key not found\" or \"has no attribute\"\n")
 	sb.WriteString("# Fix: Use print() to see actual structure, then use result[\"key\"] or .get()\n")
+	if instructions != "" {
+		sb.WriteString("#\n")
+		sb.WriteString(instructions)
+	}
 	sb.WriteString("# ============================================================================\n\n")
 
 	// Generate function definitions for each tool

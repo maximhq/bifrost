@@ -1,25 +1,34 @@
 import { MCPClientSelector } from "@/components/entitySelectors/mcpClientSelector";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Form, FormControl, FormField, FormItem, FormMessage } from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch, useGetMCPClientsQuery, useLazyGetMCPClientsQuery } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
 import type { ModelProvider } from "@/lib/types/config";
-import { injectedWebSearchFormSchema, type InjectedWebSearchFormSchema } from "@/lib/types/schemas";
+import { injectedToolsFormSchema, type InjectedToolsFormSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useForm, type Resolver } from "react-hook-form";
+import { useFieldArray, useForm, type Resolver, type UseFormReturn } from "react-hook-form";
 import { toast } from "sonner";
 import { buildProviderUpdatePayload } from "../views/utils";
 import {
+	emptyToolRow,
 	hydratedValues,
 	lookupSavedClient,
+	nameAfterServerChange,
 	nextSavedClientState,
 	pickersDisabled,
+	prefilledName,
+	replacesNativeWebSearch,
 	savedFormValues,
 	startedSavedClientState,
+	toInjectedTools,
 	toolMenuState,
+	withResolvedClientId,
 	type SavedClientState,
 } from "./injectedToolsForm.utils";
 
@@ -40,13 +49,14 @@ interface InjectedToolsFormFragmentProps {
 // The provider stores the MCP client by name, while the client picker works by id. The
 // list search matches names by substring, so it pages on until the exact name turns up.
 // It reports the name the id was resolved for, so callers never pair an id with another name,
-// and whether the lookup failed or found the server gone; retry runs it again.
-function useSavedClientId(clientName: string): SavedClientState & { retry: () => void } {
+// and whether the lookup failed or found the server gone; retry runs it again. It runs only
+// while enabled: a row whose server was picked in this form already has its id.
+function useSavedClientId(clientName: string, enabled: boolean): SavedClientState & { retry: () => void } {
 	const [fetchClients] = useLazyGetMCPClientsQuery();
 	const [resolved, setResolved] = useState<SavedClientState>({ name: "", id: "", status: "idle" });
 	const [attempt, setAttempt] = useState(0);
 	useEffect(() => {
-		if (clientName === "") return;
+		if (!enabled || clientName === "") return;
 		let cancelled = false;
 		setResolved((previous) => startedSavedClientState(clientName, previous));
 		lookupSavedClient(
@@ -61,54 +71,37 @@ function useSavedClientId(clientName: string): SavedClientState & { retry: () =>
 		return () => {
 			cancelled = true;
 		};
-	}, [clientName, fetchClients, attempt]);
+	}, [clientName, enabled, fetchClients, attempt]);
 	return { ...resolved, retry: () => setAttempt((n) => n + 1) };
 }
 
-export function InjectedToolsFormFragment({ provider }: InjectedToolsFormFragmentProps) {
-	const dispatch = useAppDispatch();
-	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
-	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
+interface InjectedToolRowProps {
+	form: UseFormReturn<InjectedToolsFormSchema, any, InjectedToolsFormSchema>;
+	index: number;
+	lockPickers: boolean;
+	onRemove: () => void;
+}
 
-	const saved = provider.injected_tools?.web_search;
-	const savedClientName = saved?.mcp_client_name ?? "";
-	const savedToolName = saved?.tool_name ?? "";
-	const resolvedClient = useSavedClientId(savedClientName);
-	const savedClientId = resolvedClient.name === savedClientName ? resolvedClient.id : "";
-	const savedClientStatus = resolvedClient.name === savedClientName ? resolvedClient.status : "idle";
-	const lockPickers = pickersDisabled(hasUpdateProviderAccess, isUpdatingProvider);
+function InjectedToolRow({ form, index, lockPickers, onRemove }: InjectedToolRowProps) {
+	const testId = `provider-tools-row-${index}`;
+	const name = form.watch(`tools.${index}.name`);
+	const clientId = form.watch(`tools.${index}.mcp_client_id`);
+	const clientName = form.watch(`tools.${index}.mcp_client_name`);
 
-	const form = useForm<InjectedWebSearchFormSchema, any, InjectedWebSearchFormSchema>({
-		resolver: zodResolver(injectedWebSearchFormSchema) as Resolver<InjectedWebSearchFormSchema, any, InjectedWebSearchFormSchema>,
-		mode: "onChange",
-		reValidateMode: "onChange",
-		defaultValues: { mcp_client_id: savedClientId, mcp_client_name: savedClientName, tool_name: savedToolName },
-	});
-
+	// A saved row carries the client name only; resolve its id for the picker.
+	const savedClient = useSavedClientId(clientName, clientId === "");
+	const savedClientStatus = clientId === "" && savedClient.name === clientName ? savedClient.status : "idle";
 	useEffect(() => {
-		dispatch(setProviderFormDirtyState(form.formState.isDirty));
-	}, [form.formState.isDirty, dispatch]);
-
-	// A different provider, or a saved setting that changed, replaces the form. The resolved
-	// client id is kept when it belongs to the saved client, since the lookup will not run
-	// again for an unchanged name.
-	useEffect(() => {
-		form.reset(savedFormValues(savedClientName, savedToolName, resolvedClient));
-		// eslint-disable-next-line react-hooks/exhaustive-deps -- a late-resolving id is handled by the hydration effect below
-	}, [form, provider.name, savedClientName, savedToolName]);
-
-	// The saved client's id resolves after the form opens; load it only into an untouched form.
-	useEffect(() => {
-		const values = hydratedValues(form.formState.isDirty, {
-			mcp_client_id: savedClientId,
-			mcp_client_name: savedClientName,
-			tool_name: savedToolName,
-		});
-		if (values && savedClientId !== "") form.reset(values);
+		if (savedClient.status !== "found" || savedClient.name !== clientName) return;
+		const resolved = withResolvedClientId(form.getValues(), index, savedClient.name, savedClient.id);
+		if (!resolved) return;
+		// An untouched form takes the id as its saved state; an edited one keeps its edits.
+		const values = hydratedValues(form.formState.isDirty, resolved);
+		if (values) form.reset(values);
+		else form.setValue(`tools.${index}.mcp_client_id`, savedClient.id, { shouldValidate: true });
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the id resolves, not on every edit
-	}, [savedClientId]);
+	}, [savedClient.status, savedClient.id, savedClient.name]);
 
-	const clientId = form.watch("mcp_client_id");
 	const toolsQuery = useGetMCPClientsQuery({ server: clientId, limit: 1 }, { skip: clientId === "" });
 	const selectedClient = toolsQuery.data?.clients?.[0];
 	const tools = selectedClient?.tools ?? [];
@@ -119,112 +112,124 @@ export function InjectedToolsFormFragment({ provider }: InjectedToolsFormFragmen
 		if (
 			selectedClient &&
 			selectedClient.config.client_id === clientId &&
-			form.getValues("mcp_client_name") !== selectedClient.config.name
+			form.getValues(`tools.${index}.mcp_client_name`) !== selectedClient.config.name
 		) {
-			form.setValue("mcp_client_name", selectedClient.config.name, { shouldDirty: true, shouldValidate: true });
+			form.setValue(`tools.${index}.mcp_client_name`, selectedClient.config.name, { shouldDirty: true, shouldValidate: true });
 		}
-	}, [selectedClient, clientId, form]);
-
-	// Save always writes a complete selection (the schema guarantees it); only Remove
-	// passes null, which clears the provider's injected tools.
-	const save = (data: InjectedWebSearchFormSchema | null) => {
-		const injectedTools = data ? { web_search: { mcp_client_name: data.mcp_client_name, tool_name: data.tool_name } } : null;
-		updateProvider(buildProviderUpdatePayload(provider, { injected_tools: injectedTools }))
-			.unwrap()
-			.then(() => {
-				toast.success(injectedTools ? "Web search tool updated" : "Web search tool removed");
-				form.reset(data ?? { mcp_client_id: "", mcp_client_name: "", tool_name: "" });
-			})
-			.catch((err) => {
-				toast.error("Failed to update web search tool", { description: getErrorMessage(err) });
-			});
-	};
+	}, [selectedClient, clientId, form, index]);
 
 	return (
-		<Form {...form}>
-			<form onSubmit={form.handleSubmit(save)} className="space-y-6 px-4 md:px-6" data-testid="provider-config-web-search-content">
-				<p className="text-muted-foreground text-xs">
-					Pick an MCP tool to serve as web search for every chat and responses request to this provider. Bifrost adds the tool to each
-					request, replaces any native web search the client sends, runs the tool itself when the model calls it, and returns only the final
-					answer.
-				</p>
+		<tr className="border-b align-top last:border-b-0" data-testid={testId}>
+			<td className="px-3 py-2">
 				<FormField
 					control={form.control}
-					name="mcp_client_id"
+					name={`tools.${index}.name`}
 					render={({ field }) => (
 						<FormItem>
-							<FormLabel>MCP server</FormLabel>
 							<FormControl>
-								<div data-testid="provider-web-search-client-select">
-									<MCPClientSelector
-										value={field.value}
-										onChange={(value) => {
-											field.onChange(value);
-											form.setValue("mcp_client_name", "", { shouldDirty: true });
-											form.setValue("tool_name", "", { shouldDirty: true, shouldValidate: true });
-										}}
-										disabled={lockPickers}
-										fallbackOption={savedClientId ? { value: savedClientId, label: savedClientName } : null}
-									/>
-								</div>
+								<Input
+									{...field}
+									placeholder="web_search"
+									className="h-8 font-mono text-xs"
+									disabled={lockPickers}
+									aria-label="Tool name the model sees"
+									data-testid={`${testId}-name`}
+								/>
 							</FormControl>
-							{savedClientStatus === "loading" && !form.formState.isDirty && (
-								<p className="text-muted-foreground text-xs" data-testid="provider-web-search-client-loading">
-									Loading saved MCP server &quot;{savedClientName}&quot;...
-								</p>
-							)}
-							{savedClientStatus === "missing" && !form.formState.isDirty && (
-								<p className="text-destructive text-xs" data-testid="provider-web-search-client-missing">
-									The saved MCP server &quot;{savedClientName}&quot; no longer exists. Pick another one.
-								</p>
-							)}
-							{savedClientStatus === "error" && !form.formState.isDirty && (
-								<div className="text-destructive flex items-center gap-2 text-xs" data-testid="provider-web-search-client-error">
-									Could not load the saved MCP server &quot;{savedClientName}&quot;.
-									<Button
-										type="button"
-										variant="outline"
-										size="sm"
-										onClick={resolvedClient.retry}
-										data-testid="provider-web-search-client-retry"
-									>
-										Retry
-									</Button>
-								</div>
+							{replacesNativeWebSearch(name) && (
+								<Badge variant="secondary" className="text-xs" data-testid={`${testId}-replaces-web-search`}>
+									Replaces native web search
+								</Badge>
 							)}
 							<FormMessage />
 						</FormItem>
 					)}
 				/>
+			</td>
+			<td className="px-3 py-2">
 				<FormField
 					control={form.control}
-					name="tool_name"
+					name={`tools.${index}.mcp_client_id`}
 					render={({ field }) => (
 						<FormItem>
-							<FormLabel>Tool</FormLabel>
-							<Select value={field.value} onValueChange={field.onChange} disabled={lockPickers || menuState !== "ready"}>
+							<FormControl>
+								<div data-testid={`${testId}-client-select`}>
+									<MCPClientSelector
+										value={field.value}
+										onChange={(value) => {
+											field.onChange(value);
+											const currentName = form.getValues(`tools.${index}.name`);
+											const nextName = nameAfterServerChange(currentName, form.getValues(`tools.${index}.tool_name`));
+											if (nextName !== currentName) form.setValue(`tools.${index}.name`, nextName, { shouldDirty: true });
+											form.setValue(`tools.${index}.mcp_client_name`, "", { shouldDirty: true });
+											form.setValue(`tools.${index}.tool_name`, "", { shouldDirty: true, shouldValidate: true });
+										}}
+										disabled={lockPickers}
+										fallbackOption={field.value && clientName ? { value: field.value, label: clientName } : null}
+									/>
+								</div>
+							</FormControl>
+							{savedClientStatus === "loading" && (
+								<p className="text-muted-foreground text-xs" data-testid={`${testId}-client-loading`}>
+									Loading saved MCP server &quot;{clientName}&quot;...
+								</p>
+							)}
+							{savedClientStatus === "missing" && (
+								<p className="text-destructive text-xs" data-testid={`${testId}-client-missing`}>
+									The saved MCP server &quot;{clientName}&quot; no longer exists. Pick another one.
+								</p>
+							)}
+							{savedClientStatus === "error" && (
+								<div className="text-destructive flex items-center gap-2 text-xs" data-testid={`${testId}-client-error`}>
+									Could not load the saved MCP server &quot;{clientName}&quot;.
+									<Button type="button" variant="outline" size="sm" onClick={savedClient.retry} data-testid={`${testId}-client-retry`}>
+										Retry
+									</Button>
+								</div>
+							)}
+							{savedClientStatus === "idle" && <FormMessage />}
+						</FormItem>
+					)}
+				/>
+			</td>
+			<td className="px-3 py-2">
+				<FormField
+					control={form.control}
+					name={`tools.${index}.tool_name`}
+					render={({ field }) => (
+						<FormItem>
+							<Select
+								value={field.value}
+								onValueChange={(value) => {
+									const current = form.getValues(`tools.${index}.name`);
+									const next = prefilledName(current, field.value, value);
+									if (next !== current) form.setValue(`tools.${index}.name`, next, { shouldDirty: true, shouldValidate: true });
+									field.onChange(value);
+								}}
+								disabled={lockPickers || menuState !== "ready"}
+							>
 								<FormControl>
-									<SelectTrigger className="w-full" data-testid="provider-web-search-tool-select">
+									<SelectTrigger className="h-8 w-full text-xs" data-testid={`${testId}-tool-select`}>
 										<SelectValue placeholder={TOOL_PLACEHOLDERS[menuState]} />
 									</SelectTrigger>
 								</FormControl>
 								<SelectContent>
 									{tools.map((tool) => (
-										<SelectItem key={tool.name} value={tool.name} data-testid={`provider-web-search-tool-option-${tool.name}`}>
+										<SelectItem key={tool.name} value={tool.name} data-testid={`${testId}-tool-option-${tool.name}`}>
 											{tool.name}
 										</SelectItem>
 									))}
 								</SelectContent>
 							</Select>
 							{menuState === "error" && (
-								<div className="text-destructive flex items-center gap-2 text-xs" data-testid="provider-web-search-tool-error">
-									Could not load this server's tools.
+								<div className="text-destructive flex items-center gap-2 text-xs" data-testid={`${testId}-tool-error`}>
+									Could not load this server&apos;s tools.
 									<Button
 										type="button"
 										variant="outline"
 										size="sm"
 										onClick={() => toolsQuery.refetch()}
-										data-testid="provider-web-search-tool-retry"
+										data-testid={`${testId}-tool-retry`}
 									>
 										Retry
 									</Button>
@@ -234,26 +239,120 @@ export function InjectedToolsFormFragment({ provider }: InjectedToolsFormFragmen
 						</FormItem>
 					)}
 				/>
+			</td>
+			<td className="w-10 px-1 py-2">
+				<Button
+					type="button"
+					variant="ghost"
+					size="icon"
+					className="h-8 w-8"
+					disabled={lockPickers}
+					onClick={onRemove}
+					aria-label={name ? `Remove tool ${name}` : "Remove tool"}
+					data-testid={`${testId}-remove-btn`}
+				>
+					<Trash2 className="h-3.5 w-3.5" />
+				</Button>
+			</td>
+		</tr>
+	);
+}
 
-				<div className="flex justify-end space-x-2 pb-6">
-					{saved && (
-						<Button
-							type="button"
-							variant="outline"
-							data-testid="provider-web-search-remove-btn"
-							disabled={!hasUpdateProviderAccess || isUpdatingProvider}
-							onClick={() => save(null)}
-						>
-							Remove
-						</Button>
-					)}
+export function InjectedToolsFormFragment({ provider }: InjectedToolsFormFragmentProps) {
+	const dispatch = useAppDispatch();
+	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
+	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
+	const lockPickers = pickersDisabled(hasUpdateProviderAccess, isUpdatingProvider);
+	// A stable key for the saved list, so a refetch returning the same list does not reset edits.
+	const savedKey = JSON.stringify(provider.injected_tools ?? []);
+
+	const form = useForm<InjectedToolsFormSchema, any, InjectedToolsFormSchema>({
+		resolver: zodResolver(injectedToolsFormSchema) as Resolver<InjectedToolsFormSchema, any, InjectedToolsFormSchema>,
+		mode: "onChange",
+		reValidateMode: "onChange",
+		defaultValues: savedFormValues(provider.injected_tools),
+	});
+	const { fields, append, remove } = useFieldArray({ control: form.control, name: "tools" });
+
+	useEffect(() => {
+		dispatch(setProviderFormDirtyState(form.formState.isDirty));
+	}, [form.formState.isDirty, dispatch]);
+
+	// A different provider, or a saved list that changed, replaces the form.
+	useEffect(() => {
+		form.reset(savedFormValues(provider.injected_tools));
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- savedKey stands in for the list's contents
+	}, [form, provider.name, savedKey]);
+
+	const save = (data: InjectedToolsFormSchema) => {
+		const injectedTools = toInjectedTools(data);
+		updateProvider(buildProviderUpdatePayload(provider, { injected_tools: injectedTools }))
+			.unwrap()
+			.then(() => {
+				toast.success(injectedTools ? "Tools updated" : "Tools removed");
+				form.reset(data);
+			})
+			.catch((err) => {
+				toast.error("Failed to update tools", { description: getErrorMessage(err) });
+			});
+	};
+
+	return (
+		<Form {...form}>
+			<form onSubmit={form.handleSubmit(save)} className="space-y-4 px-4 md:px-6" data-testid="provider-config-tools-content">
+				<p className="text-muted-foreground text-xs">
+					MCP tools added to every chat and responses request to this provider. Bifrost runs them itself when the model calls them and
+					returns only the final answer. The model sees each tool under its name. A name that matches a tool the client sends replaces that
+					tool, and the name <code className="font-mono">web_search</code> also replaces native web search.
+				</p>
+				{fields.length > 0 ? (
+					<div className="overflow-x-auto rounded-md border">
+						<table className="w-full text-sm" data-testid="provider-tools-table">
+							<thead>
+								<tr className="border-b">
+									<th className="px-3 py-2 text-left font-medium">Name</th>
+									<th className="px-3 py-2 text-left font-medium">MCP server</th>
+									<th className="px-3 py-2 text-left font-medium">Tool</th>
+									<th className="w-10 px-1 py-2">
+										<span className="sr-only">Remove</span>
+									</th>
+								</tr>
+							</thead>
+							<tbody>
+								{fields.map((field, index) => (
+									<InjectedToolRow key={field.id} form={form} index={index} lockPickers={lockPickers} onRemove={() => remove(index)} />
+								))}
+							</tbody>
+						</table>
+					</div>
+				) : (
+					<p
+						className="text-muted-foreground rounded-md border border-dashed px-3 py-6 text-center text-xs"
+						data-testid="provider-tools-empty"
+					>
+						No tools are injected for this provider.
+					</p>
+				)}
+
+				<div className="flex justify-between space-x-2 pb-6">
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						disabled={lockPickers}
+						onClick={() => append(emptyToolRow())}
+						data-testid="provider-tools-add-btn"
+					>
+						<Plus className="mr-1 h-3.5 w-3.5" />
+						Add tool
+					</Button>
 					<Button
 						type="submit"
-						data-testid="provider-web-search-save-btn"
+						data-testid="provider-tools-save-btn"
 						disabled={!form.formState.isDirty || !form.formState.isValid || !hasUpdateProviderAccess || isUpdatingProvider}
 						isLoading={isUpdatingProvider}
 					>
-						Save Web Search Tool
+						Save Tools
 					</Button>
 				</div>
 			</form>

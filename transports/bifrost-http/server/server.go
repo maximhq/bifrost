@@ -1561,6 +1561,11 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	if s.LogsCleaner != nil {
 		s.LogsCleaner.UpdateRetentionDays(config.LogRetentionDays)
 	}
+	// This path also serves cluster peers, so one node's allowlist edit
+	// reaches every node's OAuth client.
+	if err := lib.ApplyMCPOAuthPrivateAllowlist(config.MCPOAuthPrivateAllowlist); err != nil {
+		logger.Warn("ignoring invalid mcp_oauth_private_allowlist during client config reload: %v", err)
+	}
 	// Reloading whitelisted routes from the client config
 	if s.AuthMiddleware != nil {
 		s.AuthMiddleware.UpdateWhitelistedRoutes(config.WhitelistedRoutes)
@@ -2637,6 +2642,7 @@ func (s *BifrostHTTPServer) InitializeAgentGateway(ctx context.Context, registra
 		// Read the external URL live so admin config changes (and their cluster
 		// propagation) apply to card generation and push without a restart.
 		ExternalURLProvider: s.Config.GetA2AExternalClientURL,
+		RawCaptureProvider:  s.Config.GetA2AStoreRawRequestResponse,
 	}
 	if s.Config.ServerConfig != nil {
 		managerConfig.GRPCBaseDomain = s.Config.ServerConfig.A2AGRPCBaseDomain

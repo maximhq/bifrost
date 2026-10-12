@@ -1,6 +1,7 @@
 package lib
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/network"
@@ -266,8 +267,9 @@ func TestGetConfigForProvider_ProxySourceMatrix(t *testing.T) {
 // stored provider config into core: a field missing here saves fine but never reaches
 // the request path.
 func TestGetConfigForProvider_CarriesInjectedTools(t *testing.T) {
-	injected := &schemas.InjectedToolsConfig{
-		WebSearch: &schemas.InjectedToolRef{MCPClientName: "tavily", ToolName: "search"},
+	injected := []schemas.InjectedTool{
+		{Name: "web_search", MCPClientName: "tavily", ToolName: "search"},
+		{Name: "read_page", MCPClientName: "fetcher", ToolName: "fetch"},
 	}
 	store := &Config{
 		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
@@ -279,7 +281,7 @@ func TestGetConfigForProvider_CarriesInjectedTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetConfigForProvider: %v", err)
 	}
-	if config.InjectedTools != injected {
+	if !reflect.DeepEqual(config.InjectedTools, injected) {
 		t.Errorf("injected_tools must reach core; got %+v", config.InjectedTools)
 	}
 }

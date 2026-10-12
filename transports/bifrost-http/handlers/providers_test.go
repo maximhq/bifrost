@@ -313,18 +313,20 @@ func TestUpdateProvider_RejectsBaseURLComponents(t *testing.T) {
 	}
 }
 
-// An injected_tools block the typed payload cannot hold must be rejected, not decoded
-// into an empty config: a typo'd slot or a null web_search would otherwise return 200
-// with no tool configured. Both write paths are covered.
+// An injected_tools list the typed payload cannot hold must be rejected, not decoded
+// into an empty or zeroed config: the old object shape, a null entry or a typo'd field
+// would otherwise return 200 with no tool configured. Repeated names are rejected too.
+// Both write paths are covered.
 func TestProviderWrites_RejectMalformedInjectedTools(t *testing.T) {
 	SetLogger(&mockLogger{})
 	lib.SetLogger(&mockLogger{})
 	blocks := map[string]struct{ body, reason string }{
-		"unknown slot":                    {`{"websearch": {"mcp_client_name": "tavily", "tool_name": "search"}}`, "unknown slot"},
-		"null web_search":                 {`{"web_search": null}`, "web_search must be an object"},
-		"unknown web_search field":        {`{"web_search": {"mcp_client_name": "tavily", "tool_name": "search", "max_results": 5}}`, "unknown web_search field"},
-		"duplicate block, last null":      {`{"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}}, "injected_tools": {"web_search": null}`, "web_search must be an object"},
-		"duplicate web_search, last null": {`{"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}, "web_search": null}`, "web_search must be an object"},
+		"old object shape":          {`{"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}}`, "injected_tools must be an array"},
+		"null entry":                {`[null]`, "injected_tools[0] must be an object"},
+		"unknown field":             {`[{"name": "web_search", "mcp_client_name": "tavily", "tool_name": "search", "max_results": 5}]`, `unknown field \"max_results\"`},
+		"duplicate list, last null": {`[{"name": "web_search", "mcp_client_name": "tavily", "tool_name": "search"}], "injected_tools": [null]`, "injected_tools[0] must be an object"},
+		"duplicate names":           {`[{"name": "web_search", "mcp_client_name": "tavily", "tool_name": "search"}, {"name": "web_search", "mcp_client_name": "tavily", "tool_name": "crawl"}]`, "used more than once"},
+		"invalid name":              {`[{"name": "web search", "mcp_client_name": "tavily", "tool_name": "search"}]`, "must be 1-64"},
 	}
 	for name, tc := range blocks {
 		t.Run("add/"+name, func(t *testing.T) {
@@ -1286,6 +1288,152 @@ func TestListModels_DecisionsKeepsTypesafeBasedModels(t *testing.T) {
 		if resp.Total != 2 {
 			t.Fatalf("%s: expected both models listed, got %#v", provider, resp.Models)
 		}
+	}
+}
+
+// TestListModels_DecisionsOpenRouterFollowsDatasheet pins that decisions=true
+// lists OpenRouter models by the rule its Decision call gates on: a
+// supports_decisions row decides in either direction, and only a model with no
+// row falls back to the TypeSafe System One name check. The gpt-6-luna name rule does
+// not apply there: OpenRouter's gpt-6-luna chat models are rejected by its decisions
+// endpoint, which serves the family as openai/gpt-6-luna-decisions under its own row.
+func TestListModels_DecisionsOpenRouterFollowsDatasheet(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	rows := map[string]bool{"microsoft/decision-1": true, "typesafe/jev-router": false, "openai/gpt-6-luna-decisions": true}
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if supports, ok := rows[model]; ok {
+			return &schemas.ModelCapabilities{SupportsDecisions: &supports}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	models := []string{"microsoft/decision-1", "typesafe/jev-router", "typesafe/jev-1.13", "openai/gpt-6-luna-decisions", "openai/gpt-6-luna-pro", "openai/gpt-6-luna", "openai/gpt-4o"}
+	h := providerHandlerForTest(schemas.OpenRouter, []schemas.Key{{ID: "key-a"}}, models, models)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=openrouter&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"microsoft/decision-1", "openai/gpt-6-luna-decisions", "typesafe/jev-1.13"}; !slices.Equal(names, want) {
+		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
+// TestListModels_DecisionsCloudflareListsClef pins that decisions=true lists Cloudflare's
+// Clef models and nothing else, and that a datasheet row marking one as not a decision
+// model wins over the name.
+func TestListModels_DecisionsCloudflareListsClef(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	notDecisions := false
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if model == "@cf/cloudflare/clef" {
+			return &schemas.ModelCapabilities{SupportsDecisions: &notDecisions}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	models := []string{"@cf/cloudflare/clef", "@cf/cloudflare/clef-flash", "@cf/meta/llama-4-scout-17b-16e-instruct", "@cf/baai/bge-large-en-v1.5"}
+	h := providerHandlerForTest(schemas.Cloudflare, []schemas.Key{{ID: "key-a"}}, models, models)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=cloudflare&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	if want := []string{"@cf/cloudflare/clef-flash"}; !slices.Equal(names, want) {
+		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
+// TestListModels_DecisionsPerplexityListsDeciders pins that decisions=true lists
+// Perplexity's decider models and not its chat models.
+func TestListModels_DecisionsPerplexityListsDeciders(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	models := []string{"pplx-decider-v1-27b", "pplx-decider-v1.1-27b", "sonar-pro"}
+	h := providerHandlerForTest(schemas.Perplexity, []schemas.Key{{ID: "key-a"}}, models, models)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=perplexity&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"pplx-decider-v1-27b", "pplx-decider-v1.1-27b"}; !slices.Equal(names, want) {
+		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
+// TestListModels_DecisionsOllamaListsSystemOneModels pins that decisions=true
+// lists Ollama's System One models, tagged or not, and not its chat models.
+func TestListModels_DecisionsOllamaListsSystemOneModels(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	models := []string{"nimble", "tev1:0.8b", "clef-flash", "llama3.1:latest"}
+	h := providerHandlerForTest(schemas.Ollama, []schemas.Key{{ID: "key-a"}}, models, models)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=ollama&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"clef-flash", "nimble", "tev1:0.8b"}; !slices.Equal(names, want) {
+		t.Fatalf("expected %v, got %v", want, names)
 	}
 }
 

@@ -5,6 +5,7 @@ type BifrostPassthroughRequest struct {
 	Model       string        // model extracted from path or body, used for key selection when non-empty
 	Method      string
 	Path        string // stripped path, e.g. "/v1/fine-tuning/jobs"
+	APIVersion  string // version segment stripped with the route prefix, e.g. "v1beta1"; empty when none
 	RawQuery    string // raw query string, no "?"
 	UpstreamURL string // optional base URL override for host-backed passthrough routes
 	Body        []byte

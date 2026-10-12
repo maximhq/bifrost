@@ -106,6 +106,9 @@ func (g *GCSObjectStore) Put(ctx context.Context, key string, data []byte, tags 
 func (g *GCSObjectStore) Get(ctx context.Context, key string) ([]byte, error) {
 	r, err := g.client.Bucket(g.bucket).Object(key).NewReader(ctx)
 	if err != nil {
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			return nil, fmt.Errorf("objectstore: gcs read %s: %w", key, ErrNotFound)
+		}
 		return nil, fmt.Errorf("objectstore: gcs read %s: %w", key, err)
 	}
 	defer r.Close()

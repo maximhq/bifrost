@@ -2,6 +2,7 @@ package oauth2
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -19,22 +20,78 @@ import (
 // client is wired through the SSRF-safe dialer: a target the discovery chain
 // picked up from a upstream MCP server's own response
 // must not be reachable if it points at loopback or any other private/
-// link-local/CGNAT address. TestMain overrides the dialer package-wide for
-// this package's other tests (which talk to real httptest.Server loopback
-// addresses) - restore the production dialer for the duration of this test so
-// it exercises the actual guard.
+// link-local/CGNAT address. A context that records no destination policy, and
+// one recording the public-only policy, both stay public-only even when the
+// private-target allowlist names the address. TestMain overrides the dialer
+// package-wide for this package's other tests (which talk to real
+// httptest.Server loopback addresses) - restore the production dialer for the
+// duration of this test so it exercises the actual guard.
 func TestNewOAuthDiscoveryHTTPClientBlocksLoopback(t *testing.T) {
-	prev := testDialContextOverride
-	testDialContextOverride = nil
-	t.Cleanup(func() { testDialContextOverride = prev })
+	useProductionOAuthDialer(t, "127.0.0.1")
 
-	client := newOAuthDiscoveryHTTPClient(time.Second)
-	transport, ok := client.Transport.(*http.Transport)
-	require.True(t, ok)
-	require.NotNil(t, transport.DialContext)
+	for _, ctx := range []context.Context{context.Background(), withRequirePublicTarget(context.Background(), true)} {
+		client := newOAuthDiscoveryHTTPClient(ctx, time.Second)
+		transport, ok := client.Transport.(*http.Transport)
+		require.True(t, ok)
+		require.NotNil(t, transport.DialContext)
 
-	_, err := transport.DialContext(context.Background(), "tcp", "127.0.0.1:80")
+		_, err := transport.DialContext(context.Background(), "tcp", "127.0.0.1:80")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "blocked connection to non-public address")
+	}
+}
+
+// TestNewOAuthDiscoveryHTTPClientFollowsPrivateTargetAllowlist pins the
+// allowlisted policy an authenticated admin's MCP client gets: a loopback OAuth
+// server is reachable once allowlisted, refused when it is not, and the cloud
+// metadata address is refused even with an allowlist in place.
+func TestNewOAuthDiscoveryHTTPClientFollowsPrivateTargetAllowlist(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	ctx := withRequirePublicTarget(context.Background(), false)
+
+	useProductionOAuthDialer(t)
+	_, err := newOAuthDiscoveryHTTPClient(ctx, 2*time.Second).Get(server.URL)
 	require.Error(t, err)
+	require.Contains(t, err.Error(), "blocked connection to non-public address")
+
+	useProductionOAuthDialer(t, "127.0.0.1")
+	resp, err := newOAuthDiscoveryHTTPClient(ctx, 2*time.Second).Get(server.URL)
+	require.NoError(t, err, "an allowlisted loopback OAuth server must be reachable")
+	resp.Body.Close()
+
+	transport, ok := newOAuthDiscoveryHTTPClient(ctx, time.Second).Transport.(*http.Transport)
+	require.True(t, ok)
+	_, err = transport.DialContext(context.Background(), "tcp", "169.254.169.254:80")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "blocked connection to link-local address")
+}
+
+// TestSetPrivateTargetAllowlistDropsConnectionsApprovedUnderTheOldList pins
+// that removing a host from the allowlist takes effect for the next request:
+// the dial-time guard only runs when a connection is created, so a keep-alive
+// connection approved under the old list must not be reused afterwards.
+func TestSetPrivateTargetAllowlistDropsConnectionsApprovedUnderTheOldList(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	ctx := withRequirePublicTarget(context.Background(), false)
+
+	useProductionOAuthDialer(t, "127.0.0.1")
+	resp, err := newOAuthDiscoveryHTTPClient(ctx, 2*time.Second).Get(server.URL)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close() // the connection goes back to the pool for reuse
+
+	SetPrivateTargetAllowlist(nil)
+	resp, err = newOAuthDiscoveryHTTPClient(ctx, 2*time.Second).Get(server.URL)
+	if resp != nil {
+		resp.Body.Close()
+	}
+	require.Error(t, err, "a pooled connection approved under the old allowlist must not be reused")
 	require.Contains(t, err.Error(), "blocked connection to non-public address")
 }
 
@@ -62,7 +119,7 @@ func TestNewOAuthDiscoveryHTTPClientRefusesRedirectForPOST(t *testing.T) {
 	}))
 	defer redirector.Close()
 
-	client := newOAuthDiscoveryHTTPClient(2 * time.Second)
+	client := newOAuthDiscoveryHTTPClient(context.Background(), 2*time.Second)
 	resp, err := client.Post(redirector.URL, "application/x-www-form-urlencoded", strings.NewReader("grant_type=authorization_code&code=secret"))
 	if resp != nil {
 		resp.Body.Close()
@@ -107,6 +164,22 @@ func TestOAuthProxySelectorGuardsDestination(t *testing.T) {
 	got, err = direct(mk("http://127.0.0.1:8080/token"))
 	require.NoError(t, err)
 	require.Nil(t, got, "with no proxy the dial-time guard remains the only check")
+
+	// The allowlisted policy lets an allowlisted IP-literal destination through
+	// the proxy, and still refuses unlisted private and link-local ones.
+	al, err := network.ValidatePrivateTargetAllowlist([]string{"127.0.0.1"})
+	require.NoError(t, err)
+	allowlisted := oauthAllowlistedProxySelector(func(*http.Request) (*url.URL, error) { return proxy, nil }, func() *network.Allowlist { return al })
+	got, err = allowlisted(mk("http://127.0.0.1:8080/token"))
+	require.NoError(t, err)
+	require.Equal(t, proxy, got)
+	got, err = allowlisted(mk("https://auth.example.com/token"))
+	require.NoError(t, err)
+	require.Equal(t, proxy, got, "hostnames are resolved by the proxy")
+	for _, raw := range []string{"http://10.0.0.5/register", "http://169.254.169.254/latest/meta-data/"} {
+		_, err := allowlisted(mk(raw))
+		require.Error(t, err, raw)
+	}
 }
 
 // TestNewOAuthDiscoveryTransportDialsConfiguredProxyOnPrivateAddress pins the
@@ -129,7 +202,7 @@ func TestNewOAuthDiscoveryTransportDialsConfiguredProxyOnPrivateAddress(t *testi
 	proxyURL, err := url.Parse(proxy.URL)
 	require.NoError(t, err)
 
-	transport := newOAuthDiscoveryTransport(oauthDialContext(2*time.Second, proxyURL))
+	transport := newOAuthDiscoveryTransport(oauthDialContext(2*time.Second, network.SSRFSafeDialContext(2*time.Second), proxyURL))
 	transport.Proxy = oauthProxySelector(func(*http.Request) (*url.URL, error) { return proxyURL, nil })
 	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
 

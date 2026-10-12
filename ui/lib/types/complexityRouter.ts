@@ -238,14 +238,21 @@ export const SELF_HOSTED_DECISION_MODELS = [
 	{ label: "Clef", models: ["clef-flash", "clef"] },
 ] as const;
 
-// The Jev models OpenRouter serves on its decisions endpoint, latest alias first.
-// OpenRouter's catalog also lists chat models under Typesafe's namespace (such as
-// the Jev Router), which that endpoint does not accept, so only these are offered.
-export const OPENROUTER_DECISION_MODELS = ["~typesafe/jev-latest", "typesafe/jev-1.13"] as const;
+// OPENROUTER_DECISION_MODEL is the model a newly selected OpenRouter provider starts on.
+// The picker lists every OpenRouter model the datasheet marks as serving decisions.
+export const OPENROUTER_DECISION_MODEL = "~typesafe/jev-latest";
 
 // OPENAI_DECISION_MODEL is the model a newly selected OpenAI provider starts on.
 // The picker lists every model the datasheet marks as serving decisions.
 export const OPENAI_DECISION_MODEL = "gpt-6-luna";
+
+// PERPLEXITY_DECISION_MODEL is the model a newly selected Perplexity provider starts on.
+// The picker lists the decider models Perplexity serves.
+export const PERPLEXITY_DECISION_MODEL = "pplx-decider-v1.1-27b";
+
+// CLOUDFLARE_DECISION_MODEL is the model a newly selected Cloudflare provider starts on.
+// The picker lists the Clef models Cloudflare Workers AI serves.
+export const CLOUDFLARE_DECISION_MODEL = "@cf/cloudflare/clef-flash";
 
 // DEFAULT_DECISION_CONFIG supplies the model, history window, and timeout for decision-model requests.
 export const DEFAULT_DECISION_CONFIG: Required<Pick<DecisionConfig, "provider" | "model" | "previous_message_count" | "timeout">> = {

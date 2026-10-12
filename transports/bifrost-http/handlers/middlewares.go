@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	ws "github.com/fasthttp/websocket"
 	"github.com/google/uuid"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -118,6 +119,54 @@ func restoreCorrelationHeaders(ctx *fasthttp.RequestCtx) {
 	ctx.Response.Header.SetBytesV(lib.HeaderBifrostRequestID, requestID)
 	ctx.Response.Header.SetBytesV(lib.HeaderRequestID, requestID)
 	ctx.Response.Header.Set(lib.HeaderBifrostTraceID, exportTraceID)
+}
+
+// recoverWebSocketSession is deferred first inside every WebSocket upgrade callback.
+// A hijacked connection is served on its own goroutine after the HTTP handler, and
+// therefore after RecoveryMiddleware, has returned, so a panic there would otherwise
+// end the whole process. The panic is logged the same way and only this connection is
+// dropped (the callback's own deferred conn.Close runs after this recover).
+func recoverWebSocketSession(conn *ws.Conn) {
+	if r := recover(); r != nil {
+		logWebSocketPanic(conn, r)
+	}
+}
+
+// runWebSocketRelay runs one relay of a WebSocket session on the current goroutine and turns a
+// panic inside it into the error it returns, logged like recoverWebSocketSession. The relays
+// of a session run on their own goroutines, past the recover deferred by the upgrade callback,
+// so without this a panic in a plugin hook on the relay path would end the process rather
+// than the session. The error carries the panic summary only, never the panic value.
+func runWebSocketRelay(conn *ws.Conn, relay func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logWebSocketPanic(conn, r)
+			err = fmt.Errorf("websocket relay panicked: %T", r)
+		}
+	}()
+	return relay()
+}
+
+// logWebSocketPanic logs a recovered panic of a WebSocket session with the peer address and
+// the panic value's type only. Plugin hooks run on these paths, and a runtime.Error they raise
+// may carry whatever they put in its text, so unlike the request path the text is never kept.
+func logWebSocketPanic(conn *ws.Conn, r any) {
+	logger.Error(fmt.Sprintf("recovered from panic in websocket session (%s): %T\n%s", webSocketPeer(conn), r, debug.Stack()))
+}
+
+// webSocketPeer is the peer address of a connection, or empty when there is none to read: a
+// hijacked connection fasthttp has already recycled has no net.Conn underneath, and asking it
+// would panic inside the panic report.
+func webSocketPeer(conn *ws.Conn) (remote string) {
+	defer func() {
+		if recover() != nil {
+			remote = ""
+		}
+	}()
+	if conn == nil || conn.RemoteAddr() == nil {
+		return ""
+	}
+	return conn.RemoteAddr().String()
 }
 
 // panicSummary describes a recovered panic value without echoing arbitrary content.
