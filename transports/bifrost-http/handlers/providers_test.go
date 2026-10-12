@@ -1289,6 +1289,47 @@ func TestListModels_DecisionsKeepsTypesafeBasedModels(t *testing.T) {
 	}
 }
 
+// TestListModels_DecisionsOpenRouterFollowsDatasheet pins that decisions=true
+// lists OpenRouter models by the rule its Decision call gates on: a
+// supports_decisions row decides in either direction, and only a model with no
+// row falls back to the TypeSafe System One name check.
+func TestListModels_DecisionsOpenRouterFollowsDatasheet(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	rows := map[string]bool{"microsoft/decision-1": true, "typesafe/jev-router": false}
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if supports, ok := rows[model]; ok {
+			return &schemas.ModelCapabilities{SupportsDecisions: &supports}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	models := []string{"microsoft/decision-1", "typesafe/jev-router", "typesafe/jev-1.13", "openai/gpt-4o"}
+	h := providerHandlerForTest(schemas.OpenRouter, []schemas.Key{{ID: "key-a"}}, models, models)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=openrouter&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"microsoft/decision-1", "typesafe/jev-1.13"}; !slices.Equal(names, want) {
+		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
 // TestListModels_DecisionsSkipsProvidersDenyingDecisions pins that
 // decisions=true lists nothing from a custom provider whose allowed requests
 // exclude decisions, since its Decision call is denied rather than served:
