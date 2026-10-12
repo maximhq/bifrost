@@ -629,3 +629,21 @@ func TestPGTextSafety_MapUpdateShapes(t *testing.T) {
 		assert.Equal(t, routing, got.RoutingEngineLogs)
 	})
 }
+
+// TestPGTextSafety_StructUpdateNULOnlyValueIsWritten pins that a struct update
+// whose value is only NUL bytes still replaces the column. Cleaning it to ""
+// would make GORM's struct Updates skip the field as a zero value and silently
+// keep the previous value, so it is stored as U+FFFD instead.
+func TestPGTextSafety_StructUpdateNULOnlyValueIsWritten(t *testing.T) {
+	store, db := setupPGTextSafetyStore(t)
+	ctx := context.Background()
+
+	entry := pgTextSafetyBatch("nul-only", 1)[0]
+	entry.RawRequest = "previous body"
+	require.NoError(t, store.BatchCreateIfNotExists(ctx, []*Log{entry}))
+	require.NoError(t, store.Update(ctx, entry.ID, &Log{RawRequest: "\x00\x00"}))
+
+	var got string
+	require.NoError(t, db.Raw("SELECT raw_request FROM logs WHERE id = ?", entry.ID).Scan(&got).Error)
+	assert.Equal(t, "�", got, "a NUL-only update must replace the previous value, not be skipped")
+}
