@@ -860,12 +860,25 @@ func (p *GovernancePlugin) providerObjectOwnersOf(ctx *schemas.BifrostContext, k
 		owners[id] = owner
 	}
 	// The fallbacks answer for what the ownership rows did not, each id once.
+	// A list page can carry thousands of ids, so past a handful they are deduplicated through a
+	// set rather than a quadratic scan; a single-object request allocates no set.
 	unresolved := make([]string, 0, len(ids))
+	var queued map[string]struct{}
+	if len(ids) > 8 {
+		queued = make(map[string]struct{}, len(ids))
+	}
 	for _, id := range ids {
 		if _, seen := owners[id]; seen {
 			continue
 		}
-		if !slices.Contains(unresolved, id) {
+		if queued == nil {
+			if !slices.Contains(unresolved, id) {
+				unresolved = append(unresolved, id)
+			}
+			continue
+		}
+		if _, dup := queued[id]; !dup {
+			queued[id] = struct{}{}
 			unresolved = append(unresolved, id)
 		}
 	}

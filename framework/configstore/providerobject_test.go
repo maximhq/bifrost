@@ -3,12 +3,15 @@ package configstore
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"testing"
 
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 // setupProviderObjectTestStore extends the base test store with the provider_objects
@@ -289,4 +292,34 @@ func TestProviderObjectsObjectIDIndexMigration(t *testing.T) {
 	require.NoError(t, providerObjectsObjectIDIndexMigration(context.Background(), "add_provider_objects_object_id_index").Rollback(db))
 	require.False(t, indexExists(t, db, "provider_objects", "idx_provider_objects_kind_object_id"), "the rollback drops the index")
 	require.True(t, db.Migrator().HasTable("provider_objects"), "and keeps the table")
+}
+
+// BenchmarkGetProviderObjectsByIDs measures the ownership lookup of a typical list page
+// (20 ids, half of them recorded) on SQLite, the common case the id-list binding must not
+// slow down.
+func BenchmarkGetProviderObjectsByIDs(b *testing.B) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(b.TempDir(), "bench.db")), inListGormConfig())
+	require.NoError(b, err)
+	require.NoError(b, db.AutoMigrate(&tables.TableProviderObject{}))
+	store := newInListTestStore(db)
+	ctx := context.Background()
+	ids := make([]string, 0, 20)
+	for i := range 20 {
+		objectID := fmt.Sprintf("file-%02d", i)
+		id := tables.ProviderObjectID(tables.ProviderObjectKindFile, "openai", objectID)
+		ids = append(ids, id)
+		if i%2 == 0 {
+			require.NoError(b, store.UpsertProviderObject(ctx, &tables.TableProviderObject{
+				ID: id, Kind: tables.ProviderObjectKindFile, Provider: "openai", ObjectID: objectID, VirtualKeyID: "vk-a",
+			}))
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		objects, err := store.GetProviderObjectsByIDs(ctx, ids)
+		if err != nil || len(objects) != 10 {
+			b.Fatalf("lookup: %v, %d rows", err, len(objects))
+		}
+	}
 }
