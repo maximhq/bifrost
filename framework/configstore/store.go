@@ -1028,6 +1028,16 @@ type ConfigStore interface {
 	CompleteProviderJob(ctx context.Context, jobID, runnerID string) error
 	MarkProviderJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error
 	FailProviderJob(ctx context.Context, jobID, runnerID string, err error) error
+	// GetProviderJobsByFileIDs returns the provider jobs on provider whose input,
+	// output or error file is one of fileIDs.
+	GetProviderJobsByFileIDs(ctx context.Context, provider string, fileIDs []string) ([]*tables.TableProviderJob, error)
+
+	// Provider objects - which virtual key created a provider-side object
+	UpsertProviderObject(ctx context.Context, object *tables.TableProviderObject) error
+	// GetProviderObjectsByIDs returns the provider objects among the given stable
+	// ids that exist; ids with no row are simply absent from the result.
+	GetProviderObjectsByIDs(ctx context.Context, ids []string) ([]*tables.TableProviderObject, error)
+	DeleteProviderObject(ctx context.Context, id string) error
 
 	// Webhook Endpoints
 	GetWebhookEndpoints(ctx context.Context) ([]tables.TableWebhookEndpoint, error)

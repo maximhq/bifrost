@@ -132,12 +132,45 @@ const server = http.createServer((req, res) => {
 	if (req.method === "GET" && path === "/__hits") {
 		return send(200, {}, JSON.stringify({ data: [{ hits: { ...hits } }] }));
 	}
-	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses")) {
+	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
 	}
 	const chunks = [];
 	req.on("data", (c) => chunks.push(c));
 	req.on("end", () => {
+		// Creating a session incurs the WebRTC minimum before the relay validates this answer.
+		if (path === "/v1/live/sessions") {
+			let body;
+			try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+			catch { return send(400, {}, errorBody("invalid JSON", "invalid_request_error", "invalid_json")); }
+			if (!body?.session?.model || typeof body.session.instructions !== "string" || body.transport?.type !== "webrtc") {
+				return send(400, {}, errorBody("session and WebRTC transport are required", "invalid_request_error", "invalid_session"));
+			}
+			if (body.session.instructions.startsWith("filtered-live-create-")) {
+				const permissions = body.session.client?.data_channel;
+				const selectors = permissions?.allowed_server_events;
+				const topLevel = ["session.started", "session.updated", "session.closed", "session.usage.updated", "session.delegation.created", "session.input_transcript.delta", "session.output_transcript.delta", "error"];
+				const responses = ["response.output_item.done", "response.completed", "response.incomplete", "response.failed"];
+				const has = (type, nested) => Array.isArray(selectors) && selectors.some((event) => event?.type === type && event.response_event === nested);
+				if (!topLevel.every((type) => has(type, undefined)) || !responses.every((type) => has("response.event", type))) {
+					return send(400, {}, errorBody("gateway accounting events missing from upstream permissions", "invalid_request_error", "missing_gateway_events"));
+				}
+				if (JSON.stringify(permissions.allowed_client_events) !== '["session.close"]') {
+					return send(400, {}, errorBody("frontend command permissions changed", "invalid_request_error", "changed_client_permissions"));
+				}
+			}
+			if (body.session?.instructions === "refuse-live-create") {
+				return send(403, {}, errorBody("fixture refused live session creation", "permission_error", "session_refused"));
+			}
+			// A created session without an answer has still incurred the minimum.
+			if (body.session?.instructions === "answerless-live-create") {
+				return send(201, {}, JSON.stringify({ session: { id: "live_" + body.session.instructions, model: body.session.model } }));
+			}
+			return send(201, {}, JSON.stringify({
+				session: { id: "live_" + body.session.instructions, model: body.session.model },
+				transport: { type: "webrtc", sdp: "invalid SDP answer" },
+			}));
+		}
 		let parsed = {};
 		try {
 			parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) || {};

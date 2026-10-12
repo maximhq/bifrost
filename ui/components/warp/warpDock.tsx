@@ -1,8 +1,12 @@
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
-import WarpPanel from "@/components/warp/warpPanel";
 import { useIsNarrowerThan } from "@/hooks/use-mobile";
 import { useWarp } from "@/lib/contexts/warpContext";
+import { lazy, Suspense } from "react";
+
+// Lazy: the dock is on every page, and the panel pulls in the markdown renderer. Loading it on
+// first open keeps that out of the app bundle; once loaded, answers render without a fallback.
+const WarpPanel = lazy(() => import("@/components/warp/warpPanel"));
 
 // Docks Warp beside the content column so the page narrows instead of being covered.
 // 240px sidebar + 400px dock + a readable content column; below this Warp opens as a sheet.
@@ -24,17 +28,23 @@ export default function WarpDock({ children }: { children: React.ReactNode }) {
 
 				{isOpen && !isMobile && (
 					<>
-						<ResizableHandle aria-label="Resize Warp panel" className="bg-transparent md:-translate-x-1.5" data-testid="warp-dock-resize-handle" />
+						<ResizableHandle
+							aria-label="Resize Warp panel"
+							className="bg-transparent md:-translate-x-1.5"
+							data-testid="warp-dock-resize-handle"
+						/>
 						<ResizablePanel
 							id="warp-panel"
 							defaultSize="400px"
 							minSize="320px"
 							maxSize="50%"
-							className="min-h-0"
+							className="min-h-0 md:pb-3"
 							data-testid="warp-dock-panel"
 						>
-							<div className="dark:bg-card bg-card h-full min-h-0 overflow-hidden border border-gray-200 md:mr-2 md:mb-3 md:rounded-md dark:border-zinc-800">
-								<WarpPanel />
+							<div className="dark:bg-card bg-card h-full min-h-0 overflow-hidden border border-gray-200 md:mr-2 md:rounded-md dark:border-zinc-800">
+								<Suspense fallback={null}>
+									<WarpPanel />
+								</Suspense>
 							</div>
 						</ResizablePanel>
 					</>
@@ -48,7 +58,9 @@ export default function WarpDock({ children }: { children: React.ReactNode }) {
 						{/* Radix names the dialog from SheetTitle, not the panel's own heading. */}
 						<SheetTitle className="sr-only">Warp</SheetTitle>
 						<SheetDescription className="sr-only">Ask Warp questions about this deployment&apos;s logs, usage and spend.</SheetDescription>
-						<WarpPanel />
+						<Suspense fallback={null}>
+							<WarpPanel />
+						</Suspense>
 					</SheetContent>
 				</Sheet>
 			)}

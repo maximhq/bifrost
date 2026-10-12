@@ -999,10 +999,10 @@ func TestSessionAffinityFailureDropsWhatTheRequestFollowed(t *testing.T) {
 		_ = kv.SetWithTTL(route, "openai/gpt-4o", time.Minute)
 		_ = kv.SetWithTTL(openaiKey, "key-b", time.Minute)
 		// The caller named its provider, so the route binding was never consulted, and the key
-		// pool had one key, so neither was the key binding.
+		// pool had one key, the bound one, so the key binding was not followed either.
 		named := routeOf(schemas.OpenAI, "gpt-4o")
 		a.ResolveRoute(ctx, named, chain[:1])
-		a.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool[:1])
+		a.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool[1:2])
 		a.Observe(ctx, named, failed)
 		if entry := kv.data[route]; entry.value != "openai/gpt-4o" {
 			t.Fatalf("route binding touched by a request that never followed it: %+v", entry)

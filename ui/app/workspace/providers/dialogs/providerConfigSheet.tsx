@@ -67,8 +67,8 @@ const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: bo
 		label: "Pricing",
 	});
 	tabs.push({
-		id: "web-search",
-		label: "Web Search",
+		id: "tools",
+		label: "Tools",
 	});
 	tabs.push({
 		id: "debugging",
@@ -168,7 +168,7 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 							<TabsContent value="pricing">
 								<PricingFormFragment provider={provider} />
 							</TabsContent>
-							<TabsContent value="web-search">
+							<TabsContent value="tools">
 								<InjectedToolsFormFragment provider={provider} />
 							</TabsContent>
 							<TabsContent value="debugging">

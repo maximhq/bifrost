@@ -668,7 +668,7 @@ func parseAgentHistorySearch(ctx *fasthttp.RequestCtx) (logstore.AgentLogHistory
 		BusinessUnitID: values("business_unit_id"), ProjectID: values("project_id"), RequestID: value("request_id"), TraceID: value("trace_id"),
 		TaskID: value("task_id"), ContextID: value("context_id"), PushConfigID: value("push_config_id"),
 		DeliveryID: value("delivery_id"), AttemptID: value("attempt_id"), EventType: values("event_type"), TaskState: values("task_state"), Status: values("status"), RecordKind: values("record_kind"),
-		Search: value("search"),
+		Search: value("search"), GroupSessions: args.GetBool("group_sessions"),
 	}
 	for name, target := range map[string]**time.Time{"start_time": &filter.StartTime, "end_time": &filter.EndTime} {
 		if raw := value(name); raw != "" {
@@ -754,20 +754,28 @@ func sanitizeAgentHistoryPayload(payload *string) *string {
 	return &result
 }
 
+// redactAgentHistorySecrets removes credentials while preserving public OAuth definitions.
 func redactAgentHistorySecrets(value any) {
+	redactAgentHistoryValue(value, false)
+}
+
+// redactAgentHistoryValue tracks OAuth scheme definitions to distinguish public authorization fields from credentials.
+func redactAgentHistoryValue(value any, oauthDefinition bool) {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, child := range typed {
 			normalized := strings.ToLower(strings.TrimSpace(key))
-			if schemas.IsSensitiveHeader(normalized) || normalized == "password" || normalized == "client_secret" || normalized == "access_token" || normalized == "refresh_token" {
+			_, flowDefinition := child.(map[string]any)
+			publicOAuthField := oauthDefinition && (key == "authorizationCode" && flowDefinition || key == "authorizationUrl")
+			if !publicOAuthField && (schemas.IsSensitiveHeader(normalized) || normalized == "password" || normalized == "client_secret" || normalized == "access_token" || normalized == "refresh_token") {
 				typed[key] = schemas.RedactedAttrValue
 				continue
 			}
-			redactAgentHistorySecrets(child)
+			redactAgentHistoryValue(child, oauthDefinition || key == "oauth2SecurityScheme")
 		}
 	case []any:
 		for _, child := range typed {
-			redactAgentHistorySecrets(child)
+			redactAgentHistoryValue(child, oauthDefinition)
 		}
 	}
 }

@@ -4891,3 +4891,32 @@ func TestRefusalLogOutcome(t *testing.T) {
 		}
 	}
 }
+
+// TestA2ARawCaptureContentPolicy verifies raw captures follow the same content policy as typed bodies.
+func TestA2ARawCaptureContentPolicy(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		plugin := policyTestPlugin(boolPtr(disabled), nil, false)
+		plugin.writeQueue = make(chan *writeQueueEntry, 1)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "raw-policy")
+		var captures schemas.A2ARawCaptureManager
+		ctx.SetValue(schemas.A2ARawCaptureContextKey, captures.Start("capture-test"))
+		capture := schemas.GetA2ARawCapture(ctx)
+		capture.Append([]byte("request"), true)
+		capture.Append([]byte("response"), false)
+		req := &schemas.BifrostA2ARequest{RequestType: schemas.A2ARequestTypeSendMessage, AgentName: "fixture"}
+		_, _, err := plugin.PreA2AHook(ctx, req)
+		require.NoError(t, err)
+		resp := &schemas.BifrostA2AResponse{ExtraFields: schemas.BifrostA2AResponseExtraFields{A2ARequestType: req.RequestType, AgentName: req.AgentName}}
+		_, _, err = plugin.PostA2AHook(ctx, resp, nil)
+		require.NoError(t, err)
+		entry := (<-plugin.writeQueue).agentLog
+		if disabled {
+			require.Nil(t, entry.RawRequest)
+			require.Nil(t, entry.RawResponse)
+		} else {
+			require.Equal(t, "cmVxdWVzdA==", *entry.RawRequest)
+			require.Equal(t, "cmVzcG9uc2U=", *entry.RawResponse)
+		}
+	}
+}

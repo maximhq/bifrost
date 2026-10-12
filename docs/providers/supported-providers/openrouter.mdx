@@ -309,7 +309,7 @@ OpenRouter serves TypeSafe's jev family of System One judgment models on `/api/a
 | `usage.prompt_tokens` / `usage.completion_tokens` | `usage.input_tokens` / `usage.output_tokens` | |
 | `usage.cost.total_cost` | `usage.cost` | Billed amount in USD, used as-is for logging and budgets |
 
-Any other model on `/v1/decisions` returns `unsupported_operation` from the provider, so Bifrost emulates the decision through the model's tool calling. OpenRouter's `/v1/models` does not list the jev models, so Bifrost adds them to the model list.
+Every model on `/v1/decisions` is sent to the decisions endpoint, and OpenRouter decides which models it serves there: a newly served decisions model, such as `cloudflare/clef`, works as soon as OpenRouter lists it, and a model it does not serve, such as a chat model, comes back as OpenRouter's own error. With the compat setting [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) on, Bifrost instead emulates the decision through the model's tool calling for any model the model datasheet does not mark as a decisions model (or, without a datasheet entry, that is not a `typesafe/` or `~typesafe/` System One model). OpenRouter's `/v1/models` does not list the jev models, so Bifrost adds them to the model list.
 
 ---
 

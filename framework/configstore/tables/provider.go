@@ -43,7 +43,7 @@ type TableProvider struct {
 	CustomProviderConfig *schemas.CustomProviderConfig `gorm:"-" json:"custom_provider_config,omitempty"`
 	OpenAIConfig         *schemas.OpenAIConfig         `gorm:"-" json:"openai_config,omitempty"`
 	PromptCache          *schemas.PromptCacheConfig    `gorm:"-" json:"prompt_cache,omitempty"`
-	InjectedTools        *schemas.InjectedToolsConfig  `gorm:"-" json:"injected_tools,omitempty"`
+	InjectedTools        []schemas.InjectedTool        `gorm:"-" json:"injected_tools,omitempty"`
 
 	// Foreign keys
 	Models []TableModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
@@ -104,6 +104,8 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 			return err
 		}
 		p.CustomProviderConfigJSON = string(data)
+	} else {
+		p.CustomProviderConfigJSON = ""
 	}
 	if p.OpenAIConfig != nil {
 		data, err := json.Marshal(p.OpenAIConfig)
@@ -123,7 +125,7 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 	} else {
 		p.PromptCacheJSON = ""
 	}
-	if p.InjectedTools != nil {
+	if len(p.InjectedTools) > 0 {
 		data, err := json.Marshal(p.InjectedTools)
 		if err != nil {
 			return err
@@ -212,11 +214,11 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 	}
 
 	if p.InjectedToolsJSON != "" {
-		var injectedTools schemas.InjectedToolsConfig
+		var injectedTools []schemas.InjectedTool
 		if err := json.Unmarshal([]byte(p.InjectedToolsJSON), &injectedTools); err != nil {
 			return err
 		}
-		p.InjectedTools = &injectedTools
+		p.InjectedTools = injectedTools
 	}
 
 	return nil

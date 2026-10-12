@@ -145,3 +145,45 @@ func TestIndexHelpersNeverDropAnotherTablesIndex(t *testing.T) {
 		})
 	}
 }
+
+// TestMigrationAddBatchJobsFileIDIndexes pins that upgraded databases get the indexes the
+// file-ownership fallback (GetProviderJobsByFileIDs) filters on, that the migration is safe to
+// re-run, and that its rollback drops them.
+func TestMigrationAddBatchJobsFileIDIndexes(t *testing.T) {
+	for _, ndb := range indexMigrationDBs(t) {
+		t.Run(ndb.name, func(t *testing.T) {
+			require.NoError(t, ndb.db.Exec(`CREATE TABLE batch_jobs (
+				id VARCHAR(512) PRIMARY KEY, kind VARCHAR(50) NOT NULL DEFAULT 'batch', provider VARCHAR(255) NOT NULL,
+				input_file_id VARCHAR(255), output_file_id VARCHAR(255), error_file_id VARCHAR(255))`).Error)
+			runIndexMigrationTwice(t, ndb.db, "add_batch_jobs_file_id_indexes",
+				func(ctx context.Context, db *gorm.DB) error {
+					return migrationAddBatchJobsFileIDIndexes(ctx, db, testMigrationLogger)
+				},
+				"batch_jobs", "idx_batch_jobs_input_file_id")
+			require.True(t, indexExists(t, ndb.db, "batch_jobs", "idx_batch_jobs_output_file_id"))
+			require.True(t, indexExists(t, ndb.db, "batch_jobs", "idx_batch_jobs_error_file_id"))
+
+			rollback := batchJobsFileIDIndexesMigration(context.Background(), "add_batch_jobs_file_id_indexes").Rollback
+			require.NoError(t, rollback(ndb.db))
+			for _, index := range []string{"idx_batch_jobs_input_file_id", "idx_batch_jobs_output_file_id", "idx_batch_jobs_error_file_id"} {
+				require.False(t, indexExists(t, ndb.db, "batch_jobs", index), "rollback drops %s", index)
+			}
+			require.NoError(t, rollback(ndb.db), "rollback is safe to re-run")
+		})
+	}
+}
+
+// TestProviderObjectsTableRollbackRefuses pins that rolling back the provider_objects
+// migration fails instead of dropping the table: its rows are the only record of which
+// virtual key created each file, container and cached content, and without them every
+// such object becomes reachable to every key allowed on the provider. The table is
+// additive, so an older binary runs fine with it in place.
+func TestProviderObjectsTableRollbackRefuses(t *testing.T) {
+	db := freshSQLiteDB(t)
+	require.NoError(t, db.Migrator().CreateTable(&tables.TableProviderObject{}))
+
+	err := providerObjectsTableMigration(context.Background(), "add_provider_objects_table").Rollback(db)
+	require.Error(t, err, "the provider_objects migration must refuse to roll back")
+	require.Contains(t, err.Error(), "non-rollbackable")
+	require.True(t, db.Migrator().HasTable(&tables.TableProviderObject{}), "a refused rollback must keep the table")
+}

@@ -1002,6 +1002,15 @@ func (t *Tracer) CleanupStreamAccumulator(traceID string) {
 	}
 }
 
+// ResetStreamAccumulator drops the chunks accumulated for the given trace ID so a
+// retried stream attempt starts clean.
+func (t *Tracer) ResetStreamAccumulator(traceID string) {
+	if traceID == "" || t.accumulator == nil {
+		return
+	}
+	t.accumulator.ResetStreamAccumulator(traceID)
+}
+
 // ForceCleanupStreamAccumulator reaps the stream accumulator for the given trace
 // ID regardless of its reference counter. It is the guaranteed end-of-stream
 // backstop, called from the transport's trace completer once the stream has fully

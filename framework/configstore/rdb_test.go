@@ -5357,8 +5357,9 @@ func TestUpsertModelPricesBatch_Above100kColumns_SurviveResync(t *testing.T) {
 func TestProviderInjectedToolsRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
-	webSearch := &schemas.InjectedToolsConfig{
-		WebSearch: &schemas.InjectedToolRef{MCPClientName: "tavily", ToolName: "search"},
+	webSearch := []schemas.InjectedTool{
+		{Name: "web_search", MCPClientName: "tavily", ToolName: "search"},
+		{Name: "read_page", MCPClientName: "fetcher", ToolName: "fetch"},
 	}
 
 	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
@@ -5377,4 +5378,86 @@ func TestProviderInjectedToolsRoundTrip(t *testing.T) {
 	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
 	require.NoError(t, err)
 	assert.Nil(t, got.InjectedTools, "updating with a nil block must clear the stored column")
+
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{InjectedTools: webSearch}))
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{InjectedTools: []schemas.InjectedTool{}}))
+	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	assert.Empty(t, got.InjectedTools, "an empty list clears the stored column too")
+}
+
+func TestUpdateClientConfig_CompatConvertDecisionToResponsesRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := func(enabled bool) *ClientConfig {
+		return &ClientConfig{
+			EnableLogging:        new(true),
+			InitialPoolSize:      100,
+			LogRetentionDays:     30,
+			MaxRequestBodySizeMB: 50,
+			Compat:               CompatConfig{ConvertDecisionToResponses: enabled},
+		}
+	}
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(true)))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.Compat.ConvertDecisionToResponses, "enabling the toggle must persist")
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(false)))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.Compat.ConvertDecisionToResponses, "disabling the toggle must persist")
+}
+
+func TestGenerateClientConfigHash_CompatConvertDecisionToResponses(t *testing.T) {
+	on := &ClientConfig{InitialPoolSize: 100, Compat: CompatConfig{ConvertDecisionToResponses: true}}
+	off := &ClientConfig{InitialPoolSize: 100}
+	onHash, err := on.GenerateClientConfigHash()
+	require.NoError(t, err)
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, onHash, offHash, "toggling convert_decision_to_responses must change the hash")
+}
+
+// TestClientConfigUnmarshal_CompatConvertDecisionToResponsesDefaultsOff pins that,
+// unlike the other compat toggles, decision emulation stays off when config.json
+// omits it - both when compat is absent and when it is present without the field.
+func TestClientConfigUnmarshal_CompatConvertDecisionToResponsesDefaultsOff(t *testing.T) {
+	for name, raw := range map[string]string{
+		"compat absent":      `{}`,
+		"field absent":       `{"compat": {"convert_text_to_chat": true}}`,
+		"explicitly enabled": `{"compat": {"convert_decision_to_responses": true}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var c ClientConfig
+			require.NoError(t, json.Unmarshal([]byte(raw), &c))
+			assert.Equal(t, name == "explicitly enabled", c.Compat.ConvertDecisionToResponses)
+		})
+	}
+}
+
+// TestA2ARawCaptureConfigRoundTrip verifies persistence and hash parity for raw capture.
+func TestA2ARawCaptureConfigRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	config := &ClientConfig{}
+	require.NoError(t, store.UpdateClientConfig(ctx, config))
+	config, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	config.A2AStoreRawRequestResponse = true
+	require.NoError(t, store.UpdateClientConfig(ctx, config))
+	found, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.True(t, found.A2AStoreRawRequestResponse)
+	want, err := config.GenerateClientConfigHash()
+	require.NoError(t, err)
+	got, err := found.GenerateClientConfigHash()
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+	config.A2AStoreRawRequestResponse = false
+	other, err := config.GenerateClientConfigHash()
+	require.NoError(t, err)
+	require.NotEqual(t, want, other)
 }

@@ -326,6 +326,7 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 		ShouldConvertParams:                 cc.ShouldConvertParams,
 		AzureDeepseek:                       cc.AzureDeepseek,
 		ForceReasoningOnlyModelsToResponses: cc.ForceReasoningOnlyModelsToResponses,
+		ConvertDecisionToResponses:          cc.ConvertDecisionToResponses,
 	}
 	s.registerPluginWithStatus(ctx, compat.PluginName, nil, compatCfg, false)
 	s.Config.SetPluginOrderInfo(compat.PluginName, builtinPlacement, schemas.Ptr(8))

@@ -1326,6 +1326,33 @@ func TestStreamWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
 	}
 }
 
+// TestStreamWithDefaultsPreservesExtraFields pins parity with the non-streaming
+// WithDefaults: provider-format stream routes must not zero the chunk's extra_fields.
+func TestStreamWithDefaultsPreservesExtraFields(t *testing.T) {
+	extra := BifrostResponseExtraFields{
+		RequestType: ResponsesStreamRequest,
+		RoutingInfo: RoutingInfo{Provider: Vertex, Model: "claude-sonnet-5-5", Key: "vertex-key"},
+		Provider:    Vertex,
+		Latency:     42,
+		ChunkIndex:  5,
+	}
+	src := &BifrostResponsesStreamResponse{
+		Type:        ResponsesStreamResponseTypeOutputTextDelta,
+		Delta:       new("hi"),
+		ExtraFields: extra,
+	}
+
+	out := src.WithDefaults()
+	require.NotNil(t, out)
+	assert.Equal(t, extra, out.ExtraFields)
+
+	encoded, err := Marshal(out)
+	require.NoError(t, err)
+	assert.Equal(t, string(ResponsesStreamRequest), gjson.GetBytes(encoded, "extra_fields.request_type").String(), string(encoded))
+	assert.Equal(t, string(Vertex), gjson.GetBytes(encoded, "extra_fields.routing_info.provider").String(), string(encoded))
+	assert.Equal(t, int64(5), gjson.GetBytes(encoded, "extra_fields.chunk_index").Int(), string(encoded))
+}
+
 // TestCustomToolInputDoneRoundTrip preserves the terminal input clients compare with streamed custom-tool deltas.
 func TestCustomToolInputDoneRoundTrip(t *testing.T) {
 	raw := []byte(`{"type":"response.custom_tool_call_input.done","item_id":"tool1","output_index":0,"input":"grep alice@example.com"}`)
