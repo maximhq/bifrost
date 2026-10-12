@@ -996,6 +996,43 @@ func TestToOpenAIResponsesRequest_KeepsDeferLoadingForToolSearchModels(t *testin
 	}
 }
 
+func TestToOpenAIResponsesRequest_DropsDeferLoadingWithoutToolSearch(t *testing.T) {
+	req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-6-sol",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("use the weather tool")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  schemas.Ptr("tool_search"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+				},
+				{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  schemas.Ptr("get_weather"),
+					DeferLoading:          schemas.Ptr(true),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+				},
+			},
+		},
+	})
+	if req == nil {
+		t.Fatal("ToOpenAIResponsesRequest returned nil")
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if strings.Contains(string(jsonBytes), `"defer_loading":true`) {
+		t.Fatalf("defer_loading must be stripped when no tool_search tool is present: %s", jsonBytes)
+	}
+}
+
 // TestOpenAIResponsesRequest_MarshalJSON_DropsAnthropicOnlyToolTypes verifies
 // that Anthropic-only tool types (web_fetch, memory) are dropped entirely when
 // serializing for OpenAI Responses. Per OpenAI's OpenAPI spec the Responses

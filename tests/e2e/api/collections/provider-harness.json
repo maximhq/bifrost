@@ -262892,6 +262892,69 @@
           }
         }
       ]
+    },
+    {
+      "name": "230. OpenAI deferred tools require tool_search (#8361)",
+      "description": "Issue #8361. An Anthropic drop-in request to an OpenAI gpt-5.4+ model can carry defer_loading on a function tool without an OpenAI tool_search definition, which the upstream rejects. This case uses a client-side tool named tool_search (a normal function, not the Responses tool_search type), asserts a successful response, and inspects the captured OpenAI request to ensure the deferred function was made eager.",
+      "item": [
+        {
+          "name": "openai/gpt-6-sol /anthropic/v1/messages drops defer_loading without tool_search - #8361",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"max_tokens\": 256,\n  \"messages\": [{\"role\": \"user\", \"content\": \"Reply with the single word: ok\"}],\n  \"tools\": [\n    {\n      \"name\": \"tool_search\",\n      \"description\": \"Load deferred tool definitions by name.\",\n      \"input_schema\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}}, \"required\": [\"query\"]}\n    },\n    {\n      \"name\": \"fetch_weather_report\",\n      \"description\": \"Get the current weather.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var dump = JSON.stringify(rr || null);",
+                  "pm.test('openai deferred tools without tool_search: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('openai deferred tools without tool_search: deferred function is eager on the wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var tools = rr.tools || [];",
+                  "  var fn = tools.filter(function (x) { return x.name === 'fetch_weather_report'; })[0];",
+                  "  pm.expect(fn, 'fetch_weather_report missing from outbound tools: ' + dump.slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(fn, 'defer_loading reached OpenAI without a tool_search tool: ' + JSON.stringify(fn)).to.not.have.property('defer_loading');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

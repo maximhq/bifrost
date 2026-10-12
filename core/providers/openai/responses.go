@@ -1131,7 +1131,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// Filter out tools that the OpenAI-compatible target doesn't support.
 	toolCaps := schemas.ResolveModelCaps(toolProvider, capModel)
 	req.filterUnsupportedTools(supportsWebSearchContentTypes(toolCaps, toolProvider), toolProvider)
-	req.keepDeferLoading = toolCaps.SupportsToolSearch(defaultSupportsToolSearch(toolProvider, capModel))
+	// OpenAI requires a tool_search tool whenever a function is deferred.
+	hasToolSearch := slices.ContainsFunc(req.Tools, func(tool schemas.ResponsesTool) bool {
+		return tool.Type == schemas.ResponsesToolTypeToolSearch
+	})
+	req.keepDeferLoading = hasToolSearch && toolCaps.SupportsToolSearch(defaultSupportsToolSearch(toolProvider, capModel))
 
 	if bifrostReq.Params != nil {
 		req.ExtraParams = bifrostReq.Params.ExtraParams

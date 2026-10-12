@@ -1,0 +1,1 @@
+- [fix]: drop defer_loading on OpenAI Responses functions when no tool_search tool is present (#8361) [@axelray-dev](https://github.com/axelray-dev)
