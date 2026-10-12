@@ -5357,8 +5357,9 @@ func TestUpsertModelPricesBatch_Above100kColumns_SurviveResync(t *testing.T) {
 func TestProviderInjectedToolsRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
-	webSearch := &schemas.InjectedToolsConfig{
-		WebSearch: &schemas.InjectedToolRef{MCPClientName: "tavily", ToolName: "search"},
+	webSearch := []schemas.InjectedTool{
+		{Name: "web_search", MCPClientName: "tavily", ToolName: "search"},
+		{Name: "read_page", MCPClientName: "fetcher", ToolName: "fetch"},
 	}
 
 	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
@@ -5377,6 +5378,12 @@ func TestProviderInjectedToolsRoundTrip(t *testing.T) {
 	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
 	require.NoError(t, err)
 	assert.Nil(t, got.InjectedTools, "updating with a nil block must clear the stored column")
+
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{InjectedTools: webSearch}))
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{InjectedTools: []schemas.InjectedTool{}}))
+	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	assert.Empty(t, got.InjectedTools, "an empty list clears the stored column too")
 }
 
 func TestUpdateClientConfig_CompatConvertDecisionToResponsesRoundTrip(t *testing.T) {

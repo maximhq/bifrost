@@ -575,24 +575,27 @@ PromptCacheConfig:
         $ref: '#/CacheControlInjectionPoint'
 
 InjectedToolsConfig:
-  type: object
+  type: array
   description: >-
     MCP tools injected into every chat and responses request served by this provider and
     executed server side when the model calls them. The client never sees the injected
-    tool call, only the final answer.
-  additionalProperties: false
-  properties:
-    web_search:
-      $ref: '#/InjectedToolRef'
+    tool call, only the final answer. Names must be unique within a provider.
+  items:
+    $ref: '#/InjectedTool'
 
-InjectedToolRef:
+InjectedTool:
   type: object
   description: >-
-    MCP tool used as the provider's web search. Replaces any native web search tool or
-    web_search_options the client sends.
-  required: [mcp_client_name, tool_name]
+    One MCP tool injected under a name the model sees. The name replaces any client tool
+    with the same name; the name web_search also replaces native web search tools and
+    web_search_options.
+  required: [name, mcp_client_name, tool_name]
   additionalProperties: false
   properties:
+    name:
+      type: string
+      pattern: '^[a-zA-Z0-9_-]{1,64}$'
+      description: Tool name the model sees.
     mcp_client_name:
       type: string
       minLength: 1

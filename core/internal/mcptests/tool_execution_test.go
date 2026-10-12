@@ -609,7 +609,9 @@ func TestToolExecutionMultipleClients(t *testing.T) {
 // PROVIDER-INJECTED TOOL TESTS
 // =============================================================================
 
-const injectedSearchTool = "bifrostInternal-web_search"
+// injectedSearchTool is the name the model sees for the injected search tool. The MCP
+// tool behind it is bifrostInternal-web_search.
+const injectedSearchTool = "web_search"
 
 // fakeOpenAI answers /v1/chat/completions from a script and records every body it got.
 type fakeOpenAI struct {
@@ -695,6 +697,7 @@ func chatCompletionJSON(content string, finish string, toolCall string) string {
 type injectedToolsAccount struct {
 	provider schemas.ModelProvider
 	baseURL  string
+	tools    []schemas.InjectedTool // nil means the single web_search row
 }
 
 func (a *injectedToolsAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
@@ -709,12 +712,14 @@ func (a *injectedToolsAccount) GetConfigForProvider(provider schemas.ModelProvid
 	network := schemas.DefaultNetworkConfig
 	network.BaseURL = a.baseURL
 	network.MaxRetries = 0
+	tools := a.tools
+	if tools == nil {
+		tools = []schemas.InjectedTool{{Name: injectedSearchTool, MCPClientName: "bifrostInternal", ToolName: "web_search"}}
+	}
 	return &schemas.ProviderConfig{
 		NetworkConfig:            network,
 		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
-		InjectedTools: &schemas.InjectedToolsConfig{
-			WebSearch: &schemas.InjectedToolRef{MCPClientName: "bifrostInternal", ToolName: "web_search"},
-		},
+		InjectedTools:            tools,
 	}, nil
 }
 
@@ -826,6 +831,74 @@ func TestInjectedWebSearch_ClientToolCallsPassThrough(t *testing.T) {
 	assert.Equal(t, []string{"get_weather", injectedSearchTool}, fake.toolNames(0))
 	require.Len(t, resp.Choices[0].Message.ToolCalls, 1, "a client tool call goes back to the client")
 	assert.Equal(t, "get_weather", *resp.Choices[0].Message.ToolCalls[0].Function.Name)
+}
+
+// TestInjectedTools_SeveralToolsUnderTheirOwnNames configures two injected tools, one
+// of them not a search. Each reaches the model under its configured name, a turn that
+// calls both runs both MCP tools, and the client's web_search_options are kept because
+// no row is named web_search.
+func TestInjectedTools_SeveralToolsUnderTheirOwnNames(t *testing.T) {
+	twoCalls, _ := json.Marshal(map[string]any{
+		"id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "gpt-4o",
+		"choices": []any{map[string]any{"index": 0, "finish_reason": "tool_calls", "message": map[string]any{
+			"role": "assistant", "content": nil,
+			"tool_calls": []any{
+				map[string]any{"id": "call_1", "type": "function", "function": map[string]any{"name": "lookup", "arguments": `{"query":"paris"}`}},
+				map[string]any{"id": "call_2", "type": "function", "function": map[string]any{"name": "read_page", "arguments": `{"url":"https://example.com"}`}},
+			},
+		}}},
+		"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+	})
+	fake := &fakeOpenAI{replies: []string{string(twoCalls), chatCompletionJSON("Done.", "stop", "")}}
+	server := httptest.NewServer(fake)
+	t.Cleanup(server.Close)
+
+	b, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: &injectedToolsAccount{provider: schemas.OpenAI, baseURL: server.URL, tools: []schemas.InjectedTool{
+			{Name: "lookup", MCPClientName: "bifrostInternal", ToolName: "web_search"},
+			{Name: "read_page", MCPClientName: "bifrostInternal", ToolName: "fetch_url"},
+		}},
+		Logger:    bifrost.NewDefaultLogger(schemas.LogLevelError),
+		MCPConfig: &schemas.MCPConfig{ToolManagerConfig: &schemas.MCPToolManagerConfig{DisableAutoToolInject: true}},
+	})
+	require.NoError(t, err)
+	t.Cleanup(b.Shutdown)
+
+	var mu sync.Mutex
+	var ran []string
+	register := func(name, param string) {
+		schema := schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{
+			Name: name,
+			Parameters: &schemas.ToolFunctionParameters{
+				Type:       "object",
+				Properties: schemas.NewOrderedMapFromPairs(schemas.KV(param, map[string]any{"type": "string"})),
+			},
+		}}
+		require.NoError(t, b.RegisterMCPTool(name, name, func(args any) (string, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			ran = append(ran, name+":"+args.(map[string]any)[param].(string))
+			return "ok", nil
+		}, schema))
+	}
+	register("web_search", "query")
+	register("fetch_url", "url")
+
+	resp, bifrostErr := b.ChatCompletionRequest(createTestContext(), &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Go")}}},
+		Params:   &schemas.ChatParameters{WebSearchOptions: &schemas.ChatWebSearchOptions{}},
+	})
+
+	require.Nil(t, bifrostErr, "%v", bifrostErr)
+	assert.Equal(t, []string{"lookup", "read_page"}, fake.toolNames(0))
+	assert.Contains(t, fake.requests()[0], "web_search_options", "only a row named web_search replaces native web search")
+	mu.Lock()
+	assert.ElementsMatch(t, []string{"web_search:paris", "fetch_url:https://example.com"}, ran, "each name ran its own MCP tool")
+	mu.Unlock()
+	assert.Equal(t, "Done.", *resp.Choices[0].Message.Content.ContentStr)
+	assert.Len(t, fake.requests(), 2)
 }
 
 // sseChat renders chat completion chunks as an OpenAI SSE body.

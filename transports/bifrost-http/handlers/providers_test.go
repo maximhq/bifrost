@@ -313,18 +313,20 @@ func TestUpdateProvider_RejectsBaseURLComponents(t *testing.T) {
 	}
 }
 
-// An injected_tools block the typed payload cannot hold must be rejected, not decoded
-// into an empty config: a typo'd slot or a null web_search would otherwise return 200
-// with no tool configured. Both write paths are covered.
+// An injected_tools list the typed payload cannot hold must be rejected, not decoded
+// into an empty or zeroed config: the old object shape, a null entry or a typo'd field
+// would otherwise return 200 with no tool configured. Repeated names are rejected too.
+// Both write paths are covered.
 func TestProviderWrites_RejectMalformedInjectedTools(t *testing.T) {
 	SetLogger(&mockLogger{})
 	lib.SetLogger(&mockLogger{})
 	blocks := map[string]struct{ body, reason string }{
-		"unknown slot":                    {`{"websearch": {"mcp_client_name": "tavily", "tool_name": "search"}}`, "unknown slot"},
-		"null web_search":                 {`{"web_search": null}`, "web_search must be an object"},
-		"unknown web_search field":        {`{"web_search": {"mcp_client_name": "tavily", "tool_name": "search", "max_results": 5}}`, "unknown web_search field"},
-		"duplicate block, last null":      {`{"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}}, "injected_tools": {"web_search": null}`, "web_search must be an object"},
-		"duplicate web_search, last null": {`{"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}, "web_search": null}`, "web_search must be an object"},
+		"old object shape":          {`{"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}}`, "injected_tools must be an array"},
+		"null entry":                {`[null]`, "injected_tools[0] must be an object"},
+		"unknown field":             {`[{"name": "web_search", "mcp_client_name": "tavily", "tool_name": "search", "max_results": 5}]`, `unknown field \"max_results\"`},
+		"duplicate list, last null": {`[{"name": "web_search", "mcp_client_name": "tavily", "tool_name": "search"}], "injected_tools": [null]`, "injected_tools[0] must be an object"},
+		"duplicate names":           {`[{"name": "web_search", "mcp_client_name": "tavily", "tool_name": "search"}, {"name": "web_search", "mcp_client_name": "tavily", "tool_name": "crawl"}]`, "used more than once"},
+		"invalid name":              {`[{"name": "web search", "mcp_client_name": "tavily", "tool_name": "search"}]`, "must be 1-64"},
 	}
 	for name, tc := range blocks {
 		t.Run("add/"+name, func(t *testing.T) {

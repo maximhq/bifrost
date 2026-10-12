@@ -9567,42 +9567,69 @@ func ValidatePromptCache(cfg *schemas.PromptCacheConfig) error {
 	return nil
 }
 
-// ValidateInjectedTools validates the injected_tools block arriving over the management
+// injectedToolNamePattern is the tool name every supported provider accepts for a
+// function: OpenAI, Anthropic and Gemini all allow letters, digits, _ and -, up to 64.
+var injectedToolNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
+// injectedToolFields are the keys one injected_tools entry may carry.
+var injectedToolFields = map[string]struct{}{"name": {}, "mcp_client_name": {}, "tool_name": {}}
+
+// ValidateInjectedTools validates the injected_tools list arriving over the management
 // API. mcpClientNames is the configured MCP clients keyed by ID (GetMCPClientNames).
+//
+// Names must be unique: the name is what the model calls, and also what decides which
+// client tool an entry replaces, so two entries with one name would be ambiguous. The
+// same MCP tool twice would offer the model one tool under two names.
 //
 // The referenced client must exist now. At request time a missing client fails open,
 // so a typo here would otherwise leave the provider serving requests without the tool
 // the operator configured and with no error anywhere. The tool itself is not checked:
 // a client's tool list is only known once it connects, and that is a runtime concern.
-func ValidateInjectedTools(cfg *schemas.InjectedToolsConfig, mcpClientNames map[string]string) error {
-	if cfg == nil || cfg.WebSearch == nil {
-		return nil
+func ValidateInjectedTools(tools []schemas.InjectedTool, mcpClientNames map[string]string) error {
+	names := make(map[string]struct{}, len(tools))
+	refs := make(map[schemas.InjectedTool]struct{}, len(tools))
+	for i, tool := range tools {
+		if !injectedToolNamePattern.MatchString(tool.Name) {
+			return fmt.Errorf("injected tools validation failed: injected_tools[%d].name %q must be 1-64 letters, digits, _ or -", i, tool.Name)
+		}
+		if strings.TrimSpace(tool.MCPClientName) == "" {
+			return fmt.Errorf("injected tools validation failed: injected_tools[%d] (%s): mcp_client_name is required", i, tool.Name)
+		}
+		if strings.TrimSpace(tool.ToolName) == "" {
+			return fmt.Errorf("injected tools validation failed: injected_tools[%d] (%s): tool_name is required", i, tool.Name)
+		}
+		if _, dup := names[tool.Name]; dup {
+			return fmt.Errorf("injected tools validation failed: injected_tools[%d]: name %q is used more than once", i, tool.Name)
+		}
+		names[tool.Name] = struct{}{}
+		ref := schemas.InjectedTool{MCPClientName: tool.MCPClientName, ToolName: tool.ToolName}
+		if _, dup := refs[ref]; dup {
+			return fmt.Errorf("injected tools validation failed: injected_tools[%d] (%s): MCP tool %s/%s is injected more than once", i, tool.Name, tool.MCPClientName, tool.ToolName)
+		}
+		refs[ref] = struct{}{}
 	}
-	ref := cfg.WebSearch
-	if strings.TrimSpace(ref.MCPClientName) == "" {
-		return fmt.Errorf("injected tools validation failed: web_search.mcp_client_name is required")
-	}
-	if strings.TrimSpace(ref.ToolName) == "" {
-		return fmt.Errorf("injected tools validation failed: web_search.tool_name is required")
-	}
+	known := make(map[string]struct{}, len(mcpClientNames))
 	for _, name := range mcpClientNames {
-		if name == ref.MCPClientName {
-			return nil
+		known[name] = struct{}{}
+	}
+	for i, tool := range tools {
+		if _, ok := known[tool.MCPClientName]; !ok {
+			return fmt.Errorf("injected tools validation failed: injected_tools[%d] (%s) references unknown MCP client %q", i, tool.Name, tool.MCPClientName)
 		}
 	}
-	return fmt.Errorf("injected tools validation failed: web_search references unknown MCP client %q", ref.MCPClientName)
+	return nil
 }
 
-// ValidateInjectedToolsBody checks the raw injected_tools block of a provider write body
+// ValidateInjectedToolsBody checks the raw injected_tools list of a provider write body
 // against config.schema.json. It runs on the raw bytes because typed decoding keeps only
-// web_search and its two fields: a misspelled slot, a null web_search or an extra field
-// would be dropped silently, and the write would succeed with a config the schema
-// rejects. A null or absent block is fine.
+// the known fields: a misspelled field, a null entry or the old object shape would be
+// dropped or zeroed silently, and the write would succeed with a config the schema
+// rejects. A null or absent list is fine.
 //
 // It decodes with sonic, like the handler, so a repeated key resolves the same way here
 // as in the stored config: the last one wins. A first-match reader such as gjson would
-// check a valid first block and let the handler store a later null one. Bodies that fail
-// to decode are left to the handler, which rejects them itself.
+// check a valid first list and let the handler store a later invalid one. Bodies that
+// fail to decode are left to the handler, which rejects them itself.
 func ValidateInjectedToolsBody(body []byte) error {
 	var payload struct {
 		InjectedTools json.RawMessage `json:"injected_tools"`
@@ -9610,38 +9637,35 @@ func ValidateInjectedToolsBody(body []byte) error {
 	if sonic.Unmarshal(body, &payload) != nil || len(payload.InjectedTools) == 0 || string(payload.InjectedTools) == "null" {
 		return nil
 	}
-	var slots map[string]json.RawMessage
-	if sonic.Unmarshal(payload.InjectedTools, &slots) != nil {
-		return nil
+	var entries []json.RawMessage
+	if sonic.Unmarshal(payload.InjectedTools, &entries) != nil {
+		return fmt.Errorf("injected tools validation failed: injected_tools must be an array")
 	}
-	for _, slot := range slices.Sorted(maps.Keys(slots)) {
-		if slot != "web_search" {
-			return fmt.Errorf("injected tools validation failed: unknown slot %q", slot)
-		}
+	for i, entry := range entries {
 		var fields map[string]json.RawMessage
-		if string(slots[slot]) == "null" || sonic.Unmarshal(slots[slot], &fields) != nil {
-			return fmt.Errorf("injected tools validation failed: web_search must be an object")
+		if string(entry) == "null" || sonic.Unmarshal(entry, &fields) != nil {
+			return fmt.Errorf("injected tools validation failed: injected_tools[%d] must be an object", i)
 		}
 		for _, field := range slices.Sorted(maps.Keys(fields)) {
-			if field != "mcp_client_name" && field != "tool_name" {
-				return fmt.Errorf("injected tools validation failed: unknown web_search field %q", field)
+			if _, ok := injectedToolFields[field]; !ok {
+				return fmt.Errorf("injected tools validation failed: injected_tools[%d] has unknown field %q", i, field)
 			}
 		}
 	}
 	return nil
 }
 
-// unresolvedInjectedTools lists providers whose injected_tools name an MCP client that
-// is not configured. config.json is checked only against the schema, which cannot know
-// the client list, so LoadConfig reports these as boot warnings. They are warnings, not
-// errors: a client can be added later through the API, and at request time an
-// unresolved tool fails open.
+// unresolvedInjectedTools lists providers whose injected_tools fail validation, most
+// often by naming an MCP client that is not configured. config.json is checked only
+// against the schema, which cannot know the client list or enforce unique names, so
+// LoadConfig reports these as boot warnings. They are warnings, not errors: a client
+// can be added later through the API, an unresolved tool fails open at request time,
+// and a repeated name keeps its first entry.
 func unresolvedInjectedTools(providers map[schemas.ModelProvider]configstore.ProviderConfig, mcpClientNames map[string]string) []string {
 	var problems []string
 	for provider, config := range providers {
 		if err := ValidateInjectedTools(config.InjectedTools, mcpClientNames); err != nil {
-			ref := config.InjectedTools.WebSearch
-			problems = append(problems, fmt.Sprintf("provider %s: injected_tools.web_search references unknown MCP client %q", provider, ref.MCPClientName))
+			problems = append(problems, fmt.Sprintf("provider %s: %v", provider, err))
 		}
 	}
 	sort.Strings(problems)
