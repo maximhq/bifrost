@@ -342,9 +342,10 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
 			SecretKey: secret("mantle-secret-key-current"),
 		},
-		VLLMKeyConfig:   &schemas.VLLMKeyConfig{URL: secret("https://current.vllm.example.com")},
-		OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: secret("https://current.ollama.example.com")},
-		SGLKeyConfig:    &schemas.SGLKeyConfig{URL: secret("https://current.sgl.example.com")},
+		VLLMKeyConfig:       &schemas.VLLMKeyConfig{URL: secret("https://current.vllm.example.com")},
+		OllamaKeyConfig:     &schemas.OllamaKeyConfig{URL: secret("https://current.ollama.example.com")},
+		SGLKeyConfig:        &schemas.SGLKeyConfig{URL: secret("https://current.sgl.example.com")},
+		CloudflareKeyConfig: &schemas.CloudflareKeyConfig{AccountID: secret("0123456789abcdef0123456789abcdef")},
 	}
 	update := schemas.Key{
 		AzureKeyConfig: &schemas.AzureKeyConfig{
@@ -361,9 +362,10 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
 			SecretKey: staleMask("mant", "0006"),
 		},
-		VLLMKeyConfig:   &schemas.VLLMKeyConfig{URL: staleMask("vllm", "0007")},
-		OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: staleMask("olla", "0008")},
-		SGLKeyConfig:    &schemas.SGLKeyConfig{URL: staleMask("sgla", "0009")},
+		VLLMKeyConfig:       &schemas.VLLMKeyConfig{URL: staleMask("vllm", "0007")},
+		OllamaKeyConfig:     &schemas.OllamaKeyConfig{URL: staleMask("olla", "0008")},
+		SGLKeyConfig:        &schemas.SGLKeyConfig{URL: staleMask("sgla", "0009")},
+		CloudflareKeyConfig: &schemas.CloudflareKeyConfig{AccountID: staleMask("0123", "cdef")},
 	}
 
 	merged := merge(oldRaw, update)
@@ -381,6 +383,7 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		{"vllm url", merged.VLLMKeyConfig.URL.GetValue(), oldRaw.VLLMKeyConfig.URL.GetValue()},
 		{"ollama url", merged.OllamaKeyConfig.URL.GetValue(), oldRaw.OllamaKeyConfig.URL.GetValue()},
 		{"sgl url", merged.SGLKeyConfig.URL.GetValue(), oldRaw.SGLKeyConfig.URL.GetValue()},
+		{"cloudflare account id", merged.CloudflareKeyConfig.AccountID.GetValue(), oldRaw.CloudflareKeyConfig.AccountID.GetValue()},
 	}
 	for _, check := range checks {
 		if check.got != check.want {
@@ -573,6 +576,257 @@ func TestValidateProviderKeyRequiredNestedFields(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMergeUpdatedKey_OAuthKeyConfig covers the masked-update path for oauth_key_config: a
+// client that edits one field sends back a mask for every secret it did not touch, and the
+// merge must restore the stored secret rather than persist the asterisks.
+func TestMergeUpdatedKey_OAuthKeyConfig(t *testing.T) {
+	h := &ProviderHandler{}
+	secret := func(v string) *schemas.SecretVar { return schemas.NewSecretVar(v) }
+	mask := func(prefix, suffix string) *schemas.SecretVar {
+		return secret(prefix + strings.Repeat("*", 24) + suffix)
+	}
+	stored := func() schemas.Key {
+		return schemas.Key{OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType:    schemas.OAuthGrantJWTBearer,
+			TokenURL:     *secret("https://idp.example/oauth2/token"),
+			ClientID:     secret("client-123"),
+			ClientSecret: secret("client-secret-456"),
+			PrivateKey:   secret(pkcs1TestPEM(t)),
+			Issuer:       "client-123",
+			Audience:     "api://acme",
+		}}
+	}
+
+	t.Run("masks resolve back to the stored values", func(t *testing.T) {
+		update := schemas.Key{OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType:    schemas.OAuthGrantJWTBearer,
+			TokenURL:     *mask("http", "oken"),
+			ClientID:     mask("clie", "-123"),
+			ClientSecret: mask("clie", "-456"),
+			PrivateKey:   mask("----", "----"),
+			Issuer:       "client-123",
+			Audience:     "api://other",
+		}}
+		merged, err := h.mergeUpdatedKey(stored(), update)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey returned error: %v", err)
+		}
+		cfg := merged.OAuthKeyConfig
+		if cfg == nil {
+			t.Fatal("the oauth config was dropped by the merge")
+		}
+		for _, c := range []struct{ name, got, want string }{
+			{"token_url", cfg.TokenURL.GetValue(), "https://idp.example/oauth2/token"},
+			{"client_id", cfg.ClientID.GetValue(), "client-123"},
+			{"client_secret", cfg.ClientSecret.GetValue(), "client-secret-456"},
+			{"private_key", cfg.PrivateKey.GetValue(), pkcs1TestPEM(t)},
+		} {
+			if c.got != c.want {
+				t.Errorf("%s: got %q, want the stored value %q", c.name, c.got, c.want)
+			}
+		}
+		if cfg.Audience != "api://other" {
+			t.Errorf("audience: got %q, want the updated literal", cfg.Audience)
+		}
+	})
+
+	t.Run("a mask with no stored counterpart is rejected", func(t *testing.T) {
+		update := schemas.Key{OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType: schemas.OAuthGrantClientCredentials, TokenURL: *secret("https://idp.example/token"),
+			ClientID: secret("id"), ClientSecret: mask("abcd", "wxyz"),
+		}}
+		if _, err := h.mergeUpdatedKey(schemas.Key{}, update); err == nil {
+			t.Fatal("expected an error when a mask has no stored value behind it")
+		}
+	})
+
+	t.Run("unmasked literals overwrite the stored values", func(t *testing.T) {
+		update := schemas.Key{OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType: schemas.OAuthGrantClientCredentials, TokenURL: *secret("https://idp2.example/token"),
+			ClientID: secret("new-id"), ClientSecret: secret("new-secret"),
+		}}
+		merged, err := h.mergeUpdatedKey(stored(), update)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey returned error: %v", err)
+		}
+		cfg := merged.OAuthKeyConfig
+		if cfg.ClientSecret.GetValue() != "new-secret" || cfg.TokenURL.GetValue() != "https://idp2.example/token" {
+			t.Errorf("literals were not applied: %q %q", cfg.ClientSecret.GetValue(), cfg.TokenURL.GetValue())
+		}
+		if cfg.PrivateKey != nil {
+			t.Errorf("a field the update left out must not be resurrected from the stored config")
+		}
+	})
+
+	t.Run("masked extra_params values resolve back to the stored values", func(t *testing.T) {
+		storedWithParams := stored()
+		storedWithParams.OAuthKeyConfig.ExtraParams = map[string]string{"client_assertion": "assertion-secret", "resource": "api://acme"}
+		update := schemas.Key{OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType: schemas.OAuthGrantJWTBearer, TokenURL: *secret("https://idp.example/oauth2/token"),
+			PrivateKey: secret(pkcs1TestPEM(t)), Issuer: "client-123", Audience: "api://acme",
+			ExtraParams: map[string]string{"client_assertion": "asse" + strings.Repeat("*", 24) + "cret", "resource": "api://other"},
+		}}
+		merged, err := h.mergeUpdatedKey(storedWithParams, update)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey returned error: %v", err)
+		}
+		if merged.OAuthKeyConfig.ExtraParams["client_assertion"] != "assertion-secret" {
+			t.Errorf("client_assertion: got %q, want the stored value", merged.OAuthKeyConfig.ExtraParams["client_assertion"])
+		}
+		if merged.OAuthKeyConfig.ExtraParams["resource"] != "api://other" {
+			t.Errorf("resource: got %q, want the new literal", merged.OAuthKeyConfig.ExtraParams["resource"])
+		}
+	})
+
+	t.Run("a masked extra_params value that looks like a secret reference restores the stored string", func(t *testing.T) {
+		// "env.production" is sent to the token endpoint verbatim; it is not a Bifrost reference.
+		// The GET masks it, and the masked form must resolve back to the stored string.
+		storedWithParams := stored()
+		storedWithParams.OAuthKeyConfig.ExtraParams = map[string]string{"resource": "env.production"}
+		masked := storedWithParams.OAuthKeyConfig.Redacted().ExtraParams["resource"]
+		update := schemas.Key{OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType: schemas.OAuthGrantJWTBearer, TokenURL: *secret("https://idp.example/oauth2/token"),
+			PrivateKey: secret(pkcs1TestPEM(t)), Issuer: "client-123", Audience: "api://acme",
+			ExtraParams: map[string]string{"resource": masked},
+		}}
+		merged, err := h.mergeUpdatedKey(storedWithParams, update)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey returned error: %v", err)
+		}
+		if merged.OAuthKeyConfig.ExtraParams["resource"] != "env.production" {
+			t.Errorf("resource: got %q, want the stored string restored from its mask %q", merged.OAuthKeyConfig.ExtraParams["resource"], masked)
+		}
+	})
+
+	// The UI switches auth methods by sending an explicit empty value (API key -> OAuth) or an
+	// explicit null section (OAuth -> API key). Both must clear the stored half; an omitted
+	// field keeps it. resolveKey prefers a static value, so a surviving one silently wins.
+	t.Run("an explicit empty value clears the stored static key", func(t *testing.T) {
+		old := stored()
+		old.Value = *secret("sk-old")
+		decoded, err := decodeKeyUpdate([]byte(`{"name":"k","value":""}`), old)
+		if err != nil {
+			t.Fatalf("decodeKeyUpdate: %v", err)
+		}
+		merged, err := h.mergeUpdatedKey(old, decoded)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey: %v", err)
+		}
+		if merged.Value.GetValue() != "" {
+			t.Fatalf("value = %q, want cleared", merged.Value.GetValue())
+		}
+	})
+
+	t.Run("an explicit null clears the stored oauth block", func(t *testing.T) {
+		decoded, err := decodeKeyUpdate([]byte(`{"name":"k","value":"sk-new","oauth_key_config":null}`), stored())
+		if err != nil {
+			t.Fatalf("decodeKeyUpdate: %v", err)
+		}
+		if decoded.OAuthKeyConfig != nil {
+			t.Fatal("an explicit null must clear the stored oauth_key_config")
+		}
+	})
+
+	t.Run("an update without the section keeps the stored one", func(t *testing.T) {
+		body := []byte(`{"name":"renamed"}`)
+		decoded, err := decodeKeyUpdate(body, stored())
+		if err != nil {
+			t.Fatalf("decodeKeyUpdate: %v", err)
+		}
+		if decoded.OAuthKeyConfig == nil || decoded.OAuthKeyConfig.ClientSecret.GetValue() != "client-secret-456" {
+			t.Fatal("an omitted oauth_key_config must keep the stored section")
+		}
+	})
+}
+
+// TestValidateProviderKeyOAuthKeyConfig pins the setup-time checks on oauth_key_config: it is
+// accepted on any provider's key, must be whole for its grant, and literal values are
+// shape-checked so a typo fails at save rather than at the first inference call.
+func TestValidateProviderKeyOAuthKeyConfig(t *testing.T) {
+	cc := func(mutate func(*schemas.OAuthKeyConfig)) *schemas.OAuthKeyConfig {
+		c := &schemas.OAuthKeyConfig{
+			GrantType:    schemas.OAuthGrantClientCredentials,
+			TokenURL:     *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+			ClientID:     schemas.NewSecretVar("id"),
+			ClientSecret: schemas.NewSecretVar("secret"),
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+	jb := func(mutate func(*schemas.OAuthKeyConfig)) *schemas.OAuthKeyConfig {
+		c := &schemas.OAuthKeyConfig{
+			GrantType:  schemas.OAuthGrantJWTBearer,
+			TokenURL:   *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+			PrivateKey: schemas.NewSecretVar(pkcs1TestPEM(t)),
+			Issuer:     "client",
+			Audience:   "https://idp.example/oauth2/token",
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		key      schemas.Key
+		wantErr  string
+	}{
+		{"client_credentials on openai", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(nil)}, ""},
+		{"jwt_bearer on openai", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(nil)}, ""},
+		{"jwt_bearer with a PKCS#8 key", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(pkcs8TestPEM(t)) })}, ""},
+		{"http on loopback is allowed", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://127.0.0.1:9/token") })}, ""},
+		{"http on localhost in any letter case is allowed, as in core", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://LOCALHOST:8080/token") })}, ""},
+		{"env-backed token url is not shape checked", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("env.IDP_TOKEN_URL") })}, ""},
+		{"userinfo in the token url is refused", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("https://user:pass@idp.example/token")
+		})}, "must not carry userinfo, a query, or a fragment"},
+		{"a query in the token url is refused", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("https://idp.example/token?client_secret=x")
+		})}, "must not carry userinfo, a query, or a fragment"},
+		{"a fragment in the token url is refused", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("https://idp.example/token#frag")
+		})}, "must not carry userinfo, a query, or a fragment"},
+		{"plain http is refused", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://idp.example/token") })}, "https"},
+		{"missing client secret", schemas.OpenAI, schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.ClientSecret = nil })}, "client_secret"},
+		{"jwt_bearer missing audience", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.Audience = "" })}, "audience is required"},
+		{"jwt_bearer literal key is not a PEM", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar("not a key") })}, "RSA or EC private key"},
+		{"jwt_bearer env-backed key is not shape checked", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar("env.IDP_KEY") })}, ""},
+		{"an EC key under the default RS256 is refused at save", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P256(), false)); c.SigningAlgorithm = "" })}, "signing_algorithm"},
+		{"an RSA key with ES256 is refused at save", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(pkcs1TestPEM(t)); c.SigningAlgorithm = "ES256" })}, "signing_algorithm"},
+		{"a P-384 key with ES256 is refused at save", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P384(), false)); c.SigningAlgorithm = "ES256" })}, "signing_algorithm"},
+		{"a P-256 key with ES256 is accepted", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P256(), false)); c.SigningAlgorithm = "ES256" })}, ""},
+		{"a P-384 PKCS#8 key with ES384 is accepted", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P384(), true)); c.SigningAlgorithm = "ES384" })}, ""},
+		{"a P-521 key with ES512 is accepted", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P521(), false)); c.SigningAlgorithm = "ES512" })}, ""},
+		{"an RSA key with PS256 is accepted", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(pkcs8TestPEM(t)); c.SigningAlgorithm = "PS256" })}, ""},
+		{"a half block behind a value is still refused", schemas.OpenAI, schemas.Key{Value: *schemas.NewSecretVar("sk"), OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.GrantType = "" })}, "grant_type is required"},
+		{"refused on a provider that does not resolve it", schemas.Anthropic, schemas.Key{Value: *schemas.NewSecretVar("sk"), OAuthKeyConfig: cc(nil)}, "only supported on openai"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateProviderKeyURL(tt.provider, tt.key)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("got %v, want an error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+
+	t.Run("the token url is a dial target", func(t *testing.T) {
+		targets := keyDialTargets(schemas.Key{OAuthKeyConfig: cc(nil)})
+		if targets["oauth_key_config.token_url"] == nil {
+			t.Fatal("oauth_key_config.token_url must be guarded as a caller-chosen dial target")
+		}
+	})
 }
 
 // TestValidateProviderKeyGithubCopilotFormats pins that a literal GitHub App credential is
@@ -1047,12 +1301,34 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 		return `{"app_id":"123","installation_id":"456","repository_id":"789","private_key":` + strconv.Quote(copilotPEM) + `,"github_domain":"` + domain + `"}`
 	}
 
+	// A Vertex credential JSON names where the Google client dials: a service account's
+	// token_uri, and for an external account the token_url plus a credential_source the client
+	// reads (here a local file) and posts there. Swapping the JSON therefore moves the key's
+	// destination as surely as moving an Azure endpoint does.
+	const vertexServiceAccountJSON = `{"type":"service_account","project_id":"p","client_email":"sa@p.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n","token_uri":"https://oauth2.googleapis.com/token"}`
+	const vertexExternalAccountJSON = `{"type":"external_account","audience":"//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/x","subject_token_type":"urn:ietf:params:oauth:token-type:jwt","token_url":"https://evil.example.com/token","credential_source":{"file":"/etc/bifrost/config.json"}}`
+	vertexConfig := func(credentials string) string {
+		return `{"project_id":"p","region":"us-central1","auth_credentials":` + strconv.Quote(credentials) + `}`
+	}
+	vertexStored := func() *schemas.Key {
+		return &schemas.Key{
+			ID: "key-1", Name: "vertex-key", Weight: 1,
+			VertexKeyConfig: &schemas.VertexKeyConfig{
+				ProjectID:       *schemas.NewSecretVar("p"),
+				Region:          *schemas.NewSecretVar("us-central1"),
+				AuthCredentials: *schemas.NewSecretVar(vertexServiceAccountJSON),
+			},
+		}
+	}
+
 	cases := []struct {
-		name     string
-		provider schemas.ModelProvider
-		stored   *schemas.Key // nil means the request creates the key
-		body     string
-		want403  bool
+		name        string
+		provider    schemas.ModelProvider
+		stored      *schemas.Key // nil means the request creates the key
+		genuineAuth bool         // the request carries a real credential, not the fail-open bypass
+		body        string
+		want403     bool
+		wantNamed   string // a 403 must name this field
 	}{
 		{
 			name:     "create bedrock key with region only",
@@ -1115,6 +1391,43 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 			body:    `{"value":"azure-api-key","weight":1,"azure_key_config":{"endpoint":"https://myres.openai.azure.com"},"aliases":{"gpt-4o":{"model_id":"gpt-4o","endpoint":"https://evil.example.com"}}}`,
 			want403: true,
 		},
+		{
+			name:      "create vertex key with a credential json",
+			provider:  schemas.Vertex,
+			body:      `{"name":"vertex-key","weight":1,"vertex_key_config":` + vertexConfig(vertexServiceAccountJSON) + `}`,
+			want403:   true,
+			wantNamed: "vertex_key_config.auth_credentials",
+		},
+		{
+			name:      "update vertex key swapping the credential json for an external account",
+			provider:  schemas.Vertex,
+			stored:    vertexStored(),
+			body:      `{"weight":1,"vertex_key_config":` + vertexConfig(vertexExternalAccountJSON) + `}`,
+			want403:   true,
+			wantNamed: "vertex_key_config.auth_credentials",
+		},
+		{
+			name:     "update vertex key removing the credential json",
+			provider: schemas.Vertex,
+			stored:   vertexStored(),
+			body:     `{"weight":1,"vertex_key_config":{"project_id":"p","region":"us-central1","auth_credentials":""}}`,
+			want403:  true,
+		},
+		{
+			name:     "update vertex key keeping its stored credential json",
+			provider: schemas.Vertex,
+			stored:   vertexStored(),
+			body:     `{"weight":2,"vertex_key_config":` + vertexConfig(vertexServiceAccountJSON) + `}`,
+			want403:  false,
+		},
+		{
+			name:        "genuinely authenticated update vertex key swapping the credential json",
+			provider:    schemas.Vertex,
+			stored:      vertexStored(),
+			genuineAuth: true,
+			body:        `{"weight":1,"vertex_key_config":` + vertexConfig(vertexExternalAccountJSON) + `}`,
+			want403:     false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -1131,7 +1444,9 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 
 			ctx := newTestRequestCtx(tc.body)
 			ctx.SetUserValue("provider", string(tc.provider))
-			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			if !tc.genuineAuth {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
 			if tc.stored != nil {
 				ctx.SetUserValue("key_id", tc.stored.ID)
 				h.updateProviderKey(ctx)
@@ -1142,6 +1457,9 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 			got403 := ctx.Response.StatusCode() == fasthttp.StatusForbidden
 			if got403 != tc.want403 {
 				t.Fatalf("got status %d, want403=%v; body=%s", ctx.Response.StatusCode(), tc.want403, ctx.Response.Body())
+			}
+			if tc.wantNamed != "" && !strings.Contains(string(ctx.Response.Body()), tc.wantNamed) {
+				t.Fatalf("the refusal must name %s, got %s", tc.wantNamed, ctx.Response.Body())
 			}
 			keys := h.inMemoryStore.Providers[tc.provider].Keys
 			switch {
@@ -1309,6 +1627,27 @@ func pkcs8TestPEM(t *testing.T) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
 }
 
+// ecCurveTestPEM returns an EC private key on the given curve, as SEC1 or as PKCS#8.
+func ecCurveTestPEM(t *testing.T, curve elliptic.Curve, pkcs8 bool) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(curve, rand.Reader)
+	if err != nil {
+		t.Fatalf("generate ec: %v", err)
+	}
+	if pkcs8 {
+		der, err := x509.MarshalPKCS8PrivateKey(key)
+		if err != nil {
+			t.Fatalf("marshal pkcs8: %v", err)
+		}
+		return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	}
+	der, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal ec: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}))
+}
+
 func ecTestPEM(t *testing.T) string {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -1453,4 +1792,94 @@ func TestValidateVertexKeyAuth(t *testing.T) {
 	if err := validateVertexKeyAuth(schemas.OpenAI, vertex(&schemas.VertexKeyConfig{AuthCredentials: secret("x"), AWSWorkloadIdentity: wif})); err != nil {
 		t.Errorf("non-vertex provider must not be validated: %v", err)
 	}
+}
+
+// TestRejectUnknownOAuthKeyConfigFields pins API parity with config.schema.json, which sets
+// additionalProperties:false on oauth_key_config: sonic drops unknown fields, so a misspelled
+// "scope" would otherwise save a block that never requests its scopes.
+func TestRejectUnknownOAuthKeyConfigFields(t *testing.T) {
+	valid := `"grant_type":"client_credentials","token_url":"https://idp.example/oauth2/token","client_id":"id","client_secret":"s"`
+	cases := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{"no block", `{"value":"sk","weight":1}`, ""},
+		{"null block", `{"value":"sk","oauth_key_config":null}`, ""},
+		{"known fields only", `{"oauth_key_config":{` + valid + `,"scopes":["inference"],"extra_params":{"resource":"r"}}}`, ""},
+		{"secret references", `{"oauth_key_config":{` + valid + `,"client_secret":{"ref":"OAUTH_SECRET","type":"env"}}}`, ""},
+		{"misspelled scopes", `{"oauth_key_config":{` + valid + `,"scope":["inference"]}}`, `unknown field "scope"`},
+		{"unknown nested field", `{"oauth_key_config":{` + valid + `,"client_secrett":"s"}}`, `unknown field "client_secrett"`},
+		{"unknown field outside the block is not this check's job", `{"oauth_key_config":{` + valid + `},"colour":"blue"}`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := rejectUnknownOAuthKeyConfigFields([]byte(tc.body))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error got %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestProviderKeyWrites_RejectUnknownOAuthKeyConfigFields pins that both write paths refuse a
+// block carrying a field the schema does not know, naming the field, instead of saving it
+// without that setting.
+func TestProviderKeyWrites_RejectUnknownOAuthKeyConfigFields(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	block := `{"grant_type":"client_credentials","token_url":"https://idp.example/oauth2/token","client_id":"id","client_secret":"s","scope":["inference"]}`
+
+	t.Run("create", func(t *testing.T) {
+		h := &ProviderHandler{
+			inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}},
+			modelsManager: &mockModelsManager{},
+		}
+		attachBifrostClient(t, h.inMemoryStore)
+		ctx := newTestRequestCtx(`{"name":"oauth","weight":1,"oauth_key_config":` + block + `}`)
+		ctx.SetUserValue("provider", string(schemas.OpenAI))
+		h.createProviderKey(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+			t.Fatalf("status got %d, want 400; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		// The JSON error body escapes the quotes around the field name.
+		if body := string(ctx.Response.Body()); !strings.Contains(body, `oauth_key_config: unknown field \"scope\"`) {
+			t.Fatalf("the response must name the unknown field, got %s", body)
+		}
+	})
+
+	t.Run("update", func(t *testing.T) {
+		h := &ProviderHandler{
+			inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-1", Name: "oauth", Weight: 1, OAuthKeyConfig: &schemas.OAuthKeyConfig{
+					GrantType:    schemas.OAuthGrantClientCredentials,
+					TokenURL:     *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+					ClientID:     schemas.NewSecretVar("id"),
+					ClientSecret: schemas.NewSecretVar("s"),
+				}}}},
+			}},
+			modelsManager: &mockModelsManager{},
+		}
+		attachBifrostClient(t, h.inMemoryStore)
+		ctx := newTestRequestCtx(`{"oauth_key_config":` + block + `}`)
+		ctx.SetUserValue("provider", string(schemas.OpenAI))
+		ctx.SetUserValue("key_id", "key-1")
+		h.updateProviderKey(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+			t.Fatalf("status got %d, want 400; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		// The JSON error body escapes the quotes around the field name.
+		if body := string(ctx.Response.Body()); !strings.Contains(body, `oauth_key_config: unknown field \"scope\"`) {
+			t.Fatalf("the response must name the unknown field, got %s", body)
+		}
+		if stored := h.inMemoryStore.Providers[schemas.OpenAI].Keys[0]; len(stored.OAuthKeyConfig.Scopes) != 0 || stored.OAuthKeyConfig.ClientID.GetValue() != "id" {
+			t.Fatalf("the stored key must be untouched, got %+v", stored.OAuthKeyConfig)
+		}
+	})
 }

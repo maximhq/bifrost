@@ -31,8 +31,8 @@ func savedConfig() configstore.ProviderConfig {
 		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic},
 		OpenAIConfig:         &schemas.OpenAIConfig{DisableStore: true},
 		PromptCache:          &schemas.PromptCacheConfig{AutoInject: true, TTL: schemas.Ptr("1h")},
-		InjectedTools: &schemas.InjectedToolsConfig{
-			WebSearch: &schemas.InjectedToolRef{MCPClientName: "tavily", ToolName: "search"},
+		InjectedTools: []schemas.InjectedTool{
+			{Name: "web_search", MCPClientName: "tavily", ToolName: "search"},
 		},
 	}
 }
@@ -52,7 +52,7 @@ func TestApplyProviderConfigUpdates_OmittedBlocksArePreserved(t *testing.T) {
 	require.NotNil(t, config.PromptCache.TTL)
 	assert.Equal(t, "1h", *config.PromptCache.TTL)
 	require.NotNil(t, config.InjectedTools, "an omitted injected_tools must survive")
-	assert.Equal(t, "tavily", config.InjectedTools.WebSearch.MCPClientName)
+	assert.Equal(t, "tavily", config.InjectedTools[0].MCPClientName)
 }
 
 func TestApplyProviderConfigUpdates_ExplicitNullClears(t *testing.T) {
@@ -82,12 +82,13 @@ func TestApplyProviderConfigUpdates_PresentBlocksAreReplaced(t *testing.T) {
 
 func TestApplyProviderConfigUpdates_InjectedToolsReplaced(t *testing.T) {
 	config := savedConfig()
-	payload, fields := decodeUpdate(t, `{"injected_tools":{"web_search":{"mcp_client_name":"exa","tool_name":"web_search_exa"}}}`)
+	payload, fields := decodeUpdate(t, `{"injected_tools":[{"name":"web_search","mcp_client_name":"exa","tool_name":"web_search_exa"},{"name":"read_page","mcp_client_name":"exa","tool_name":"crawl"}]}`)
 
 	applyProviderConfigUpdates(&config, payload, fields)
 
-	require.NotNil(t, config.InjectedTools)
-	require.NotNil(t, config.InjectedTools.WebSearch)
-	assert.Equal(t, schemas.InjectedToolRef{MCPClientName: "exa", ToolName: "web_search_exa"}, *config.InjectedTools.WebSearch)
+	assert.Equal(t, []schemas.InjectedTool{
+		{Name: "web_search", MCPClientName: "exa", ToolName: "web_search_exa"},
+		{Name: "read_page", MCPClientName: "exa", ToolName: "crawl"},
+	}, config.InjectedTools, "the list is replaced whole, in order")
 	assert.NotNil(t, config.PromptCache, "the blocks this request did not mention are untouched")
 }

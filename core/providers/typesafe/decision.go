@@ -15,12 +15,6 @@ import (
 // typesafeMaxChoiceOptions is Typesafe's documented cap on choice options.
 const typesafeMaxChoiceOptions = 255
 
-// typesafeMinScoreLevels and typesafeMaxScoreLevels bound a score criteria array.
-const (
-	typesafeMinScoreLevels = 2
-	typesafeMaxScoreLevels = 10
-)
-
 // typesafeQuestionTypes maps the normalized question types to the native
 // ones Typesafe serves; its "noul" is the normalized predicate.
 var typesafeQuestionTypes = map[schemas.DecisionType]string{
@@ -221,10 +215,12 @@ func choiceCriteria(name string, criteria interface{}) (map[string]any, error) {
 	return m, nil
 }
 
-// scoreCriteria validates the ordered array of 2-10 level descriptions, each
-// a string, object, or array, or null for an undescribed level, preserved
+// scoreCriteria validates the ordered array of level descriptions, each a
+// string, object, or array, or null for an undescribed level, preserved
 // losslessly. Go SDK callers supply []string; HTTP JSON decoding supplies
-// []interface{} - both are the same ordered array on the wire.
+// []interface{} - both are the same ordered array on the wire. The number of
+// levels is the endpoint's rule, not ours: Typesafe accepts 2-10, Perplexity
+// 1-10, and each rejects the rest with its own error.
 func scoreCriteria(name string, criteria interface{}) (interface{}, error) {
 	var levels []any
 	switch typed := criteria.(type) {
@@ -248,9 +244,6 @@ func scoreCriteria(name string, criteria interface{}) (interface{}, error) {
 		for i := range levels {
 			levels[i] = value.Index(i).Interface()
 		}
-	}
-	if len(levels) < typesafeMinScoreLevels || len(levels) > typesafeMaxScoreLevels {
-		return nil, providerUtils.InvalidRequestErrorf("question %q score criteria must have between %d and %d levels, got %d", name, typesafeMinScoreLevels, typesafeMaxScoreLevels, len(levels))
 	}
 	for i, level := range levels {
 		if !isJSONNull(level) && !validStructuredValue(level) {

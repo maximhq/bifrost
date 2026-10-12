@@ -146,6 +146,9 @@ func RunDecisionEmulationTest(t *testing.T, client *bifrost.Bifrost, ctx context
 		}
 
 		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		// Emulation is opt-in; this is what the compat plugin's
+		// convert_decision_to_responses sets, and this suite runs without plugins.
+		bfCtx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
 		response, bifrostErr := client.DecisionRequest(bfCtx, request)
 		if bifrostErr != nil {
 			t.Fatalf("❌ Emulated decision failed: %v", GetErrorMessage(bifrostErr))

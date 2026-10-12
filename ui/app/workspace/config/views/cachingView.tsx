@@ -48,6 +48,7 @@ const defaultDirectConfig: EditorCacheConfig = {
 	exclude_system_prompt: false,
 	cache_by_model: true,
 	cache_by_provider: true,
+	disable_identity_scoping: false,
 };
 
 // Configs we treat as "the user has nothing saved": both API responses
@@ -73,8 +74,9 @@ const inferMode = (config: EditorCacheConfig): CacheMode => {
 	return "direct";
 };
 
-// Strip semantic-only fields when persisting a direct-only payload so the
-// server validator doesn't reject a stale provider choice.
+// Clear semantic-only fields when persisting a direct-only payload so the
+// server validator doesn't reject a stale provider choice. An update merges
+// over the saved config, so they are sent empty rather than left out.
 const buildPayload = (config: EditorCacheConfig, mode: CacheMode): CacheConfig => {
 	const base = {
 		ttl: config.ttl ?? 0,
@@ -83,11 +85,12 @@ const buildPayload = (config: EditorCacheConfig, mode: CacheMode): CacheConfig =
 		exclude_system_prompt: config.exclude_system_prompt,
 		cache_by_model: config.cache_by_model,
 		cache_by_provider: config.cache_by_provider,
+		disable_identity_scoping: config.disable_identity_scoping ?? false,
 		vector_store_namespace: config.vector_store_namespace?.trim() || undefined,
 		default_cache_key: config.default_cache_key?.trim() || undefined,
 	};
 	if (mode === "direct") {
-		return { ...base, dimension: 1 } as CacheConfig;
+		return { ...base, provider: "", embedding_model: "", dimension: 1 } as CacheConfig;
 	}
 	return {
 		...base,
@@ -185,6 +188,7 @@ export default function CachingView() {
 			"exclude_system_prompt",
 			"cache_by_model",
 			"cache_by_provider",
+			"disable_identity_scoping",
 			"vector_store_namespace",
 			"default_cache_key",
 		];
@@ -635,6 +639,22 @@ export default function CachingView() {
 												data-testid="caching-cache-by-provider-switch"
 												checked={cacheConfig.cache_by_provider}
 												onCheckedChange={(checked) => updateLocal({ cache_by_provider: checked })}
+												size="md"
+											/>
+										</div>
+										<div className="flex items-center justify-between space-x-2 rounded-sm border p-3">
+											<div className="space-y-0.5">
+												<Label className="text-sm font-medium">Scope Cache by Identity</Label>
+												<p className="text-muted-foreground text-xs">
+													Serve a cached response only to the virtual key and user that wrote it. Turn off to share entries across
+													identities that send the same cache key.
+												</p>
+											</div>
+											<Switch
+												aria-label="Scope cache by identity"
+												data-testid="caching-identity-scoping-switch"
+												checked={!cacheConfig.disable_identity_scoping}
+												onCheckedChange={(checked) => updateLocal({ disable_identity_scoping: !checked })}
 												size="md"
 											/>
 										</div>

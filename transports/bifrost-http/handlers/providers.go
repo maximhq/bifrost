@@ -125,7 +125,7 @@ type ProviderResponse struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`          // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`           // Prompt-cache breakpoint injection
-	InjectedTools            *schemas.InjectedToolsConfig     `json:"injected_tools,omitempty"`         // MCP tools injected and auto-executed server side
+	InjectedTools            []schemas.InjectedTool           `json:"injected_tools,omitempty"`         // MCP tools injected and auto-executed server side
 	ProviderStatus           ProviderStatus                   `json:"provider_status"`                  // Health/initialization status of the provider
 	Status                   string                           `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
 	Description              string                           `json:"description,omitempty"`            // Error/status description
@@ -156,7 +156,7 @@ type providerCreatePayload struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`  // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`   // Prompt-cache breakpoint injection
-	InjectedTools            *schemas.InjectedToolsConfig      `json:"injected_tools,omitempty"` // MCP tools injected and auto-executed server side
+	InjectedTools            []schemas.InjectedTool            `json:"injected_tools,omitempty"` // MCP tools injected and auto-executed server side
 }
 
 type providerUpdatePayload struct {
@@ -170,7 +170,7 @@ type providerUpdatePayload struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`  // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`   // Prompt-cache breakpoint injection
-	InjectedTools            *schemas.InjectedToolsConfig     `json:"injected_tools,omitempty"` // MCP tools injected and auto-executed server side
+	InjectedTools            []schemas.InjectedTool           `json:"injected_tools,omitempty"` // MCP tools injected and auto-executed server side
 }
 
 // applyProviderConfigUpdates copies onto config only the nested config blocks the
@@ -333,10 +333,21 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 
 // addProvider handles POST /api/providers - Add a new provider
 // NOTE: This only gets called when a new custom provider is added
+// sendPayloadDecodeError rejects a provider write body the typed payload cannot decode.
+// An injected_tools value of the wrong shape (the old object form, a non-array) is one
+// such body, and its own message says what to fix instead of a generic one.
+func sendPayloadDecodeError(ctx *fasthttp.RequestCtx) {
+	if err := lib.ValidateInjectedToolsBody(ctx.PostBody()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
+		return
+	}
+	SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+}
+
 func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	var payload providerCreatePayload
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		sendPayloadDecodeError(ctx)
 		return
 	}
 	// Validate provider
@@ -521,7 +532,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}{}
 
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		sendPayloadDecodeError(ctx)
 		return
 	}
 
@@ -1126,10 +1137,14 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 // offers a model the request would reject nor hides one it would serve: none
 // on a custom provider whose allowed requests exclude decisions, every model
 // of a Typesafe-based provider (Typesafe, or a custom provider on its base
-// serving Laya, Nimble, or Clef), a TypeSafe System One model on OpenRouter,
-// and otherwise a model the datasheet (or, without a row, the name-based
-// fallback) marks supports_decisions. A key alias is checked as the model it
-// points at, as the request path checks it.
+// serving Laya, Nimble, or Clef), and otherwise a model the datasheet marks
+// supports_decisions, or without a row the provider's name-based fallback (a
+// TypeSafe System One model on OpenRouter, a Clef model on Cloudflare, a decider
+// model on Perplexity, a System One model on Ollama, the gpt-6-luna family
+// elsewhere). OpenRouter serves
+// gpt-6-luna's decisions under its own id (openai/gpt-6-luna-decisions, marked by
+// its datasheet row), so the gpt-6-luna name rule would list its chat models. A
+// key alias is checked as the model it points at, as the request path checks it.
 func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, model string) bool {
 	custom := h.customProviderConfig(provider)
 	if !custom.IsOperationAllowed(schemas.DecisionRequest) {
@@ -1139,10 +1154,18 @@ func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, mode
 		return true
 	}
 	model = h.aliasTarget(provider, model)
-	if provider == schemas.OpenRouter {
-		return schemas.IsTypesafeModel(model)
+	fallback := schemas.DefaultSupportsDecisions(model)
+	switch provider {
+	case schemas.OpenRouter:
+		fallback = schemas.IsTypesafeModel(model)
+	case schemas.Cloudflare:
+		fallback = schemas.IsClefModel(model)
+	case schemas.Perplexity:
+		fallback = schemas.IsPerplexityDeciderModel(model)
+	case schemas.Ollama:
+		fallback = schemas.IsOllamaDecisionModel(model)
 	}
-	return schemas.ResolveModelCaps(provider, model).SupportsDecisions(schemas.DefaultSupportsDecisions(model))
+	return schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback)
 }
 
 // customProviderConfig returns the provider's custom configuration, or nil for

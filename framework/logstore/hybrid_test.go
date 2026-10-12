@@ -2,7 +2,9 @@ package logstore
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -306,7 +308,7 @@ func TestHybrid_EmptyPayloadSkipsUpload(t *testing.T) {
 	err := hybrid.CreateIfNotExists(ctx, entry)
 	require.NoError(t, err)
 
-	waitForUploads(t, func() bool { return len(hybrid.uploadQueue) == 0 })
+	waitForUploads(t, func() bool { return hybrid.queuedUploads() == 0 })
 
 	// No upload when all payload fields are empty (e.g. initial "processing" entries).
 	assert.Equal(t, 0, objStore.Len(), "empty-payload entries should not be uploaded")
@@ -682,6 +684,7 @@ func TestHybrid_A2ACorrelationReconciliationUsesInnerStore(t *testing.T) {
 }
 
 func TestHybrid_AgentLogPayloadRoundTrip(t *testing.T) {
+	rawRequest, rawResponse := "cmVxdWVzdA==", "/wA="
 	hybrid, inner, _ := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
@@ -693,6 +696,7 @@ func TestHybrid_AgentLogPayloadRoundTrip(t *testing.T) {
 	entry := &AgentLog{
 		ID: "a2a-1", Timestamp: ts, RecordKind: "request",
 		Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "req-a2a-1",
+		RawRequest: &rawRequest, RawResponse: &rawResponse,
 		RequestBody: &requestBody, ResponseBody: &responseBody, PluginLogs: pluginLogs, ErrorDetailsParsed: errorDetails,
 	}
 
@@ -724,6 +728,10 @@ func TestHybrid_AgentLogPayloadRoundTrip(t *testing.T) {
 	assert.Equal(t, pluginLogs, operation.PluginLogs)
 	require.NotNil(t, operation.ErrorDetails)
 	assert.Equal(t, "upstream failed", operation.ErrorDetails.Error.Message)
+	require.Nil(t, dbOnly.RawRequest)
+	require.Nil(t, dbOnly.RawResponse)
+	require.Equal(t, rawRequest, *operation.RawRequest)
+	require.Equal(t, rawResponse, *operation.RawResponse)
 }
 
 func TestHybrid_HiddenAgentLogRetainsObjectWithoutHydration(t *testing.T) {
@@ -1647,4 +1655,397 @@ func TestHybridMigrationInProgressForwardsToInner(t *testing.T) {
 	assert.True(t, gated.MigrationInProgress(context.Background()))
 
 	var _ MaintenanceGate = hybrid
+}
+
+// TestHybrid_BatchUpdateKeepsDBRowContentFree covers a reconcile onto a row that
+// has no stored object yet (its partial insert never offloaded anything): the
+// scalar columns land on the DB row, the output is offloaded like an insert's
+// would be, and the DB row never holds content, visible or hidden.
+func TestHybrid_BatchUpdateKeepsDBRowContentFree(t *testing.T) {
+	hybrid, inner, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Now().UTC()
+
+	for _, id := range []string{"visible", "hidden"} {
+		require.NoError(t, inner.CreateIfNotExists(ctx, &Log{
+			ID: id, Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o",
+			Status: "processing", ContentHidden: id == "hidden",
+		}))
+	}
+
+	output := "reconciled output"
+	msg := func() *schemas.ChatMessage {
+		return &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}
+	}
+	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{
+		{ID: "visible", Status: "success", TotalTokens: 7, OutputMessageParsed: msg()},
+		{ID: "hidden", Status: "success", TotalTokens: 9, OutputMessageParsed: msg(), ContentHidden: true},
+		{ID: "absent", Status: "success"}, // skipped, never inserted
+	}))
+	waitForOffload(t, inner, "visible")
+	waitForOffload(t, inner, "hidden")
+
+	visibleRow, err := inner.FindByID(ctx, "visible")
+	require.NoError(t, err)
+	assert.Equal(t, "success", visibleRow.Status)
+	assert.Equal(t, 7, visibleRow.TotalTokens)
+	assert.Empty(t, visibleRow.OutputMessage, "visible reconcile offloads its output instead of writing it to the DB row")
+	visible, err := hybrid.FindByID(ctx, "visible")
+	require.NoError(t, err)
+	assert.Contains(t, visible.OutputMessage, output, "visible row hydrates the reconciled output")
+
+	hiddenRow, err := inner.FindByID(ctx, "hidden")
+	require.NoError(t, err)
+	assert.Equal(t, "success", hiddenRow.Status)
+	assert.Equal(t, 9, hiddenRow.TotalTokens)
+	assert.Empty(t, hiddenRow.OutputMessage, "hidden reconcile must not write content into the DB row")
+	assert.True(t, hiddenRow.ContentHidden)
+
+	_, err = inner.FindByID(ctx, "absent")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestHybrid_BatchUpdateMergesOutputIntoStoredObject covers the reconcile of a
+// request that completed after its pending entry was evicted: the partial row's
+// input is already in object storage, so the late output must be merged into
+// that object (for hidden and visible rows alike) while the DB row stays
+// content-free, exactly as an insert would have left it.
+func TestHybrid_BatchUpdateMergesOutputIntoStoredObject(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Now().UTC()
+
+	input := "the question"
+	for _, id := range []string{"merge-visible", "merge-hidden"} {
+		entry := &Log{
+			ID: id, Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o",
+			Status: "processing", ContentHidden: id == "merge-hidden",
+			InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
+		}
+		require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+		waitForOffload(t, inner, id)
+	}
+
+	output := "the answer"
+	msg := func() *schemas.ChatMessage {
+		return &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}
+	}
+	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{
+		{ID: "merge-visible", Status: "success", TotalTokens: 7, OutputMessageParsed: msg()},
+		{ID: "merge-hidden", Status: "success", TotalTokens: 9, OutputMessageParsed: msg(), ContentHidden: true},
+	}))
+
+	for _, id := range []string{"merge-visible", "merge-hidden"} {
+		waitForUploads(t, func() bool {
+			data, err := objStore.Get(ctx, ObjectKey("test", ts, id))
+			return err == nil && strings.Contains(string(data), output)
+		})
+		data, err := objStore.Get(ctx, ObjectKey("test", ts, id))
+		require.NoError(t, err)
+		assert.Contains(t, string(data), input, "%s: stored object keeps the input", id)
+		assert.Contains(t, string(data), output, "%s: stored object gains the late output", id)
+
+		dbRow, err := inner.FindByID(ctx, id)
+		require.NoError(t, err)
+		assert.Equal(t, "success", dbRow.Status)
+		assert.Empty(t, dbRow.OutputMessage, "%s: DB row stays content-free", id)
+	}
+
+	visible, err := hybrid.FindByID(ctx, "merge-visible")
+	require.NoError(t, err)
+	assert.Equal(t, 7, visible.TotalTokens)
+	assert.Contains(t, visible.InputHistory, input)
+	assert.Contains(t, visible.OutputMessage, output, "visible row hydrates input and output")
+
+	hidden, err := hybrid.FindByID(ctx, "merge-hidden")
+	require.NoError(t, err)
+	assert.Equal(t, 9, hidden.TotalTokens)
+	assert.True(t, hidden.ContentHidden)
+	assert.Empty(t, hidden.OutputMessage, "hidden row never hydrates content")
+}
+
+// slowInsertObjectStore delays Puts that carry no output (the insert path's
+// payload) so a reconcile upload queued right after an insert can overtake it.
+type slowInsertObjectStore struct {
+	objectstore.ObjectStore
+	delay time.Duration
+}
+
+func (s *slowInsertObjectStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
+	if strings.Contains(string(data), `"output_message":""`) {
+		time.Sleep(s.delay)
+	}
+	return s.ObjectStore.Put(ctx, key, data, tags)
+}
+
+func newTestHybridWithObjects(t *testing.T, objects objectstore.ObjectStore) (*HybridLogStore, LogStore) {
+	t.Helper()
+	inner, err := newSqliteLogStore(context.Background(), &SQLiteConfig{Path: filepath.Join(t.TempDir(), "hybrid.db")}, hybridTestLogger{})
+	require.NoError(t, err)
+	return newHybridLogStore(inner, objects, "test", hybridTestLogger{}, nil, nil), inner
+}
+
+// TestHybrid_BatchUpdateUploadOrderedAfterInsertUpload: a reconcile that runs
+// before the partial's initial upload has finished must not race it on the
+// object key; the stored object ends up with the full input and the output.
+// The row is hidden, so the DB holds no copy of the input: an upload built
+// from the row would lose it for good.
+func TestHybrid_BatchUpdateUploadOrderedAfterInsertUpload(t *testing.T) {
+	mem := objectstore.NewInMemoryObjectStore()
+	hybrid, inner := newTestHybridWithObjects(t, &slowInsertObjectStore{ObjectStore: mem, delay: 150 * time.Millisecond})
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Now().UTC()
+
+	input := "the full question"
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, &Log{
+		ID: "ordered", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "processing", ContentHidden: true,
+		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
+	}))
+	// The insert upload is still in flight: has_object is not set yet.
+	row, err := inner.FindByID(ctx, "ordered")
+	require.NoError(t, err)
+	require.False(t, row.HasObject)
+
+	output := "the answer"
+	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: "ordered", Status: "success", ContentHidden: true, OutputMessageParsed: &schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}}}))
+
+	waitForOffload(t, inner, "ordered")
+	waitForUploads(t, func() bool {
+		data, err := mem.Get(ctx, ObjectKey("test", ts, "ordered"))
+		return err == nil && strings.Contains(string(data), output)
+	})
+	data, err := mem.Get(ctx, ObjectKey("test", ts, "ordered"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), input, "the insert's full input survives the reconcile upload")
+	assert.Contains(t, string(data), output, "the reconcile's output survives the insert upload")
+}
+
+// TestHybrid_BatchUpdateMergesRepeatedEntriesForOneID: several entries for one
+// id in a batch contribute one merged upload, not competing ones.
+func TestHybrid_BatchUpdateMergesRepeatedEntriesForOneID(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Now().UTC()
+
+	input := "question"
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, &Log{
+		ID: "repeated", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "processing",
+		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
+	}))
+	waitForOffload(t, inner, "repeated")
+
+	output := "answer"
+	toolCall := "lookup_weather"
+	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{
+		{ID: "repeated", OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}},
+		{ID: "repeated", Status: "success", ToolCallsParsed: []schemas.ChatAssistantMessageToolCall{{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolCall}}}},
+	}))
+	waitForUploads(t, func() bool {
+		data, err := objStore.Get(ctx, ObjectKey("test", ts, "repeated"))
+		return err == nil && strings.Contains(string(data), toolCall)
+	})
+	data, err := objStore.Get(ctx, ObjectKey("test", ts, "repeated"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), input)
+	assert.Contains(t, string(data), output, "the first entry's payload is kept")
+	assert.Contains(t, string(data), toolCall, "the second entry's payload is kept")
+	row, err := inner.FindByID(ctx, "repeated")
+	require.NoError(t, err)
+	assert.Equal(t, "success", row.Status)
+}
+
+// TestHybrid_BatchUpdateLeavesObjectUntouchedWhenReadFails: when the stored
+// object cannot be read, the reconcile must not replace it with a payload
+// rebuilt from the content-free DB row; the DB scalars still apply.
+func TestHybrid_BatchUpdateLeavesObjectUntouchedWhenReadFails(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Now().UTC()
+
+	input := "hidden question"
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, &Log{
+		ID: "readfail", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "processing", ContentHidden: true,
+		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
+	}))
+	waitForOffload(t, inner, "readfail")
+	before, err := objStore.Get(ctx, ObjectKey("test", ts, "readfail"))
+	require.NoError(t, err)
+	require.Contains(t, string(before), input)
+
+	objStore.GetErr = fmt.Errorf("simulated transient read failure")
+	output := "late answer"
+	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: "readfail", Status: "success", TotalTokens: 5, ContentHidden: true,
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}}}))
+	waitForUploads(t, func() bool { return hybrid.droppedUploads.Load() == 1 })
+	objStore.GetErr = nil
+
+	after, err := objStore.Get(ctx, ObjectKey("test", ts, "readfail"))
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after), "a failed read must never overwrite the stored object")
+	row, err := inner.FindByID(ctx, "readfail")
+	require.NoError(t, err)
+	assert.Equal(t, "success", row.Status)
+	assert.Equal(t, 5, row.TotalTokens)
+	assert.Empty(t, row.OutputMessage)
+}
+
+// TestHybrid_BatchUpdateMergesOrphanedObjectWhenFlagUnset: has_object=false is
+// not proof that no object exists (the Put can succeed while every has_object
+// update fails). The merge must still look for the object and lay the output
+// over it instead of replacing the saved input.
+func TestHybrid_BatchUpdateMergesOrphanedObjectWhenFlagUnset(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Now().UTC()
+
+	require.NoError(t, inner.CreateIfNotExists(ctx, &Log{
+		ID: "orphan", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o",
+		Status: "processing", ContentHidden: true,
+	}))
+	orphaned, err := sonic.Marshal(map[string]string{"input_history": `[{"role":"user","content":"the orphaned question"}]`})
+	require.NoError(t, err)
+	require.NoError(t, objStore.Put(ctx, ObjectKey("test", ts, "orphan"), orphaned, nil))
+
+	output := "the answer"
+	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: "orphan", Status: "success", ContentHidden: true,
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}}}))
+	waitForUploads(t, func() bool {
+		data, err := objStore.Get(ctx, ObjectKey("test", ts, "orphan"))
+		return err == nil && strings.Contains(string(data), output)
+	})
+	data, err := objStore.Get(ctx, ObjectKey("test", ts, "orphan"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "the orphaned question", "the orphaned object's input must survive the merge")
+}
+
+// TestHybrid_BatchUpdateDropsMergeWhenObjectReadIsAmbiguous: with has_object
+// unset, a read error that is not "not found" leaves it unknown whether an
+// object exists, so the merge upload is dropped rather than risk replacing one.
+func TestHybrid_BatchUpdateDropsMergeWhenObjectReadIsAmbiguous(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Now().UTC()
+
+	require.NoError(t, inner.CreateIfNotExists(ctx, &Log{
+		ID: "ambiguous", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "processing",
+	}))
+	objStore.GetErr = fmt.Errorf("simulated transient read failure")
+
+	output := "the answer"
+	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: "ambiguous", Status: "success",
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}}}))
+	waitForUploads(t, func() bool { return hybrid.droppedUploads.Load() == 1 })
+	assert.Equal(t, 0, objStore.Len(), "nothing may be written while the object's existence is unknown")
+	row, err := inner.FindByID(ctx, "ambiguous")
+	require.NoError(t, err)
+	assert.Equal(t, "success", row.Status, "the DB scalars still apply")
+}
+
+// TestHybrid_BatchUpdateKeepsStoredTimestamp: the reconcile's entry carries no
+// timestamp, and the merge must not overwrite the stored object's request time
+// with the zero value.
+func TestHybrid_BatchUpdateKeepsStoredTimestamp(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Now().UTC().Add(-90 * time.Minute)
+
+	input := "question"
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, &Log{
+		ID: "keep-ts", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "processing",
+		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
+	}))
+	waitForOffload(t, inner, "keep-ts")
+
+	output := "answer"
+	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: "keep-ts", Status: "success",
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}}}))
+	waitForUploads(t, func() bool {
+		data, err := objStore.Get(ctx, ObjectKey("test", ts, "keep-ts"))
+		return err == nil && strings.Contains(string(data), output)
+	})
+
+	data, err := objStore.Get(ctx, ObjectKey("test", ts, "keep-ts"))
+	require.NoError(t, err)
+	var stored map[string]string
+	require.NoError(t, sonic.Unmarshal(data, &stored))
+	got, err := time.Parse(time.RFC3339Nano, stored["timestamp"])
+	require.NoError(t, err)
+	assert.True(t, got.Equal(ts), "stored timestamp %s must stay the request time %s", stored["timestamp"], ts.Format(time.RFC3339Nano))
+}
+
+// TestHybrid_BatchUpdateRefreshesObjectTags: the partial row saved at eviction
+// has no selected key, virtual key or routing rule and stream=false; those are
+// only known at completion. The merged object's tags must describe the row as
+// the batch leaves it, accumulating every entry for the id in order.
+func TestHybrid_BatchUpdateRefreshesObjectTags(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Now().UTC()
+
+	input := "question"
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, &Log{
+		ID: "tags", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "processing",
+		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
+	}))
+	waitForOffload(t, inner, "tags")
+	key := ObjectKey("test", ts, "tags")
+	require.Equal(t, "false", objStore.GetTags(key)["stream"])
+
+	vk, rule, output := "vk-1", "rule-1", "answer"
+	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{
+		{ID: "tags", SelectedKeyID: "key-1", VirtualKeyID: &vk, Stream: true},
+		{ID: "tags", Status: "success", RoutingRuleID: &rule,
+			OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}},
+	}))
+	waitForUploads(t, func() bool {
+		data, err := objStore.Get(ctx, key)
+		return err == nil && strings.Contains(string(data), output)
+	})
+
+	tags := objStore.GetTags(key)
+	assert.Equal(t, "key-1", tags["selected_key_id"], "first entry's selected key")
+	assert.Equal(t, "vk-1", tags["virtual_key_id"], "first entry's virtual key")
+	assert.Equal(t, "true", tags["stream"], "first entry's stream flag")
+	assert.Equal(t, "rule-1", tags["routing_rule_id"], "second entry's routing rule")
+	assert.Equal(t, "success", tags["status"], "second entry's status")
+	assert.Equal(t, "openai", tags["provider"], "fields the batch leaves zero keep the saved row's value")
+}
+
+// TestHybrid_BatchUpdateAppliesFinalVisibility: a row saved hidden whose final
+// decision is visible ends visible, and its output is served on read.
+func TestHybrid_BatchUpdateAppliesFinalVisibility(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Now().UTC()
+
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, &Log{
+		ID: "unhide", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o",
+		Status: "processing", ContentHidden: true,
+	}))
+	output := "allowed answer"
+	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: "unhide", Status: "success", ContentHidden: false,
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}}}))
+	waitForUploads(t, func() bool {
+		data, err := objStore.Get(ctx, ObjectKey("test", ts, "unhide"))
+		return err == nil && strings.Contains(string(data), output)
+	})
+	waitForOffload(t, inner, "unhide")
+
+	row, err := inner.FindByID(ctx, "unhide")
+	require.NoError(t, err)
+	assert.False(t, row.ContentHidden, "the final visible decision wins over the saved hidden flag")
+	found, err := hybrid.FindByID(ctx, "unhide")
+	require.NoError(t, err)
+	assert.Contains(t, found.OutputMessage, output, "a visible row serves its output")
 }

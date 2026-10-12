@@ -56,7 +56,9 @@ config:
       that re-enables it or changes admin_username / admin_password must carry either
       auth_config.current_password (the stored admin password) or a valid
       auth_config.setup_token; otherwise it is refused with 403. A genuinely
-      authenticated session needs neither.
+      authenticated session needs neither. Changing
+      client_config.mcp_oauth_private_allowlist also requires an authenticated
+      admin session and is refused with 403 while dashboard authentication is off.
     tags:
       - Configuration
     requestBody:
@@ -82,7 +84,8 @@ config:
           auth_config was changed without the required proof: the first admin account
           needs a valid setup_token, and re-enabling authentication or changing the admin
           credentials while dashboard authentication is disabled needs current_password
-          or a valid setup_token
+          or a valid setup_token; or client_config.mcp_oauth_private_allowlist was changed
+          without an authenticated admin session
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 

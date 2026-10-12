@@ -611,10 +611,15 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 			requestType, _ = raw.(string)
 		}
 	}
+	var errorType schemas.ErrorType
 	if requestType != "" {
-		if errorType := schemas.ClassifyErrorType(err, schemas.RequestType(requestType)); errorType != "" {
+		if errorType = schemas.ClassifyErrorType(err, schemas.RequestType(requestType)); errorType != "" {
 			// Plain string: readers assert .(string); a defined type is dropped.
 			span.SetAttribute(schemas.AttrBifrostErrorType, string(errorType))
+			// Mirrored onto the typed record the attribute map renders from.
+			if llm.Error != nil {
+				llm.Error.Type = string(errorType)
+			}
 		}
 	}
 
@@ -724,6 +729,8 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 		if v, ok := respAttrs[schemas.AttrFinishReasons]; ok {
 			rootSpan.SetAttribute(schemas.AttrFinishReasons, v)
 		}
+		// Only an HTTP status here cannot tell a model refusal from a provider outage.
+		rootSpan.SetAttributes(schemas.RootSpanErrorAttributes(err, errorType))
 	}
 }
 
@@ -844,7 +851,26 @@ func (t *Tracer) AddStreamingChunk(traceID string, response *schemas.BifrostResp
 	if traceID == "" || response == nil {
 		return
 	}
-	t.store.AppendStreamingChunk(traceID, response)
+	if firstChunk := t.store.appendStreamingChunk(traceID, response); !firstChunk.IsZero() {
+		t.stampTimeToFirstToken(traceID, firstChunk)
+	}
+}
+
+// stampTimeToFirstToken records request receipt to first chunk on the llm.call and
+// root spans. Measured from trace creation, so it covers the whole client wait.
+func (t *Tracer) stampTimeToFirstToken(traceID string, firstChunk time.Time) {
+	trace := t.store.GetTrace(traceID)
+	if trace == nil || trace.StartTime.IsZero() {
+		return
+	}
+	ms := float64(firstChunk.Sub(trace.StartTime).Nanoseconds()) / 1e6
+	if ms <= 0 {
+		return
+	}
+	if spanID := t.GetDeferredSpanID(traceID); spanID != "" {
+		trace.GetSpan(spanID).SetAttribute(schemas.AttrBifrostTimeToFirstTokenMs, ms)
+	}
+	trace.RootSpan.SetAttribute(schemas.AttrBifrostTimeToFirstTokenMs, ms)
 }
 
 // GetAccumulatedChunks returns the accumulated response, TTFT, and chunk count for the deferred span.
@@ -1000,6 +1026,15 @@ func (t *Tracer) CleanupStreamAccumulator(traceID string) {
 			t.store.logger.Error("error in CleanupStreamAccumulator: %v", err)
 		}
 	}
+}
+
+// ResetStreamAccumulator drops the chunks accumulated for the given trace ID so a
+// retried stream attempt starts clean.
+func (t *Tracer) ResetStreamAccumulator(traceID string) {
+	if traceID == "" || t.accumulator == nil {
+		return
+	}
+	t.accumulator.ResetStreamAccumulator(traceID)
 }
 
 // ForceCleanupStreamAccumulator reaps the stream accumulator for the given trace

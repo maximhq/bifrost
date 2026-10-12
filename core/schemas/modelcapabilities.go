@@ -189,6 +189,9 @@ type ModelCapabilities struct {
 	// budget. False on models that reject it, which need the config omitted.
 	SupportsReasoningDisable *bool `json:"supports_reasoning_disable,omitempty"`
 
+	// Effort the model applies when the request omits it ("none" means it does not reason).
+	DefaultReasoningEffort *string `json:"default_reasoning_effort,omitempty"`
+
 	// Model accepts thinking:{type:"between_tools"} (no up-front thinking).
 	SupportsBetweenToolsThinking *bool `json:"supports_between_tools_thinking,omitempty"`
 
@@ -266,6 +269,15 @@ type ModelCapabilities struct {
 	// the hardcoded per-provider fallback in core/providers/openai outright; absent
 	// or empty means the fallback applies.
 	ReservedToolNamespaces []string `json:"reserved_tool_namespaces,omitempty"`
+
+	// Tool-schema `pattern` accepts lookaround assertions; false ⇒ they are stripped before dispatch.
+	SupportsRegexLookaround *bool `json:"supports_regex_lookaround,omitempty"`
+
+	// Tool-schema `pattern` accepts the `\0` escape; false ⇒ it is rewritten to `\x00` before dispatch.
+	SupportsRegexNULEscape *bool `json:"supports_regex_nul_escape,omitempty"`
+
+	// String `format` values tool schemas may carry; any other is dropped before dispatch.
+	SupportedSchemaFormats []string `json:"supported_schema_formats,omitempty"`
 
 	// ---- Aliasing & regional inference profiles ----
 

@@ -7,6 +7,7 @@ export type AgentLogStatus = "processing" | "success" | "error";
 // stays database-resident so the table does not hydrate full payload objects.
 // Mirrors logstore.AgentLogSummary JSON field names.
 export interface AgentLogSummary {
+	session_child_count?: number;
 	id: string;
 	timestamp: string; // ISO string from Go time.Time
 	record_kind: AgentRecordKind;
@@ -57,9 +58,17 @@ export interface AgentLogSummary {
 	input?: string;
 }
 
+// Display-only annotations for operations expanded beneath a context root.
+export type DisplayAgentLogSummary = AgentLogSummary & {
+	__sessionTurn?: number;
+	__isLast?: boolean;
+};
+
 // Hydrated entry returned by GET /api/agents/history/{id}. Bodies are JSON
 // strings with secrets already redacted server-side.
 export interface AgentLogDetail extends AgentLogSummary {
+	raw_request?: string; // Base64-encoded transport bytes.
+	raw_response?: string;
 	request_body?: string;
 	response_body?: string;
 	event_body?: string;

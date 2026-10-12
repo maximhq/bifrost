@@ -1035,7 +1035,14 @@ func hasAnthropicOnlyResponsesToolFlags(t schemas.ResponsesTool, keepDeferLoadin
 		responsesToolCallersNeedRewrite(t) ||
 		len(t.InputExamples) > 0 ||
 		t.EagerInputStreaming != nil ||
-		(t.ResponsesToolCodeInterpreter != nil && t.ResponsesToolCodeInterpreter.Version != nil)
+		(t.ResponsesToolCodeInterpreter != nil && t.ResponsesToolCodeInterpreter.Version != nil) ||
+		hasAnthropicMCPToolsetConfig(t)
+}
+
+// hasAnthropicMCPToolsetConfig reports whether an MCP tool carries the Anthropic mcp_toolset
+// configuration (default_config / tool_configs), which OpenAI's mcp tool does not accept.
+func hasAnthropicMCPToolsetConfig(t schemas.ResponsesTool) bool {
+	return t.ResponsesToolMCP != nil && (t.ResponsesToolMCP.DefaultConfig != nil || len(t.ResponsesToolMCP.ToolConfigs) > 0)
 }
 
 // responsesToolCallersNeedRewrite reports whether allowed_callers has to change
@@ -1358,6 +1365,12 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 				}
 				toolCopy.InputExamples = nil
 				toolCopy.EagerInputStreaming = nil
+				if hasAnthropicMCPToolsetConfig(toolCopy) {
+					mcpCopy := *toolCopy.ResponsesToolMCP
+					mcpCopy.DefaultConfig = nil
+					mcpCopy.ToolConfigs = nil
+					toolCopy.ResponsesToolMCP = &mcpCopy
+				}
 				if toolCopy.ResponsesToolCodeInterpreter != nil && toolCopy.ResponsesToolCodeInterpreter.Version != nil {
 					ciCopy := *toolCopy.ResponsesToolCodeInterpreter
 					ciCopy.Version = nil

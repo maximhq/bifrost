@@ -30,9 +30,9 @@ func TestFireworks(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:                schemas.Fireworks,
-		ChatModel:               "accounts/fireworks/models/kimi-k2p7-code",
+		ChatModel:               "accounts/fireworks/models/gpt-oss-120b",
 		Fallbacks:               []schemas.Fallback{},
-		TextModel:               "accounts/fireworks/models/kimi-k2p7-code",
+		TextModel:               "accounts/fireworks/models/deepseek-v4p1-flash",
 		TextCompletionFallbacks: []schemas.Fallback{},
 		EmbeddingModel:          "fireworks/qwen3-embedding-8b",
 		ReasoningModel:          "",
