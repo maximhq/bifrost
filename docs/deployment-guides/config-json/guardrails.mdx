@@ -726,10 +726,11 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 
 | Field | Required | env.\* supported | Notes |
 |-------|----------|-----------------|-------|
-| `patterns` | Yes | **Plain only** | Array of `{ pattern, description?, entity_type?, flags?, action?, redaction_strategy?, redaction_mode? }` objects |
+| `patterns` | Yes | **Plain only** | Array of `{ pattern, description?, entity_type?, flags?, action?, redaction_strategy?, redaction_mode?, allowed_values? }` objects |
 | `patterns[].action` | No | **Plain only** | `detect_only` \| `block` \| `redact` (default: `block`) |
 | `patterns[].redaction_strategy` | No | **Plain only** | `replace` \| `mask` \| `hash` (default: `replace`) |
 | `patterns[].redaction_mode` | No | **Plain only** | `runtime` \| `logs_only` \| `runtime_reversible` (default: `runtime`) |
+| `patterns[].allowed_values` | No | **Plain only** | Array of exact values the pattern ignores (case-insensitive, whole-match). Matches equal to one of them are not detected, blocked, or redacted |
 
 ### Secrets
 

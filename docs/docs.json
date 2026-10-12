@@ -134,6 +134,7 @@
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/bedrock-mantle",
                   "providers/supported-providers/cerebras",
+                  "providers/supported-providers/cloudflare",
                   "providers/supported-providers/cohere",
                   "providers/supported-providers/databricks",
                   "providers/supported-providers/deepseek",
@@ -170,6 +171,7 @@
               "providers/reasoning",
               "providers/performance",
               "providers/custom-providers",
+              "providers/self-hosted-decision-models",
               "providers/custom-pricing",
               "providers/request-options",
               "providers/test-harness-coverage"
@@ -227,6 +229,7 @@
               "features/drop-in-replacement",
               "features/retries-and-fallbacks",
               "features/complexity-router",
+              "features/warp",
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",

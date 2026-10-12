@@ -2859,8 +2859,15 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			if tool.ResponsesToolFunction != nil {
 				// Create the complete schema object that Bedrock expects
 				var schemaObject interface{}
-				if tool.ResponsesToolFunction.Parameters != nil {
-					schemaObject = tool.ResponsesToolFunction.Parameters
+				if parameters := tool.ResponsesToolFunction.Parameters; parameters != nil {
+					// Claude rejects oneOf/anyOf/allOf at the input_schema root.
+					if (len(parameters.OneOf) > 0 || len(parameters.AnyOf) > 0 || len(parameters.AllOf) > 0) && schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+						var err error
+						if parameters, err = anthropic.NormalizeAnthropicToolInputSchema(parameters); err != nil {
+							return nil, err
+						}
+					}
+					schemaObject = parameters
 				} else {
 					// Fallback to empty object schema if no parameters
 					schemaObject = map[string]interface{}{
