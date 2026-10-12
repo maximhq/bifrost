@@ -55,7 +55,7 @@ An access profile defines the provider, model, budget, rate-limit, and MCP acces
   </Step>
 </Steps>
 
-When a user becomes eligible for the profile, Bifrost creates a per-user copy and issues a profile-managed virtual key. See [Access Profiles](/enterprise/access-profiles) for the complete assignment and propagation behavior.
+When a user becomes eligible for the profile, Bifrost creates a per-user copy and issues the user a virtual key, governed by the profiles they hold. See [Access Profiles](/enterprise/access-profiles) for the complete assignment and propagation behavior.
 
 <Note>
   An access profile attached to a role is the standard way to issue governed virtual keys at scale. Edge can also resolve an active virtual key assigned directly to the user, through one of the user's teams, or through a team in the user's business unit.
