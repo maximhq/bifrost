@@ -217,7 +217,7 @@ print(f"File content:\n{content}")
 ### Create a Batch
 
 <Note>
-With a virtual key that restricts models on the provider, file-based batches (`input_file_id` or `input_blob`) need a key that allows every model of the provider on OpenAI and Azure, and a supplied, allowed `model` on Gemini, Vertex, and Bedrock. See [Batches defined by an uploaded file](/features/governance/virtual-keys#batches-defined-by-an-uploaded-file). Inline batches are checked per item.
+With a virtual key that restricts models on the provider, file-based batches (`input_file_id` or `input_blob`) need a key that allows every model of the provider on OpenAI and Azure, and a supplied, allowed `model` on Gemini, Vertex, and Bedrock; a custom provider follows its base provider. See [Batches defined by an uploaded file](/features/governance/virtual-keys#batches-defined-by-an-uploaded-file). Inline batches are checked per item, and a request naming a file or blob together with inline `requests` is refused with `400`.
 </Note>
 
 <Tabs group="provider">

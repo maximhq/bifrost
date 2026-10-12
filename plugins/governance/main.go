@@ -92,6 +92,35 @@ type InMemoryStore interface {
 	GetEnabledAgents() map[string]bool // agent name → allow by default
 }
 
+// singleProviderStore is an InMemoryStore that can hand back one provider's configuration without
+// building the whole map, so a per-request model check stays free of allocations.
+type singleProviderStore interface {
+	GetConfiguredProvider(provider schemas.ModelProvider) (configstore.ProviderConfig, bool)
+}
+
+// configuredProvider returns one provider's configuration from store, read alone when the store
+// supports it.
+func configuredProvider(store InMemoryStore, provider schemas.ModelProvider) (configstore.ProviderConfig, bool) {
+	if single, ok := store.(singleProviderStore); ok {
+		return single.GetConfiguredProvider(provider)
+	}
+	config, ok := store.GetConfiguredProviders()[provider]
+	return config, ok
+}
+
+// configuredBaseProvider is the provider whose implementation runs provider's requests: the base
+// type of a custom provider, otherwise provider itself. It reads that one provider's configuration.
+func configuredBaseProvider(store InMemoryStore, provider schemas.ModelProvider) schemas.ModelProvider {
+	if store == nil {
+		return provider
+	}
+	config, ok := configuredProvider(store, provider)
+	if !ok || config.CustomProviderConfig == nil || config.CustomProviderConfig.BaseProviderType == "" {
+		return provider
+	}
+	return config.CustomProviderConfig.BaseProviderType
+}
+
 type BaseGovernancePlugin interface {
 	GetName() string
 	Evaluate(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest) (*EvaluationResult, *schemas.BifrostError)
@@ -1010,7 +1039,7 @@ func (p *GovernancePlugin) modelMatcher() grant.ModelMatcher {
 	return func(provider, model string, allowed []string) bool {
 		var providerConfig *configstore.ProviderConfig
 		if p.inMemoryStore != nil {
-			if config, ok := p.inMemoryStore.GetConfiguredProviders()[schemas.ModelProvider(provider)]; ok {
+			if config, ok := configuredProvider(p.inMemoryStore, schemas.ModelProvider(provider)); ok {
 				providerConfig = &config
 			}
 		}
@@ -1171,10 +1200,13 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	return req, nil, nil
 }
 
-// isOpaqueBatchInput reports whether a batch create's work is an uploaded file or blob rather than
-// inline requests, so the models it will run are not visible on the request.
+// isOpaqueBatchInput reports whether a batch create's work is an uploaded file or blob, so the
+// models it will run are not visible on the request. Inline items beside a file do not make the
+// batch inline: no provider runs them then. OpenAI, Azure and Bedrock submit the file and drop
+// the items, Gemini and Vertex refuse the mix, so the items are at most a decoy for the model
+// check and the file rule has to hold.
 func isOpaqueBatchInput(req *schemas.BifrostRequest) bool {
-	if req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil || len(req.BatchCreateRequest.Requests) > 0 {
+	if req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil {
 		return false
 	}
 	batch := req.BatchCreateRequest

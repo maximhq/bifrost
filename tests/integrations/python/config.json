@@ -975,7 +975,8 @@
           "name": "OpenAI API Key",
           "value": "env.OPENAI_API_KEY",
           "weight": 1,
-          "models": ["*"]
+          "models": ["*"],
+          "use_for_batch_api": true
         }
       ],
       "custom_provider_config": {

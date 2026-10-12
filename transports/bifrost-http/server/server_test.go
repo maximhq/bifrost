@@ -1362,11 +1362,10 @@ func TestMarshalPluginConfig_WithComplexType(t *testing.T) {
 	}
 }
 
-// GetConfiguredProviders hands back the live provider map uncopied, which is safe for the callers
-// that index it once. The name listing cannot be written that way: provider add, delete and status
-// updates all write to that map in place under the write lock, so a caller ranging it after the read
-// lock is released hits a concurrent map iteration and write. That is fatal rather than merely
-// stale — it takes the process down — so the slice is built under the lock instead. Run with -race.
+// Provider add, delete and status updates all write to the provider map in place under the write
+// lock, so a caller ranging it after the read lock is released hits a concurrent map iteration and
+// write. That is fatal rather than merely stale — it takes the process down — so the slice is built
+// under the lock instead. Run with -race.
 func TestGetConfiguredProviderNamesIsSafeAgainstConcurrentProviderEdits(t *testing.T) {
 	config := &lib.Config{
 		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}},
@@ -1885,8 +1884,9 @@ func TestIssue8212RetentionChange(t *testing.T) {
 				}()
 			})
 		})
-  }
+	}
 }
+
 // The telemetry plugin reads config.CustomLabels, but the loader only ever seeded it
 // from client_config.prometheus_labels, so the plugin's own custom_labels were accepted
 // and ignored. Both name extra Prometheus labels, so they union.
@@ -2021,4 +2021,81 @@ func TestPrometheusHTTPMiddlewarePassesThroughWithoutThePlugin(t *testing.T) {
 	if !served {
 		t.Error("request was not served when no telemetry plugin is loaded")
 	}
+}
+
+// TestGovernanceInMemoryStoreProvidersSurviveEdits pins that the provider map the governance
+// plugin reads (batchBaseProvider, modelMatcher) can be indexed after the accessor has released
+// its lock while a provider edit writes to the live map: the accessor must hand back a copy, not
+// the map itself, or the read is a fatal concurrent map access under load.
+// The per-request model check reads one provider through GetConfiguredProvider: it takes the read
+// lock and copies nothing, unlike GetConfiguredProviders, which snapshots the whole map.
+func TestGovernanceInMemoryStoreReadsOneProviderWithoutCopying(t *testing.T) {
+	config := &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}, schemas.Anthropic: {}}}
+	store := &GovernanceInMemoryStore{Config: config}
+	var single interface {
+		GetConfiguredProvider(schemas.ModelProvider) (configstore.ProviderConfig, bool)
+	} = store
+
+	_, ok := single.GetConfiguredProvider(schemas.OpenAI)
+	assert.True(t, ok)
+	_, ok = single.GetConfiguredProvider(schemas.Gemini)
+	assert.False(t, ok)
+	assert.Zero(t, testing.AllocsPerRun(100, func() { _, _ = single.GetConfiguredProvider(schemas.OpenAI) }), "a one-provider read allocates nothing")
+}
+
+// BenchmarkGovernanceInMemoryStoreProviderLookup compares reading one provider out of a snapshot of
+// the whole map (what a model check did) with reading it alone, across twenty configured providers.
+func BenchmarkGovernanceInMemoryStoreProviderLookup(b *testing.B) {
+	providers := map[schemas.ModelProvider]configstore.ProviderConfig{}
+	for i := 0; i < 20; i++ {
+		providers[schemas.ModelProvider(fmt.Sprintf("provider-%d", i))] = configstore.ProviderConfig{}
+	}
+	providers[schemas.OpenAI] = configstore.ProviderConfig{}
+	store := &GovernanceInMemoryStore{Config: &lib.Config{Providers: providers}}
+	b.Run("whole_map", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = store.GetConfiguredProviders()[schemas.OpenAI]
+		}
+	})
+	b.Run("single", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_, _ = store.GetConfiguredProvider(schemas.OpenAI)
+		}
+	})
+}
+
+func TestGovernanceInMemoryStoreProvidersSurviveEdits(t *testing.T) {
+	t.Parallel()
+	config := &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}}
+	store := &GovernanceInMemoryStore{Config: config}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 2000; i++ {
+			providers := store.GetConfiguredProviders()
+			_, _ = providers[schemas.OpenAI]
+			_, _ = providers[schemas.Anthropic]
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 2000; i++ {
+			config.Mu.Lock()
+			config.Providers[schemas.Anthropic] = configstore.ProviderConfig{}
+			delete(config.Providers, schemas.Anthropic)
+			config.Mu.Unlock()
+		}
+	}()
+	wg.Wait()
+
+	providers := store.GetConfiguredProviders()
+	config.Mu.Lock()
+	config.Providers[schemas.Gemini] = configstore.ProviderConfig{}
+	config.Mu.Unlock()
+	_, leaked := providers[schemas.Gemini]
+	assert.False(t, leaked, "the returned map is a snapshot, not the live map")
 }
