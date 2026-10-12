@@ -120,6 +120,10 @@ func (h *WSLiveHandler) handleAttach(ctx *fasthttp.RequestCtx) {
 // openSideband selects a key and dials the provider's attach endpoint on it.
 func (h *WSLiveHandler) openSideband(up *liveRequest) (*liveSidebandRelay, *schemas.BifrostError) {
 	ctx, cancel := h.gateway.sessionContext(up.auth, up.preReqCtx, up.middlewareValues, up.path)
+	if bifrostErr := h.gateway.admitSideband(ctx, up.providerKey); bifrostErr != nil {
+		cancel()
+		return nil, bifrostErr
+	}
 	key, bifrostErr := h.gateway.controlKey(ctx, up.providerKey)
 	if bifrostErr != nil {
 		cancel()

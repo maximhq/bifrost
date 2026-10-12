@@ -629,3 +629,42 @@ func TestLiveRelayBackendSwitchEnforcesPinnedKeyBeforeForwarding(t *testing.T) {
 	assert.Len(t, posts, len(opens))
 	assert.Equal(t, len(opens), cleanups, "rejected and admitted units are cleaned exactly once")
 }
+
+// TestLiveSidebandAdmissionRespectsGovernance: a sideband names only a session id, yet it acts
+// on the operator's key for the provider, so it is held to the caller's virtual key as the
+// primary session is.
+func TestLiveSidebandAdmissionRespectsGovernance(t *testing.T) {
+	t.Parallel()
+
+	t.Run("without governance the sideband is admitted", func(t *testing.T) {
+		g := &liveGateway{config: &lib.Config{}}
+		assert.Nil(t, g.admitSideband(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.OpenAI))
+	})
+	t.Run("governance is asked about the provider, not a model", func(t *testing.T) {
+		config := &lib.Config{}
+		plugin := &mockRealtimeMintingGovernancePlugin{}
+		plugins := []schemas.BasePlugin{plugin}
+		config.BasePlugins.Store(&plugins)
+		g := &liveGateway{config: config}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-123")
+		require.Nil(t, g.admitSideband(ctx, "openai-split"))
+		assert.Equal(t, 1, plugin.evaluateCalls)
+		assert.Equal(t, schemas.ModelProvider("openai-split"), plugin.seenProvider)
+		assert.Equal(t, "", plugin.seenModel)
+		assert.Equal(t, "sk-bf-123", plugin.seenVirtualKey)
+		skipSpend, _ := ctx.Value(schemas.BifrostContextKeySkipBudgetAndRateLimits).(bool)
+		assert.True(t, skipSpend, "a sideband spends nothing: the primary session is what budgets and request limits govern")
+	})
+	t.Run("a governance refusal is the caller's answer", func(t *testing.T) {
+		config := &lib.Config{}
+		refusal := &schemas.BifrostError{StatusCode: schemas.Ptr(403), Error: &schemas.ErrorField{Message: "Provider 'openai' is not allowed"}}
+		plugins := []schemas.BasePlugin{&mockRealtimeMintingGovernancePlugin{err: refusal}}
+		config.BasePlugins.Store(&plugins)
+		g := &liveGateway{config: config}
+		bifrostErr := g.admitSideband(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.OpenAI)
+		require.NotNil(t, bifrostErr)
+		assert.Equal(t, 403, *bifrostErr.StatusCode)
+		assert.Contains(t, bifrostErr.Error.Message, "not allowed")
+	})
+}
