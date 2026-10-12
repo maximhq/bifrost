@@ -1216,7 +1216,30 @@
         ]
       }
     ],
+    "budgets": [
+      {
+        "id": "harness-cfgbudget-daily",
+        "max_limit": 0.0000001,
+        "reset_duration": "1d",
+        "virtual_key_id": "vk-harness-cfgbudget"
+      }
+    ],
     "virtual_keys": [
+      {
+        "name": "Harness config.json budget key",
+        "id": "vk-harness-cfgbudget",
+        "value": "sk-bf-harness-cfgbudget",
+        "is_active": true,
+        "calendar_aligned": true,
+        "provider_configs": [
+          {
+            "provider": "openai",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          }
+        ]
+      },
       {
         "name": "Test Key",
         "id": "vk-test",
