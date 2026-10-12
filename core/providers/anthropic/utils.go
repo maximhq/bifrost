@@ -1183,6 +1183,15 @@ func IsSonnet55Plus(model string) bool {
 	return strings.Contains(m, "sonnet-5-5") || strings.Contains(m, "sonnet-5.5")
 }
 
+// IsHaiku55Plus returns true for Claude Haiku 5.5, matching the
+// Bedrock/Vertex/date-suffixed forms. Haiku 5.5 rejects extended thinking with a
+// 400 ("thinking.type.enabled" is not supported for this model) - adaptive
+// thinking with output_config.effort is the thinking-on mode.
+func IsHaiku55Plus(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "haiku-5-5") || strings.Contains(m, "haiku-5.5")
+}
+
 // IsFableFamily returns true for Claude Fable / Mythos models (Fable 5,
 // Mythos 5, Mythos Preview). These share Opus 4.7+'s request surface
 // (adaptive-only thinking, temperature/top_p/top_k removed) AND additionally
@@ -1409,7 +1418,7 @@ func ApplyDefaultEagerInputStreamingToRawBody(jsonBody []byte, provider schemas.
 // DefaultSupportsAdaptiveThinking: thinking.type "adaptive" is accepted on Opus
 // 4.6, Sonnet 4.6, Sonnet 5+, Opus 4.7+ and the Fable/Mythos family.
 func DefaultSupportsAdaptiveThinking(model string) bool {
-	if IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model) {
+	if IsOpus47Plus(model) || IsSonnet5Plus(model) || IsHaiku55Plus(model) || IsFableFamily(model) {
 		return true
 	}
 	m := strings.ToLower(model)
@@ -1426,6 +1435,8 @@ func DefaultEffortControl(model string) *schemas.EffortControl {
 	switch {
 	case IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model):
 		levels = append(levels, schemas.ReasoningEffortXHigh, schemas.ReasoningEffortMax)
+	case IsHaiku55Plus(model):
+		// Base ladder only: higher levels are unverified for Haiku 5.5.
 	case DefaultSupportsAdaptiveThinking(model):
 		levels = append(levels, schemas.ReasoningEffortMax)
 	}
@@ -1535,7 +1546,7 @@ func SupportsNativeEffort(caps schemas.ModelCaps) bool {
 // Source: https://platform.claude.com/docs/en/build-with-claude/effort
 func DefaultSupportsNativeEffort(model string) bool {
 	m := strings.ToLower(model)
-	if IsFableFamily(m) || IsSonnet5Plus(m) || IsOpus5Plus(m) {
+	if IsFableFamily(m) || IsHaiku55Plus(m) || IsSonnet5Plus(m) || IsOpus5Plus(m) {
 		return true
 	}
 	if strings.Contains(m, "haiku") {
