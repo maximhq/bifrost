@@ -78,6 +78,12 @@ type Service struct {
 	cleanupOnce     sync.Once
 	cleanupStopOnce sync.Once
 	stopCleanup     chan struct{}
+	// upkeepOnce/stopUpkeep/upkeepStopOnce own the topic upkeep loop the
+	// same way, and topicJobs is what it starts discovery through.
+	upkeepOnce     sync.Once
+	upkeepStopOnce sync.Once
+	stopUpkeep     chan struct{}
+	topicJobs      TopicJobQueue
 	// catalog prices Warp's own usage. Nil is supported: the panel then reports
 	// tokens without a cost, rather than reporting a cost of zero.
 	catalog      *modelcatalog.ModelCatalog
@@ -313,6 +319,7 @@ func (s *Service) Shutdown() {
 	s.closed = true
 	// Takes no lock of its own, so it is safe inside this one.
 	s.stopHistoryCleanup()
+	s.stopTopicUpkeep()
 	if s.indexer != nil {
 		s.indexer.Close()
 	}
