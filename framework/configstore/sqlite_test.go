@@ -52,3 +52,48 @@ func TestSQLiteWriteTransactionWaitsForAConcurrentWriter(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 7, cfg.LogRetentionDays, "the other writer's change is kept")
 }
+
+// A SQLite transaction that reads before it writes must still be able to write after another
+// connection in the same pool has committed in between. In WAL mode a deferred transaction only
+// holds a read snapshot after that first read, and its upgrade to a write then fails at once with
+// "database is locked": the busy timeout never applies to a stale snapshot. Startup workers write
+// to the store while the first request-driven write runs, so every transaction has to take the
+// write lock when it begins and let the busy timeout queue the others behind it.
+func TestSQLiteTransactionsTakeTheWriteLockOnBegin(t *testing.T) {
+	store, err := newSqliteConfigStore(context.Background(), &SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	db := store.(*RDBConfigStore).DB()
+	require.NoError(t, db.Exec("CREATE TABLE lock_probe (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)").Error)
+	require.NoError(t, db.Exec("INSERT INTO lock_probe (id, n) VALUES (1, 0)").Error)
+
+	otherWriter := make(chan error, 1)
+	err = db.Transaction(func(tx *gorm.DB) error {
+		var n int
+		if err := tx.Raw("SELECT n FROM lock_probe WHERE id = 1").Scan(&n).Error; err != nil {
+			return err
+		}
+		// Another pooled connection writes while this transaction is open. It must queue
+		// behind this transaction (and complete after the commit), not slip in ahead of it.
+		go func() { otherWriter <- db.Exec("UPDATE lock_probe SET n = n + 10 WHERE id = 1").Error }()
+		select {
+		case err := <-otherWriter:
+			require.NoError(t, err)
+			t.Log("the other writer committed while this transaction was open")
+		case <-time.After(200 * time.Millisecond):
+			t.Log("the other writer is waiting behind this transaction")
+		}
+		return tx.Exec("UPDATE lock_probe SET n = ? WHERE id = 1", n+1).Error
+	})
+	require.NoError(t, err, "a read-then-write transaction must not fail on a stale snapshot")
+
+	select {
+	case err := <-otherWriter:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the other writer never completed")
+	}
+	var n int
+	require.NoError(t, db.Raw("SELECT n FROM lock_probe WHERE id = 1").Scan(&n).Error)
+	require.Equal(t, 11, n, "both writes must land, in order")
+}
