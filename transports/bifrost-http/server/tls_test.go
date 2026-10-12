@@ -151,7 +151,7 @@ func TestListenServesPlainOrTLS(t *testing.T) {
 		require.NoError(t, err)
 		resp, err := client.Get(fmt.Sprintf("%s://localhost:%s/", scheme, port))
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 		return string(body)
@@ -173,11 +173,11 @@ func TestListenServesPlainOrTLS(t *testing.T) {
 			srv := &fasthttp.Server{Handler: func(ctx *fasthttp.RequestCtx) {
 				ctx.SetBodyString(fmt.Sprintf("tls=%v", ctx.IsTLS()))
 			}}
-			defer srv.Shutdown()
+			defer func() { _ = srv.Shutdown() }()
 			require.Len(t, listeners, len(tc.schemes))
 			for i, l := range listeners {
 				assert.Equal(t, tc.schemes[i], l.scheme)
-				go srv.Serve(l.ln)
+				go func() { _ = srv.Serve(l.ln) }()
 				addr := l.ln.Addr().String()
 				assert.Equal(t, fmt.Sprintf("tls=%v", l.scheme == "https"), get(t, l.scheme, addr))
 			}
@@ -235,4 +235,47 @@ func TestCertReloaderFollowsKubernetesSecretSymlinkSwap(t *testing.T) {
 	r.lastCheck = time.Time{}
 	r.mu.Unlock()
 	assert.Equal(t, "second", servedCN(t, r))
+}
+
+func TestTLSListenerBoundsHandshakeOnly(t *testing.T) {
+	previous := tlsHandshakeTimeout
+	tlsHandshakeTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { tlsHandshakeTimeout = previous })
+
+	certFile, keyFile := writeTestPair(t, t.TempDir(), "first")
+	s := &BifrostHTTPServer{Host: "127.0.0.1", Port: "0", TLSCertFile: certFile, TLSKeyFile: keyFile}
+	listeners, err := s.listen()
+	require.NoError(t, err)
+	srv := &fasthttp.Server{Handler: func(ctx *fasthttp.RequestCtx) { ctx.SetBodyString("ok") }}
+	go func() { _ = srv.Serve(listeners[0].ln) }()
+	t.Cleanup(func() { _ = srv.Shutdown() })
+	addr := listeners[0].ln.Addr().String()
+
+	t.Run("a client that never completes the handshake is cut off", func(t *testing.T) {
+		raw, err := net.Dial("tcp", addr)
+		require.NoError(t, err)
+		defer func() { _ = raw.Close() }()
+		require.NoError(t, raw.SetReadDeadline(time.Now().Add(5*time.Second)))
+		start := time.Now()
+		_, err = raw.Read(make([]byte, 1))
+		require.Error(t, err, "the server closes the connection")
+		assert.Less(t, time.Since(start), 3*time.Second)
+	})
+
+	t.Run("a connection outlives the handshake deadline once established", func(t *testing.T) {
+		pool := x509.NewCertPool()
+		caPEM, err := os.ReadFile(certFile)
+		require.NoError(t, err)
+		require.True(t, pool.AppendCertsFromPEM(caPEM))
+		conn, err := tls.Dial("tcp", addr, &tls.Config{RootCAs: pool, ServerName: "localhost"})
+		require.NoError(t, err)
+		defer func() { _ = conn.Close() }()
+		time.Sleep(3 * tlsHandshakeTimeout)
+		_, err = conn.Write([]byte("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
+		require.NoError(t, err)
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+		resp, err := io.ReadAll(conn)
+		require.NoError(t, err)
+		assert.Contains(t, string(resp), "200 OK")
+	})
 }

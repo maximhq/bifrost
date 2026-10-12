@@ -103,6 +103,12 @@ func (r *certReloader) maybeReload() *tls.Certificate {
 	return r.cert
 }
 
+// tlsHandshakeTimeout bounds how long a client may take to complete the TLS
+// handshake. The server sets no read or write timeouts, so that streams can run
+// as long as they need; without this bound a client that never finishes the
+// handshake would hold its connection, unauthenticated, indefinitely.
+var tlsHandshakeTimeout = 10 * time.Second
+
 // newTLSListener wraps ln so connections are served over TLS with the pair in
 // certFile and keyFile, reloaded when the files change. HTTP/1.1 only, which is
 // what the fasthttp server speaks.
@@ -111,11 +117,64 @@ func newTLSListener(ln net.Listener, certFile, keyFile string) (net.Listener, er
 	if err != nil {
 		return nil, err
 	}
-	return tls.NewListener(ln, &tls.Config{
+	return &tlsListener{Listener: ln, config: &tls.Config{
 		MinVersion:     tls.VersionTLS12,
 		NextProtos:     []string{"http/1.1"},
 		GetCertificate: reloader.getCertificate,
-	}), nil
+	}}, nil
+}
+
+type tlsListener struct {
+	net.Listener
+	config *tls.Config
+}
+
+// Accept returns the connection without handshaking, like tls.NewListener, so
+// a slow client never holds up the accept loop. The handshake runs on first use.
+func (l *tlsListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &handshakeDeadlineConn{Conn: tls.Server(c, l.config), timeout: tlsHandshakeTimeout}, nil
+}
+
+// handshakeDeadlineConn completes the TLS handshake under a deadline on first
+// use, then clears the deadline so the connection itself has no time limit.
+type handshakeDeadlineConn struct {
+	*tls.Conn
+	timeout time.Duration
+	once    sync.Once
+	err     error
+}
+
+// Handshake also serves callers that run the handshake themselves; fasthttp's
+// IsTLS detects TLS connections by this method and ConnectionState.
+func (c *handshakeDeadlineConn) Handshake() error {
+	c.once.Do(func() {
+		if c.err = c.Conn.SetDeadline(time.Now().Add(c.timeout)); c.err != nil {
+			return
+		}
+		if c.err = c.Conn.Handshake(); c.err != nil {
+			return
+		}
+		c.err = c.Conn.SetDeadline(time.Time{})
+	})
+	return c.err
+}
+
+func (c *handshakeDeadlineConn) Read(b []byte) (int, error) {
+	if err := c.Handshake(); err != nil {
+		return 0, err
+	}
+	return c.Conn.Read(b)
+}
+
+func (c *handshakeDeadlineConn) Write(b []byte) (int, error) {
+	if err := c.Handshake(); err != nil {
+		return 0, err
+	}
+	return c.Conn.Write(b)
 }
 
 type serverListener struct {
@@ -145,7 +204,7 @@ func (s *BifrostHTTPServer) listen() ([]serverListener, error) {
 	var listeners []serverListener
 	closeAll := func() {
 		for _, l := range listeners {
-			l.ln.Close()
+			_ = l.ln.Close()
 		}
 	}
 	for _, sp := range specs {
@@ -159,7 +218,7 @@ func (s *BifrostHTTPServer) listen() ([]serverListener, error) {
 		if sp.secure {
 			tlsLn, err := newTLSListener(ln, s.TLSCertFile, s.TLSKeyFile)
 			if err != nil {
-				ln.Close()
+				_ = ln.Close()
 				closeAll()
 				return nil, err
 			}
