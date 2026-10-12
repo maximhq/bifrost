@@ -188719,7 +188719,7 @@
     },
     {
       "name": "137. MCP client registration validation (mcp-registration-validation)",
-      "description": "Management-endpoint checks with no live provider involved. POST /api/mcp/client must validate connection_type against the enum (http, sse, stdio) before anything else, and an unauthenticated (auth-bypassed) registration whose target hostname cannot be resolved must be refused rather than handed to the connect path. Both run against the harness profile, which has no admin auth configured.",
+      "description": "Management-endpoint checks with no live provider involved. POST /api/mcp/client must validate connection_type against the enum (http, sse, stdio) before anything else, and an unauthenticated (auth-bypassed) registration whose target hostname cannot be resolved must be refused rather than handed to the connect path. Both run against the harness profile, which has no admin auth configured. DELETE /api/mcp/client/<id> for an id no client has must answer 404, not 500.",
       "item": [
         {
           "name": "POST /api/mcp/client · unknown connection_type is rejected with 400",
@@ -188806,6 +188806,53 @@
                 "api",
                 "mcp",
                 "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] DELETE /api/mcp/client/<random uuid> unknown id is not found (mcp client delete)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh uuid every run, so no registered client can ever match it.",
+                  "pm.variables.set('mcpClientDeleteUnknownId', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// An unknown id used to surface as a 500 'failed to delete MCP config' because the store's",
+                  "// not-found error was untyped; it is a 404 and the runtime manager is never reached.",
+                  "pm.test('unknown MCP client id is a 404', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(404);",
+                  "});",
+                  "pm.test('error says the client was not found', function () {",
+                  "  pm.expect(pm.response.text(), pm.response.text()).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{mcpClientDeleteUnknownId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{mcpClientDeleteUnknownId}}"
               ]
             }
           }
