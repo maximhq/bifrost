@@ -115,7 +115,8 @@
           "    } else if (Array.isArray(j.output) && j.output.length > 0) {",
           "        shape = 'openai-responses-output';",
           "        // Responses tool-use items are all typed <tool>_call (function_call, tool_search_call, custom_tool_call, mcp_call, local_shell_call, ...). A client-execution call is a valid TERMINAL output: the model emits the call and stops, waiting for the matching *_output, so no text accompanies it.",
-          "        hasContent = j.output.some(function (o) { return o && (o.type === 'message' || /_call$/.test(o.type || '') || (o.content && o.content.length)); });",
+          "        // A compaction-only reply (POST /v1/responses/compact, e.g. xAI) carries its state in a single compaction item.",
+          "        hasContent = j.output.some(function (o) { return o && (o.type === 'message' || o.type === 'compaction' || /_call$/.test(o.type || '') || (o.content && o.content.length)); });",
           "    } else if (j.output && j.output.message && j.output.message.content) {",
           "        shape = 'bedrock-converse';",
           "        hasContent = j.output.message.content.length > 0;",
@@ -241,6 +242,17 @@
           "        // An async job is a receipt, not content: submit returns {id, status} and the result",
           "        // only exists once the job completes. The id IS the payload.",
           "        hasContent = !!j.id;",
+          "    } else if (j.role === 'tool' && j.content !== undefined) {",
+          "        shape = 'mcp-tool-result';",
+          "        // POST /v1/mcp/tool/execute answers with one tool message; its content IS the result, a tool's own error text included.",
+          "        hasContent = typeof j.content === 'string' ? j.content.length > 0 : Array.isArray(j.content) && j.content.length > 0;",
+          "    } else if (j.jsonrpc === '2.0' && (j.result !== undefined || j.error !== undefined)) {",
+          "        shape = 'mcp-jsonrpc';",
+          "        // The /mcp server endpoint answers JSON-RPC: a result object is the payload, an error member is a failure.",
+          "        hasContent = !!j.result && typeof j.result === 'object' && j.error === undefined;",
+          "    } else if (typeof j.value === 'string' && typeof j.expires_at === 'number') {",
+          "        shape = 'realtime-client-secret';",
+          "        hasContent = j.value.length > 0;",
           "    }",
           "    pm.expect(hasContent, 'expected non-empty content (shape=' + shape + ', body=' + JSON.stringify(j).slice(0, 200) + ')').to.be.true;",
           "  });",
@@ -20524,7 +20536,7 @@
               }
             },
             {
-              "name": "Cross-cut: virtual key auth (X-Bifrost-VK)",
+              "name": "Cross-cut: virtual key auth (x-bf-vk)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -20533,8 +20545,8 @@
                     "value": "application/json"
                   },
                   {
-                    "key": "X-Bifrost-VK",
-                    "value": "vk-test"
+                    "key": "x-bf-vk",
+                    "value": "sk-bf-test-key"
                   }
                 ],
                 "body": {
@@ -20593,7 +20605,7 @@
                     "value": "application/json"
                   },
                   {
-                    "key": "X-Bifrost-VK",
+                    "key": "x-bf-vk",
                     "value": "sk-bf-test-key-nocontent"
                   }
                 ],
@@ -20652,7 +20664,7 @@
                     "value": "application/json"
                   },
                   {
-                    "key": "X-Bifrost-VK",
+                    "key": "x-bf-vk",
                     "value": "sk-bf-test-key"
                   }
                 ],
@@ -32133,7 +32145,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"command-r-plus\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hello\"}]\n}"
+                  "raw": "{\n  \"model\": \"command-a-03-2025\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hello\"}]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/cohere/v2/chat",
@@ -32171,7 +32183,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"command-r-plus\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count 1-5.\"}]\n,\n  \"stream\": true\n}"
+                  "raw": "{\n  \"model\": \"command-a-03-2025\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count 1-5.\"}]\n,\n  \"stream\": true\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/cohere/v2/chat",
@@ -32209,7 +32221,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"command-r-plus\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hi\"},{\"role\":\"assistant\",\"content\":\"Hello\"},{\"role\":\"user\",\"content\":\"How are you?\"}]\n}"
+                  "raw": "{\n  \"model\": \"command-a-03-2025\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hi\"},{\"role\":\"assistant\",\"content\":\"Hello\"},{\"role\":\"user\",\"content\":\"How are you?\"}]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/cohere/v2/chat",
@@ -32247,7 +32259,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"command-r-plus\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Weather in Lagos, Nigeria?\"}],\n  \"tools\": [{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}]\n}"
+                  "raw": "{\n  \"model\": \"command-a-03-2025\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Weather in Lagos, Nigeria?\"}],\n  \"tools\": [{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/cohere/v2/chat",
@@ -32258,44 +32270,6 @@
                     "cohere",
                     "v2",
                     "chat"
-                  ]
-                }
-              }
-            },
-            {
-              "name": "Cohere drop-in: list models",
-              "event": [
-                {
-                  "listen": "test",
-                  "script": {
-                    "type": "text/javascript",
-                    "exec": [
-                      "if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var raw = JSON.stringify(j); pm.expect(raw.length, 'body too small').to.be.greaterThan(50); }); }"
-                    ]
-                  }
-                }
-              ],
-              "request": {
-                "method": "POST",
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  }
-                ],
-                "body": {
-                  "mode": "raw",
-                  "raw": ""
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/cohere/v1/models",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "cohere",
-                    "v1",
-                    "models"
                   ]
                 }
               }
@@ -32487,7 +32461,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"command-r-plus\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hello\"}]\n}"
+                  "raw": "{\n  \"model\": \"command-a-03-2025\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hello\"}]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/langchain/v2/chat",
@@ -32689,7 +32663,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"command-r-plus\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hello\"}]\n}"
+                  "raw": "{\n  \"model\": \"command-a-03-2025\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hello\"}]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/litellm/v2/chat",
@@ -32891,7 +32865,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"command-r-plus\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hello\"}]\n}"
+                  "raw": "{\n  \"model\": \"command-a-03-2025\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hello\"}]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/pydanticai/v2/chat",
@@ -87163,7 +87137,7 @@
     },
     {
       "name": "48. Integration-Axis Criss-Cross (umbrella drop-ins x dialect x provider x feature)",
-      "description": "Folder 47 crossed endpoint shape x provider x feature under the bare prefixes (/v1, /openai, /anthropic, /genai, /bedrock). This folder adds the INTEGRATION axis.\n\nThe umbrella integrations re-mount every shape family under their own prefix - langchain.go:22-37 is CreateOpenAIRouteConfigs('/langchain') + CreateAnthropicRouteConfigs + CreateGenAIRouteConfigs + CreateBedrockRouteConfigs + CreateCohereRouteConfigs, and /litellm, /pydanticai and /cursor do the same. So /langchain/v2/chat pointed at anthropic/claude-haiku-4-5 is Cohere's dialect on LangChain's prefix against Anthropic's backend: three vendors in one request.\n\nRounds 18-22 and 27 already exercise these prefixes, but they send bare models (gpt-4o-mini, claude-haiku-4-5, command-r-plus) with no provider prefix, so every row is native-shape - the same gap Rounds 23-26 had one level down. Every row here carries an explicit provider/model prefix.\n\nAssertions are folder 47's, keyed by endpoint dialect. Cohere v2 chat routes return the provider's raw Cohere body for native Cohere calls and convert foreign-provider responses into Cohere v2 shape with top-level message, finish_reason, and usage fields. The Cohere-family rows assert that public API shape.\n\nNative-dialect cells (/langchain/v1/messages -> anthropic, etc.) are omitted: they are not criss-cross and belong to Rounds 18-22. [SKIP] tags cite in-repo evidence - rerank is a real implementation in only bedrock/cohere/vertex/vllm, every other provider returns NewUnsupportedOperationError.",
+      "description": "Folder 47 crossed endpoint shape x provider x feature under the bare prefixes (/v1, /openai, /anthropic, /genai, /bedrock). This folder adds the INTEGRATION axis.\n\nThe umbrella integrations re-mount every shape family under their own prefix - langchain.go:22-37 is CreateOpenAIRouteConfigs('/langchain') + CreateAnthropicRouteConfigs + CreateGenAIRouteConfigs + CreateBedrockRouteConfigs + CreateCohereRouteConfigs, and /litellm, /pydanticai and /cursor do the same. So /langchain/v2/chat pointed at anthropic/claude-haiku-4-5 is Cohere's dialect on LangChain's prefix against Anthropic's backend: three vendors in one request.\n\nRounds 18-22 and 27 already exercise these prefixes, but they send bare models (gpt-4o-mini, claude-haiku-4-5, command-a-03-2025) with no provider prefix, so every row is native-shape - the same gap Rounds 23-26 had one level down. Every row here carries an explicit provider/model prefix.\n\nAssertions are folder 47's, keyed by endpoint dialect. Cohere v2 chat routes return the provider's raw Cohere body for native Cohere calls and convert foreign-provider responses into Cohere v2 shape with top-level message, finish_reason, and usage fields. The Cohere-family rows assert that public API shape.\n\nNative-dialect cells (/langchain/v1/messages -> anthropic, etc.) are omitted: they are not criss-cross and belong to Rounds 18-22. [SKIP] tags cite in-repo evidence - rerank is a real implementation in only bedrock/cohere/vertex/vllm, every other provider returns NewUnsupportedOperationError.",
       "item": [
         {
           "name": "48.1 /langchain",
@@ -137049,8 +137023,7 @@
                   "// Rerank bills in search units rather than tokens; without this the request costs nothing.",
                   "pm.test('usage carries a billable unit', function () {",
                   "  pm.expect(j.usage, 'no usage block: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
-                  "  var d = j.usage.completion_tokens_details || {};",
-                  "  pm.expect(d.num_search_queries, 'search units missing, rerank would bill zero').to.be.above(0);",
+                  "  pm.expect(j.usage.search_units, 'search units missing, rerank would bill zero').to.be.above(0);",
                   "});"
                 ]
               }
@@ -137114,7 +137087,7 @@
           ]
         },
         {
-          "name": "56. /cohere/v2/rerank error shape -> cohere/rerank-v3.5 - PR #6328",
+          "name": "56. [EXPECT-4XX] /cohere/v2/rerank error shape -> cohere/rerank-v3.5 - PR #6328",
           "request": {
             "method": "POST",
             "header": [
@@ -143749,11 +143722,9 @@
                   "pm.test('63.7 breakpoint reaches the wire', function () {",
                   "  pm.expect(rawStr, 'raw_request: ' + rawStr.slice(0, 800)).to.include('prompt_cache_breakpoint');",
                   "});",
-                  "// The block marker alone leaves implicit caching on, which anchors the prefix",
-                  "// to the newest message and bills a write every turn. mode=explicit pins it.",
-                  "pm.test('63.7 explicit cache mode is set alongside it (#6180)', function () {",
-                  "  var opts = rr.prompt_cache_options || {};",
-                  "  pm.expect(opts.mode, 'prompt_cache_options: ' + JSON.stringify(opts)).to.eql('explicit');",
+                  "// #8334: the breakpoint is honoured in OpenAI's default implicit mode, so Bifrost no longer forces explicit mode.",
+                  "pm.test('63.7 the request stays in implicit cache mode (#8334)', function () {",
+                  "  pm.expect(rr, 'raw_request: ' + rawStr.slice(0, 800)).to.not.have.property('prompt_cache_options');",
                   "});",
                   "pm.test('63.7 cache_control is not forwarded to an OpenAI-shaped endpoint', function () {",
                   "  pm.expect(rawStr.indexOf('cache_control')).to.equal(-1);",
@@ -144167,9 +144138,9 @@
                       "pm.test('64.1.5 the neutral marker is translated, never passed through', function () {",
                       "  pm.expect(rawStr, 'raw_request: ' + rawStr.slice(0, 800)).to.not.include('cache_control');",
                       "});",
-                      "pm.test('64.1.5 explicit mode is switched on for the gpt-5.6 family', function () {",
-                      "  pm.expect(rawStr).to.include('prompt_cache_options');",
-                      "  pm.expect(rawStr).to.include('\"mode\":\"explicit\"');",
+                      "// #8334: the breakpoint is honoured in OpenAI's default implicit mode, so Bifrost no longer forces explicit mode.",
+                      "pm.test('64.1.5 the request stays in implicit cache mode (#8334)', function () {",
+                      "  pm.expect(rr, 'raw_request: ' + rawStr.slice(0, 800)).to.not.have.property('prompt_cache_options');",
                       "});",
                       "// prompt_cache_breakpoint has nowhere to put a duration, so a configured ttl is",
                       "// dropped rather than smuggled through as an unknown field the provider would 400 on.",
@@ -144237,9 +144208,9 @@
                       "pm.test('64.1.6 the neutral marker is translated, never passed through', function () {",
                       "  pm.expect(rawStr, 'raw_request: ' + rawStr.slice(0, 800)).to.not.include('cache_control');",
                       "});",
-                      "pm.test('64.1.6 explicit mode is switched on for the gpt-5.6 family', function () {",
-                      "  pm.expect(rawStr).to.include('prompt_cache_options');",
-                      "  pm.expect(rawStr).to.include('\"mode\":\"explicit\"');",
+                      "// #8334: the breakpoint is honoured in OpenAI's default implicit mode, so Bifrost no longer forces explicit mode.",
+                      "pm.test('64.1.6 the request stays in implicit cache mode (#8334)', function () {",
+                      "  pm.expect(rr, 'raw_request: ' + rawStr.slice(0, 800)).to.not.have.property('prompt_cache_options');",
                       "});",
                       "// prompt_cache_breakpoint has nowhere to put a duration, so a configured ttl is",
                       "// dropped rather than smuggled through as an unknown field the provider would 400 on.",
@@ -146599,9 +146570,9 @@
                       "  pm.expect(ccCount, 'the Anthropic spelling must not reach OpenAI').to.equal(0);",
                       "  pm.expect(markedStr, 'marked: ' + markedStr).to.include('bf-64 cx-rev-sys');",
                       "});",
-                      "pm.test('64.8.5 explicit mode is switched on, or the breakpoint is inert', function () {",
-                      "  pm.expect(rawStr).to.include('prompt_cache_options');",
-                      "  pm.expect(rawStr).to.include('\"mode\":\"explicit\"');",
+                      "// #8334: the breakpoint is honoured in OpenAI's default implicit mode, so Bifrost no longer forces explicit mode.",
+                      "pm.test('64.8.5 the request stays in implicit cache mode (#8334)', function () {",
+                      "  pm.expect(rr, 'raw_request: ' + rawStr.slice(0, 800)).to.not.have.property('prompt_cache_options');",
                       "});"
                     ]
                   }
@@ -151114,7 +151085,7 @@
                   "  // schemas.Bedrock was absent from responsesUsesPromptCacheBreakpoints, so the",
                   "  // serializer stripped cache_control and left implicit caching in place.",
                   "  pm.expect(raw, 'cache_control was dropped: ' + raw).to.include('prompt_cache_breakpoint');",
-                  "  pm.expect(raw, 'explicit mode not requested: ' + raw).to.include('prompt_cache_options');",
+                  "  pm.expect(raw, 'explicit mode must not be forced (#8334): ' + raw).to.not.include('prompt_cache_options');",
                   "});"
                 ]
               }
@@ -164659,82 +164630,6 @@
           "response": []
         },
         {
-          "name": "/v1/decisions - matches jev anchors - cohere/command-a-vision-07-2025",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "pm.test('emulated decision succeeds', function () {",
-                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
-                  "});",
-                  "var body = pm.response.json();",
-                  "var expected = 30;",
-                  "// Native noul answers carry no confidence ({kind, value} only - docs/quickstart/gateway/decisions.mdx), so the",
-                  "// emulation schema leaves it optional there and strict-schema providers may omit it; choice/score require it.",
-                  "pm.test('every question answered (confidence on choice/score)', function () {",
-                  "    pm.expect(Object.keys(body.answers).length).to.eql(expected);",
-                  "    Object.keys(body.answers).forEach(function (k) {",
-                  "        var a = body.answers[k];",
-                  "        if (a.kind === 'noul') {",
-                  "            pm.expect(a.value, k + ' noul value').to.be.a('number').and.to.be.within(0, 1);",
-                  "            if (a.confidence !== undefined) { pm.expect(a.confidence, k + ' confidence').to.be.a('number'); }",
-                  "        } else {",
-                  "            pm.expect(a.confidence, k + ' confidence').to.be.a('number');",
-                  "        }",
-                  "    });",
-                  "});",
-                  "pm.test('anchor verdicts match jev', function () {",
-                  "    pm.expect(Math.round(body.answers['is_frustrated'].value), 'is_frustrated').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['is_angry'].value), 'is_angry').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['mentions_refund'].value), 'mentions_refund').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['threatens_chargeback'].value), 'threatens_chargeback').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['threatens_cancellation'].value), 'threatens_cancellation').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['mentions_competitor'].value), 'mentions_competitor').to.eql(1);",
-                  "    pm.expect(Math.round(body.answers['is_satisfied'].value), 'is_satisfied').to.eql(0);",
-                  "    pm.expect(body.answers['category'].value, 'category').to.eql(\"billing\");",
-                  "    pm.expect(body.answers['sentiment'].value, 'sentiment').to.eql(\"negative\");",
-                  "    pm.expect(body.answers['customer_tier'].value, 'customer_tier').to.eql(\"pro\");",
-                  "});",
-                  "pm.test('resolved by the LLM provider with usage', function () {",
-                  "    pm.expect(body.extra_fields.provider).to.eql('cohere');",
-                  "    pm.expect(body.usage.prompt_tokens).to.be.above(0);",
-                  "});"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "x-bf-compat",
-                "value": "[\"convert_decision_to_responses\"]"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/v1/decisions",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "decisions"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"cohere/command-a-vision-07-2025\",\n  \"state\": \"Customer support ticket #88231. Customer is on the Pro plan and has been a paying subscriber for 3 years. They write: 'This is my FIFTH email in two weeks and NOBODY has replied. You charged my card THREE times for a single order (#A-4021) at $149 each, so $447 total instead of $149. I have screenshots of all three charges. I have asked for a refund every single time and been completely ignored. If the two extra charges are not refunded TODAY I am filing a chargeback with my bank, cancelling my Pro subscription immediately, posting the screenshots on Twitter, and reporting you to the Better Business Bureau. Your competitor Acme offers the same features for less and I am seriously considering switching. This is completely unacceptable and I want a real person to fix this now.'\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"is_angry\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer angry?\"\n    },\n    \"is_satisfied\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer satisfied with the service?\"\n    },\n    \"is_polite\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the message written in a calm, polite tone?\"\n    },\n    \"mentions_refund\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer ask for a refund?\"\n    },\n    \"threatens_chargeback\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten a bank chargeback?\"\n    },\n    \"threatens_cancellation\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to cancel their subscription?\"\n    },\n    \"threatens_public_complaint\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to complain publicly (social media, review sites, or a regulator)?\"\n    },\n    \"mentions_competitor\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer mention a competitor?\"\n    },\n    \"is_billing_related\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the issue about billing or charges?\"\n    },\n    \"is_repeat_contact\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Has the customer contacted support about this before?\"\n    },\n    \"has_attached_evidence\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer say they have evidence such as screenshots?\"\n    },\n    \"mentions_specific_amount\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer cite a specific dollar amount?\"\n    },\n    \"is_long_time_customer\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this a long-time customer (multiple years)?\"\n    },\n    \"requests_human_response\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer explicitly ask to speak to a real person?\"\n    },\n    \"is_first_time_issue\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this the first time the customer is raising this issue?\"\n    },\n    \"willing_to_wait\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer willing to wait patiently for a resolution?\"\n    },\n    \"expresses_urgency\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer express that this is urgent?\"\n    },\n    \"mentions_data_loss\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report lost data?\"\n    },\n    \"reports_product_crash\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report the product crashing or a software defect?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges, refunds, invoices\",\n        \"bug\": \"product defects or crashes\",\n        \"account\": \"login or account access\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"sentiment\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Overall sentiment of the message\",\n      \"criteria\": {\n        \"positive\": \"happy\",\n        \"neutral\": \"matter of fact\",\n        \"negative\": \"unhappy or hostile\"\n      }\n    },\n    \"primary_emotion\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The dominant emotion\",\n      \"criteria\": {\n        \"anger\": \"angry or hostile\",\n        \"confusion\": \"confused\",\n        \"sadness\": \"sad or disappointed\",\n        \"joy\": \"happy\"\n      }\n    },\n    \"customer_tier\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which plan is the customer on?\",\n      \"criteria\": {\n        \"free\": \"free plan\",\n        \"pro\": \"pro plan\",\n        \"enterprise\": \"enterprise plan\"\n      }\n    },\n    \"recommended_action\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The single best next action\",\n      \"criteria\": {\n        \"issue_refund\": \"refund the extra charges\",\n        \"request_more_info\": \"ask for more details\",\n        \"close_ticket\": \"close with no action\",\n        \"ignore\": \"take no action\"\n      }\n    },\n    \"contact_channel\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which channel did the customer use?\",\n      \"criteria\": {\n        \"email\": \"email or support ticket\",\n        \"phone\": \"phone call\",\n        \"chat\": \"live chat\",\n        \"social\": \"social media\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered this week\",\n        \"should be answered today\",\n        \"needs an immediate reply\"\n      ]\n    },\n    \"severity\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How severe is the customer's problem?\",\n      \"criteria\": [\n        \"minor\",\n        \"moderate\",\n        \"major\",\n        \"severe\"\n      ]\n    },\n    \"churn_risk\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How likely is this customer to cancel?\",\n      \"criteria\": [\n        \"not at all likely\",\n        \"somewhat likely\",\n        \"very likely\",\n        \"almost certain\"\n      ]\n    },\n    \"customer_satisfaction\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How satisfied is the customer right now?\",\n      \"criteria\": [\n        \"very unsatisfied\",\n        \"unsatisfied\",\n        \"neutral\",\n        \"satisfied\",\n        \"very satisfied\"\n      ]\n    }\n  }\n}"
-            }
-          },
-          "response": []
-        },
-        {
           "name": "/v1/decisions - matches jev anchors - cohere/command-a-translate-08-2025",
           "event": [
             {
@@ -166863,7 +166758,7 @@
           "response": []
         },
         {
-          "name": "/v1/decisions - matches jev anchors - parasail/parasail-deepseek-v3",
+          "name": "/v1/decisions - matches jev anchors - parasail/parasail-deepseek-v4-flash",
           "event": [
             {
               "listen": "test",
@@ -166933,7 +166828,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"parasail/parasail-deepseek-v3\",\n  \"state\": \"Customer support ticket #88231. Customer is on the Pro plan and has been a paying subscriber for 3 years. They write: 'This is my FIFTH email in two weeks and NOBODY has replied. You charged my card THREE times for a single order (#A-4021) at $149 each, so $447 total instead of $149. I have screenshots of all three charges. I have asked for a refund every single time and been completely ignored. If the two extra charges are not refunded TODAY I am filing a chargeback with my bank, cancelling my Pro subscription immediately, posting the screenshots on Twitter, and reporting you to the Better Business Bureau. Your competitor Acme offers the same features for less and I am seriously considering switching. This is completely unacceptable and I want a real person to fix this now.'\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"is_angry\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer angry?\"\n    },\n    \"is_satisfied\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer satisfied with the service?\"\n    },\n    \"is_polite\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the message written in a calm, polite tone?\"\n    },\n    \"mentions_refund\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer ask for a refund?\"\n    },\n    \"threatens_chargeback\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten a bank chargeback?\"\n    },\n    \"threatens_cancellation\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to cancel their subscription?\"\n    },\n    \"threatens_public_complaint\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to complain publicly (social media, review sites, or a regulator)?\"\n    },\n    \"mentions_competitor\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer mention a competitor?\"\n    },\n    \"is_billing_related\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the issue about billing or charges?\"\n    },\n    \"is_repeat_contact\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Has the customer contacted support about this before?\"\n    },\n    \"has_attached_evidence\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer say they have evidence such as screenshots?\"\n    },\n    \"mentions_specific_amount\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer cite a specific dollar amount?\"\n    },\n    \"is_long_time_customer\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this a long-time customer (multiple years)?\"\n    },\n    \"requests_human_response\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer explicitly ask to speak to a real person?\"\n    },\n    \"is_first_time_issue\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this the first time the customer is raising this issue?\"\n    },\n    \"willing_to_wait\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer willing to wait patiently for a resolution?\"\n    },\n    \"expresses_urgency\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer express that this is urgent?\"\n    },\n    \"mentions_data_loss\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report lost data?\"\n    },\n    \"reports_product_crash\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report the product crashing or a software defect?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges, refunds, invoices\",\n        \"bug\": \"product defects or crashes\",\n        \"account\": \"login or account access\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"sentiment\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Overall sentiment of the message\",\n      \"criteria\": {\n        \"positive\": \"happy\",\n        \"neutral\": \"matter of fact\",\n        \"negative\": \"unhappy or hostile\"\n      }\n    },\n    \"primary_emotion\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The dominant emotion\",\n      \"criteria\": {\n        \"anger\": \"angry or hostile\",\n        \"confusion\": \"confused\",\n        \"sadness\": \"sad or disappointed\",\n        \"joy\": \"happy\"\n      }\n    },\n    \"customer_tier\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which plan is the customer on?\",\n      \"criteria\": {\n        \"free\": \"free plan\",\n        \"pro\": \"pro plan\",\n        \"enterprise\": \"enterprise plan\"\n      }\n    },\n    \"recommended_action\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The single best next action\",\n      \"criteria\": {\n        \"issue_refund\": \"refund the extra charges\",\n        \"request_more_info\": \"ask for more details\",\n        \"close_ticket\": \"close with no action\",\n        \"ignore\": \"take no action\"\n      }\n    },\n    \"contact_channel\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which channel did the customer use?\",\n      \"criteria\": {\n        \"email\": \"email or support ticket\",\n        \"phone\": \"phone call\",\n        \"chat\": \"live chat\",\n        \"social\": \"social media\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered this week\",\n        \"should be answered today\",\n        \"needs an immediate reply\"\n      ]\n    },\n    \"severity\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How severe is the customer's problem?\",\n      \"criteria\": [\n        \"minor\",\n        \"moderate\",\n        \"major\",\n        \"severe\"\n      ]\n    },\n    \"churn_risk\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How likely is this customer to cancel?\",\n      \"criteria\": [\n        \"not at all likely\",\n        \"somewhat likely\",\n        \"very likely\",\n        \"almost certain\"\n      ]\n    },\n    \"customer_satisfaction\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How satisfied is the customer right now?\",\n      \"criteria\": [\n        \"very unsatisfied\",\n        \"unsatisfied\",\n        \"neutral\",\n        \"satisfied\",\n        \"very satisfied\"\n      ]\n    }\n  }\n}"
+              "raw": "{\n  \"model\": \"parasail/parasail-deepseek-v4-flash\",\n  \"state\": \"Customer support ticket #88231. Customer is on the Pro plan and has been a paying subscriber for 3 years. They write: 'This is my FIFTH email in two weeks and NOBODY has replied. You charged my card THREE times for a single order (#A-4021) at $149 each, so $447 total instead of $149. I have screenshots of all three charges. I have asked for a refund every single time and been completely ignored. If the two extra charges are not refunded TODAY I am filing a chargeback with my bank, cancelling my Pro subscription immediately, posting the screenshots on Twitter, and reporting you to the Better Business Bureau. Your competitor Acme offers the same features for less and I am seriously considering switching. This is completely unacceptable and I want a real person to fix this now.'\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"is_angry\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer angry?\"\n    },\n    \"is_satisfied\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer satisfied with the service?\"\n    },\n    \"is_polite\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the message written in a calm, polite tone?\"\n    },\n    \"mentions_refund\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer ask for a refund?\"\n    },\n    \"threatens_chargeback\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten a bank chargeback?\"\n    },\n    \"threatens_cancellation\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to cancel their subscription?\"\n    },\n    \"threatens_public_complaint\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to complain publicly (social media, review sites, or a regulator)?\"\n    },\n    \"mentions_competitor\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer mention a competitor?\"\n    },\n    \"is_billing_related\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the issue about billing or charges?\"\n    },\n    \"is_repeat_contact\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Has the customer contacted support about this before?\"\n    },\n    \"has_attached_evidence\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer say they have evidence such as screenshots?\"\n    },\n    \"mentions_specific_amount\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer cite a specific dollar amount?\"\n    },\n    \"is_long_time_customer\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this a long-time customer (multiple years)?\"\n    },\n    \"requests_human_response\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer explicitly ask to speak to a real person?\"\n    },\n    \"is_first_time_issue\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this the first time the customer is raising this issue?\"\n    },\n    \"willing_to_wait\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer willing to wait patiently for a resolution?\"\n    },\n    \"expresses_urgency\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer express that this is urgent?\"\n    },\n    \"mentions_data_loss\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report lost data?\"\n    },\n    \"reports_product_crash\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report the product crashing or a software defect?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges, refunds, invoices\",\n        \"bug\": \"product defects or crashes\",\n        \"account\": \"login or account access\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"sentiment\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Overall sentiment of the message\",\n      \"criteria\": {\n        \"positive\": \"happy\",\n        \"neutral\": \"matter of fact\",\n        \"negative\": \"unhappy or hostile\"\n      }\n    },\n    \"primary_emotion\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The dominant emotion\",\n      \"criteria\": {\n        \"anger\": \"angry or hostile\",\n        \"confusion\": \"confused\",\n        \"sadness\": \"sad or disappointed\",\n        \"joy\": \"happy\"\n      }\n    },\n    \"customer_tier\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which plan is the customer on?\",\n      \"criteria\": {\n        \"free\": \"free plan\",\n        \"pro\": \"pro plan\",\n        \"enterprise\": \"enterprise plan\"\n      }\n    },\n    \"recommended_action\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The single best next action\",\n      \"criteria\": {\n        \"issue_refund\": \"refund the extra charges\",\n        \"request_more_info\": \"ask for more details\",\n        \"close_ticket\": \"close with no action\",\n        \"ignore\": \"take no action\"\n      }\n    },\n    \"contact_channel\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which channel did the customer use?\",\n      \"criteria\": {\n        \"email\": \"email or support ticket\",\n        \"phone\": \"phone call\",\n        \"chat\": \"live chat\",\n        \"social\": \"social media\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered this week\",\n        \"should be answered today\",\n        \"needs an immediate reply\"\n      ]\n    },\n    \"severity\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How severe is the customer's problem?\",\n      \"criteria\": [\n        \"minor\",\n        \"moderate\",\n        \"major\",\n        \"severe\"\n      ]\n    },\n    \"churn_risk\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How likely is this customer to cancel?\",\n      \"criteria\": [\n        \"not at all likely\",\n        \"somewhat likely\",\n        \"very likely\",\n        \"almost certain\"\n      ]\n    },\n    \"customer_satisfaction\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How satisfied is the customer right now?\",\n      \"criteria\": [\n        \"very unsatisfied\",\n        \"unsatisfied\",\n        \"neutral\",\n        \"satisfied\",\n        \"very satisfied\"\n      ]\n    }\n  }\n}"
             }
           },
           "response": []
@@ -174288,7 +174183,10 @@
                   "});",
                   "if (!rr) { return; }",
                   "pm.test('115.1 Astra normalizes reasoning_effort none to low', function () {",
-                  "  pm.expect(rr.reasoning_effort).to.eql('low');",
+                  "  // Astra chat is routed to Responses (#7806), so the effort travels as reasoning.effort.",
+                  "  pm.expect((body.extra_fields || {}).converted_request_type, 'compat force_reasoning_only_models_to_responses should route Astra chat to Responses: ' + pm.response.text()).to.eql('responses');",
+                  "  pm.expect(rr.reasoning, 'reasoning missing on the Responses body: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning.effort).to.eql('low');",
                   "});",
                   "pm.test('115.1 Astra sampling and logprob fields are absent on the wire', function () {",
                   "  ['temperature', 'top_p', 'logprobs', 'top_logprobs'].forEach(function (key) {",
@@ -174544,8 +174442,7 @@
                   "  pm.expect(first.prompt_cache_breakpoint, 'first input block: ' + JSON.stringify(first)).to.be.an('object');",
                   "  pm.expect(first.prompt_cache_breakpoint.mode).to.eql('explicit');",
                   "  pm.expect(JSON.stringify(rr.input || [])).to.not.include('cache_control');",
-                  "  pm.expect(rr.prompt_cache_options, 'prompt_cache_options missing').to.be.an('object');",
-                  "  pm.expect(rr.prompt_cache_options.mode).to.eql('explicit');",
+                  "  pm.expect(rr, 'explicit mode must not be forced (#8334)').to.not.have.property('prompt_cache_options');",
                   "});"
                 ]
               }
@@ -177136,7 +177033,7 @@
           }
         },
         {
-          "name": "openai logs-null-sort seed: failed request with no cost",
+          "name": "[EXPECT-404] openai logs-null-sort seed: failed request with no cost",
           "event": [
             {
               "listen": "prerequest",
@@ -182429,7 +182326,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"gemini/gemini-3.7-flash\",\"max_output_tokens\":20,\"input\":[{\"role\":\"user\",\"content\":\"Fetch the spec, then reply ok.\"},{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"cat spec.json\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"c1\",\"output\":\"{\\\"schema\\\":{\\\"$ref\\\":\\\"#/components/schemas/SOM_computer_post_response\\\"}}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"bash\",\"description\":\"run\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}]}"
+              "raw": "{\"model\":\"gemini/gemini-3.7-flash\",\"max_output_tokens\":512,\"input\":[{\"role\":\"user\",\"content\":\"Fetch the spec, then reply ok.\"},{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"cat spec.json\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"c1\",\"output\":\"{\\\"schema\\\":{\\\"$ref\\\":\\\"#/components/schemas/SOM_computer_post_response\\\"}}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"bash\",\"description\":\"run\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -188508,7 +188405,7 @@
       "description": "The pricing, model-parameters, and MCP library catalog URLs accept the file:// scheme only when set in config.json (air-gapped deployments). Over PUT /api/config a file:// value is refused with 400 before any state is touched, for every one of the three fields and regardless of whether the path exists. The openai keyword is only a harness filter label; no provider calls are made and nothing is persisted.",
       "item": [
         {
-          "name": "openai catalog-url-scheme: PUT /api/config rejects file:// pricing_url",
+          "name": "[EXPECT-400] openai catalog-url-scheme: PUT /api/config rejects file:// pricing_url",
           "event": [
             {
               "listen": "test",
@@ -188553,7 +188450,7 @@
           }
         },
         {
-          "name": "openai catalog-url-scheme: PUT /api/config rejects file:// model_parameters_url",
+          "name": "[EXPECT-400] openai catalog-url-scheme: PUT /api/config rejects file:// model_parameters_url",
           "event": [
             {
               "listen": "test",
@@ -188598,7 +188495,7 @@
           }
         },
         {
-          "name": "openai catalog-url-scheme: PUT /api/config rejects file:// mcp_library_url",
+          "name": "[EXPECT-400] openai catalog-url-scheme: PUT /api/config rejects file:// mcp_library_url",
           "event": [
             {
               "listen": "test",
@@ -188643,7 +188540,7 @@
           }
         },
         {
-          "name": "openai catalog-url-scheme: PUT /api/config rejects relative file:// pricing_url even for a missing path",
+          "name": "[EXPECT-400] openai catalog-url-scheme: PUT /api/config rejects relative file:// pricing_url even for a missing path",
           "event": [
             {
               "listen": "test",
@@ -188786,23 +188683,32 @@
     },
     {
       "name": "138. Provider endpoint updates require dashboard auth (provider-endpoint-updates)",
-      "description": "Management-plane regression for the default harness profile (tests/integrations/python/config.json, dashboard auth unconfigured). A caller admitted without a credential check must not be able to point the global proxy or a provider key's endpoint at a new host, and nothing may persist after the refusal. No provider calls are made; the openai keyword is only a harness filter label. Under a profile with dashboard auth enabled these rows return 401 and fail loudly on purpose - run them against the default profile.",
+      "description": "Management-plane regression for the default harness profile (tests/integrations/python/config.json, dashboard auth unconfigured, setup_token set). A caller with no credential must not be able to point the global proxy or a provider key's endpoint at a new host, and nothing may persist after the refusal. Under the OSS setup lock that caller is refused with 401 before the handler runs, so the write rows strip the X-Bifrost-Setup-Token header the harness injects: a request carrying the token is authenticated and is allowed, and its write would persist. No provider calls are made; the openai keyword is only a harness filter label. Under a profile with dashboard auth enabled the write rows return a 401 without the setup-lock message and fail loudly on purpose - run them against the default profile.",
       "item": [
         {
-          "name": "[EXPECT-403] openai provider-endpoint-updates proxy url change refused without dashboard auth",
+          "name": "[EXPECT-401] openai provider-endpoint-updates proxy url change refused without dashboard auth",
           "protocolProfileBehavior": {
             "followRedirects": false,
             "disableCookies": true
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('provider-endpoint-updates proxy url change is refused with 403', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
-                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('authenticated admin session');",
+                  "pm.test('provider-endpoint-updates proxy url change is refused by the setup lock', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('X-Bifrost-Setup-Token');",
                   "});"
                 ]
               }
@@ -188875,20 +188781,29 @@
           }
         },
         {
-          "name": "[EXPECT-403] openai provider-endpoint-updates azure key endpoint refused without dashboard auth",
+          "name": "[EXPECT-401] openai provider-endpoint-updates azure key endpoint refused without dashboard auth",
           "protocolProfileBehavior": {
             "followRedirects": false,
             "disableCookies": true
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('provider-endpoint-updates key endpoint is refused with 403', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
-                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('azure_key_config.endpoint');",
+                  "pm.test('provider-endpoint-updates key endpoint is refused by the setup lock', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('X-Bifrost-Setup-Token');",
                   "});"
                 ]
               }
@@ -189362,7 +189277,7 @@
           }
         },
         {
-          "name": "malformed realtime SDP offer gets an HTTP response, not a dropped connection - request-limits",
+          "name": "[EXPECT-4XX] malformed realtime SDP offer gets an HTTP response, not a dropped connection - request-limits",
           "event": [
             {
               "listen": "test",
@@ -193104,7 +193019,7 @@
       "description": "Cross-cutting rows whose remainder was named in the backlog: OpenAI web search via /v1/chat (url_citation annotations), Vertex Gemini code execution via /v1/chat, and a unary fallback from an unknown primary model. Not here: Bedrock Opus 4.7 sampling (folder 146.5), computer use via /v1/chat (chat tools carry only function and custom, so folder 153.3 covers it through /v1/responses), and real HTTP 5xx / 429 Retry-After propagation (folder 154, against provider-error-fixture.mjs).",
       "item": [
         {
-          "name": "149.1 openai/gpt-4o-mini-search-preview chat web_search_options returns url_citation annotations (web search cross-cut)",
+          "name": "149.1 openai/gpt-5-search-api chat web_search_options returns url_citation annotations (web search cross-cut)",
           "request": {
             "method": "POST",
             "header": [
@@ -193115,7 +193030,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-4o-mini-search-preview\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the capital of France? Cite a source.\"\n    }\n  ],\n  \"web_search_options\": {}\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5-search-api\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the capital of France? Cite a source.\"\n    }\n  ],\n  \"web_search_options\": {}\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -193461,7 +193376,7 @@
           ]
         },
         {
-          "name": "150.6 [EXPECT-4XX] bedrock cohere embed-v4 rejects the v3 truncate value END (cohere truncate)",
+          "name": "150.6 [EXPECT-4XX] bedrock cohere embed-v4 rejects an unknown truncate value MIDDLE (cohere truncate)",
           "request": {
             "method": "POST",
             "header": [
@@ -193472,7 +193387,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"texts\": [\n    \"truncate enum probe\"\n  ],\n  \"input_type\": \"search_document\",\n  \"truncate\": \"END\",\n  \"embedding_types\": [\n    \"float\"\n  ]\n}"
+              "raw": "{\n  \"texts\": [\n    \"truncate enum probe\"\n  ],\n  \"input_type\": \"search_document\",\n  \"truncate\": \"MIDDLE\",\n  \"embedding_types\": [\n    \"float\"\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/bedrock/model/global.cohere.embed-v4:0/invoke",
@@ -194049,7 +193964,7 @@
           ]
         },
         {
-          "name": "151.13 [EXPECT-4XX] anthropic legacy /v1/complete text completions is forwarded and rejected for a Messages-only model (text completions)",
+          "name": "151.13 [EXPECT-4XX] anthropic legacy /v1/complete forwards top_k and a post-Opus-4.6 model rejects it (text completions)",
           "request": {
             "method": "POST",
             "header": [
@@ -194068,7 +193983,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"prompt\": \"\\n\\nHuman: Reply OK.\\n\\nAssistant:\",\n  \"max_tokens_to_sample\": 16\n}"
+              "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"prompt\": \"\\n\\nHuman: Reply OK.\\n\\nAssistant:\",\n  \"max_tokens_to_sample\": 16,\n  \"top_k\": 5\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/anthropic/v1/complete",
@@ -194393,16 +194308,16 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"bf-harness-h150\"\n}"
+              "raw": "{\n  \"provider\": \"openai\",\n  \"name\": \"bf-harness-h150\"\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/v1/containers?provider=openai",
+              "raw": "{{baseUrl}}/v1/containers",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "v1",
-                "containers?provider=openai"
+                "containers"
               ]
             }
           },
@@ -194482,8 +194397,23 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var j = pm.response.json();",
-                  "pm.test('list includes the created container', function () { pm.expect(j.data, pm.response.text().slice(0, 400)).to.be.an('array'); var ids = j.data.map(function (c) { return c.id; }); pm.expect(ids, pm.response.text().slice(0, 400)).to.include(pm.collectionVariables.get('h152ContainerId')); });"
+                  "var want = pm.collectionVariables.get('h152ContainerId');",
+                  "// OpenAI's container list shows a new container a moment after create, so re-list before failing. Bounded: six reads a second apart.",
+                  "function listed(j) { return !!j && Array.isArray(j.data) && j.data.some(function (c) { return c && c.id === want; }); }",
+                  "function check(attempt, j, txt) {",
+                  "  if (listed(j) || attempt >= 6) {",
+                  "    pm.test('list includes the created container', function () { pm.expect(j && j.data, (txt || '').slice(0, 400)).to.be.an('array'); pm.expect(j.data.map(function (c) { return c.id; }), 'after ' + attempt + ' re-list(s): ' + (txt || '').slice(0, 400)).to.include(want); });",
+                  "    return;",
+                  "  }",
+                  "  setTimeout(function () {",
+                  "    pm.sendRequest({ url: pm.variables.get('baseUrl') + '/v1/containers?provider=openai&limit=100&order=desc', method: 'GET' }, function (err, res) {",
+                  "      var body = null; try { body = err ? null : res.json(); } catch (e) { body = null; }",
+                  "      check(attempt + 1, body, err ? String(err) : res.text());",
+                  "    });",
+                  "  }, 1000);",
+                  "}",
+                  "var first = null; try { first = pm.response.json(); } catch (e) { first = null; }",
+                  "check(0, first, pm.response.text());"
                 ]
               }
             }
@@ -194645,7 +194575,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/cohere.embed-english-v3\",\n  \"input\": \"cohere v3 truncate probe\",\n  \"input_type\": \"search_document\",\n  \"extra_params\": {\n    \"truncate\": \"END\"\n  }\n}"
+              "raw": "{\n  \"model\": \"bedrock/cohere.embed-english-v3\",\n  \"input\": \"cohere v3 truncate probe\",\n  \"input_type\": \"search_document\",\n  \"truncate\": \"END\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/embeddings",
@@ -194683,7 +194613,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/cohere.embed-english-v3\",\n  \"input\": \"cohere v3 truncate enum probe\",\n  \"input_type\": \"search_document\",\n  \"extra_params\": {\n    \"truncate\": \"RIGHT\"\n  }\n}"
+              "raw": "{\n  \"model\": \"bedrock/cohere.embed-english-v3\",\n  \"input\": \"cohere v3 truncate enum probe\",\n  \"input_type\": \"search_document\",\n  \"truncate\": \"RIGHT\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/embeddings",
@@ -196863,7 +196793,7 @@
               "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"temperature\": 5,\n    \"maxOutputTokens\": 16\n  }\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash:generateContent",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -196871,6 +196801,7 @@
                 "genai",
                 "v1beta",
                 "models",
+                "gemini",
                 "gemini-2.5-flash:generateContent"
               ]
             }
@@ -196906,7 +196837,7 @@
               "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"topP\": 2,\n    \"maxOutputTokens\": 16\n  }\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash:generateContent",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -196914,6 +196845,7 @@
                 "genai",
                 "v1beta",
                 "models",
+                "gemini",
                 "gemini-2.5-flash:generateContent"
               ]
             }
@@ -196949,7 +196881,7 @@
               "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"topK\": -5,\n    \"maxOutputTokens\": 16\n  }\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash:generateContent",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -196957,6 +196889,7 @@
                 "genai",
                 "v1beta",
                 "models",
+                "gemini",
                 "gemini-2.5-flash:generateContent"
               ]
             }
@@ -199371,7 +199304,7 @@
     },
     {
       "name": "163. MCP log deletion requires dashboard auth (#7769) (mcp-log-delete-auth)",
-      "description": "Management-plane regression for #7769 using the default harness profile with dashboard auth disabled or unconfigured. A caller admitted without an authenticated admin session must receive 403 from DELETE /api/mcp-logs before body parsing or storage deletion. The session-status precondition fails loudly when this folder is run against an auth-enabled profile. The valid-body probe uses a fresh GUID sentinel rather than an existing log ID, so even an unfixed gateway cannot delete real records; the handler Go tests independently assert zero storage calls and preserve authenticated deletion. Cookies, inherited auth, and redirect following are disabled. No authentication configuration is changed and no provider calls are made; openai is only a harness filter label. Run the whole folder in order with FEATURE=mcp-log-delete-auth and PARALLEL=0.",
+      "description": "Management-plane regression for #7769 using the default harness profile with dashboard auth disabled or unconfigured. A caller with no credential must be refused by DELETE /api/mcp-logs before body parsing or storage deletion. Under the OSS setup lock that refusal is the lock's 401, so the delete rows strip the X-Bifrost-Setup-Token header the harness injects: a request carrying the token is authenticated and is allowed to delete. The session-status precondition fails loudly when this folder is run against an auth-enabled profile. The valid-body probe uses a fresh GUID sentinel rather than an existing log ID, so even an unfixed gateway cannot delete real records; the handler Go tests independently assert zero storage calls and preserve authenticated deletion. Cookies, inherited auth, and redirect following are disabled. No authentication configuration is changed and no provider calls are made; openai is only a harness filter label. Run the whole folder in order with FEATURE=mcp-log-delete-auth and PARALLEL=0.",
       "item": [
         {
           "name": "[EXPECT-200] openai mcp-log-delete-auth dashboard bypass precondition - #7769",
@@ -199405,7 +199338,7 @@
           ]
         },
         {
-          "name": "[EXPECT-403] openai mcp-log-delete-auth nonempty IDs refused without dashboard auth - #7769",
+          "name": "[EXPECT-401] openai mcp-log-delete-auth nonempty IDs refused without dashboard auth - #7769",
           "protocolProfileBehavior": {
             "followRedirects": false,
             "disableCookies": true
@@ -199429,13 +199362,22 @@
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('mcp-log-delete-auth rejects unauthenticated deletion with 403', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
-                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('authenticated admin session');",
+                  "pm.test('mcp-log-delete-auth rejects unauthenticated deletion at the setup lock', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('X-Bifrost-Setup-Token');",
                   "});"
                 ]
               }
@@ -199443,7 +199385,7 @@
           ]
         },
         {
-          "name": "[EXPECT-403] openai mcp-log-delete-auth malformed body refused before parsing - #7769",
+          "name": "[EXPECT-401] openai mcp-log-delete-auth malformed body refused before parsing - #7769",
           "protocolProfileBehavior": {
             "followRedirects": false,
             "disableCookies": true
@@ -199467,13 +199409,22 @@
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('mcp-log-delete-auth checks authentication before parsing the body', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
-                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('authenticated admin session');",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('X-Bifrost-Setup-Token');",
                   "  pm.expect(pm.response.text(), 'body parsing ran before authentication: ' + pm.response.text()).to.not.include('Invalid JSON');",
                   "});"
                 ]
@@ -200677,7 +200628,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"id\": \"code-mode-budget-integer-result\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = 1 << 10000\\\"}\"\n  }\n}"
+              "raw": "{\n  \"id\": \"code-mode-budget-integer-result\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = 1 << 128\\\\nfor i in range(6):\\\\n    result *= result\\\"}\"\n  }\n}"
             }
           }
         }
@@ -200976,7 +200927,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"id\": \"code-mode-limits-raised-steps\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"for i in range(2000000):\\\\n    pass\\\"}\"\n  }\n}"
+              "raw": "{\n  \"id\": \"code-mode-limits-raised-steps\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"for i in range(2000000):\\\\n    pass\\\\nresult = 'done'\\\"}\"\n  }\n}"
             }
           }
         },
@@ -201443,11 +201394,13 @@
                   "var txt = pm.response.text() || '';",
                   "pm.test('166.2 exact success status', function () { pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200); });",
                   "if (pm.response.code !== 200) { return; }",
+                  "// extra_fields.raw_response echoes the upstream Responses stream, so the leak check reads the stream without it.",
+                  "var clientTxt = txt.split('\\n').map(function (line) { if (line.indexOf('data:') !== 0) { return line; } var ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return line; } if (ev && ev.extra_fields) { delete ev.extra_fields.raw_response; } return 'data: ' + JSON.stringify(ev); }).join('\\n');",
                   "pm.test('166.2 caller still gets a chat completion stream', function () {",
                   "  pm.expect(pm.response.headers.get('content-type') || '').to.include('event-stream');",
                   "  pm.expect(txt, txt.slice(0, 400)).to.include('chat.completion.chunk');",
                   "  pm.expect(txt, 'no [DONE] terminator: ' + txt.slice(-400)).to.include('[DONE]');",
-                  "  pm.expect(txt, 'Responses event names leaked to a chat caller').to.not.include('response.completed');",
+                  "  pm.expect(clientTxt, 'Responses event names leaked to a chat caller').to.not.include('response.completed');",
                   "});",
                   "var rr = null;",
                   "var content = '', finish = null;",
@@ -203522,7 +203475,7 @@
           }
         },
         {
-          "name": "openai warp-refusal cleanup: delete the refused conversation",
+          "name": "[EXPECT-204] openai warp-refusal cleanup: delete the refused conversation",
           "event": [
             {
               "listen": "prerequest",
@@ -204596,8 +204549,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('converse store azure: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
-                  "var reqId = pm.response.headers.get('x-request-id');",
-                  "pm.test('converse store azure: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('converse store azure: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
                   "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
                   "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
                   "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
@@ -204653,8 +204606,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('converse store openai: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
-                  "var reqId = pm.response.headers.get('x-request-id');",
-                  "pm.test('converse store openai: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('converse store openai: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
                   "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
                   "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
                   "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
@@ -204710,8 +204663,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('converse-stream store azure: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
-                  "var reqId = pm.response.headers.get('x-request-id');",
-                  "pm.test('converse-stream store azure: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('converse-stream store azure: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
                   "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
                   "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
                   "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
@@ -204767,8 +204720,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('converse store bedrock_mantle: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
-                  "var reqId = pm.response.headers.get('x-request-id');",
-                  "pm.test('converse store bedrock_mantle: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('converse store bedrock_mantle: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
                   "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
                   "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
                   "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
@@ -204824,8 +204777,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('converse store bedrock_openai_ep: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
-                  "var reqId = pm.response.headers.get('x-request-id');",
-                  "pm.test('converse store bedrock_openai_ep: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('converse store bedrock_openai_ep: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
                   "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
                   "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
                   "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
@@ -204881,8 +204834,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('converse store openrouter: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
-                  "var reqId = pm.response.headers.get('x-request-id');",
-                  "pm.test('converse store openrouter: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('converse store openrouter: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
                   "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
                   "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
                   "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
@@ -205745,6 +205698,10 @@
               {
                 "key": "x-bf-send-back-raw-request",
                 "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
               }
             ],
             "body": {
@@ -205774,6 +205731,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// /openai/v1/responses returns OpenAI's body verbatim while the raw response is kept, so this request turns it off to read extra_fields.raw_request.",
                   "pm.test('176.1: 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
@@ -208567,8 +208525,8 @@
                   "  pm.expect(body.usage.cost.input_cost || 0, 'usage.cost: ' + JSON.stringify(body.usage.cost)).to.eql(0);",
                   "  pm.expect(body.usage.cost.output_cost || 0, 'usage.cost: ' + JSON.stringify(body.usage.cost)).to.eql(0);",
                   "});",
-                  "var reqId = pm.response.headers.get('x-request-id');",
-                  "pm.test('opaque provider cost: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('opaque provider cost: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
                   "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
                   "function checkLog(attempt) {",
                   "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
@@ -213032,8 +212990,8 @@
                   "  if (ABOVE_100K) { pm.expect(u.prompt_tokens, 'prompt must exceed 100k tokens (raise the line count in the pre-request script): ' + JSON.stringify(u)).to.be.above(100000); }",
                   "  else { pm.expect(u.prompt_tokens, 'usage: ' + JSON.stringify(u)).to.be.within(1, 100000); }",
                   "});",
-                  "var reqId = pm.response.headers.get('x-request-id');",
-                  "pm.test(LABEL + ': x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test(LABEL + ': x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
                   "// /api is locked behind the setup token on the harness profile; pm.sendRequest does not inherit the collection header.",
                   "var setupToken = pm.variables.get('setupToken');",
                   "var logHeaders = setupToken ? [{ key: 'X-Bifrost-Setup-Token', value: setupToken }] : [];",
@@ -213119,8 +213077,8 @@
                   "  if (ABOVE_100K) { pm.expect(u.prompt_tokens, 'prompt must exceed 100k tokens (raise the line count in the pre-request script): ' + JSON.stringify(u)).to.be.above(100000); }",
                   "  else { pm.expect(u.prompt_tokens, 'usage: ' + JSON.stringify(u)).to.be.within(1, 100000); }",
                   "});",
-                  "var reqId = pm.response.headers.get('x-request-id');",
-                  "pm.test(LABEL + ': x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test(LABEL + ': x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
                   "// /api is locked behind the setup token on the harness profile; pm.sendRequest does not inherit the collection header.",
                   "var setupToken = pm.variables.get('setupToken');",
                   "var logHeaders = setupToken ? [{ key: 'X-Bifrost-Setup-Token', value: setupToken }] : [];",
@@ -246745,6 +246703,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var raw = pm.response.text() || '';",
+                  "// extra_fields.raw_response echoes the upstream stream, so the leak check reads the stream without it.",
+                  "var clientRaw = raw.split('\\n').map(function (line) { if (line.indexOf('data:') !== 0) { return line; } var ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return line; } if (ev && ev.extra_fields) { delete ev.extra_fields.raw_response; } return 'data: ' + JSON.stringify(ev); }).join('\\n');",
                   "pm.test('custom tool accepted on gpt-4o-mini (stream)', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + raw).to.equal(200);",
                   "  pm.expect(raw).to.not.include(\"Invalid value: 'custom'\");",
@@ -246756,7 +246716,7 @@
                   "  pm.expect(deltaAt, 'no non-empty custom_tool_call_input.delta').to.be.above(-1);",
                   "  pm.expect(deltaAt, 'input delta must come before done').to.be.below(raw.indexOf('response.custom_tool_call_input.done'));",
                   "  pm.expect(raw, 'no custom_tool_call item').to.match(/\"type\"\\s*:\\s*\"custom_tool_call\"/);",
-                  "  pm.expect(raw, 'function call events leaked').to.not.include('response.function_call_arguments');",
+                  "  pm.expect(clientRaw, 'function call events leaked').to.not.include('response.function_call_arguments');",
                   "  pm.expect(raw).to.include('code_exec');",
                   "});"
                 ]
@@ -247946,7 +247906,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_output_tokens\": 256,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"echo\",\n      \"description\": \"Echo text back.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in Paris? If you cannot look it up, say so in one sentence.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"tool_removal\",\n          \"tool\": {\n            \"type\": \"tool_reference\",\n            \"name\": \"get_weather\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Weather lookups are disabled for phase 2.\"\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_output_tokens\": 256,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"echo\",\n      \"description\": \"Echo text back.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in Paris? If you cannot look it up, say so in one sentence.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"tool_removal\",\n          \"tool\": {\n            \"type\": \"tool_reference\",\n            \"name\": \"get_weather\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Weather lookups are disabled for phase 2.\"\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -254398,9 +254358,9 @@
                   "  for (var i = 0; i < clients.length; i++) {",
                   "    var cfg = clients[i].config;",
                   "    if (!cfg || !cfg.name || cfg.name.indexOf('harness_codemode_instr_') !== 0) { continue; }",
-                  "    if (cfg.name === client) { mine = cfg.id; continue; }",
+                  "    if (cfg.name === client) { mine = cfg.client_id; continue; }",
                   "    var stamp = parseInt(cfg.name.substring(23), 10);",
-                  "    if (stamp && (Date.now() - stamp) > STALE_MS) { stale.push(cfg.id); }",
+                  "    if (stamp && (Date.now() - stamp) > STALE_MS) { stale.push(cfg.client_id); }",
                   "  }",
                   "  pm.expect(mine, 'this run\\'s client is not listed, so the cleanup below cannot run: ' + pm.response.text()).to.be.a('string');",
                   "  // This run's client first, so it is reclaimed even if the sweep cap is reached.",
