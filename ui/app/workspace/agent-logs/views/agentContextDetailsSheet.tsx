@@ -1,4 +1,6 @@
 import { formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
+import BlockHeader from "@/app/workspace/logs/views/blockHeader";
+import LogEntryDetailsView from "@/app/workspace/logs/views/logEntryDetailsView";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -7,7 +9,7 @@ import { useGetAgentLogStatsQuery, useLazyGetAgentLogOperationsQuery } from "@/l
 import type { AgentLogOperation, AgentLogSummary } from "@/lib/types/agentLogs";
 import { cn } from "@/lib/utils";
 import { format, isValid } from "date-fns";
-import { ArrowDown, ArrowUp, CheckCircle, ChevronLeft, ChevronRight, Clock, Filter, Loader2, XCircle } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, ChevronLeft, ChevronRight, Filter, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { toast } from "sonner";
 import { A2APartsView, A2APayloadView, TaskStateBadge } from "./a2aPayloadView";
@@ -547,13 +549,6 @@ export function AgentContextDetailsSheet({
 
 	const totalPages = Math.max(1, Math.ceil(totalCount / CONTEXT_PAGE_SIZE));
 
-	const statsSummary = [
-		{ label: "Operations", value: stats?.total_entries ?? 0, icon: Clock },
-		{ label: "Successful", value: stats?.success_count ?? 0, icon: CheckCircle },
-		{ label: "Failed", value: stats?.error_count ?? 0, icon: XCircle },
-		{ label: "Avg duration", value: formatLatency(stats?.average_latency ?? 0), icon: Clock },
-	] as const;
-
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-4 sm:max-w-[60%] md:p-8">
@@ -564,24 +559,33 @@ export function AgentContextDetailsSheet({
 					</code>
 				</SheetHeader>
 
-				<div className="flex flex-wrap items-center justify-between gap-3">
-					<div className="text-muted-foreground flex flex-wrap gap-x-4 gap-y-1 text-xs">
-						{statsSummary.map(({ label, value, icon: Icon }) => (
-							<span key={label} className="flex items-center gap-1.5">
-								<Icon className="size-3.5" />
-								{label} <span className="text-foreground font-mono">{value}</span>
-							</span>
-						))}
+				<details className="group bg-card rounded-sm border" open={false}>
+					<summary className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-4 py-2.5 text-sm transition">
+						<span className="text-foreground font-medium">More details</span>
+						<span className="text-muted-foreground flex items-center gap-2 text-xs">
+							<span className="hidden md:inline">operation counts and duration</span>
+							<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+						</span>
+					</summary>
+					<div className="space-y-4 border-t px-4 py-4 md:px-6">
+						<BlockHeader title="Session stats" />
+						<div className="grid w-full grid-cols-2 gap-4 md:grid-cols-4">
+							<LogEntryDetailsView className="w-full" label="Operations" value={stats ? stats.total_entries.toLocaleString() : "—"} />
+							<LogEntryDetailsView className="w-full" label="Successful" value={stats ? stats.success_count.toLocaleString() : "—"} />
+							<LogEntryDetailsView className="w-full" label="Failed" value={stats ? stats.error_count.toLocaleString() : "—"} />
+							<LogEntryDetailsView className="w-full" label="Avg Duration" value={stats ? formatLatency(stats.average_latency) : "—"} />
+						</div>
 					</div>
-					<div className="flex shrink-0 items-center gap-2">
-						<Button variant="outline" size="sm" onClick={() => contextId && onFilterContext(contextId)}>
-							<Filter className="size-4" /> Filter session
-						</Button>
-						<Button variant="outline" size="sm" onClick={() => setSortOrder((order) => (order === "asc" ? "desc" : "asc"))}>
-							{sortOrder === "asc" ? <ArrowUp className="size-4" /> : <ArrowDown className="size-4" />}
-							{sortOrder === "asc" ? "Earliest first" : "Latest first"}
-						</Button>
-					</div>
+				</details>
+
+				<div className="flex items-center justify-end gap-2">
+					<Button variant="outline" size="sm" onClick={() => contextId && onFilterContext(contextId)}>
+						<Filter className="size-4" /> Filter session
+					</Button>
+					<Button variant="outline" size="sm" onClick={() => setSortOrder((order) => (order === "asc" ? "desc" : "asc"))}>
+						{sortOrder === "asc" ? <ArrowUp className="size-4" /> : <ArrowDown className="size-4" />}
+						{sortOrder === "asc" ? "Earliest first" : "Latest first"}
+					</Button>
 				</div>
 
 				<Tabs

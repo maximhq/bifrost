@@ -415,8 +415,8 @@ export function AgentLogDetailSheet({
 	if (!isFullDataReady) {
 		return (
 			<Sheet open={open} onOpenChange={onOpenChange}>
-				<SheetContent className="border-secondary flex w-full flex-col gap-4 overflow-x-hidden border p-4 sm:max-w-[60%] md:p-8">
-					<div className="flex h-full items-center justify-center">
+				<SheetContent className="border-secondary flex w-full flex-col gap-2 overflow-x-hidden border p-0 sm:max-w-[60%]">
+					<div className="flex h-full items-center justify-center p-4 md:p-8">
 						<SheetTitle className="sr-only">Loading A2A log details</SheetTitle>
 						<Loader2 className="text-muted-foreground h-6 w-6 animate-spin" />
 					</div>
