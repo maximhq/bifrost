@@ -164,13 +164,30 @@ func (r *TopicReader) ListTopics(ctx context.Context, limit int) ([]Topic, int, 
 	if len(rows) == 0 {
 		return nil, 0, nil
 	}
-	// Counted over the active topics and the requests that matched none.
-	// Requests still filed under a topic that has since been retired are
-	// neither: they belong to a set of topics that is no longer the answer.
-	ids := make([]string, 0, len(rows)+1)
+	// Counted over the active topics, the topics merged into them, and the
+	// requests that matched none. Requests still filed under a topic that
+	// has since been retired are none of those: they belong to a set of
+	// topics that is no longer the answer.
+	active := make(map[string]struct{}, len(rows))
 	for _, row := range rows {
-		ids = append(ids, row.ID)
+		active[row.ID] = struct{}{}
 	}
+	merged, err := r.topics.ListWarpTopics(ctx, logstore.WarpTopicFilter{
+		Kinds: []string{logstore.WarpTopicKindTopic}, Statuses: []string{logstore.WarpTopicStatusMerged},
+		EmbeddingSignature: embeddingConfigSignature(config), OmitCentroids: true,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("list merged topics: %w", err)
+	}
+	into := resolveMergedTopics(active, merged)
+	ids := make([]string, 0, len(rows)+len(into)+1)
+	for id := range active {
+		ids = append(ids, id)
+	}
+	for id := range into {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
 	usage, err := r.topics.SummarizeWarpTopicAssignments(ctx, logstore.WarpTopicAssignmentFilter{TopicIDs: append(ids, "")})
 	if err != nil {
 		return nil, 0, fmt.Errorf("count topic requests: %w", err)
@@ -178,7 +195,11 @@ func (r *TopicReader) ListTopics(ctx context.Context, limit int) ([]Topic, int, 
 	sizes := make(map[string]int, len(usage))
 	total := 0
 	for _, entry := range usage {
-		sizes[entry.TopicID] = int(entry.Requests)
+		id := entry.TopicID
+		if target, ok := into[id]; ok {
+			id = target
+		}
+		sizes[id] += int(entry.Requests)
 		total += int(entry.Requests)
 	}
 	topics := make([]Topic, 0, len(rows))
@@ -344,6 +365,11 @@ func (s *Service) RegisterTopics(runner *sidekiq.Runner) {
 		return
 	}
 	runner.Register(TopicsJobKind, s.RunTopicsJob)
+	runner.Register(TopicDiscoveryJobKind, s.RunDiscoveryJob)
+	runner.RegisterSummarizer(TopicDiscoveryJobKind, SummarizeBackfillMeta)
+	s.mu.Lock()
+	s.topicJobs = runner
+	s.mu.Unlock()
 }
 
 // topicStore returns the log store's topic tables under the read lock, or nil
