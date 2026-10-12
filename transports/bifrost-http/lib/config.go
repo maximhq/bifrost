@@ -818,6 +818,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	MCPEnableTempTokenAuth:          false,
 	HideDeletedVirtualKeysInFilters: false,
 	DeleteExpiredVirtualKeys:        false,
+	EnforceVKObjectOwnership:        true,
 	RoutingChainMaxDepth:            rules.DefaultChainMaxDepth,
 	Compat:                          configstore.CompatConfig{ForceReasoningOnlyModelsToResponses: true},
 }
@@ -7455,6 +7456,14 @@ func (c *Config) ShouldAllowPerRequestStorageOverride() bool {
 // ShouldAllowPerRequestRawOverride returns whether per-request raw request/response overrides are permitted.
 func (c *Config) ShouldAllowPerRequestRawOverride() bool {
 	return c.ClientConfig.AllowPerRequestRawOverride
+}
+
+// ShouldEnforceVKObjectOwnership reports client.enforce_vk_object_ownership. It reads under Mu, the
+// lock config saves and reloads hold while they copy the client config in; unset means on.
+func (c *Config) ShouldEnforceVKObjectOwnership() bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return c.ClientConfig == nil || c.ClientConfig.EnforceVKObjectOwnership
 }
 
 // ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header.

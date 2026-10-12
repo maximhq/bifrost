@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -86,8 +87,12 @@ func (s *RDBConfigStore) GetProviderJobsByIDs(ctx context.Context, jobIDs []stri
 		return nil, nil
 	}
 	var jobs []*tables.TableProviderJob
-	if err := s.DB().WithContext(ctx).Where("id IN ?", jobIDs).Find(&jobs).Error; err != nil {
-		return nil, err
+	for chunk := range slices.Chunk(jobIDs, providerLookupChunk) {
+		var page []*tables.TableProviderJob
+		if err := s.DB().WithContext(ctx).Where("id IN ?", chunk).Find(&page).Error; err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, page...)
 	}
 	return jobs, nil
 }
@@ -99,10 +104,22 @@ func (s *RDBConfigStore) GetProviderJobsByFileIDs(ctx context.Context, provider 
 		return nil, nil
 	}
 	var jobs []*tables.TableProviderJob
-	if err := s.DB().WithContext(ctx).
-		Where("provider = ? AND (input_file_id IN ? OR output_file_id IN ? OR error_file_id IN ?)", provider, fileIDs, fileIDs, fileIDs).
-		Find(&jobs).Error; err != nil {
-		return nil, err
+	// A job can name its input file in one chunk and its output file in another; return it once.
+	seen := make(map[string]struct{})
+	for chunk := range slices.Chunk(fileIDs, providerLookupChunk) {
+		var page []*tables.TableProviderJob
+		if err := s.DB().WithContext(ctx).
+			Where("provider = ? AND (input_file_id IN ? OR output_file_id IN ? OR error_file_id IN ?)", provider, chunk, chunk, chunk).
+			Find(&page).Error; err != nil {
+			return nil, err
+		}
+		for _, job := range page {
+			if _, dup := seen[job.ID]; dup {
+				continue
+			}
+			seen[job.ID] = struct{}{}
+			jobs = append(jobs, job)
+		}
 	}
 	return jobs, nil
 }

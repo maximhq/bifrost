@@ -323,6 +323,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		WhitelistedRoutes:                         config.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters:           config.HideDeletedVirtualKeysInFilters,
 		DeleteExpiredVirtualKeys:                  config.DeleteExpiredVirtualKeys,
+		EnforceVKObjectOwnership:                  config.EnforceVKObjectOwnership,
 		HiddenRequestTypes:                        config.HiddenRequestTypes,
 		RoutingChainMaxDepth:                      config.RoutingChainMaxDepth,
 		MCPExternalClientURL:                      mcpExternalURLToString(config.MCPExternalClientURL),
@@ -367,6 +368,13 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		// update mirroring the Delete above.
 		if config.MCPToolSyncInterval == 0 {
 			if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Model(&tables.TableClientConfig{}).Update("mcp_tool_sync_interval", 0).Error; err != nil {
+				return err
+			}
+		}
+		// Same for enforce_vk_object_ownership, which defaults to true: Create would drop an
+		// explicit false and the database would store true.
+		if !config.EnforceVKObjectOwnership {
+			if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Model(&tables.TableClientConfig{}).Update("enforce_vk_object_ownership", false).Error; err != nil {
 				return err
 			}
 		}
@@ -631,6 +639,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		WhitelistedRoutes:                     dbConfig.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters:       dbConfig.HideDeletedVirtualKeysInFilters,
 		DeleteExpiredVirtualKeys:              dbConfig.DeleteExpiredVirtualKeys,
+		EnforceVKObjectOwnership:              dbConfig.EnforceVKObjectOwnership,
 		HiddenRequestTypes:                    dbConfig.HiddenRequestTypes,
 		RoutingChainMaxDepth:                  dbConfig.RoutingChainMaxDepth,
 		MCPExternalClientURL:                  schemas.NewSecretVar(dbConfig.MCPExternalClientURL),

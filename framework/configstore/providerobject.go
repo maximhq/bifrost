@@ -3,6 +3,7 @@ package configstore
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,6 +32,11 @@ func (s *RDBConfigStore) UpsertProviderObject(ctx context.Context, object *table
 	}).Create(object).Error
 }
 
+// providerLookupChunk bounds the ids bound into one IN clause. A list filter looks up every item of a
+// page under every equivalent provider name, which can exceed SQLite's 32766 bound variables and
+// Postgres's 65535 parameters; a query that repeats the list three times still stays well below both.
+const providerLookupChunk = 1000
+
 // GetProviderObjectsByIDs returns the provider objects among ids that exist, in no
 // particular order. Ids with no row are simply absent from the result.
 func (s *RDBConfigStore) GetProviderObjectsByIDs(ctx context.Context, ids []string) ([]*tables.TableProviderObject, error) {
@@ -38,8 +44,12 @@ func (s *RDBConfigStore) GetProviderObjectsByIDs(ctx context.Context, ids []stri
 		return nil, nil
 	}
 	var objects []*tables.TableProviderObject
-	if err := s.DB().WithContext(ctx).Where("id IN ?", ids).Find(&objects).Error; err != nil {
-		return nil, err
+	for chunk := range slices.Chunk(ids, providerLookupChunk) {
+		var page []*tables.TableProviderObject
+		if err := s.DB().WithContext(ctx).Where("id IN ?", chunk).Find(&page).Error; err != nil {
+			return nil, err
+		}
+		objects = append(objects, page...)
 	}
 	return objects, nil
 }

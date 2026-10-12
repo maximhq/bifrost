@@ -173,10 +173,18 @@ func liveSessionVirtualKeyID(ctx *schemas.BifrostContext) string {
 	return virtualKey.ID
 }
 
+// ownershipEnforced reports whether live sessions are restricted to the virtual key that opened
+// them (client.enforce_vk_object_ownership, on by default). It reads the live client config, so a
+// saved change applies to the next route.
+func (g *liveGateway) ownershipEnforced() bool {
+	return g.config == nil || g.config.ShouldEnforceVKObjectOwnership()
+}
+
 // bindLiveSession records vkID, the virtual key that opened the provider session, if any, trying
 // once more when the write fails. A record that still cannot be written is returned: the caller
 // ends the session rather than hand out an id nobody is recorded for, which every key on the
-// provider could then reach.
+// provider could then reach. This holds while client.enforce_vk_object_ownership is off too, so
+// turning it on later binds every session opened in the meantime.
 func (g *liveGateway) bindLiveSession(ctx *schemas.BifrostContext, vkID string, providerKey schemas.ModelProvider, providerSessionID string) error {
 	if vkID == "" {
 		return nil
@@ -205,7 +213,8 @@ func (g *liveGateway) bindLiveSession(ctx *schemas.BifrostContext, vkID string, 
 // checkLiveSessionOwner refuses a route on a session that another virtual key opened. Without a
 // config store nothing is recorded anywhere, so a virtual-key request cannot be checked and is
 // refused, as governance refuses bound provider objects; a store failure is refused too rather
-// than let an unverified request through.
+// than let an unverified request through. Nothing is refused while client.enforce_vk_object_ownership
+// is turned off; bindLiveSession still records the opener so turning it back on covers the session.
 //
 // The session is looked up by its id under every provider name it was recorded under, not only
 // the one the route resolved to: the bare control route prefers openai, while a session opened on
@@ -215,6 +224,9 @@ func (g *liveGateway) bindLiveSession(ctx *schemas.BifrostContext, vkID string, 
 func (g *liveGateway) checkLiveSessionOwner(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, sessionID string) *schemas.BifrostError {
 	vkID := liveSessionVirtualKeyID(ctx)
 	if vkID == "" {
+		return nil
+	}
+	if !g.ownershipEnforced() {
 		return nil
 	}
 	if g.config == nil || g.config.ConfigStore == nil {

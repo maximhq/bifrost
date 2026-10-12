@@ -83,6 +83,8 @@ type Config struct {
 	RequiredHeaders       *[]string `json:"required_headers"` // Pointer to live config slice; changes are reflected immediately without restart
 	IsEnterprise          bool      `json:"is_enterprise"`
 	DisableAutoToolInject *bool     `json:"disable_auto_tool_inject"`
+	// Reports the live client.enforce_vk_object_ownership; nil means on
+	ObjectOwnershipEnforced func() bool `json:"-"`
 }
 
 type InMemoryStore interface {
@@ -185,6 +187,8 @@ type GovernancePlugin struct {
 	requiredHeaders       *[]string // pointer to live config slice; lowercased at check time
 	isEnterprise          bool
 	disableAutoToolInject *bool
+
+	objectOwnershipEnforcedFn func() bool
 }
 
 // Init initializes and returns a governance plugin instance.
@@ -250,10 +254,12 @@ func Init(
 	var isVkMandatory *bool
 	var requiredHeaders *[]string
 	var disableAutoToolInject *bool
+	var objectOwnershipEnforcedFn func() bool
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
 		disableAutoToolInject = config.DisableAutoToolInject
+		objectOwnershipEnforcedFn = config.ObjectOwnershipEnforced
 	}
 
 	newStoreStart := time.Now()
@@ -287,6 +293,8 @@ func Init(
 		isEnterprise:          config != nil && config.IsEnterprise,
 		disableAutoToolInject: disableAutoToolInject,
 		inMemoryStore:         inMemoryStore,
+
+		objectOwnershipEnforcedFn: objectOwnershipEnforcedFn,
 	}
 	return plugin, nil
 }
@@ -329,10 +337,12 @@ func InitFromStore(
 	var isVkMandatory *bool
 	var requiredHeaders *[]string
 	var disableAutoToolInject *bool
+	var objectOwnershipEnforcedFn func() bool
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
 		disableAutoToolInject = config.DisableAutoToolInject
+		objectOwnershipEnforcedFn = config.ObjectOwnershipEnforced
 	}
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
@@ -353,6 +363,8 @@ func InitFromStore(
 		requiredHeaders:       requiredHeaders,
 		isEnterprise:          config != nil && config.IsEnterprise,
 		disableAutoToolInject: disableAutoToolInject,
+
+		objectOwnershipEnforcedFn: objectOwnershipEnforcedFn,
 	}
 	return plugin, nil
 }
@@ -407,6 +419,13 @@ func (p *GovernancePlugin) UpdateEnforceAuthOnInference(enforceAuthOnInference b
 	p.cfgMutex.Lock()
 	defer p.cfgMutex.Unlock()
 	p.isVkMandatory = new(enforceAuthOnInference)
+}
+
+// objectOwnershipEnforced reports whether provider objects are restricted to the virtual key
+// that created them (client.enforce_vk_object_ownership). It is on unless configured off. The
+// transport's getter reads under the same lock config saves hold, so a save never races a request.
+func (p *GovernancePlugin) objectOwnershipEnforced() bool {
+	return p.objectOwnershipEnforcedFn == nil || p.objectOwnershipEnforcedFn()
 }
 
 // HTTPTransportPreAuthHook is a no-op: this plugin does no credential work, so it has
