@@ -800,6 +800,46 @@ func (s *RDBLogStore) Update(ctx context.Context, id string, entry any) error {
 	return nil
 }
 
+// BatchUpdate applies partial updates to multiple existing log rows in a single
+// transaction. Each entry must carry an ID; only its non-zero fields are written
+// (GORM Updates semantics), so output columns can be reconciled onto an existing
+// row while its input columns are left intact.
+//
+// Unlike the single-row Update, a row that does not match is silently skipped
+// rather than returning ErrNotFound: this is a best-effort batch reconciliation
+// (e.g. evicted-pending recovery), and the absence of a row is not a failure of
+// the whole batch. Callers that enqueue a partial-row insert before the matching
+// update rely on insert-before-update ordering so the row is present by the time
+// the update runs.
+func (s *RDBLogStore) BatchUpdate(ctx context.Context, entries []*Log) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, entry := range entries {
+			if entry == nil || entry.ID == "" {
+				continue
+			}
+			serialized, err := serializeLogUpdateEntry(entry)
+			if err != nil {
+				return err
+			}
+			// content_summary is omitted: SerializeFields regenerates it from the
+			// entry's own payload, and an output-only entry would otherwise replace
+			// the input summary already on the row.
+			if err := tx.Model(&Log{}).Where("id = ?", entry.ID).Omit("content_summary").Updates(serialized).Error; err != nil {
+				return err
+			}
+			// Updates skips zero values, so a final "visible" (false) decision
+			// would never clear a hidden flag saved earlier; write it explicitly.
+			if err := tx.Model(&Log{}).Where("id = ?", entry.ID).UpdateColumn("content_hidden", entry.ContentHidden).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // BulkUpdateCost updates log costs in bulk, using a PostgreSQL-specific batched
 // VALUES update when available and per-row updates for other dialects.
 func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]CostUpdate) error {
