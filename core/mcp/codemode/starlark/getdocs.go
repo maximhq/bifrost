@@ -164,13 +164,18 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 	sb.WriteString("# Wrap loops: def main(): for x in items: ... then result = main()\n")
 	sb.WriteString("#\n")
 	sb.WriteString("# CRITICAL - HANDLING RESPONSES:\n")
-	sb.WriteString("# Tool responses are dicts. To avoid runtime errors:\n")
-	sb.WriteString("# 1. Use print(result) to inspect the response structure first\n")
-	sb.WriteString("# 2. Access dict values with brackets: result[\"key\"] NOT result.key\n")
-	sb.WriteString("# 3. Use .get() for safe access: result.get(\"key\", default)\n")
+	// The sandbox has no import and no Starlark json module, so a str result cannot be
+	// parsed in code. Saying "responses are dicts" here is what sent models into
+	// result["key"] on values that were plain strings; state both shapes instead.
+	sb.WriteString("# A result is JSON-decoded once, and once more when that yields a JSON string.\n")
+	sb.WriteString("# So it is a dict or list when the server's text is JSON, otherwise a str.\n")
+	sb.WriteString("# 1. print(result) when unsure which shape you got\n")
+	sb.WriteString("# 2. dict: result[\"key\"], or result.get(\"key\", default) for safe access\n")
+	sb.WriteString("# 3. list: result[0] - integer indexing; there is no .get() on a list\n")
+	sb.WriteString("# 4. str: print it and read the output - the sandbox cannot parse it in code\n")
 	sb.WriteString("#\n")
-	sb.WriteString("# Common error: \"key not found\" or \"has no attribute\"\n")
-	sb.WriteString("# Fix: Use print() to see actual structure, then use result[\"key\"] or .get()\n")
+	sb.WriteString("# Common error: \"key not found\", \"has no attribute\", or indexing a str\n")
+	sb.WriteString("# Fix: print(result) to see the actual structure, then index it the way that shape needs\n")
 	if instructions != "" {
 		sb.WriteString("#\n")
 		sb.WriteString(instructions)

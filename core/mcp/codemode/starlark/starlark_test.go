@@ -1543,6 +1543,27 @@ func TestCodeModeDeadline(t *testing.T) {
 	}
 }
 
+// BenchmarkExtractResultFromChatMessage measures the nested-tool-result decode path.
+// The "wrapped" cases are what the extra decode touches; "bare" is the unchanged path.
+func BenchmarkExtractResultFromChatMessage(b *testing.B) {
+	for _, tc := range []struct{ name, content string }{
+		{"bare-object", `{"title":"Example Domain","url":"https://example.com","content":"This domain is for use in documentation examples without needing permission. This is not a service; avoid relying on it for testing and monitoring purposes."}`},
+		{"wrapped-object", `"{\"title\":\"Example Domain\",\"url\":\"https://example.com\",\"content\":\"This domain is for use in documentation examples without needing permission. This is not a service; avoid relying on it for testing and monitoring purposes.\"}"`},
+		{"plain-text", `This domain is for use in documentation examples without needing permission.`},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			content := tc.content
+			msg := &schemas.ChatMessage{
+				Content: &schemas.ChatMessageContent{ContentStr: &content},
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = extractResultFromChatMessage(msg)
+			}
+		})
+	}
+}
+
 func BenchmarkCodeModeExecution(b *testing.B) {
 	for _, tc := range []struct{ name, code string }{
 		{"scalar", "result = 6 * 7"},
@@ -1751,6 +1772,34 @@ func TestGetToolDocsCarriesServerInstructions(t *testing.T) {
 
 	if !strings.Contains(content, "# Always call list_items before mutating.") {
 		t.Fatalf("getToolDocs dropped the server's instructions, got:\n%s", content)
+	}
+}
+
+// The handling guidance has to name the operation each shape actually supports: key access
+// and .get() are dict-only, and a list is indexed by integer. It also must not go back to
+// telling the model that a result is always a dict, which is what sent it into result["key"]
+// on values the decoder left as strings.
+func TestGetToolDocsStatesShapeSpecificAccess(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+
+	msg, err := mode.handleGetToolDocs(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("tool-call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"server":"codey","tool":"add"}`},
+	})
+	content := instructionsToolResponse(t, msg, err)
+
+	for _, want := range []string{
+		`result.get("key", default)`,
+		"result[0]",
+		"there is no .get() on a list",
+		"cannot parse it in code",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("getToolDocs guidance is missing %q, got:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "Tool responses are dicts") {
+		t.Fatalf("getToolDocs claims every result is a dict again, got:\n%s", content)
 	}
 }
 

@@ -329,6 +329,8 @@ Reads a virtual `.pyi` file to get compact Python function signatures for tools.
 ```python
 # youtube server tools
 # Usage: youtube.tool_name(param=value)
+# Results are JSON-decoded: an object or array when the server's text is JSON
+# (a JSON string wrapping the payload is decoded too), otherwise a plain str.
 # For detailed docs: use getToolDocs(server="youtube", tool="tool_name")
 #
 # ---- server instructions (from the upstream handshake) ----
@@ -370,10 +372,12 @@ Get detailed documentation for a specific tool when the compact signature from `
 # No async/await needed - calls are synchronous.
 #
 # CRITICAL - HANDLING RESPONSES:
-# Tool responses are dicts. To avoid runtime errors:
-# 1. Use print(result) to inspect the response structure first
-# 2. Access dict values with brackets: result["key"] NOT result.key
-# 3. Use .get() for safe access: result.get("key", default)
+# A result is JSON-decoded once, and once more when that yields a JSON string.
+# So it is a dict or list when the server's text is JSON, otherwise a str.
+# 1. print(result) when unsure which shape you got
+# 2. dict: result["key"], or result.get("key", default) for safe access
+# 3. list: result[0] - integer indexing; there is no .get() on a list
+# 4. str: print it and read the output - the sandbox cannot parse it in code
 # ============================================================================
 
 def search(query: str, maxResults: int = None) -> dict:

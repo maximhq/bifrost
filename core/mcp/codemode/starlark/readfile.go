@@ -295,6 +295,13 @@ func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isTo
 	sb.WriteString(fmt.Sprintf("# Usage: %s.tool_name(param=value)\n", clientName))
 	sb.WriteString("# The def names below are the exact callable names to use in executeToolCode.\n")
 	sb.WriteString("# Read this file before executeToolCode to confirm parameters and return shape.\n")
+	// The decoding below is what executeToolCode actually does (utils.go): text that parses
+	// as JSON - including a JSON string wrapping the payload - arrives as a container,
+	// anything else as a str. Saying "dict, always" here is what sent models into
+	// result["key"] on values that were never dicts.
+	sb.WriteString("# Results are JSON-decoded: a dict or list when the server's text is JSON (a JSON\n")
+	sb.WriteString("# string wrapping the payload is decoded too), otherwise a plain str. Index a dict\n")
+	sb.WriteString("# with result[\"key\"], a list with result[0]; a str can only be printed.\n")
 	sb.WriteString(fmt.Sprintf("# For detailed docs: use getToolDocs(server=\"%s\", tool=\"tool_name\")\n", clientName))
 	sb.WriteString("# Note: Descriptions may be truncated. Use getToolDocs for full details.\n")
 	if instructions != "" {

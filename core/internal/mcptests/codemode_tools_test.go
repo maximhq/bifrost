@@ -978,3 +978,74 @@ result = {"result": r, "format": "responses"}`
 		assert.Contains(t, fmt.Sprintf("%v", resultObj["result"]), "42")
 	}
 }
+
+// TestCodeMode_JSONStringToolResultIsDecoded is the regression test for a server whose
+// MCP text content is itself a JSON string (WebReader, Context7, WebSearchPrime and
+// deepwiki all return this shape). The stub promises dict, and because the sandbox has no
+// JSON decoder the value has to arrive as a container, not as a string.
+func TestCodeMode_JSONStringToolResultIsDecoded(t *testing.T) {
+	t.Parallel()
+
+	manager := setupMCPManager(t)
+
+	// Same shape as RegisterEchoTool, but the returned string is the JSON encoding of a
+	// JSON string - exactly what a server that stringifies its payload puts on the wire.
+	payload := `{"title":"Example Domain","url":"https://example.com"}`
+	require.NoError(t, manager.RegisterTool(
+		"wrapped_page",
+		"Returns a page payload wrapped in a JSON string",
+		func(args any) (string, error) {
+			encoded, err := json.Marshal(payload)
+			if err != nil {
+				return "", err
+			}
+			return string(encoded), nil
+		},
+		schemas.ChatTool{
+			Type: schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{
+				Name:        "wrapped_page",
+				Description: schemas.Ptr("Returns a page payload wrapped in a JSON string"),
+				Parameters: &schemas.ToolFunctionParameters{
+					Type:       "object",
+					Properties: schemas.NewOrderedMapFromPairs(),
+				},
+			},
+		},
+	))
+	require.NoError(t, SetInternalClientAsCodeMode(manager, []string{"*"}))
+
+	bifrost := setupBifrost(t)
+	bifrost.SetMCPManager(manager)
+
+	ctx := createTestContext()
+
+	// Index the result. Pre-fix the value is a string and this fails inside the sandbox.
+	code := `page = bifrostInternal.wrapped_page()
+result = {
+    "title": page["title"],
+    "hasUrl": hasattr(page, "get")
+}`
+
+	argsJSON, _ := json.Marshal(map[string]interface{}{"code": code})
+	toolCall := schemas.ChatAssistantMessageToolCall{
+		ID:   schemas.Ptr("call-json-string-result"),
+		Type: schemas.Ptr("function"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{
+			Name:      schemas.Ptr("executeToolCode"),
+			Arguments: string(argsJSON),
+		},
+	}
+
+	result, bifrostErr := bifrost.ExecuteChatMCPTool(ctx, &toolCall)
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, result)
+
+	returnValue, hasError, errorMsg := ParseCodeModeResponse(t, *result.Content.ContentStr)
+	require.False(t, hasError, "indexing a JSON-string result must not fail: %s", errorMsg)
+
+	resultObj, ok := returnValue.(map[string]interface{})
+	require.True(t, ok, "expected an object, got %T", returnValue)
+	assert.Equal(t, "Example Domain", resultObj["title"])
+	assert.Equal(t, true, resultObj["hasUrl"])
+}
