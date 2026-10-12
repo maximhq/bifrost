@@ -78,6 +78,7 @@ const (
 	Wafer         ModelProvider = "wafer"
 	GithubCopilot ModelProvider = "github-copilot"
 	Databricks    ModelProvider = "databricks"
+	Cloudflare    ModelProvider = "cloudflare"
 	Typesafe      ModelProvider = "typesafe"
 )
 
@@ -127,6 +128,7 @@ var StandardProviders = []ModelProvider{
 	Wafer,
 	GithubCopilot,
 	Databricks,
+	Cloudflare,
 	Typesafe,
 }
 
@@ -442,6 +444,7 @@ const (
 	BifrostContextKeyCompatShouldConvertParams           BifrostContextKey = "bifrost-compat-should-convert-params"       // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatAzureDeepseek                 BifrostContextKey = "bifrost-compat-azure-deepseek"              // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatForceReasoningOnlyToResponses BifrostContextKey = "bifrost-compat-reasoning-only-to-responses" // bool (per-request override from x-bf-compat header)
+	BifrostContextKeyCompatConvertDecisionToResponses    BifrostContextKey = "bifrost-compat-decision-to-responses"       // bool (per-request override from x-bf-compat header)
 	BifrostContextKeySupportsAssistantPrefill            BifrostContextKey = "bifrost-supports-assistant-prefill"         // bool (set by compat plugin) - if model supports assistant prefill
 	BifrostContextKeyCompatDroppedParams                 BifrostContextKey = "bifrost-compat-dropped-params"              // []string (set by compat plugin) - params stripped from the request because the model catalog did not allowlist them; read back in PostLLMHook to populate extra_fields.dropped_compat_plugin_params
 	BifrostContextKeyAttemptTrail                        BifrostContextKey = "bifrost-attempt-trail"                      // []KeyAttemptRecord (set by bifrost - DO NOT SET THIS MANUALLY) - per-attempt key selection history

@@ -400,7 +400,9 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 		accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: namedLevels{"low", "high"}})
 		// Element validation still applies to typed slices.
 		reject(t, TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: []int{1, 2}}, "level 0 must be a string, object, or array")
-		reject(t, TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: []rubric{{Level: "only one"}}}, "between 2 and 10")
+		// The level count is the endpoint's rule: one level and more than ten are forwarded.
+		accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: []rubric{{Level: "only one"}}})
+		accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}})
 	})
 
 	t.Run("typed nil pointers are JSON null descriptions", func(t *testing.T) {
@@ -514,11 +516,6 @@ func TestToTypesafeDecisionRequestRejections(t *testing.T) {
 			name:     "score criteria missing",
 			question: TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d"},
 			wantSub:  "ordered array",
-		},
-		{
-			name:     "score criteria too short",
-			question: TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: []interface{}{"only one"}},
-			wantSub:  "between 2 and 10",
 		},
 		{
 			name:     "score criteria non-string level",

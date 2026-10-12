@@ -15,12 +15,6 @@ import (
 // emit_decision function call nor a JSON-object message body.
 var errDecisionNoContent = errors.New("model returned no decision function call or structured output")
 
-// isUnsupportedOperation reports whether an error is a provider's
-// "operation not supported" signal (set by NewUnsupportedOperationError).
-func isUnsupportedOperation(err *schemas.BifrostError) bool {
-	return err != nil && err.Error != nil && err.Error.Code != nil && *err.Error.Code == "unsupported_operation"
-}
-
 // decisionSystemPrompt frames the judgment task for an emulating LLM.
 const decisionSystemPrompt = "You are a judgment engine. Read the given state and answer every question by " +
 	"calling the provided function exactly once. For each question emit the requested value and your " +

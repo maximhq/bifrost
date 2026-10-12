@@ -360,6 +360,7 @@ type oauthToken struct {
 // decision, and generates the gateway-facing agent card. Mutations are serialized
 // so persistence and the published runtime cannot diverge.
 type Manager struct {
+	rawCaptures        schemas.A2ARawCaptureManager
 	store              Store
 	logger             schemas.Logger
 	httpClient         *http.Client
@@ -373,6 +374,7 @@ type Manager struct {
 	// externalURLFn overrides externalURL when set; see
 	// ManagerConfig.ExternalURLProvider.
 	externalURLFn func() string
+	rawCaptureFn  func() bool
 	authPolicy    schemas.AgentGatewayAuthPolicy
 	// grpcBaseDomain and grpcPort mirror ManagerConfig; see its documentation.
 	grpcBaseDomain string
@@ -460,6 +462,7 @@ type InspectedAgentExtension struct {
 }
 
 type InspectResponse struct {
+	Card                 *a2a.AgentCard            `json:"card,omitempty"`
 	Name                 string                    `json:"name,omitempty"`
 	Description          string                    `json:"description,omitempty"`
 	Version              string                    `json:"version,omitempty"`
@@ -516,6 +519,7 @@ type ManagerConfig struct {
 	// matching how MCP reads the same setting per request. The constructor's
 	// externalURL argument remains the fallback when unset.
 	ExternalURLProvider func() string
+	RawCaptureProvider  func() bool
 }
 
 // externalBaseURL returns the public base URL used for gateway-facing URLs
@@ -554,6 +558,7 @@ func NewManager(ctx context.Context, store Store, logger schemas.Logger, externa
 		logger:             logger,
 		externalURL:        strings.TrimRight(externalURL, "/"),
 		externalURLFn:      config.ExternalURLProvider,
+		rawCaptureFn:       config.RawCaptureProvider,
 		httpClient:         client,
 		pushDeliveryClient: newPushDeliveryClient(config.AllowPrivatePushCallbacks),
 		pushRelayID:        uuid.NewString(),
@@ -828,6 +833,7 @@ func (m *Manager) Inspect(ctx context.Context, req InspectRequest) (InspectRespo
 
 func inspectCard(card *a2a.AgentCard, capabilities map[string]bool) InspectResponse {
 	response := InspectResponse{
+		Card:                 card,
 		Name:                 card.Name,
 		Description:          card.Description,
 		Version:              card.Version,
@@ -2095,9 +2101,41 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		managed[http.CanonicalHeaderKey("x-bf-vk")] = slices.Clone(values)
 	}
 	clone.Header = sanitizeUpstreamHeaders(req.Header, managed)
+	capture := schemas.GetA2ARawCapture(clone.Context())
+	if capture != nil {
+		capture.Reset()
+		if clone.Body != nil {
+			clone.Body = &captureReadCloser{ReadCloser: clone.Body, capture: capture, request: true, expected: clone.ContentLength}
+		}
+		if getBody := clone.GetBody; getBody != nil {
+			// HTTP transport retries recreate the body instead of reading the original wrapper.
+			clone.GetBody = func() (io.ReadCloser, error) {
+				body, err := getBody()
+				if err != nil {
+					return nil, err
+				}
+				capture.Reset()
+				return &captureReadCloser{ReadCloser: body, capture: capture, request: true, expected: clone.ContentLength}, nil
+			}
+		}
+	}
 	resp, err := t.base.RoundTrip(clone)
+	if capture != nil && resp != nil && resp.Body != nil {
+		resp.Body = &captureReadCloser{ReadCloser: resp.Body, capture: capture, expected: resp.ContentLength}
+	}
 	if err == nil && resp != nil && resp.StatusCode != http.StatusOK && clone.Method == http.MethodPost && !isHTTPJSONErrorResponse(clone, resp) {
-		resp.Body.Close()
+		if capture != nil {
+			// Closing the HTTP body interrupts a stalled read. Capture must not
+			// delay a status-only SDK error indefinitely just to record its body.
+			var closeOnce sync.Once
+			closeBody := func() { closeOnce.Do(func() { _ = resp.Body.Close() }) }
+			timer := time.AfterFunc(time.Second, closeBody)
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, (1<<20)+1))
+			timer.Stop()
+			closeBody()
+		} else {
+			resp.Body.Close()
+		}
 		return nil, &upstreamHTTPStatusError{StatusCode: resp.StatusCode, Status: resp.Status}
 	}
 	if err == nil && resp != nil {

@@ -30,10 +30,10 @@ export default function WarpDock({ children }: { children: React.ReactNode }) {
 							defaultSize="400px"
 							minSize="320px"
 							maxSize="50%"
-							className="min-h-0"
+							className="min-h-0 md:pb-3"
 							data-testid="warp-dock-panel"
 						>
-							<div className="dark:bg-card bg-card h-full min-h-0 overflow-hidden border border-gray-200 md:mr-2 md:mb-3 md:rounded-md dark:border-zinc-800">
+							<div className="dark:bg-card bg-card h-full min-h-0 overflow-hidden border border-gray-200 md:mr-2 md:rounded-md dark:border-zinc-800">
 								<WarpPanel />
 							</div>
 						</ResizablePanel>

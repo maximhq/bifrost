@@ -2,6 +2,9 @@
   "$schema": "https://www.getbifrost.ai/schema",
   "setup_token": "bifrost-e2e-setup-token",
   "mcp": {
+    "tool_manager_config": {
+      "oauth_private_allowlist": ["localhost", "127.0.0.1", "::1"]
+    },
     "client_configs": [
       {
         "name": "sse_mcp",
@@ -305,6 +308,25 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "cloudflare": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Cloudflare API Token",
+          "value": "env.CLOUDFLARE_API_TOKEN",
+          "weight": 1,
+          "models": ["*"],
+          "cloudflare_key_config": {
+            "account_id": "env.CLOUDFLARE_ACCOUNT_ID"
+          }
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "groq": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
@@ -331,6 +353,25 @@
           "value": "env.PERPLEXITY_API_KEY",
           "weight": 1,
           "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "ollama": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Local Ollama",
+          "value": "",
+          "weight": 1,
+          "models": ["tev1:0.8b-q8_0", "tev1:bifrost-harness-missing"],
+          "ollama_key_config": {
+            "url": "http://localhost:11434"
+          }
         }
       ],
       "network_config": {
@@ -605,12 +646,104 @@
       "network_config": {
         "default_request_timeout_in_seconds": 300
       },
-      "injected_tools": {
-        "web_search": {
+      "injected_tools": [
+        {
+          "name": "web_search",
           "mcp_client_name": "sse_mcp",
           "tool_name": "web_search"
         }
-      }
+      ]
+    },
+    "openai_injectedtools": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "injected_tools": [
+        {
+          "name": "lighthouse_lookup",
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "web_search"
+        }
+      ]
+    },
+    "openai_injectedalias": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "injected_tools": [
+        {
+          "name": "lighthouse_lookup",
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "web_search"
+        },
+        {
+          "name": "sse_mcp-web_search",
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "echo"
+        }
+      ]
+    },
+    "openai_injectedfirstrow": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "injected_tools": [
+        {
+          "name": "web_search",
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "no_such_tool"
+        },
+        {
+          "name": "web_search",
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "web_search"
+        }
+      ]
     },
     "anthropic_websearch": {
       "send_back_raw_request": true,
@@ -631,12 +764,13 @@
       "network_config": {
         "default_request_timeout_in_seconds": 300
       },
-      "injected_tools": {
-        "web_search": {
+      "injected_tools": [
+        {
+          "name": "web_search",
           "mcp_client_name": "sse_mcp",
           "tool_name": "web_search"
         }
-      }
+      ]
     },
     "gemini_pc_auto": {
       "send_back_raw_request": true,
@@ -1197,7 +1331,30 @@
         ]
       }
     ],
+    "budgets": [
+      {
+        "id": "harness-cfgbudget-daily",
+        "max_limit": 0.0000001,
+        "reset_duration": "1d",
+        "virtual_key_id": "vk-harness-cfgbudget"
+      }
+    ],
     "virtual_keys": [
+      {
+        "name": "Harness config.json budget key",
+        "id": "vk-harness-cfgbudget",
+        "value": "sk-bf-harness-cfgbudget",
+        "is_active": true,
+        "calendar_aligned": true,
+        "provider_configs": [
+          {
+            "provider": "openai",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          }
+        ]
+      },
       {
         "name": "Test Key",
         "id": "vk-test",
@@ -1266,6 +1423,12 @@
           },
           {
             "provider": "parasail",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "cloudflare",
             "allowed_models": ["*"],
             "key_ids": ["*"],
             "weight": 1.0

@@ -45,6 +45,51 @@ Every key object supports these fields:
 | `weight` | float | Load balancing weight. Higher = more traffic |
 | `aliases` | object | Map logical name → actual model name for this key |
 | `use_for_batch_api` | boolean | Mark key as eligible for batch API calls |
+| `oauth_key_config` | object | Mint the bearer from an OAuth token endpoint instead of carrying a static `value`. `openai` and custom providers on the `openai` base only. See below |
+
+### OAuth-minted keys (`oauth_key_config`)
+
+Leave `value` empty and set `oauth_key_config` to have Bifrost request the access token itself, cache it per credential and refresh it before expiry. A non-empty `value` always wins.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `grant_type` | string | `client_credentials` or `jwt_bearer` (required) |
+| `token_url` | string | Token endpoint, `https` (required; `env.` reference allowed). Plain `http` only for loopback hosts; no userinfo, query or fragment |
+| `client_id`, `client_secret` | string | Client credentials for `client_credentials` |
+| `auth_style` | string | `header` (HTTP Basic, default) or `body` |
+| `private_key` | string | RSA or EC PEM for `jwt_bearer` |
+| `issuer`, `subject`, `audience`, `key_id` | string | Assertion claims and `kid` for `jwt_bearer`; `audience` is an optional form parameter for `client_credentials` |
+| `signing_algorithm` | string | `RS256` (default), `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, `ES512` |
+| `assertion_lifetime_seconds` | integer | Seconds from issue until the assertion expires, default 300, maximum 3600; `iat` is backdated 30 seconds, so `exp - iat` is this value plus 30 |
+| `scopes` | array | Scopes requested |
+| `extra_params` | object | Extra form parameters on the token request. Masked on read; encrypted at rest only when `encryption_key` / `BIFROST_ENCRYPTION_KEY` is set. Not for credentials |
+
+```json
+{
+  "providers": {
+    "acme-llm": {
+      "custom_provider_config": { "base_provider_type": "openai" },
+      "network_config": { "base_url": "https://llm.acme.example/v1" },
+      "keys": [
+        {
+          "name": "acme-oauth",
+          "models": ["*"],
+          "weight": 1.0,
+          "oauth_key_config": {
+            "grant_type": "client_credentials",
+            "token_url": "https://idp.acme.example/oauth2/token",
+            "client_id": "env.ACME_CLIENT_ID",
+            "client_secret": "env.ACME_CLIENT_SECRET",
+            "scopes": ["inference"]
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+The full field reference with the JWT bearer example is in [Custom Providers → Authentication](/providers/custom-providers#authentication-oauth-minted-keys).
 
 Per-provider `network_config` options (applies to all standard providers):
 

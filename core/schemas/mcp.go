@@ -338,8 +338,9 @@ type MCPToolManagerConfig struct {
 	// MaxInstructionsPerClient bounds one server's forwarded instructions, in bytes. 0 is the default.
 	MaxInstructionsPerClient int `json:"max_instructions_per_client,omitempty"`
 	// MaxInstructionsTotal bounds the whole aggregate, in bytes. 0 is the default.
-	MaxInstructionsTotal int                `json:"max_instructions_total,omitempty"`
-	CodeModeLimits       *MCPCodeModeLimits `json:"code_mode_limits,omitempty"` // Per-execution code mode budgets; nil keeps the defaults
+	MaxInstructionsTotal  int                `json:"max_instructions_total,omitempty"`
+	CodeModeLimits        *MCPCodeModeLimits `json:"code_mode_limits,omitempty"`        // Per-execution code mode budgets; nil keeps the defaults
+	OAuthPrivateAllowlist []string           `json:"oauth_private_allowlist,omitempty"` // Private hosts, IPs and CIDRs the MCP OAuth chain may reach for clients registered with admin auth
 }
 
 // MCPCodeModeLimits bounds a single code mode execution. A zero field uses its default.

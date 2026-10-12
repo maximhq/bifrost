@@ -543,12 +543,16 @@ describe("decision model providers", () => {
 	const typesafe = provider({ name: "typesafe" } as Partial<ModelProvider>);
 	const openrouter = provider({ name: "openrouter" } as Partial<ModelProvider>);
 	const openai = provider({ name: "openai" } as Partial<ModelProvider>);
+	const cloudflare = provider({ name: "cloudflare" } as Partial<ModelProvider>);
+	const perplexity = provider({ name: "perplexity" } as Partial<ModelProvider>);
+	const ollama = provider({ name: "ollama" } as Partial<ModelProvider>);
 	const laya = custom("Laya");
 	const clef = custom("cloudflare clev", "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef");
 	const clefFlash = custom("clef-flash", "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef-flash/");
 
 	test("offers only providers that answer decisions natively", () => {
-		for (const candidate of [typesafe, openrouter, openai, laya, clef]) expect(isDecisionProvider(candidate)).toBe(true);
+		for (const candidate of [typesafe, openrouter, openai, cloudflare, perplexity, ollama, laya, clef])
+			expect(isDecisionProvider(candidate)).toBe(true);
 		expect(isDecisionProvider(provider({ name: "anthropic" } as Partial<ModelProvider>))).toBe(false);
 		expect(
 			isDecisionProvider(
@@ -587,26 +591,24 @@ describe("decision model providers", () => {
 		expect(defaultDecisionModel(typesafe)).toBe("jev-latest");
 		expect(defaultDecisionModel(openrouter)).toBe("~typesafe/jev-latest");
 		expect(defaultDecisionModel(openai)).toBe("gpt-6-luna");
+		expect(defaultDecisionModel(cloudflare)).toBe("@cf/cloudflare/clef-flash");
+		expect(defaultDecisionModel(perplexity)).toBe("pplx-decider-v1.1-27b");
+		// Only Ollama's listing says which System One models are pulled locally.
+		expect(defaultDecisionModel(ollama)).toBe("");
 		expect(defaultDecisionModel(clefFlash)).toBe("clef-flash");
 		expect(defaultDecisionModel(laya)).toBe("english");
 		expect(defaultDecisionModel(custom("nimble-gpu"))).toBe("nimble-latest");
 		expect(defaultDecisionModel(custom("ollama-clef"))).toBe("clef-flash");
 	});
 
-	test("accepts only OpenRouter's Jev models for the openrouter provider", () => {
+	test("leaves OpenRouter's decision model to the decisions listing", () => {
+		// The picker offers only the models /api/models marks as serving decisions, so the
+		// schema accepts any OpenRouter model rather than a fixed list.
 		const base = { ...DEFAULT_FORM_VALUES, classifier: "decision" as const, keywords };
 		const parse = (model: string) =>
 			analyzerConfigSchema.safeParse({ ...base, decision: { ...base.decision, provider: "openrouter", model } });
 		expect(parse("~typesafe/jev-latest").success).toBe(true);
-		expect(parse("typesafe/jev-1.13").success).toBe(true);
-		// A chat model OpenRouter lists under Typesafe's namespace is not a decision model.
-		const rejected = parse("typesafe/jev-router");
-		expect(rejected.success).toBe(false);
-		if (!rejected.success) expect(rejected.error.issues.map((issue) => issue.path.join("."))).toContain("decision.model");
-		// The rule is scoped to OpenRouter: other providers keep free-form models.
-		expect(
-			analyzerConfigSchema.safeParse({ ...base, decision: { ...base.decision, provider: "typesafe", model: "jev-1.13.0" } }).success,
-		).toBe(true);
+		expect(parse("cloudflare/clef").success).toBe(true);
 	});
 
 	test("starts a self-hosted provider whose name says nothing on none", () => {

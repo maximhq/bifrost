@@ -288,6 +288,23 @@ When running the Gateway, access the built-in dashboard at `http://localhost:808
 - Detailed request/response inspection
 - Token and cost analytics
 
+#### Grouped view
+
+The **Group** button in the logs toolbar folds related requests into one row. The row's label says what it holds:
+
+| Label | What it groups | Grouped by |
+|-------|----------------|------------|
+| `2 turns` | Requests in the same session, under the first request | `session_id` |
+| `1 fallback` | Fallback attempts of one request, under the original attempt | `parent_request_id` |
+
+Batch and video requests show `N linked` for the settled-cost row that follows them.
+
+Click the label to expand the row. Session requests have a blue left border and are numbered `turn 2`, `turn 3` and so on. Fallback attempts have a grey border and read `fallback 1`, `fallback 2`. A session request with its own fallbacks gets its own toggle. Hover a label to see which key it groups by.
+
+Grouping is off by default. Your choice is kept in the URL (`grouped=true`). It turns off while you filter to a single `session_id` or `parent_request_id`, since that is already one group. On very large log tables it can load slower than the flat view.
+
+To group through the API, send `roots_only=true`, and add `group_sessions=true` to fold sessions too. Each row returns `child_count`, `session_child_count`, `session_total_cost` and `session_total_tokens`.
+
 ### API Endpoints
 
 Query logs programmatically using the `GET` request.
@@ -370,6 +387,24 @@ ws.onmessage = (event) => {
   console.log('New log entry:', logUpdate)
 }
 ```
+
+---
+
+## Background jobs
+
+Long operations run in the background so you can keep using the page. Find them in the bell icon in the top bar, on the **Background jobs** tab. The bell always opens on **Notifications**. Each tab has a badge, showing unread notifications on one and running jobs on the other.
+
+| Job | Started by |
+|-----|------------|
+| Recalculating log costs | Recalculate cost on the logs page |
+| Indexing logs for Warp | A Warp log index backfill |
+| Virtual key expiry cleanup | The daily cleanup of [expired virtual keys](/features/governance/virtual-keys#key-expiry) |
+
+Each job shows its status and, if it reports progress, a progress bar. Totals are approximate, so a finished job's count can be slightly off. To stop a running job, click **Cancel** on its row, then **Stop job**. A cancelled job does not resume. Dismiss a finished job from its row, or click **Clear finished** in the panel header to remove them all. On the Notifications tab, that spot holds **Mark all read**.
+
+Only administrators see jobs. Without View on the `BackgroundJobs` [RBAC resource](/enterprise/rbac), the tab is hidden. Cancelling needs Update on the same resource.
+
+`GET /api/sidekiq/jobs` returns all pending and running jobs, plus jobs finished in the last 24 hours. Results are newest first, up to 50.
 
 ---
 

@@ -204,6 +204,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Sarvam,
 		schemas.Wafer,
 		schemas.Databricks,
+		schemas.Cloudflare,
 		schemas.GithubCopilot,
 		schemas.Typesafe,
 		ProviderOpenAICustom,
@@ -528,6 +529,18 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				// Databricks has no batch surface. The flag is still required so the
 				// router hands batch and file requests to the provider, whose
 				// unsupported_operation answer is what the harness asserts on.
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Cloudflare:
+		return []schemas.Key{
+			{
+				Value:  *schemas.NewSecretVar("env.CLOUDFLARE_API_TOKEN"),
+				Models: []string{"*"},
+				Weight: 1.0,
+				CloudflareKeyConfig: &schemas.CloudflareKeyConfig{
+					AccountID: *schemas.NewSecretVar("env.CLOUDFLARE_ACCOUNT_ID"),
+				},
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
@@ -947,6 +960,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			},
 		}, nil
 	case schemas.Databricks:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Cloudflare:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,

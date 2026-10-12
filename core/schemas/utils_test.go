@@ -229,3 +229,30 @@ func TestParseModelString(t *testing.T) {
 		assert.Equal(t, "gpt-4o", model)
 	})
 }
+
+func TestIsClefModel(t *testing.T) {
+	for _, model := range []string{"clef", "clef-flash", "clef-omni", "@cf/cloudflare/clef", "@cf/cloudflare/clef-flash", "@cf/cloudflare/clef-omni"} {
+		assert.True(t, IsClefModel(model), model)
+	}
+	for _, model := range []string{"Clef-Flash", "cloudflare/clef", "@cf/meta/llama-4-scout-17b-16e-instruct", ""} {
+		assert.False(t, IsClefModel(model), model)
+	}
+}
+
+func TestIsPerplexityDeciderModel(t *testing.T) {
+	for _, model := range []string{"pplx-decider-v1-27b", "pplx-decider-v1.1-27b", "pplx-decider-v1.1-27b-20261006", "PPLX-Decider-v1.1-27b"} {
+		assert.True(t, IsPerplexityDeciderModel(model), model)
+	}
+	for _, model := range []string{"sonar-pro", "perplexity/pplx-decider-v1.1-27b", "decider", ""} {
+		assert.False(t, IsPerplexityDeciderModel(model), model)
+	}
+}
+
+func TestIsOllamaDecisionModel(t *testing.T) {
+	for _, model := range []string{"nimble", "nimble:latest", "nimble-2", "tev1:0.8b", "tev1-mini", "clef", "clef-flash", "clef-omni", "Clef-Flash:9b", "laya", "laya-multilingual"} {
+		assert.True(t, IsOllamaDecisionModel(model), model)
+	}
+	for _, model := range []string{"llama3.1:latest", "ollama/nimble", "", ":nimble", "tev2"} {
+		assert.False(t, IsOllamaDecisionModel(model), model)
+	}
+}
