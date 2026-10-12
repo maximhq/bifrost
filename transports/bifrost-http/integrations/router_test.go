@@ -1059,7 +1059,7 @@ func Test_handleStreaming_RetentionCancelsAndLeavesNoGoroutine(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 
 	rec := newCancelRecorder()
-	router.handleStreaming(ctx, nil, RouteConfig{}, stream, rec.cancel)
+	router.handleStreaming(ctx, nil, RouteConfig{}, "", stream, rec.cancel)
 
 	// Drain the response body so the producer's SendEvent calls succeed and it reaches
 	// its normal end-of-stream path rather than the write-error path (which has always
