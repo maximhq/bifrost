@@ -278,6 +278,9 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 	copyRawMessageFieldByName(&copy, original, "AdditionalTools")
 
 	copy.CacheControl = deepCopyCacheControl(original.CacheControl)
+	if original.OutputConfig != nil {
+		copy.OutputConfig = &schemas.ResponsesMessageOutputConfig{Effort: clonePtr(original.OutputConfig.Effort)}
+	}
 
 	// Deep copy ResponsesReasoning if present
 	if original.ResponsesReasoning != nil {
@@ -840,6 +843,20 @@ func deepCopyResponsesMessageContentBlock(original schemas.ResponsesMessageConte
 		copyBreakpoint := *original.PromptCacheBreakpoint
 		copyBreakpoint.Mode = clonePtr(copyBreakpoint.Mode)
 		copy.PromptCacheBreakpoint = &copyBreakpoint
+	}
+	// The definition is copied by value, as in schemas.DeepCopyResponsesMessage.
+	if original.ToolChange != nil {
+		copyToolChange := *original.ToolChange
+		copyToolChange.Name = clonePtr(original.ToolChange.Name)
+		copyToolChange.ServerName = clonePtr(original.ToolChange.ServerName)
+		copyToolChange.Definition = clonePtr(original.ToolChange.Definition)
+		copy.ToolChange = &copyToolChange
+	}
+	if original.GuardContent != nil {
+		copy.GuardContent = &schemas.GuardContent{}
+		if original.GuardContent.Qualifiers != nil {
+			copy.GuardContent.Qualifiers = append([]string(nil), original.GuardContent.Qualifiers...)
+		}
 	}
 
 	return copy

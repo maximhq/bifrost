@@ -806,6 +806,48 @@ func TestDeepCopyResponsesMessageDoesNotShareWebSearchAction(t *testing.T) {
 	require.Equal(t, newAction(), copied.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction)
 }
 
+// TestDeepCopyResponsesMessageKeepsOutputConfig covers the per-message effort
+// override, which the copy dropped.
+func TestDeepCopyResponsesMessageKeepsOutputConfig(t *testing.T) {
+	original := schemas.ResponsesMessage{
+		Role:         schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+		OutputConfig: &schemas.ResponsesMessageOutputConfig{Effort: schemas.Ptr("high")},
+	}
+
+	copied := deepCopyResponsesMessage(original)
+
+	*original.OutputConfig.Effort = "mutated"
+	require.NotNil(t, copied.OutputConfig, "output_config was dropped")
+	require.Equal(t, "high", *copied.OutputConfig.Effort)
+}
+
+// TestDeepCopyResponsesMessageContentBlockKeepsToolChangeAndGuardContent covers
+// the tool_addition / tool_removal target and Bedrock guard qualifiers, which
+// the block copy dropped.
+func TestDeepCopyResponsesMessageContentBlockKeepsToolChangeAndGuardContent(t *testing.T) {
+	newBlock := func() schemas.ResponsesMessageContentBlock {
+		return schemas.ResponsesMessageContentBlock{
+			Type: schemas.ResponsesInputMessageContentBlockTypeText,
+			ToolChange: &schemas.ResponsesToolChangeTarget{
+				Type:       "function",
+				Name:       schemas.Ptr("lookup"),
+				ServerName: schemas.Ptr("docs"),
+				Definition: &schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("lookup")},
+			},
+			GuardContent: &schemas.GuardContent{Qualifiers: []string{"query"}},
+		}
+	}
+	original := newBlock()
+
+	copied := deepCopyResponsesMessageContentBlock(original)
+
+	*original.ToolChange.Name = "mutated"
+	*original.ToolChange.ServerName = "mutated"
+	original.ToolChange.Definition.Name = schemas.Ptr("mutated")
+	original.GuardContent.Qualifiers[0] = "mutated"
+	require.Equal(t, newBlock(), copied)
+}
+
 // Only output_item.done carries a custom_tool_call's `input`, so the accumulator
 // must take that item wholesale.
 func TestBuildResponsesMessagePreservesCustomToolCallInput(t *testing.T) {
