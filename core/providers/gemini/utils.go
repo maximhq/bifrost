@@ -1408,18 +1408,26 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			config.Logprobs = schemas.Ptr(int32(topLogProbs))
 		}
 	}
-	// Gemini 2.5 and earlier reject function declarations sent together with
-	// responseMimeType "application/json" (structured output / JSON mode). That
-	// pairing is only supported on Gemini 3.x. Keep function calling working by
-	// dropping the JSON response-format hint for older models.
-	// Docs: https://ai.google.dev/gemini-api/docs/structured-output
-	if len(params.Tools) > 0 &&
-		config.ResponseMIMEType == "application/json" &&
-		!caps.SupportsResponseSchemaWithTools(isGemini3Plus(model)) {
-		config.ResponseMIMEType = ""
-		config.ResponseJSONSchema = nil
-	}
+	dropJSONResponseFormatWithToolsIfUnsupported(&config, len(params.Tools) > 0, caps, model)
 	return config, nil
+}
+
+// dropJSONResponseFormatWithToolsIfUnsupported clears the JSON response format when
+// tools ride along on a model that cannot combine them. Gemini 2.5 and earlier reject
+// function declarations sent together with responseMimeType "application/json"
+// (structured output / JSON mode); the pairing is only supported on Gemini 3.x. Function
+// calling is kept working by dropping the JSON response-format hint for older models.
+// Shared by the chat and Responses converters so the two paths cannot drift.
+// Docs: https://ai.google.dev/gemini-api/docs/structured-output
+func dropJSONResponseFormatWithToolsIfUnsupported(config *GenerationConfig, hasTools bool, caps schemas.ModelCaps, model string) {
+	if !hasTools || config.ResponseMIMEType != "application/json" {
+		return
+	}
+	if caps.SupportsResponseSchemaWithTools(isGemini3Plus(model)) {
+		return
+	}
+	config.ResponseMIMEType = ""
+	config.ResponseJSONSchema = nil
 }
 
 // mapBifrostServiceTierToGemini converts a BifrostServiceTier to a Gemini ServiceTier.
