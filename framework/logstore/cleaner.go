@@ -84,6 +84,13 @@ func NewLogsCleaner(manager LogRetentionManager, config CleanerConfig, logger sc
 	}
 }
 
+// RetentionDays is the retention period the next cleanup pass will use.
+func (c *LogsCleaner) RetentionDays() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.config.RetentionDays
+}
+
 // UpdateRetentionDays updates the retention period used by subsequent cleanup
 // passes. A pass already in progress keeps its cutoff for both log tables.
 func (c *LogsCleaner) UpdateRetentionDays(retentionDays int) {

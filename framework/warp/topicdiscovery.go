@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 )
 
@@ -437,6 +438,11 @@ type TopicUpkeep struct {
 	// Themes is how many themes the topics are grouped into after a pass
 	// that changed them; zero when nothing changed.
 	Themes int
+	// Pruned is how many topic and theme rows, retired for longer than the
+	// grace period, were deleted; Dropped how many pooled requests of
+	// another embedding model were.
+	Pruned  int
+	Dropped int64
 }
 
 // MaintainTopics retires the topics whose traffic has stopped and merges the
@@ -469,9 +475,36 @@ func (s *Service) MaintainTopics(ctx context.Context) (TopicUpkeep, error) {
 	if err != nil {
 		return done, fmt.Errorf("read topics: %w", err)
 	}
-	if len(active) == 0 {
-		return done, nil
+	if len(active) > 0 {
+		if err := s.retireAndMergeTopics(ctx, store, signature, active, &done); err != nil {
+			return done, err
+		}
 	}
+	// Then the tidying nobody reads the results of, on every pass whether or
+	// not one changed anything: merged topics whose survivor has gone are
+	// gone too, rows retired long enough ago are deleted, and pooled
+	// requests of another embedding model are dropped.
+	grace := s.topicLimits.pruneGrace
+	if grace == 0 {
+		grace = topicsRetireAfter
+	}
+	pruned, err := pruneRetiredTopics(ctx, store, time.Now().UTC(), grace)
+	if err != nil {
+		return done, err
+	}
+	done.Pruned = pruned
+	dropped, err := store.DeleteWarpTopicUnmatchedExcept(ctx, signature)
+	if err != nil {
+		return done, fmt.Errorf("drop pooled requests of other models: %w", err)
+	}
+	done.Dropped = dropped
+	return done, nil
+}
+
+// retireAndMergeTopics is the part of upkeep that needs active topics: it
+// retires the silent and the foreign, merges the alike, and regroups the
+// themes when anything changed.
+func (s *Service) retireAndMergeTopics(ctx context.Context, store logstore.WarpTopicStore, signature string, active []logstore.WarpTopic, done *TopicUpkeep) error {
 	ids := make([]string, 0, len(active))
 	for _, topic := range active {
 		ids = append(ids, topic.ID)
@@ -484,11 +517,11 @@ func (s *Service) MaintainTopics(ctx context.Context) (TopicUpkeep, error) {
 	}
 	recentCount, err := countTopicRequests(ctx, store, counted, into, &since)
 	if err != nil {
-		return done, fmt.Errorf("count recent requests: %w", err)
+		return fmt.Errorf("count recent requests: %w", err)
 	}
 	totalCount, err := countTopicRequests(ctx, store, counted, into, nil)
 	if err != nil {
-		return done, fmt.Errorf("count requests: %w", err)
+		return fmt.Errorf("count requests: %w", err)
 	}
 
 	var changed []logstore.WarpTopic
@@ -519,14 +552,14 @@ func (s *Service) MaintainTopics(ctx context.Context) (TopicUpkeep, error) {
 	}
 	repointed, err := repointMergedTopics(ctx, store, live, merged)
 	if err != nil {
-		return done, err
+		return err
 	}
 	changed = append(changed, repointed...)
 	if len(changed) == 0 {
-		return done, nil
+		return nil
 	}
 	if err := store.UpsertWarpTopics(ctx, changed); err != nil {
-		return done, fmt.Errorf("write topics: %w", err)
+		return fmt.Errorf("write topics: %w", err)
 	}
 	if done.Retired > 0 || done.Merged > 0 {
 		if s.indexer != nil {
@@ -540,7 +573,128 @@ func (s *Service) MaintainTopics(ctx context.Context) (TopicUpkeep, error) {
 		}
 		done.Themes = themes.Themes
 	}
-	return done, nil
+	return nil
+}
+
+// pruneRetiredTopics retires the merged topics whose survivor is no longer
+// active, then deletes every row retired for longer than grace, and reports
+// how many it deleted.
+//
+// Retired rows are kept for a while rather than deleted at once so a run or
+// a reader in flight still finds the row an id names; after that nothing
+// reads them, since every read selects on active topics and follows
+// merged_into only to one.
+func pruneRetiredTopics(ctx context.Context, store logstore.WarpTopicStore, now time.Time, grace time.Duration) (int, error) {
+	rows, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{Statuses: []string{logstore.WarpTopicStatusActive, logstore.WarpTopicStatusMerged, logstore.WarpTopicStatusRetired}, OmitCentroids: true})
+	if err != nil {
+		return 0, fmt.Errorf("read topics for pruning: %w", err)
+	}
+	active := make(map[string]struct{})
+	for _, row := range rows {
+		if row.Status == logstore.WarpTopicStatusActive {
+			active[row.ID] = struct{}{}
+		}
+	}
+	var orphaned []string
+	var expired []string
+	for _, row := range rows {
+		switch row.Status {
+		case logstore.WarpTopicStatusMerged:
+			if _, ok := active[row.MergedInto]; !ok {
+				orphaned = append(orphaned, row.ID)
+			}
+		case logstore.WarpTopicStatusRetired:
+			if row.UpdatedAt.Before(now.Add(-grace)) {
+				expired = append(expired, row.ID)
+			}
+		}
+	}
+	if len(orphaned) > 0 {
+		whole, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{IDs: orphaned})
+		if err != nil {
+			return 0, fmt.Errorf("read orphaned merged topics: %w", err)
+		}
+		for index := range whole {
+			whole[index].Status = logstore.WarpTopicStatusRetired
+		}
+		if err := store.UpsertWarpTopics(ctx, whole); err != nil {
+			return 0, fmt.Errorf("retire orphaned merged topics: %w", err)
+		}
+	}
+	if len(expired) == 0 {
+		return 0, nil
+	}
+	if err := store.DeleteWarpTopics(ctx, expired); err != nil {
+		return 0, fmt.Errorf("delete retired topics: %w", err)
+	}
+	return len(expired), nil
+}
+
+// TopicHealth is how live filing is doing: what there is to file under, how
+// much waits for a topic, and how much of the last day's traffic matched
+// nothing. A rising unmatched share is the sign the topics no longer fit
+// the traffic.
+type TopicHealth struct {
+	ActiveTopics int   `json:"active_topics"`
+	Themes       int   `json:"themes"`
+	Pooled       int64 `json:"pooled"`
+	// RequestsDay and UnmatchedDay count the requests filed in the last 24
+	// hours and those of them that matched no topic; UnmatchedShare is the
+	// second over the first, or zero when nothing was filed.
+	RequestsDay    int64   `json:"requests_24h"`
+	UnmatchedDay   int64   `json:"unmatched_24h"`
+	UnmatchedShare float64 `json:"unmatched_share_24h"`
+}
+
+// TopicHealth reads the live filing's state for the embedding model in use.
+//
+// It is the deployment's state: the topic and pool counts cover every caller,
+// and the pool has no owner to scope by. A caller whose reads are narrowed is
+// told none of it - ErrUnavailable - rather than their own day's requests
+// beside the deployment's topics.
+func (s *Service) TopicHealth(ctx context.Context) (TopicHealth, error) {
+	var health TopicHealth
+	store := s.topicStore()
+	if store == nil {
+		return health, ErrUnavailable
+	}
+	if !withCallerRestriction(ctx, ScopeFromContext(ctx), s.callerRestriction).Unrestricted || queryscope.DimensionFromContext(ctx) != nil {
+		return health, ErrUnavailable
+	}
+	config, err := s.Config(ctx)
+	if err != nil {
+		return health, err
+	}
+	signature := embeddingConfigSignature(config)
+	topics, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{Statuses: []string{logstore.WarpTopicStatusActive}, EmbeddingSignature: signature, OmitCentroids: true})
+	if err != nil {
+		return health, fmt.Errorf("read topics: %w", err)
+	}
+	for _, topic := range topics {
+		if topic.Kind == logstore.WarpTopicKindTheme {
+			health.Themes++
+		} else {
+			health.ActiveTopics++
+		}
+	}
+	if health.Pooled, err = store.CountWarpTopicUnmatched(ctx, signature); err != nil {
+		return health, fmt.Errorf("count pooled requests: %w", err)
+	}
+	since := time.Now().UTC().Add(-24 * time.Hour)
+	usage, err := store.SummarizeWarpTopicAssignments(ctx, logstore.WarpTopicAssignmentFilter{StartTime: &since})
+	if err != nil {
+		return health, fmt.Errorf("count the day's requests: %w", err)
+	}
+	for _, entry := range usage {
+		health.RequestsDay += entry.Requests
+		if entry.TopicID == "" {
+			health.UnmatchedDay = entry.Requests
+		}
+	}
+	if health.RequestsDay > 0 {
+		health.UnmatchedShare = float64(health.UnmatchedDay) / float64(health.RequestsDay)
+	}
+	return health, nil
 }
 
 // repointMergedTopics returns the topics already merged whose merged_into is
@@ -793,11 +947,17 @@ func (s *Service) topicUpkeepTick(ctx context.Context) {
 	done, err := s.MaintainTopics(ctx)
 	switch {
 	case errors.Is(err, ErrUnavailable):
-		return
+		// Warp is off or unset: no topics to keep, but expired logs' vectors
+		// still go, and discovery sees for itself that it is not due.
 	case err != nil:
 		s.warnf("failed to maintain Warp topics: %v", err)
-	case done.Retired > 0 || done.Merged > 0:
-		s.infof("warp topics: retired %d, merged %d", done.Retired, done.Merged)
+	case done.Retired > 0 || done.Merged > 0 || done.Pruned > 0 || done.Dropped > 0:
+		s.infof("warp topics: retired %d, merged %d, pruned %d, dropped %d pooled", done.Retired, done.Merged, done.Pruned, done.Dropped)
+	}
+	if swept, err := s.sweepExpiredVectors(ctx, time.Now().UTC()); err != nil {
+		s.warnf("failed to sweep expired Warp vectors: %v", err)
+	} else if swept > 0 {
+		s.infof("warp: swept %d vector(s) of expired logs", swept)
 	}
 	started, err := s.StartDiscoveryIfDue(ctx)
 	if err != nil {

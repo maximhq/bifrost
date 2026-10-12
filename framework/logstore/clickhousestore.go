@@ -887,17 +887,39 @@ func (s *ClickHouseLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Ti
 	return s.chDeleteWhere(ctx, "logs", "created_at < ?", cutoff)
 }
 
-// DeleteLog deletes a log entry by id with a lightweight delete.
+// DeleteLog deletes a log entry by id with a lightweight delete, and with it
+// what Warp's topic tables hold about it.
 func (s *ClickHouseLogStore) DeleteLog(ctx context.Context, id string) error {
-	return s.chLightweightDelete(ctx, "logs", "id = ?", id)
+	if err := s.chLightweightDelete(ctx, "logs", "id = ?", id); err != nil {
+		return err
+	}
+	return s.deleteWarpTopicRowsForLogs(ctx, []string{id})
 }
 
-// DeleteLogs deletes multiple log entries by id with one lightweight delete.
+// DeleteLogs deletes multiple log entries by id with one lightweight delete,
+// and with them what Warp's topic tables hold about them.
 func (s *ClickHouseLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	return s.chLightweightDelete(ctx, "logs", "id IN ?", ids)
+	if err := s.chLightweightDelete(ctx, "logs", "id IN ?", ids); err != nil {
+		return err
+	}
+	return s.deleteWarpTopicRowsForLogs(ctx, ids)
+}
+
+// deleteWarpTopicRowsForLogs is the lightweight-delete form of the RDB
+// store's.
+func (s *ClickHouseLogStore) deleteWarpTopicRowsForLogs(ctx context.Context, ids []string) error {
+	for chunk := range slices.Chunk(ids, chWarpTopicDeleteChunk) {
+		if err := s.chLightweightDelete(ctx, "warp_topic_assignments", "log_id IN ?", chunk); err != nil {
+			return err
+		}
+		if err := s.chLightweightDelete(ctx, "warp_topic_unmatched", "log_id IN ?", chunk); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DeleteMCPToolLogs deletes multiple MCP tool log entries by id with one
@@ -1370,6 +1392,22 @@ func (s *ClickHouseLogStore) PruneWarpTopicUnmatched(ctx context.Context, olderT
 		return 0, err
 	}
 	return s.chDeleteWhere(ctx, "warp_topic_unmatched", where, args...)
+}
+
+// DeleteWarpTopicUnmatchedExcept drops the pool rows of every other embedding
+// model with one lightweight delete.
+func (s *ClickHouseLogStore) DeleteWarpTopicUnmatchedExcept(ctx context.Context, embeddingSignature string) (int64, error) {
+	return s.chDeleteWhere(ctx, "warp_topic_unmatched", "embedding_signature <> ?", embeddingSignature)
+}
+
+// DeleteWarpTopics removes topic and theme rows with lightweight deletes.
+func (s *ClickHouseLogStore) DeleteWarpTopics(ctx context.Context, ids []string) error {
+	for chunk := range slices.Chunk(ids, chWarpTopicDeleteChunk) {
+		if err := s.chLightweightDelete(ctx, "warp_topics", "id IN ?", chunk); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DeleteWarpTopicUnmatchedBatch deletes every pool row whose log was created
