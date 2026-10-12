@@ -47,12 +47,6 @@ type fakeWarpVectorStore struct {
 	// respondVector, when set, answers from the query vector as well, for tests
 	// where each phrasing of a search reaches different rows.
 	respondVector func(vector []float32, queries []vectorstore.Query) []vectorstore.SearchResult
-	// failNamespace/failAfter/failErr make writes into one namespace fail once
-	// failAfter of them have succeeded, so a test can stop a run partway
-	// through writing.
-	failNamespace string
-	failAfter     int
-	failErr       error
 	// created is every namespace CreateNamespace was called for. With strict
 	// set, a paging read of any other namespace fails, which is how the
 	// embedded and Pinecone backends behave after a restart: they keep each
@@ -198,21 +192,10 @@ func (f *fakeWarpVectorStore) GetNearest(_ context.Context, _ string, vector []f
 	return f.nearest, nil
 }
 func (f *fakeWarpVectorStore) RequiresVectors() bool { return true }
-func (f *fakeWarpVectorStore) failAddAfter(namespace string, succeeded int, err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.failNamespace, f.failAfter, f.failErr = namespace, succeeded, err
-}
 
 func (f *fakeWarpVectorStore) Add(_ context.Context, namespace string, id string, embedding []float32, metadata map[string]interface{}) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.failErr != nil && namespace == f.failNamespace {
-		if f.failAfter == 0 {
-			return f.failErr
-		}
-		f.failAfter--
-	}
 	if f.addErr != nil {
 		err := f.addErr
 		f.addErr = nil

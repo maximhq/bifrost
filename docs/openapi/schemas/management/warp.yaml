@@ -408,7 +408,12 @@ WarpTopicsStatus:
       type: integer
       format: int64
       description: Topics written.
-    skipped: { type: integer, format: int64 }
+    skipped:
+      type: integer
+      format: int64
+      description: |
+        Requests that were indexed but are no longer in the log store, so they
+        were clustered but could not be filed under a topic.
     failed:
       type: integer
       format: int64

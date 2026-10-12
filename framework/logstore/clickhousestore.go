@@ -1323,6 +1323,17 @@ func (s *ClickHouseLogStore) UpsertWarpTopicAssignments(ctx context.Context, ass
 	return s.db.WithContext(ctx).Create(&assignments).Error
 }
 
+// DeleteWarpTopicAssignments removes the given requests' assignments with
+// lightweight deletes.
+func (s *ClickHouseLogStore) DeleteWarpTopicAssignments(ctx context.Context, logIDs []string) error {
+	for chunk := range slices.Chunk(logIDs, chWarpTopicDeleteChunk) {
+		if err := s.chLightweightDelete(ctx, "warp_topic_assignments", "log_id IN ?", chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // DeleteWarpTopicAssignmentsBatch deletes every assignment whose log was
 // created before cutoff with one lightweight delete; see DeleteLogsBatch for
 // why batchSize is ignored.
