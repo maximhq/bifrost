@@ -238,10 +238,9 @@ export const SELF_HOSTED_DECISION_MODELS = [
 	{ label: "Clef", models: ["clef-flash", "clef"] },
 ] as const;
 
-// The Jev models OpenRouter serves on its decisions endpoint, latest alias first.
-// OpenRouter's catalog also lists chat models under Typesafe's namespace (such as
-// the Jev Router), which that endpoint does not accept, so only these are offered.
-export const OPENROUTER_DECISION_MODELS = ["~typesafe/jev-latest", "typesafe/jev-1.13"] as const;
+// OPENROUTER_DECISION_MODEL is the model a newly selected OpenRouter provider starts on.
+// The picker lists every OpenRouter model the datasheet marks as serving decisions.
+export const OPENROUTER_DECISION_MODEL = "~typesafe/jev-latest";
 
 // OPENAI_DECISION_MODEL is the model a newly selected OpenAI provider starts on.
 // The picker lists every model the datasheet marks as serving decisions.
