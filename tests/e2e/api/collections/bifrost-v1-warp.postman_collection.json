@@ -4668,7 +4668,7 @@
     {
       "id": "folder-topics",
       "name": "Topics",
-      "description": "Topic clusters are one snapshot: the clusters Setup computed over the seeded window, across the whole deployment, counted in requests. The overview case must be answered from list_topics in one call, with topic names left unlinked - a name linked to a single example says how many requests the topic holds and opens one. The rest ask for what the snapshot cannot show - another time range, a trend, every request in a topic, a count of people. Each must say so, offer the feature-request link, and neither call list_topics again nor rebuild a breakdown by slicing the logs with other tools.",
+      "description": "Topics are counted over whatever window the question names, from the topic each request Setup indexed was filed under, across the whole deployment, in requests. list_topics takes the window and filters itself and carries a trend per topic against the period before, so the overview, a time range and a week-over-week trend are each one call, with topic names left unlinked - a name linked to a single example says how many requests the topic holds and opens one. What it still cannot show - every request in a topic, a count of people - is declined with the feature-request link, without rebuilding a breakdown by slicing the logs with other tools.",
       "item": [
         {
           "id": "topics-overview",
@@ -4721,8 +4721,8 @@
           }
         },
         {
-          "id": "topics-past-hour",
-          "name": "Declines topics for another time range",
+          "id": "topics-past-day",
+          "name": "Lists topics for another time range in one call",
           "event": [
             {
               "listen": "prerequest",
@@ -4730,7 +4730,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.prerequest({\"name\":\"Declines topics for another time range\",\"ask\":\"What topics came up in the past hour, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"answerAll\":[\"github\\\\.com/maximhq/bifrost/issues/new\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\"]}});"
+                  "warp.prerequest({\"name\":\"Lists topics for another time range in one call\",\"ask\":\"What topics came up in the past 24 hours, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"argsMatch\":[{\"tool\":\"list_topics\",\"pattern\":\"\\\"start_time\\\"\\\\s*:\\\\s*\\\"-(24h|1d|1440m)\\\"\"}],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
                 ]
               }
             },
@@ -4740,7 +4740,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.test({\"name\":\"Declines topics for another time range\",\"ask\":\"What topics came up in the past hour, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"answerAll\":[\"github\\\\.com/maximhq/bifrost/issues/new\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\"]}});"
+                  "warp.test({\"name\":\"Lists topics for another time range in one call\",\"ask\":\"What topics came up in the past 24 hours, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"argsMatch\":[{\"tool\":\"list_topics\",\"pattern\":\"\\\"start_time\\\"\\\\s*:\\\\s*\\\"-(24h|1d|1440m)\\\"\"}],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
                 ]
               }
             }
@@ -4772,7 +4772,7 @@
         },
         {
           "id": "topics-trend",
-          "name": "Declines a topic trend",
+          "name": "Reads a topic trend off one call",
           "event": [
             {
               "listen": "prerequest",
@@ -4780,7 +4780,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.prerequest({\"name\":\"Declines a topic trend\",\"ask\":\"Which topics are growing this week compared to last week, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"answerAll\":[\"github\\\\.com/maximhq/bifrost/issues/new\"],\"answerNone\":[\"\\\\b(grew|growing|increased|up) (by )?\\\\d+ ?%\"]}});"
+                  "warp.prerequest({\"name\":\"Reads a topic trend off one call\",\"ask\":\"Which topics are growing this week compared to last week, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
                 ]
               }
             },
@@ -4790,7 +4790,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.test({\"name\":\"Declines a topic trend\",\"ask\":\"Which topics are growing this week compared to last week, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"answerAll\":[\"github\\\\.com/maximhq/bifrost/issues/new\"],\"answerNone\":[\"\\\\b(grew|growing|increased|up) (by )?\\\\d+ ?%\"]}});"
+                  "warp.test({\"name\":\"Reads a topic trend off one call\",\"ask\":\"Which topics are growing this week compared to last week, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
                 ]
               }
             }

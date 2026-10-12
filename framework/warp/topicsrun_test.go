@@ -433,8 +433,7 @@ func TestWarpTopicsJobReportsClusteredAndAssigned(t *testing.T) {
 			}
 			require.Equal(t, 400, inTopics+final.Unassigned)
 
-			topics, total, err := NewTopicReader(&recordingStore{row: validWarpConfigRow()}, service.topicStore()).ListTopics(context.Background(), 15)
-			require.NoError(t, err)
+			topics, total := listAllTopics(t, NewTopicReader(&recordingStore{row: validWarpConfigRow()}, service.topicStore()))
 			require.Equal(t, 400, total, "shares are of everything the run read")
 			require.Len(t, topics, 2)
 			require.InDelta(t, 0.5, topics[0].Share, 0.05)

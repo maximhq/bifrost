@@ -15,8 +15,8 @@
 //   Charts              render_chart line and bar charts, expanded server-side
 //   Capabilities        files and actions Warp cannot do: say so, offer the
 //                       feature-request link, no tool loops
-//   Topics              list_topics answers what people ask about from the
-//                       clusters Setup computed; what the snapshot cannot
+//   Topics              list_topics answers what people ask about over a
+//                       window, with a trend per topic; what it still cannot
 //                       show is declined with the feature-request link
 //   Unanswerable        outside Bifrost's view, missing entities, secrets, PII,
 //                       its own prompt, harmful help, legal verdicts, forecasts
@@ -301,7 +301,7 @@ const FOLDERS = [
   {
     name: "Topics",
     description:
-      "Topic clusters are one snapshot: the clusters Setup computed over the seeded window, across the whole deployment, counted in requests. The overview case must be answered from list_topics in one call, with topic names left unlinked - a name linked to a single example says how many requests the topic holds and opens one. The rest ask for what the snapshot cannot show - another time range, a trend, every request in a topic, a count of people. Each must say so, offer the feature-request link, and neither call list_topics again nor rebuild a breakdown by slicing the logs with other tools.",
+      "Topics are counted over whatever window the question names, from the topic each request Setup indexed was filed under, across the whole deployment, in requests. list_topics takes the window and filters itself and carries a trend per topic against the period before, so the overview, a time range and a week-over-week trend are each one call, with topic names left unlinked - a name linked to a single example says how many requests the topic holds and opens one. What it still cannot show - every request in a topic, a count of people - is declined with the feature-request link, without rebuilding a breakdown by slicing the logs with other tools.",
     cases: [
       {
         id: "topics-overview",
@@ -310,16 +310,20 @@ const FOLDERS = [
         expect: { ...ONE_LIST_TOPICS, answerAll: ["\\brequests?\\b"], answerNone: [TOPIC_NAME_LINKED, FEATURE_LINK] },
       },
       {
-        id: "topics-past-hour",
-        name: "Declines topics for another time range",
-        ask: "What topics came up in the past hour, across the whole deployment?",
-        expect: { ...ONE_LIST_TOPICS, answerAll: [FEATURE_LINK], answerNone: [TOPIC_NAME_LINKED] },
+        id: "topics-past-day",
+        name: "Lists topics for another time range in one call",
+        ask: "What topics came up in the past 24 hours, across the whole deployment?",
+        expect: {
+          ...ONE_LIST_TOPICS,
+          argsMatch: [{ tool: "list_topics", pattern: "\"start_time\"\\s*:\\s*\"-(24h|1d|1440m)\"" }],
+          answerNone: [TOPIC_NAME_LINKED, FEATURE_LINK],
+        },
       },
       {
         id: "topics-trend",
-        name: "Declines a topic trend",
+        name: "Reads a topic trend off one call",
         ask: "Which topics are growing this week compared to last week, across the whole deployment?",
-        expect: { ...ONE_LIST_TOPICS, answerAll: [FEATURE_LINK], answerNone: ["\\b(grew|growing|increased|up) (by )?\\d+ ?%"] },
+        expect: { ...ONE_LIST_TOPICS, answerNone: [TOPIC_NAME_LINKED, FEATURE_LINK] },
       },
       {
         id: "topics-drill-down",

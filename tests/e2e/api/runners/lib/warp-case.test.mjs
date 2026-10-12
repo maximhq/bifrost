@@ -146,7 +146,7 @@ test("topic cases allow exactly one list_topics call and no other tool", () => {
   const { pm } = fakePm();
   const lib = createWarpLib(pm);
   const toolFailure = /tool calls, want at most|no use for|did not call/;
-  for (const id of ["topics-overview", "topics-past-hour", "topics-trend", "topics-drill-down", "topics-people"]) {
+  for (const id of ["topics-overview", "topics-past-day", "topics-trend", "topics-drill-down", "topics-people"]) {
     const { expect } = caseFromCollection(id);
     const tools = (calls) => lib.evaluate(answered("x", calls), expect).filter((f) => toolFailure.test(f));
     assert.deepStrictEqual(tools(["list_topics"]), [], `${id}: one list_topics call`);

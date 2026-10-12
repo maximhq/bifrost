@@ -3,10 +3,12 @@ package warp
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -182,29 +184,36 @@ func TestBuildTopicsJobMetaErrorClasses(t *testing.T) {
 
 func TestWarpSystemPromptPrefersListTopics(t *testing.T) {
 	content := systemInstructions(&schemas.WarpConfig{}, true)
-	require.Contains(t, content, "call list_topics first")
-	require.Contains(t, content, "or that topics are not available to the person asking")
+	require.Contains(t, content, "call list_topics first, with the window and filters the question names")
+	require.Contains(t, content, "Only if it reports that no topics have been built yet")
+	require.NotContains(t, content, "not available to the person asking", "a restricted caller is answered from their own requests now")
 }
 
-// Topics answer one question: what the requests of the last computed window
-// were about. Asked for anything finer - another time range, one team, a
-// trend, the requests behind a topic - the model used to go looking, slicing
-// the logs call after call for an answer no tool holds. It is told what there
-// is and what there is not, so it can say so and stop.
+// Topics are counted over whatever window and slice the question names, and
+// each row carries its trend. The model is told what one call answers - so it
+// neither declines a time range it can serve nor compares two calls by hand -
+// and what is still not there, so it can say so and stop rather than slice
+// the logs looking for it.
 func TestWarpSystemPromptSaysWhatTopicsCannotAnswer(t *testing.T) {
 	content := systemInstructions(&schemas.WarpConfig{}, true)
 	for _, line := range []string{
-		"Topics are a snapshot",
-		"a different time range",
-		"one team, customer, user, model or app",
-		"whether a topic is growing",
-		"every request in a topic",
-		"how many people or conversations",
-		"cost, latency or errors per topic",
-		"Call list_topics once",
+		"Topics are counted over a window",
+		"defaults to the last 7 days",
+		"trend block against the period of equal length just before it",
+		"new_in_window",
+		"with interval hour or day",
+		"growing or shrinking, new, costly or failing",
+		`"this week against last week" is one call`,
+		"It cannot list every request in a topic",
+		"sessions are sessions, not people",
+		"broader themes",
 		"is not available yet",
+		"Do not rebuild a topic breakdown",
 	} {
 		require.Contains(t, content, line)
+	}
+	for _, gone := range []string{"Topics are a snapshot", "a different time range", "Call list_topics once"} {
+		require.NotContains(t, content, gone)
 	}
 	require.Contains(t, content, "Leave a topic's name unlinked")
 	require.Contains(t, content, `say "requests" when you report them`)
@@ -632,6 +641,22 @@ func topicTestReader(t *testing.T, logs map[string]logstore.Log) *semanticLogRea
 	return &semanticLogReader{logs: logs, topics: store}
 }
 
+// listAllTopics lists every topic over all time, as a question with no
+// window would, returning the topics and the total they are shares of.
+func listAllTopics(t *testing.T, reader *TopicReader) ([]Topic, int) {
+	t.Helper()
+	list, err := reader.ListTopics(context.Background(), allTimeTopicQuery(15))
+	require.NoError(t, err)
+	return list.Topics, int(list.TotalRequests)
+}
+
+// allTimeTopicQuery is a query whose window holds every test timestamp.
+func allTimeTopicQuery(limit int) TopicQuery {
+	start := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+	return TopicQuery{Filter: logstore.WarpTopicAssignmentFilter{StartTime: &start, EndTime: &end}, Limit: limit}
+}
+
 // topicTestSignature is the embedding signature the test configuration
 // carries, which is what every topic row is stamped with.
 func topicTestSignature() string {
@@ -932,8 +957,7 @@ func TestWarpTopicsJobReplacesPreviousTopics(t *testing.T) {
 	require.Equal(t, 2, final.Failed, "each failed label is counted")
 	require.Contains(t, final.LastError, "no keys found")
 
-	listed, total, err := NewTopicReader(&recordingStore{row: validWarpConfigRow()}, store).ListTopics(ctx, 15)
-	require.NoError(t, err)
+	listed, total := listAllTopics(t, NewTopicReader(&recordingStore{row: validWarpConfigRow()}, store))
 	require.Len(t, listed, 2)
 	require.Equal(t, 6, total, "the request filed under the retired topic is not counted")
 }
@@ -1038,8 +1062,11 @@ func TestWarpTopicsJobRestoresAssignmentsWhenALaterBatchFails(t *testing.T) {
 	before := assignments()
 	require.Len(t, before, 5)
 	reader2 := NewTopicReader(&recordingStore{row: validWarpConfigRow()}, store)
-	topicsBefore, totalBefore, err := reader2.ListTopics(ctx, 15)
+	end := start.Add(24 * time.Hour)
+	window := TopicQuery{Filter: logstore.WarpTopicAssignmentFilter{StartTime: &start, EndTime: &end}, Limit: 15}
+	listBefore, err := reader2.ListTopics(ctx, window)
 	require.NoError(t, err)
+	require.NotEmpty(t, listBefore.Topics)
 
 	// Six requests in batches of four: the first batch lands, the second fails.
 	limits := defaultTopicLimits()
@@ -1050,10 +1077,9 @@ func TestWarpTopicsJobRestoresAssignmentsWhenALaterBatchFails(t *testing.T) {
 	require.ErrorContains(t, err, "log store unavailable")
 
 	require.Equal(t, before, assignments(), "every request is back under the topic it had, and the added row is gone")
-	topicsAfter, totalAfter, err := reader2.ListTopics(ctx, 15)
+	listAfter, err := reader2.ListTopics(ctx, window)
 	require.NoError(t, err)
-	require.Equal(t, totalBefore, totalAfter)
-	require.Equal(t, topicsBefore, topicsAfter)
+	require.Equal(t, listBefore, listAfter, "the previous topics answer as they did, counts included")
 }
 
 // failingTopicStore is a log store whose assignment writes fail: every one,
@@ -1223,13 +1249,23 @@ func TestWarpTopicsNeedALogStoreThatKeepsThem(t *testing.T) {
 
 // list_topics is the tool that answers "what do people ask about": topics by
 // size, with a share and links a reader can open, counted from the rows.
+// topicToolDeps are tool deps for an administrator asking over the given
+// store, with the clock pinned so a relative window lands on the test rows.
+func topicToolDeps(store logstore.LogStore, now time.Time) *ToolDeps {
+	return &ToolDeps{
+		logManager: &fakeLogReader{}, clock: now,
+		topics: NewTopicReader(&recordingStore{row: validWarpConfigRow()}, store),
+		scope:  Scope{HasIdentity: true, UserID: "admin", Unrestricted: true},
+	}
+}
+
 func TestWarpListTopicsToolReturnsSortedTopics(t *testing.T) {
 	store := topicTestLogStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{
-		{ID: "t-small", Label: "Password resets", Cohesion: 0.5, ExampleLogIDsJSON: `["log-1","log-2"]`, EmbeddingSignature: topicTestSignature(), CreatedAt: now},
-		{ID: "t-big", Label: "Refund requests", Cohesion: 0.875, ExampleLogIDsJSON: `["log-1","log-2"]`, EmbeddingSignature: topicTestSignature(), CreatedAt: now},
+		{ID: "t-small", Label: "Password resets", Cohesion: 0.5, ExampleLogIDsJSON: `["log-1","log-2"]`, EmbeddingSignature: topicTestSignature(), CreatedAt: now.Add(-30 * 24 * time.Hour)},
+		{ID: "t-big", Label: "Refund requests", Cohesion: 0.875, ExampleLogIDsJSON: `["log-1","log-2"]`, EmbeddingSignature: topicTestSignature(), CreatedAt: now.Add(-2 * 24 * time.Hour)},
 	}))
 	var rows []logstore.WarpTopicAssignment
 	for index := range 12 {
@@ -1237,23 +1273,51 @@ func TestWarpListTopicsToolReturnsSortedTopics(t *testing.T) {
 		if index < 3 {
 			topic = "t-small"
 		}
-		rows = append(rows, logstore.WarpTopicAssignment{LogID: fmt.Sprintf("log-%d", index), TopicID: topic, Timestamp: now.Add(-time.Duration(index) * time.Minute)})
+		row := logstore.WarpTopicAssignment{LogID: fmt.Sprintf("log-%d", index), TopicID: topic, Timestamp: now.Add(-time.Duration(index) * time.Minute), SessionID: fmt.Sprintf("s-%d", index/2), Cost: 0.5, TotalTokens: 100, Latency: 200}
+		if index == 4 {
+			row.Status = "error"
+		}
+		rows = append(rows, row)
 	}
+	// Two that matched nothing, and one from before the week the window covers.
+	rows = append(rows,
+		logstore.WarpTopicAssignment{LogID: "none-1", Timestamp: now.Add(-time.Hour)},
+		logstore.WarpTopicAssignment{LogID: "none-2", Timestamp: now.Add(-2 * time.Hour)},
+		logstore.WarpTopicAssignment{LogID: "old", TopicID: "t-big", Timestamp: now.Add(-8 * 24 * time.Hour)},
+	)
 	require.NoError(t, store.UpsertWarpTopicAssignments(ctx, rows))
 
-	reader := NewTopicReader(&recordingStore{row: validWarpConfigRow()}, store)
-	result, err := runTool(t, "list_topics", &ToolDeps{logManager: &fakeLogReader{}, topics: reader, scope: Scope{HasIdentity: true, UserID: "admin", Unrestricted: true}}, map[string]any{})
+	result, err := runTool(t, "list_topics", topicToolDeps(store, now), map[string]any{})
 	require.NoError(t, err)
 	out := result.(map[string]any)
 	topics := out["topics"].([]Topic)
 	require.Len(t, topics, 2)
-	require.Equal(t, "Refund requests", topics[0].Label)
-	require.Equal(t, 9, topics[0].Size)
-	require.InDelta(t, 0.75, topics[0].Share, 1e-9)
-	require.InDelta(t, 0.875, topics[0].Cohesion, 1e-9)
-	require.Equal(t, []string{logDetailLink("log-1"), logDetailLink("log-2")}, topics[0].SampleLinks)
-	require.Equal(t, 12, out["total_clustered"])
-	require.Equal(t, now.Format(time.RFC3339), out["computed_at"])
+	big := topics[0]
+	require.Equal(t, "Refund requests", big.Label)
+	require.EqualValues(t, 9, big.Requests)
+	require.InDelta(t, 9.0/14, big.Share, 1e-9, "a share of every request in the window, the unmatched ones included")
+	require.EqualValues(t, 5, big.Sessions)
+	require.EqualValues(t, 1, big.Errors)
+	require.InDelta(t, 4.5, big.Cost, 1e-9)
+	require.EqualValues(t, 900, big.Tokens)
+	require.InDelta(t, 200, big.AvgLatency, 1e-9)
+	require.InDelta(t, 0.875, big.Cohesion, 1e-9)
+	require.Equal(t, now.Add(-2*24*time.Hour), big.FirstSeen)
+	require.True(t, big.New, "made inside the window")
+	require.False(t, topics[1].New)
+	require.Equal(t, []string{logDetailLink("log-1"), logDetailLink("log-2")}, big.SampleLinks)
+	require.True(t, big.Trend.HasPreviousPeriod, "one request the week before")
+	require.EqualValues(t, 1, big.Trend.PreviousRequests)
+	require.InDelta(t, 800, big.Trend.RequestsTrend, 1e-9)
+	require.Nil(t, big.Trend.CostTrend, "the week before cost nothing, so there is no percentage")
+	require.False(t, topics[1].Trend.HasPreviousPeriod)
+	require.Zero(t, topics[1].Trend.RequestsTrend)
+	require.Equal(t, int64(14), out["total_requests"])
+	require.Equal(t, int64(2), out["unmatched_requests"])
+	require.Equal(t, 2, out["total_topics"])
+	require.Equal(t, "deployment", out["scope"])
+	require.Equal(t, map[string]string{"start": now.Add(-7 * 24 * time.Hour).Format(time.RFC3339Nano), "end": now.Format(time.RFC3339Nano)}, out["window"], "the last 7 days unless told otherwise")
+	require.Equal(t, map[string]string{"start": now.Add(-14 * 24 * time.Hour).Format(time.RFC3339Nano), "end": now.Add(-7 * 24 * time.Hour).Format(time.RFC3339Nano)}, out["previous_window"])
 	_, hasHint := out["hint"]
 	require.False(t, hasHint)
 
@@ -1264,21 +1328,145 @@ func TestWarpListTopicsToolReturnsSortedTopics(t *testing.T) {
 	encoded, err := sonic.MarshalString(out)
 	require.NoError(t, err)
 	require.Contains(t, encoded, `"example_links":["`+logDetailLink("log-1")+`","`+logDetailLink("log-2")+`"]`)
+	require.Contains(t, encoded, `"new_in_window":true`)
+	require.Contains(t, encoded, `"cost_trend":null`)
 	require.NotContains(t, encoded, "sample_links")
+	require.NotContains(t, encoded, "series", "no interval, no series")
 	_, hasLogsLink := out["logs_link"]
 	require.False(t, hasLogsLink, "the unfiltered Logs page is not what a topic count covers")
 	require.Contains(t, out["links"], "one example request")
 	require.Contains(t, out["counts"], "count requests")
-	require.Contains(t, out["cannot_answer"], "a different time range")
+	require.Contains(t, out["trend"], "previous_window")
+	require.Contains(t, out["cannot_answer"], "every request in a topic")
+	require.NotContains(t, out["cannot_answer"], "time range")
+}
+
+// The window and the filters are the ones every other tool takes, over the
+// columns an assignment carries; a filter it does not carry is refused by
+// name rather than ignored. With an interval each topic also comes bucket by
+// bucket.
+func TestWarpListTopicsToolTakesAWindowFiltersAndAnInterval(t *testing.T) {
+	store := topicTestLogStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{
+		{ID: "refunds", Label: "Refund requests", EmbeddingSignature: topicTestSignature(), CreatedAt: now.Add(-60 * 24 * time.Hour)},
+		{ID: "passwords", Label: "Password resets", EmbeddingSignature: topicTestSignature(), CreatedAt: now.Add(-60 * 24 * time.Hour)},
+	}))
+	var rows []logstore.WarpTopicAssignment
+	for day := range 4 {
+		for index := range 2 {
+			at := now.Add(-time.Duration(day)*24*time.Hour - time.Duration(index)*time.Hour)
+			rows = append(rows,
+				logstore.WarpTopicAssignment{LogID: fmt.Sprintf("r-%d-%d", day, index), TopicID: "refunds", Timestamp: at, TeamID: "team-a", Model: "gpt-4o", Cost: 1},
+				logstore.WarpTopicAssignment{LogID: fmt.Sprintf("p-%d-%d", day, index), TopicID: "passwords", Timestamp: at, TeamID: "team-b", Model: "gpt-4o", SessionID: "sess-1"},
+			)
+		}
+	}
+	rows = append(rows, logstore.WarpTopicAssignment{LogID: "r-claude", TopicID: "refunds", Timestamp: now.Add(-time.Hour), TeamID: "team-a", Model: "claude"})
+	require.NoError(t, store.UpsertWarpTopicAssignments(ctx, rows))
+	deps := topicToolDeps(store, now)
+
+	// A window of the last two days, by team.
+	result, err := runTool(t, "list_topics", deps, map[string]any{"filters": map[string]any{"start_time": "-2d", "team_ids": []any{"team-a"}}})
+	require.NoError(t, err)
+	out := result.(map[string]any)
+	topics := out["topics"].([]Topic)
+	require.Len(t, topics, 1, "the other team's topic has no request the filter reaches")
+	require.Equal(t, "Refund requests", topics[0].Label)
+	require.EqualValues(t, 6, topics[0].Requests, "days 0 and 1, the first of day 2 exactly at the window's edge, and the claude one")
+	require.EqualValues(t, 3, topics[0].Trend.PreviousRequests, "the two days before hold the rest of day 2 and day 3")
+	require.InDelta(t, 100, topics[0].Trend.RequestsTrend, 1e-9)
+	require.Equal(t, "named", out["scope"])
+	require.Equal(t, int64(6), out["total_requests"])
+
+	// A model and a session narrow the same way.
+	result, err = runTool(t, "list_topics", deps, map[string]any{"filters": map[string]any{"models": []any{"claude"}}})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, result.(map[string]any)["topics"].([]Topic)[0].Requests)
+	result, err = runTool(t, "list_topics", deps, map[string]any{"filters": map[string]any{"session_id": "sess-1"}})
+	require.NoError(t, err)
+	require.Equal(t, "Password resets", result.(map[string]any)["topics"].([]Topic)[0].Label)
+
+	// Day by day, oldest first, with the window's day boundaries.
+	result, err = runTool(t, "list_topics", deps, map[string]any{"filters": map[string]any{"start_time": "-2d", "models": []any{"gpt-4o"}}, "interval": "day"})
+	require.NoError(t, err)
+	topics = result.(map[string]any)["topics"].([]Topic)
+	require.Len(t, topics, 2)
+	for _, topic := range topics {
+		require.Len(t, topic.Series, 3, "%s: three UTC days touch the window", topic.Label)
+		require.Equal(t, time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC), topic.Series[0].Bucket)
+		require.Equal(t, time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC), topic.Series[2].Bucket)
+		for index, point := range topic.Series {
+			want := 2
+			if index == 0 {
+				want = 1 // the window starts at noon that day
+			}
+			require.EqualValues(t, want, point.Requests, "%s on %s", topic.Label, point.Bucket)
+		}
+	}
+	require.Equal(t, "Password resets", topics[0].Label, "equal in requests, so in label order")
+	require.InDelta(t, 1, topics[1].Series[0].Cost, 1e-9)
+	require.InDelta(t, 2, topics[1].Series[1].Cost, 1e-9)
+
+	// A window too long for its interval, and a filter a topic count cannot take.
+	_, err = runTool(t, "list_topics", deps, map[string]any{"filters": map[string]any{"start_time": "-30d"}, "interval": "hour"})
+	require.ErrorContains(t, err, "more than 200 buckets")
+	// Buckets are aligned to the epoch and both end buckets count: exactly 200
+	// hours that start mid-hour touch 201 of them, and 200 hours that start on
+	// the hour and stop short of the last touch 200.
+	_, err = runTool(t, "list_topics", deps, map[string]any{"filters": map[string]any{"start_time": "2026-08-20T00:30:00Z", "end_time": "2026-08-28T08:30:00Z"}, "interval": "hour"})
+	require.ErrorContains(t, err, "more than 200 buckets")
+	_, err = runTool(t, "list_topics", deps, map[string]any{"filters": map[string]any{"start_time": "2026-08-20T00:00:00Z", "end_time": "2026-08-28T07:59:59Z"}, "interval": "hour"})
+	require.NoError(t, err)
+	_, err = runTool(t, "list_topics", deps, map[string]any{"filters": map[string]any{"stop_reasons": []any{"length"}, "min_cost": 1}})
+	require.ErrorContains(t, err, "unknown filter fields: min_cost, stop_reasons")
+	require.ErrorContains(t, err, "Supported fields are: apps, business_unit_ids, customer_ids, end_time, models, providers, scope, session_id, start_time, status, team_ids, user_ids, virtual_key_ids")
+	_, err = runTool(t, "list_topics", deps, map[string]any{"filters": map[string]any{"apps": []any{"Warp"}}})
+	require.ErrorContains(t, err, `apps must not name "Warp"`)
+}
+
+// The filter the tool advertises is the shared one cut down to what a topic
+// count can honour, field descriptions included, so the model reads the same
+// words for start_time here as everywhere else.
+func TestTopicFilterSchemaIsTheSharedFilterCutDown(t *testing.T) {
+	var shared, topic struct {
+		Description string         `json:"description"`
+		Properties  map[string]any `json:"properties"`
+	}
+	require.NoError(t, sonic.UnmarshalString(FilterSchema, &shared))
+	require.NoError(t, sonic.UnmarshalString(TopicFilterSchema, &topic))
+	require.ElementsMatch(t, topicFilterFields, slices.Collect(maps.Keys(topic.Properties)))
+	for field, property := range topic.Properties {
+		require.Equal(t, shared.Properties[field], property, field)
+	}
+	require.Contains(t, topic.Description, "last 7 days")
+	require.NotContains(t, topic.Description, "24 hours")
+
+	tool, ok := toolByName(buildTools(), "list_topics")
+	require.True(t, ok)
+	require.ElementsMatch(t, []string{"filters", "interval", "limit"}, tool.argumentNames())
 }
 
 func TestWarpListTopicsToolHintsWhenNothingComputed(t *testing.T) {
-	reader := NewTopicReader(&recordingStore{row: validWarpConfigRow()}, topicTestLogStore(t))
-	result, err := runTool(t, "list_topics", &ToolDeps{logManager: &fakeLogReader{}, topics: reader, scope: Scope{HasIdentity: true, UserID: "admin", Unrestricted: true}}, map[string]any{})
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	store := topicTestLogStore(t)
+	result, err := runTool(t, "list_topics", topicToolDeps(store, now), map[string]any{})
 	require.NoError(t, err)
 	out := result.(map[string]any)
 	require.Empty(t, out["topics"])
-	require.Contains(t, out["hint"], "No topic clusters have been computed")
+	require.Contains(t, out["hint"], "No topics have been built yet")
+
+	// Topics that exist but hold none of the window's requests are a
+	// different answer: the window is empty, not the deployment.
+	require.NoError(t, store.UpsertWarpTopics(context.Background(), []logstore.WarpTopic{{ID: "t-1", Label: "Refund requests", EmbeddingSignature: topicTestSignature()}}))
+	require.NoError(t, store.UpsertWarpTopicAssignments(context.Background(), []logstore.WarpTopicAssignment{{LogID: "old", TopicID: "t-1", Timestamp: now.Add(-30 * 24 * time.Hour)}}))
+	result, err = runTool(t, "list_topics", topicToolDeps(store, now), map[string]any{})
+	require.NoError(t, err)
+	out = result.(map[string]any)
+	require.Empty(t, out["topics"])
+	require.Contains(t, out["hint"], "no request in this window")
+	require.Equal(t, int64(0), out["total_requests"])
 }
 
 // The list is the active topics of the embedding model Warp is configured
@@ -1308,11 +1496,10 @@ func TestWarpListTopicsReadsOnlyTheCurrentActiveTopics(t *testing.T) {
 	file("", 1)
 	require.NoError(t, store.UpsertWarpTopicAssignments(ctx, rows))
 
-	topics, total, err := NewTopicReader(&recordingStore{row: validWarpConfigRow()}, store).ListTopics(ctx, 15)
-	require.NoError(t, err)
+	topics, total := listAllTopics(t, NewTopicReader(&recordingStore{row: validWarpConfigRow()}, store))
 	require.Len(t, topics, 1)
 	require.Equal(t, "Refund requests", topics[0].Label)
-	require.Equal(t, 4, topics[0].Size)
+	require.Equal(t, 4, int(topics[0].Requests))
 	require.Equal(t, 5, total, "the four in the topic and the one in none")
 	require.InDelta(t, 0.8, topics[0].Share, 1e-9)
 }
@@ -1336,50 +1523,152 @@ func TestWarpTopicsWorkOnAStoreThatForgetsNamespaces(t *testing.T) {
 	require.Equal(t, 6, final.Scanned)
 	require.Equal(t, 2, final.Indexed)
 
-	topics, total, err := NewTopicReader(&recordingStore{row: validWarpConfigRow()}, service.topicStore()).ListTopics(context.Background(), 15)
-	require.NoError(t, err)
+	topics, total := listAllTopics(t, NewTopicReader(&recordingStore{row: validWarpConfigRow()}, service.topicStore()))
 	require.Len(t, topics, 2)
 	require.Equal(t, 6, total)
 }
 
-// A restricted caller must not learn what the whole deployment asks about from
-// a tool that cannot scope its answer. list_topics is withheld from them, and
-// the hint sends them to the sample the store does scope.
-func TestWarpListTopicsIsWithheldFromARestrictedCaller(t *testing.T) {
+// A store that applies the caller's scope to its own reads - the enterprise
+// log store resolves it per call, from who is asking - answers a restricted
+// caller with no queryscope on the context. Only that store does: a plain one
+// is still refused, as above.
+func TestWarpListTopicsServesARestrictedCallerThroughAStoreThatScopesItsReads(t *testing.T) {
+	inner := topicTestLogStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, inner.UpsertWarpTopics(ctx, []logstore.WarpTopic{
+		{ID: "shared", Label: "Refund requests", ExampleLogIDsJSON: `["theirs-1","ours-1"]`, EmbeddingSignature: topicTestSignature()},
+		{ID: "theirs", Label: "Password resets", ExampleLogIDsJSON: `["theirs-2"]`, EmbeddingSignature: topicTestSignature()},
+	}))
+	require.NoError(t, inner.UpsertWarpTopicAssignments(ctx, []logstore.WarpTopicAssignment{
+		{LogID: "ours-1", TopicID: "shared", Timestamp: now.Add(-time.Hour), TeamID: "team-a"},
+		{LogID: "theirs-1", TopicID: "shared", Timestamp: now.Add(-time.Hour), TeamID: "team-z"},
+		{LogID: "theirs-2", TopicID: "theirs", Timestamp: now.Add(-time.Hour), TeamID: "team-z"},
+	}))
+	deps := topicToolDeps(&perCallScopedTopicStore{LogStore: inner, teams: []string{"team-a"}}, now)
+	deps.scope = Scope{HasIdentity: true, UserID: "u-a", Visibility: "their team's traffic"}
+
+	// Naming the other team reaches nothing of theirs.
+	result, err := runTool(t, "list_topics", deps, map[string]any{"filters": map[string]any{"team_ids": []any{"team-z"}}})
+	require.NoError(t, err)
+	require.Empty(t, result.(map[string]any)["topics"])
+
+	result, err = runTool(t, "list_topics", deps, map[string]any{"filters": map[string]any{"scope": "all"}})
+	require.NoError(t, err)
+	out := result.(map[string]any)
+	topics := out["topics"].([]Topic)
+	require.Len(t, topics, 1)
+	require.Equal(t, "Refund requests", topics[0].Label)
+	require.EqualValues(t, 1, topics[0].Requests)
+	require.Equal(t, []string{"ours-1"}, topics[0].SampleLogIDs)
+	require.Equal(t, int64(1), out["total_requests"])
+}
+
+// perCallScopedTopicStore narrows its assignment reads to teams on every call,
+// as the enterprise log store narrows them to the caller's principal, and says
+// so through CallerScopedTopicStore.
+type perCallScopedTopicStore struct {
+	logstore.LogStore
+	teams []string
+}
+
+func (s *perCallScopedTopicStore) ScopesWarpTopicReadsPerCall() bool { return true }
+
+func (s *perCallScopedTopicStore) scoped(ctx context.Context) context.Context {
+	return queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB { return db.Where("team_id IN ?", s.teams) })
+}
+
+func (s *perCallScopedTopicStore) SummarizeWarpTopicAssignments(ctx context.Context, filter logstore.WarpTopicAssignmentFilter) ([]logstore.WarpTopicUsage, error) {
+	return s.LogStore.SummarizeWarpTopicAssignments(s.scoped(ctx), filter)
+}
+
+func (s *perCallScopedTopicStore) ListWarpTopicAssignments(ctx context.Context, filter logstore.WarpTopicAssignmentFilter, limit int) ([]logstore.WarpTopicAssignment, error) {
+	return s.LogStore.ListWarpTopicAssignments(s.scoped(ctx), filter, limit)
+}
+
+func (s *perCallScopedTopicStore) BucketWarpTopicAssignments(ctx context.Context, filter logstore.WarpTopicAssignmentFilter, bucketSizeSeconds int64) ([]logstore.WarpTopicBucket, error) {
+	return s.LogStore.BucketWarpTopicAssignments(s.scoped(ctx), filter, bucketSizeSeconds)
+}
+
+// A restricted caller is answered from the requests they may see. A topic
+// none of those fall under is not in the answer at all, not even by name; one
+// some do is listed with its name, counted over their requests alone, with
+// only the examples they may open. The store applies their scope to every
+// count, so the tool neither bounces them to a sample nor widens anything.
+func TestWarpListTopicsAnswersARestrictedCallerFromTheirOwnRequests(t *testing.T) {
 	store := topicTestLogStore(t)
 	ctx := context.Background()
-	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{{ID: "t-1", Label: "Refund requests", ExampleLogIDsJSON: `["log-1"]`, EmbeddingSignature: topicTestSignature()}}))
-	require.NoError(t, store.UpsertWarpTopicAssignments(ctx, []logstore.WarpTopicAssignment{{LogID: "log-1", TopicID: "t-1", Timestamp: time.Now().UTC()}}))
-	reader := NewTopicReader(&recordingStore{row: validWarpConfigRow()}, store)
-	deps := &ToolDeps{logManager: &fakeLogReader{}, topics: reader, scope: Scope{Unrestricted: true}}
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{
+		{ID: "shared", Label: "Refund requests", ExampleLogIDsJSON: `["theirs-1","ours-1"]`, EmbeddingSignature: topicTestSignature()},
+		{ID: "theirs", Label: "Password resets", ExampleLogIDsJSON: `["theirs-2"]`, EmbeddingSignature: topicTestSignature()},
+	}))
+	require.NoError(t, store.UpsertWarpTopicAssignments(ctx, []logstore.WarpTopicAssignment{
+		{LogID: "ours-1", TopicID: "shared", Timestamp: now.Add(-time.Hour), TeamID: "team-a"},
+		{LogID: "ours-2", TopicID: "shared", Timestamp: now.Add(-time.Hour), TeamID: "team-a"},
+		{LogID: "ours-none", TopicID: "", Timestamp: now.Add(-time.Hour), TeamID: "team-a"},
+		{LogID: "theirs-1", TopicID: "shared", Timestamp: now.Add(-time.Hour), TeamID: "team-z"},
+		{LogID: "theirs-2", TopicID: "theirs", Timestamp: now.Add(-time.Hour), TeamID: "team-z"},
+		{LogID: "theirs-3", TopicID: "theirs", Timestamp: now.Add(-time.Hour), TeamID: "team-z"},
+		{LogID: "theirs-none", TopicID: "", Timestamp: now.Add(-time.Hour), TeamID: "team-z"},
+	}))
+	deps := topicToolDeps(store, now)
+	deps.scope = Scope{HasIdentity: true, UserID: "u-a", Visibility: "their team's traffic"}
 	tool, ok := toolByName(buildTools(), "list_topics")
 	require.True(t, ok)
 
-	// A caller the deployment's resolver restricts carries no queryscope on
-	// the context; the restriction lives only in the turn's resolved scope.
-	resolverRestricted := &ToolDeps{logManager: &fakeLogReader{}, topics: reader, scope: Scope{Visibility: "their teams' traffic"}}
-	for name, call := range map[string]struct {
-		ctx  context.Context
-		deps *ToolDeps
-	}{
-		"row scope":           {queryscope.WithQueryScope(context.Background(), func(db *gorm.DB) *gorm.DB { return db }), deps},
-		"dimension scope":     {queryscope.WithDimensionScope(context.Background(), func(string) ([]string, bool) { return nil, true }), deps},
-		"resolver restricted": {context.Background(), resolverRestricted},
+	// The closure shape the enterprise wrapper attaches (dacscope.go logScope).
+	scoped := queryscope.WithQueryScope(context.Background(), func(db *gorm.DB) *gorm.DB {
+		return db.Where("team_id IN ?", []string{"team-a"})
+	})
+	result, err := tool.execute(scoped, deps, map[string]any{"filters": map[string]any{"scope": "all"}})
+	require.NoError(t, err)
+	out := result.(map[string]any)
+	topics := out["topics"].([]Topic)
+	require.Len(t, topics, 1)
+	require.Equal(t, "Refund requests", topics[0].Label)
+	require.EqualValues(t, 2, topics[0].Requests)
+	require.InDelta(t, 2.0/3, topics[0].Share, 1e-9, "of the three requests they may see")
+	require.Equal(t, []string{"ours-1"}, topics[0].SampleLogIDs, "the example from another team is not offered")
+	require.Equal(t, []string{logDetailLink("ours-1")}, topics[0].SampleLinks)
+	require.Equal(t, int64(3), out["total_requests"])
+	require.Equal(t, int64(1), out["unmatched_requests"])
+	require.Equal(t, "all", out["scope"])
+	encoded, err := sonic.MarshalString(out)
+	require.NoError(t, err)
+	require.NotContains(t, encoded, "Password resets", "a topic none of their requests fall under")
+	require.NotContains(t, encoded, "theirs")
+
+	// Without "all", an identified caller's default is their own requests,
+	// as with every other tool; nothing is filed under their user id here.
+	result, err = tool.execute(scoped, deps, map[string]any{})
+	require.NoError(t, err)
+	out = result.(map[string]any)
+	require.Empty(t, out["topics"])
+	require.Equal(t, "self", out["scope"])
+	require.Contains(t, out["hint"], "no request in this window and scope")
+
+	// Restricted, but with no scope on the context for the topic tables to
+	// apply: the enterprise wrapper scopes log reads per call, and the topic
+	// tables are read beneath it. Every count would be the deployment's, and
+	// naming another team would read theirs. The tool refuses before it reads.
+	for _, args := range []map[string]any{
+		{"filters": map[string]any{"team_ids": []any{"team-z"}}},
+		{"filters": map[string]any{"scope": "all"}},
+		{},
 	} {
-		result, err := tool.execute(call.ctx, call.deps, map[string]any{})
-		require.NoError(t, err, name)
-		out := result.(map[string]any)
-		encoded, err := sonic.MarshalString(out)
-		require.NoError(t, err)
-		require.NotContains(t, encoded, "Refund requests", name)
-		require.NotContains(t, encoded, "log-1", name)
-		require.Equal(t, false, out["available"], name)
-		require.Contains(t, out["hint"], "take one bounded sample", name)
+		result, err = tool.execute(context.Background(), deps, args)
+		require.Error(t, err, "%v", args)
+		require.Nil(t, result)
+		require.Contains(t, err.Error(), "query_logs", "the refusal names what the caller can use instead")
 	}
 
-	result, err := tool.execute(context.Background(), deps, map[string]any{})
+	// A caller nothing restricts gets everything.
+	result, err = tool.execute(context.Background(), topicToolDeps(store, now), map[string]any{})
 	require.NoError(t, err)
-	require.Len(t, result.(map[string]any)["topics"], 1, "a caller nothing restricts gets the topics")
+	out = result.(map[string]any)
+	require.Len(t, out["topics"], 2)
+	require.Equal(t, int64(7), out["total_requests"])
 }
 
 // Two clusters that come back with the same name are one topic to anyone
@@ -1506,12 +1795,11 @@ func TestWarpTopicsJobAgainstLiveVectorStores(t *testing.T) {
 				require.Equal(t, 2, final.Indexed, "run %d", run)
 				require.Empty(t, final.LastError, "run %d", run)
 
-				topics, total, err := topicReader.ListTopics(ctx, 15)
-				require.NoError(t, err, "run %d", run)
+				topics, total := listAllTopics(t, topicReader)
 				require.Equal(t, 2*perSubject, total)
 				require.Len(t, topics, 2, "run %d leaves only its own topics", run)
 				for _, topic := range topics {
-					require.GreaterOrEqual(t, topic.Size, perSubject-5)
+					require.GreaterOrEqual(t, int(topic.Requests), perSubject-5)
 					require.Len(t, topic.SampleLogIDs, topicsLabelSamples)
 					require.Greater(t, topic.Cohesion, 0.5)
 				}
