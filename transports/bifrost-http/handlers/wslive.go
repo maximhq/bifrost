@@ -76,6 +76,7 @@ func (h *WSLiveHandler) upgrade(ctx *fasthttp.RequestCtx, up *liveRequest, serve
 	}
 	err := upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 		defer conn.Close()
+		defer recoverWebSocketSession(conn)
 		defer up.cancel()
 		serve(newRealtimeClientConn(conn))
 	})
@@ -319,11 +320,52 @@ func (r *liveWSRelay) run() {
 	clientDone := make(chan struct{})
 	go func() {
 		defer close(clientDone)
+		defer r.recoverPump()
 		r.pumpClient()
 	}()
-	go r.watchStale()
-	r.pumpUpstream()
+	go func() {
+		defer r.recoverPump()
+		r.watchStale()
+	}()
+	r.pumpUpstreamRecovering()
 	releaseLiveClient(r.clientConn, r.clientGone.Load(), clientDone)
+}
+
+// pumpUpstreamRecovering runs the upstream pump and, if it panics (a billing post-hook, say),
+// ends the session the way an upstream drop does: the panic is logged, the client is told, the
+// upstream is abandoned and upstreamEnded releases the stale watcher and bills what was spent.
+// The upgrade callback's own recover would keep the process alive but skip all of that, leaving
+// a watcher per failure behind.
+func (r *liveWSRelay) pumpUpstreamRecovering() {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logWebSocketPanic(r.clientConn.conn, rec)
+			r.sendError(newRealtimeWireBifrostError(500, "server_error", "the live session is ending after an internal error"))
+			r.abandonUpstream()
+			// Ending the session bills what was spent through the same hooks that may have
+			// just panicked; a second panic is logged and the watcher is still released.
+			defer func() {
+				if again := recover(); again != nil {
+					logWebSocketPanic(r.clientConn.conn, again)
+				}
+			}()
+			r.upstreamEnded()
+		}
+	}()
+	r.pumpUpstream()
+}
+
+// recoverPump is deferred on the goroutines of a live session that run past the recover of the
+// upgrade callback (the client pump, where plugin hooks run, and the stale watcher). A panic
+// there ends this session the way a refusal does, with the client told and the usage spent so
+// far still billed, instead of ending the process. The client sees a fixed message, never the
+// panic value.
+func (r *liveWSRelay) recoverPump() {
+	if rec := recover(); rec != nil {
+		logWebSocketPanic(r.clientConn.conn, rec)
+		r.sendError(newRealtimeWireBifrostError(500, "server_error", "the live session is ending after an internal error"))
+		r.requestClose()
+	}
 }
 
 // liveCloseHandshakeGrace bounds the wait for the client's close reply before its socket is dropped.
@@ -375,6 +417,9 @@ func (r *liveSidebandRelay) run() *schemas.BifrostError {
 	clientDone := make(chan struct{})
 	go func() {
 		defer close(clientDone)
+		// pumpClient closes the upstream on the way out, which ends the sideband; a panic
+		// in the update check takes that same exit instead of ending the process.
+		defer recoverWebSocketSession(r.clientConn.conn)
 		r.pumpClient()
 	}()
 	ended := r.pumpUpstream()

@@ -339,12 +339,27 @@ func (m *liveMeter) finish(finalSeconds float64) {
 	}
 	m.finished = true
 	m.accrueSecondsLocked(max(finalSeconds, m.minimumSeconds))
-	// The voice lane closes last: its unit carries the session's end for plugins.
-	for _, lane := range m.backends {
+	// The voice lane closes last: its unit carries the session's end for plugins. Every lane is
+	// closed even if a post hook panics on one: finish runs once, so a lane skipped here would never
+	// be billed or cleaned, and the voice unit's session end would be lost. The first panic is
+	// raised again once every lane is closed, for the session's recovery to log.
+	var firstPanic any
+	closeLane := func(lane *liveLane) {
+		defer func() {
+			if rec := recover(); rec != nil && firstPanic == nil {
+				firstPanic = rec
+			}
+		}()
 		m.closeLaneLocked(lane)
 	}
+	for _, lane := range m.backends {
+		closeLane(lane)
+	}
 	if m.voice != nil {
-		m.closeLaneLocked(m.voice)
+		closeLane(m.voice)
+	}
+	if firstPanic != nil {
+		panic(firstPanic)
 	}
 }
 
@@ -379,8 +394,11 @@ func (m *liveMeter) rotateLocked(lane *liveLane) {
 		m.refusal = bifrostErr
 		return
 	}
+	// The admitted unit becomes the lane's even if closing the old one panics in a post hook: the
+	// session's recovery then ends the session through finish, which bills and cleans the lane's
+	// current unit, and an unassigned one would never be billed, cleaned or marked as the end.
+	defer func() { lane.current = next }()
 	m.closeLaneLocked(lane)
-	lane.current = next
 }
 
 // closeLaneLocked bills the lane's accrued usage on its current unit and clears it.
