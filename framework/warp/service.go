@@ -225,6 +225,7 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 	service.topics = service.buildTopicReader()
 	if service.store != nil && service.vectorStore != nil && service.embed != nil {
 		service.indexer = NewLogIndexer(service.store, service.vectorStore, service.embed, service.logger)
+		service.indexer.SetTopicStore(topicStoreOf(service.logs))
 		if service.logs != nil {
 			// Only when the reader can hydrate. A reader that cannot is still a
 			// perfectly good LogReader for every other Warp tool, so semantic
@@ -340,6 +341,10 @@ func (s *Service) SetLogReader(logs LogReader) {
 	// The topic reader reads through the same reader's store, so it follows.
 	s.semantic = s.buildSemanticSearcher()
 	s.topics = s.buildTopicReader()
+	// Live assignment files through the same store, so it follows too.
+	if s.indexer != nil {
+		s.indexer.SetTopicStore(topicStoreOf(logs))
+	}
 }
 
 // buildSemanticSearcher returns a searcher for the current dependencies, or nil

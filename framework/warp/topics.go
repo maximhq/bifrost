@@ -534,6 +534,11 @@ func (s *Service) RunTopicsJob(ctx context.Context, job tables.TableSidekiqJob, 
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), topicsCleanupTimeout)
 		retireErr := retireTopics(cleanupCtx, topicStore, written)
 		cancel()
+		// The indexer here may have read the written topics while they were
+		// active; it reads them again rather than file under retired ones.
+		if s.indexer != nil {
+			s.indexer.InvalidateTopics()
+		}
 		if retireErr != nil {
 			// The topics it wrote are still active, so the run says so.
 			meta.LastError += fmt.Sprintf("; retire written topics: %v", retireErr)
@@ -545,6 +550,11 @@ func (s *Service) RunTopicsJob(ctx context.Context, job tables.TableSidekiqJob, 
 		// The new topics are in place and are what list_topics serves, so
 		// this is reported rather than failing a run that did its job.
 		meta.LastError = fmt.Sprintf("retire previous topics: %v", err)
+	}
+	// Requests indexed from now on are filed under the new topics at once in
+	// this process; other instances pick them up when their copy expires.
+	if s.indexer != nil {
+		s.indexer.InvalidateTopics()
 	}
 	meta.Message = fmt.Sprintf("Clustered %d request(s) into %d topic(s).", meta.Clustered, meta.Indexed)
 	if meta.Assigned > 0 {

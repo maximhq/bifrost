@@ -1100,6 +1100,34 @@ func TestWarpTopicsJobReportsAFailedCleanup(t *testing.T) {
 	require.NotContains(t, err.Error(), "retire")
 }
 
+// A run that fails after writing its topics retires them, and the indexer in
+// this process is told: it may have read them while they were active, and
+// would otherwise keep filing requests under retired topics until its copy
+// expires.
+func TestWarpTopicsJobInvalidatesTheIndexerWhenWritingFails(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	reader := topicTestReader(t, topicTestLogs(start))
+	store := reader.topics.(logstore.LogStore)
+	service, _ := topicTestService(t, newFakeWarpVectorStore(), reader, topicTestNaming)
+	require.NotNil(t, service.indexer)
+	ctx := context.Background()
+	_, err := service.indexer.centres.get(ctx, topicTestSignature())
+	require.NoError(t, err)
+	loaded := func() bool {
+		service.indexer.centres.mu.Lock()
+		defer service.indexer.centres.mu.Unlock()
+		return !service.indexer.centres.loadedAt.IsZero()
+	}
+	require.True(t, loaded())
+
+	reader.topics = &failingTopicStore{LogStore: store, err: fmt.Errorf("assignments unavailable")}
+	metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
+	require.NoError(t, err)
+	_, err = service.RunTopicsJob(ctx, tables.TableSidekiqJob{ID: "job-1", Metadata: metaJSON}, func(string) error { return nil })
+	require.ErrorContains(t, err, "assignments unavailable")
+	require.False(t, loaded(), "the next request reads the topics again")
+}
+
 // retireFailingTopicStore fails assignment writes as failingTopicStore does,
 // and every topic write after the first: the run's own topics land, and
 // retiring them again does not.

@@ -40,6 +40,9 @@ type logIndexItem struct {
 	id       string
 	text     string
 	metadata map[string]interface{}
+	// assignment is the request as it is filed under a topic once it has
+	// been embedded: the log's columns, with the topic left to fill in.
+	assignment logstore.WarpTopicAssignment
 }
 
 // LogIndexer owns all stream-sized and queued indexing state outside request
@@ -80,6 +83,17 @@ type LogIndexer struct {
 	// it. A field rather than a constant so a test can pick a short one without
 	// waiting out the production value.
 	drainBudget time.Duration
+	// centres and assigner are live topic assignment: the topics a request
+	// is measured against, and the batches its row is written in. See
+	// topicassign.go.
+	centres  *topicCentres
+	assigner *topicAssigner
+	// topicMu keeps a request's topic lookup and its filing on one store:
+	// assignTopic holds it shared, SetTopicStore exclusively.
+	topicMu sync.RWMutex
+	// beforeFile runs between a request's topic lookup and its filing, for a
+	// test to act in that gap. Nil outside tests.
+	beforeFile func()
 }
 
 // warpIndexItemTimeout bounds one background index. Long enough for a slow
@@ -88,16 +102,30 @@ type LogIndexer struct {
 const warpIndexItemTimeout = 2 * time.Minute
 
 func NewLogIndexer(store configstore.WarpStore, vectors vectorstore.VectorStore, embed EmbeddingExecutor, logger schemas.Logger) *LogIndexer {
+	return newLogIndexer(store, vectors, embed, logger, topicsAssignFlushInterval)
+}
+
+// newLogIndexer is NewLogIndexer with the assignment flush interval chosen,
+// for tests that cannot wait out the production one.
+func newLogIndexer(store configstore.WarpStore, vectors vectorstore.VectorStore, embed EmbeddingExecutor, logger schemas.Logger, assignFlushInterval time.Duration) *LogIndexer {
 	ctx, cancel := context.WithCancel(context.Background())
 	indexer := &LogIndexer{
 		store: store, vectors: vectors, embed: embed, logger: logger,
 		queue: make(chan logIndexItem, warpIndexQueueSize), done: make(chan struct{}),
 		ctx: ctx, cancel: cancel, drainBudget: warpIndexDrainBudget,
+		centres: &topicCentres{ttl: topicCentresTTL}, assigner: newTopicAssigner(logger),
 	}
 	for range warpIndexWorkers {
 		indexer.wg.Add(1)
 		go indexer.worker()
 	}
+	// Started with the workers; it is the workers' writes it flushes, and it
+	// flushes them once more after the workers are done.
+	indexer.wg.Add(1)
+	go func() {
+		defer indexer.wg.Done()
+		indexer.assigner.run(ctx, indexer.done, assignFlushInterval)
+	}()
 	return indexer
 }
 
@@ -250,6 +278,7 @@ func (i *LogIndexer) indexItemWithConfig(ctx context.Context, config *schemas.Wa
 		i.ensureMu.Unlock()
 		return false, usage, err
 	}
+	i.assignTopic(ctx, config, item, embedding)
 	return true, usage, nil
 }
 
@@ -306,6 +335,12 @@ func (i *LogIndexer) Close() {
 		}
 		<-drained
 	}
+	// The workers drain the queue after done closes, so a request they file
+	// then can land after the assigner's last flush. One more, on a context
+	// of its own because the indexer's is about to go.
+	flushCtx, cancel := context.WithTimeout(context.Background(), topicsAssignFlushTimeout)
+	i.assigner.flush(flushCtx)
+	cancel()
 	if i.cancel != nil {
 		i.cancel()
 	}
@@ -481,7 +516,7 @@ func buildLogIndexItem(entry *logstore.Log) (logIndexItem, bool) {
 		"team_ids": mergedIDs(entry.TeamID, entry.TeamIDs), "customer_ids": mergedIDs(entry.CustomerID, entry.CustomerIDs),
 		"business_unit_ids": mergedIDs(entry.BusinessUnitID, entry.BusinessUnitIDs),
 	}
-	return logIndexItem{id: entry.ID, text: text, metadata: metadata}, true
+	return logIndexItem{id: entry.ID, text: text, metadata: metadata, assignment: logstore.WarpTopicAssignmentFromLog(entry)}, true
 }
 
 func roundedMetric(value *float64, multiplier float64) int64 {
