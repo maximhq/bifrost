@@ -270,6 +270,49 @@ func TestWarpUpkeepRetiresSilentTopics(t *testing.T) {
 	require.Equal(t, TopicUpkeep{}, done, "a second pass finds nothing to do")
 }
 
+// A pass that changes the topics regroups them into themes; one that changes
+// nothing leaves the themes alone.
+func TestWarpUpkeepRegroupsThemesWhenTopicsChange(t *testing.T) {
+	service, reader := discoveryTestService(t, themeTestChat(money))
+	store := reader.topics
+	ctx := context.Background()
+	signature := embeddingConfigSignature(configFromRow(assignTestRow()))
+	now := time.Now().UTC()
+	old := now.Add(-2 * topicsRetireAfter)
+	// Five topics far apart, so nothing merges; one silent for long enough
+	// to retire.
+	var rows []logstore.WarpTopic
+	for axis, label := range []string{"Refund requests", "Invoice questions", "Password resets", "Login failures", "Weather"} {
+		vector := make([]float32, 8)
+		vector[axis] = 1
+		rows = append(rows, logstore.WarpTopic{
+			ID: fmt.Sprintf("t-%d", axis), Label: label, Centroid: logstore.EncodeWarpVector(vector), Cohesion: 0.98,
+			EmbeddingSignature: signature, CreatedAt: old,
+		})
+	}
+	require.NoError(t, store.UpsertWarpTopics(ctx, rows))
+	require.NoError(t, store.UpsertWarpTopicAssignments(ctx, []logstore.WarpTopicAssignment{
+		{LogID: "r-0", TopicID: "t-0", Timestamp: now.Add(-time.Hour)},
+		{LogID: "r-1", TopicID: "t-1", Timestamp: now.Add(-time.Hour)},
+		{LogID: "r-2", TopicID: "t-2", Timestamp: now.Add(-time.Hour)},
+		{LogID: "r-3", TopicID: "t-3", Timestamp: now.Add(-time.Hour)},
+		{LogID: "r-4", TopicID: "t-4", Timestamp: old},
+	}))
+
+	done, err := service.MaintainTopics(ctx)
+	require.NoError(t, err)
+	require.Equal(t, TopicUpkeep{Retired: 1, Themes: 2}, done, "Weather retired; the rest grouped")
+	themes := topicsByID(t, store, logstore.WarpTopicKindTheme)
+	require.Len(t, themes, 2)
+	for _, theme := range themes {
+		require.Equal(t, signature, theme.EmbeddingSignature)
+	}
+
+	done, err = service.MaintainTopics(ctx)
+	require.NoError(t, err)
+	require.Equal(t, TopicUpkeep{}, done, "nothing changed, nothing regrouped")
+}
+
 // Two topics that have come to mean the same thing are merged, the smaller
 // into the larger, and the requests filed under the smaller still count
 // under the larger when the tool lists it.

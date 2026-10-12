@@ -127,6 +127,8 @@ export interface WarpBackfillJob {
 	indexed: number;
 	skipped: number;
 	failed: number;
+	/** Topic runs only: how many themes the topics were grouped into once written. */
+	themes?: number;
 	/** Tokens the job's embedding calls have consumed so far, across resumes. */
 	embedding_tokens?: number;
 	/** USD cost of those calls. Absent when the deployment cannot price them - unknown, not free. */
