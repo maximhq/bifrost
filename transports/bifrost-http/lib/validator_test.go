@@ -3953,7 +3953,7 @@ func TestSchemaCodeModeLimitsValueBytes(t *testing.T) {
 // only on the generic provider def is rejected for Bedrock, Azure, Vertex and the rest.
 func TestValidateConfigSchema_InjectedTools(t *testing.T) {
 	schema := loadLocalSchema(t)
-	const injected = `"injected_tools": {"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}}`
+	const injected = `"injected_tools": [{"name": "web_search", "mcp_client_name": "tavily", "tool_name": "search"}, {"name": "read_page", "mcp_client_name": "fetcher", "tool_name": "fetch"}]`
 	// Each base config must pass on its own. A base that fails for an unrelated reason
 	// fails identically with injected_tools added, which would hide a rejection.
 	keyConfigs := map[string]string{
@@ -4004,10 +4004,20 @@ func TestValidateConfigSchema_InjectedTools(t *testing.T) {
 	if err := ValidateConfigSchema([]byte(openaiBase), schema); err != nil {
 		t.Fatalf("openai base config must pass before the rejection cases mean anything: %v", err)
 	}
+	for _, block := range []string{`[]`, `[{"name": "read_page", "mcp_client_name": "fetcher", "tool_name": "fetch"}]`} {
+		config := fmt.Sprintf(`{"providers": {"openai": {"keys": [{"name": "k", "value": "v", "weight": 1.0}], "injected_tools": %s}}}`, block)
+		if err := ValidateConfigSchema([]byte(config), schema); err != nil {
+			t.Errorf("%s: injected_tools rejected: %v", block, err)
+		}
+	}
 	for name, block := range map[string]string{
-		"missing tool_name": `{"web_search": {"mcp_client_name": "tavily"}}`,
-		"empty client name": `{"web_search": {"mcp_client_name": "", "tool_name": "search"}}`,
-		"unknown slot":      `{"code_exec": {"mcp_client_name": "tavily", "tool_name": "run"}}`,
+		"old object shape":  `{"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}}`,
+		"missing name":      `[{"mcp_client_name": "tavily", "tool_name": "search"}]`,
+		"name with a space": `[{"name": "web search", "mcp_client_name": "tavily", "tool_name": "search"}]`,
+		"missing tool_name": `[{"name": "web_search", "mcp_client_name": "tavily"}]`,
+		"empty client name": `[{"name": "web_search", "mcp_client_name": "", "tool_name": "search"}]`,
+		"unknown field":     `[{"name": "web_search", "mcp_client_name": "tavily", "tool_name": "run", "max_results": 3}]`,
+		"null entry":        `[null]`,
 	} {
 		config := fmt.Sprintf(`{"providers": {"openai": {"keys": [{"name": "k", "value": "v", "weight": 1.0}], "injected_tools": %s}}}`, block)
 		if err := ValidateConfigSchema([]byte(config), schema); err == nil {

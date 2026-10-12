@@ -23329,24 +23329,39 @@ func TestValidateCustomProvider_BaseProviderTypes(t *testing.T) {
 // time it would fail open and the provider would silently serve requests without the
 // web search tool the operator configured.
 func TestValidateInjectedTools(t *testing.T) {
-	clients := map[string]string{"id-1": "tavily"}
-	ref := func(client, tool string) *schemas.InjectedToolsConfig {
-		return &schemas.InjectedToolsConfig{WebSearch: &schemas.InjectedToolRef{MCPClientName: client, ToolName: tool}}
+	clients := map[string]string{"id-1": "tavily", "id-2": "fetcher"}
+	row := func(name, client, tool string) schemas.InjectedTool {
+		return schemas.InjectedTool{Name: name, MCPClientName: client, ToolName: tool}
 	}
+	search := row("web_search", "tavily", "search")
+	fetch := row("read_page", "fetcher", "fetch")
 
-	assert.NoError(t, ValidateInjectedTools(nil, nil), "no injected_tools block is not a misconfiguration")
-	assert.NoError(t, ValidateInjectedTools(&schemas.InjectedToolsConfig{}, nil), "an empty block injects nothing")
-	assert.NoError(t, ValidateInjectedTools(ref("tavily", "search"), clients))
+	assert.NoError(t, ValidateInjectedTools(nil, nil), "no injected_tools list is not a misconfiguration")
+	assert.NoError(t, ValidateInjectedTools([]schemas.InjectedTool{}, nil), "an empty list injects nothing")
+	assert.NoError(t, ValidateInjectedTools([]schemas.InjectedTool{search, fetch}, clients))
+	assert.NoError(t, ValidateInjectedTools([]schemas.InjectedTool{row("Fetch-Page_2", "fetcher", "fetch")}, clients), "letters, digits, _ and - are allowed")
 
-	for name, cfg := range map[string]*schemas.InjectedToolsConfig{
-		"missing client name": ref("", "search"),
-		"blank client name":   ref("  ", "search"),
-		"missing tool name":   ref("tavily", ""),
-		"unknown client":      ref("exa", "search"),
+	for name, tc := range map[string]struct {
+		tools  []schemas.InjectedTool
+		reason string
+	}{
+		"missing name":         {[]schemas.InjectedTool{row("", "tavily", "search")}, "must be 1-64"},
+		"name with a space":    {[]schemas.InjectedTool{row("web search", "tavily", "search")}, "must be 1-64"},
+		"name too long":        {[]schemas.InjectedTool{row(strings.Repeat("a", 65), "tavily", "search")}, "must be 1-64"},
+		"missing client name":  {[]schemas.InjectedTool{row("web_search", "", "search")}, "mcp_client_name is required"},
+		"blank client name":    {[]schemas.InjectedTool{row("web_search", "  ", "search")}, "mcp_client_name is required"},
+		"missing tool name":    {[]schemas.InjectedTool{row("web_search", "tavily", "")}, "tool_name is required"},
+		"duplicate name":       {[]schemas.InjectedTool{search, row("web_search", "fetcher", "fetch")}, `name "web_search" is used more than once`},
+		"same MCP tool twice":  {[]schemas.InjectedTool{search, row("lookup", "tavily", "search")}, "injected more than once"},
+		"unknown client":       {[]schemas.InjectedTool{search, row("crawl", "exa", "crawl")}, `injected_tools[1] (crawl) references unknown MCP client "exa"`},
+		"duplicate on unknown": {[]schemas.InjectedTool{row("a", "exa", "x"), row("a", "exa", "y")}, "used more than once"},
 	} {
-		assert.Error(t, ValidateInjectedTools(cfg, clients), name)
+		err := ValidateInjectedTools(tc.tools, clients)
+		if assert.Error(t, err, name) {
+			assert.Contains(t, err.Error(), tc.reason, name)
+		}
 	}
-	assert.Error(t, ValidateInjectedTools(ref("tavily", "search"), nil), "no MCP clients configured at all")
+	assert.Error(t, ValidateInjectedTools([]schemas.InjectedTool{search}, nil), "no MCP clients configured at all")
 }
 
 // TestUnresolvedInjectedTools pins the load-time check for config.json. The file path
@@ -23355,8 +23370,8 @@ func TestValidateInjectedTools(t *testing.T) {
 // startup; at request time it fails open.
 func TestUnresolvedInjectedTools(t *testing.T) {
 	ref := func(client string) configstore.ProviderConfig {
-		return configstore.ProviderConfig{InjectedTools: &schemas.InjectedToolsConfig{
-			WebSearch: &schemas.InjectedToolRef{MCPClientName: client, ToolName: "search"},
+		return configstore.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+			{Name: "web_search", MCPClientName: client, ToolName: "search"},
 		}}
 	}
 	providers := map[schemas.ModelProvider]configstore.ProviderConfig{
@@ -23364,23 +23379,27 @@ func TestUnresolvedInjectedTools(t *testing.T) {
 		schemas.Anthropic: ref("exa"),
 		schemas.Gemini:    {},
 	}
-	assert.Equal(t, []string{`provider anthropic: injected_tools.web_search references unknown MCP client "exa"`},
+	assert.Equal(t, []string{`provider anthropic: injected tools validation failed: injected_tools[0] (web_search) references unknown MCP client "exa"`},
 		unresolvedInjectedTools(providers, map[string]string{"id-1": "tavily"}))
 	assert.Len(t, unresolvedInjectedTools(providers, nil), 2, "with no MCP clients every reference is unresolved")
 	assert.Empty(t, unresolvedInjectedTools(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Gemini: {}}, nil))
+
+	dup := configstore.ProviderConfig{InjectedTools: append(ref("tavily").InjectedTools, schemas.InjectedTool{Name: "web_search", MCPClientName: "tavily", ToolName: "crawl"})}
+	assert.Len(t, unresolvedInjectedTools(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: dup}, map[string]string{"id-1": "tavily"}), 1,
+		"config.json cannot express unique names, so a repeated one is a boot warning")
 }
 
 // TestValidateInjectedToolsBody_AcceptsSchemaValidShapes is the positive control for the
-// handler rejections: a well-formed block, a null block and an absent block all pass, and
-// so does a body whose last injected_tools block is valid.
+// handler rejections: a well-formed list, an empty, null or absent list all pass, and so
+// does a body whose last injected_tools list is valid.
 func TestValidateInjectedToolsBody_AcceptsSchemaValidShapes(t *testing.T) {
 	for _, body := range []string{
-		`{"injected_tools": {"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}}}`,
-		`{"injected_tools": {}}`,
+		`{"injected_tools": [{"name": "web_search", "mcp_client_name": "tavily", "tool_name": "search"}, {"name": "read_page", "mcp_client_name": "fetcher", "tool_name": "fetch"}]}`,
+		`{"injected_tools": []}`,
 		`{"injected_tools": null}`,
 		`{"keys": []}`,
 		// The handler keeps the last of repeated keys, so only the last block is what gets stored.
-		`{"injected_tools": {"web_search": null}, "injected_tools": {"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}}}`,
+		`{"injected_tools": [null], "injected_tools": [{"name": "web_search", "mcp_client_name": "tavily", "tool_name": "search"}]}`,
 	} {
 		if err := ValidateInjectedToolsBody([]byte(body)); err != nil {
 			t.Errorf("%s: unexpected rejection: %v", body, err)

@@ -440,8 +440,8 @@ func TestProviderConfig_Redacted_MasksSecretBackedIdentifiers(t *testing.T) {
 // ProviderConfig that are built field by field: Redacted (GET responses) and
 // GenerateConfigHash (config.json vs DB drift detection).
 func TestProviderConfig_InjectedToolsSurvivesRedactionAndHash(t *testing.T) {
-	cfg := ProviderConfig{InjectedTools: &schemas.InjectedToolsConfig{
-		WebSearch: &schemas.InjectedToolRef{MCPClientName: "tavily", ToolName: "search"},
+	cfg := ProviderConfig{InjectedTools: []schemas.InjectedTool{
+		{Name: "web_search", MCPClientName: "tavily", ToolName: "search"},
 	}}
 	assert.Equal(t, cfg.InjectedTools, cfg.Redacted().InjectedTools)
 
@@ -451,8 +451,17 @@ func TestProviderConfig_InjectedToolsSurvivesRedactionAndHash(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, without, withTool)
 
-	cfg.InjectedTools.WebSearch.ToolName = "web_search"
+	cfg.InjectedTools[0].ToolName = "web_search"
 	changed, err := cfg.GenerateConfigHash("openai")
 	require.NoError(t, err)
 	assert.NotEqual(t, withTool, changed)
+
+	cfg.InjectedTools[0].Name = "search"
+	renamed, err := cfg.GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, changed, renamed, "the model-facing name is part of the config")
+
+	empty, err := (&ProviderConfig{InjectedTools: []schemas.InjectedTool{}}).GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.Equal(t, without, empty, "an empty list is the same config as none")
 }

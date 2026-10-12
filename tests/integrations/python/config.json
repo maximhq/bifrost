@@ -605,12 +605,13 @@
       "network_config": {
         "default_request_timeout_in_seconds": 300
       },
-      "injected_tools": {
-        "web_search": {
+      "injected_tools": [
+        {
+          "name": "web_search",
           "mcp_client_name": "sse_mcp",
           "tool_name": "web_search"
         }
-      }
+      ]
     },
     "anthropic_websearch": {
       "send_back_raw_request": true,
@@ -631,12 +632,13 @@
       "network_config": {
         "default_request_timeout_in_seconds": 300
       },
-      "injected_tools": {
-        "web_search": {
+      "injected_tools": [
+        {
+          "name": "web_search",
           "mcp_client_name": "sse_mcp",
           "tool_name": "web_search"
         }
-      }
+      ]
     },
     "gemini_pc_auto": {
       "send_back_raw_request": true,

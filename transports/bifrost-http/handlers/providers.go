@@ -125,7 +125,7 @@ type ProviderResponse struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`          // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`           // Prompt-cache breakpoint injection
-	InjectedTools            *schemas.InjectedToolsConfig     `json:"injected_tools,omitempty"`         // MCP tools injected and auto-executed server side
+	InjectedTools            []schemas.InjectedTool           `json:"injected_tools,omitempty"`         // MCP tools injected and auto-executed server side
 	ProviderStatus           ProviderStatus                   `json:"provider_status"`                  // Health/initialization status of the provider
 	Status                   string                           `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
 	Description              string                           `json:"description,omitempty"`            // Error/status description
@@ -156,7 +156,7 @@ type providerCreatePayload struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`  // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`   // Prompt-cache breakpoint injection
-	InjectedTools            *schemas.InjectedToolsConfig      `json:"injected_tools,omitempty"` // MCP tools injected and auto-executed server side
+	InjectedTools            []schemas.InjectedTool            `json:"injected_tools,omitempty"` // MCP tools injected and auto-executed server side
 }
 
 type providerUpdatePayload struct {
@@ -170,7 +170,7 @@ type providerUpdatePayload struct {
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`  // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`   // Prompt-cache breakpoint injection
-	InjectedTools            *schemas.InjectedToolsConfig     `json:"injected_tools,omitempty"` // MCP tools injected and auto-executed server side
+	InjectedTools            []schemas.InjectedTool           `json:"injected_tools,omitempty"` // MCP tools injected and auto-executed server side
 }
 
 // applyProviderConfigUpdates copies onto config only the nested config blocks the
@@ -333,10 +333,21 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 
 // addProvider handles POST /api/providers - Add a new provider
 // NOTE: This only gets called when a new custom provider is added
+// sendPayloadDecodeError rejects a provider write body the typed payload cannot decode.
+// An injected_tools value of the wrong shape (the old object form, a non-array) is one
+// such body, and its own message says what to fix instead of a generic one.
+func sendPayloadDecodeError(ctx *fasthttp.RequestCtx) {
+	if err := lib.ValidateInjectedToolsBody(ctx.PostBody()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
+		return
+	}
+	SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+}
+
 func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	var payload providerCreatePayload
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		sendPayloadDecodeError(ctx)
 		return
 	}
 	// Validate provider
@@ -521,7 +532,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}{}
 
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		sendPayloadDecodeError(ctx)
 		return
 	}
 

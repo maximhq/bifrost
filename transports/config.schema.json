@@ -6370,19 +6370,20 @@
       "additionalProperties": false
     },
     "injected_tools": {
-      "type": "object",
-      "description": "MCP tools Bifrost injects into every chat and responses request served by this provider and executes server side when the model calls them. The client never sees the injected tool call, only the final answer.",
-      "properties": {
-        "web_search": {
-          "$ref": "#/$defs/injected_tool_ref",
-          "description": "MCP tool used as this provider's web search. Replaces any native web search tool or web_search_options the client sends."
-        }
-      },
-      "additionalProperties": false
+      "type": "array",
+      "description": "MCP tools Bifrost injects into every chat and responses request served by this provider and executes server side when the model calls them. The client never sees the injected tool call, only the final answer. Names must be unique within a provider.",
+      "items": {
+        "$ref": "#/$defs/injected_tool"
+      }
     },
-    "injected_tool_ref": {
+    "injected_tool": {
       "type": "object",
       "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "description": "Tool name the model sees. It replaces any client tool with the same name; the name web_search also replaces native web search tools and web_search_options."
+        },
         "mcp_client_name": {
           "type": "string",
           "minLength": 1,
@@ -6395,6 +6396,7 @@
         }
       },
       "required": [
+        "name",
         "mcp_client_name",
         "tool_name"
       ],
