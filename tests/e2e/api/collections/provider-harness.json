@@ -261558,6 +261558,187 @@
           }
         }
       ]
+    },
+    {
+      "name": "227. DeepSeek structured output downgrades json_schema to json_object (deepseek json schema)",
+      "description": "DeepSeek's chat endpoint rejects response_format json_schema with HTTP 400 (\"This response_format type is unavailable now\") and only accepts json_object. Bifrost now sends json_object with the schema carried as a system instruction that names json, so structured-output requests succeed and still return JSON in the requested shape. These cases pin /v1/chat/completions (non-streaming and streaming) and /v1/responses (served through the chat fallback). The /cohere/v2/chat and /langchain ingresses are pinned by the existing 48.5.C and 48.1.G deepseek structured-output rows. Each case is red before the fix (DeepSeek 400) and green after.",
+      "item": [
+        {
+          "name": "227.1 deepseek/deepseek-v4-flash /v1/chat/completions response_format json_schema returns schema-shaped JSON (deepseek json schema)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Extract the person: Ada Lovelace is 36 years old.\"\n    }\n  ],\n  \"response_format\": {\n    \"type\": \"json_schema\",\n    \"json_schema\": {\n      \"name\": \"person\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"name\": {\n            \"type\": \"string\"\n          },\n          \"age\": {\n            \"type\": \"integer\"\n          }\n        },\n        \"required\": [\n          \"name\",\n          \"age\"\n        ],\n        \"additionalProperties\": false\n      },\n      \"strict\": true\n    }\n  },\n  \"max_tokens\": 1024\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'deepseek rejected the json_schema request: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('no response_format rejection', function () { pm.expect(pm.response.text(), pm.response.text()).to.not.match(/response_format type is unavailable/i); });",
+                  "function checkPerson(text) {",
+                  "  var parsed;",
+                  "  pm.expect(function () { parsed = JSON.parse(text); }, 'content is not JSON: ' + text).to.not.throw();",
+                  "  pm.expect(parsed, 'content is not a JSON object: ' + text).to.be.an('object');",
+                  "  pm.expect(parsed.name, 'missing required string field name: ' + text).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(parsed.age, 'missing required integer field age: ' + text).to.be.a('number');",
+                  "}",
+                  "pm.test('content follows the schema', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  checkPerson(j.choices[0].message.content);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "227.2 deepseek/deepseek-v4-flash /v1/chat/completions stream response_format json_schema returns schema-shaped JSON (deepseek json schema)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You extract people from text.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Extract the person: Ada Lovelace is 36 years old.\"\n    }\n  ],\n  \"response_format\": {\n    \"type\": \"json_schema\",\n    \"json_schema\": {\n      \"name\": \"person\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"name\": {\n            \"type\": \"string\"\n          },\n          \"age\": {\n            \"type\": \"integer\"\n          }\n        },\n        \"required\": [\n          \"name\",\n          \"age\"\n        ],\n        \"additionalProperties\": false\n      },\n      \"strict\": true\n    }\n  },\n  \"max_tokens\": 1024,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'deepseek rejected the json_schema request: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('no response_format rejection', function () { pm.expect(pm.response.text(), pm.response.text()).to.not.match(/response_format type is unavailable/i); });",
+                  "function checkPerson(text) {",
+                  "  var parsed;",
+                  "  pm.expect(function () { parsed = JSON.parse(text); }, 'content is not JSON: ' + text).to.not.throw();",
+                  "  pm.expect(parsed, 'content is not a JSON object: ' + text).to.be.an('object');",
+                  "  pm.expect(parsed.name, 'missing required string field name: ' + text).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(parsed.age, 'missing required integer field age: ' + text).to.be.a('number');",
+                  "}",
+                  "pm.test('streamed content follows the schema', function () {",
+                  "  var content = '';",
+                  "  pm.response.text().split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data: ') !== 0) { return; }",
+                  "    var payload = line.slice(6).trim();",
+                  "    if (payload === '[DONE]') { return; }",
+                  "    var chunk = JSON.parse(payload);",
+                  "    pm.expect(chunk.error, 'stream carried an error: ' + payload).to.be.undefined;",
+                  "    (chunk.choices || []).forEach(function (c) { if (c.delta && typeof c.delta.content === 'string') { content += c.delta.content; } });",
+                  "  });",
+                  "  checkPerson(content);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "227.3 deepseek/deepseek-v4-flash /v1/responses text.format json_schema returns schema-shaped JSON (deepseek json schema)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": \"Extract the person: Ada Lovelace is 36 years old.\",\n  \"text\": {\n    \"format\": {\n      \"type\": \"json_schema\",\n      \"name\": \"person\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"name\": {\n            \"type\": \"string\"\n          },\n          \"age\": {\n            \"type\": \"integer\"\n          }\n        },\n        \"required\": [\n          \"name\",\n          \"age\"\n        ],\n        \"additionalProperties\": false\n      },\n      \"strict\": true\n    }\n  },\n  \"max_output_tokens\": 1024\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'deepseek rejected the json_schema request: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('no response_format rejection', function () { pm.expect(pm.response.text(), pm.response.text()).to.not.match(/response_format type is unavailable/i); });",
+                  "function checkPerson(text) {",
+                  "  var parsed;",
+                  "  pm.expect(function () { parsed = JSON.parse(text); }, 'content is not JSON: ' + text).to.not.throw();",
+                  "  pm.expect(parsed, 'content is not a JSON object: ' + text).to.be.an('object');",
+                  "  pm.expect(parsed.name, 'missing required string field name: ' + text).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(parsed.age, 'missing required integer field age: ' + text).to.be.a('number');",
+                  "}",
+                  "pm.test('output text follows the schema', function () {",
+                  "  var j = pm.response.json();",
+                  "  var text = '';",
+                  "  (j.output || []).forEach(function (item) { if (item.type === 'message') { (item.content || []).forEach(function (part) { if (part.type === 'output_text') { text += part.text; } }); } });",
+                  "  checkPerson(text);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
