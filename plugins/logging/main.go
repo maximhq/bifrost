@@ -3173,6 +3173,8 @@ func applyA2AContentPolicy(entry *logstore.AgentLog, policy contentPolicy) {
 	entry.RequestBody = nil
 	entry.ResponseBody = nil
 	entry.EventBody = nil
+	entry.RawRequest = nil
+	entry.RawResponse = nil
 }
 
 // PreA2AHook records protocol-neutral correlation fields and the payload values
@@ -3263,6 +3265,9 @@ func (p *LoggerPlugin) PostA2AHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 		entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, policy.visible(), shouldStoreRaw)
 	} else {
 		entry.Status = "success"
+	}
+	if capture := schemas.GetA2ARawCapture(ctx); capture != nil {
+		entry.RawRequest, entry.RawResponse = capture.Snapshot()
 	}
 	applyA2AContentPolicy(entry, policy)
 	entry.PluginLogs = serializePluginLogsBounded(ctx.GetPluginLogs(), maxA2APluginLogsLen)

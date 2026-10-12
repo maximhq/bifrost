@@ -557,6 +557,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_compat_force_reasoning_only_models_to_responses_column"}, run: migrationAddCompatForceReasoningOnlyModelsToResponsesColumn},
 	{IDs: []string{"backfill_compat_force_reasoning_only_models_to_responses"}, run: migrationBackfillCompatForceReasoningOnlyModelsToResponses},
 	{IDs: []string{"add_agent_gateway_tables"}, run: migrationAddAgentGatewayTables},
+	{IDs: []string{"add_a2a_raw_capture_setting"}, run: migrationAddA2ARawCaptureSetting},
 	{IDs: []string{"add_agent_push_config_tenant_column"}, run: migrationAddAgentPushConfigTenantColumn},
 	{IDs: []string{"add_ignore_provider_cost_column"}, run: migrationAddIgnoreProviderCostColumn},
 	{IDs: []string{"add_100k_token_pricing_columns"}, run: migrationAdd100kTokenPricingColumns},
@@ -15763,4 +15764,17 @@ func migrationAddCloudflareKeyConfigColumns(ctx context.Context, db *gorm.DB, lo
 		return fmt.Errorf("error while running cloudflare key config columns migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddA2ARawCaptureSetting adds the opt-in raw capture setting for existing stores.
+func migrationAddA2ARawCaptureSetting(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "add_a2a_raw_capture_setting",
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "A2AStoreRawRequestResponse")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "A2AStoreRawRequestResponse")
+		},
+	})
 }

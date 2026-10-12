@@ -5430,3 +5430,27 @@ func TestClientConfigUnmarshal_CompatConvertDecisionToResponsesDefaultsOff(t *te
 		})
 	}
 }
+
+// TestA2ARawCaptureConfigRoundTrip verifies persistence and hash parity for raw capture.
+func TestA2ARawCaptureConfigRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	config := &ClientConfig{}
+	require.NoError(t, store.UpdateClientConfig(ctx, config))
+	config, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	config.A2AStoreRawRequestResponse = true
+	require.NoError(t, store.UpdateClientConfig(ctx, config))
+	found, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.True(t, found.A2AStoreRawRequestResponse)
+	want, err := config.GenerateClientConfigHash()
+	require.NoError(t, err)
+	got, err := found.GenerateClientConfigHash()
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+	config.A2AStoreRawRequestResponse = false
+	other, err := config.GenerateClientConfigHash()
+	require.NoError(t, err)
+	require.NotEqual(t, want, other)
+}

@@ -1908,6 +1908,7 @@ func (h *HybridLogStore) hydrateAgentLogDetail(ctx context.Context, detail *Agen
 	}
 	entry := &AgentLog{ID: detail.ID, Timestamp: detail.Timestamp, HasObject: detail.hasObject, ContentHidden: detail.contentHidden, PayloadReference: detail.payloadReference}
 	h.hydrateAgentLog(ctx, entry)
+	detail.RawRequest, detail.RawResponse = entry.RawRequest, entry.RawResponse
 	detail.RequestBody = entry.RequestBody
 	detail.ResponseBody = entry.ResponseBody
 	detail.EventBody = entry.EventBody
@@ -1985,6 +1986,10 @@ func applyAgentLogBodyUpdate(entry *AgentLog, field string, value any) error {
 		entry.ResponseBody = body
 	case "event_body":
 		entry.EventBody = body
+	case "raw_request":
+		entry.RawRequest = body
+	case "raw_response":
+		entry.RawResponse = body
 	}
 	return nil
 }
@@ -1995,7 +2000,7 @@ func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry an
 		return h.inner.UpdateAgentLog(ctx, id, entry)
 	}
 	payloadUpdate := false
-	for _, field := range []string{"request_body", "response_body", "event_body"} {
+	for _, field := range []string{"request_body", "response_body", "event_body", "raw_request", "raw_response"} {
 		if _, ok := updates[field]; ok {
 			payloadUpdate = true
 			break
@@ -2018,7 +2023,7 @@ func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry an
 	dbUpdates := make(map[string]interface{}, len(updates)+1)
 	for field, value := range updates {
 		switch field {
-		case "request_body", "response_body", "event_body":
+		case "request_body", "response_body", "event_body", "raw_request", "raw_response":
 			if err := applyAgentLogBodyUpdate(current, field, value); err != nil {
 				return err
 			}
@@ -2039,6 +2044,8 @@ func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry an
 	dbUpdates["request_body"] = dbEntry.RequestBody
 	dbUpdates["response_body"] = dbEntry.ResponseBody
 	dbUpdates["event_body"] = dbEntry.EventBody
+	dbUpdates["raw_request"] = dbEntry.RawRequest
+	dbUpdates["raw_response"] = dbEntry.RawResponse
 	dbUpdates["payload_reference"] = dbEntry.PayloadReference
 	dbUpdates["has_object"] = false
 	if err := h.inner.UpdateAgentLog(ctx, id, dbUpdates); err != nil {

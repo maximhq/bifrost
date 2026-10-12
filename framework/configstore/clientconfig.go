@@ -128,12 +128,13 @@ type ClientConfig struct {
 	HiddenRequestTypes                    []string                              `json:"hidden_request_types,omitempty"`              // Request types excluded from dashboard and log API reads; logs are still written
 	RoutingChainMaxDepth                  int                                   `json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`           // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
-	A2AExternalClientURL                  *schemas.SecretVar                    `json:"a2a_external_client_url,omitempty"`           // Public base URL used for Agent Gateway push-notification callback URLs and served agent card URLs. Supports env var syntax ("env.MY_VAR") and vault refs
-	MCPServerAuthMode                     tables.MCPServerAuthMode              `json:"mcp_server_auth_mode,omitempty"`              // How /mcp authenticates inbound clients: headers (default), both, or oauth.
-	OAuth2ServerConfig                    *tables.OAuth2ServerConfig            `json:"oauth2_server_config,omitempty"`              // OAuth2 AS-specific settings (IssuerURL, token TTLs). Only relevant when MCPServerAuthMode is both or oauth.
-	ConfigHash                            string                                `json:"-"`                                           // Config hash for reconciliation (not serialized)
-	DumpErrorsInConsoleLogs               bool                                  `json:"dump_errors_in_console_logs"`                 // Dump error details in console logs
-	WebhookConfig                         *tables.WebhookConfig                 `json:"webhook_config,omitempty"`                    // Global webhook delivery settings; nil means all defaults
+	A2AStoreRawRequestResponse            bool                                  `json:"a2a_store_raw_request_response"`
+	A2AExternalClientURL                  *schemas.SecretVar                    `json:"a2a_external_client_url,omitempty"` // Public base URL used for Agent Gateway push-notification callback URLs and served agent card URLs. Supports env var syntax ("env.MY_VAR") and vault refs
+	MCPServerAuthMode                     tables.MCPServerAuthMode              `json:"mcp_server_auth_mode,omitempty"`    // How /mcp authenticates inbound clients: headers (default), both, or oauth.
+	OAuth2ServerConfig                    *tables.OAuth2ServerConfig            `json:"oauth2_server_config,omitempty"`    // OAuth2 AS-specific settings (IssuerURL, token TTLs). Only relevant when MCPServerAuthMode is both or oauth.
+	ConfigHash                            string                                `json:"-"`                                 // Config hash for reconciliation (not serialized)
+	DumpErrorsInConsoleLogs               bool                                  `json:"dump_errors_in_console_logs"`       // Dump error details in console logs
+	WebhookConfig                         *tables.WebhookConfig                 `json:"webhook_config,omitempty"`          // Global webhook delivery settings; nil means all defaults
 }
 
 // IsMCPOAuthDiscoveryEnabled reports whether the well-known OAuth discovery
@@ -507,6 +508,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 
 	// Only hashed when set to avoid hash churn on existing configs that predate the field.
+	if c.A2AStoreRawRequestResponse {
+		hash.Write([]byte("a2aStoreRawRequestResponse:true"))
+	}
 	if c.A2AExternalClientURL.IsSet() {
 		if c.A2AExternalClientURL.IsFromSecret() {
 			hash.Write([]byte("a2aExternalClientURL:ref:" + c.A2AExternalClientURL.GetRawRef()))

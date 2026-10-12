@@ -76,10 +76,14 @@ export interface AgentFilterData {
 export const agentLogsApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
 		// List Agent history rows (metadata only) with filters and pagination.
-		getAgentLogs: builder.query<AgentLogHistoryResponse, { filters: AgentLogFilters; pagination: AgentPagination; selectedId?: string }>({
-			query: ({ filters, pagination, selectedId }) => {
+		getAgentLogs: builder.query<
+			AgentLogHistoryResponse,
+			{ filters: AgentLogFilters; pagination: AgentPagination; selectedId?: string; groupSessions?: boolean }
+		>({
+			query: ({ filters, pagination, selectedId, groupSessions }) => {
 				const query = new URLSearchParams(buildAgentHistoryQuery(filters, pagination));
 				if (selectedId) query.set("selected_id", selectedId);
+				if (groupSessions) query.set("group_sessions", "true");
 				return `/agents/history?${query}`;
 			},
 			providesTags: ["AgentLogs"],

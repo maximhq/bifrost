@@ -10361,3 +10361,10 @@ func (g *governedConfigEntities) skipBudget(ctx context.Context, holderKind stri
 	}
 	return true
 }
+
+// GetA2AStoreRawRequestResponse reads the live Agent Gateway raw capture setting.
+func (c *Config) GetA2AStoreRawRequestResponse() bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return c.ClientConfig != nil && c.ClientConfig.A2AStoreRawRequestResponse
+}
