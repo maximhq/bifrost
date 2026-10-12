@@ -1520,7 +1520,7 @@ func checkURLAccessibility(rawURL string) error {
 		resp.Body.Close()
 	}()
 	if resp.StatusCode != http.StatusOK {
-		logger.Debug("url accessibility check for %s returned HTTP %d", rawURL, resp.StatusCode)
+		logger.Debug("url accessibility check for host %s returned HTTP %d", parsed.Hostname(), resp.StatusCode)
 		return errURLNotReachable
 	}
 	return nil
