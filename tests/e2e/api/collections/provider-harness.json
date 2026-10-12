@@ -252061,6 +252061,274 @@
           }
         }
       ]
+    },
+    {
+      "name": "208. Databricks OAuth M2M token-mint failures and fallback gating (databricks oauth failure)",
+      "description": "Pins the client-visible failure behaviour of Databricks OAuth M2M after the provider moved onto the shared token cache (core/providers/utils/tokencache). Two shapes:\n\n1. The workspace host is unreachable (127.0.0.1:9). The token mint gets no HTTP status, which is a temporary outage: the error allows fallbacks and the configured fallback serves the request (x-bifrost-routing-info-is-fallback: true).\n2. The token endpoint answers 401 invalid_client. That is a credential or configuration fault: the error names the token endpoint, blocks fallbacks, and the request fails even though a fallback is configured. The answer comes from a local fixture so it cannot drift to a 429 or 5xx, which would correctly be treated as transient: start node tests/e2e/api/runners/databricks-token-fixture.mjs (port 8795, override with --port and the databricksTokenFixtureUrl variable) and run with INCLUDE_PREVIEW=1. The row creates the provider with proxy_config pointing at the fixture and trusting the CA it serves at /__ca.\n\nDatabricks is not a supported base for custom providers, so both cases configure the built-in databricks provider itself through the management API (create the provider, then add a key through /keys, since inline keys on provider creation are ignored) with a bogus service principal, so no Databricks credential is needed, and delete it afterwards. Setup refuses to run over an operator-configured databricks provider; only a leftover carrying the harness key name is replaced. Case 2 carries [EXPECT-401] because the token endpoint's status is passed through to the client, which the collection-level status test must expect. Before the shared cache, every mint failure allowed fallbacks, so case 2 served from the fallback; it is the red-before pin for the new gating. The secret must never appear in a response body.\n\nRun with FEATURE=\"databricks oauth failure\".",
+      "item": [
+        {
+          "name": "databricks/databricks-claude-sonnet-4-5 service principal against an unreachable workspace fails at the token mint and the fallback serves - #8254",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "// Databricks is not a supported base for custom providers (core/schemas.SupportedBaseProviders),",
+                  "// so the row configures the built-in 'databricks' provider itself for the duration of the run.",
+                  "// Its single key is an OAuth M2M service principal pointed at the given workspace host; no real",
+                  "// Databricks credential is involved: the host decides how the token mint fails, which is the",
+                  "// behaviour under test. The provider name is a singleton, so setup never overwrites an operator's",
+                  "// configuration: an existing databricks provider fails the row unless its only key carries the",
+                  "// harness marker (a leftover from an aborted run), in which case it is removed first.",
+                  "var PROVIDER = 'databricks';",
+                  "var KEY_NAME = 'harness-dbxoauth-sp';",
+                  "pm.variables.set('dbxOauthProvider', PROVIDER);",
+                  "pm.variables.set('dbxOauthCreated', '');",
+                  "// Two steps: POST /api/providers ignores inline keys, so the key is added through /keys.",
+                  "function createProvider(cb) {",
+                  "  mgmt('POST', '/api/providers', {provider: PROVIDER}, function (err, res) {",
+                  "    pm.test('setup: configured the databricks provider for the run', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    if (err || res.code !== 200) { pm.execution.skipRequest(); return cb(); }",
+                  "    pm.variables.set('dbxOauthCreated', '1');",
+                  "    mgmt('POST', '/api/providers/' + PROVIDER + '/keys', {name: KEY_NAME, models: ['*'], weight: 1, databricks_key_config: {workspace_url: '127.0.0.1:9', client_id: 'harness-service-principal', client_secret: 'harness-service-principal-secret'}}, function (err2, res2) {",
+                  "      pm.test('setup: added the harness service principal key', function () {",
+                  "        pm.expect(err2).to.equal(null);",
+                  "        pm.expect(res2.code, res2.text()).to.equal(200);",
+                  "      });",
+                  "      cb();",
+                  "    });",
+                  "  });",
+                  "}",
+                  "mgmt('GET', '/api/providers/' + PROVIDER, null, function (err, res) {",
+                  "  if (err || !res || res.code === 404) { return createProvider(function () {}); }",
+                  "  // GET /api/providers/{provider} carries no keys; they are listed by /keys.",
+                  "  mgmt('GET', '/api/providers/' + PROVIDER + '/keys', null, function (kErr, kRes) {",
+                  "    var keys = (!kErr && kRes && kRes.code === 200 && kRes.json() && kRes.json().keys) || [];",
+                  "    var leftover = keys.length === 1 && keys[0].name === KEY_NAME;",
+                  "    pm.test('setup: no operator-configured databricks provider is in the way', function () {",
+                  "      pm.expect(leftover, 'a databricks provider already exists and is not a harness leftover; remove it or run against a clean profile: ' + (kRes ? kRes.text() : String(kErr))).to.equal(true);",
+                  "    });",
+                  "    if (!leftover) { pm.execution.skipRequest(); return; }",
+                  "    mgmt('DELETE', '/api/providers/' + PROVIDER, null, function () { createProvider(function () {}); });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('dbxOauthProvider');",
+                  "if (provider && pm.variables.get('dbxOauthCreated') === '1') {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: removed the databricks provider the run configured', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('an unreachable token endpoint is a temporary outage, so the configured fallback serves the request', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'is-fallback header: ' + pm.response.text()).to.equal('true');",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.choices).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(pm.response.text(), 'the service principal secret must never be echoed').to.not.include('harness-service-principal-secret');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{dbxOauthProvider}}/databricks-claude-sonnet-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false,\n  \"fallbacks\": [\n    \"openai/gpt-4o-mini\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-401] databricks/databricks-claude-sonnet-4-5 service principal rejected by the token endpoint blocks the fallback - #8254",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "// The token endpoint is the local fixture (node tests/e2e/api/runners/databricks-token-fixture.mjs), reached as the",
+                  "// provider's HTTP proxy: it terminates TLS for the workspace host and answers /oidc/v1/token with 401 invalid_client,",
+                  "// so the rejection is deterministic and no request leaves the machine.",
+                  "var FIXTURE = pm.variables.get('databricksTokenFixtureUrl') || 'http://127.0.0.1:8795';",
+                  "var fixtureCa = '';",
+                  "// Databricks is not a supported base for custom providers (core/schemas.SupportedBaseProviders),",
+                  "// so the row configures the built-in 'databricks' provider itself for the duration of the run.",
+                  "// Its single key is an OAuth M2M service principal pointed at the given workspace host; no real",
+                  "// Databricks credential is involved: the host decides how the token mint fails, which is the",
+                  "// behaviour under test. The provider name is a singleton, so setup never overwrites an operator's",
+                  "// configuration: an existing databricks provider fails the row unless its only key carries the",
+                  "// harness marker (a leftover from an aborted run), in which case it is removed first.",
+                  "var PROVIDER = 'databricks';",
+                  "var KEY_NAME = 'harness-dbxoauth-sp';",
+                  "pm.variables.set('dbxOauthProvider', PROVIDER);",
+                  "pm.variables.set('dbxOauthCreated', '');",
+                  "// Two steps: POST /api/providers ignores inline keys, so the key is added through /keys.",
+                  "function createProvider(cb) {",
+                  "  mgmt('POST', '/api/providers', {provider: PROVIDER, proxy_config: {type: 'http', url: FIXTURE, ca_cert_pem: fixtureCa}}, function (err, res) {",
+                  "    pm.test('setup: configured the databricks provider for the run', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    if (err || res.code !== 200) { pm.execution.skipRequest(); return cb(); }",
+                  "    pm.variables.set('dbxOauthCreated', '1');",
+                  "    mgmt('POST', '/api/providers/' + PROVIDER + '/keys', {name: KEY_NAME, models: ['*'], weight: 1, databricks_key_config: {workspace_url: 'dbx-fixture-workspace.invalid', client_id: 'harness-service-principal', client_secret: 'harness-service-principal-secret'}}, function (err2, res2) {",
+                  "      pm.test('setup: added the harness service principal key', function () {",
+                  "        pm.expect(err2).to.equal(null);",
+                  "        pm.expect(res2.code, res2.text()).to.equal(200);",
+                  "      });",
+                  "      cb();",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.sendRequest({url: FIXTURE + '/__ca', method: 'GET'}, function (caErr, caRes) {",
+                  "  pm.test('setup: the databricks token fixture is running at ' + FIXTURE, function () {",
+                  "    pm.expect(caErr, 'start node tests/e2e/api/runners/databricks-token-fixture.mjs').to.equal(null);",
+                  "    pm.expect(caRes.code, caRes.text()).to.equal(200);",
+                  "    pm.expect(caRes.text()).to.include('BEGIN CERTIFICATE');",
+                  "  });",
+                  "  if (caErr || caRes.code !== 200) { pm.execution.skipRequest(); return; }",
+                  "  fixtureCa = caRes.text();",
+                  "mgmt('GET', '/api/providers/' + PROVIDER, null, function (err, res) {",
+                  "  if (err || !res || res.code === 404) { return createProvider(function () {}); }",
+                  "  // GET /api/providers/{provider} carries no keys; they are listed by /keys.",
+                  "  mgmt('GET', '/api/providers/' + PROVIDER + '/keys', null, function (kErr, kRes) {",
+                  "    var keys = (!kErr && kRes && kRes.code === 200 && kRes.json() && kRes.json().keys) || [];",
+                  "    var leftover = keys.length === 1 && keys[0].name === KEY_NAME;",
+                  "    pm.test('setup: no operator-configured databricks provider is in the way', function () {",
+                  "      pm.expect(leftover, 'a databricks provider already exists and is not a harness leftover; remove it or run against a clean profile: ' + (kRes ? kRes.text() : String(kErr))).to.equal(true);",
+                  "    });",
+                  "    if (!leftover) { pm.execution.skipRequest(); return; }",
+                  "    mgmt('DELETE', '/api/providers/' + PROVIDER, null, function () { createProvider(function () {}); });",
+                  "  });",
+                  "});",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('dbxOauthProvider');",
+                  "if (provider && pm.variables.get('dbxOauthCreated') === '1') {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: removed the databricks provider the run configured', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('a 401 from the token endpoint is a credential fault and must not drain onto the fallback', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'the fallback must not have served: ' + pm.response.text()).to.not.equal('true');",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text).to.include('oauth token request to https://dbx-fixture-workspace.invalid/oidc/v1/token failed (401)');",
+                  "  pm.expect(text).to.include('invalid_client');",
+                  "  pm.expect(text, 'the service principal secret must never be echoed').to.not.include('harness-service-principal-secret');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{dbxOauthProvider}}/databricks-claude-sonnet-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false,\n  \"fallbacks\": [\n    \"openai/gpt-4o-mini\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

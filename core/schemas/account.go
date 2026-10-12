@@ -996,6 +996,87 @@ type DatabricksKeyConfig struct {
 	ForwardGatewayTags bool                `json:"forward_gateway_tags,omitempty"` // Whether to forward Bifrost governance labels as Databricks-Ai-Gateway-Request-Tags
 }
 
+const (
+	// DatabricksOAuthTokenPath is the workspace-level OAuth token endpoint for M2M service principals.
+	DatabricksOAuthTokenPath = "/oidc/v1/token"
+	// DatabricksOAuthScope is the scope Databricks requires for M2M client-credentials grants.
+	DatabricksOAuthScope = "all-apis"
+)
+
+// databricksOAuthScopes is the shared, read-only scope list every derived config points at,
+// so the per-request derivation does not allocate a slice.
+var databricksOAuthScopes = []string{DatabricksOAuthScope}
+
+// OAuthConfig maps the service-principal pair onto the common OAuth key config, filling in the
+// token endpoint and scope that Databricks fixes for every workspace. The wire shape of
+// databricks_key_config is unchanged; this is how the provider hands its credentials to the
+// shared token cache, so Databricks and custom OpenAI-compatible providers mint through one
+// code path. host is the bare workspace host. It returns false when either half of the pair
+// is missing, so a caller can report the half-configured case in its own words. The value is
+// returned rather than a pointer so the per-request derivation stays on the stack.
+func (c *DatabricksKeyConfig) OAuthConfig(host string) (OAuthKeyConfig, bool) {
+	if c == nil || c.ClientID == nil || c.ClientSecret == nil {
+		return OAuthKeyConfig{}, false
+	}
+	if c.ClientID.GetValue() == "" || c.ClientSecret.GetValue() == "" {
+		return OAuthKeyConfig{}, false
+	}
+	return OAuthKeyConfig{
+		GrantType:    OAuthGrantClientCredentials,
+		TokenURL:     *NewSecretVar("https://" + host + DatabricksOAuthTokenPath),
+		ClientID:     c.ClientID,
+		ClientSecret: c.ClientSecret,
+		Scopes:       databricksOAuthScopes,
+		AuthStyle:    OAuthAuthStyleHeader,
+	}, true
+}
+
+// OAuthGrantType selects how an OAuthKeyConfig obtains an access token.
+type OAuthGrantType string
+
+const (
+	// OAuthGrantClientCredentials is the OAuth 2.0 client_credentials grant (RFC 6749 §4.4).
+	OAuthGrantClientCredentials OAuthGrantType = "client_credentials"
+	// OAuthGrantJWTBearer is the JWT bearer assertion grant (RFC 7523): Bifrost signs an
+	// assertion with the configured private key and exchanges it for an access token.
+	OAuthGrantJWTBearer OAuthGrantType = "jwt_bearer"
+)
+
+// OAuthAuthStyle selects where the client_credentials grant sends the client ID and secret.
+type OAuthAuthStyle string
+
+const (
+	// OAuthAuthStyleHeader sends the credentials as HTTP Basic auth (the RFC 6749 default).
+	OAuthAuthStyleHeader OAuthAuthStyle = "header"
+	// OAuthAuthStyleBody sends client_id and client_secret as form fields in the request body.
+	OAuthAuthStyleBody OAuthAuthStyle = "body"
+)
+
+// OAuthKeyConfig is the common shape every OAuth-minted key credential reduces to. A custom
+// OpenAI-compatible provider carries it directly on the key as oauth_key_config; providers
+// with their own key config (Databricks) derive one from their fields. The shared token
+// cache in core/providers/utils/tokencache mints, caches and refreshes from this struct, so
+// the grant handling, cache keying and error mapping exist once.
+//
+// Leave Key.Value empty to mint from this config; a non-empty Value always wins and is sent
+// verbatim as the bearer token.
+type OAuthKeyConfig struct {
+	GrantType                OAuthGrantType    `json:"grant_type"`                           // client_credentials or jwt_bearer (required)
+	TokenURL                 SecretVar         `json:"token_url"`                            // Token endpoint, absolute https URL (required, supports env. prefix)
+	ClientID                 *SecretVar        `json:"client_id,omitempty"`                  // client_credentials: client ID (required for that grant)
+	ClientSecret             *SecretVar        `json:"client_secret,omitempty"`              // client_credentials: client secret (required for that grant)
+	PrivateKey               *SecretVar        `json:"private_key,omitempty"`                // jwt_bearer: RSA or EC private key, PEM (required for that grant)
+	Scopes                   []string          `json:"scopes,omitempty"`                     // Scopes requested, sent space-joined
+	Audience                 string            `json:"audience,omitempty"`                   // jwt_bearer: aud claim (required for that grant); client_credentials: optional audience form param
+	Issuer                   string            `json:"issuer,omitempty"`                     // jwt_bearer: iss claim (required for that grant)
+	Subject                  string            `json:"subject,omitempty"`                    // jwt_bearer: sub claim (defaults to issuer)
+	KeyID                    string            `json:"key_id,omitempty"`                     // jwt_bearer: kid header
+	SigningAlgorithm         string            `json:"signing_algorithm,omitempty"`          // jwt_bearer: RS256 (default), RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512
+	AuthStyle                OAuthAuthStyle    `json:"auth_style,omitempty"`                 // client_credentials: header (default) or body
+	ExtraParams              map[string]string `json:"extra_params,omitempty"`               // Extra form parameters sent on the token request
+	AssertionLifetimeSeconds int               `json:"assertion_lifetime_seconds,omitempty"` // jwt_bearer: assertion exp - iat (default 300)
+}
+
 // GithubCopilotKeyConfig holds GitHub App credentials for server-to-server Copilot access.
 //
 // A GitHub App carrying the "Copilot Requests" permission mints short-lived installation
