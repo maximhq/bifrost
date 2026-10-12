@@ -663,7 +663,7 @@ curl http://localhost:8080/v1/decisions \
   }'
 ```
 
-A model is sent to the decisions endpoint when the model datasheet marks it `supports_decisions`, so a newly released decisions model needs only a datasheet entry. Without the datasheet, the `gpt-6-luna` family is recognized by name. Any other OpenAI model answers decision requests through structured output on its chat API instead.
+A model is sent to the decisions endpoint when the model datasheet marks it `supports_decisions`, so a newly released decisions model needs only a datasheet entry. Without the datasheet, the `gpt-6-luna` family is recognized by name. Any other OpenAI model returns `unsupported_operation` on decision requests, unless the compat setting [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) is on, in which case it answers through structured output on its Responses API.
 
 OpenAI takes text where `/v1/decisions` also carries TypeSafe's structured values, so these are converted before the request is sent, the same way they are rendered for a chat model:
 

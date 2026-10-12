@@ -245,7 +245,7 @@ Available operations:
 - **`transcription`**: Speech-to-text conversion
 - **`transcription_stream`**: Streaming speech-to-text
 - **`rerank`**: Document reranking via `/v1/rerank` (OpenAI-compatible base only)
-- **`decisions`**: Decision requests via `/v1/decisions`. A `typesafe` base serves them natively, and so does an `openai` base for the models the datasheet marks `supports_decisions` (such as `gpt-6-luna`); other models and bases emulate them through the Responses API
+- **`decisions`**: Decision requests via `/v1/decisions`. A `typesafe` base serves them natively, and so does an `openai` base for the models the datasheet marks `supports_decisions` (such as `gpt-6-luna`); other models and bases return `unsupported_operation`, unless the compat setting [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) is on, in which case they emulate them through the Responses API. Leave that setting off when a custom provider serves decisions: custom providers have no model catalog entries, so with it on even a `typesafe` base would be emulated instead of answered natively
 
 ### Base Provider Types
 

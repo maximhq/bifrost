@@ -322,6 +322,7 @@ bifrost:
       shouldConvertParams: false
       azureDeepseek: false
       # forceReasoningOnlyModelsToResponses: true  # Route chat requests to responses for models that cannot reason with tool calls, so reasoning is kept (default true)
+      # convertDecisionToResponses: false  # Emulate decision requests through the model's Responses API when it has no native decisions endpoint (default false)
     prometheusLabels: []
     # Header filtering configuration for x-bf-eh-* headers forwarded to LLM providers
     headerFilterConfig:
