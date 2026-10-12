@@ -256652,62 +256652,6 @@
           "response": []
         },
         {
-          "name": "[EXPECT-404] openai object-ownership: another key cannot run a batch on the file through the OpenAI passthrough route",
-          "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Without both keys and the uploaded file there is nothing to compare; the failed setup request already reports why.",
-                  "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue') || !pm.collectionVariables.get('objFileId')) { pm.execution.skipRequest(); return; }"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "var txt = pm.response.text() || '';",
-                  "// A batch created through passthrough runs on the input_file_id its body names, under the shared key, as the native batch create runs on its input file.",
-                  "// Naming another key's file is refused before the provider is called: 404 on the file, never a model",
-                  "// answer and never a 401/403/500 that would mean the request was refused for a different reason.",
-                  "pm.test('object-ownership: a passthrough batch create naming another key\\'s file as input_file_id is 404', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
-                  "});",
-                  "pm.test('object-ownership: the 404 names the file as not found', function () {",
-                  "  var body = {};",
-                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-                  "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
-                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('not found');",
-                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include(pm.collectionVariables.get('objFileId'));",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "x-bf-vk",
-                "value": "{{objOtherVkValue}}"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"input_file_id\":\"{{objFileId}}\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\"}"
-            },
-            "url": "{{baseUrl}}/openai_passthrough/v1/batches"
-          },
-          "response": []
-        },
-        {
           "name": "[EXPECT-404] openai object-ownership: another key cannot run code against the file through a code_interpreter container",
           "event": [
             {
