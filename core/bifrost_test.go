@@ -810,6 +810,22 @@ func BenchmarkCalculateBackoff(b *testing.B) {
 	}
 }
 
+// BenchmarkAgentContinuationChecksOnPlainRequest measures what the MCP agent-loop continuation
+// and MCP-instructions cache-placement checks add to a request that uses neither: one context
+// lookup each, expected to allocate nothing.
+func BenchmarkAgentContinuationChecksOnPlainRequest(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-4o-mini")
+	input := []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if agentContinuationRoute(ctx) != nil || injectedMCPInstructionsChatIndex(ctx, input) != -1 {
+			b.Fatal("plain request read as an agent continuation")
+		}
+	}
+}
+
 // Benchmark IsRateLimitErrorMessage performance
 func BenchmarkIsRateLimitError(b *testing.B) {
 	messages := []string{
@@ -3491,6 +3507,171 @@ func TestRequestedRouteSurvivesPreRequestRewrite(t *testing.T) {
 				t.Errorf("RoutingInfo requested route = (%q, %q), want (openai, gpt-4o-mini)", got.RequestedProvider, got.RequestedModel)
 			}
 		})
+	}
+}
+
+// agentLoopServer is an OpenAI-compatible upstream for one MCP agent loop: the first turn calls
+// the in-process echo tool, and a turn that carries the tool result answers. It records the
+// model of every request it serves.
+func agentLoopServer(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var models []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var parsed struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &parsed)
+		mu.Lock()
+		models = append(models, parsed.Model)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), `"role":"tool"`) {
+			fmt.Fprint(w, `{"id":"chatcmpl-2","object":"chat.completion","created":1,"model":"m",`+
+				`"choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],`+
+				`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"m",`+
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-1","type":"function",`+
+			`"function":{"name":"bifrostInternal-echo","arguments":"{\"message\":\"hi\"}"}}]},"finish_reason":"tool_calls"}],`+
+			`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	t.Cleanup(server.Close)
+	return server, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), models...)
+	}
+}
+
+// newAgentLoopClient initializes Bifrost with MCP and an auto-executed in-process echo tool.
+func newAgentLoopClient(t *testing.T, account *MockAccount, plugins ...schemas.LLMPlugin) *Bifrost {
+	t.Helper()
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewNoOpLogger(),
+		LLMPlugins: plugins,
+		MCPConfig:  &schemas.MCPConfig{},
+	})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+	echo := schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{
+		Name:       "echo",
+		Parameters: &schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMapFromPairs(schemas.KV("message", map[string]interface{}{"type": "string"}))},
+	}}
+	if err := client.RegisterMCPTool("echo", "Echoes the message", func(args any) (string, error) { return "echoed", nil }, echo); err != nil {
+		t.Fatalf("RegisterMCPTool failed: %v", err)
+	}
+	for _, state := range client.MCPManager.GetClients() {
+		if state.ExecutionConfig.ID == "bifrostInternal" {
+			state.ExecutionConfig.ToolsToAutoExecute = []string{"*"}
+			if err := client.MCPManager.UpdateClient(state.ExecutionConfig.ID, state.ExecutionConfig); err != nil {
+				t.Fatalf("UpdateClient failed: %v", err)
+			}
+		}
+	}
+	return client
+}
+
+// TestAgentLoopContinuationKeepsRequestedRoute pins that an MCP agent loop's later turns report
+// the route the caller sent, not the one a routing rule rewrote it to on turn 1, and stay on the
+// routed model.
+func TestAgentLoopContinuationKeepsRequestedRoute(t *testing.T) {
+	server, models := agentLoopServer(t)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newAgentLoopClient(t, account, &modelRewritingPlugin{routedModel: "gpt-4o"})
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	defer ctx.Cancel()
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "requested-alias",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("echo hi")}},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("request failed: %s", bifrostErr.Error.Message)
+	}
+	if got := models(); !reflect.DeepEqual(got, []string{"gpt-4o", "gpt-4o"}) {
+		t.Fatalf("upstream models = %v, want both turns on the routed gpt-4o", got)
+	}
+	info := resp.ExtraFields.RoutingInfo
+	if info.RequestedProvider != schemas.OpenAI || info.RequestedModel != "requested-alias" {
+		t.Errorf("final RoutingInfo requested route = (%q, %q), want (openai, requested-alias)", info.RequestedProvider, info.RequestedModel)
+	}
+	if info.Model != "gpt-4o" {
+		t.Errorf("final RoutingInfo.Model = %q, want gpt-4o", info.Model)
+	}
+}
+
+// TestAgentLoopContinuationStaysOnServingFallback pins that when a fallback served turn 1 of an
+// MCP agent loop, later turns go straight to that fallback instead of retrying the primary, and
+// the final response still reports it as the fallback it is.
+func TestAgentLoopContinuationStaysOnServingFallback(t *testing.T) {
+	var primaryHits atomic.Int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
+	}))
+	t.Cleanup(primary.Close)
+	fallback, models := agentLoopServer(t)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, primary.URL)
+	account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+		{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, fallback.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newAgentLoopClient(t, account)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	defer ctx.Cancel()
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-3-5-haiku-20241022",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("echo hi")}},
+		},
+		Fallbacks: []schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-4o-mini"}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("request failed: %s", bifrostErr.Error.Message)
+	}
+	if got := primaryHits.Load(); got != 1 {
+		t.Errorf("primary was called %d times, want 1: the continuation turn must not retry the primary turn 1 fell back from", got)
+	}
+	if got := models(); !reflect.DeepEqual(got, []string{"gpt-4o-mini", "gpt-4o-mini"}) {
+		t.Fatalf("fallback upstream models = %v, want both turns on gpt-4o-mini", got)
+	}
+	info := resp.ExtraFields.RoutingInfo
+	if info.Provider != schemas.OpenAI || !info.IsFallback {
+		t.Errorf("final RoutingInfo = provider %q is_fallback %v, want the openai fallback", info.Provider, info.IsFallback)
+	}
+	if info.PrimaryProvider == nil || *info.PrimaryProvider != schemas.Anthropic {
+		t.Errorf("final RoutingInfo.PrimaryProvider = %v, want anthropic", info.PrimaryProvider)
+	}
+	if idx, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); idx != 1 {
+		t.Errorf("fallback index on the context = %d, want 1 (the transport's x-bifrost-fallback-index header reads it)", idx)
+	}
+	if info.RequestedProvider != schemas.Anthropic || info.RequestedModel != "claude-3-5-haiku-20241022" {
+		t.Errorf("final RoutingInfo requested route = (%q, %q), want the caller's anthropic route", info.RequestedProvider, info.RequestedModel)
 	}
 }
 

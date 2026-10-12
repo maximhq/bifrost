@@ -49,6 +49,8 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyRequestedModel:          {},
 	BifrostContextKeyProviderProxyConfig:     {},
 	BifrostContextKeyMCPInboundBearer:        {},
+	BifrostContextKeyMCPAgentServedRoute:     {},
+	BifrostContextKeyMCPInstructionsText:     {},
 }
 
 // isReservedKey reports whether key is a reserved context key whose writes are
