@@ -259659,6 +259659,192 @@
           }
         }
       ]
+    },
+    {
+      "name": "223. Structured output alongside function tools on pre-3 models (structured output with tools)",
+      "description": "Gemini 2.5 and earlier reject responseMimeType \"application/json\" sent together with function declarations (\"Function calling with a response mime type: 'application/json' is unsupported\"). The chat converter already dropped the JSON response-format hint for those models; the Responses converter (convertParamsToGenerationConfigResponses) did not, so /v1/responses with a function tool plus text.format json_schema, and a bare-model /genai generateContent with functionDeclarations plus responseMimeType (which crosses the same neutral Responses path), came back as a 400. These cases pin a 200 on the gemini and vertex hosts, non-streaming and streaming, and on the /genai ingress. Each is red before the fix (Google 400) and green after.",
+      "item": [
+        {
+          "name": "223.1 gemini/gemini-2.5-flash /v1/responses function tool with text.format json_schema returns 200 (structured output with tools)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"What is the weather in Paris right now? Use the tool.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"text\": {\n    \"format\": {\n      \"type\": \"json_schema\",\n      \"name\": \"Answer\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"answer\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"answer\"\n        ]\n      }\n    }\n  },\n  \"max_output_tokens\": 512\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'gemini request failed: ' + pm.response.text()).to.equal(200);",
+                  "pm.test('no mime-type-with-tools rejection', function () { pm.expect(pm.response.text(), 'Google rejected JSON mode next to function tools: ' + pm.response.text()).to.not.match(/response mime type/i); });",
+                  "var j = pm.response.json();",
+                  "pm.test('gemini: the response carries output', function () { pm.expect(j.output, pm.response.text()).to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "223.2 vertex/gemini-2.5-flash /v1/responses function tool with text.format json_schema returns 200 (structured output with tools)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"input\": \"What is the weather in Paris right now? Use the tool.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"text\": {\n    \"format\": {\n      \"type\": \"json_schema\",\n      \"name\": \"Answer\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"answer\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"answer\"\n        ]\n      }\n    }\n  },\n  \"max_output_tokens\": 512\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'vertex request failed: ' + pm.response.text()).to.equal(200);",
+                  "pm.test('no mime-type-with-tools rejection', function () { pm.expect(pm.response.text(), 'Google rejected JSON mode next to function tools: ' + pm.response.text()).to.not.match(/response mime type/i); });",
+                  "var j = pm.response.json();",
+                  "pm.test('vertex: the response carries output', function () { pm.expect(j.output, pm.response.text()).to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "223.3 gemini/gemini-2.5-flash /v1/responses streaming function tool with text.format json_schema completes (structured output with tools)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"What is the weather in Paris right now? Use the tool.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"text\": {\n    \"format\": {\n      \"type\": \"json_schema\",\n      \"name\": \"Answer\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"answer\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"answer\"\n        ]\n      }\n    }\n  },\n  \"max_output_tokens\": 512,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'gemini stream failed: ' + pm.response.text()).to.equal(200);",
+                  "pm.test('no mime-type-with-tools rejection', function () { pm.expect(pm.response.text(), 'Google rejected JSON mode next to function tools: ' + pm.response.text()).to.not.match(/response mime type/i); });",
+                  "pm.test('gemini: the stream reached response.completed', function () { pm.expect(pm.response.text(), 'no response.completed event: ' + pm.response.text()).to.include('response.completed'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "223.4 gemini-2.5-flash /genai generateContent functionDeclarations with responseMimeType json returns 200 (structured output with tools)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"What is the weather in Paris right now? Use the tool.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        {\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city.\",\n          \"parameters\": {\n            \"type\": \"OBJECT\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"STRING\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseMimeType\": \"application/json\",\n    \"maxOutputTokens\": 256,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-2.5-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'gemini genai request failed: ' + pm.response.text()).to.equal(200);",
+                  "pm.test('no mime-type-with-tools rejection', function () { pm.expect(pm.response.text(), 'Google rejected JSON mode next to function tools: ' + pm.response.text()).to.not.match(/response mime type/i); });",
+                  "var j = pm.response.json();",
+                  "pm.test('gemini: a candidate came back', function () { pm.expect(j.candidates, pm.response.text()).to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

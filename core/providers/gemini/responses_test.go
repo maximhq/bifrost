@@ -656,6 +656,72 @@ func TestConvertResponsesToolsToGeminiCodeExecution(t *testing.T) {
 	})
 }
 
+// Gemini-native retrieval tools (retrieval.vertexAiSearch, retrieval.vertexRagStore,
+// googleSearchRetrieval, ...) have no neutral Responses tool. A /genai request routed
+// to Vertex (or a bare model) goes through ToBifrostResponsesRequest and back out
+// through ToGeminiResponsesRequest, and these tools used to vanish on the way, so the
+// model answered ungrounded with a 200. They must reach the outbound request intact,
+// alongside the neutral tools, on every retry attempt.
+func TestGenAINativeRetrievalToolsSurviveNeutralRoundTrip(t *testing.T) {
+	threshold := float32(0.3)
+	in := &GeminiGenerationRequest{
+		Model:    "vertex/gemini-2.5-flash",
+		Contents: []Content{{Role: "user", Parts: []*Part{{Text: "What does the index say?"}}}},
+		Tools: []Tool{
+			{Retrieval: &Retrieval{VertexAISearch: &VertexAISearch{Datastore: "projects/p/locations/global/collections/default_collection/dataStores/ds"}}},
+			{Retrieval: &Retrieval{VertexRAGStore: &VertexRAGStore{RAGResources: []*VertexRAGStoreRAGResource{{RAGCorpus: "projects/p/locations/us-central1/ragCorpora/c"}}}}},
+			{GoogleSearchRetrieval: &GoogleSearchRetrieval{DynamicRetrievalConfig: &DynamicRetrievalConfig{Mode: "MODE_DYNAMIC", DynamicThreshold: &threshold}}},
+			{Retrieval: &Retrieval{}},
+			{CodeExecution: &ToolCodeExecution{}},
+		},
+	}
+	bifrostReq := in.ToBifrostResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	if bifrostReq == nil || bifrostReq.Params == nil {
+		t.Fatalf("ToBifrostResponsesRequest returned no params")
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		out, err := ToGeminiResponsesRequest(nil, bifrostReq)
+		if err != nil {
+			t.Fatalf("attempt %d: ToGeminiResponsesRequest error: %v", attempt, err)
+		}
+		var vertexSearch, ragStore, emptyRetrieval, searchRetrieval, codeExecution int
+		for _, tool := range out.Tools {
+			if tool.Retrieval != nil {
+				switch {
+				case tool.Retrieval.VertexAISearch != nil:
+					if tool.Retrieval.VertexAISearch.Datastore != "projects/p/locations/global/collections/default_collection/dataStores/ds" {
+						t.Fatalf("attempt %d: datastore = %q", attempt, tool.Retrieval.VertexAISearch.Datastore)
+					}
+					vertexSearch++
+				case tool.Retrieval.VertexRAGStore != nil:
+					ragStore++
+				default:
+					emptyRetrieval++
+				}
+			}
+			if tool.GoogleSearchRetrieval != nil {
+				cfg := tool.GoogleSearchRetrieval.DynamicRetrievalConfig
+				if cfg == nil || cfg.Mode != "MODE_DYNAMIC" || cfg.DynamicThreshold == nil || *cfg.DynamicThreshold != threshold {
+					t.Fatalf("attempt %d: googleSearchRetrieval config lost: %+v", attempt, cfg)
+				}
+				searchRetrieval++
+			}
+			if tool.CodeExecution != nil {
+				codeExecution++
+			}
+		}
+		if vertexSearch != 1 || ragStore != 1 || emptyRetrieval != 1 || searchRetrieval != 1 || codeExecution != 1 {
+			t.Fatalf("attempt %d: tools = %+v, want vertexAiSearch, vertexRagStore, bare retrieval, googleSearchRetrieval and codeExecution each once", attempt, out.Tools)
+		}
+		for key := range out.GetExtraParams() {
+			if strings.Contains(key, "tool") {
+				t.Fatalf("attempt %d: carrier key %q leaked onto the wire", attempt, key)
+			}
+		}
+	}
+}
+
 // executableCode and codeExecutionResult arrive as two sibling parts. They must land as
 // one structured code_interpreter_call carrying code and outputs, not as prose text —
 // that is the shape OpenAI and Anthropic already produce.
