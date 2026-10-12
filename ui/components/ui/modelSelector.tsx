@@ -84,6 +84,8 @@ interface ModelSelectorBaseProps {
 	renderValueLabel?: (value: string) => React.ReactNode;
 	/** Drops the magnifier from the trigger. The one in the search field stays either way. */
 	hideSearchIcon?: boolean;
+	/** Single select only: open with an empty search showing the full list, instead of seeding it with the current model. */
+	openWithEmptySearch?: boolean;
 	/** id for the trigger, so a form label and its error message can point at it. */
 	inputId?: string;
 	ariaLabelledBy?: string;
@@ -151,6 +153,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 		extraOptions,
 		renderValueLabel,
 		hideSearchIcon = false,
+		openWithEmptySearch = false,
 		inputId,
 		ariaLabelledBy,
 		ariaDescribedBy,
@@ -353,13 +356,13 @@ export function ModelSelector(props: ModelSelectorProps) {
 			 * gets back to the full list in one click. Multi keeps its empty field: its search is
 			 * for the next pick, not the ones already made.
 			 */
-			const seed = !isMulti && selected[0] && !extraValues.has(selected[0]) ? selected[0] : "";
+			const seed = !isMulti && !openWithEmptySearch && selected[0] && !extraValues.has(selected[0]) ? selected[0] : "";
 			setSeededSearch(seed);
 			setSearch(seed);
 			setOpen(true);
 			setHasOpened(true);
 		},
-		[closeAndResetSearch, isMulti, selected, extraValues],
+		[closeAndResetSearch, isMulti, openWithEmptySearch, selected, extraValues],
 	);
 
 	// Paging happens on scroll rather than through a button, so the list stays a list.

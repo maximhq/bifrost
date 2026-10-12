@@ -318,10 +318,7 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 	return (
 		<div className="grid gap-4 sm:grid-cols-2" data-testid="complexity-router-decision-fields">
 			<div className="space-y-2">
-				<FieldLabel
-					htmlFor="decision-provider"
-					tooltip="Typesafe for Jev, OpenRouter for the decision models it serves, Cloudflare for Clef, Perplexity for its decider models, Ollama for the System One models pulled locally, OpenAI or a custom provider with base format OpenAI for OpenAI's decision models, or a custom provider with base format Typesafe serving Laya, Nimble, or Clef."
-				>
+				<FieldLabel htmlFor="decision-provider" tooltip="The provider that runs the decision model.">
 					Provider
 				</FieldLabel>
 				<Controller
@@ -372,6 +369,8 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 								<ModelSelector
 									inputId="decision-model"
 									data-testid="complexity-router-decision-model-select"
+									hideSearchIcon
+									openWithEmptySearch
 									provider={providerName}
 									keys={providerKeyIds}
 									decisions
@@ -388,6 +387,8 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 								<ModelSelector
 									inputId="decision-model"
 									data-testid="complexity-router-decision-model-select"
+									hideSearchIcon
+									openWithEmptySearch
 									provider={providerName || undefined}
 									keys={providerKeyIds}
 									value={field.value ?? ""}
@@ -419,6 +420,8 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 								<ModelSelector
 									inputId="decision-model"
 									data-testid="complexity-router-decision-model-select"
+									hideSearchIcon
+									openWithEmptySearch
 									provider={providerName || undefined}
 									keys={providerKeyIds}
 									value={field.value ?? ""}
@@ -940,7 +943,7 @@ const CLASSIFIER_OPTIONS: {
 		value: "decision",
 		title: "Decision model",
 		description:
-			"A decision model judges the complexity of each request and picks the tier whose definition, signals, and examples fit it best. Use Typesafe Jev or OpenAI's decision models, or run Laya, Nimble, or Clef. No phrases to write or maintain.",
+			"A decision model judges the complexity of each request and picks the tier whose definition, signals, and examples fit it best. Use Typesafe Jev, OpenAI's decision models, Cloudflare Clef, or another provider that serves decision models. No phrases to write or maintain.",
 	},
 	{
 		value: "semantic",
