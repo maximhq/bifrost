@@ -43868,7 +43868,7 @@
             }
           },
           "403": {
-            "description": "A non-builtin path was supplied and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
+            "description": "A non-builtin path was supplied, or a built-in plugin's outbound endpoint (collector_url, metrics_endpoint, push_gateway_url) or an env./vault. reference in its config was set or changed, and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
           },
           "409": {
             "description": "Plugin already exists",
@@ -44088,7 +44088,7 @@
             }
           },
           "403": {
-            "description": "A non-builtin path was supplied and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
+            "description": "A non-builtin path was supplied, or a built-in plugin's outbound endpoint (collector_url, metrics_endpoint, push_gateway_url) or an env./vault. reference in its config was set or changed, and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
           },
           "404": {
             "description": "Plugin not found",
