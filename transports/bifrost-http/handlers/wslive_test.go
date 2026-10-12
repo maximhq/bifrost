@@ -9,6 +9,7 @@ import (
 
 	"github.com/fasthttp/router"
 	ws "github.com/fasthttp/websocket"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -492,6 +493,59 @@ func TestLiveSidebandRelayChecksUpdatesAndEndsAlone(t *testing.T) {
 	}
 }
 
+// TestLiveSidebandRelayReportsHowItEnded: the sideband's row records an upstream that dropped
+// while the client was attached, and nothing when the client left or the upstream closed normally.
+func TestLiveSidebandRelayReportsHowItEnded(t *testing.T) {
+	t.Parallel()
+	start := func(t *testing.T) (*ws.Conn, *ws.Conn, chan *schemas.BifrostError) {
+		t.Helper()
+		bifrostSide, app, cleanup := dialRealtimeTestConn(t)
+		t.Cleanup(cleanup)
+		upstream, openai := dialLiveTestUpstream(t)
+		relay := &liveSidebandRelay{liveUpdatePolicy: testLiveUpdatePolicy(fakeLiveModels{allowed: true}), clientConn: newRealtimeClientConn(bifrostSide), upstream: upstream}
+		ended := make(chan *schemas.BifrostError, 1)
+		go func() { ended <- relay.run() }()
+		t.Cleanup(func() { _ = openai.UnderlyingConn().Close() })
+		return app, openai, ended
+	}
+	wait := func(t *testing.T, ended chan *schemas.BifrostError) *schemas.BifrostError {
+		t.Helper()
+		select {
+		case err := <-ended:
+			return err
+		case <-time.After(5 * time.Second):
+			t.Fatal("sideband relay did not end")
+			return nil
+		}
+	}
+
+	t.Run("upstream drops while the client is attached", func(t *testing.T) {
+		app, openai, ended := start(t)
+		require.NoError(t, openai.UnderlyingConn().Close())
+		assert.Contains(t, readFrame(t, app), "upstream connection ended", "the client is told")
+		err := wait(t, ended)
+		require.NotNil(t, err, "the row records the failure the client was told about")
+		assert.Equal(t, 502, *err.StatusCode)
+	})
+	t.Run("client leaves", func(t *testing.T) {
+		app, _, ended := start(t)
+		require.NoError(t, app.Close())
+		assert.Nil(t, wait(t, ended))
+	})
+	t.Run("upstream closes normally", func(t *testing.T) {
+		_, openai, ended := start(t)
+		require.NoError(t, openai.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, "session over"), time.Now().Add(time.Second)))
+		assert.Nil(t, wait(t, ended))
+	})
+}
+
+func TestLiveSidebandUpgradeRefusalKeepsTheHandshakeStatus(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, 403, *sidebandUpgradeRefusal(403).StatusCode, "a disallowed origin is refused with 403 by the upgrader")
+	assert.Equal(t, 400, *sidebandUpgradeRefusal(400).StatusCode)
+	assert.Equal(t, 400, *sidebandUpgradeRefusal(0).StatusCode, "an upgrade that wrote no status is a bad handshake")
+}
+
 func TestLiveAttachRefusesBeforeUpgrade(t *testing.T) {
 	t.Parallel()
 
@@ -628,4 +682,87 @@ func TestLiveRelayBackendSwitchEnforcesPinnedKeyBeforeForwarding(t *testing.T) {
 	opens, posts, cleanups := f.runner.snapshot()
 	assert.Len(t, posts, len(opens))
 	assert.Equal(t, len(opens), cleanups, "rejected and admitted units are cleaned exactly once")
+}
+
+// sidebandHookRecorder observes a sideband's request through the plugin pipeline.
+type sidebandHookRecorder struct {
+	refuse       *schemas.BifrostError
+	preType      schemas.RequestType
+	preProvider  schemas.ModelProvider
+	preSession   string
+	preSkipSpend bool
+	postType     schemas.RequestType
+	postKeyName  string
+	postLatency  int64
+	postErr      bool
+}
+
+func (*sidebandHookRecorder) GetName() string { return "sideband-recorder" }
+func (*sidebandHookRecorder) Cleanup() error  { return nil }
+func (*sidebandHookRecorder) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (r *sidebandHookRecorder) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	r.preType = req.RequestType
+	r.preProvider, _, _ = req.GetRequestFields()
+	r.preSession, _ = ctx.Value(schemas.BifrostContextKeyRealtimeProviderSessionID).(string)
+	r.preSkipSpend, _ = ctx.Value(schemas.BifrostContextKeySkipBudgetAndRateLimits).(bool)
+	if r.refuse != nil {
+		return req, &schemas.LLMPluginShortCircuit{Error: r.refuse}, nil
+	}
+	return req, nil, nil
+}
+func (r *sidebandHookRecorder) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	r.postType, _, _, _ = bifrost.GetResponseFields(resp, bifrostErr)
+	r.postKeyName, _ = ctx.Value(schemas.BifrostContextKeySelectedKeyName).(string)
+	r.postErr = bifrostErr != nil
+	if resp != nil {
+		r.postLatency = resp.GetExtraFields().Latency
+	}
+	return resp, bifrostErr, nil
+}
+
+// TestLiveSidebandIsARequestOfItsOwn: a sideband names only a session id, yet it acts on the
+// operator's key for the provider, so it runs through the plugin pipeline as a request of its own:
+// governance holds it to the caller's virtual key without charging it, and its row names the
+// provider session and how long it stayed attached.
+func TestLiveSidebandIsARequestOfItsOwn(t *testing.T) {
+	t.Parallel()
+	recorder := &sidebandHookRecorder{}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: splitKeysAccount{}, LLMPlugins: []schemas.LLMPlugin{recorder}, Logger: bifrost.NewDefaultLogger(schemas.LogLevelError)})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	g := &liveGateway{client: client}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	hooks, bifrostErr := g.admitSideband(ctx, schemas.OpenAI, "live_1")
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, hooks)
+	assert.Equal(t, schemas.LiveSidebandRequest, recorder.preType)
+	assert.Equal(t, schemas.OpenAI, recorder.preProvider)
+	assert.Equal(t, "live_1", recorder.preSession, "the row names the provider session it joined")
+	assert.True(t, recorder.preSkipSpend, "a sideband spends nothing: budgets and request limits govern the session")
+	closeSideband(ctx, hooks, schemas.OpenAI, schemas.Key{ID: "every-model", Name: "every-model"}, time.Now().Add(-1500*time.Millisecond), nil)
+	assert.Equal(t, schemas.LiveSidebandRequest, recorder.postType)
+	assert.Equal(t, "every-model", recorder.postKeyName, "the row names the key the sideband dialed with")
+	assert.False(t, recorder.postErr)
+	assert.GreaterOrEqual(t, recorder.postLatency, int64(1500), "the row carries how long the sideband stayed attached")
+
+	// A refusal from the pipeline is the caller's answer, and the row closes with it.
+	recorder.refuse = &schemas.BifrostError{StatusCode: schemas.Ptr(403), Error: &schemas.ErrorField{Message: "Provider 'openai' is not allowed"}}
+	hooks, bifrostErr = g.admitSideband(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.OpenAI, "live_2")
+	require.NotNil(t, bifrostErr)
+	assert.Nil(t, hooks)
+	assert.Equal(t, 403, *bifrostErr.StatusCode)
+	assert.True(t, recorder.postErr)
+
+	// A dial that fails after admission closes the row as an error without touching the caller's copy.
+	recorder.refuse, recorder.postErr = nil, false
+	ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	hooks, bifrostErr = g.admitSideband(ctx, schemas.OpenAI, "live_3")
+	require.Nil(t, bifrostErr)
+	dialErr := newRealtimeWireBifrostError(502, "upstream_connection_error", "dial failed")
+	closeSideband(ctx, hooks, schemas.OpenAI, schemas.Key{}, time.Now(), dialErr)
+	assert.True(t, recorder.postErr)
+	assert.Equal(t, schemas.RequestType(""), dialErr.ExtraFields.RequestType, "the error sent to the caller is not rewritten")
 }

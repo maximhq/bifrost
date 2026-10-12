@@ -112,6 +112,7 @@ func (h *WSLiveHandler) handleAttach(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if !h.upgrade(ctx, up, func(clientConn *realtimeClientConn) { h.serveSideband(relay, clientConn) }) {
+		closeSideband(relay.ctx, relay.hooks, relay.provider, relay.key, relay.startedAt, sidebandUpgradeRefusal(ctx.Response.StatusCode()))
 		relay.cancel()
 		h.pool.Discard(relay.upstream)
 	}
@@ -120,13 +121,21 @@ func (h *WSLiveHandler) handleAttach(ctx *fasthttp.RequestCtx) {
 // openSideband selects a key and dials the provider's attach endpoint on it.
 func (h *WSLiveHandler) openSideband(up *liveRequest) (*liveSidebandRelay, *schemas.BifrostError) {
 	ctx, cancel := h.gateway.sessionContext(up.auth, up.preReqCtx, up.middlewareValues, up.path)
+	startedAt := time.Now()
+	hooks, bifrostErr := h.gateway.admitSideband(ctx, up.providerKey, up.sessionID)
+	if bifrostErr != nil {
+		cancel()
+		return nil, bifrostErr
+	}
 	key, bifrostErr := h.gateway.controlKey(ctx, up.providerKey)
 	if bifrostErr != nil {
+		closeSideband(ctx, hooks, up.providerKey, schemas.Key{}, startedAt, bifrostErr)
 		cancel()
 		return nil, bifrostErr
 	}
 	upstream, bifrostErr := h.dial(ctx, up.provider, up.providerKey, key, schemas.LiveConnectionSideband, up.sessionID)
 	if bifrostErr != nil {
+		closeSideband(ctx, hooks, up.providerKey, key, startedAt, bifrostErr)
 		cancel()
 		return nil, bifrostErr
 	}
@@ -134,7 +143,19 @@ func (h *WSLiveHandler) openSideband(up *liveRequest) (*liveSidebandRelay, *sche
 		liveUpdatePolicy: liveUpdatePolicy{models: h.gateway.client, provider: up.providerKey, key: key, checkKeyModels: true},
 		upstream:         upstream,
 		cancel:           cancel,
+		ctx:              ctx,
+		hooks:            hooks,
+		startedAt:        startedAt,
 	}, nil
+}
+
+// sidebandUpgradeRefusal describes an upgrade the WebSocket upgrader refused, with the status it
+// answered: 403 for an origin the deployment does not allow, 400 for a bad handshake.
+func sidebandUpgradeRefusal(status int) *schemas.BifrostError {
+	if status < 400 {
+		status = 400
+	}
+	return newRealtimeWireBifrostError(status, "invalid_request_error", "the sideband's WebSocket upgrade was refused")
 }
 
 // serveSideband relays one sideband on an upgraded connection and releases what openSideband took.
@@ -145,12 +166,15 @@ func (h *WSLiveHandler) serveSideband(relay *liveSidebandRelay, clientConn *real
 	defer clientConn.stopHeartbeat()
 
 	if _, sessionErr := h.sessions.Create(clientConn.conn); sessionErr != nil {
-		clientConn.writeRealtimeError(newRealtimeWireBifrostError(429, "rate_limit_exceeded", sessionErr.Error()))
+		refusal := newRealtimeWireBifrostError(429, "rate_limit_exceeded", sessionErr.Error())
+		clientConn.writeRealtimeError(refusal)
+		closeSideband(relay.ctx, relay.hooks, relay.provider, relay.key, relay.startedAt, refusal)
 		return
 	}
 	defer h.sessions.Remove(clientConn.conn)
 	relay.clientConn = clientConn
-	relay.run()
+	ended := relay.run()
+	closeSideband(relay.ctx, relay.hooks, relay.provider, relay.key, relay.startedAt, ended)
 }
 
 // serveSession runs one live session: bootstrap, admission, dial, relay, close.
@@ -338,16 +362,24 @@ type liveSidebandRelay struct {
 	upstream   *bfws.UpstreamConn
 	cancel     context.CancelFunc // the sideband's context; nil in tests
 	clientGone atomic.Bool
+
+	ctx       *schemas.BifrostContext    // the sideband's request context, which its row is written on
+	hooks     *bifrost.RealtimeTurnHooks // nil in tests
+	startedAt time.Time
 }
 
-func (r *liveSidebandRelay) run() {
+// run relays until either side ends. It reports an upstream that ended while the client was still
+// attached, so the sideband's row records the failure the client was told about; a client that
+// left, or an upstream that closed normally, is not a failure.
+func (r *liveSidebandRelay) run() *schemas.BifrostError {
 	clientDone := make(chan struct{})
 	go func() {
 		defer close(clientDone)
 		r.pumpClient()
 	}()
-	r.pumpUpstream()
+	ended := r.pumpUpstream()
 	releaseLiveClient(r.clientConn, r.clientGone.Load(), clientDone)
+	return ended
 }
 
 func (r *liveSidebandRelay) pumpClient() {
@@ -376,14 +408,16 @@ func (r *liveSidebandRelay) pumpClient() {
 	}
 }
 
-func (r *liveSidebandRelay) pumpUpstream() {
+func (r *liveSidebandRelay) pumpUpstream() *schemas.BifrostError {
 	for {
 		messageType, message, err := r.upstream.ReadMessage()
 		if err != nil {
-			if !r.clientGone.Load() && !isNormalWebSocketClosure(err) {
-				r.clientConn.writeRealtimeError(newRealtimeWireBifrostError(502, "server_error", "the live session's upstream connection ended"))
+			if r.clientGone.Load() || isNormalWebSocketClosure(err) {
+				return nil
 			}
-			return
+			ended := newRealtimeWireBifrostError(502, "server_error", "the live session's upstream connection ended")
+			r.clientConn.writeRealtimeError(ended)
+			return ended
 		}
 		if r.clientGone.Load() {
 			continue

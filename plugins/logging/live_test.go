@@ -502,3 +502,40 @@ func TestLiveSessionTerminalBackendFailure(t *testing.T) {
 		})
 	}
 }
+
+// A sideband is logged as a request of its own, like a download: it names the provider session it
+// joined and the keys it attached with, carries how long it stayed, and never folds into the
+// session's row.
+func TestLiveSidebandIsLoggedAsItsOwnRow(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "sb-1")
+	ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-1")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
+	ctx.SetValue(schemas.BifrostContextKeyRealtimeProviderSessionID, "live_abc")
+	req := &schemas.BifrostRequest{RequestType: schemas.LiveSidebandRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI}}
+	_, _, err = plugin.PreLLMHook(ctx, req)
+	require.NoError(t, err)
+	resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Object:      "live.sideband",
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.LiveSidebandRequest, Provider: schemas.OpenAI, Latency: 1234},
+	}}
+	_, _, err = plugin.PostLLMHook(ctx, resp, nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	row, err := store.FindByID(context.Background(), "sb-1")
+	require.NoError(t, err)
+	assert.Equal(t, string(schemas.LiveSidebandRequest), row.Object)
+	assert.Equal(t, logStatusSuccess, row.Status)
+	assert.Equal(t, "openai", row.Provider)
+	assert.Equal(t, "key-1", row.SelectedKeyID)
+	require.NotNil(t, row.VirtualKeyID)
+	assert.Equal(t, "vk-1", *row.VirtualKeyID)
+	assert.Equal(t, "live_abc", row.MetadataParsed["provider_session_id"])
+	require.NotNil(t, row.Latency)
+	assert.EqualValues(t, 1234, *row.Latency)
+	assert.Nil(t, row.LiveSessionParsed, "a sideband is not a session")
+}

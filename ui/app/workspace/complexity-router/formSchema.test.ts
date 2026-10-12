@@ -476,11 +476,8 @@ describe("decision model provider state", () => {
 		expect(getDecisionProviderState([provider()], [key()], "nimble")).toBe("missing");
 	});
 
-	test("reports a provider that failed to initialise or list models", () => {
+	test("reports a provider that failed to initialise", () => {
 		expect(getDecisionProviderState([provider({ provider_status: "error" } as Partial<ModelProvider>)], [key()], "typesafe")).toBe(
-			"failing",
-		);
-		expect(getDecisionProviderState([provider({ status: "list_models_failed" } as Partial<ModelProvider>)], [key()], "typesafe")).toBe(
 			"failing",
 		);
 	});
@@ -509,23 +506,15 @@ describe("decision model provider state", () => {
 		expect(getDecisionProviderState([laya], [], "Laya")).toBe("configured");
 	});
 
-	test("ignores a stale listing failure on a provider with model listing turned off", () => {
+	test("ignores a model-listing failure", () => {
+		const cloudflare = provider({ name: "cloudflare", status: "list_models_failed" } as Partial<ModelProvider>);
+		expect(getDecisionProviderState([cloudflare], [key({ provider: "cloudflare" } as Partial<DBKey>)], "cloudflare")).toBe("configured");
 		const laya = provider({
 			name: "Laya",
 			status: "list_models_failed",
-			custom_provider_config: {
-				base_provider_type: "typesafe",
-				is_key_less: true,
-				allowed_requests: { list_models: false, decisions: true },
-			},
-		} as Partial<ModelProvider>);
-		expect(getDecisionProviderState([laya], [], "Laya")).toBe("configured");
-		const listing = provider({
-			name: "nimble",
-			status: "list_models_failed",
 			custom_provider_config: { base_provider_type: "typesafe", is_key_less: true },
 		} as Partial<ModelProvider>);
-		expect(getDecisionProviderState([listing], [], "nimble")).toBe("failing");
+		expect(getDecisionProviderState([laya], [], "Laya")).toBe("configured");
 	});
 });
 

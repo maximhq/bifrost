@@ -13,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 func TestLiveBackendModelAndRewrite(t *testing.T) {
@@ -395,4 +396,68 @@ func TestLiveMeterAliasResponsePrefersExactModelOverSnapshot(t *testing.T) {
 	defer meter.finish(0)
 	assert.Equal(t, "mini", meter.backendLaneForLocked("gpt-5.6-terra-mini").model,
 		"an exact admitted model must win over another model's snapshot prefix")
+}
+
+// twoLiveProvidersAccount adds a custom OpenAI-based provider and a provider without live
+// support next to splitKeysAccount's OpenAI, so a bare control route has a choice to make.
+type twoLiveProvidersAccount struct{ splitKeysAccount }
+
+func (twoLiveProvidersAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI, "openai-custom", schemas.Anthropic}, nil
+}
+
+func (a twoLiveProvidersAccount) GetKeysForProvider(ctx context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	switch p {
+	case "openai-custom", schemas.Anthropic:
+		return []schemas.Key{{ID: string(p) + "-key", Name: string(p) + "-key", Value: *schemas.NewSecretVar("sk-" + string(p)), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
+	}
+	return a.splitKeysAccount.GetKeysForProvider(ctx, p)
+}
+
+func (a twoLiveProvidersAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	switch p {
+	case "openai-custom":
+		return &schemas.ProviderConfig{NetworkConfig: schemas.DefaultNetworkConfig, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize, CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}}, nil
+	case schemas.Anthropic:
+		return &schemas.ProviderConfig{NetworkConfig: schemas.DefaultNetworkConfig, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+	}
+	return a.splitKeysAccount.GetConfigForProvider(p)
+}
+
+// TestLiveControlProviderHonoursTheNamedProvider: a route that only carries a session id cannot
+// tell which provider opened the session, so the caller may name it as on other id-only routes.
+func TestLiveControlProviderHonoursTheNamedProvider(t *testing.T) {
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: twoLiveProvidersAccount{}, Logger: bifrost.NewDefaultLogger(schemas.LogLevelError)})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	g := &liveGateway{client: client}
+	for _, tc := range []struct{ name, path, named, want, wantErr string }{
+		{"bare route defaults to openai", "/v1/live/sessions/live_1/attach", "", "openai", ""},
+		{"named custom provider on the bare route", "/v1/live/sessions/live_1/attach", "openai-custom", "openai-custom", ""},
+		{"integration prefix wins over the name", "/openai/v1/live/sessions/live_1/content", "openai-custom", "openai", ""},
+		{"named provider without live support", "/v1/live/sessions/live_1/content", "anthropic", "", "does not support live sessions: anthropic"},
+		{"unknown provider", "/v1/live/sessions/live_1/content", "nope", "", "not configured"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider, providerKey, bifrostErr := g.controlProvider(tc.path, tc.named)
+			if tc.wantErr != "" {
+				require.NotNil(t, bifrostErr)
+				assert.Contains(t, bifrostErr.Error.Message, tc.wantErr)
+				return
+			}
+			require.Nil(t, bifrostErr, "refused: %v", bifrostErr)
+			assert.NotNil(t, provider)
+			assert.Equal(t, schemas.ModelProvider(tc.want), providerKey)
+		})
+	}
+}
+
+func TestLiveControlProviderNameReadsQueryThenHeader(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/v1/live/sessions/live_1/content")
+	assert.Equal(t, "", liveControlProviderName(ctx))
+	ctx.Request.Header.Set("x-model-provider", "openai-custom")
+	assert.Equal(t, "openai-custom", liveControlProviderName(ctx))
+	ctx.Request.SetRequestURI("/v1/live/sessions/live_1/content?provider=openai")
+	assert.Equal(t, "openai", liveControlProviderName(ctx), "the query parameter wins over the header")
 }
