@@ -255452,7 +255452,7 @@
     },
     {
       "name": "213. Client-side tool search keeps tool_reference inside tool_result (#8348 / PR #8349) (tool-reference-tool-result)",
-      "description": "Issue #8348: Claude Code's client-side tool search (ToolSearch with ENABLE_TOOL_SEARCH) answers with a plain tool_result whose content is tool_reference blocks, which the provider expands into the deferred tool's definition. Both anthropic->responses converters dropped tool_reference, so on /anthropic/v1/messages to Bedrock (InvokeModel route for defer_loading tools, #6825) the tool_result reached AWS empty and the model never saw the tool it had just loaded: it searched again or guessed the arguments. The deferred tool's only parameter is zq_city_code_v7, a name no model guesses, so a tool_use that carries it proves the definition was expanded. Case 1 is the native /anthropic/v1/messages ingress on Bedrock and also asserts the tool_reference on the InvokeModel wire, case 2 its streaming variant. Case 3 pins the other route the change reaches: /anthropic/v1/messages to OpenAI, where tool_reference has no equivalent. The text sibling must flatten to the function_call_output string and no tool_reference may reach the wire. Routes not covered: /v1/responses and /v1/chat/completions have no tool_reference construct on their wire, and server-side tool search (tool_search_tool_result) is folder 71.",
+      "description": "Issue #8348: Claude Code's client-side tool search (ToolSearch with ENABLE_TOOL_SEARCH) answers with a plain tool_result whose content is tool_reference blocks, which the provider expands into the deferred tool's definition. Both anthropic->responses converters dropped tool_reference, so on /anthropic/v1/messages to Bedrock (InvokeModel route for defer_loading tools, #6825) the tool_result reached AWS empty and the model never saw the tool it had just loaded: it searched again or guessed the arguments. The deferred tool's only parameter is zq_city_code_v7, a name no model guesses, so a tool_use that carries it proves the definition was expanded. Case 1 is the native /anthropic/v1/messages ingress on Bedrock and also asserts the tool_reference, with the cache_control the client put on it, on the InvokeModel wire; case 2 is its streaming variant. Cases 3 and 4 pin the wires that have no tool_reference construct and must not receive one: OpenAI (the text sibling flattens to the function_call_output string) and Replicate gpt-5-structured (which takes the Responses input list as-is). Not covered here: Anthropic direct, Vertex, Azure, Bedrock Mantle and the other hosts of the Anthropic request builder share the converter that case 1 exercises, and Claude Code traffic to a Claude model on them is raw passthrough that never touched the block. /v1/responses and the Go SDK can also carry the block, through function_call_output.output, to the same converter. /v1/chat/completions has no such content part. The /bedrock/model/{id}/invoke ingress still drops the block (pre-existing, tracked separately). Server-side tool search is folder '71. Bedrock tool search routes Claude to InvokeModel (#6825)'.",
       "item": [
         {
           "name": "bedrock/global.anthropic.claude-sonnet-4-6 /anthropic/v1/messages tool_reference in tool_result expands the deferred tool - tool-reference-tool-result - #8348",
@@ -255481,7 +255481,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_tokens\":256,\"tools\":[{\"name\":\"tool_search\",\"description\":\"Load deferred tool definitions by name.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"name\":\"fetch_weather_report\",\"description\":\"Get the current weather for a city.\",\"defer_loading\":true,\"input_schema\":{\"type\":\"object\",\"properties\":{\"zq_city_code_v7\":{\"type\":\"string\",\"description\":\"IATA city code\"}},\"required\":[\"zq_city_code_v7\"]}}],\"messages\":[{\"role\":\"user\",\"content\":\"Use fetch_weather_report for Tokyo. Load it first via tool_search, then call it.\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_search_1\",\"name\":\"tool_search\",\"input\":{\"query\":\"select:fetch_weather_report\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_search_1\",\"content\":[{\"type\":\"tool_reference\",\"tool_name\":\"fetch_weather_report\"}]}]}]}"
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_tokens\":256,\"tools\":[{\"name\":\"tool_search\",\"description\":\"Load deferred tool definitions by name.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"name\":\"fetch_weather_report\",\"description\":\"Get the current weather for a city.\",\"defer_loading\":true,\"input_schema\":{\"type\":\"object\",\"properties\":{\"zq_city_code_v7\":{\"type\":\"string\",\"description\":\"IATA city code\"}},\"required\":[\"zq_city_code_v7\"]}}],\"messages\":[{\"role\":\"user\",\"content\":\"Use fetch_weather_report for Tokyo. Load it first via tool_search, then call it.\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_search_1\",\"name\":\"tool_search\",\"input\":{\"query\":\"select:fetch_weather_report\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_search_1\",\"content\":[{\"type\":\"tool_reference\",\"tool_name\":\"fetch_weather_report\",\"cache_control\":{\"type\":\"ephemeral\"}}]}]}]}"
             }
           },
           "event": [
@@ -255512,17 +255512,22 @@
                   "pm.test('bedrock tool_reference /anthropic: tool_reference reached the InvokeModel wire', function () {",
                   "  pm.expect(rr && rr.anthropic_version, 'anthropic_version missing: the request did not go to InvokeModel. body=' + dump).to.eql('bedrock-2023-05-31');",
                   "  var refs = 0;",
+                  "  var cached = 0;",
                   "  var msgs = (rr && rr.messages) || [];",
                   "  for (var i = 0; i < msgs.length; i++) {",
                   "    var content = Array.isArray(msgs[i].content) ? msgs[i].content : [];",
                   "    for (var j = 0; j < content.length; j++) {",
                   "      var inner = content[j].type === 'tool_result' && Array.isArray(content[j].content) ? content[j].content : [];",
                   "      for (var k = 0; k < inner.length; k++) {",
-                  "        if (inner[k].type === 'tool_reference' && inner[k].tool_name === 'fetch_weather_report') { refs++; }",
+                  "        if (inner[k].type === 'tool_reference' && inner[k].tool_name === 'fetch_weather_report') {",
+                  "          refs++;",
+                  "          if (inner[k].cache_control && inner[k].cache_control.type === 'ephemeral') { cached++; }",
+                  "        }",
                   "      }",
                   "    }",
                   "  }",
                   "  pm.expect(refs, 'tool_result reached InvokeModel without its tool_reference (#8348): ' + dump).to.equal(1);",
+                  "  pm.expect(cached, 'the tool_reference lost the cache_control the client put on it, so the cache breakpoint moved: ' + dump).to.equal(1);",
                   "});"
                 ]
               }
@@ -255638,6 +255643,66 @@
                   "    if (items[i].role === 'tool') { output = items[i].content; }",
                   "  }",
                   "  pm.expect(output, 'the tool result must reach OpenAI as the text sibling string: ' + dump).to.eql('Loaded fetch_weather_report');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "replicate/openai/gpt-5-structured /anthropic/v1/messages tool_reference in tool_result stays off the Replicate wire - tool-reference-tool-result - #8348",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"replicate/openai/gpt-5-structured\",\"max_tokens\":64,\"tools\":[{\"name\":\"tool_search\",\"description\":\"Load deferred tool definitions by name.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}},{\"name\":\"fetch_weather_report\",\"description\":\"Get the current weather for a city.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"zq_city_code_v7\":{\"type\":\"string\",\"description\":\"IATA city code\"}},\"required\":[\"zq_city_code_v7\"]}}],\"messages\":[{\"role\":\"user\",\"content\":\"Use fetch_weather_report for Tokyo. Load it first via tool_search, then call it.\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_search_1\",\"name\":\"tool_search\",\"input\":{\"query\":\"select:fetch_weather_report\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_search_1\",\"content\":[{\"type\":\"text\",\"text\":\"Loaded fetch_weather_report\"},{\"type\":\"tool_reference\",\"tool_name\":\"fetch_weather_report\"}]}]}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('replicate tool_reference /anthropic: 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('replicate tool_reference /anthropic: raw_request captured (the harness Makefile enables allow_per_request_raw_override)', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing: the outbound body cannot be verified. body=' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "var dump = JSON.stringify(rr || {});",
+                  "pm.test('replicate tool_reference /anthropic: tool_reference dropped and the text kept', function () {",
+                  "  pm.expect(dump, 'tool_reference reached the Replicate wire (gpt-5-structured takes the Responses input list as-is): ' + dump).to.not.include('tool_reference');",
+                  "  var items = ((rr && rr.input) || {}).input_item_list || [];",
+                  "  var output = null;",
+                  "  for (var i = 0; i < items.length; i++) {",
+                  "    if (items[i].type === 'function_call_output') { output = items[i].output; }",
+                  "  }",
+                  "  pm.expect(JSON.stringify(output), 'the tool result must reach Replicate with its text sibling: ' + dump).to.include('Loaded fetch_weather_report');",
                   "});"
                 ]
               }
