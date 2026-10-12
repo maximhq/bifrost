@@ -104,6 +104,8 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 			return err
 		}
 		p.CustomProviderConfigJSON = string(data)
+	} else {
+		p.CustomProviderConfigJSON = ""
 	}
 	if p.OpenAIConfig != nil {
 		data, err := json.Marshal(p.OpenAIConfig)

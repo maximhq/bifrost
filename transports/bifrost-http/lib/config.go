@@ -8846,8 +8846,13 @@ func ValidateCustomProviderUpdate(newConfig, existingConfig configstore.Provider
 		return nil
 	}
 
-	// If new config doesn't have CustomProviderConfig but existing does, return an error
+	// If new config doesn't have CustomProviderConfig but existing does, return an error,
+	// unless the name has since become a standard provider: dropping the custom config then
+	// converts it into that provider in place, keeping its keys and governance records.
 	if newConfig.CustomProviderConfig == nil {
+		if bifrost.IsStandardProvider(provider) {
+			return nil
+		}
 		return fmt.Errorf("custom_provider_config cannot be removed after creation for provider %s", provider)
 	}
 
