@@ -609,6 +609,78 @@ func TestExtractResultFromChatMessage(t *testing.T) {
 			t.Errorf("Expected nil result for message without content, got %v", result)
 		}
 	})
+
+	// MCP servers whose TextContent is itself a JSON-encoded string (WebReader,
+	// Context7, WebSearchPrime, deepwiki) hand back a string whose own content is
+	// still JSON. The stubs promise a dict, and the sandbox has no json module, so
+	// the one extra decode has to happen here or the value is unusable in code.
+	t.Run("Extract JSON string wrapped in a JSON string", func(t *testing.T) {
+		content := `"{\"title\":\"Example Domain\",\"url\":\"https://example.com\"}"`
+		msg := &schemas.ChatMessage{
+			Content: &schemas.ChatMessageContent{
+				ContentStr: &content,
+			},
+		}
+
+		result := extractResultFromChatMessage(msg)
+		resultMap, ok := result.(map[string]interface{})
+		if !ok {
+			t.Fatalf("Expected map, got %T", result)
+		}
+
+		if resultMap["title"] != "Example Domain" {
+			t.Errorf("Expected title 'Example Domain', got '%v'", resultMap["title"])
+		}
+	})
+
+	t.Run("Extract JSON array wrapped in a JSON string", func(t *testing.T) {
+		content := `"[{\"url\":\"https://example.com\"}]"`
+		msg := &schemas.ChatMessage{
+			Content: &schemas.ChatMessageContent{
+				ContentStr: &content,
+			},
+		}
+
+		result := extractResultFromChatMessage(msg)
+		resultList, ok := result.([]interface{})
+		if !ok {
+			t.Fatalf("Expected list, got %T", result)
+		}
+
+		if len(resultList) != 1 {
+			t.Fatalf("Expected one element, got %d", len(resultList))
+		}
+	})
+
+	t.Run("Plain text stays a string", func(t *testing.T) {
+		content := "not json at all: plain text"
+		msg := &schemas.ChatMessage{
+			Content: &schemas.ChatMessageContent{
+				ContentStr: &content,
+			},
+		}
+
+		if result := extractResultFromChatMessage(msg); result != content {
+			t.Errorf("Expected unchanged string, got %T", result)
+		}
+	})
+
+	t.Run("JSON-looking string stays unparsed one level deep", func(t *testing.T) {
+		// A quote-escaped JSON string held inside a JSON string: the first decode
+		// yields a string, and only one retry is allowed, so a third level stays
+		// a string rather than being walked indefinitely.
+		content := `"\"{\\\"title\\\":\\\"Example Domain\\\"}\""`
+		msg := &schemas.ChatMessage{
+			Content: &schemas.ChatMessageContent{
+				ContentStr: &content,
+			},
+		}
+
+		result := extractResultFromChatMessage(msg)
+		if resultMap, ok := result.(map[string]interface{}); ok {
+			t.Fatalf("Expected the third level to stay a string, got map %v", resultMap)
+		}
+	})
 }
 
 func TestFormatResultForLog(t *testing.T) {

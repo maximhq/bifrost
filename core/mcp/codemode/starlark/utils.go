@@ -46,7 +46,33 @@ func extractResultFromChatMessage(msg *schemas.ChatMessage) interface{} {
 		return rawResult
 	}
 
-	return finalResult
+	return decodeNestedJSONString(finalResult)
+}
+
+// decodeNestedJSONString decodes a value that arrived as a JSON-encoded string.
+//
+// Some MCP servers return their payload as a JSON string inside the text content
+// (WebReader, Context7, WebSearchPrime and deepwiki among them), so the first decode
+// yields a string whose own content is still JSON. The .pyi stubs and getToolDocs
+// describe every tool result as a dict, and the sandbox exposes no JSON decoder
+// (no import, no Starlark json module), so without this second decode those results
+// are unusable from generated code and the model has to print them and read them.
+//
+// Deliberately a single retry: a server that encodes deeper than two levels keeps a
+// string rather than making this walk arbitrary depth, and the returned value is
+// always either the original string or the decoded container.
+func decodeNestedJSONString(v interface{}) interface{} {
+	s, ok := v.(string)
+	if !ok || s == "" {
+		return v
+	}
+
+	var nested interface{}
+	if err := sonic.Unmarshal([]byte(s), &nested); err != nil {
+		return v
+	}
+
+	return nested
 }
 
 // extractResultFromResponsesMessage extracts the result or error from a ResponsesMessage.
