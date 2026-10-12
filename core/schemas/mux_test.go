@@ -2107,7 +2107,8 @@ func TestReasoningSummarySurvivesChatResponsesConversion(t *testing.T) {
 // TestToChatMessages_DropsToolChangeBlocks: Responses-to-Chat is the fallback that
 // OpenAI-compatible providers (Groq, Nebius, ...) take. Chat has no tool_addition /
 // tool_removal content part, so the blocks are dropped: text siblings stay, a system message
-// left with nothing is skipped rather than sent as an empty content array.
+// left with nothing is skipped rather than sent as an empty content array. The remaining
+// system message follows a user turn, so it is inlined as a user reminder.
 func TestToChatMessages_DropsToolChangeBlocks(t *testing.T) {
 	removal := &ResponsesToolChangeTarget{Type: ResponsesToolChangeTargetTypeToolReference, Name: Ptr("get_weather")}
 	chat := ToChatMessages([]ResponsesMessage{
@@ -2124,8 +2125,8 @@ func TestToChatMessages_DropsToolChangeBlocks(t *testing.T) {
 		t.Fatalf("chat messages = %d, want 2 (the tool-change-only system message must be dropped): %+v", len(chat), chat)
 	}
 	sys := chat[1]
-	if sys.Role != ChatMessageRoleSystem || sys.Content == nil {
-		t.Fatalf("chat[1] = %+v, want the system message with content", sys)
+	if sys.Role != ChatMessageRoleUser || sys.Content == nil {
+		t.Fatalf("chat[1] = %+v, want the remaining text as a user turn", sys)
 	}
 	var blocks []ChatContentBlock
 	if sys.Content.ContentBlocks != nil {
@@ -2136,11 +2137,12 @@ func TestToChatMessages_DropsToolChangeBlocks(t *testing.T) {
 			t.Fatalf("tool-change block forwarded as an unknown chat content part: %+v", blocks)
 		}
 	}
+	want := "<system-reminder>\nWeather lookups are disabled.\n</system-reminder>\n"
 	if sys.Content.ContentStr != nil {
-		if *sys.Content.ContentStr != "Weather lookups are disabled." {
-			t.Errorf("system text = %q, want the text sibling", *sys.Content.ContentStr)
+		if *sys.Content.ContentStr != want {
+			t.Errorf("system text = %q, want the text sibling wrapped as a reminder", *sys.Content.ContentStr)
 		}
-	} else if len(blocks) != 1 || blocks[0].Text == nil || *blocks[0].Text != "Weather lookups are disabled." {
-		t.Errorf("system content = %+v, want only the text sibling", blocks)
+	} else if len(blocks) != 1 || blocks[0].Text == nil || *blocks[0].Text != want {
+		t.Errorf("system content = %+v, want only the wrapped text sibling", blocks)
 	}
 }
