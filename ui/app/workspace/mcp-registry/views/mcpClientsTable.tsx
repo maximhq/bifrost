@@ -1167,7 +1167,13 @@ export default function MCPClientsTable({
 												{/* Pure config, valid whatever the connection state is: a server
 												    that can't be reached right now is still configured for code
 												    mode or not. */}
-												<Badge className={c.config.is_code_mode_client ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-800"}>
+												<Badge
+													className={
+														c.config.is_code_mode_client
+															? "bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-300"
+															: "bg-gray-100 text-gray-800 dark:bg-muted dark:text-muted-foreground"
+													}
+												>
 													{c.config.is_code_mode_client ? "Enabled" : "Disabled"}
 												</Badge>
 											</TableCell>

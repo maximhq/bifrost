@@ -946,7 +946,7 @@ export default function LogsPage() {
 
 					{/* Main Content */}
 					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 rounded-md border p-4 pb-2 lg:overflow-hidden">
-						<div className="shrink-0">
+						<div className="@container/logs-header shrink-0">
 							<LogsHeaderView
 								filters={filters}
 								onFiltersChange={setFilters}

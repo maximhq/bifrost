@@ -60,7 +60,7 @@
           "// Otherwise newman reports it as passing (because of an early return) which is misleading next to a failing status.",
           "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
           "// Management API (/api/...) and OAuth (/oauth2/...) responses carry no inference content, so the shape check does not apply to them; those rows assert their own bodies.",
-          "var __skipShape = __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1;",
+          "var __skipShape = __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
           "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('audio/') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
@@ -102,6 +102,13 @@
           "        var parts = j.candidates[0].content.parts || [];",
           "        // Image-output models (responseModalities IMAGE) answer with inlineData parts only; the image IS the content.",
           "        hasContent = parts.some(function (p) { return p && (p.text || p.functionCall || p.executableCode || (p.inlineData && p.inlineData.data)); });",
+          "    } else if (j.object === 'interaction') {",
+          "        shape = 'interactions';",
+          "        // A completed interaction carries its reply as a model_output step (a store:false reply has no id).",
+          "        // A background create or a cancel is a receipt instead: its id and status ARE the payload.",
+          "        hasContent = j.status === 'completed'",
+          "            ? (Array.isArray(j.steps) && j.steps.some(function (s) { return s && s.type === 'model_output' && Array.isArray(s.content) && s.content.length > 0; }))",
+          "            : (typeof j.id === 'string' && j.id.length > 0 && (j.status === 'in_progress' || j.status === 'cancelled'));",
           "    } else if (typeof j.output_text === 'string' && j.output_text.length > 0) {",
           "        shape = 'openai-responses-output_text';",
           "        hasContent = true;",
@@ -200113,184 +200120,8 @@
     },
     {
       "name": "Passthrough inference route policy (inference-route-policy)",
-      "description": "Only explicit inference methods and paths may select provider credentials. All checks fail before provider calls.",
+      "description": "x-model-provider may only repeat the passthrough route's provider. The check fails before provider calls.",
       "item": [
-        {
-          "name": "[EXPECT-403] openai inference-route-policy openai account endpoint refused",
-          "protocolProfileBehavior": {
-            "followRedirects": false,
-            "disableCookies": true
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('inference-route-policy openai account endpoint refused', function () {",
-                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(403);",
-                  "  pm.expect(pm.response.text()).to.include(\"inference endpoint\");",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "auth": {
-              "type": "noauth"
-            },
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/openai_passthrough/v1/files",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "openai_passthrough",
-                "v1",
-                "files"
-              ]
-            }
-          }
-        },
-        {
-          "name": "[EXPECT-403] openai inference-route-policy anthropic account endpoint refused",
-          "protocolProfileBehavior": {
-            "followRedirects": false,
-            "disableCookies": true
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('inference-route-policy anthropic account endpoint refused', function () {",
-                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(403);",
-                  "  pm.expect(pm.response.text()).to.include(\"inference endpoint\");",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "auth": {
-              "type": "noauth"
-            },
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/anthropic_passthrough/v1/files",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "anthropic_passthrough",
-                "v1",
-                "files"
-              ]
-            }
-          }
-        },
-        {
-          "name": "[EXPECT-403] openai inference-route-policy azure account endpoint refused",
-          "protocolProfileBehavior": {
-            "followRedirects": false,
-            "disableCookies": true
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('inference-route-policy azure account endpoint refused', function () {",
-                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(403);",
-                  "  pm.expect(pm.response.text()).to.include(\"inference endpoint\");",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "auth": {
-              "type": "noauth"
-            },
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/azure_passthrough/v1/files",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "azure_passthrough",
-                "v1",
-                "files"
-              ]
-            }
-          }
-        },
-        {
-          "name": "[EXPECT-403] openai inference-route-policy genai account endpoint refused",
-          "protocolProfileBehavior": {
-            "followRedirects": false,
-            "disableCookies": true
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('inference-route-policy genai account endpoint refused', function () {",
-                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(403);",
-                  "  pm.expect(pm.response.text()).to.include(\"inference endpoint\");",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "auth": {
-              "type": "noauth"
-            },
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/genai_passthrough/v1/files",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "genai_passthrough",
-                "v1",
-                "files"
-              ]
-            }
-          }
-        },
         {
           "name": "[EXPECT-400] openai inference-route-policy provider switch refused",
           "protocolProfileBehavior": {
@@ -254613,7 +254444,1014 @@
       ]
     },
     {
-      "name": "212. Client tool_use named web_search/web_fetch stays a function_call (#8078 / PR #8079)",
+      "name": "202. Live content route honours the named provider (live named provider)",
+      "description": "A recording download names only a session id, so on the bare route the caller may name the provider with ?provider= or x-model-provider, as the file, batch and video routes accept. Provider resolution runs before the session is looked up, so an unknown session id reaches it with nothing spent: a provider without live support or an unknown name is refused with 400, the query parameter wins over the header, and the /openai prefix wins over both. Sideband attach shares the resolver but is a WebSocket upgrade the harness cannot drive; tests/live covers it.",
+      "item": [
+        {
+          "name": "[EXPECT-400] /v1/live/sessions/{id}/content?provider=anthropic resolves the named provider before the session lookup - live named provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400: the named provider is resolved before the session is looked up', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('The refusal names the provider the caller asked for, which serves no live sessions', function () { pm.expect(pm.response.text()).to.include('does not support live sessions: anthropic'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/live/sessions/sess_harness_named_provider/content?provider=anthropic",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "live",
+                "sessions",
+                "sess_harness_named_provider",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/live/sessions/{id}/content with x-model-provider naming an unconfigured provider is refused - live named provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400: an unknown provider name is refused', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('The refusal says the named provider is not configured', function () { pm.expect(pm.response.text()).to.include('\"no-such-provider\" is not configured'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-model-provider",
+                "value": "no-such-provider"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/live/sessions/sess_harness_named_provider/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "live",
+                "sessions",
+                "sess_harness_named_provider",
+                "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/live/sessions/{id}/content ?provider= wins over a conflicting x-model-provider header - live named provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400: the query parameter named Anthropic', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('The query parameter, not the header, named the provider', function () { pm.expect(pm.response.text()).to.include('does not support live sessions: anthropic'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-model-provider",
+                "value": "openai"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/live/sessions/sess_harness_named_provider/content?provider=anthropic",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "live",
+                "sessions",
+                "sess_harness_named_provider",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] /openai/v1/live/sessions/{id}/content ignores x-model-provider: the integration prefix wins - live named provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 404: the request reached OpenAI, which has no such session', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(404); });",
+                  "pm.test('The prefix, not the header, chose the provider', function () { pm.expect(pm.response.text()).to.not.include('anthropic'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-model-provider",
+                "value": "anthropic"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/live/sessions/sess_harness_named_provider/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "live",
+                "sessions",
+                "sess_harness_named_provider",
+                "content"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "212. GenAI passthrough Interactions API create, flat and v1beta1 project paths (genai-interactions-passthrough)",
+      "description": "Interactions API creation through /genai_passthrough.\n\nGemini: POST /genai_passthrough/v1beta/interactions was refused with 403 by the passthrough inference filter, which only admitted models/*:generateContent-style paths.\n\nVertex: Google serves Interactions only at /v1beta1/projects/{p}/locations/{l}/interactions. The genai passthrough router strips /genai_passthrough/v1beta1 and the Vertex provider rebuilt the upstream URL with a hardcoded /v1, so the request reached /v1/.../interactions and Google answered 404. The router now carries the stripped version and Vertex honors v1beta1.\n\nBifrost rewrites the project and location in a Vertex passthrough path to the selected key's, so the {{vertexProject}} default needs no override; the key must hold service-account credentials (Interactions rejects API keys). get/cancel/delete of a stored interaction stay refused, so these rows only create.",
+      "item": [
+        {
+          "name": "212.1 gemini interactions create via /genai_passthrough/v1beta - genai-interactions-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{genaiModel}}\",\n  \"input\": \"Reply with exactly: OK\",\n  \"store\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "interactions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The passthrough inference filter refused every /interactions path with 403",
+                  "// \"passthrough requires a supported inference endpoint\"; interaction creation is now admitted.",
+                  "// store:false keeps runs stateless: the reply carries steps (the May 2026 schema) but no id.",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini interactions create: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var dump = JSON.stringify(j).slice(0, 400);",
+                  "pm.test('gemini interactions create: served by gemini - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), dump).to.eql('gemini');",
+                  "});",
+                  "pm.test('gemini interactions create: completed Interaction forwarded verbatim - genai-interactions-passthrough', function () {",
+                  "  pm.expect(j.status, dump).to.eql('completed');",
+                  "  pm.expect(j.steps, dump).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.steps.some(function (s) { return s && s.type === 'model_output'; }), dump).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "212.2 gemini interactions create stream via /genai_passthrough/v1beta - genai-interactions-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{genaiModel}}\",\n  \"input\": \"Reply with exactly: OK\",\n  \"stream\": true,\n  \"store\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "interactions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The passthrough inference filter refused every /interactions path with 403",
+                  "// \"passthrough requires a supported inference endpoint\"; interaction creation is now admitted.",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini interactions stream: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini interactions stream: SSE stream runs to interaction.completed - genai-interactions-passthrough', function () {",
+                  "  pm.expect(String(pm.response.headers.get('Content-Type')), 'content-type').to.include('text/event-stream');",
+                  "  pm.expect(body, body.slice(0, 400)).to.include('interaction.completed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "212.3 vertex interactions create via /genai_passthrough/v1beta1 project path - genai-interactions-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-3.1-pro-preview\",\n  \"input\": \"Reply with exactly: OK\",\n  \"store\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta1/projects/{{vertexProject}}/locations/global/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "global",
+                "interactions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Vertex serves Interactions only under v1beta1. The router stripped /v1beta1 with its prefix and",
+                  "// Vertex rebuilt the URL with /v1, so Google answered 404; on dev the inference filter also 403'd.",
+                  "// gemini-2.5 models are refused by Vertex Interactions; store:false means the reply carries no id.",
+                  "var body = pm.response.text();",
+                  "pm.test('vertex interactions create: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var dump = JSON.stringify(j).slice(0, 400);",
+                  "pm.test('vertex interactions create: served by vertex - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), dump).to.eql('vertex');",
+                  "});",
+                  "pm.test('vertex interactions create: completed Interaction forwarded verbatim - genai-interactions-passthrough', function () {",
+                  "  pm.expect(j.status, dump).to.eql('completed');",
+                  "  pm.expect(j.steps, dump).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.steps.some(function (s) { return s && s.type === 'model_output'; }), dump).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "212.4 vertex interactions create stream via /genai_passthrough/v1beta1 project path - genai-interactions-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-3.1-pro-preview\",\n  \"input\": \"Reply with exactly: OK\",\n  \"stream\": true,\n  \"store\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta1/projects/{{vertexProject}}/locations/global/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "global",
+                "interactions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Vertex serves Interactions only under v1beta1. The router stripped /v1beta1 with its prefix and",
+                  "// Vertex rebuilt the URL with /v1, so Google answered 404; on dev the inference filter also 403'd.",
+                  "var body = pm.response.text();",
+                  "pm.test('vertex interactions stream: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('vertex interactions stream: SSE stream runs to interaction.completed - genai-interactions-passthrough', function () {",
+                  "  pm.expect(String(pm.response.headers.get('Content-Type')), 'content-type').to.include('text/event-stream');",
+                  "  pm.expect(body, body.slice(0, 400)).to.include('interaction.completed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "212.5 vertex claude streamRawPredict via /genai_passthrough/v1beta1 stays on v1 - genai-interactions-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"vertex-2023-10-16\",\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly: OK\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta1/projects/{{vertexProject}}/locations/{{vertexLocation}}/publishers/anthropic/models/claude-sonnet-4-6:streamRawPredict",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "{{vertexLocation}}",
+                "publishers",
+                "anthropic",
+                "models",
+                "claude-sonnet-4-6:streamRawPredict"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Interactions needs the client's v1beta1, but model calls must keep the v1 they have always used:",
+                  "// Google answers 500 \"Failed to process request\" to Claude streamRawPredict on v1beta1 (v1 and unary",
+                  "// rawPredict are fine), so honoring v1beta1 for model paths broke AnthropicVertex clients whose base URL ends in /v1beta1.",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('vertex claude v1beta1 stream: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('vertex claude v1beta1 stream: served by vertex - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('vertex');",
+                  "});",
+                  "pm.test('vertex claude v1beta1 stream: SSE runs to message_stop - genai-interactions-passthrough', function () {",
+                  "  pm.expect(body, body.slice(0, 400)).to.include('message_start');",
+                  "  pm.expect(body, body.slice(-400)).to.include('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "212.6 gemini interactions create stored, producer for get and delete - genai-interactions-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{genaiModel}}\",\n  \"input\": \"Reply with exactly: OK\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "interactions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Get, cancel and delete were refused with 403 by the passthrough inference filter, which admitted only",
+                  "// POST creation; the whole Interactions API is now admitted on the GenAI routes.",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini stored create: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var dump = JSON.stringify(j).slice(0, 400);",
+                  "pm.test('gemini stored create: served by gemini - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), dump).to.eql('gemini');",
+                  "});",
+                  "pm.test('gemini stored create: interaction is completed - genai-interactions-passthrough', function () {",
+                  "  pm.expect(j.id, dump).to.be.a('string').and.not.empty;",
+                  "  pm.expect([\"completed\"], dump).to.include(j.status);",
+                  "});",
+                  "pm.collectionVariables.set('h212GeminiInteractionId', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "212.7 gemini interactions get via /genai_passthrough/v1beta - genai-interactions-passthrough",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/interactions/{{h212GeminiInteractionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "interactions",
+                "{{h212GeminiInteractionId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Get, cancel and delete were refused with 403 by the passthrough inference filter, which admitted only",
+                  "// POST creation; the whole Interactions API is now admitted on the GenAI routes.",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini get: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var dump = JSON.stringify(j).slice(0, 400);",
+                  "pm.test('gemini get: returns the stored interaction with its model_output - genai-interactions-passthrough', function () {",
+                  "  pm.expect(j.id, dump).to.eql(pm.collectionVariables.get('h212GeminiInteractionId'));",
+                  "  pm.expect(j.status, dump).to.eql('completed');",
+                  "  pm.expect((j.steps || []).some(function (s) { return s && s.type === 'model_output'; }), dump).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "212.8 gemini interactions delete via /genai_passthrough/v1beta - genai-interactions-passthrough",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/interactions/{{h212GeminiInteractionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "interactions",
+                "{{h212GeminiInteractionId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Get, cancel and delete were refused with 403 by the passthrough inference filter, which admitted only",
+                  "// POST creation; the whole Interactions API is now admitted on the GenAI routes.",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini delete: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini delete: served by gemini and acknowledged with an empty body - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body).to.eql('gemini');",
+                  "  pm.expect(JSON.stringify(pm.response.json()), body).to.eql('{}');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "212.9 gemini interactions create background, producer for resume, cancel and delete - genai-interactions-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-3-flash-preview\",\n  \"input\": \"Write a 600-word essay about rivers.\",\n  \"background\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "interactions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Get, cancel and delete were refused with 403 by the passthrough inference filter, which admitted only",
+                  "// POST creation; the whole Interactions API is now admitted on the GenAI routes.",
+                  "// gemini-2.5 models refuse background interactions, so this row pins a Gemini 3 model.",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini background create: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var dump = JSON.stringify(j).slice(0, 400);",
+                  "pm.test('gemini background create: served by gemini - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), dump).to.eql('gemini');",
+                  "});",
+                  "pm.test('gemini background create: interaction is in_progress or completed - genai-interactions-passthrough', function () {",
+                  "  pm.expect(j.id, dump).to.be.a('string').and.not.empty;",
+                  "  pm.expect([\"in_progress\", \"completed\"], dump).to.include(j.status);",
+                  "});",
+                  "pm.collectionVariables.set('h212GeminiBgInteractionId', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "212.10 gemini interactions resume stream via GET ?stream=true - genai-interactions-passthrough",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/interactions/{{h212GeminiBgInteractionId}}?stream=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "interactions",
+                "{{h212GeminiBgInteractionId}}"
+              ],
+              "query": [
+                {
+                  "key": "stream",
+                  "value": "true"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A GET has no body, so the router must read ?stream=true from the query to take the streaming path;",
+                  "// otherwise the resumed SSE would be buffered until the background run ends.",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini resume stream: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini resume stream: SSE runs to interaction.completed - genai-interactions-passthrough', function () {",
+                  "  pm.expect(String(pm.response.headers.get('Content-Type')), 'content-type').to.include('text/event-stream');",
+                  "  pm.expect(body, body.slice(0, 400)).to.include('interaction.completed');",
+                  "});",
+                  "pm.test('gemini resume stream: served by the streaming path - genai-interactions-passthrough', function () {",
+                  "  pm.expect(String(pm.response.headers.get('X-Accel-Buffering')), 'buffered: the GET took the unary path').to.eql('no');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "212.11 gemini interactions cancel via /genai_passthrough/v1beta - genai-interactions-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/interactions/{{h212GeminiBgInteractionId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "interactions",
+                "{{h212GeminiBgInteractionId}}",
+                "cancel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Get, cancel and delete were refused with 403 by the passthrough inference filter, which admitted only",
+                  "// POST creation; the whole Interactions API is now admitted on the GenAI routes.",
+                  "// The resumed stream above ran the background interaction to completion, so cancel is a no-op that",
+                  "// returns it completed; a still-running one comes back cancelled.",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini cancel: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var dump = JSON.stringify(j).slice(0, 400);",
+                  "pm.test('gemini cancel: served by gemini - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), dump).to.eql('gemini');",
+                  "});",
+                  "pm.test('gemini cancel: interaction is cancelled or completed - genai-interactions-passthrough', function () {",
+                  "  pm.expect(j.id, dump).to.be.a('string').and.not.empty;",
+                  "  pm.expect([\"cancelled\", \"completed\"], dump).to.include(j.status);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "212.12 gemini interactions delete background via /genai_passthrough/v1beta - genai-interactions-passthrough",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/interactions/{{h212GeminiBgInteractionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "interactions",
+                "{{h212GeminiBgInteractionId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Get, cancel and delete were refused with 403 by the passthrough inference filter, which admitted only",
+                  "// POST creation; the whole Interactions API is now admitted on the GenAI routes.",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini background delete: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini background delete: served by gemini and acknowledged with an empty body - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body).to.eql('gemini');",
+                  "  pm.expect(JSON.stringify(pm.response.json()), body).to.eql('{}');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "212.13 vertex interactions create background via /genai_passthrough/v1beta1, producer for cancel and delete - genai-interactions-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-3-flash-preview\",\n  \"input\": \"Write a 600-word essay about rivers.\",\n  \"background\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta1/projects/{{vertexProject}}/locations/global/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "global",
+                "interactions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Get, cancel and delete were refused with 403 by the passthrough inference filter, which admitted only",
+                  "// POST creation; the whole Interactions API is now admitted on the GenAI routes.",
+                  "// Background runs need storage, so this row cannot send store:false. Vertex refuses get and resume for",
+                  "// model interactions upstream, so cancel and delete are the Vertex rows; all three pin the global key that",
+                  "// created the interaction, since a model-less passthrough call may otherwise pick any Vertex key.",
+                  "var body = pm.response.text();",
+                  "pm.test('vertex background create: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var dump = JSON.stringify(j).slice(0, 400);",
+                  "pm.test('vertex background create: served by vertex - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), dump).to.eql('vertex');",
+                  "});",
+                  "pm.test('vertex background create: interaction is in_progress or completed - genai-interactions-passthrough', function () {",
+                  "  pm.expect(j.id, dump).to.be.a('string').and.not.empty;",
+                  "  pm.expect([\"in_progress\", \"completed\"], dump).to.include(j.status);",
+                  "});",
+                  "pm.collectionVariables.set('h212VertexBgInteractionId', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "212.14 vertex interactions cancel via /genai_passthrough/v1beta1 - genai-interactions-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta1/projects/{{vertexProject}}/locations/global/interactions/{{h212VertexBgInteractionId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "global",
+                "interactions",
+                "{{h212VertexBgInteractionId}}",
+                "cancel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Get, cancel and delete were refused with 403 by the passthrough inference filter, which admitted only",
+                  "// POST creation; the whole Interactions API is now admitted on the GenAI routes.",
+                  "var body = pm.response.text();",
+                  "pm.test('vertex cancel: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var dump = JSON.stringify(j).slice(0, 400);",
+                  "pm.test('vertex cancel: served by vertex - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), dump).to.eql('vertex');",
+                  "});",
+                  "pm.test('vertex cancel: interaction is cancelled or completed - genai-interactions-passthrough', function () {",
+                  "  pm.expect(j.id, dump).to.be.a('string').and.not.empty;",
+                  "  pm.expect([\"cancelled\", \"completed\"], dump).to.include(j.status);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "212.15 vertex interactions delete via /genai_passthrough/v1beta1 - genai-interactions-passthrough",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta1/projects/{{vertexProject}}/locations/global/interactions/{{h212VertexBgInteractionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "global",
+                "interactions",
+                "{{h212VertexBgInteractionId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Get, cancel and delete were refused with 403 by the passthrough inference filter, which admitted only",
+                  "// POST creation; the whole Interactions API is now admitted on the GenAI routes.",
+                  "// Vertex deletes only a finished interaction; the cancel above finished it.",
+                  "var body = pm.response.text();",
+                  "pm.test('vertex delete: 200 - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('vertex delete: served by vertex and acknowledged with an empty body - genai-interactions-passthrough', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body).to.eql('vertex');",
+                  "  pm.expect(JSON.stringify(pm.response.json()), body).to.eql('{}');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "213. Client tool_use named web_search/web_fetch stays a function_call (#8078 / PR #8079)",
       "description": "Regression for #8078 / PR #8079. A client (function) tool_use named web_search or web_fetch was converted to a web_search_call / web_fetch_call because the grouped Anthropic converter matched on name only, orphaning its tool_result. Bedrock rejected the replay with 'The number of toolResult blocks ... exceeds the number of toolUse blocks of previous turn'. Each case replays an assistant turn with client tool_use blocks named web_search and web_fetch plus the matching tool_results through /anthropic/v1/messages and expects a successful reply.",
       "item": [
         {

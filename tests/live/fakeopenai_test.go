@@ -72,6 +72,7 @@ type fakeConn interface {
 type wsFakeConn struct {
 	mu   sync.Mutex
 	conn *websocket.Conn
+	auth string // the Authorization header the connection was opened with
 }
 
 func (c *wsFakeConn) send(frame []byte) error {
@@ -272,7 +273,7 @@ func (f *fakeOpenAI) serveAttach(w http.ResponseWriter, r *http.Request, id stri
 	if err != nil {
 		return
 	}
-	c := &wsFakeConn{conn: conn}
+	c := &wsFakeConn{conn: conn, auth: r.Header.Get("Authorization")}
 	s.addConn(c)
 	_ = c.send(s.startedFrame())
 	s.readLoop(conn, c)
@@ -651,6 +652,19 @@ func (s *fakeSession) WaitInbound(t *testing.T, typ string, n int) gjson.Result 
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// SidebandAuths lists the Authorization header of every attached WebSocket sideband, in order.
+func (s *fakeSession) SidebandAuths() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var auths []string
+	for _, c := range s.conns {
+		if ws, ok := c.(*wsFakeConn); ok && ws.auth != "" {
+			auths = append(auths, ws.auth)
+		}
+	}
+	return auths
 }
 
 // Connections is how many connections the session has right now.

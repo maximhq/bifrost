@@ -586,12 +586,10 @@ export function getDecisionProviderState(
 ): DecisionProviderState {
 	const provider = (providers ?? []).find((candidate) => candidate.name === providerName);
 	if (!provider) return "missing";
-	// The provider failed to initialise, or could not list models with its keys:
-	// both mean its credentials or settings are wrong. A provider with model
-	// listing turned off (Laya, Clef) never lists, so a stale listing failure on
-	// it says nothing about its decisions endpoint.
-	const listsModels = provider.custom_provider_config?.allowed_requests?.list_models !== false;
-	if (provider.provider_status !== "active" || (listsModels && provider.status === "list_models_failed")) return "failing";
+	// The provider failed to initialise. A model-listing failure is not checked:
+	// it says nothing about the decisions endpoint, and the provider-level listing
+	// status can be stale while the provider's keys work.
+	if (provider.provider_status !== "active") return "failing";
 	// A keyless custom provider (a self-hosted Laya, for one) needs no key.
 	if (provider.custom_provider_config?.is_key_less) return "configured";
 	// A key omits `enabled` when unset, which the Go side reads as enabled.

@@ -107,7 +107,7 @@ func (g *liveGateway) resolveSession(ctx *fasthttp.RequestCtx, req *liveRequest)
 	if req.sessionID == "" {
 		return refuse(newRealtimeWireBifrostError(400, "invalid_request_error", "a session id is required"))
 	}
-	provider, providerKey, bifrostErr := g.controlProvider(req.path)
+	provider, providerKey, bifrostErr := g.controlProvider(req.path, liveControlProviderName(ctx))
 	if bifrostErr != nil {
 		return refuse(bifrostErr)
 	}
@@ -185,12 +185,28 @@ func (g *liveGateway) sessionContext(auth *authHeaders, preReqCtx *schemas.Bifro
 	return ctx, cancel
 }
 
+// liveControlProviderName is the provider a caller names on a route that only carries a session
+// id: the ?provider= query parameter, else the x-model-provider header, as the file, batch and
+// video routes accept.
+func liveControlProviderName(ctx *fasthttp.RequestCtx) string {
+	if named := strings.TrimSpace(string(ctx.QueryArgs().Peek("provider"))); named != "" {
+		return named
+	}
+	return strings.TrimSpace(string(ctx.Request.Header.Peek("x-model-provider")))
+}
+
 // controlProvider resolves the provider a route on an existing session names: the integration
-// prefix, or, on the bare route, the standard OpenAI provider when configured, else the one
-// configured provider that serves live sessions. Custom OpenAI-based providers serve live
-// sessions too, so the bare route cannot be left to a scan alone.
-func (g *liveGateway) controlProvider(path string) (schemas.LiveProvider, schemas.ModelProvider, *schemas.BifrostError) {
+// prefix, else the provider the caller named, else, on the bare route, the standard OpenAI
+// provider when configured, else the one configured provider that serves live sessions. Custom
+// OpenAI-based providers serve live sessions too, so the bare route cannot be left to a scan alone.
+func (g *liveGateway) controlProvider(path, named string) (schemas.LiveProvider, schemas.ModelProvider, *schemas.BifrostError) {
 	providerKey := realtimeDefaultProviderForPath(path)
+	if providerKey == "" && named != "" {
+		providerKey = schemas.ModelProvider(named)
+		if g.client.GetProviderByKey(providerKey) == nil {
+			return nil, "", newRealtimeWireBifrostError(400, "invalid_request_error", fmt.Sprintf("provider %q is not configured", named))
+		}
+	}
 	if providerKey == "" {
 		configured, err := g.client.GetConfiguredProviders()
 		if err != nil {
@@ -218,6 +234,64 @@ func (g *liveGateway) controlProvider(path string) (schemas.LiveProvider, schema
 		return nil, "", newRealtimeWireBifrostError(400, "invalid_request_error", "provider does not support live sessions: "+string(providerKey))
 	}
 	return provider, providerKey, nil
+}
+
+// admitSideband opens a sideband as a request of its own through the plugin pipeline. Governance
+// holds it to the caller's virtual key as the primary session is held: the provider must be
+// allowed, and the keys the caller may use are published for selection. Budgets and request
+// limits are skipped: a sideband spends nothing, and the session it joins is what they govern, so
+// an exhausted key keeps control of the session it already has. Logging gives it a row naming the
+// provider session. The caller settles the row with closeSideband.
+func (g *liveGateway) admitSideband(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, sessionID string) (*bifrost.RealtimeTurnHooks, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveSidebandRequest)
+	ctx.SetValue(schemas.BifrostContextKeyRealtimeProviderSessionID, sessionID)
+	ctx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+	// The sideband outlives the attach request: its row is delivered when its own trace completes,
+	// so it must not inherit the transport's, as live units and realtime turns do not.
+	ctx.ClearValue(schemas.BifrostContextKeyTraceID)
+	ctx.ClearValue(schemas.BifrostContextKeyExportTraceID)
+	setRealtimeTurnStreamContext(ctx, time.Now(), false)
+	return g.client.RunRealtimeTurnPreHooks(ctx, &schemas.BifrostRequest{
+		RequestType:      schemas.LiveSidebandRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: providerKey},
+	})
+}
+
+// closeSideband settles a sideband's row: the key it dialed with and how long it stayed
+// attached, or why it never was.
+func closeSideband(ctx *schemas.BifrostContext, hooks *bifrost.RealtimeTurnHooks, providerKey schemas.ModelProvider, key schemas.Key, startedAt time.Time, bifrostErr *schemas.BifrostError) {
+	if hooks == nil {
+		return
+	}
+	defer func() {
+		if hooks.Cleanup != nil {
+			hooks.Cleanup()
+		}
+	}()
+	if hooks.PostHookRunner == nil {
+		return
+	}
+	setRealtimeTurnStreamContext(ctx, startedAt, true)
+	// The key is chosen after the pre-hooks ran; the row names it, as a unit's does.
+	if strings.TrimSpace(key.ID) != "" {
+		ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, key.ID)
+	}
+	if strings.TrimSpace(key.Name) != "" {
+		ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, key.Name)
+	}
+	// The row is delivered when the sideband's trace completes, as a turn's is.
+	defer completeRealtimeTurnTrace(ctx)
+	if bifrostErr != nil {
+		postErr := *bifrostErr
+		postErr.ExtraFields.RequestType = schemas.LiveSidebandRequest
+		postErr.ExtraFields.Provider = providerKey
+		hooks.PostHookRunner(ctx, nil, &postErr)
+		return
+	}
+	hooks.PostHookRunner(ctx, &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Object:      "live.sideband",
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.LiveSidebandRequest, Provider: providerKey, Latency: time.Since(startedAt).Milliseconds()},
+	}}, nil)
 }
 
 // controlKey selects the key a route on an existing session acts with. Sessions are not yet
