@@ -907,6 +907,34 @@ Nothing is built unless a connector asks for it. With no profile setting `export
 - Latency and timing (start/end timestamps)
 - Error details with status codes
 
+For streaming requests, two time-to-first-token values are exported, and they answer
+different questions:
+
+| Attribute | Unit | Measures |
+| --- | --- | --- |
+| `bifrost.response.time_to_first_token_ms` | milliseconds | Request received to first chunk — the full wait a client experiences, including queueing, plugin hooks, key selection and the provider's own time to first byte |
+| `gen_ai.response.time_to_first_chunk` | seconds | First chunk measured from provider stream setup, so it reflects only the provider's streaming behaviour |
+
+Use `bifrost.response.time_to_first_token_ms` for latency dashboards and alerting that
+should track what callers actually see. It is set on both the `llm.call` span and the
+root span, so a trace-level dashboard can read it without drilling in.
+
+### Failed Requests
+
+Failures are classified on the root span as well as the `llm.call` span, so a dashboard
+built on root spans can distinguish causes rather than seeing only an HTTP status:
+
+| Attribute | Description |
+| --- | --- |
+| `bifrost.error.type` | Normalized failure category, identical to the `error_type` metric label |
+| `error.type` | The provider's or Bifrost's own error type |
+| `gen_ai.error` | The error message |
+| `gen_ai.error.code` | The error code, when the provider supplies one |
+
+This also covers requests rejected before they reach a provider — no key supports the
+requested model, a governance refusal, an unknown model. Those carry the requested model
+and provider too, so they can be grouped the same way as provider-side failures.
+
 ### Caller-Supplied Headers
 
 Headers Bifrost forwards to the upstream provider — both `x-bf-eh-*` prefixed headers and headers matched by the [direct allowlist](/deployment-guides/config-json/client#header-filtering) — are also surfaced on the `llm.call` span as `gen_ai.request.extra_header.<name>` attributes. This makes it easy to filter or correlate traces by caller context (session ID, tenant ID, correlation IDs) without standing up extra plumbing.

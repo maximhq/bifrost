@@ -1216,6 +1216,10 @@ const (
 	// reverse hop (enqueue->dequeue) is already the "queue-wait" span.
 	AttrBifrostWorkerHandoffMs = "bifrost.worker.handoff_ms"
 
+	// AttrBifrostTimeToFirstTokenMs is request receipt to first streamed chunk, so
+	// unlike time_to_first_chunk it includes gateway overhead. Streaming only.
+	AttrBifrostTimeToFirstTokenMs = "bifrost.response.time_to_first_token_ms"
+
 	// AttrBifrostContentLoggingDisabled is set to true on the root span when the request's virtual
 	// key turned content logging off. Connectors read it through ContentLoggingDisabledForTrace and
 	// strip content the way their own disable_content_logging would; it is never set to false, so a
