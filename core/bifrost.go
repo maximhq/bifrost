@@ -10626,8 +10626,19 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 		}
 	}
 
-	// Single key: no rotation possible, skip session stickiness (no KV write needed).
+	// Single key: no rotation possible, so the session cannot choose. It is still asked, so it can
+	// drop a binding to a key that left the pool, except by a realtime pick, which never writes
+	// the session's bindings, and by a pool a second model or the batch and file APIs narrowed,
+	// which says nothing about the keys the session's own requests can use.
 	if len(supportedKeys) == 1 {
+		if len(additionalModels) == 0 &&
+			requestType != schemas.RealtimeRequest &&
+			requestType != schemas.WebSocketResponsesRequest &&
+			!isBatchRequestType(requestType) &&
+			!isFileRequestType(requestType) &&
+			schemas.IsSessionAffinityActive(ctx) {
+			bifrost.sessionAffinity.ResolveKey(ctx, providerKey, model, supportedKeys)
+		}
 		return []schemas.Key{supportedKeys[0]}, false, nil
 	}
 
