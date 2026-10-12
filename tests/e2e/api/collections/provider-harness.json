@@ -247860,7 +247860,7 @@
     },
     {
       "name": "198. Provider-injected MCP web search (injected-web-search)",
-      "description": "Provider config `injected_tools.web_search` names an MCP tool that Bifrost adds to every chat and responses request for the provider, replacing any native web search the client sent, and executes server side when the model calls it. The harness profile points `openai_websearch` and `anthropic_websearch` at `sse_mcp/web_search` (examples/mcps/remote-test-server), whose single result states a fact no model knows: the lighthouse is teal-and-amber and its keeper is Orrin Vale. An answer naming Orrin proves the gateway ran the search and fed the result back; every case also pins that the client never sees the injected tool call. `sse_mcp` keeps `web_search` out of its tools_to_execute, so the cases also prove the injected tool bypasses the client allow-list. Red before the feature: the profile field is unknown and no turn runs the tool.",
+      "description": "Provider config `injected_tools` lists MCP tools that Bifrost adds to every chat and responses request for the provider under the name each entry gives, and executes server side when the model calls them. A name replaces any client tool of the same name, and the name `web_search` also replaces any native web search the client sent. The harness profile points `openai_websearch` and `anthropic_websearch` at `sse_mcp/web_search` under the name `web_search`, and `openai_injectedtools` at the same tool under the name `lighthouse_lookup` (examples/mcps/remote-test-server), whose single result states a fact no model knows: the lighthouse is teal-and-amber and its keeper is Orrin Vale. An answer naming Orrin proves the gateway ran the search and fed the result back; every case also pins that the client never sees the injected tool call. `sse_mcp` keeps `web_search` out of its tools_to_execute, so the cases also prove the injected tool bypasses the client allow-list. Red before the feature: the profile field is unknown and no turn runs the tool.",
       "item": [
         {
           "name": "[EXPECT-200] openai_websearch gpt-4o-mini chat injected-web-search answers from the MCP tool",
@@ -247900,7 +247900,8 @@
                   "  pm.expect(msg.tool_calls || [], 'the injected tool call leaked to the client: ' + pm.response.text()).to.have.length(0);",
                   "  pm.expect(body.choices[0].finish_reason).to.equal('stop');",
                   "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
-                  "  pm.expect(raw, 'the MCP tool was not declared upstream: ' + raw).to.include('sse_mcp-web_search');",
+                  "  pm.expect(raw, 'the injected tool was not declared upstream as web_search: ' + raw).to.include('\"name\":\"web_search\"');",
+                  "  pm.expect(raw, 'the prefixed MCP tool name reached the model: ' + raw).to.not.include('sse_mcp-web_search');",
                   "  pm.expect(raw, 'native web_search_options reached the provider: ' + raw).to.not.include('web_search_options');",
                   "});"
                 ]
@@ -247969,7 +247970,8 @@
                   "  var raws = events.filter(function (e) { return e.extra_fields && e.extra_fields.raw_request; }).map(function (e) { return JSON.stringify(e.extra_fields.raw_request); });",
                   "  pm.expect(raws.length, 'no raw_request in the stream (send_back_raw_request is on for this profile provider)').to.be.above(0);",
                   "  raws.forEach(function (raw) {",
-                  "    pm.expect(raw, 'the MCP tool was not declared upstream: ' + raw).to.include('sse_mcp-web_search');",
+                  "    pm.expect(raw, 'the injected tool was not declared upstream as web_search: ' + raw).to.include('\"name\":\"web_search\"');",
+                  "    pm.expect(raw, 'the prefixed MCP tool name reached the model: ' + raw).to.not.include('sse_mcp-web_search');",
                   "    pm.expect(raw, 'native web_search_options reached the provider: ' + raw).to.not.include('web_search_options');",
                   "  });",
                   "});"
@@ -248038,7 +248040,8 @@
                   "  var raws = events.filter(function (e) { return e.extra_fields && e.extra_fields.raw_request; }).map(function (e) { return JSON.stringify(e.extra_fields.raw_request); });",
                   "  pm.expect(raws.length, 'no raw_request in the stream (send_back_raw_request is on for this profile provider)').to.be.above(0);",
                   "  raws.forEach(function (raw) {",
-                  "    pm.expect(raw, 'the MCP tool was not declared upstream: ' + raw).to.include('sse_mcp-web_search');",
+                  "    pm.expect(raw, 'the injected tool was not declared upstream as web_search: ' + raw).to.include('\"name\":\"web_search\"');",
+                  "    pm.expect(raw, 'the prefixed MCP tool name reached the model: ' + raw).to.not.include('sse_mcp-web_search');",
                   "    pm.expect(raw, 'the native web search reached the provider: ' + raw).to.not.include('\"type\":\"web_search\"');",
                   "  });",
                   "  (completed.output || []).forEach(function (item) {",
@@ -248091,7 +248094,8 @@
                   "  pm.expect(text, 'answer does not use the search result: ' + pm.response.text()).to.match(/orrin/i);",
                   "  pm.expect(body.stop_reason).to.equal('end_turn');",
                   "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
-                  "  pm.expect(raw, 'the MCP tool was not declared upstream: ' + raw).to.include('sse_mcp-web_search');",
+                  "  pm.expect(raw, 'the injected tool was not declared upstream as web_search: ' + raw).to.include('\"name\":\"web_search\"');",
+                  "  pm.expect(raw, 'the prefixed MCP tool name reached the model: ' + raw).to.not.include('sse_mcp-web_search');",
                   "  pm.expect(raw, 'native web_search_20250305 reached Anthropic: ' + raw).to.not.include('web_search_20250305');",
                   "});"
                 ]
@@ -248115,10 +248119,10 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('the provider API reports the configured injected web search tool', function () {",
+                  "pm.test('the provider API reports the configured injected tools list', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "  var injected = pm.response.json().injected_tools;",
-                  "  pm.expect(injected, 'injected_tools missing from the provider response: ' + pm.response.text()).to.eql({ web_search: { mcp_client_name: 'sse_mcp', tool_name: 'web_search' } });",
+                  "  pm.expect(injected, 'injected_tools missing from the provider response: ' + pm.response.text()).to.eql([{ name: 'web_search', mcp_client_name: 'sse_mcp', tool_name: 'web_search' }]);",
                   "});"
                 ]
               }
@@ -248126,7 +248130,7 @@
           ]
         },
         {
-          "name": "[EXPECT-400] anthropic_websearch provider API injected-web-search rejects a tool-less web_search",
+          "name": "[EXPECT-400] anthropic_websearch provider API injected-web-search rejects the old object shape",
           "request": {
             "auth": {
               "type": "noauth"
@@ -248140,7 +248144,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 10,\n    \"buffer_size\": 100\n  },\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"anthropic\",\n    \"is_key_less\": false\n  },\n  \"injected_tools\": {\n    \"web_search\": {\n      \"mcp_client_name\": \"sse_mcp\"\n    }\n  }\n}"
+              "raw": "{\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 10,\n    \"buffer_size\": 100\n  },\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"anthropic\",\n    \"is_key_less\": false\n  },\n  \"injected_tools\": {\n    \"web_search\": {\n      \"mcp_client_name\": \"sse_mcp\",\n      \"tool_name\": \"web_search\"\n    }\n  }\n}"
             },
             "url": "{{baseUrl}}/api/providers/anthropic_websearch"
           },
@@ -248150,9 +248154,614 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('the validator rejects injected_tools without a tool_name, before anything is saved', function () {",
+                  "pm.test('the validator rejects the old injected_tools object, before anything is saved', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
-                  "  pm.expect(pm.response.text(), 'rejected for another reason: ' + pm.response.text()).to.include('web_search.tool_name is required');",
+                  "  pm.expect(pm.response.text(), 'rejected for another reason: ' + pm.response.text()).to.include('injected_tools must be an array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedtools gpt-4o-mini chat injected-web-search alias replaces the client tool of the same name",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedtools/gpt-4o-mini\",\n  \"tool_choice\": \"required\",\n  \"max_tokens\": 200,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"lighthouse_lookup\",\n        \"description\": \"CLIENT-DEFINED lookup that must be replaced\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"q\": {\n              \"type\": \"string\"\n            }\n          }\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use the lighthouse_lookup tool to look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a client tool sharing an injected name is replaced, and the alias runs the MCP tool', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var msg = body.choices[0].message;",
+                  "  pm.expect(String(msg.content), 'answer does not use the MCP tool result: ' + pm.response.text()).to.match(/orrin/i);",
+                  "  pm.expect(msg.tool_calls || [], 'the injected tool call leaked to the client: ' + pm.response.text()).to.have.length(0);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the injected tool was not declared under its configured name: ' + raw).to.include('\"name\":\"lighthouse_lookup\"');",
+                  "  pm.expect(raw, 'the client tool of the same name reached the provider: ' + raw).to.not.include('CLIENT-DEFINED');",
+                  "  pm.expect(raw, 'the prefixed MCP tool name reached the model: ' + raw).to.not.include('sse_mcp-web_search');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedtools gpt-4o-mini responses injected-web-search alias keeps native web search",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedtools/gpt-4o-mini\",\n  \"max_output_tokens\": 300,\n  \"tools\": [\n    {\n      \"type\": \"web_search\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"lighthouse_lookup\"\n  },\n  \"input\": \"Use the lighthouse_lookup tool to look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('only a tool named web_search replaces native web search; a forced alias still runs', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var text = '';",
+                  "  (body.output || []).forEach(function (item) {",
+                  "    pm.expect(item.type, 'an injected call or its result leaked to the client: ' + JSON.stringify(item)).to.not.match(/^function_call/);",
+                  "    (item.content || []).forEach(function (part) { if (part.type === 'output_text') text += part.text; });",
+                  "  });",
+                  "  pm.expect(text, 'answer does not use the MCP tool result: ' + pm.response.text()).to.match(/orrin/i);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the injected tool was not declared under its configured name: ' + raw).to.include('\"name\":\"lighthouse_lookup\"');",
+                  "  pm.expect(raw, 'native web search was dropped though no injected tool is named web_search: ' + raw).to.include('\"type\":\"web_search\"');",
+                  "  pm.expect(raw, 'the prefixed MCP tool name reached the model: ' + raw).to.not.include('sse_mcp-web_search');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedtools provider API injected-web-search returns the aliased entry",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/openai_injectedtools"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the provider API reports the injected tool under its configured name', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().injected_tools, 'injected_tools missing from the provider response: ' + pm.response.text()).to.eql([{ name: 'lighthouse_lookup', mcp_client_name: 'sse_mcp', tool_name: 'web_search' }]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] anthropic_websearch provider API injected-web-search rejects a repeated tool name",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 10,\n    \"buffer_size\": 100\n  },\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"anthropic\",\n    \"is_key_less\": false\n  },\n  \"injected_tools\": [\n    {\n      \"name\": \"web_search\",\n      \"mcp_client_name\": \"sse_mcp\",\n      \"tool_name\": \"web_search\"\n    },\n    {\n      \"name\": \"web_search\",\n      \"mcp_client_name\": \"sse_mcp\",\n      \"tool_name\": \"echo\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/api/providers/anthropic_websearch"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the validator rejects two injected tools with one name, before anything is saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'rejected for another reason: ' + pm.response.text()).to.include('is used more than once');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] anthropic_websearch provider API injected-web-search rejects a tool-less entry",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 10,\n    \"buffer_size\": 100\n  },\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"anthropic\",\n    \"is_key_less\": false\n  },\n  \"injected_tools\": [\n    {\n      \"name\": \"web_search\",\n      \"mcp_client_name\": \"sse_mcp\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/api/providers/anthropic_websearch"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the validator rejects an injected tool without a tool_name, before anything is saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'rejected for another reason: ' + pm.response.text()).to.include('tool_name is required');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedtools gpt-4o-mini chat injected-web-search forced choice on the prefixed MCP name follows the alias",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedtools/gpt-4o-mini\",\n  \"max_tokens\": 200,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"sse_mcp-web_search\",\n        \"description\": \"Search the web\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"query\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"query\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"sse_mcp-web_search\"\n    }\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a choice pinning the prefixed MCP name is pointed at the injected alias', function () {",
+                  "  // Red before the fix: the prefixed declaration was dropped but tool_choice still named it,",
+                  "  // so the provider rejected a choice for an undeclared tool.",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var msg = body.choices[0].message;",
+                  "  pm.expect(msg.tool_calls || [], 'the injected tool call leaked to the client: ' + pm.response.text()).to.have.length(0);",
+                  "  var text = String(msg.content);",
+                  "  pm.expect(text, 'the forced call did not run the MCP tool: ' + pm.response.text()).to.match(/orrin/i);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the injected tool was not declared under its configured name: ' + raw).to.include('\"name\":\"lighthouse_lookup\"');",
+                  "  pm.expect(raw, 'the prefixed MCP name reached the provider: ' + raw).to.not.include('sse_mcp-web_search');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedtools gpt-4o-mini responses injected-web-search forced choice on the prefixed MCP name follows the alias",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedtools/gpt-4o-mini\",\n  \"max_output_tokens\": 300,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"sse_mcp-web_search\",\n      \"description\": \"Search the web\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"sse_mcp-web_search\"\n  },\n  \"input\": \"Look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a Responses choice pinning the prefixed MCP name is pointed at the injected alias', function () {",
+                  "  // Red before the fix: the prefixed declaration was dropped but tool_choice still named it,",
+                  "  // so the provider rejected a choice for an undeclared tool.",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var text = '';",
+                  "  (body.output || []).forEach(function (item) {",
+                  "    pm.expect(item.type, 'an injected call or its result leaked to the client: ' + JSON.stringify(item)).to.not.match(/^function_call/);",
+                  "    (item.content || []).forEach(function (part) { if (part.type === 'output_text') text += part.text; });",
+                  "  });",
+                  "  pm.expect(text, 'the forced call did not run the MCP tool: ' + pm.response.text()).to.match(/orrin/i);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the injected tool was not declared under its configured name: ' + raw).to.include('\"name\":\"lighthouse_lookup\"');",
+                  "  pm.expect(raw, 'the prefixed MCP name reached the provider: ' + raw).to.not.include('sse_mcp-web_search');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedalias gpt-4o-mini chat injected-web-search choice naming a configured alias keeps that alias",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedalias/gpt-4o-mini\",\n  \"max_tokens\": 200,\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"sse_mcp-web_search\"\n    }\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call the tool with the message ECHO-MARK-4471, then reply with exactly the text the tool returned.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a choice naming a configured alias runs that alias, even when it is also another row prefixed MCP name', function () {",
+                  "  // Red before the fix: the choice was rewritten to lighthouse_lookup, so the web search ran instead of echo.",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var msg = body.choices[0].message;",
+                  "  pm.expect(msg.tool_calls || [], 'an injected tool call leaked to the client: ' + pm.response.text()).to.have.length(0);",
+                  "  var text = String(msg.content);",
+                  "  pm.expect(text, 'the forced alias did not run echo: ' + pm.response.text()).to.include('ECHO-MARK-4471');",
+                  "  pm.expect(text, 'the choice was redirected to the web search alias: ' + pm.response.text()).to.not.match(/orrin/i);",
+                  "  // The prompt carries the marker, so the answer alone cannot prove the tool ran. The final",
+                  "  // turn's request carries the tool result: echo returns an echoed key the prompt never",
+                  "  // mentions, and the web search result (Orrin) must be absent.",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the echo result never reached the model, so echo did not run: ' + raw).to.include('echoed');",
+                  "  pm.expect(raw, 'the web search alias ran instead of echo: ' + raw).to.not.match(/orrin/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedalias gpt-4o-mini responses injected-web-search choice naming a configured alias keeps that alias",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedalias/gpt-4o-mini\",\n  \"max_output_tokens\": 300,\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"sse_mcp-web_search\"\n  },\n  \"input\": \"Call the tool with the message ECHO-MARK-4471, then reply with exactly the text the tool returned.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a choice naming a configured alias runs that alias, even when it is also another row prefixed MCP name', function () {",
+                  "  // Red before the fix: the choice was rewritten to lighthouse_lookup, so the web search ran instead of echo.",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var text = '';",
+                  "  (body.output || []).forEach(function (item) {",
+                  "    pm.expect(item.type, 'an injected call or its result leaked to the client: ' + JSON.stringify(item)).to.not.match(/^function_call/);",
+                  "    (item.content || []).forEach(function (part) { if (part.type === 'output_text') text += part.text; });",
+                  "  });",
+                  "  pm.expect(text, 'the forced alias did not run echo: ' + pm.response.text()).to.include('ECHO-MARK-4471');",
+                  "  pm.expect(text, 'the choice was redirected to the web search alias: ' + pm.response.text()).to.not.match(/orrin/i);",
+                  "  // The prompt carries the marker, so the answer alone cannot prove the tool ran. The final",
+                  "  // turn's request carries the tool result: echo returns an echoed key the prompt never",
+                  "  // mentions, and the web search result (Orrin) must be absent.",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the echo result never reached the model, so echo did not run: ' + raw).to.include('echoed');",
+                  "  pm.expect(raw, 'the web search alias ran instead of echo: ' + raw).to.not.match(/orrin/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedtools gpt-4o-mini responses injected-web-search custom choice for a replaced tool pins the injected function",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedtools/gpt-4o-mini\",\n  \"max_output_tokens\": 300,\n  \"tools\": [\n    {\n      \"type\": \"custom\",\n      \"name\": \"lighthouse_lookup\",\n      \"description\": \"CLIENT-DEFINED custom tool that must be replaced\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"custom\",\n    \"name\": \"lighthouse_lookup\"\n  },\n  \"input\": \"Look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a custom choice for a tool the injected tool replaced becomes a function choice for it', function () {",
+                  "  // Red before the fix: the custom tool was dropped but the custom choice stayed, so OpenAI rejected it.",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var text = '';",
+                  "  (body.output || []).forEach(function (item) {",
+                  "    pm.expect(item.type, 'an injected call or its result leaked to the client: ' + JSON.stringify(item)).to.not.match(/^function_call/);",
+                  "    (item.content || []).forEach(function (part) { if (part.type === 'output_text') text += part.text; });",
+                  "  });",
+                  "  pm.expect(text, 'the forced call did not run the MCP tool: ' + pm.response.text()).to.match(/orrin/i);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the client custom tool reached the provider: ' + raw).to.not.include('CLIENT-DEFINED');",
+                  "  pm.expect(raw, 'a custom tool choice reached the provider: ' + raw).to.not.include('\"type\":\"custom\"');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedtools gpt-4o-mini chat injected-web-search allowed_tools entry for the prefixed MCP name follows the alias",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedtools/gpt-4o-mini\",\n  \"max_tokens\": 200,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"sse_mcp-web_search\",\n        \"description\": \"Search the web\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"query\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"query\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"allowed_tools\",\n    \"allowed_tools\": {\n      \"mode\": \"required\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"sse_mcp-web_search\"\n          }\n        }\n      ]\n    }\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an allowed_tools entry for a dropped prefixed declaration names the injected alias', function () {",
+                  "  // Red before the fix: the entry still named sse_mcp-web_search, which was no longer declared, so OpenAI rejected it.",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var msg = body.choices[0].message;",
+                  "  pm.expect(msg.tool_calls || [], 'an injected tool call leaked to the client: ' + pm.response.text()).to.have.length(0);",
+                  "  var text = String(msg.content);",
+                  "  pm.expect(text, 'the required call did not run the MCP tool: ' + pm.response.text()).to.match(/orrin/i);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the injected tool was not declared under its configured name: ' + raw).to.include('\"name\":\"lighthouse_lookup\"');",
+                  "  pm.expect(raw, 'the prefixed MCP name reached the provider: ' + raw).to.not.include('sse_mcp-web_search');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedtools gpt-4o-mini responses injected-web-search allowed_tools entry for the prefixed MCP name follows the alias",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedtools/gpt-4o-mini\",\n  \"max_output_tokens\": 300,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"sse_mcp-web_search\",\n      \"description\": \"Search the web\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"allowed_tools\",\n    \"mode\": \"required\",\n    \"tools\": [\n      {\n        \"type\": \"function\",\n        \"name\": \"sse_mcp-web_search\"\n      }\n    ]\n  },\n  \"input\": \"Look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an allowed_tools entry for a dropped prefixed declaration names the injected alias', function () {",
+                  "  // Red before the fix: the entry still named sse_mcp-web_search, which was no longer declared, so OpenAI rejected it.",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var text = '';",
+                  "  (body.output || []).forEach(function (item) {",
+                  "    pm.expect(item.type, 'an injected call or its result leaked to the client: ' + JSON.stringify(item)).to.not.match(/^function_call/);",
+                  "    (item.content || []).forEach(function (part) { if (part.type === 'output_text') text += part.text; });",
+                  "  });",
+                  "  pm.expect(text, 'the required call did not run the MCP tool: ' + pm.response.text()).to.match(/orrin/i);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the injected tool was not declared under its configured name: ' + raw).to.include('\"name\":\"lighthouse_lookup\"');",
+                  "  pm.expect(raw, 'the prefixed MCP name reached the provider: ' + raw).to.not.include('sse_mcp-web_search');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedfirstrow gpt-4o-mini responses injected-web-search unavailable first row keeps native web search",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedfirstrow/gpt-4o-mini\",\n  \"max_output_tokens\": 50,\n  \"tools\": [\n    {\n      \"type\": \"web_search\"\n    }\n  ],\n  \"input\": \"Reply with the single word ok.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an unavailable first web_search row is not replaced by a later row of the same name', function () {",
+                  "  // Red before the fix: the later web_search row stood in, so native web search was stripped and a function web_search declared.",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'native web search was stripped: ' + raw).to.include('\"type\":\"web_search\"');",
+                  "  pm.expect(raw, 'a later duplicate web_search row was injected: ' + raw).to.not.include('\"name\":\"web_search\"');",
+                  "  pm.expect(raw, 'the MCP tool reached the provider: ' + raw).to.not.include('sse_mcp-web_search');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedfirstrow provider API injected-web-search keeps both configured rows",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/openai_injectedfirstrow"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('config.json duplicates load with a warning, so the provider and both rows are present', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var names = (pm.response.json().injected_tools || []).map(function (t) { return t.name + ':' + t.tool_name; });",
+                  "  pm.expect(names, 'unexpected injected_tools: ' + pm.response.text()).to.eql(['web_search:no_such_tool', 'web_search:web_search']);",
                   "});"
                 ]
               }
