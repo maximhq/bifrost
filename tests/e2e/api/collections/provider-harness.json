@@ -259845,6 +259845,355 @@
           ]
         }
       ]
+    },
+    {
+      "name": "224. Replay and routing fidelity: thinking order, mcp server_label, served tier on chat streams, bare sonar routing (replay-routing-fidelity)",
+      "description": "Wire pins for four gateway fixes. 224.1: a replayed Cohere reasoning transcript with reasoning after assistant text must keep thinking ahead of text in every assistant message (Cohere 400s otherwise); the transcript is sent in full so it does not depend on an MCP agent loop. 224.2: chat requests served through the Responses API (gpt-6-astra) must carry service_tier on the streamed chunks (128.3 pins the non-streaming body). 224.3/224.4: bare perplexity/sonar on /v1/responses is routed to /chat/completions like the sonar-* models. 224.5/224.6: mcp_list_tools / mcp_call items keep server_label in the response and on replay (152.1 pins the response side only). The decisions tool_choice gate for cohere/command-a-reasoning is pinned by the existing /v1/decisions jev-anchor case for that model.",
+      "item": [
+        {
+          "name": "224.1 cohere/command-a-reasoning /v1/responses replay with reasoning after assistant text and a tool turn keeps thinking first - replay-routing-fidelity",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A replayed agent turn can carry reasoning AFTER an assistant text item (user, reasoning, message,",
+                  "// reasoning, function_call, function_call_output). Pre-fix the converter appended that second reasoning to",
+                  "// the finished text message, and Cohere 400s: \"content items of type 'thinking' ... must come before items",
+                  "// of other types\". Post-fix it opens a new assistant turn carrying the thinking and the tool call.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('224.1 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'replay failed: ' + txt).to.equal(200);",
+                  "});",
+                  "pm.test('224.1 Cohere did not reject the thinking order', function () {",
+                  "  pm.expect(txt, 'thinking-order rejection').to.not.include('must come before');",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('224.1 response has output', function () {",
+                  "  pm.expect(body.output, 'expected output array: ' + txt.slice(0, 600)).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('224.1 every outbound assistant message puts thinking before any other content', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honoured').to.be.an('object');",
+                  "  pm.expect(rr.messages, 'raw_request.messages missing: ' + JSON.stringify(rr).slice(0, 600)).to.be.an('array');",
+                  "  rr.messages.forEach(function (m, i) {",
+                  "    if (m.role !== 'assistant' || !Array.isArray(m.content)) { return; }",
+                  "    var seenOther = false;",
+                  "    m.content.forEach(function (c, j) {",
+                  "      if (c.type === 'thinking') { pm.expect(seenOther, 'messages[' + i + '].content[' + j + '] is thinking after other content: ' + JSON.stringify(m).slice(0, 600)).to.equal(false); }",
+                  "      else { seenOther = true; }",
+                  "    });",
+                  "  });",
+                  "});",
+                  "pm.test('224.1 the replayed tool call reached Cohere', function () {",
+                  "  var calls = (rr && rr.messages || []).filter(function (m) { return m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length; });",
+                  "  pm.expect(calls.length, 'no assistant tool_calls message on the wire: ' + JSON.stringify(rr).slice(0, 800)).to.be.at.least(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/command-a-reasoning-08-2025\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": \"Work out 340 + 51 with the add tool, then give just the number.\"\n    },\n    {\n      \"type\": \"reasoning\",\n      \"summary\": [],\n      \"content\": [\n        {\n          \"type\": \"reasoning_text\",\n          \"text\": \"The user wants 340 + 51. I will state my plan first.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"I will add 340 and 51 with the tool.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"reasoning\",\n      \"summary\": [],\n      \"content\": [\n        {\n          \"type\": \"reasoning_text\",\n          \"text\": \"Now call the add tool with a=340 and b=51.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_add_222\",\n      \"name\": \"add\",\n      \"arguments\": \"{\\\"a\\\":340,\\\"b\\\":51}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_add_222\",\n      \"output\": \"{\\\"sum\\\":391}\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"add\",\n      \"description\": \"Add two numbers\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"a\": {\n            \"type\": \"number\"\n          },\n          \"b\": {\n            \"type\": \"number\"\n          }\n        },\n        \"required\": [\n          \"a\",\n          \"b\"\n        ]\n      }\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"max_output_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "224.2 openai/gpt-6-astra /v1/chat/completions streaming service_tier fast: chunks echo the served tier - replay-routing-fidelity fast-service-tier",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// gpt-6-astra chat is served through the Responses API. Pre-fix the Responses->chat conversion never",
+                  "// copied service_tier, so the chat body and every chunk came back without it and the log row billed",
+                  "// at Standard rates. x-bf-expect-cost lets the dbverify reporter recompute the cost at the served tier.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('224.2 exact success status', function () { pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200); });",
+                  "pm.test('224.2 response is SSE', function () {",
+                  "  pm.expect(pm.response.headers.get('content-type') || '').to.include('event-stream');",
+                  "});",
+                  "var lastTier = null; var chunks = 0;",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  if (!ev || ev.object !== 'chat.completion.chunk') { return; }",
+                  "  chunks++;",
+                  "  if (ev.service_tier) { lastTier = ev.service_tier; }",
+                  "});",
+                  "pm.test('224.2 stream carries chat.completion.chunk events', function () {",
+                  "  pm.expect(chunks, 'no chat chunks: ' + txt.slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('224.2 a chunk echoes the served tier (fast, or default if OpenAI downgraded)', function () {",
+                  "  pm.expect(lastTier, 'no chunk carried service_tier: ' + txt.slice(-800)).to.be.oneOf(['fast', 'default']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "fast-tier-chat-stream-{{$guid}}"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-astra\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with only OK.\"\n    }\n  ],\n  \"service_tier\": \"fast\",\n  \"reasoning_effort\": \"low\",\n  \"max_completion_tokens\": 32,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "224.3 perplexity/sonar /v1/responses bare sonar is served from chat completions - replay-routing-fidelity",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Perplexity's /v1/responses rejects the Sonar family (`model \"sonar\" is not supported`); only sonar-*",
+                  "// was routed to /chat/completions, so bare sonar 400ed. Post-fix it is served via chat and converted back.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('224.3 exact success status', function () { pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200); });",
+                  "pm.test('224.3 upstream did not reject the model', function () { pm.expect(txt).to.not.include('is not supported'); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('224.3 Responses-shaped body with output', function () {",
+                  "  pm.expect(body.object, txt.slice(0, 400)).to.eql('response');",
+                  "  pm.expect(body.output, 'expected output array').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('224.3 the wire request is chat-shaped (messages, not input)', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honoured').to.be.an('object');",
+                  "  pm.expect(rr.messages, 'outbound body: ' + JSON.stringify(rr).slice(0, 600)).to.be.an('array');",
+                  "  pm.expect(rr.input, 'outbound body still Responses-shaped').to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"perplexity/sonar\",\n  \"input\": \"Reply with only OK.\",\n  \"max_output_tokens\": 32\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "224.4 perplexity/sonar /v1/responses streaming bare sonar is served from chat completions - replay-routing-fidelity",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('224.4 exact success status', function () { pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200); });",
+                  "pm.test('224.4 response is SSE and completes', function () {",
+                  "  pm.expect(pm.response.headers.get('content-type') || '').to.include('event-stream');",
+                  "  pm.expect(txt, txt.slice(-800)).to.include('response.completed');",
+                  "});",
+                  "pm.test('224.4 upstream did not reject the model', function () { pm.expect(txt).to.not.include('is not supported'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"perplexity/sonar\",\n  \"input\": \"Reply with only OK.\",\n  \"max_output_tokens\": 32,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "224.5 openai/gpt-4o-mini responses mcp tool output keeps server_label for replay (mcp tool) - replay-routing-fidelity",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// server_label sat on two embedded structs at the same depth, so the JSON codecs dropped it both ways:",
+                  "// the mcp_list_tools / mcp_call items came back without it, and replaying them made OpenAI 400.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('224.5 exact success status', function () { pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var items = body.output || [];",
+                  "var mcpItems = items.filter(function (o) { return typeof o.type === 'string' && o.type.indexOf('mcp_') === 0; });",
+                  "pm.test('224.5 output has mcp_* items and each carries server_label deepwiki', function () {",
+                  "  pm.expect(mcpItems.length, 'no mcp_* items: ' + txt.slice(0, 800)).to.be.above(0);",
+                  "  mcpItems.forEach(function (o) { pm.expect(o.server_label, 'server_label dropped on ' + o.type + ': ' + JSON.stringify(o).slice(0, 400)).to.eql('deepwiki'); });",
+                  "});",
+                  "pm.collectionVariables.set('mcpServerLabelReplayInput222', JSON.stringify([",
+                  "  { type: 'message', role: 'user', content: 'Use the deepwiki tool to ask what the facebook/react repo is about, one sentence.' }",
+                  "].concat(items).concat([{ type: 'message', role: 'user', content: 'Thanks. Now say only DONE.' }])));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Use the deepwiki tool to ask what the facebook/react repo is about, one sentence.\",\n  \"tools\": [\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"deepwiki\",\n      \"server_url\": \"https://mcp.deepwiki.com/mcp\",\n      \"require_approval\": \"never\",\n      \"allowed_tools\": [\n        \"ask_question\"\n      ]\n    }\n  ],\n  \"max_output_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "224.6 openai/gpt-4o-mini responses replay of mcp_list_tools and mcp_call items is accepted (mcp tool) - replay-routing-fidelity",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Replays 224.5's output verbatim. An unresolved {{mcpServerLabelReplayInput222}} is not valid JSON, so a",
+                  "// missing capture fails here loudly rather than passing.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('224.6 exact success status', function () { pm.expect(pm.response.code, 'replay failed: ' + txt).to.equal(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('224.6 every replayed mcp_* input item reached OpenAI with its server_label', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honoured').to.be.an('object');",
+                  "  var mcpIn = (rr.input || []).filter(function (o) { return o && typeof o.type === 'string' && o.type.indexOf('mcp_') === 0; });",
+                  "  pm.expect(mcpIn.length, 'no mcp_* items in the outbound input: ' + JSON.stringify(rr).slice(0, 800)).to.be.above(0);",
+                  "  mcpIn.forEach(function (o) { pm.expect(o.server_label, 'server_label dropped on ' + o.type).to.eql('deepwiki'); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": {{mcpServerLabelReplayInput222}},\n  \"tools\": [\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"deepwiki\",\n      \"server_url\": \"https://mcp.deepwiki.com/mcp\",\n      \"require_approval\": \"never\",\n      \"allowed_tools\": [\n        \"ask_question\"\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

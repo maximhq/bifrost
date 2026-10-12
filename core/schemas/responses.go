@@ -2107,15 +2107,15 @@ type ResponsesToolMessage struct {
 	ToolsetName *string `json:"toolset_name,omitempty"`
 	// ItemCaller and CreatedBy are shared by the shell and apply_patch items; they sit
 	// here because duplicate json keys across embedded structs are silently dropped.
-	ItemCaller *ResponsesShellCaller `json:"caller,omitempty"`
-	CreatedBy  *string               `json:"created_by,omitempty"`
+	ItemCaller  *ResponsesShellCaller `json:"caller,omitempty"`
+	CreatedBy   *string               `json:"created_by,omitempty"`
+	ServerLabel *string               `json:"server_label,omitempty"` // shared by the mcp_* items; hoisted for the same reason
 
 	// Tool calls and outputs
 	*ResponsesFileSearchToolCall
 	*ResponsesComputerToolCall
 	*ResponsesComputerToolCallOutput
 	*ResponsesCodeInterpreterToolCall
-	*ResponsesMCPToolCall
 	*ResponsesCustomToolCall
 	*ResponsesImageGenerationCall
 
@@ -2966,9 +2966,9 @@ func isShellCallOutputArray(data []byte) bool {
 // -----------------------------------------------------------------------------
 
 // ResponsesMCPListTools represents a list of MCP tools
+// (its server_label lives on ResponsesToolMessage.ServerLabel).
 type ResponsesMCPListTools struct {
-	ServerLabel string             `json:"server_label"`
-	Tools       []ResponsesMCPTool `json:"tools"`
+	Tools []ResponsesMCPTool `json:"tools"`
 }
 
 // ResponsesMCPTool represents an MCP tool
@@ -2993,11 +2993,6 @@ type ResponsesMCPApprovalResponse struct {
 	ApprovalRequestID string  `json:"approval_request_id"`
 	Approve           bool    `json:"approve"`
 	Reason            *string `json:"reason,omitempty"`
-}
-
-// ResponsesMCPToolCall represents a MCP tool call
-type ResponsesMCPToolCall struct {
-	ServerLabel string `json:"server_label"` // The label of the MCP server running the tool
 }
 
 // -----------------------------------------------------------------------------
