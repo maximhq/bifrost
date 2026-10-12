@@ -1,3 +1,4 @@
+import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { Check, Copy } from "lucide-react";
 
@@ -6,9 +7,9 @@ function EndpointRow({ label, endpoint, testId }: { label: string; endpoint: str
 	const { copy, copied } = useCopyToClipboard({ successMessage: "Endpoint copied" });
 	return (
 		<div className="bg-muted/40 text-muted-foreground flex items-center justify-between gap-2 rounded-sm border px-3 py-2 text-sm">
-			<div className="flex min-w-0 flex-col">
+			<div className="flex min-w-0 flex-1 flex-col">
 				<span className="text-muted-foreground/70 text-xs">{label}</span>
-				<span className="font-mono break-all">{endpoint}</span>
+				<TruncatedLabel className="block font-mono">{endpoint}</TruncatedLabel>
 			</div>
 			<button
 				type="button"

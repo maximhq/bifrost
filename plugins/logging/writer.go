@@ -895,6 +895,12 @@ func estimateWriteQueueEntrySize(entry *writeQueueEntry) int {
 	}
 	if entry.agentLog != nil {
 		size := len(entry.agentLog.PluginLogs) + len(entry.agentLog.ErrorDetails) + 512
+		if entry.agentLog.RawRequest != nil {
+			size += len(*entry.agentLog.RawRequest)
+		}
+		if entry.agentLog.RawResponse != nil {
+			size += len(*entry.agentLog.RawResponse)
+		}
 		if entry.agentLog.RequestBody != nil {
 			size += len(*entry.agentLog.RequestBody)
 		}

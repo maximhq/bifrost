@@ -684,6 +684,7 @@ func TestHybrid_A2ACorrelationReconciliationUsesInnerStore(t *testing.T) {
 }
 
 func TestHybrid_AgentLogPayloadRoundTrip(t *testing.T) {
+	rawRequest, rawResponse := "cmVxdWVzdA==", "/wA="
 	hybrid, inner, _ := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
@@ -695,6 +696,7 @@ func TestHybrid_AgentLogPayloadRoundTrip(t *testing.T) {
 	entry := &AgentLog{
 		ID: "a2a-1", Timestamp: ts, RecordKind: "request",
 		Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "req-a2a-1",
+		RawRequest: &rawRequest, RawResponse: &rawResponse,
 		RequestBody: &requestBody, ResponseBody: &responseBody, PluginLogs: pluginLogs, ErrorDetailsParsed: errorDetails,
 	}
 
@@ -726,6 +728,10 @@ func TestHybrid_AgentLogPayloadRoundTrip(t *testing.T) {
 	assert.Equal(t, pluginLogs, operation.PluginLogs)
 	require.NotNil(t, operation.ErrorDetails)
 	assert.Equal(t, "upstream failed", operation.ErrorDetails.Error.Message)
+	require.Nil(t, dbOnly.RawRequest)
+	require.Nil(t, dbOnly.RawResponse)
+	require.Equal(t, rawRequest, *operation.RawRequest)
+	require.Equal(t, rawResponse, *operation.RawResponse)
 }
 
 func TestHybrid_HiddenAgentLogRetainsObjectWithoutHydration(t *testing.T) {

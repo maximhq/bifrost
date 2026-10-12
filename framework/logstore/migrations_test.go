@@ -1053,3 +1053,19 @@ func TestMigrationLockProbeWaitersHonourContext(t *testing.T) {
 	releaseOnce()
 	assert.True(t, <-first, "the in-flight probe still completes normally")
 }
+
+// TestAgentRawCaptureMigration upgrades existing Agent log tables without replacing rows.
+func TestAgentRawCaptureMigration(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "raw-migration.db")), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE agent_logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO agent_logs (id) VALUES (?)", "existing").Error)
+	for range 2 {
+		require.NoError(t, migrationAddAgentRawPayloadColumns(context.Background(), db, testLogger{}))
+	}
+	require.True(t, db.Migrator().HasColumn(&AgentLog{}, "RawRequest"))
+	require.True(t, db.Migrator().HasColumn(&AgentLog{}, "RawResponse"))
+	var count int64
+	require.NoError(t, db.Table("agent_logs").Where("id = ?", "existing").Count(&count).Error)
+	require.Equal(t, int64(1), count)
+}

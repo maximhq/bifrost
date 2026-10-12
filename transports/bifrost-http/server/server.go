@@ -2642,6 +2642,7 @@ func (s *BifrostHTTPServer) InitializeAgentGateway(ctx context.Context, registra
 		// Read the external URL live so admin config changes (and their cluster
 		// propagation) apply to card generation and push without a restart.
 		ExternalURLProvider: s.Config.GetA2AExternalClientURL,
+		RawCaptureProvider:  s.Config.GetA2AStoreRawRequestResponse,
 	}
 	if s.Config.ServerConfig != nil {
 		managerConfig.GRPCBaseDomain = s.Config.ServerConfig.A2AGRPCBaseDomain

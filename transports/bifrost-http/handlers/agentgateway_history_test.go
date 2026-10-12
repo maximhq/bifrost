@@ -22,6 +22,7 @@ type agentHistoryAggregateStore struct {
 	bucketSize       int64
 	entryID          string
 	operationID      string
+	listFilter       *logstore.AgentLogHistoryFilter
 	listCalled       bool
 	operationsCalled bool
 }
@@ -37,8 +38,9 @@ func (s *agentHistoryAggregateStore) GetAgentHistogram(_ context.Context, filter
 	return &logstore.AgentHistogramResult{BucketSizeSeconds: bucketSizeSeconds}, nil
 }
 
-func (s *agentHistoryAggregateStore) ListAgentLogHistory(_ context.Context, _ logstore.AgentLogHistoryFilter, _ logstore.PaginationOptions) (*logstore.AgentLogHistoryResult, error) {
+func (s *agentHistoryAggregateStore) ListAgentLogHistory(_ context.Context, filter logstore.AgentLogHistoryFilter, _ logstore.PaginationOptions) (*logstore.AgentLogHistoryResult, error) {
 	s.listCalled = true
+	s.listFilter = &filter
 	return &logstore.AgentLogHistoryResult{Logs: []logstore.AgentLogSummary{}, Pagination: logstore.PaginationOptions{Limit: 50}}, nil
 }
 
@@ -155,4 +157,19 @@ func TestAgentGatewayHistoryAggregatesShareListFilters(t *testing.T) {
 	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
 	require.NotNil(t, store.statsFilter)
 	require.Nil(t, store.statsFilter.StartTime)
+}
+
+// TestAgentGatewayHistorySessionGrouping verifies the list forwards its opt-in flag.
+func TestAgentGatewayHistorySessionGrouping(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		store := &agentHistoryAggregateStore{}
+		path := "/api/agents/history?record_kind=request"
+		if enabled {
+			path += "&group_sessions=true"
+		}
+		ctx := serveAgentHistory(agentHistoryAggregateRouter(store), path)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+		require.NotNil(t, store.listFilter)
+		require.Equal(t, enabled, store.listFilter.GroupSessions)
+	}
 }

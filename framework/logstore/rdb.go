@@ -5367,7 +5367,13 @@ func (s *RDBLogStore) ListAgentLogHistory(ctx context.Context, filter AgentLogHi
 		return nil, fmt.Errorf("logstore: Agent history offset must be non-negative")
 	}
 
+	if filter.SessionGroupingActive() {
+		filter.RecordKind = []string{"request"}
+	}
 	query := s.applyAgentHistoryFilters(s.ScopedDB(ctx).Model(&AgentLog{}), filter)
+	if filter.SessionGroupingActive() {
+		query = s.applyAgentSessionRootFilter(query, filter)
+	}
 
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
@@ -5391,7 +5397,60 @@ func (s *RDBLogStore) ListAgentLogHistory(ctx context.Context, filter AgentLogHi
 	for i := range rows {
 		deserializeAgentSummaryGovernance(&rows[i])
 	}
+	if filter.SessionGroupingActive() {
+		if err := s.attachAgentSessionCounts(ctx, rows, filter); err != nil {
+			return nil, err
+		}
+	}
 	return &AgentLogHistoryResult{Logs: rows, Pagination: pagination}, nil
+}
+
+// applyAgentSessionRootFilter keeps the earliest matching row per context before
+// pagination. The peer population has the same filters and access scope as the
+// outer query. Missing context IDs remain independent rows.
+func (s *RDBLogStore) applyAgentSessionRootFilter(query *gorm.DB, filter AgentLogHistoryFilter) *gorm.DB {
+	peers := s.applyAgentHistoryFilters(s.ScopedDB(query.Statement.Context).Model(&AgentLog{}), filter).
+		Where("context_id IS NOT NULL AND context_id <> ''")
+	var roots *gorm.DB
+	if s.db.Dialector.Name() == "clickhouse" {
+		roots = peers.Select("argMin(id, (timestamp, id)) AS id").Group("context_id")
+	} else {
+		ranked := peers.Select("id, ROW_NUMBER() OVER (PARTITION BY context_id ORDER BY timestamp ASC, id ASC) AS session_rank")
+		roots = s.db.Table("(?) AS agent_session_roots", ranked).Select("id").Where("session_rank = 1")
+	}
+	return query.Where("(context_id IS NULL OR context_id = '' OR id IN (?))", roots)
+}
+
+// attachAgentSessionCounts attaches the number of other matching operations to
+// each listed context root, without loading payloads or counting stream events.
+func (s *RDBLogStore) attachAgentSessionCounts(ctx context.Context, rows []AgentLogSummary, filter AgentLogHistoryFilter) error {
+	contextIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.ContextID != nil && *row.ContextID != "" {
+			contextIDs = append(contextIDs, *row.ContextID)
+		}
+	}
+	if len(contextIDs) == 0 {
+		return nil
+	}
+	var counts []struct {
+		ContextID string
+		Count     int64
+	}
+	query := s.applyAgentHistoryFilters(s.ScopedDB(ctx).Model(&AgentLog{}), filter)
+	if err := query.Where("context_id IN ?", contextIDs).Select("context_id, COUNT(*) AS count").Group("context_id").Scan(&counts).Error; err != nil {
+		return err
+	}
+	byContext := make(map[string]int64, len(counts))
+	for _, count := range counts {
+		byContext[count.ContextID] = count.Count - 1
+	}
+	for i := range rows {
+		if rows[i].ContextID != nil {
+			rows[i].SessionChildCount = byContext[*rows[i].ContextID]
+		}
+	}
+	return nil
 }
 
 // ListAgentLogOperations returns a bounded page of request rows with correlated events.
@@ -5458,7 +5517,9 @@ func buildAgentLogOperations(summaries []AgentLogSummary, rows []AgentLog, pagin
 		if request == nil {
 			continue
 		}
-		operations = append(operations, newAgentLogOperation(request, rowsByRequestID[summary.RequestID]))
+		operation := newAgentLogOperation(request, rowsByRequestID[summary.RequestID])
+		operation.SessionChildCount = summary.SessionChildCount
+		operations = append(operations, operation)
 	}
 	return &AgentLogOperationResult{Logs: operations, Pagination: pagination}
 }

@@ -794,6 +794,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	// Preserve the stored Agent Gateway URL when an older or partial client omits
 	// the field. An explicit null still clears the override.
+	if _, present := clientConfigFields["a2a_store_raw_request_response"]; present {
+		updatedConfig.A2AStoreRawRequestResponse = payload.ClientConfig.A2AStoreRawRequestResponse
+	}
 	if _, present := clientConfigFields["a2a_external_client_url"]; present {
 		updatedConfig.A2AExternalClientURL = payload.ClientConfig.A2AExternalClientURL
 	}

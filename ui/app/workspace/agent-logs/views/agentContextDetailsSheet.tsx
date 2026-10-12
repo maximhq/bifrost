@@ -1,6 +1,5 @@
+import { InteractiveValue } from "./interactiveValue";
 import { formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
-import BlockHeader from "@/app/workspace/logs/views/blockHeader";
-import LogEntryDetailsView from "@/app/workspace/logs/views/logEntryDetailsView";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -9,10 +8,10 @@ import { useGetAgentLogStatsQuery, useLazyGetAgentLogOperationsQuery } from "@/l
 import type { AgentLogOperation, AgentLogSummary } from "@/lib/types/agentLogs";
 import { cn } from "@/lib/utils";
 import { format, isValid } from "date-fns";
-import { ArrowDown, ArrowUp, ChevronDown, ChevronLeft, ChevronRight, Filter, Loader2 } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { toast } from "sonner";
-import { A2APartsView, A2APayloadView, TaskStateBadge } from "./a2aPayloadView";
+import { A2AConversationMessage as ConversationMessage, A2APayloadView, TaskStateBadge } from "./a2aPayloadView";
 import { CorrelatedLogsContent, useCorrelatedLogCounts } from "./correlatedLogs";
 
 const CONTEXT_PAGE_SIZE = 10;
@@ -28,12 +27,15 @@ interface AgentContextDetailsSheetProps {
 }
 
 interface SessionContent {
+	id?: string;
 	key: string;
 	role: "user" | "agent";
 	kind: "message" | "status" | "artifact";
 	parts: unknown[];
 	state?: string;
 	artifactName?: string;
+	artifactDescription?: string;
+	artifactFields?: Record<string, unknown>;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -56,9 +58,12 @@ function partsFromMessage(value: unknown): unknown[] | null {
 }
 
 interface AssembledArtifact {
+	id?: string;
 	key: string;
 	parts: unknown[];
 	name?: string;
+	description?: string;
+	fields?: Record<string, unknown>;
 }
 
 function messageIdentity(message: Record<string, unknown>): string | null {
@@ -87,7 +92,7 @@ function buildSessionContent(log: AgentLogOperation): SessionContent[] {
 		const messageId = messageIdentity(message);
 		if (messageId && seenMessageIds.has(messageId)) return;
 		if (messageId) seenMessageIds.add(messageId);
-		content.push({ key, role, kind, parts, state });
+		content.push({ id: messageId ?? undefined, key, role, kind, parts, state });
 	};
 
 	const setArtifact = (taskId: string | undefined, artifact: Record<string, unknown>, fallback: string, append: boolean) => {
@@ -97,8 +102,14 @@ function buildSessionContent(log: AgentLogOperation): SessionContent[] {
 		if (!existing) artifactOrder.push(identity);
 		assembledArtifacts.set(identity, {
 			key: identity,
+			id: typeof artifact.artifactId === "string" ? artifact.artifactId : existing?.id,
 			parts: append ? [...(existing?.parts ?? []), ...incoming] : incoming,
 			name: typeof artifact.name === "string" ? artifact.name : existing?.name,
+			description: typeof artifact.description === "string" ? artifact.description : existing?.description,
+			fields: {
+				...existing?.fields,
+				...Object.fromEntries(Object.entries(artifact).filter(([key]) => !["artifactId", "name", "description", "parts"].includes(key))),
+			},
 		});
 	};
 
@@ -167,49 +178,18 @@ function buildSessionContent(log: AgentLogOperation): SessionContent[] {
 		const artifact = assembledArtifacts.get(identity);
 		if (!artifact) return;
 		content.push({
+			id: artifact.id,
 			key: `artifact-${artifact.key}`,
 			role: "agent",
 			kind: "artifact",
 			parts: artifact.parts,
 			artifactName: artifact.name,
+			artifactDescription: artifact.description,
+			artifactFields: artifact.fields,
 		});
 	});
 
 	return content;
-}
-
-function ConversationMessage({ item, timestamp, context }: { item: SessionContent; timestamp?: string; context?: string }) {
-	const user = item.role === "user";
-	const label = user ? "You" : item.kind === "artifact" ? "Artifact" : item.kind === "status" ? "Agent update" : "Agent response";
-	return (
-		<div className="flex gap-3">
-			<div className="flex flex-col items-center pt-1.5">
-				<span className={cn("size-2 rounded-full", user ? "bg-blue-500" : item.kind === "artifact" ? "bg-violet-500" : "bg-foreground")} />
-				<div className="bg-border mt-1 w-px flex-1" />
-			</div>
-			<div className="min-w-0 flex-1 pb-5">
-				<div className="mb-1.5 flex min-w-0 items-center gap-2">
-					<span className="text-xs font-semibold">{label}</span>
-					{item.state ? <TaskStateBadge state={item.state} /> : null}
-					{item.kind === "artifact" && item.artifactName ? (
-						<span className="text-muted-foreground truncate text-xs">{item.artifactName}</span>
-					) : null}
-					{context ? <span className="text-muted-foreground truncate text-xs">{context}</span> : null}
-					{timestamp ? <span className="text-muted-foreground ml-auto font-mono text-[10px]">{timestamp}</span> : null}
-				</div>
-				<div
-					className={cn(
-						"rounded-sm border p-3 text-sm leading-5",
-						user && "border-blue-200 bg-blue-50/60 dark:border-blue-900 dark:bg-blue-950/30",
-						item.kind === "artifact" && "border-violet-200 bg-violet-50/60 dark:border-violet-900 dark:bg-violet-950/25",
-						!user && item.kind !== "artifact" && "bg-card",
-					)}
-				>
-					<A2APartsView parts={item.parts} />
-				</div>
-			</div>
-		</div>
-	);
 }
 
 // ConversationFailedResponse renders a failed task as the Agent's response turn when no status message was recorded.
@@ -220,7 +200,7 @@ function ConversationFailedResponse({ state }: { state: string }) {
 				<span className="bg-destructive size-2 rounded-full" />
 				<div className="bg-border mt-1 w-px flex-1" />
 			</div>
-			<div className="min-w-0 flex-1 pb-5">
+			<div className="min-w-0 flex-1">
 				<div className="mb-1.5 flex min-w-0 items-center gap-2">
 					<span className="text-xs font-semibold">Agent response</span>
 					<TaskStateBadge state={state} />
@@ -238,7 +218,7 @@ function ConversationError({ error, timestamp }: { error: unknown; timestamp?: s
 				<span className="bg-destructive size-2 rounded-full" />
 				<div className="bg-border mt-1 w-px flex-1" />
 			</div>
-			<div className="min-w-0 flex-1 pb-5">
+			<div className="min-w-0 flex-1">
 				<div className="mb-1.5 flex min-w-0 items-center gap-2">
 					<span className="text-xs font-semibold">Error</span>
 					{timestamp ? <span className="text-muted-foreground ml-auto font-mono text-[10px]">{timestamp}</span> : null}
@@ -262,7 +242,7 @@ export function A2AConversationHistory({ responseBody }: { responseBody?: string
 					{history.length} {history.length === 1 ? "message" : "messages"}
 				</span>
 			</summary>
-			<div className="space-y-3 border-t p-3">
+			<div className="border-t p-3">
 				{history.map((value, index) => {
 					const message = asRecord(value);
 					const parts = partsFromMessage(message);
@@ -270,9 +250,10 @@ export function A2AConversationHistory({ responseBody }: { responseBody?: string
 					const role = typeof message.role === "string" && message.role.replace(/^ROLE_/, "").toLowerCase() === "user" ? "user" : "agent";
 					return (
 						<ConversationMessage
+							last={index === history.length - 1}
 							key={messageIdentity(message) ?? index}
 							item={{
-								key: `history-${index}`,
+								id: messageIdentity(message) ?? undefined,
 								role,
 								kind: "message",
 								parts,
@@ -407,6 +388,11 @@ export function A2AOperationConversation({
 				<ConversationMessage
 					key={item.key}
 					item={item}
+					last={
+						index === messages.length - 1 &&
+						!hasError &&
+						!(hasFailedTaskState && !messages.some((message) => message.role === "agent" && message.kind === "status"))
+					}
 					timestamp={index === 0 ? renderedTimestamp : undefined}
 					context={
 						index === 0 && allowPushConversation && isA2APushConversationOperation(log.operation)
@@ -549,50 +535,55 @@ export function AgentContextDetailsSheet({
 
 	const totalPages = Math.max(1, Math.ceil(totalCount / CONTEXT_PAGE_SIZE));
 
+	const statsSummary = [
+		{ label: "Operations", value: stats?.total_entries ?? 0 },
+		{ label: "Successful", value: stats?.success_count ?? 0 },
+		{ label: "Failed", value: stats?.error_count ?? 0 },
+		{ label: "Avg duration", value: formatLatency(stats?.average_latency ?? 0) },
+	] as const;
+
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-4 sm:max-w-[60%] md:p-8">
-				<SheetHeader className="flex min-w-0 flex-col items-start px-0" headerClassName="mb-0">
+			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden overflow-y-auto p-4 pb-0 sm:max-w-[60%] md:p-8 md:pb-0">
+				<SheetHeader className="flex min-w-0 flex-col items-start px-0" headerClassName="bg-card sticky -top-4 z-20 mb-0 py-4 md:-top-8">
 					<SheetTitle>Agent session</SheetTitle>
-					<code className="text-muted-foreground block max-w-full truncate text-xs" title={contextId || undefined}>
-						{contextId}
-					</code>
+					{contextId && (
+						<InteractiveValue
+							value={contextId}
+							label="Session"
+							filter={{ context_id: contextId }}
+							onFilter={() => onFilterContext(contextId)}
+							className="text-muted-foreground block font-mono text-xs"
+							testId="agent-session-id"
+						/>
+					)}
 				</SheetHeader>
 
-				<details className="group bg-card rounded-sm border" open={false}>
-					<summary className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-4 py-2.5 text-sm transition">
-						<span className="text-foreground font-medium">More details</span>
-						<span className="text-muted-foreground flex items-center gap-2 text-xs">
-							<span className="hidden md:inline">operation counts and duration</span>
-							<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
-						</span>
-					</summary>
-					<div className="space-y-4 border-t px-4 py-4 md:px-6">
-						<BlockHeader title="Session stats" />
-						<div className="grid w-full grid-cols-2 gap-4 md:grid-cols-4">
-							<LogEntryDetailsView className="w-full" label="Operations" value={stats ? stats.total_entries.toLocaleString() : "—"} />
-							<LogEntryDetailsView className="w-full" label="Successful" value={stats ? stats.success_count.toLocaleString() : "—"} />
-							<LogEntryDetailsView className="w-full" label="Failed" value={stats ? stats.error_count.toLocaleString() : "—"} />
-							<LogEntryDetailsView className="w-full" label="Avg Duration" value={stats ? formatLatency(stats.average_latency) : "—"} />
-						</div>
+				<div className="flex flex-wrap items-center justify-between gap-3">
+					<div className="text-muted-foreground flex flex-wrap gap-x-4 gap-y-1 text-xs">
+						{statsSummary.map(({ label, value }) => (
+							<span key={label} className="flex items-center gap-1.5">
+								{label} <span className="text-foreground font-mono tabular-nums">{value}</span>
+							</span>
+						))}
 					</div>
-				</details>
-
-				<div className="flex items-center justify-end gap-2">
-					<Button variant="outline" size="sm" onClick={() => contextId && onFilterContext(contextId)}>
-						<Filter className="size-4" /> Filter session
-					</Button>
-					<Button variant="outline" size="sm" onClick={() => setSortOrder((order) => (order === "asc" ? "desc" : "asc"))}>
-						{sortOrder === "asc" ? <ArrowUp className="size-4" /> : <ArrowDown className="size-4" />}
-						{sortOrder === "asc" ? "Earliest first" : "Latest first"}
-					</Button>
+					<div className="flex shrink-0 items-center gap-2">
+						<button
+							type="button"
+							className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs transition-colors"
+							onClick={() => setSortOrder((order) => (order === "asc" ? "desc" : "asc"))}
+						>
+							{sortOrder === "asc" ? "Earliest first" : "Latest first"}
+							{sortOrder === "asc" ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" />}
+						</button>
+					</div>
 				</div>
 
 				<Tabs
 					key={contextId}
 					defaultValue="operations"
 					onValueChange={(value) => setActiveTab({ correlationKey, value })}
-					className="min-h-0 flex-1 gap-2"
+					className="shrink-0 gap-2"
 				>
 					{llmCount > 0 || mcpCount > 0 ? (
 						<TabsList className="bg-muted/60 h-10 w-fit">
@@ -617,8 +608,8 @@ export function AgentContextDetailsSheet({
 							) : null}
 						</TabsList>
 					) : null}
-					<TabsContent value="operations" className="flex min-h-0 flex-1 flex-col gap-3">
-						<div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto pr-1">
+					<TabsContent value="operations" className="flex flex-col gap-3">
+						<div className="pr-1">
 							{loading && logs.length === 0 ? (
 								<div className="flex h-32 items-center justify-center gap-2 text-sm">
 									<Loader2 className="size-4 animate-spin" /> Loading context...
@@ -637,7 +628,7 @@ export function AgentContextDetailsSheet({
 						</div>
 
 						{totalCount > CONTEXT_PAGE_SIZE ? (
-							<div className="flex items-center justify-between text-xs" data-testid="pagination">
+							<div className="bg-card sticky bottom-0 z-10 flex items-center justify-between py-3 text-xs" data-testid="pagination">
 								<div className="text-muted-foreground flex items-center gap-2">
 									{(page * CONTEXT_PAGE_SIZE + 1).toLocaleString()}-{Math.min((page + 1) * CONTEXT_PAGE_SIZE, totalCount).toLocaleString()}{" "}
 									of {totalCount.toLocaleString()} entries

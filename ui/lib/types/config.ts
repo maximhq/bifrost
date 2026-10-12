@@ -856,6 +856,7 @@ export interface CoreConfig {
 	header_filter_config?: GlobalHeaderFilterConfig;
 	mcp_external_client_url?: SecretVar;
 	a2a_external_client_url?: SecretVar;
+	a2a_store_raw_request_response?: boolean;
 	mcp_server_auth_mode?: "headers" | "both" | "oauth";
 	oauth2_server_config?: {
 		issuer_url?: SecretVar;

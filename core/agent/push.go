@@ -644,6 +644,10 @@ func (m *Manager) AcceptPushCallback(ctx context.Context, agentName, token strin
 	markPushNotificationTransport(gateCtx)
 	var opErr error
 	_, gateErr := m.RunWithPluginPipeline(gateCtx, envelope, func(*schemas.BifrostA2ARequest, func(*schemas.BifrostA2AEvent)) (*schemas.BifrostA2AResponse, error) {
+		// Ingress has no upstream client to observe, but body contains the exact received bytes.
+		if capture := schemas.GetA2ARawCapture(gateCtx); capture != nil {
+			capture.Append(body, true)
+		}
 		now := time.Now().UTC()
 		enqueue := startPhaseSpan(gateCtx, "a2a.push.db.enqueue")
 		_, err := m.pushStore.CreateAgentPushDeliveryIfNotExists(gateCtx, &schemas.AgentPushDelivery{
@@ -962,14 +966,35 @@ func (m *Manager) sendPushDownstream(ctx context.Context, config *schemas.AgentP
 	}
 	callStart := time.Now()
 	defer func() { schemas.AddUpstreamLatency(ctx, time.Since(callStart)) }()
+	capture := schemas.GetA2ARawCapture(ctx)
+	if capture != nil {
+		capture.Reset()
+		req.Body = &captureReadCloser{ReadCloser: req.Body, capture: capture, request: true, expected: req.ContentLength}
+		if getBody := req.GetBody; getBody != nil {
+			// HTTP transport retries recreate the body instead of reading the original wrapper.
+			req.GetBody = func() (io.ReadCloser, error) {
+				body, err := getBody()
+				if err != nil {
+					return nil, err
+				}
+				capture.Reset()
+				return &captureReadCloser{ReadCloser: body, capture: capture, request: true, expected: req.ContentLength}, nil
+			}
+		}
+	}
 	resp, err := m.pushDeliveryClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("send push delivery: %w", err)
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	if capture != nil {
+		resp.Body = &captureReadCloser{ReadCloser: resp.Body, capture: capture, expected: resp.ContentLength}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, (1<<20)+1))
+	} else {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Status only: the body is downstream-controlled and must not reach logs.
+		// Error metadata stays status-only; an explicitly enabled raw capture is stored separately.
 		return fmt.Errorf("push delivery endpoint returned HTTP status %s", resp.Status)
 	}
 	return nil

@@ -420,6 +420,11 @@
           ],
           "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is reached via a different URL than its server-side metadata. Supports env var syntax: \"env.MY_VAR\"."
         },
+        "a2a_store_raw_request_response": {
+          "type": "boolean",
+          "default": false,
+          "description": "Capture upstream A2A transport bodies before SDK conversion. HTTP bodies preserve JSON-RPC envelopes and SSE framing. Raw capture is unavailable for gRPC. Stored as base64, bounded to 1 MiB per direction, and subject to the shared content logging policy."
+        },
         "a2a_external_client_url": {
           "anyOf": [
             {

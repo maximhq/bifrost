@@ -4815,3 +4815,17 @@ func TestMigrationAddOAuthKeyConfigColumns_BoundsTheLockWait(t *testing.T) {
 		assert.True(t, pgDB.Migrator().HasColumn(&tables.TableKey{}, column), "column %s missing after the retry", column)
 	}
 }
+
+// TestA2ARawCaptureSettingMigration defaults existing deployments to capture disabled.
+func TestA2ARawCaptureSettingMigration(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.Exec("CREATE TABLE config_client (id INTEGER PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO config_client (id) VALUES (1)").Error)
+	for range 2 {
+		require.NoError(t, migrationAddA2ARawCaptureSetting(context.Background(), db, testMigrationLogger))
+	}
+	require.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "A2AStoreRawRequestResponse"))
+	var enabled bool
+	require.NoError(t, db.Table("config_client").Select("a2a_store_raw_request_response").Where("id = 1").Scan(&enabled).Error)
+	require.False(t, enabled)
+}

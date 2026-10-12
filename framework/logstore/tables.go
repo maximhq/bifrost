@@ -1463,6 +1463,7 @@ const AgentLogHistoryMaxLimit = 1000
 // The slice fields match any of their values (OR); every populated filter must
 // match (AND).
 type AgentLogHistoryFilter struct {
+	GroupSessions  bool
 	AgentName      []string
 	StartTime      *time.Time
 	EndTime        *time.Time
@@ -1489,6 +1490,13 @@ type AgentLogHistoryFilter struct {
 	// error). Protocol payloads are deliberately excluded: under the hybrid
 	// store they live in object storage and are not queryable in SQL.
 	Search string
+}
+
+// SessionGroupingActive reports whether context grouping may collapse this search.
+// Explicit identifier searches keep every matching operation visible.
+func (f AgentLogHistoryFilter) SessionGroupingActive() bool {
+	return f.GroupSessions && f.ContextID == "" && f.TaskID == "" && f.RequestID == "" &&
+		f.TraceID == "" && f.PushConfigID == "" && f.DeliveryID == "" && f.AttemptID == ""
 }
 
 // AgentLogStats aggregates an A2A history search. A2A has no pricing model, so
@@ -1544,6 +1552,7 @@ type AgentFilterData struct {
 
 // AgentLogSummary is the compact metadata contract returned by list searches.
 type AgentLogSummary struct {
+	SessionChildCount       int64            `gorm:"-" json:"session_child_count,omitempty"`
 	ID                      string           `json:"id"`
 	Timestamp               time.Time        `json:"timestamp"`
 	RecordKind              string           `json:"record_kind"`
@@ -1606,6 +1615,8 @@ type AgentLogSummary struct {
 // AgentLogDetail is the rich public contract. Persistence and object-storage
 // bookkeeping never leave the log store through this type.
 type AgentLogDetail struct {
+	RawRequest  *string `json:"raw_request,omitempty"` // Base64-encoded upstream body bytes.
+	RawResponse *string `json:"raw_response,omitempty"`
 	AgentLogSummary
 	RequestBody      *string               `json:"request_body,omitempty"`
 	ResponseBody     *string               `json:"response_body,omitempty"`
@@ -1640,6 +1651,7 @@ func NewAgentLogDetail(entry *AgentLog) AgentLogDetail {
 		Latency: entry.Latency, UpstreamLatency: entry.UpstreamLatency, OverheadLatency: entry.OverheadLatency,
 		OverheadBreakdown: entry.OverheadBreakdownParsed,
 		ContentType:       entry.ContentType, Input: entry.RequestBody,
+		RawRequest: entry.RawRequest, RawResponse: entry.RawResponse,
 		RequestBody: entry.RequestBody, ResponseBody: entry.ResponseBody, EventBody: entry.EventBody,
 		PluginLogs: entry.PluginLogs, ErrorDetails: entry.ErrorDetailsParsed,
 		hasObject: entry.HasObject, contentHidden: entry.ContentHidden, payloadReference: entry.PayloadReference,
@@ -1717,6 +1729,8 @@ type AgentLog struct {
 	OverheadLatency   *float64 `json:"overhead_latency,omitempty"`
 	OverheadBreakdown string   `gorm:"type:text" json:"-"` // Name-keyed JSON object, mirroring Log.OverheadBreakdown
 	ContentType       *string  `gorm:"type:varchar(255)" json:"content_type,omitempty"`
+	RawRequest        *string  `gorm:"type:text" json:"raw_request,omitempty"` // Base64 preserves binary transport bytes.
+	RawResponse       *string  `gorm:"type:text" json:"raw_response,omitempty"`
 	RequestBody       *string  `gorm:"type:text" json:"request_body,omitempty"`
 	ResponseBody      *string  `gorm:"type:text" json:"response_body,omitempty"`
 	EventBody         *string  `gorm:"type:text" json:"event_body,omitempty"`

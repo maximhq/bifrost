@@ -1,3 +1,4 @@
+import { mapAgentCard } from "@/lib/utils/agentCard";
 import { getExternalBaseUrl } from "@/app/workspace/mcp-registry/views/mcpUsageGuide/utils";
 import { SectionHeader } from "@/app/workspace/mcp-registry/views/sectionHeader";
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
@@ -21,7 +22,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { AlertTriangle, ChevronDown, FileSearch, Info, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useRef, useState } from "react";
 import { AuthFields, TLSFields, authSummary, emptyAuth, emptySecret, hasTLS, normalizeAuth } from "./agentAuthFields";
-import { AgentCardPreview } from "./agentCardPreview";
+import { AgentCardPreview } from "@/components/agents/agentCardPreview";
 import { AgentEndpoints } from "./agentEndpoints";
 
 const AGENT_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -70,11 +71,11 @@ function authForRequirement(result: InspectAgentCardResponse, index: number): Ag
 		headers: Object.fromEntries(headers.map((header) => [header, emptySecret()])),
 		oauth: oauthScheme
 			? {
-				token_url: oauthScheme.token_url,
-				client_id: emptySecret(),
-				client_secret: emptySecret(),
-				scopes: oauthScheme.scopes ?? [],
-			}
+					token_url: oauthScheme.token_url,
+					client_id: emptySecret(),
+					client_secret: emptySecret(),
+					scopes: oauthScheme.scopes ?? [],
+				}
 			: undefined,
 		security_schemes: names,
 		tls: hasMutualTLS ? {} : undefined,
@@ -106,7 +107,7 @@ function SettingRow({
 	children,
 }: {
 	label: string;
-	description: string;
+	description?: string;
 	checked: boolean;
 	onCheckedChange: (checked: boolean) => void;
 	testId?: string;
@@ -117,7 +118,7 @@ function SettingRow({
 			<div className="flex items-center justify-between gap-4 p-3">
 				<div className="space-y-0.5">
 					<Label>{label}</Label>
-					<p className="text-muted-foreground text-xs">{description}</p>
+					{description && <p className="text-muted-foreground text-xs">{description}</p>}
 				</div>
 				<Switch checked={checked} onCheckedChange={onCheckedChange} data-testid={testId} />
 			</div>
@@ -214,7 +215,10 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const baseUrl = getExternalBaseUrl(coreConfig?.client_config);
 	const grpc = coreConfig?.agent_gateway
-		? { baseDomain: coreConfig.agent_gateway.grpc_base_domain, port: coreConfig.agent_gateway.grpc_port }
+		? {
+				baseDomain: coreConfig.agent_gateway.grpc_base_domain,
+				port: coreConfig.agent_gateway.grpc_port,
+			}
 		: undefined;
 
 	const applyRequirement = (result: InspectAgentCardResponse, index: number) => {
@@ -229,11 +233,11 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 			oauth:
 				next.oauth && current.type === "oauth"
 					? {
-						...next.oauth,
-						client_id: current.oauth?.client_id ?? next.oauth.client_id,
-						client_secret: current.oauth?.client_secret ?? next.oauth.client_secret,
-						token_url: next.oauth.token_url ?? current.oauth?.token_url,
-					}
+							...next.oauth,
+							client_id: current.oauth?.client_id ?? next.oauth.client_id,
+							client_secret: current.oauth?.client_secret ?? next.oauth.client_secret,
+							token_url: next.oauth.token_url ?? current.oauth?.token_url,
+						}
 					: next.oauth,
 			tls: current.tls ?? next.tls,
 		}));
@@ -247,7 +251,10 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 		}
 		setInspectionError(null);
 		try {
-			const result = await inspectCard({ agent_card_url: agentCardUrl.trim(), discovery_auth: normalizeAuth(cardAuth) }).unwrap();
+			const result = await inspectCard({
+				agent_card_url: agentCardUrl.trim(),
+				discovery_auth: normalizeAuth(cardAuth),
+			}).unwrap();
 			setInspection(result);
 			applyRequirement(result, 0);
 		} catch (error) {
@@ -310,12 +317,23 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 			extension_uris: extensionUris.map((uri) => uri.trim()).filter(Boolean),
 		};
 		try {
-			if (agent) await updateAgent({ name: agent.name, data: { ...payload, enabled: agent.enabled } }).unwrap();
+			if (agent)
+				await updateAgent({
+					name: agent.name,
+					data: { ...payload, enabled: agent.enabled },
+				}).unwrap();
 			else await createAgent({ name, enabled: true, ...payload }).unwrap();
-			toast({ title: "Success", description: agent ? "Agent updated successfully" : "Agent registered successfully" });
+			toast({
+				title: "Success",
+				description: agent ? "Agent updated successfully" : "Agent registered successfully",
+			});
 			onSaved();
 		} catch (error) {
-			toast({ title: "Unable to save agent", description: getErrorMessage(error), variant: "destructive" });
+			toast({
+				title: "Unable to save agent",
+				description: getErrorMessage(error),
+				variant: "destructive",
+			});
 		}
 	};
 
@@ -421,7 +439,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 							</Alert>
 						)}
 						{inspection ? (
-							<AgentCardPreview card={inspection} />
+							<AgentCardPreview card={inspection.card ? { ...mapAgentCard(inspection.card), warnings: inspection.warnings } : inspection} />
 						) : (
 							!inspectionError && (
 								<div className="text-muted-foreground flex flex-col items-center gap-2 rounded-sm border border-dashed p-6 text-center text-sm">
@@ -505,7 +523,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 						</OptionGroup>
 						<SettingRow
 							label="Forward Bifrost authentication"
-							description="For agents that call Bifrost for LLM or MCP traffic, so usage stays attributed to the original caller."
+							description="Turn this on for agents that use Bifrost for LLM or MCP calls. You will need to configure the server to send this authentication with those calls so access and usage can stay attributed to the requester."
 							checked={forwardAcceptedCredential}
 							onCheckedChange={setForwardAcceptedCredential}
 							testId="agent-forward-credential-switch"
@@ -518,11 +536,31 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 										onValueChange={(value) => setForwardAcceptedCredentialOverridesAuth(value === "incoming")}
 									>
 										<SelectTrigger className="w-full">
-											<SelectValue />
+											<SelectValue>
+												{forwardAcceptedCredentialOverridesAuth
+													? "Use the incoming Bifrost authentication"
+													: "Keep the configured agent authentication"}
+											</SelectValue>
 										</SelectTrigger>
 										<SelectContent>
-											<SelectItem value="configured">Keep the configured agent authentication</SelectItem>
-											<SelectItem value="incoming">Use the incoming Bifrost authentication</SelectItem>
+											<SelectItem value="configured" className="py-2" textValue="Keep the configured agent authentication">
+												<div className="space-y-1 whitespace-normal">
+													<p>Keep the configured agent authentication</p>
+													<p className="text-muted-foreground text-xs">
+														If both use the same header, keep the agent’s configured credential. Forward the incoming Bifrost authentication
+														on other headers.
+													</p>
+												</div>
+											</SelectItem>
+											<SelectItem value="incoming" className="py-2" textValue="Use the incoming Bifrost authentication">
+												<div className="space-y-1 whitespace-normal">
+													<p>Use the incoming Bifrost authentication</p>
+													<p className="text-muted-foreground text-xs">
+														If both use the same header, replace the configured credential with the incoming Bifrost authentication. For
+														agents that call Bifrost for LLM or MCP traffic, this keeps usage attributed to the original caller.
+													</p>
+												</div>
+											</SelectItem>
 										</SelectContent>
 									</Select>
 								</>
@@ -552,7 +590,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 									excludeIds={virtualKeyIds}
 									onSelect={(option) => setVirtualKeyIds((current) => [...current, option.value])}
 									trigger={
-										<Button type="button" variant="outline" size="sm" data-testid="agent-add-virtual-key-button">
+										<Button type="button" variant="outline" size="sm" disabled={allowByDefault} data-testid="agent-add-virtual-key-button">
 											<Plus className="h-4 w-4" />
 											Add key
 										</Button>
@@ -567,9 +605,9 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 							onCheckedChange={setAllowByDefault}
 							testId="agent-allow-by-default-switch"
 						/>
-						{virtualKeyIds.length === 0 ? (
+						{allowByDefault || virtualKeyIds.length === 0 ? (
 							<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
-								{allowByDefault ? "No explicit grants. Any valid key can reach this agent." : "No keys granted yet."}
+								{allowByDefault ? "Any valid key can reach this agent." : "No keys granted yet."}
 							</div>
 						) : (
 							<div className="divide-y rounded-sm border">
@@ -641,7 +679,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 						</>
 					)}
 				</div>
-				<div className="bg-card flex items-center justify-between gap-3 border-t px-4 py-4 md:px-8 sticky bottom-0">
+				<div className="bg-card sticky bottom-0 flex items-center justify-between gap-3 border-t px-4 py-4 md:px-8">
 					<p className="text-muted-foreground text-xs">{isBlocked && !unsupportedRequirement ? "Fetch the agent card to continue." : ""}</p>
 					<div className="flex gap-2">
 						<Button type="button" variant="outline" onClick={onClose}>
