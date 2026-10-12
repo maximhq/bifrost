@@ -1,9 +1,16 @@
 package vertex
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/gemini"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestStripVertexGeminiUnsupportedFieldsRawPreservesOrdering(t *testing.T) {
@@ -34,4 +41,41 @@ func TestStripVertexCountTokensUnsupportedFields(t *testing.T) {
 	t.Run("handles empty body", func(t *testing.T) {
 		assert.Empty(t, stripVertexCountTokensUnsupportedFields(nil))
 	})
+}
+
+// TestVertexGeminiResponsesNativeToolSubFieldsReachWire mirrors the Vertex Responses body
+// build for a Gemini model (ToGeminiResponsesRequestWithImageURLSchemes, the typed and raw
+// Vertex strips, then the provider marshal) for a /genai request carrying native tools.
+// retrieval.dynamicRetrievalConfig is not a modelled retrieval field: Google, not Bifrost,
+// must judge it, so it has to reach the Vertex body instead of collapsing to {"retrieval":{}}.
+func TestVertexGeminiResponsesNativeToolSubFieldsReachWire(t *testing.T) {
+	retrieval := `{"dynamicRetrievalConfig":{"mode":"MODE_DYNAMIC","dynamicThreshold":0.7}}`
+	searchRetrieval := `{"dynamicRetrievalConfig":{"mode":"MODE_DYNAMIC","dynamicThreshold":0.3}}`
+	body := `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"retrieval":` + retrieval + `},{"googleSearchRetrieval":` + searchRetrieval + `}]}`
+
+	var in gemini.GeminiGenerationRequest
+	require.NoError(t, json.Unmarshal([]byte(body), &in))
+	in.Model = "vertex/gemini-2.5-flash"
+	bifrostReq := in.ToBifrostResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	require.NotNil(t, bifrostReq)
+	bifrostReq.Provider = schemas.Vertex
+
+	reqBody, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(nil, bifrostReq, "http", "https", "gs")
+	require.NoError(t, err)
+	stripVertexGeminiUnsupportedFields(reqBody)
+	wire, err := providerUtils.MarshalProviderRequest(reqBody)
+	require.NoError(t, err)
+	wire = stripVertexGeminiUnsupportedFieldsRaw(wire)
+
+	var gotRetrieval, gotSearchRetrieval string
+	for _, tool := range gjson.GetBytes(wire, "tools").Array() {
+		if v := tool.Get("retrieval"); v.Exists() {
+			gotRetrieval = v.Raw
+		}
+		if v := tool.Get("googleSearchRetrieval"); v.Exists() {
+			gotSearchRetrieval = v.Raw
+		}
+	}
+	assert.Equal(t, retrieval, gotRetrieval, "retrieval tool must reach Vertex unchanged; body %s", wire)
+	assert.Equal(t, searchRetrieval, gotSearchRetrieval, "googleSearchRetrieval must reach Vertex unchanged; body %s", wire)
 }

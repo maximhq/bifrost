@@ -195147,6 +195147,72 @@
           ]
         },
         {
+          "name": "152.14b gemini-2.5-flash native urlContext streamGenerateContent reports urlContextMetadata in a chunk (url context)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"In one sentence, what is https://www.wikipedia.org/ about?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"urlContext\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 128,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-2.5-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream returns 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text().slice(0, 800)).to.equal(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var md = [];",
+                  "text.split(/\\r?\\n/).forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  var chunk; try { chunk = JSON.parse(payload); } catch (e) { return; }",
+                  "  (chunk.candidates || []).forEach(function (c) {",
+                  "    if (c && c.urlContextMetadata && c.urlContextMetadata.urlMetadata) { md = md.concat(c.urlContextMetadata.urlMetadata); }",
+                  "  });",
+                  "});",
+                  "pm.test('some streamed chunk carries urlContextMetadata with a successful retrieval', function () {",
+                  "  pm.expect(md.length, 'no urlContextMetadata in any chunk: ' + text.slice(0, 800)).to.be.above(0);",
+                  "  pm.expect(String(md[0].urlRetrievalStatus), text.slice(0, 800)).to.match(/SUCCESS/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "152.15 azure gpt-4o-transcribe deployment transcriptions route returns text (azure whisper)",
           "event": [
             {
