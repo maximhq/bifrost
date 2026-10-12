@@ -200,6 +200,16 @@ type WarpTopicUsage struct {
 	AvgLatency float64 `gorm:"column:avg_latency" json:"avg_latency"` // ms, over requests that measured one
 }
 
+// WarpTopicBucket is what one topic's requests add up to in one time bucket.
+type WarpTopicBucket struct {
+	TopicID  string  `gorm:"column:topic_id" json:"topic_id"`
+	Bucket   int64   `gorm:"column:bucket_start" json:"bucket"` // unix seconds at which the bucket starts
+	Requests int64   `gorm:"column:requests" json:"requests"`
+	Errors   int64   `gorm:"column:errors" json:"errors"`
+	Cost     float64 `gorm:"column:total_cost" json:"cost"`
+	Tokens   int64   `gorm:"column:tokens" json:"tokens"`
+}
+
 // WarpTopicStore is the topic surface. It is embedded in LogStore for the
 // reason WarpConversationStore is: a store that forgot a method should fail
 // the build, not start and serve no topics.
@@ -228,6 +238,12 @@ type WarpTopicStore interface {
 	// DeleteWarpTopicAssignments removes the given requests' assignments, for
 	// a run taking back the rows it wrote.
 	DeleteWarpTopicAssignments(ctx context.Context, logIDs []string) error
+	// BucketWarpTopicAssignments adds up the selected assignments per topic
+	// and per bucket of bucketSizeSeconds, oldest bucket first, within the
+	// caller's access scope. Buckets start at multiples of the size since the
+	// Unix epoch, as the log histograms draw them, and a bucket with no
+	// request has no row.
+	BucketWarpTopicAssignments(ctx context.Context, filter WarpTopicAssignmentFilter, bucketSizeSeconds int64) ([]WarpTopicBucket, error)
 	// DeleteWarpTopicAssignmentsBatch deletes up to batchSize assignments whose
 	// log was created before cutoff, for the retention cleaner.
 	DeleteWarpTopicAssignmentsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
@@ -486,13 +502,15 @@ func (s *RDBLogStore) warpTopicAssignments(ctx context.Context, filter WarpTopic
 // warpTopicUsageColumns is the per-topic aggregate. No alias repeats a column
 // name: ClickHouse resolves a name to the alias first, and sum(cost) AS cost
 // would then be an aggregate of an aggregate anywhere else it appeared.
-const warpTopicUsageColumns = "topic_id, " +
-	"count(*) AS requests, " +
+const warpTopicUsageColumns = "topic_id, " + warpTopicSumColumns + ", " +
 	"count(DISTINCT NULLIF(session_id, '')) AS sessions, " +
+	"COALESCE(avg(CASE WHEN latency > 0 THEN latency END), 0) AS avg_latency"
+
+// warpTopicSumColumns are the sums a bucket and a usage row share.
+const warpTopicSumColumns = "count(*) AS requests, " +
 	"COALESCE(sum(CASE WHEN status = 'error' THEN 1 ELSE 0 END), 0) AS errors, " +
 	"COALESCE(sum(cost), 0) AS total_cost, " +
-	"COALESCE(sum(total_tokens), 0) AS tokens, " +
-	"COALESCE(avg(CASE WHEN latency > 0 THEN latency END), 0) AS avg_latency"
+	"COALESCE(sum(total_tokens), 0) AS tokens"
 
 // SummarizeWarpTopicAssignments adds up the selected assignments per topic,
 // largest first, within the caller's access scope.
@@ -528,6 +546,25 @@ func (s *RDBLogStore) DeleteWarpTopicAssignments(ctx context.Context, logIDs []s
 		}
 	}
 	return nil
+}
+
+// BucketWarpTopicAssignments adds up the selected assignments per topic and
+// per bucket, oldest bucket first, within the caller's access scope.
+//
+// The bucket is the same per-dialect expression the log histograms use, so a
+// topic's series lines up with the request series the dashboard draws over
+// the same window.
+func (s *RDBLogStore) BucketWarpTopicAssignments(ctx context.Context, filter WarpTopicAssignmentFilter, bucketSizeSeconds int64) ([]WarpTopicBucket, error) {
+	if bucketSizeSeconds <= 0 {
+		return nil, fmt.Errorf("bucket size must be positive")
+	}
+	var buckets []WarpTopicBucket
+	err := s.warpTopicAssignments(ctx, filter).
+		Select(unixBucketExpr(s.db.Dialector.Name(), bucketSizeSeconds) + " AS bucket_start, topic_id, " + warpTopicSumColumns).
+		Group("bucket_start, topic_id").
+		Order("bucket_start ASC, topic_id ASC").
+		Scan(&buckets).Error
+	return buckets, err
 }
 
 // DeleteWarpTopicAssignmentsBatch deletes up to batchSize assignments whose log

@@ -689,6 +689,14 @@ func TestWarpEveryFilteredToolLinksItsFilters(t *testing.T) {
 			require.NotContains(t, cases, tool.name)
 			continue
 		}
+		// list_topics counts the window's requests by topic, and the Logs page
+		// cannot filter by topic: a link to the window alone would open a
+		// different set than any of its rows counts. Its own test pins that
+		// it offers example links instead.
+		if tool.name == "list_topics" {
+			require.NotContains(t, cases, tool.name)
+			continue
+		}
 		require.Contains(t, cases, tool.name, "%s takes filters and has no link case here", tool.name)
 	}
 

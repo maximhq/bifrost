@@ -247,6 +247,12 @@ func (e *unknownFilterFieldsError) Error() string {
 // is the worst failure mode available here: the model cannot tell, and neither
 // can the reader.
 func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, error) {
+	return parseFiltersWithLookback(raw, now, DefaultLookback)
+}
+
+// parseFiltersWithLookback is parseFilters with the window a missing
+// start_time falls back to, measured back from end_time.
+func parseFiltersWithLookback(raw map[string]any, now time.Time, lookback time.Duration) (*logstore.SearchFilters, error) {
 	filters := &logstore.SearchFilters{}
 	if raw == nil {
 		raw = map[string]any{}
@@ -300,7 +306,7 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		end = &now
 	}
 	if start == nil {
-		defaulted := end.Add(-DefaultLookback)
+		defaulted := end.Add(-lookback)
 		start = &defaulted
 	}
 	if start.After(*end) {
@@ -1150,8 +1156,7 @@ func bucketSize(filters *logstore.SearchFilters) (int64, error) {
 	// itself (a shared helper other callers do use with a possibly-nil bound),
 	// StartTime/EndTime are never nil here.
 	bucket := logstore.DefaultBucketSize(filters.StartTime, filters.EndTime)
-	span := filters.EndTime.Sub(*filters.StartTime).Seconds()
-	if bucket > 0 && span/float64(bucket) > MaxHistogramBuckets {
+	if histogramBucketCount(*filters.StartTime, *filters.EndTime, bucket) > MaxHistogramBuckets {
 		return 0, fmt.Errorf("the requested time range produces more than %d buckets; use a shorter range", MaxHistogramBuckets)
 	}
 	return bucket, nil
@@ -1299,4 +1304,22 @@ func filtersObject(args map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("filters must be an object mapping dimension names to values, got %T", value)
 	}
 	return raw, nil
+}
+
+// histogramBucketCount is how many buckets of bucketSeconds the inclusive range
+// [start, end] touches. The stores align buckets to the epoch, so a range that
+// starts partway through a bucket reaches one more than its length divided by
+// the bucket size, and both end buckets count.
+func histogramBucketCount(start, end time.Time, bucketSeconds int64) int64 {
+	if bucketSeconds <= 0 || end.Before(start) {
+		return 0
+	}
+	floorDiv := func(value int64) int64 {
+		quotient := value / bucketSeconds
+		if value%bucketSeconds < 0 {
+			quotient--
+		}
+		return quotient
+	}
+	return floorDiv(end.Unix()) - floorDiv(start.Unix()) + 1
 }

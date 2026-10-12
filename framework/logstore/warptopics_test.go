@@ -360,6 +360,56 @@ func TestWarpTopicAssignmentsList(t *testing.T) {
 // A restricted caller's scope is a predicate over the log ownership columns.
 // The assignments table carries those columns so that the same predicate, built
 // for logs and never told about this table, restricts it too.
+func TestWarpTopicAssignmentsBucket(t *testing.T) {
+	forEachWarpTopicStore(t, func(t *testing.T, store LogStore) {
+		ctx := context.Background()
+		// Twenty minutes past the hour, so the hour bucket a request falls in
+		// is the hour before it, not the time itself.
+		base := time.Date(2026, 9, 1, 12, 20, 0, 250_000_000, time.UTC)
+		at := func(minutes int) time.Time { return base.Add(time.Duration(minutes) * time.Minute) }
+
+		rows := []WarpTopicAssignment{
+			warpTestAssignment("a1", "billing", at(0)),
+			warpTestAssignment("a2", "billing", at(5)),
+			warpTestAssignment("a3", "sql", at(10)),
+			warpTestAssignment("a4", "billing", at(60)),
+			warpTestAssignment("a5", "", at(65)),
+			warpTestAssignment("a6", "billing", at(125)),
+		}
+		rows[0].Cost, rows[0].TotalTokens = 0.25, 10
+		rows[1].Cost, rows[1].TotalTokens, rows[1].Status = 0.25, 20, "error"
+		rows[3].Cost, rows[3].TotalTokens, rows[3].TeamID = 1, 5, "team-b"
+		require.NoError(t, store.UpsertWarpTopicAssignments(ctx, rows))
+
+		hour := func(h int) int64 { return time.Date(2026, 9, 1, h, 0, 0, 0, time.UTC).Unix() }
+		buckets, err := store.BucketWarpTopicAssignments(ctx, WarpTopicAssignmentFilter{}, 3600)
+		require.NoError(t, err)
+		require.Equal(t, []WarpTopicBucket{
+			{TopicID: "billing", Bucket: hour(12), Requests: 2, Errors: 1, Cost: 0.5, Tokens: 30},
+			{TopicID: "sql", Bucket: hour(12), Requests: 1},
+			{TopicID: "", Bucket: hour(13), Requests: 1},
+			{TopicID: "billing", Bucket: hour(13), Requests: 1, Cost: 1, Tokens: 5},
+			{TopicID: "billing", Bucket: hour(14), Requests: 1},
+		}, buckets, "oldest bucket first, topics in order within one, no row for an empty bucket")
+
+		// The same filters as the summary: a window, a topic, a team.
+		start, end := at(0), at(60)
+		buckets, err = store.BucketWarpTopicAssignments(ctx, WarpTopicAssignmentFilter{
+			StartTime: &start, EndTime: &end, TopicIDs: []string{"billing"}, TeamIDs: []string{"team-b"},
+		}, 3600)
+		require.NoError(t, err)
+		require.Equal(t, []WarpTopicBucket{{TopicID: "billing", Bucket: hour(13), Requests: 1, Cost: 1, Tokens: 5}}, buckets)
+
+		// A day bucket folds every hour into one.
+		buckets, err = store.BucketWarpTopicAssignments(ctx, WarpTopicAssignmentFilter{TopicIDs: []string{"billing"}}, 86400)
+		require.NoError(t, err)
+		require.Equal(t, []WarpTopicBucket{{TopicID: "billing", Bucket: hour(0), Requests: 4, Errors: 1, Cost: 1.5, Tokens: 35}}, buckets)
+
+		_, err = store.BucketWarpTopicAssignments(ctx, WarpTopicAssignmentFilter{}, 0)
+		require.Error(t, err, "a bucket of no size is a bug in the caller, not a default")
+	})
+}
+
 func TestWarpTopicAssignmentsRespectAccessScope(t *testing.T) {
 	forEachWarpTopicStore(t, func(t *testing.T, store LogStore) {
 		ctx := context.Background()
@@ -389,6 +439,14 @@ func TestWarpTopicAssignmentsRespectAccessScope(t *testing.T) {
 		byTopic := warpUsageByTopic(usage)
 		assert.EqualValues(t, 2, byTopic["billing"].Requests, "another team's request must not be counted")
 		assert.EqualValues(t, 1, byTopic["sql"].Requests)
+
+		buckets, err := store.BucketWarpTopicAssignments(scoped, WarpTopicAssignmentFilter{}, 86400)
+		require.NoError(t, err)
+		var bucketed int64
+		for _, bucket := range buckets {
+			bucketed += bucket.Requests
+		}
+		assert.EqualValues(t, 3, bucketed, "a series is counted over the same rows as the summary")
 
 		// Naming a row outside the scope does not reach it.
 		reached, err := store.ListWarpTopicAssignments(scoped, WarpTopicAssignmentFilter{LogIDs: []string{"theirs"}}, 0)

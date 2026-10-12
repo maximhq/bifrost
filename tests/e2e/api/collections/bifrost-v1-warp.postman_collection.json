@@ -2316,7 +2316,7 @@
       "item": [
         {
           "id": "content-themes",
-          "name": "Summarises what people asked about this week from a sample",
+          "name": "Summarises what people asked about this week from the topics",
           "event": [
             {
               "listen": "prerequest",
@@ -2324,7 +2324,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.prerequest({\"name\":\"Summarises what people asked about this week from a sample\",\"ask\":\"What are people asking about most in the last 7 days?\",\"expect\":{\"toolsAll\":[\"query_logs\"],\"toolsOnly\":[\"describe_filter_space\",\"ask_user\",\"count_logs\",\"query_logs\",\"query_model_performance\",\"query_usage_by\",\"semantic_search_logs\",\"get_log_detail\"],\"argsMatch\":[{\"tool\":\"query_logs\",\"pattern\":\"\\\"include_content\\\":\\\\s*true\"}],\"answerAll\":[\"sample of \\\\d[\\\\d,]* of \\\\d[\\\\d,]* requests\",\"not representative of the entire traffic\"]}});"
+                  "warp.prerequest({\"name\":\"Summarises what people asked about this week from the topics\",\"ask\":\"What are people asking about most in the last 7 days?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"describe_filter_space\",\"ask_user\",\"list_topics\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
                 ]
               }
             },
@@ -2334,7 +2334,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.test({\"name\":\"Summarises what people asked about this week from a sample\",\"ask\":\"What are people asking about most in the last 7 days?\",\"expect\":{\"toolsAll\":[\"query_logs\"],\"toolsOnly\":[\"describe_filter_space\",\"ask_user\",\"count_logs\",\"query_logs\",\"query_model_performance\",\"query_usage_by\",\"semantic_search_logs\",\"get_log_detail\"],\"argsMatch\":[{\"tool\":\"query_logs\",\"pattern\":\"\\\"include_content\\\":\\\\s*true\"}],\"answerAll\":[\"sample of \\\\d[\\\\d,]* of \\\\d[\\\\d,]* requests\",\"not representative of the entire traffic\"]}});"
+                  "warp.test({\"name\":\"Summarises what people asked about this week from the topics\",\"ask\":\"What are people asking about most in the last 7 days?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"describe_filter_space\",\"ask_user\",\"list_topics\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
                 ]
               }
             }
@@ -2366,7 +2366,7 @@
         },
         {
           "id": "content-themes-user",
-          "name": "Summarises what one user was doing from a sample",
+          "name": "Summarises what one user was doing from the topics",
           "event": [
             {
               "listen": "prerequest",
@@ -2374,7 +2374,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.prerequest({\"name\":\"Summarises what one user was doing from a sample\",\"ask\":\"What kinds of tasks was Alex Rivera doing this week?\",\"expect\":{\"toolsAll\":[\"query_logs\"],\"toolsOnly\":[\"describe_filter_space\",\"ask_user\",\"count_logs\",\"query_logs\",\"query_model_performance\",\"query_usage_by\",\"semantic_search_logs\",\"get_log_detail\"],\"argsMatch\":[{\"tool\":\"query_logs\",\"pattern\":\"^(?=[\\\\s\\\\S]*\\\"include_content\\\":\\\\s*true)(?=[\\\\s\\\\S]*\\\"user_ids\\\"[\\\\s\\\\S]*\\\"user-alex-rivera\\\")\"}],\"answerAll\":[\"sample of \\\\d[\\\\d,]* of \\\\d[\\\\d,]* requests\",\"not representative of the entire traffic\"]}});"
+                  "warp.prerequest({\"name\":\"Summarises what one user was doing from the topics\",\"ask\":\"What kinds of tasks was Alex Rivera doing this week?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"describe_filter_space\",\"ask_user\",\"list_topics\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"],\"argsMatch\":[{\"tool\":\"list_topics\",\"pattern\":\"user-alex-rivera\"}]}});"
                 ]
               }
             },
@@ -2384,7 +2384,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.test({\"name\":\"Summarises what one user was doing from a sample\",\"ask\":\"What kinds of tasks was Alex Rivera doing this week?\",\"expect\":{\"toolsAll\":[\"query_logs\"],\"toolsOnly\":[\"describe_filter_space\",\"ask_user\",\"count_logs\",\"query_logs\",\"query_model_performance\",\"query_usage_by\",\"semantic_search_logs\",\"get_log_detail\"],\"argsMatch\":[{\"tool\":\"query_logs\",\"pattern\":\"^(?=[\\\\s\\\\S]*\\\"include_content\\\":\\\\s*true)(?=[\\\\s\\\\S]*\\\"user_ids\\\"[\\\\s\\\\S]*\\\"user-alex-rivera\\\")\"}],\"answerAll\":[\"sample of \\\\d[\\\\d,]* of \\\\d[\\\\d,]* requests\",\"not representative of the entire traffic\"]}});"
+                  "warp.test({\"name\":\"Summarises what one user was doing from the topics\",\"ask\":\"What kinds of tasks was Alex Rivera doing this week?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"describe_filter_space\",\"ask_user\",\"list_topics\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"],\"argsMatch\":[{\"tool\":\"list_topics\",\"pattern\":\"user-alex-rivera\"}]}});"
                 ]
               }
             }
@@ -4718,7 +4718,7 @@
     {
       "id": "folder-topics",
       "name": "Topics",
-      "description": "Topic clusters are one snapshot: the clusters Setup computed over the seeded window, across the whole deployment, counted in requests. The overview case must be answered from list_topics in one call, with topic names left unlinked - a name linked to a single example says how many requests the topic holds and opens one. The rest ask for what the snapshot cannot show - a trend, every request in a topic, a count of people. A survey scoped to a window or a person is not a topic question; it is covered under Conversation content. Each must say so, offer the feature-request link, and neither call list_topics again nor rebuild a breakdown by slicing the logs with other tools.",
+      "description": "Topics are counted over whatever window the question names, from the topic each request Setup indexed was filed under, across the whole deployment, in requests. list_topics takes the window and filters itself and carries a trend per topic against the period before, so the overview, a time range and a week-over-week trend are each one call, with topic names left unlinked - a name linked to a single example says how many requests the topic holds and opens one. What it still cannot show - every request in a topic, a count of people - is declined with the feature-request link, without rebuilding a breakdown by slicing the logs with other tools.",
       "item": [
         {
           "id": "topics-overview",
@@ -4771,8 +4771,8 @@
           }
         },
         {
-          "id": "topics-trend",
-          "name": "Declines a topic trend",
+          "id": "topics-past-day",
+          "name": "Lists topics for another time range in one call",
           "event": [
             {
               "listen": "prerequest",
@@ -4780,7 +4780,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.prerequest({\"name\":\"Declines a topic trend\",\"ask\":\"Which topics are growing this week compared to last week, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"answerAll\":[\"github\\\\.com/maximhq/bifrost/issues/new\"],\"answerNone\":[\"\\\\b(grew|growing|increased|up) (by )?\\\\d+ ?%\"]}});"
+                  "warp.prerequest({\"name\":\"Lists topics for another time range in one call\",\"ask\":\"What topics came up in the past 24 hours, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"argsMatch\":[{\"tool\":\"list_topics\",\"pattern\":\"\\\"start_time\\\"\\\\s*:\\\\s*\\\"-(24h|1d|1440m)\\\"\"}],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
                 ]
               }
             },
@@ -4790,7 +4790,57 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.test({\"name\":\"Declines a topic trend\",\"ask\":\"Which topics are growing this week compared to last week, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"answerAll\":[\"github\\\\.com/maximhq/bifrost/issues/new\"],\"answerNone\":[\"\\\\b(grew|growing|increased|up) (by )?\\\\d+ ?%\"]}});"
+                  "warp.test({\"name\":\"Lists topics for another time range in one call\",\"ask\":\"What topics came up in the past 24 hours, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"argsMatch\":[{\"tool\":\"list_topics\",\"pattern\":\"\\\"start_time\\\"\\\\s*:\\\\s*\\\"-(24h|1d|1440m)\\\"\"}],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/warp/chat",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "warp",
+                "chat"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "id": "topics-trend",
+          "name": "Reads a topic trend off one call",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
+                  "warp.prerequest({\"name\":\"Reads a topic trend off one call\",\"ask\":\"Which topics are growing this week compared to last week, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
+                  "warp.test({\"name\":\"Reads a topic trend off one call\",\"ask\":\"Which topics are growing this week compared to last week, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
                 ]
               }
             }

@@ -146,7 +146,7 @@ test("topic cases allow exactly one list_topics call and no other tool", () => {
   const { pm } = fakePm();
   const lib = createWarpLib(pm);
   const toolFailure = /tool calls, want at most|no use for|did not call/;
-  for (const id of ["topics-overview", "topics-trend", "topics-drill-down", "topics-people"]) {
+  for (const id of ["topics-overview", "topics-past-day", "topics-trend", "topics-drill-down", "topics-people"]) {
     const { expect } = caseFromCollection(id);
     const tools = (calls) => lib.evaluate(answered("x", calls), expect).filter((f) => toolFailure.test(f));
     assert.deepStrictEqual(tools(["list_topics"]), [], `${id}: one list_topics call`);
@@ -158,32 +158,19 @@ test("topic cases allow exactly one list_topics call and no other tool", () => {
 
 // A survey scoped to a window or a person is answered from one query_logs
 // sample, never from list_topics, and says it is a sample.
-test("scoped survey cases take the sample, say so, and never call list_topics", () => {
+test("scoped survey cases are a list_topics call with the scope, never a rebuilt sample", () => {
   const { pm } = fakePm();
   const lib = createWarpLib(pm);
+  const topics = { name: "list_topics", arguments: '{"filters": {"start_time": "-7d", "user_ids": ["user-alex-rivera"]}}' };
   const sample = { name: "query_logs", arguments: '{"include_content": true, "limit": 25}' };
-  const userSample = { name: "query_logs", arguments: '{"include_content": true, "limit": 25, "filters": {"user_ids": ["user-alex-rivera"]}}' };
-  const disclaimer = "Mostly debugging. This is based on a sample of 25 of 1,204 requests and is not representative of the entire traffic.";
   for (const id of ["content-themes", "content-themes-user"]) {
     const { expect } = caseFromCollection(id);
-    // A user survey's sample has to be that user's requests; the window survey takes any.
-    const ok = id === "content-themes-user" ? userSample : sample;
-    assert.deepStrictEqual(lib.evaluate(answered(disclaimer, ["describe_filter_space", ok]), expect), [], `${id}: one sample with the sentence`);
-    // The model split comes from query_model_performance, which the cases allow.
-    assert.deepStrictEqual(lib.evaluate(answered(disclaimer, [ok, "query_model_performance"]), expect), [], `${id}: a per-model split beside the sample`);
-    assert.notDeepStrictEqual(lib.evaluate(answered(disclaimer, ["list_topics", ok]), expect), [], `${id}: list_topics`);
-    assert.notDeepStrictEqual(lib.evaluate(answered("Mostly debugging.", [ok]), expect), [], `${id}: no sample sentence`);
-    assert.notDeepStrictEqual(lib.evaluate(answered(disclaimer, [{ name: "query_logs", arguments: '{"limit": 25}' }]), expect), [], `${id}: no content`);
+    assert.deepStrictEqual(lib.evaluate(answered("Refund requests led with 40 requests.", ["describe_filter_space", topics]), expect), [], `${id}: one scoped list_topics call`);
+    assert.notDeepStrictEqual(lib.evaluate(answered("Refund requests led with 40 requests.", [sample]), expect), [], `${id}: a sample instead of the topics`);
+    assert.notDeepStrictEqual(lib.evaluate(answered("Refund requests led with 40 requests.", [topics, sample]), expect), [], `${id}: topics rebuilt from the logs`);
   }
-  // On the same call as the content: a sample of everyone, or a user filter on
-  // a different call, does not describe what this user was doing.
   const { expect } = caseFromCollection("content-themes-user");
-  assert.notDeepStrictEqual(lib.evaluate(answered(disclaimer, [sample]), expect), [], "content-themes-user: a sample of everyone");
-  assert.notDeepStrictEqual(
-    lib.evaluate(answered(disclaimer, [sample, { name: "query_logs", arguments: '{"limit": 5, "filters": {"user_ids": ["user-alex-rivera"]}}' }]), expect),
-    [],
-    "content-themes-user: the user filter on a different call from the content",
-  );
+  assert.notDeepStrictEqual(lib.evaluate(answered("Refund requests led.", [{ name: "list_topics", arguments: "{}" }]), expect), [], "content-themes-user: unscoped to the user");
 });
 
 test("noDataTools allows discovery calls and rejects data queries", () => {

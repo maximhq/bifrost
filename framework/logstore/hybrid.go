@@ -2503,6 +2503,12 @@ func (h *HybridLogStore) ListWarpTopicAssignments(ctx context.Context, filter Wa
 	return h.inner.ListWarpTopicAssignments(ctx, filter, limit)
 }
 
+// BucketWarpTopicAssignments adds up the selected assignments per topic and
+// per bucket.
+func (h *HybridLogStore) BucketWarpTopicAssignments(ctx context.Context, filter WarpTopicAssignmentFilter, bucketSizeSeconds int64) ([]WarpTopicBucket, error) {
+	return h.inner.BucketWarpTopicAssignments(ctx, filter, bucketSizeSeconds)
+}
+
 // DeleteWarpTopicAssignmentsBatch deletes expired assignments in batches.
 func (h *HybridLogStore) DeleteWarpTopicAssignmentsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
 	return h.inner.DeleteWarpTopicAssignmentsBatch(ctx, cutoff, batchSize)

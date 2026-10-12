@@ -155,8 +155,7 @@ func TestWarpDiscoveryMakesTopicsOfThePool(t *testing.T) {
 	require.Len(t, pooled, final.Unassigned)
 
 	// The tool sees them at once.
-	listed, total, err := NewTopicReader(&recordingStore{row: assignTestRow()}, store).ListTopics(ctx, 15)
-	require.NoError(t, err)
+	listed, total := listAllTopics(t, NewTopicReader(&recordingStore{row: assignTestRow()}, store))
 	require.Len(t, listed, 2)
 	require.Equal(t, 123, total)
 }
@@ -324,22 +323,31 @@ func TestWarpUpkeepMergesTopicsThatMeanTheSameThing(t *testing.T) {
 		require.Equal(t, "big", merged[0].MergedInto, id)
 	}
 
-	listed, total, err := NewTopicReader(&recordingStore{row: assignTestRow()}, store).ListTopics(ctx, 15)
-	require.NoError(t, err)
+	listed, total := listAllTopics(t, NewTopicReader(&recordingStore{row: assignTestRow()}, store))
 	require.Len(t, listed, 2)
 	require.Equal(t, 65, total)
 	require.Equal(t, "Refund requests", listed[0].Label)
-	require.Equal(t, 45, listed[0].Size, "30 of its own, 10 and 5 filed under the topics merged into it")
-	require.Equal(t, 20, listed[1].Size)
+	require.Equal(t, 45, int(listed[0].Requests), "30 of its own, 10 and 5 filed under the topics merged into it")
+	require.Equal(t, 20, int(listed[1].Requests))
+
+	// Its series folds them in the same way, bucket by bucket.
+	query := allTimeTopicQuery(15)
+	query.BucketSeconds = 365 * 86400
+	list, err := NewTopicReader(&recordingStore{row: assignTestRow()}, store).ListTopics(ctx, query)
+	require.NoError(t, err)
+	var inSeries int64
+	for _, point := range list.Topics[0].Series {
+		inSeries += point.Requests
+	}
+	require.EqualValues(t, 45, inSeries)
 
 	// A topic merged into one that is later merged itself still resolves.
 	survivor.Status, survivor.MergedInto = logstore.WarpTopicStatusMerged, "apart"
 	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{survivor}))
-	listed, total, err = NewTopicReader(&recordingStore{row: assignTestRow()}, store).ListTopics(ctx, 15)
-	require.NoError(t, err)
+	listed, total = listAllTopics(t, NewTopicReader(&recordingStore{row: assignTestRow()}, store))
 	require.Len(t, listed, 1)
 	require.Equal(t, 65, total)
-	require.Equal(t, 65, listed[0].Size)
+	require.Equal(t, 65, int(listed[0].Requests))
 }
 
 // Requests filed under a topic since merged count for the topic it was merged
