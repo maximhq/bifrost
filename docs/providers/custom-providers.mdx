@@ -259,6 +259,128 @@ Custom providers can be built on these supported providers:
 - `replicate` - Replicate
 - `typesafe` - TypeSafe (decisions and model listing only; see [TypeSafe](/providers/supported-providers/typesafe#custom-typesafe-providers))
 
+### Authentication (OAuth-minted keys)
+
+A custom provider on the `openai` base normally carries a static API key in each key's `value`. Upstreams that sit behind an identity provider and issue short-lived access tokens can instead be given an `oauth_key_config` on the key: leave `value` empty and Bifrost obtains the token from the token endpoint, sends it as the bearer, caches it per credential, collapses concurrent requests onto one mint, and refreshes it a minute before it expires. A rejected credential is backed off rather than retried on every request. The same machinery serves Databricks OAuth M2M; it applies to the standard `openai` provider too.
+
+Two grants are supported:
+
+- **`client_credentials`** (RFC 6749 §4.4): a client ID and secret, sent as HTTP Basic auth by default or as form fields with `auth_style: "body"`.
+- **`jwt_bearer`** (RFC 7523): Bifrost signs a JWT assertion (`iss`, `sub`, `aud`, `iat`, `nbf`, `exp`, `jti`) with your RSA or EC private key and exchanges it for a token.
+
+A non-empty `value` always wins, so a key can carry both while you migrate. `oauth_key_config` is only accepted on `openai` and on custom providers whose base is `openai`; elsewhere it is refused at configuration time rather than silently ignored.
+
+<Tabs group="custom-provider-oauth">
+
+<Tab title="Using Web UI">
+
+1. Open the custom provider under **Providers** and click **Add Key**
+2. Under **Authentication Method** choose **OAuth (minted token)**
+3. Pick the grant, enter the **Token URL**, then the client ID and secret (client credentials) or the private key, issuer and audience (JWT bearer)
+4. Add scopes if the identity provider needs them, then save
+
+The stored key shows the token URL in plain text and masks the client secret and private key, like every other credential.
+
+</Tab>
+
+<Tab title="Using API">
+
+```bash
+# Client credentials
+curl --location 'http://localhost:8080/api/providers/acme-llm/keys' \
+--header 'Content-Type: application/json' \
+--data '{
+    "name": "acme-oauth",
+    "models": ["*"],
+    "weight": 1.0,
+    "oauth_key_config": {
+        "grant_type": "client_credentials",
+        "token_url": "https://idp.acme.example/oauth2/token",
+        "client_id": "env.ACME_CLIENT_ID",
+        "client_secret": "env.ACME_CLIENT_SECRET",
+        "scopes": ["inference"]
+    }
+}'
+
+# JWT bearer
+curl --location 'http://localhost:8080/api/providers/acme-llm/keys' \
+--header 'Content-Type: application/json' \
+--data '{
+    "name": "acme-jwt",
+    "models": ["*"],
+    "weight": 1.0,
+    "oauth_key_config": {
+        "grant_type": "jwt_bearer",
+        "token_url": "https://idp.acme.example/oauth2/token",
+        "private_key": "env.ACME_PRIVATE_KEY",
+        "issuer": "svc-bifrost",
+        "audience": "https://idp.acme.example/oauth2/token",
+        "signing_algorithm": "ES256"
+    }
+}'
+```
+
+</Tab>
+
+<Tab title="Using config.json">
+
+```json
+{
+  "providers": {
+    "acme-llm": {
+      "custom_provider_config": {
+        "base_provider_type": "openai"
+      },
+      "network_config": {
+        "base_url": "https://llm.acme.example/v1"
+      },
+      "keys": [
+        {
+          "name": "acme-oauth",
+          "models": ["*"],
+          "weight": 1.0,
+          "oauth_key_config": {
+            "grant_type": "client_credentials",
+            "token_url": "https://idp.acme.example/oauth2/token",
+            "client_id": "env.ACME_CLIENT_ID",
+            "client_secret": "env.ACME_CLIENT_SECRET",
+            "scopes": ["inference"],
+            "audience": "api://acme-llm"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+#### `oauth_key_config` reference
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `grant_type` | ✅ | `client_credentials` or `jwt_bearer`. |
+| `token_url` | ✅ | The token endpoint. Must be `https` (plain `http` is accepted for loopback hosts only) and must not carry userinfo, a query or a fragment, since the URL is shown in plain text when the key is read back. Supports `env.` references. |
+| `client_id` | client credentials | Client ID. |
+| `client_secret` | client credentials | Client secret. |
+| `auth_style` | | `header` (HTTP Basic, default) or `body` (form fields) for the client credentials. |
+| `private_key` | JWT bearer | RSA or EC private key in PEM form. PKCS#1, SEC 1 and PKCS#8 all work; a PEM pasted with literal `\n` is repaired. |
+| `issuer` | JWT bearer | The `iss` claim, usually the client or service account ID. |
+| `subject` | | The `sub` claim. Defaults to `issuer`. |
+| `audience` | JWT bearer | The `aud` claim, usually the token endpoint. For client credentials it is sent as the optional `audience` form parameter. |
+| `key_id` | | The `kid` header, when the identity provider selects keys by ID. |
+| `signing_algorithm` | | `RS256` (default), `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, `ES512`. Symmetric algorithms are refused. |
+| `assertion_lifetime_seconds` | | Seconds from issue until the assertion expires (`exp` = now + value). Default `300`, maximum `3600`. Bifrost backdates `iat` and `nbf` by 30 seconds for clock skew, so the assertion's `exp - iat` span is this value plus 30; pick a value 30 seconds under any span limit your identity provider enforces. |
+| `scopes` | | Scopes requested, sent space-joined. |
+| `extra_params` | | Extra form parameters sent on every token request. Values are masked when the key is read back, and the column is encrypted at rest only when encryption is enabled (`encryption_key` or `BIFROST_ENCRYPTION_KEY`, see [config.json](/deployment-guides/config-json)), like every other credential column. This map is not the place for a credential: use `client_secret` or `private_key`. |
+
+**Token lifetime.** Bifrost normally refreshes a token one minute before the expiry the endpoint reported. If the token already has one minute or less left when it is minted, Bifrost refreshes it halfway through its remaining lifetime (a 30-second token is re-minted after about 15 seconds). A token endpoint that returns no `expires_in` is assumed to live five minutes, so such a token is re-minted roughly every four minutes.
+
+**Failures.** A rejected mint is cached and retried with a backoff: 2 s doubling to 60 s for a credential or configuration fault (any 4xx other than 429), 0.5 s doubling to 10 s for a rate limit, a 5xx or an unreachable endpoint; a `Retry-After` from the endpoint extends the window. Separately from the backoff, fallbacks are gated by the kind of failure: a 4xx other than 429 blocks them, since another provider cannot repair a bad credential, while a 429, a 5xx or an unreachable endpoint leaves the configured fallbacks available.
+
 ### Streaming Termination
 
 Most OpenAI-compatible providers end a stream with a `data: [DONE]` marker, and Bifrost reads until it arrives so that a trailing usage-only chunk — which many providers send after `finish_reason` — is not lost.

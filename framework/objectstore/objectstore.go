@@ -5,8 +5,14 @@ package objectstore
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrNotFound is wrapped by Get when the key definitely has no object, so
+// callers can tell "nothing stored" from a read that failed for another reason
+// (and so must not assume the object is absent).
+var ErrNotFound = errors.New("objectstore: object not found")
 
 // ObjectInfo describes a stored object returned by listing operations.
 type ObjectInfo struct {

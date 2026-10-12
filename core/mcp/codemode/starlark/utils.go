@@ -13,8 +13,25 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/canonical/starlark/syntax"
 	"github.com/mark3labs/mcp-go/mcp"
+	codemcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// serverInstructionsComment renders the client's upstream instructions, or "" if it advertises
+// none. Shared by readToolFile and getToolDocs: every stub documenting a server carries them.
+func (s *StarlarkCodeMode) serverInstructionsComment(clientName string) string {
+	client := s.clientManager.GetClientByName(clientName)
+	if client == nil || client.ExecutionConfig == nil {
+		return ""
+	}
+	// Client override first, then the configured global. The aggregate total stays out of it:
+	// a stub carries one server, so being clamped by the whole-set budget would cut it early.
+	limit := client.ExecutionConfig.MaxInstructionsLength
+	if limit <= 0 {
+		limit = s.clientManager.InstructionCaps().PerClient
+	}
+	return codemcp.InstructionsCommentBlock(client.ServerInstructions, limit)
+}
 
 // extractResultFromChatMessage extracts the result from a chat message and parses it as JSON if possible.
 func extractResultFromChatMessage(msg *schemas.ChatMessage) interface{} {

@@ -1,11 +1,12 @@
 import { ColumnConfigDropdown, type ColumnConfigEntry } from "@/components/table";
 import { Button } from "@/components/ui/button";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
 import type { AgentLogFilters } from "@/lib/types/agentLogs";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
-import { Radio, RefreshCw, Search, X } from "lucide-react";
+import { ListTree, Radio, RefreshCw, Search, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 interface AgentHeaderViewProps {
@@ -14,6 +15,8 @@ interface AgentHeaderViewProps {
 	period: string;
 	onPeriodChange: (period?: string, from?: Date, to?: Date) => void;
 	polling: boolean;
+	grouped: boolean;
+	onGroupedToggle: (enabled: boolean) => void;
 	onPollToggle: (enabled: boolean) => void;
 	onRefresh: () => void;
 	loading?: boolean;
@@ -30,6 +33,8 @@ export function AgentHeaderView({
 	period,
 	onPeriodChange,
 	polling,
+	grouped,
+	onGroupedToggle,
 	onPollToggle,
 	onRefresh,
 	loading = false,
@@ -96,6 +101,24 @@ export function AgentHeaderView({
 				{polling ? <Radio className="h-4 w-4 animate-pulse" /> : <Radio className="h-4 w-4" />}
 				Live
 			</Button>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<Button
+						variant={grouped ? "default" : "outline"}
+						size="sm"
+						className="h-7.5"
+						onClick={() => onGroupedToggle(!grouped)}
+						data-testid="agent-logs-header-group-btn"
+						aria-pressed={grouped}
+					>
+						<ListTree className="h-4 w-4" />
+						Group
+					</Button>
+				</TooltipTrigger>
+				<TooltipContent sideOffset={6} className="max-w-64">
+					Groups operations sharing a context under the context&apos;s first matching operation. Expand a row to view its operations.
+				</TooltipContent>
+			</Tooltip>
 			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 items-center gap-2 rounded-sm border">
 				<Search className="mr-0.5 ml-2 size-4" />
 				<Input

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -4748,4 +4750,82 @@ func TestEnsureVKLimitModelConfigSkipsAMissingKey(t *testing.T) {
 	var tiers int64
 	require.NoError(t, db.Model(&tables.TableModelConfig{}).Where("scope_id = ?", "vk-gone").Count(&tiers).Error)
 	assert.Zero(t, tiers, "an orphaned tier was left behind")
+}
+
+// TestMigrationAddOAuthKeyConfigColumns_BoundsTheLockWait pins the rolling-upgrade behaviour
+// of the oauth column-add on Postgres: ADD COLUMN takes ACCESS EXCLUSIVE on config_keys, so
+// while another session holds the table the migration must fail fast with lock_not_available
+// and leave the step unapplied, instead of parking at the head of the lock queue where every
+// later read and write on the table waits behind it. Skips when Postgres is not reachable.
+func TestMigrationAddOAuthKeyConfigColumns_BoundsTheLockWait(t *testing.T) {
+	const schema = pgTestSchema + "_oauth_lockwait"
+	dsn := strings.Replace(postgresDSN, "search_path="+pgTestSchema, "search_path="+schema, 1)
+	pgDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Skipf("postgres unavailable: %v", err)
+	}
+	sqlDB, err := pgDB.DB()
+	require.NoError(t, err)
+	if err := sqlDB.Ping(); err != nil {
+		t.Skipf("postgres unavailable: %v", err)
+	}
+	require.NoError(t, pgDB.Exec("DROP SCHEMA IF EXISTS "+schema+" CASCADE").Error)
+	require.NoError(t, pgDB.Exec("CREATE SCHEMA "+schema).Error)
+	t.Cleanup(func() { pgDB.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE") })
+	// The pre-upgrade shape: a key table without any oauth_* column, and an empty ledger.
+	require.NoError(t, pgDB.Exec(`CREATE TABLE config_keys (id VARCHAR(255) PRIMARY KEY)`).Error)
+	require.NoError(t, pgDB.Exec(`CREATE TABLE migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+
+	// A second session holds the table, as a long transaction would during a rolling upgrade.
+	ctx := context.Background()
+	holder, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	holderTx, err := holder.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	_, err = holderTx.ExecContext(ctx, "LOCK TABLE config_keys IN ACCESS EXCLUSIVE MODE")
+	require.NoError(t, err)
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			_ = holderTx.Rollback()
+			_ = holder.Close()
+		}
+	}
+	t.Cleanup(release)
+
+	migrationCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	start := time.Now()
+	err = migrationAddOAuthKeyConfigColumns(migrationCtx, pgDB, testMigrationLogger)
+	waited := time.Since(start)
+	require.Error(t, err, "the migration must not succeed while config_keys is locked")
+	var pgErr *pgconn.PgError
+	require.True(t, errors.As(err, &pgErr), "expected a lock_not_available failure, got %v after %s", err, waited)
+	assert.Equal(t, "55P03", pgErr.Code, "expected SQLSTATE 55P03 lock_not_available, got %s: %s", pgErr.Code, pgErr.Message)
+	assert.Less(t, waited, 15*time.Second, "the lock wait must be bounded, took %s", waited)
+
+	// Nothing was recorded for the failed attempt, so the next boot retries and succeeds.
+	var applied int64
+	require.NoError(t, pgDB.Table("migrations").Where("id = ?", "add_oauth_key_config_columns").Count(&applied).Error)
+	assert.Zero(t, applied, "a failed column-add must not be recorded as applied")
+	release()
+	require.NoError(t, migrationAddOAuthKeyConfigColumns(ctx, pgDB, testMigrationLogger))
+	for _, column := range oauthKeyConfigColumns {
+		assert.True(t, pgDB.Migrator().HasColumn(&tables.TableKey{}, column), "column %s missing after the retry", column)
+	}
+}
+
+// TestA2ARawCaptureSettingMigration defaults existing deployments to capture disabled.
+func TestA2ARawCaptureSettingMigration(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.Exec("CREATE TABLE config_client (id INTEGER PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO config_client (id) VALUES (1)").Error)
+	for range 2 {
+		require.NoError(t, migrationAddA2ARawCaptureSetting(context.Background(), db, testMigrationLogger))
+	}
+	require.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "A2AStoreRawRequestResponse"))
+	var enabled bool
+	require.NoError(t, db.Table("config_client").Select("a2a_store_raw_request_response").Where("id = 1").Scan(&enabled).Error)
+	require.False(t, enabled)
 }

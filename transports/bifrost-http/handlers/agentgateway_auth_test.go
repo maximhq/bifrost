@@ -1177,3 +1177,18 @@ func (e *testAgentExecutor) Execute(ctx context.Context, ec *a2asrv.ExecutorCont
 func (*testAgentExecutor) Cancel(context.Context, *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 	return func(yield func(a2a.Event, error) bool) { yield(nil, a2a.ErrUnsupportedOperation) }
 }
+
+// TestAgentHistoryPreservesOAuthDefinitions verifies public flow definitions survive credential redaction.
+func TestAgentHistoryPreservesOAuthDefinitions(t *testing.T) {
+	body := `{"oauth2SecurityScheme":{"flows":{"authorizationCode":{"authorizationUrl":"https://example.com/authorize","tokenUrl":"https://example.com/token","refreshUrl":"https://example.com/refresh","scopes":{"research:read":"Read documents"},"client_secret":"private"}}},"Authorization":"Bearer private","authorizationCode":"private"}`
+	sanitized := sanitizeAgentHistoryPayload(&body)
+	require.NotNil(t, sanitized)
+	require.Contains(t, *sanitized, `"authorizationUrl":"https://example.com/authorize"`)
+	require.Contains(t, *sanitized, `"tokenUrl":"https://example.com/token"`)
+	require.Contains(t, *sanitized, `"refreshUrl":"https://example.com/refresh"`)
+	require.Contains(t, *sanitized, `"research:read":"Read documents"`)
+	require.Contains(t, *sanitized, `"client_secret":"REDACTED"`)
+	require.Contains(t, *sanitized, `"Authorization":"REDACTED"`)
+	require.Contains(t, *sanitized, `"authorizationCode":"REDACTED"`)
+	require.NotContains(t, *sanitized, "private")
+}

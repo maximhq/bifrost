@@ -247860,7 +247860,7 @@
     },
     {
       "name": "198. Provider-injected MCP web search (injected-web-search)",
-      "description": "Provider config `injected_tools.web_search` names an MCP tool that Bifrost adds to every chat and responses request for the provider, replacing any native web search the client sent, and executes server side when the model calls it. The harness profile points `openai_websearch` and `anthropic_websearch` at `sse_mcp/web_search` (examples/mcps/remote-test-server), whose single result states a fact no model knows: the lighthouse is teal-and-amber and its keeper is Orrin Vale. An answer naming Orrin proves the gateway ran the search and fed the result back; every case also pins that the client never sees the injected tool call. `sse_mcp` keeps `web_search` out of its tools_to_execute, so the cases also prove the injected tool bypasses the client allow-list. Red before the feature: the profile field is unknown and no turn runs the tool.",
+      "description": "Provider config `injected_tools` lists MCP tools that Bifrost adds to every chat and responses request for the provider under the name each entry gives, and executes server side when the model calls them. A name replaces any client tool of the same name, and the name `web_search` also replaces any native web search the client sent. The harness profile points `openai_websearch` and `anthropic_websearch` at `sse_mcp/web_search` under the name `web_search`, and `openai_injectedtools` at the same tool under the name `lighthouse_lookup` (examples/mcps/remote-test-server), whose single result states a fact no model knows: the lighthouse is teal-and-amber and its keeper is Orrin Vale. An answer naming Orrin proves the gateway ran the search and fed the result back; every case also pins that the client never sees the injected tool call. `sse_mcp` keeps `web_search` out of its tools_to_execute, so the cases also prove the injected tool bypasses the client allow-list. Red before the feature: the profile field is unknown and no turn runs the tool.",
       "item": [
         {
           "name": "[EXPECT-200] openai_websearch gpt-4o-mini chat injected-web-search answers from the MCP tool",
@@ -247900,7 +247900,8 @@
                   "  pm.expect(msg.tool_calls || [], 'the injected tool call leaked to the client: ' + pm.response.text()).to.have.length(0);",
                   "  pm.expect(body.choices[0].finish_reason).to.equal('stop');",
                   "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
-                  "  pm.expect(raw, 'the MCP tool was not declared upstream: ' + raw).to.include('sse_mcp-web_search');",
+                  "  pm.expect(raw, 'the injected tool was not declared upstream as web_search: ' + raw).to.include('\"name\":\"web_search\"');",
+                  "  pm.expect(raw, 'the prefixed MCP tool name reached the model: ' + raw).to.not.include('sse_mcp-web_search');",
                   "  pm.expect(raw, 'native web_search_options reached the provider: ' + raw).to.not.include('web_search_options');",
                   "});"
                 ]
@@ -247969,7 +247970,8 @@
                   "  var raws = events.filter(function (e) { return e.extra_fields && e.extra_fields.raw_request; }).map(function (e) { return JSON.stringify(e.extra_fields.raw_request); });",
                   "  pm.expect(raws.length, 'no raw_request in the stream (send_back_raw_request is on for this profile provider)').to.be.above(0);",
                   "  raws.forEach(function (raw) {",
-                  "    pm.expect(raw, 'the MCP tool was not declared upstream: ' + raw).to.include('sse_mcp-web_search');",
+                  "    pm.expect(raw, 'the injected tool was not declared upstream as web_search: ' + raw).to.include('\"name\":\"web_search\"');",
+                  "    pm.expect(raw, 'the prefixed MCP tool name reached the model: ' + raw).to.not.include('sse_mcp-web_search');",
                   "    pm.expect(raw, 'native web_search_options reached the provider: ' + raw).to.not.include('web_search_options');",
                   "  });",
                   "});"
@@ -248038,7 +248040,8 @@
                   "  var raws = events.filter(function (e) { return e.extra_fields && e.extra_fields.raw_request; }).map(function (e) { return JSON.stringify(e.extra_fields.raw_request); });",
                   "  pm.expect(raws.length, 'no raw_request in the stream (send_back_raw_request is on for this profile provider)').to.be.above(0);",
                   "  raws.forEach(function (raw) {",
-                  "    pm.expect(raw, 'the MCP tool was not declared upstream: ' + raw).to.include('sse_mcp-web_search');",
+                  "    pm.expect(raw, 'the injected tool was not declared upstream as web_search: ' + raw).to.include('\"name\":\"web_search\"');",
+                  "    pm.expect(raw, 'the prefixed MCP tool name reached the model: ' + raw).to.not.include('sse_mcp-web_search');",
                   "    pm.expect(raw, 'the native web search reached the provider: ' + raw).to.not.include('\"type\":\"web_search\"');",
                   "  });",
                   "  (completed.output || []).forEach(function (item) {",
@@ -248091,7 +248094,8 @@
                   "  pm.expect(text, 'answer does not use the search result: ' + pm.response.text()).to.match(/orrin/i);",
                   "  pm.expect(body.stop_reason).to.equal('end_turn');",
                   "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
-                  "  pm.expect(raw, 'the MCP tool was not declared upstream: ' + raw).to.include('sse_mcp-web_search');",
+                  "  pm.expect(raw, 'the injected tool was not declared upstream as web_search: ' + raw).to.include('\"name\":\"web_search\"');",
+                  "  pm.expect(raw, 'the prefixed MCP tool name reached the model: ' + raw).to.not.include('sse_mcp-web_search');",
                   "  pm.expect(raw, 'native web_search_20250305 reached Anthropic: ' + raw).to.not.include('web_search_20250305');",
                   "});"
                 ]
@@ -248115,10 +248119,10 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('the provider API reports the configured injected web search tool', function () {",
+                  "pm.test('the provider API reports the configured injected tools list', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "  var injected = pm.response.json().injected_tools;",
-                  "  pm.expect(injected, 'injected_tools missing from the provider response: ' + pm.response.text()).to.eql({ web_search: { mcp_client_name: 'sse_mcp', tool_name: 'web_search' } });",
+                  "  pm.expect(injected, 'injected_tools missing from the provider response: ' + pm.response.text()).to.eql([{ name: 'web_search', mcp_client_name: 'sse_mcp', tool_name: 'web_search' }]);",
                   "});"
                 ]
               }
@@ -248126,7 +248130,7 @@
           ]
         },
         {
-          "name": "[EXPECT-400] anthropic_websearch provider API injected-web-search rejects a tool-less web_search",
+          "name": "[EXPECT-400] anthropic_websearch provider API injected-web-search rejects the old object shape",
           "request": {
             "auth": {
               "type": "noauth"
@@ -248140,7 +248144,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 10,\n    \"buffer_size\": 100\n  },\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"anthropic\",\n    \"is_key_less\": false\n  },\n  \"injected_tools\": {\n    \"web_search\": {\n      \"mcp_client_name\": \"sse_mcp\"\n    }\n  }\n}"
+              "raw": "{\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 10,\n    \"buffer_size\": 100\n  },\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"anthropic\",\n    \"is_key_less\": false\n  },\n  \"injected_tools\": {\n    \"web_search\": {\n      \"mcp_client_name\": \"sse_mcp\",\n      \"tool_name\": \"web_search\"\n    }\n  }\n}"
             },
             "url": "{{baseUrl}}/api/providers/anthropic_websearch"
           },
@@ -248150,9 +248154,614 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('the validator rejects injected_tools without a tool_name, before anything is saved', function () {",
+                  "pm.test('the validator rejects the old injected_tools object, before anything is saved', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
-                  "  pm.expect(pm.response.text(), 'rejected for another reason: ' + pm.response.text()).to.include('web_search.tool_name is required');",
+                  "  pm.expect(pm.response.text(), 'rejected for another reason: ' + pm.response.text()).to.include('injected_tools must be an array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedtools gpt-4o-mini chat injected-web-search alias replaces the client tool of the same name",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedtools/gpt-4o-mini\",\n  \"tool_choice\": \"required\",\n  \"max_tokens\": 200,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"lighthouse_lookup\",\n        \"description\": \"CLIENT-DEFINED lookup that must be replaced\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"q\": {\n              \"type\": \"string\"\n            }\n          }\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use the lighthouse_lookup tool to look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a client tool sharing an injected name is replaced, and the alias runs the MCP tool', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var msg = body.choices[0].message;",
+                  "  pm.expect(String(msg.content), 'answer does not use the MCP tool result: ' + pm.response.text()).to.match(/orrin/i);",
+                  "  pm.expect(msg.tool_calls || [], 'the injected tool call leaked to the client: ' + pm.response.text()).to.have.length(0);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the injected tool was not declared under its configured name: ' + raw).to.include('\"name\":\"lighthouse_lookup\"');",
+                  "  pm.expect(raw, 'the client tool of the same name reached the provider: ' + raw).to.not.include('CLIENT-DEFINED');",
+                  "  pm.expect(raw, 'the prefixed MCP tool name reached the model: ' + raw).to.not.include('sse_mcp-web_search');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedtools gpt-4o-mini responses injected-web-search alias keeps native web search",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedtools/gpt-4o-mini\",\n  \"max_output_tokens\": 300,\n  \"tools\": [\n    {\n      \"type\": \"web_search\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"lighthouse_lookup\"\n  },\n  \"input\": \"Use the lighthouse_lookup tool to look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('only a tool named web_search replaces native web search; a forced alias still runs', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var text = '';",
+                  "  (body.output || []).forEach(function (item) {",
+                  "    pm.expect(item.type, 'an injected call or its result leaked to the client: ' + JSON.stringify(item)).to.not.match(/^function_call/);",
+                  "    (item.content || []).forEach(function (part) { if (part.type === 'output_text') text += part.text; });",
+                  "  });",
+                  "  pm.expect(text, 'answer does not use the MCP tool result: ' + pm.response.text()).to.match(/orrin/i);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the injected tool was not declared under its configured name: ' + raw).to.include('\"name\":\"lighthouse_lookup\"');",
+                  "  pm.expect(raw, 'native web search was dropped though no injected tool is named web_search: ' + raw).to.include('\"type\":\"web_search\"');",
+                  "  pm.expect(raw, 'the prefixed MCP tool name reached the model: ' + raw).to.not.include('sse_mcp-web_search');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedtools provider API injected-web-search returns the aliased entry",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/openai_injectedtools"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the provider API reports the injected tool under its configured name', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().injected_tools, 'injected_tools missing from the provider response: ' + pm.response.text()).to.eql([{ name: 'lighthouse_lookup', mcp_client_name: 'sse_mcp', tool_name: 'web_search' }]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] anthropic_websearch provider API injected-web-search rejects a repeated tool name",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 10,\n    \"buffer_size\": 100\n  },\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"anthropic\",\n    \"is_key_less\": false\n  },\n  \"injected_tools\": [\n    {\n      \"name\": \"web_search\",\n      \"mcp_client_name\": \"sse_mcp\",\n      \"tool_name\": \"web_search\"\n    },\n    {\n      \"name\": \"web_search\",\n      \"mcp_client_name\": \"sse_mcp\",\n      \"tool_name\": \"echo\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/api/providers/anthropic_websearch"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the validator rejects two injected tools with one name, before anything is saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'rejected for another reason: ' + pm.response.text()).to.include('is used more than once');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] anthropic_websearch provider API injected-web-search rejects a tool-less entry",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 10,\n    \"buffer_size\": 100\n  },\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"anthropic\",\n    \"is_key_less\": false\n  },\n  \"injected_tools\": [\n    {\n      \"name\": \"web_search\",\n      \"mcp_client_name\": \"sse_mcp\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/api/providers/anthropic_websearch"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the validator rejects an injected tool without a tool_name, before anything is saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'rejected for another reason: ' + pm.response.text()).to.include('tool_name is required');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedtools gpt-4o-mini chat injected-web-search forced choice on the prefixed MCP name follows the alias",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedtools/gpt-4o-mini\",\n  \"max_tokens\": 200,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"sse_mcp-web_search\",\n        \"description\": \"Search the web\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"query\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"query\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"sse_mcp-web_search\"\n    }\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a choice pinning the prefixed MCP name is pointed at the injected alias', function () {",
+                  "  // Red before the fix: the prefixed declaration was dropped but tool_choice still named it,",
+                  "  // so the provider rejected a choice for an undeclared tool.",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var msg = body.choices[0].message;",
+                  "  pm.expect(msg.tool_calls || [], 'the injected tool call leaked to the client: ' + pm.response.text()).to.have.length(0);",
+                  "  var text = String(msg.content);",
+                  "  pm.expect(text, 'the forced call did not run the MCP tool: ' + pm.response.text()).to.match(/orrin/i);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the injected tool was not declared under its configured name: ' + raw).to.include('\"name\":\"lighthouse_lookup\"');",
+                  "  pm.expect(raw, 'the prefixed MCP name reached the provider: ' + raw).to.not.include('sse_mcp-web_search');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedtools gpt-4o-mini responses injected-web-search forced choice on the prefixed MCP name follows the alias",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedtools/gpt-4o-mini\",\n  \"max_output_tokens\": 300,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"sse_mcp-web_search\",\n      \"description\": \"Search the web\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"sse_mcp-web_search\"\n  },\n  \"input\": \"Look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a Responses choice pinning the prefixed MCP name is pointed at the injected alias', function () {",
+                  "  // Red before the fix: the prefixed declaration was dropped but tool_choice still named it,",
+                  "  // so the provider rejected a choice for an undeclared tool.",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var text = '';",
+                  "  (body.output || []).forEach(function (item) {",
+                  "    pm.expect(item.type, 'an injected call or its result leaked to the client: ' + JSON.stringify(item)).to.not.match(/^function_call/);",
+                  "    (item.content || []).forEach(function (part) { if (part.type === 'output_text') text += part.text; });",
+                  "  });",
+                  "  pm.expect(text, 'the forced call did not run the MCP tool: ' + pm.response.text()).to.match(/orrin/i);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the injected tool was not declared under its configured name: ' + raw).to.include('\"name\":\"lighthouse_lookup\"');",
+                  "  pm.expect(raw, 'the prefixed MCP name reached the provider: ' + raw).to.not.include('sse_mcp-web_search');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedalias gpt-4o-mini chat injected-web-search choice naming a configured alias keeps that alias",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedalias/gpt-4o-mini\",\n  \"max_tokens\": 200,\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"sse_mcp-web_search\"\n    }\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call the tool with the message ECHO-MARK-4471, then reply with exactly the text the tool returned.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a choice naming a configured alias runs that alias, even when it is also another row prefixed MCP name', function () {",
+                  "  // Red before the fix: the choice was rewritten to lighthouse_lookup, so the web search ran instead of echo.",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var msg = body.choices[0].message;",
+                  "  pm.expect(msg.tool_calls || [], 'an injected tool call leaked to the client: ' + pm.response.text()).to.have.length(0);",
+                  "  var text = String(msg.content);",
+                  "  pm.expect(text, 'the forced alias did not run echo: ' + pm.response.text()).to.include('ECHO-MARK-4471');",
+                  "  pm.expect(text, 'the choice was redirected to the web search alias: ' + pm.response.text()).to.not.match(/orrin/i);",
+                  "  // The prompt carries the marker, so the answer alone cannot prove the tool ran. The final",
+                  "  // turn's request carries the tool result: echo returns an echoed key the prompt never",
+                  "  // mentions, and the web search result (Orrin) must be absent.",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the echo result never reached the model, so echo did not run: ' + raw).to.include('echoed');",
+                  "  pm.expect(raw, 'the web search alias ran instead of echo: ' + raw).to.not.match(/orrin/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedalias gpt-4o-mini responses injected-web-search choice naming a configured alias keeps that alias",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedalias/gpt-4o-mini\",\n  \"max_output_tokens\": 300,\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"sse_mcp-web_search\"\n  },\n  \"input\": \"Call the tool with the message ECHO-MARK-4471, then reply with exactly the text the tool returned.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a choice naming a configured alias runs that alias, even when it is also another row prefixed MCP name', function () {",
+                  "  // Red before the fix: the choice was rewritten to lighthouse_lookup, so the web search ran instead of echo.",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var text = '';",
+                  "  (body.output || []).forEach(function (item) {",
+                  "    pm.expect(item.type, 'an injected call or its result leaked to the client: ' + JSON.stringify(item)).to.not.match(/^function_call/);",
+                  "    (item.content || []).forEach(function (part) { if (part.type === 'output_text') text += part.text; });",
+                  "  });",
+                  "  pm.expect(text, 'the forced alias did not run echo: ' + pm.response.text()).to.include('ECHO-MARK-4471');",
+                  "  pm.expect(text, 'the choice was redirected to the web search alias: ' + pm.response.text()).to.not.match(/orrin/i);",
+                  "  // The prompt carries the marker, so the answer alone cannot prove the tool ran. The final",
+                  "  // turn's request carries the tool result: echo returns an echoed key the prompt never",
+                  "  // mentions, and the web search result (Orrin) must be absent.",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the echo result never reached the model, so echo did not run: ' + raw).to.include('echoed');",
+                  "  pm.expect(raw, 'the web search alias ran instead of echo: ' + raw).to.not.match(/orrin/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedtools gpt-4o-mini responses injected-web-search custom choice for a replaced tool pins the injected function",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedtools/gpt-4o-mini\",\n  \"max_output_tokens\": 300,\n  \"tools\": [\n    {\n      \"type\": \"custom\",\n      \"name\": \"lighthouse_lookup\",\n      \"description\": \"CLIENT-DEFINED custom tool that must be replaced\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"custom\",\n    \"name\": \"lighthouse_lookup\"\n  },\n  \"input\": \"Look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a custom choice for a tool the injected tool replaced becomes a function choice for it', function () {",
+                  "  // Red before the fix: the custom tool was dropped but the custom choice stayed, so OpenAI rejected it.",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var text = '';",
+                  "  (body.output || []).forEach(function (item) {",
+                  "    pm.expect(item.type, 'an injected call or its result leaked to the client: ' + JSON.stringify(item)).to.not.match(/^function_call/);",
+                  "    (item.content || []).forEach(function (part) { if (part.type === 'output_text') text += part.text; });",
+                  "  });",
+                  "  pm.expect(text, 'the forced call did not run the MCP tool: ' + pm.response.text()).to.match(/orrin/i);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the client custom tool reached the provider: ' + raw).to.not.include('CLIENT-DEFINED');",
+                  "  pm.expect(raw, 'a custom tool choice reached the provider: ' + raw).to.not.include('\"type\":\"custom\"');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedtools gpt-4o-mini chat injected-web-search allowed_tools entry for the prefixed MCP name follows the alias",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedtools/gpt-4o-mini\",\n  \"max_tokens\": 200,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"sse_mcp-web_search\",\n        \"description\": \"Search the web\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"query\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"query\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"allowed_tools\",\n    \"allowed_tools\": {\n      \"mode\": \"required\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"sse_mcp-web_search\"\n          }\n        }\n      ]\n    }\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an allowed_tools entry for a dropped prefixed declaration names the injected alias', function () {",
+                  "  // Red before the fix: the entry still named sse_mcp-web_search, which was no longer declared, so OpenAI rejected it.",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var msg = body.choices[0].message;",
+                  "  pm.expect(msg.tool_calls || [], 'an injected tool call leaked to the client: ' + pm.response.text()).to.have.length(0);",
+                  "  var text = String(msg.content);",
+                  "  pm.expect(text, 'the required call did not run the MCP tool: ' + pm.response.text()).to.match(/orrin/i);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the injected tool was not declared under its configured name: ' + raw).to.include('\"name\":\"lighthouse_lookup\"');",
+                  "  pm.expect(raw, 'the prefixed MCP name reached the provider: ' + raw).to.not.include('sse_mcp-web_search');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedtools gpt-4o-mini responses injected-web-search allowed_tools entry for the prefixed MCP name follows the alias",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedtools/gpt-4o-mini\",\n  \"max_output_tokens\": 300,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"sse_mcp-web_search\",\n      \"description\": \"Search the web\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"allowed_tools\",\n    \"mode\": \"required\",\n    \"tools\": [\n      {\n        \"type\": \"function\",\n        \"name\": \"sse_mcp-web_search\"\n      }\n    ]\n  },\n  \"input\": \"Look up the Bifrost harness lighthouse: what colors is it painted and who is its keeper? Answer in one sentence.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an allowed_tools entry for a dropped prefixed declaration names the injected alias', function () {",
+                  "  // Red before the fix: the entry still named sse_mcp-web_search, which was no longer declared, so OpenAI rejected it.",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var text = '';",
+                  "  (body.output || []).forEach(function (item) {",
+                  "    pm.expect(item.type, 'an injected call or its result leaked to the client: ' + JSON.stringify(item)).to.not.match(/^function_call/);",
+                  "    (item.content || []).forEach(function (part) { if (part.type === 'output_text') text += part.text; });",
+                  "  });",
+                  "  pm.expect(text, 'the required call did not run the MCP tool: ' + pm.response.text()).to.match(/orrin/i);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'the injected tool was not declared under its configured name: ' + raw).to.include('\"name\":\"lighthouse_lookup\"');",
+                  "  pm.expect(raw, 'the prefixed MCP name reached the provider: ' + raw).to.not.include('sse_mcp-web_search');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedfirstrow gpt-4o-mini responses injected-web-search unavailable first row keeps native web search",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedfirstrow/gpt-4o-mini\",\n  \"max_output_tokens\": 50,\n  \"tools\": [\n    {\n      \"type\": \"web_search\"\n    }\n  ],\n  \"input\": \"Reply with the single word ok.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an unavailable first web_search row is not replaced by a later row of the same name', function () {",
+                  "  // Red before the fix: the later web_search row stood in, so native web search was stripped and a function web_search declared.",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || '');",
+                  "  pm.expect(raw, 'native web search was stripped: ' + raw).to.include('\"type\":\"web_search\"');",
+                  "  pm.expect(raw, 'a later duplicate web_search row was injected: ' + raw).to.not.include('\"name\":\"web_search\"');",
+                  "  pm.expect(raw, 'the MCP tool reached the provider: ' + raw).to.not.include('sse_mcp-web_search');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai_injectedfirstrow provider API injected-web-search keeps both configured rows",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/openai_injectedfirstrow"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('config.json duplicates load with a warning, so the provider and both rows are present', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var names = (pm.response.json().injected_tools || []).map(function (t) { return t.name + ':' + t.tool_name; });",
+                  "  pm.expect(names, 'unexpected injected_tools: ' + pm.response.text()).to.eql(['web_search:no_such_tool', 'web_search:web_search']);",
                   "});"
                 ]
               }
@@ -252063,7 +252672,1719 @@
       ]
     },
     {
-      "name": "208. Client tool_use named web_search/web_fetch stays a function_call (#8078 / PR #8079)",
+      "name": "208. Databricks OAuth M2M token-mint failures and fallback gating (databricks oauth failure)",
+      "description": "Pins the client-visible failure behaviour of Databricks OAuth M2M after the provider moved onto the shared token cache (core/providers/utils/tokencache). Two shapes:\n\n1. The workspace host is unreachable (127.0.0.1:9). The token mint gets no HTTP status, which is a temporary outage: the error allows fallbacks and the configured fallback serves the request (x-bifrost-routing-info-is-fallback: true).\n2. The token endpoint answers 401 invalid_client. That is a credential or configuration fault: the error names the token endpoint, blocks fallbacks, and the request fails even though a fallback is configured. The answer comes from a local fixture so it cannot drift to a 429 or 5xx, which would correctly be treated as transient: start node tests/e2e/api/runners/databricks-token-fixture.mjs (port 8795, override with --port and the databricksTokenFixtureUrl variable) and run with INCLUDE_PREVIEW=1. The row creates the provider with proxy_config pointing at the fixture and trusting the CA it serves at /__ca.\n\nDatabricks is not a supported base for custom providers, so both cases configure the built-in databricks provider itself through the management API (create the provider, then add a key through /keys, since inline keys on provider creation are ignored) with a bogus service principal, so no Databricks credential is needed, and delete it afterwards. Setup refuses to run over an operator-configured databricks provider; only a leftover carrying the harness key name is replaced. Case 2 carries [EXPECT-401] because the token endpoint's status is passed through to the client, which the collection-level status test must expect. Before the shared cache, every mint failure allowed fallbacks, so case 2 served from the fallback; it is the red-before pin for the new gating. The secret must never appear in a response body.\n\nRun with FEATURE=\"databricks oauth failure\".",
+      "item": [
+        {
+          "name": "databricks/databricks-claude-sonnet-4-5 service principal against an unreachable workspace fails at the token mint and the fallback serves - #8254",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "// Databricks is not a supported base for custom providers (core/schemas.SupportedBaseProviders),",
+                  "// so the row configures the built-in 'databricks' provider itself for the duration of the run.",
+                  "// Its single key is an OAuth M2M service principal pointed at the given workspace host; no real",
+                  "// Databricks credential is involved: the host decides how the token mint fails, which is the",
+                  "// behaviour under test. The provider name is a singleton, so setup never overwrites an operator's",
+                  "// configuration: an existing databricks provider fails the row unless its only key carries the",
+                  "// harness marker (a leftover from an aborted run), in which case it is removed first.",
+                  "var PROVIDER = 'databricks';",
+                  "var KEY_NAME = 'harness-dbxoauth-sp';",
+                  "pm.variables.set('dbxOauthProvider', PROVIDER);",
+                  "pm.variables.set('dbxOauthCreated', '');",
+                  "// Two steps: POST /api/providers ignores inline keys, so the key is added through /keys.",
+                  "function createProvider(cb) {",
+                  "  mgmt('POST', '/api/providers', {provider: PROVIDER}, function (err, res) {",
+                  "    pm.test('setup: configured the databricks provider for the run', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    if (err || res.code !== 200) { pm.execution.skipRequest(); return cb(); }",
+                  "    pm.variables.set('dbxOauthCreated', '1');",
+                  "    mgmt('POST', '/api/providers/' + PROVIDER + '/keys', {name: KEY_NAME, models: ['*'], weight: 1, databricks_key_config: {workspace_url: '127.0.0.1:9', client_id: 'harness-service-principal', client_secret: 'harness-service-principal-secret'}}, function (err2, res2) {",
+                  "      pm.test('setup: added the harness service principal key', function () {",
+                  "        pm.expect(err2).to.equal(null);",
+                  "        pm.expect(res2.code, res2.text()).to.equal(200);",
+                  "      });",
+                  "      cb();",
+                  "    });",
+                  "  });",
+                  "}",
+                  "mgmt('GET', '/api/providers/' + PROVIDER, null, function (err, res) {",
+                  "  if (err || !res || res.code === 404) { return createProvider(function () {}); }",
+                  "  // GET /api/providers/{provider} carries no keys; they are listed by /keys.",
+                  "  mgmt('GET', '/api/providers/' + PROVIDER + '/keys', null, function (kErr, kRes) {",
+                  "    var keys = (!kErr && kRes && kRes.code === 200 && kRes.json() && kRes.json().keys) || [];",
+                  "    var leftover = keys.length === 1 && keys[0].name === KEY_NAME;",
+                  "    pm.test('setup: no operator-configured databricks provider is in the way', function () {",
+                  "      pm.expect(leftover, 'a databricks provider already exists and is not a harness leftover; remove it or run against a clean profile: ' + (kRes ? kRes.text() : String(kErr))).to.equal(true);",
+                  "    });",
+                  "    if (!leftover) { pm.execution.skipRequest(); return; }",
+                  "    mgmt('DELETE', '/api/providers/' + PROVIDER, null, function () { createProvider(function () {}); });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('dbxOauthProvider');",
+                  "if (provider && pm.variables.get('dbxOauthCreated') === '1') {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: removed the databricks provider the run configured', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('an unreachable token endpoint is a temporary outage, so the configured fallback serves the request', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'is-fallback header: ' + pm.response.text()).to.equal('true');",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.choices).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(pm.response.text(), 'the service principal secret must never be echoed').to.not.include('harness-service-principal-secret');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{dbxOauthProvider}}/databricks-claude-sonnet-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false,\n  \"fallbacks\": [\n    \"openai/gpt-4o-mini\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-401] databricks/databricks-claude-sonnet-4-5 service principal rejected by the token endpoint blocks the fallback - #8254",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "// The token endpoint is the local fixture (node tests/e2e/api/runners/databricks-token-fixture.mjs), reached as the",
+                  "// provider's HTTP proxy: it terminates TLS for the workspace host and answers /oidc/v1/token with 401 invalid_client,",
+                  "// so the rejection is deterministic and no request leaves the machine.",
+                  "var FIXTURE = pm.variables.get('databricksTokenFixtureUrl') || 'http://127.0.0.1:8795';",
+                  "var fixtureCa = '';",
+                  "// Databricks is not a supported base for custom providers (core/schemas.SupportedBaseProviders),",
+                  "// so the row configures the built-in 'databricks' provider itself for the duration of the run.",
+                  "// Its single key is an OAuth M2M service principal pointed at the given workspace host; no real",
+                  "// Databricks credential is involved: the host decides how the token mint fails, which is the",
+                  "// behaviour under test. The provider name is a singleton, so setup never overwrites an operator's",
+                  "// configuration: an existing databricks provider fails the row unless its only key carries the",
+                  "// harness marker (a leftover from an aborted run), in which case it is removed first.",
+                  "var PROVIDER = 'databricks';",
+                  "var KEY_NAME = 'harness-dbxoauth-sp';",
+                  "pm.variables.set('dbxOauthProvider', PROVIDER);",
+                  "pm.variables.set('dbxOauthCreated', '');",
+                  "// Two steps: POST /api/providers ignores inline keys, so the key is added through /keys.",
+                  "function createProvider(cb) {",
+                  "  mgmt('POST', '/api/providers', {provider: PROVIDER, proxy_config: {type: 'http', url: FIXTURE, ca_cert_pem: fixtureCa}}, function (err, res) {",
+                  "    pm.test('setup: configured the databricks provider for the run', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    if (err || res.code !== 200) { pm.execution.skipRequest(); return cb(); }",
+                  "    pm.variables.set('dbxOauthCreated', '1');",
+                  "    mgmt('POST', '/api/providers/' + PROVIDER + '/keys', {name: KEY_NAME, models: ['*'], weight: 1, databricks_key_config: {workspace_url: 'dbx-fixture-workspace.invalid', client_id: 'harness-service-principal', client_secret: 'harness-service-principal-secret'}}, function (err2, res2) {",
+                  "      pm.test('setup: added the harness service principal key', function () {",
+                  "        pm.expect(err2).to.equal(null);",
+                  "        pm.expect(res2.code, res2.text()).to.equal(200);",
+                  "      });",
+                  "      cb();",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.sendRequest({url: FIXTURE + '/__ca', method: 'GET'}, function (caErr, caRes) {",
+                  "  pm.test('setup: the databricks token fixture is running at ' + FIXTURE, function () {",
+                  "    pm.expect(caErr, 'start node tests/e2e/api/runners/databricks-token-fixture.mjs').to.equal(null);",
+                  "    pm.expect(caRes.code, caRes.text()).to.equal(200);",
+                  "    pm.expect(caRes.text()).to.include('BEGIN CERTIFICATE');",
+                  "  });",
+                  "  if (caErr || caRes.code !== 200) { pm.execution.skipRequest(); return; }",
+                  "  fixtureCa = caRes.text();",
+                  "mgmt('GET', '/api/providers/' + PROVIDER, null, function (err, res) {",
+                  "  if (err || !res || res.code === 404) { return createProvider(function () {}); }",
+                  "  // GET /api/providers/{provider} carries no keys; they are listed by /keys.",
+                  "  mgmt('GET', '/api/providers/' + PROVIDER + '/keys', null, function (kErr, kRes) {",
+                  "    var keys = (!kErr && kRes && kRes.code === 200 && kRes.json() && kRes.json().keys) || [];",
+                  "    var leftover = keys.length === 1 && keys[0].name === KEY_NAME;",
+                  "    pm.test('setup: no operator-configured databricks provider is in the way', function () {",
+                  "      pm.expect(leftover, 'a databricks provider already exists and is not a harness leftover; remove it or run against a clean profile: ' + (kRes ? kRes.text() : String(kErr))).to.equal(true);",
+                  "    });",
+                  "    if (!leftover) { pm.execution.skipRequest(); return; }",
+                  "    mgmt('DELETE', '/api/providers/' + PROVIDER, null, function () { createProvider(function () {}); });",
+                  "  });",
+                  "});",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: JSON.stringify(body)}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('dbxOauthProvider');",
+                  "if (provider && pm.variables.get('dbxOauthCreated') === '1') {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: removed the databricks provider the run configured', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('a 401 from the token endpoint is a credential fault and must not drain onto the fallback', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'the fallback must not have served: ' + pm.response.text()).to.not.equal('true');",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text).to.include('oauth token request to https://dbx-fixture-workspace.invalid/oidc/v1/token failed (401)');",
+                  "  pm.expect(text).to.include('invalid_client');",
+                  "  pm.expect(text, 'the service principal secret must never be echoed').to.not.include('harness-service-principal-secret');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{dbxOauthProvider}}/databricks-claude-sonnet-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false,\n  \"fallbacks\": [\n    \"openai/gpt-4o-mini\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "209. Custom OpenAI-compatible provider mints its bearer from oauth_key_config (custom provider oauth)",
+      "description": "Pins the oauth_key_config wire contract for custom providers on the openai base. A key may carry no value and instead an OAuth2 client_credentials (or RFC 7523 jwt_bearer) block; OpenAIProvider resolves it at method entry through core/providers/utils/tokencache (ResolveBearer), the same path Databricks OAuth M2M uses, and the management API stores the block with its secrets encrypted and returns it redacted.\n\nEach case stands up a run-scoped custom provider through the management API and deletes it afterwards, sweeping leftovers older than ten minutes. The token endpoint is deliberately unreachable (https://127.0.0.1:9), so the inference case pins the shape of the failure rather than a live IdP: the request must fail at token minting with the token endpoint named and no secret echoed, never with the upstream's 401 that a static-bearer path would produce.\n\nRed before the change: POST /keys without a value is refused (Key value must not be empty), so the OAuth key never exists and the chat case has nothing to mint from. Green after: the key saves, round-trips redacted, and the chat request fails at the mint. The refusal cases pin that allowing a valueless OAuth key did not loosen the empty-key, half-block, token_url, auth_style or signing_algorithm checks. The body-placement case pins that auth_style and audience stay readable while client_id, client_secret and every extra_params value come back masked, and that an update which sends those masks back resolves them to the stored values instead of clearing them. The jwt_bearer cases pin the RFC 7523 grant on the same path: the PEM is stored masked and never echoed, the claims round-trip readable, the chat request fails at the exchange (the assertion signed, the endpoint unreachable), and a literal private_key that is not an RSA or EC PEM is refused at save naming the field, so it never reaches a mint. Refusal rows carry [EXPECT-400] and mint rows [EXPECT-502] (the unreachable token endpoint is a bad gateway), which the collection-level status test must expect.\n\nRun with FEATURE=\"custom provider oauth\".",
+      "item": [
+        {
+          "name": "openai custom provider oauth_key_config key is accepted, served redacted and mints before the upstream call [EXPECT-502]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-oauthkey-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.openai.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped OpenAI-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('oauthKeyProvider', provider);",
+                  "sweepStale(function () {",
+                  "  createProvider(provider, function (ok) {",
+                  "    if (!ok) { return; }",
+                  "    mgmt('POST', '/api/providers/' + encodeURIComponent(provider) + '/keys', '{\"name\":' + JSON.stringify(provider + '-oauth') + ',\"models\":[\"*\"],\"weight\":1,\"oauth_key_config\":{\"grant_type\":\"client_credentials\",\"token_url\":\"https://127.0.0.1:9/oauth/token\",\"client_id\":\"harness-client-id\",\"client_secret\":\"harness-client-secret\",\"scopes\":[\"inference\"]}}', function (err, res) {",
+                  "      pm.test('a key with oauth_key_config and no value is accepted', function () {",
+                  "        pm.expect(err).to.equal(null);",
+                  "        pm.expect(res.code, res.text()).to.equal(200);",
+                  "      });",
+                  "      if (err || res.code !== 200) { return; }",
+                  "      mgmt('GET', '/api/providers/' + encodeURIComponent(provider) + '/keys', null, function (err2, res2) {",
+                  "        pm.test('the stored key round-trips with its secrets redacted', function () {",
+                  "          pm.expect(err2).to.equal(null);",
+                  "          pm.expect(res2.code, res2.text()).to.equal(200);",
+                  "          var keys = (res2.json() || {}).keys || [];",
+                  "          pm.expect(keys, res2.text()).to.have.lengthOf(1);",
+                  "          var cfg = keys[0].oauth_key_config;",
+                  "          pm.expect(cfg, res2.text()).to.be.an('object');",
+                  "          pm.expect(cfg.grant_type).to.equal('client_credentials');",
+                  "          pm.expect(cfg.token_url.value, 'the token url is an address and stays readable').to.equal('https://127.0.0.1:9/oauth/token');",
+                  "          pm.expect(cfg.scopes).to.eql(['inference']);",
+                  "          pm.expect(cfg.client_secret.value, 'client_secret must be redacted').to.not.equal('harness-client-secret');",
+                  "          pm.expect(cfg.client_id.value, 'client_id must be redacted').to.not.equal('harness-client-id');",
+                  "          pm.expect(res2.text()).to.not.include('harness-client-secret');",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('oauthKeyProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('the request fails at token minting, not at the upstream', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.not.equal(200);",
+                  "  pm.expect(pm.response.code, 'a 401 here means the static-bearer path ran instead of the OAuth mint: ' + pm.response.text()).to.not.equal(401);",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body).to.include('oauth token request');",
+                  "  pm.expect(body, 'the client secret must never be echoed').to.not.include('harness-client-secret');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{oauthKeyProvider}}/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai custom provider key with neither value nor oauth_key_config is still refused [EXPECT-400]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-oauthkey-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.openai.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped OpenAI-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('oauthKeyProvider', provider);",
+                  "sweepStale(function () { createProvider(provider, function () {}); });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('oauthKeyProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('an empty key is refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('Key value must not be empty');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"no-credential\",\n  \"models\": [\n    \"*\"\n  ],\n  \"weight\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{oauthKeyProvider}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{oauthKeyProvider}}",
+                "keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai custom provider half-configured oauth_key_config is refused at save [EXPECT-400]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-oauthkey-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.openai.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped OpenAI-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('oauthKeyProvider', provider);",
+                  "sweepStale(function () { createProvider(provider, function () {}); });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('oauthKeyProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('a client_credentials block without a secret is refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('client_secret');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"half-oauth\",\n  \"models\": [\n    \"*\"\n  ],\n  \"weight\": 1,\n  \"oauth_key_config\": {\n    \"grant_type\": \"client_credentials\",\n    \"token_url\": \"https://idp.example/oauth2/token\",\n    \"client_id\": \"harness-client-id\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{oauthKeyProvider}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{oauthKeyProvider}}",
+                "keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai custom provider oauth_key_config with a plain-http token_url is refused at save [EXPECT-400]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-oauthkey-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.openai.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped OpenAI-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('oauthKeyProvider', provider);",
+                  "sweepStale(function () { createProvider(provider, function () {}); });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('oauthKeyProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('a client secret may not travel over plain http', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('https');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"http-oauth\",\n  \"models\": [\n    \"*\"\n  ],\n  \"weight\": 1,\n  \"oauth_key_config\": {\n    \"grant_type\": \"client_credentials\",\n    \"token_url\": \"http://idp.example/oauth2/token\",\n    \"client_id\": \"harness-client-id\",\n    \"client_secret\": \"harness-client-secret\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{oauthKeyProvider}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{oauthKeyProvider}}",
+                "keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai custom provider client_credentials oauth_key_config with body placement, audience and extra_params round-trips masked and survives an update that sends the masks back",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-oauthkey-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.openai.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped OpenAI-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('oauthKeyProvider', provider);",
+                  "sweepStale(function () {",
+                  "  createProvider(provider, function (ok) {",
+                  "    if (!ok) { return; }",
+                  "    mgmt('POST', '/api/providers/' + encodeURIComponent(provider) + '/keys', '{\"name\":' + JSON.stringify(provider + '-oauth') + ',\"models\":[\"*\"],\"weight\":1,\"oauth_key_config\":' + \"{\\\"grant_type\\\":\\\"client_credentials\\\",\\\"token_url\\\":\\\"https://127.0.0.1:9/oauth/token\\\",\\\"client_id\\\":\\\"harness-client-id\\\",\\\"client_secret\\\":\\\"harness-client-secret\\\",\\\"auth_style\\\":\\\"body\\\",\\\"scopes\\\":[\\\"inference\\\",\\\"models.read\\\"],\\\"audience\\\":\\\"api://harness-llm-gateway\\\",\\\"extra_params\\\":{\\\"resource\\\":\\\"api://harness-resource\\\",\\\"tenant\\\":\\\"harness-literal-param\\\"}}\" + '}', function (err, res) {",
+                  "      pm.test('a client_credentials key with body placement, audience and extra_params is accepted', function () {",
+                  "        pm.expect(err).to.equal(null);",
+                  "        pm.expect(res.code, res.text()).to.equal(200);",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('oauthKeyProvider');",
+                  "function cleanup() {",
+                  "  if (!provider) { return; }",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "function checkRedacted(label, cfg, text) {",
+                  "  pm.expect(cfg, text).to.be.an('object');",
+                  "  pm.expect(cfg.grant_type, label).to.equal('client_credentials');",
+                  "  pm.expect(cfg.auth_style, label + ': auth_style is a plain enum and stays readable').to.equal('body');",
+                  "  pm.expect(cfg.audience, label + ': audience is a plain string and stays readable').to.equal('api://harness-llm-gateway');",
+                  "  pm.expect(cfg.scopes, label).to.eql(['inference', 'models.read']);",
+                  "  pm.expect(cfg.extra_params, label).to.be.an('object');",
+                  "  pm.expect(cfg.extra_params.resource, label + ': extra_params values are masked as literal strings').to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(cfg.extra_params.resource, label).to.not.equal('api://harness-resource');",
+                  "  pm.expect(cfg.extra_params.tenant, label).to.not.equal('harness-literal-param');",
+                  "  pm.expect(cfg.client_secret.value, label + ': client_secret must be redacted').to.not.equal('harness-client-secret');",
+                  "  pm.expect(text, label + ': no literal may be echoed').to.not.include('harness-client-secret');",
+                  "  pm.expect(text, label).to.not.include('api://harness-resource');",
+                  "  pm.expect(text, label).to.not.include('harness-literal-param');",
+                  "}",
+                  "var keys = [];",
+                  "pm.test('the stored key lists auth_style and audience readable with every credential-bearing field masked', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(200);",
+                  "  keys = (pm.response.json() || {}).keys || [];",
+                  "  pm.expect(keys, pm.response.text()).to.have.lengthOf(1);",
+                  "  checkRedacted('GET', keys[0].oauth_key_config, pm.response.text());",
+                  "});",
+                  "if (!keys.length || !keys[0].oauth_key_config) { cleanup(); return; }",
+                  "var stored = keys[0];",
+                  "// The update body is written field by field in a fixed order, never re-serialized from the parsed GET.",
+                  "// Masked SecretVars go back as their masked string; the server resolves a mask to the stored value.",
+                  "var cfg = stored.oauth_key_config;",
+                  "function sv(v) { return JSON.stringify(v && typeof v === 'object' ? v.value : v); }",
+                  "var update = '{\"name\":' + JSON.stringify(stored.name) + ',\"models\":[\"*\"],\"weight\":1,\"oauth_key_config\":{' +",
+                  "  '\"grant_type\":' + JSON.stringify(cfg.grant_type) +",
+                  "  ',\"token_url\":' + sv(cfg.token_url) +",
+                  "  ',\"client_id\":' + sv(cfg.client_id) +",
+                  "  ',\"client_secret\":' + sv(cfg.client_secret) +",
+                  "  ',\"auth_style\":' + JSON.stringify(cfg.auth_style) +",
+                  "  ',\"scopes\":[' + (cfg.scopes || []).map(function (x) { return JSON.stringify(x); }).join(',') + ']' +",
+                  "  ',\"audience\":' + JSON.stringify(cfg.audience) +",
+                  "  ',\"extra_params\":{\"resource\":' + JSON.stringify(cfg.extra_params.resource) + ',\"tenant\":' + JSON.stringify(cfg.extra_params.tenant) + '}}}';",
+                  "mgmt('PUT', '/api/providers/' + encodeURIComponent(provider) + '/keys/' + encodeURIComponent(stored.id), update, function (err, res) {",
+                  "  pm.test('an update that sends the masked GET body back is accepted (masks resolve to the stored values)', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "  });",
+                  "  if (err || res.code !== 200) { cleanup(); return; }",
+                  "  mgmt('GET', '/api/providers/' + encodeURIComponent(provider) + '/keys', null, function (err2, res2) {",
+                  "    pm.test('after the update the key still carries body placement, audience, scopes and masked extra_params', function () {",
+                  "      pm.expect(err2).to.equal(null);",
+                  "      pm.expect(res2.code, res2.text()).to.equal(200);",
+                  "      var after = (res2.json() || {}).keys || [];",
+                  "      pm.expect(after, res2.text()).to.have.lengthOf(1);",
+                  "      checkRedacted('PUT round-trip', after[0].oauth_key_config, res2.text());",
+                  "    });",
+                  "    cleanup();",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{oauthKeyProvider}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{oauthKeyProvider}}",
+                "keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai custom provider client_credentials oauth_key_config with an unknown auth_style is refused at save [EXPECT-400]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-oauthkey-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.openai.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped OpenAI-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('oauthKeyProvider', provider);",
+                  "sweepStale(function () { createProvider(provider, function () {}); });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('oauthKeyProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('auth_style outside header/body is refused with 400 naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('auth_style');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"query-auth-style\",\n  \"models\": [\n    \"*\"\n  ],\n  \"weight\": 1,\n  \"oauth_key_config\": {\n    \"grant_type\": \"client_credentials\",\n    \"token_url\": \"https://idp.example/oauth2/token\",\n    \"client_id\": \"harness-client-id\",\n    \"client_secret\": \"harness-client-secret\",\n    \"auth_style\": \"query\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{oauthKeyProvider}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{oauthKeyProvider}}",
+                "keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai custom provider jwt_bearer oauth_key_config key is accepted, served with private_key redacted and mints before the upstream call [EXPECT-502]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-oauthkey-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.openai.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped OpenAI-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('oauthKeyProvider', provider);",
+                  "sweepStale(function () {",
+                  "  createProvider(provider, function (ok) {",
+                  "    if (!ok) { return; }",
+                  "    mgmt('POST', '/api/providers/' + encodeURIComponent(provider) + '/keys', '{\"name\":' + JSON.stringify(provider + '-oauth') + ',\"models\":[\"*\"],\"weight\":1,\"oauth_key_config\":' + \"{\\\"grant_type\\\":\\\"jwt_bearer\\\",\\\"token_url\\\":\\\"https://127.0.0.1:9/oauth/token\\\",\\\"private_key\\\":\\\"-----BEGIN PRIVATE KEY-----\\\\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgPRGI14LQwtUx25rt\\\\n+1l02+TsYAezzwKs49T6XLM37ZmhRANCAAS06cNQlnL0IAiijz4O5dkVNBWh2Fl9\\\\nrjGqe06oXP1NPnB+MN9wC8Cizwjv6UqvGsOMvuu3CITydqgXaGnQlU50\\\\n-----END PRIVATE KEY-----\\\",\\\"issuer\\\":\\\"harness-issuer\\\",\\\"subject\\\":\\\"harness-subject\\\",\\\"audience\\\":\\\"https://127.0.0.1:9/oauth/token\\\",\\\"key_id\\\":\\\"harness-kid-1\\\",\\\"signing_algorithm\\\":\\\"ES256\\\",\\\"assertion_lifetime_seconds\\\":120,\\\"scopes\\\":[\\\"inference\\\"]}\" + '}', function (err, res) {",
+                  "      pm.test('a key with oauth_key_config and no value is accepted', function () {",
+                  "        pm.expect(err).to.equal(null);",
+                  "        pm.expect(res.code, res.text()).to.equal(200);",
+                  "      });",
+                  "      if (err || res.code !== 200) { return; }",
+                  "      mgmt('GET', '/api/providers/' + encodeURIComponent(provider) + '/keys', null, function (err2, res2) {",
+                  "        pm.test('the stored jwt_bearer key round-trips with its claims readable and the private key redacted', function () {",
+                  "          pm.expect(err2).to.equal(null);",
+                  "          pm.expect(res2.code, res2.text()).to.equal(200);",
+                  "          var keys = (res2.json() || {}).keys || [];",
+                  "          pm.expect(keys, res2.text()).to.have.lengthOf(1);",
+                  "          var cfg = keys[0].oauth_key_config;",
+                  "          pm.expect(cfg, res2.text()).to.be.an('object');",
+                  "          pm.expect(cfg.grant_type).to.equal('jwt_bearer');",
+                  "          pm.expect(cfg.token_url.value).to.equal('https://127.0.0.1:9/oauth/token');",
+                  "          pm.expect(cfg.issuer).to.equal('harness-issuer');",
+                  "          pm.expect(cfg.subject).to.equal('harness-subject');",
+                  "          pm.expect(cfg.audience).to.equal('https://127.0.0.1:9/oauth/token');",
+                  "          pm.expect(cfg.key_id).to.equal('harness-kid-1');",
+                  "          pm.expect(cfg.signing_algorithm).to.equal('ES256');",
+                  "          pm.expect(cfg.assertion_lifetime_seconds).to.equal(120);",
+                  "          pm.expect(cfg.scopes).to.eql(['inference']);",
+                  "          pm.expect(cfg.private_key, 'private_key is present').to.be.an('object');",
+                  "          pm.expect(cfg.private_key.value, 'private_key must be redacted').to.not.include('BEGIN PRIVATE KEY');",
+                  "          pm.expect(res2.text(), 'no PEM material may be echoed').to.not.include('MIGHAgEAMBMGByqGSM49AgEG');",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('oauthKeyProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('the jwt_bearer request fails at token minting, not at the upstream', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.not.equal(200);",
+                  "  pm.expect(pm.response.code, 'a 401 here means the static-bearer path ran instead of the OAuth mint: ' + pm.response.text()).to.not.equal(401);",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, 'the assertion was signed and the exchange was attempted').to.include('oauth token request');",
+                  "  pm.expect(body, 'no PEM material may be echoed').to.not.include('MIGHAgEAMBMGByqGSM49AgEG');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{oauthKeyProvider}}/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai custom provider jwt_bearer oauth_key_config with an unknown signing_algorithm is refused at save [EXPECT-400]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-oauthkey-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.openai.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped OpenAI-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('oauthKeyProvider', provider);",
+                  "sweepStale(function () { createProvider(provider, function () {}); });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('oauthKeyProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('a signing_algorithm outside the supported list is refused with 400 naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('signing_algorithm');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"hs256-jwt\",\n  \"models\": [\n    \"*\"\n  ],\n  \"weight\": 1,\n  \"oauth_key_config\": {\n    \"grant_type\": \"jwt_bearer\",\n    \"token_url\": \"https://idp.example/oauth2/token\",\n    \"private_key\": \"-----BEGIN PRIVATE KEY-----\\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgPRGI14LQwtUx25rt\\n+1l02+TsYAezzwKs49T6XLM37ZmhRANCAAS06cNQlnL0IAiijz4O5dkVNBWh2Fl9\\nrjGqe06oXP1NPnB+MN9wC8Cizwjv6UqvGsOMvuu3CITydqgXaGnQlU50\\n-----END PRIVATE KEY-----\",\n    \"issuer\": \"harness-issuer\",\n    \"audience\": \"https://idp.example/oauth2/token\",\n    \"signing_algorithm\": \"HS256\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{oauthKeyProvider}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{oauthKeyProvider}}",
+                "keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai custom provider jwt_bearer oauth_key_config whose private_key is not a PEM is refused at save [EXPECT-400]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-oauthkey-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "function createProvider(name, cb) {",
+                  "  mgmt('POST', '/api/providers', '{\"provider\":' + JSON.stringify(name) + ',\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false},\"network_config\":{\"base_url\":\"https://api.openai.com\"}}', function (err, res) {",
+                  "    pm.test('setup: created the run-scoped OpenAI-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    cb(!err && res.code === 200);",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('oauthKeyProvider', provider);",
+                  "sweepStale(function () { createProvider(provider, function () {}); });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('oauthKeyProvider');",
+                  "if (provider) {",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('a literal private_key that is not a PEM is refused with 400 naming the field, so a mangled key never persists and fails at the first mint', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('private_key');",
+                  "  pm.expect(pm.response.text()).to.include('PEM');",
+                  "  pm.expect(pm.response.text(), 'the key material must never be echoed').to.not.include('harness-not-a-pem-key');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"not-a-pem-jwt\",\n  \"models\": [\n    \"*\"\n  ],\n  \"weight\": 1,\n  \"oauth_key_config\": {\n    \"grant_type\": \"jwt_bearer\",\n    \"token_url\": \"https://idp.example/oauth2/token\",\n    \"private_key\": \"harness-not-a-pem-key\",\n    \"issuer\": \"harness-issuer\",\n    \"audience\": \"https://idp.example/oauth2/token\",\n    \"signing_algorithm\": \"ES256\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{oauthKeyProvider}}/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{oauthKeyProvider}}",
+                "keys"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "210. Upstream server instructions reach the code mode stub files (code-mode-instructions) [SERIAL]",
+      "description": "Code mode replaces an upstream's tools with four meta-tools (listToolFiles, readToolFile, getToolDocs, executeToolCode) and moves the real tool documentation into a virtual .pyi filesystem. The gateway handshake already forwarded each upstream's `instructions` (folder 172), but the stub files carried none of it: the model was told the server's rules in the system prompt, naming tools it was never sent, and then read a stub that said nothing about them immediately before generating the call. These cases pin that the instructions now ride with the server on every surface that documents it, bounded by the same per-client cap.\n\nSerial, and it provisions its own client: the shared python profile has no code-mode client, and a code-mode client makes the four meta-tools visible to every MCP-bearing request while it exists, so the create and the delete bracket the reads rather than living in the profile. The upstream is the same SSE fixture as sse_mcp (examples/mcps/remote-test-server), which advertises instructions on its initialize handshake.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-instructions provision a code-mode client on the SSE fixture",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Per-run name: two runs against one gateway must not contend for the same client, and the",
+                  "// sweep below keys off this shared prefix to reap anything an interrupted run left behind.",
+                  "pm.collectionVariables.set('codeModeInstructionsClient', 'harness_codemode_instr_' + Date.now());",
+                  "pm.collectionVariables.set('codeModeInstructionsQueue', '[]');",
+                  "pm.collectionVariables.set('codeModeInstructionsSweeps', '0');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode client registers against the SSE fixture', function () {",
+                  "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.be.oneOf([200, 201]);",
+                  "  pm.expect(pm.response.json().status, 'unexpected create status: ' + pm.response.text()).to.eql('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{codeModeInstructionsClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\n    \"echo\",\n    \"add\",\n    \"greet\"\n  ],\n  \"tools_to_auto_execute\": [\n    \"echo\",\n    \"add\",\n    \"greet\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-instructions the handshake aggregate omits the code-mode client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpcResult(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line).result;",
+                  "}",
+                  "",
+                  "pm.test('the handshake aggregate excludes the code mode client', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var result = rpcResult(pm.response);",
+                  "  pm.expect(result, 'no JSON-RPC result: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(result.instructions, 'instructions missing entirely - sse_mcp should still contribute: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(result.instructions, 'a non-code-mode upstream must still be aggregated: ' + result.instructions).to.include('<mcp_server name=\"sse_mcp\">');",
+                  "  // Its tools were replaced by the four meta-tools, so guidance naming them does not belong",
+                  "  // in a block every request pays for. It rides in the server's .pyi stub instead.",
+                  "  pm.expect(result.instructions, 'code mode client leaked into the aggregate: ' + result.instructions).to.not.include(pm.collectionVariables.get('codeModeInstructionsClient'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"harness\",\"version\":\"1\"}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-instructions listToolFiles points at the server without carrying its prose",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var client = pm.collectionVariables.get('codeModeInstructionsClient');",
+                  "pm.test('listing names which servers carry instructions', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'listToolFiles errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  pm.expect(pm.response.text(), 'listing did not point at the server carrying instructions: ' + pm.response.text()).to.include('Servers with their own usage instructions');",
+                  "  pm.expect(pm.response.text(), 'pointer did not name this run\\'s client: ' + pm.response.text()).to.include(client);",
+                  "});",
+                  "pm.test('the listing stays an index, not a copy of every server\\'s prose', function () {",
+                  "  pm.expect(pm.response.text(), 'listing carried the instruction text instead of a pointer: ' + pm.response.text()).to.not.include('Prefer echo for plain text');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-instructions\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"listToolFiles\",\n    \"arguments\": \"{}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-instructions readToolFile carries the server's instructions above the signatures",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// content is a plain JSON string holding the stub, so assert on real lines rather than on the",
+                  "// escaped response body.",
+                  "pm.test('the stub the model re-reads before executeToolCode carries the server rules', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'readToolFile errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var stub = pm.response.json().content;",
+                  "  pm.expect(stub, 'content is not a string, so the stub cannot be inspected: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.collectionVariables.set('codeModeInstructionsStub', stub);",
+                  "  pm.expect(stub, 'stub dropped the upstream instructions:\\n' + stub).to.include('Prefer echo for plain text');",
+                  "  pm.expect(stub, 'stub carried the text with no delimiter:\\n' + stub).to.include('# ---- server instructions (from the upstream handshake) ----');",
+                  "});",
+                  "",
+                  "// Line-anchored on purpose: the stub header contains the phrase 'def names below', so a bare",
+                  "// indexOf('def ') matches that comment instead of the first signature and the check never holds.",
+                  "pm.test('the block sits above the signatures it constrains', function () {",
+                  "  var stub = pm.collectionVariables.get('codeModeInstructionsStub') || '';",
+                  "  var lines = stub.split('\\n');",
+                  "  var blockLine = -1, firstDefLine = -1;",
+                  "  for (var i = 0; i < lines.length; i++) {",
+                  "    if (blockLine === -1 && lines[i].indexOf('# ---- server instructions') === 0) { blockLine = i; }",
+                  "    if (firstDefLine === -1 && lines[i].indexOf('def ') === 0) { firstDefLine = i; }",
+                  "  }",
+                  "  pm.expect(blockLine, 'no instruction block line found:\\n' + stub).to.be.above(-1);",
+                  "  pm.expect(firstDefLine, 'no signature line found in the stub:\\n' + stub).to.be.above(-1);",
+                  "  pm.expect(blockLine, 'instructions landed below the signatures:\\n' + stub).to.be.below(firstDefLine);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-instructions\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"readToolFile\",\n    \"arguments\": \"{\\\"fileName\\\":\\\"servers/{{codeModeInstructionsClient}}.pyi\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-instructions getToolDocs carries the server's instructions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the full-detail escape hatch carries the server rules too', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'getToolDocs errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  pm.expect(pm.response.text(), 'getToolDocs dropped the upstream instructions: ' + pm.response.text()).to.include('Prefer echo for plain text');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-instructions\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"getToolDocs\",\n    \"arguments\": \"{\\\"server\\\":\\\"{{codeModeInstructionsClient}}\\\",\\\"tool\\\":\\\"echo\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-instructions queue this run's client, plus any stale leftovers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var client = pm.collectionVariables.get('codeModeInstructionsClient');",
+                  "// The name carries the run's Date.now(), so a leftover's age is readable from the name itself.",
+                  "// Anything younger than this belongs to a run that may still be reading stubs: never touch it.",
+                  "var STALE_MS = 3600000;",
+                  "pm.test('this run\\'s code-mode client is listed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var clients = pm.response.json().clients || [];",
+                  "  var mine = null, stale = [];",
+                  "  for (var i = 0; i < clients.length; i++) {",
+                  "    var cfg = clients[i].config;",
+                  "    if (!cfg || !cfg.name || cfg.name.indexOf('harness_codemode_instr_') !== 0) { continue; }",
+                  "    if (cfg.name === client) { mine = cfg.id; continue; }",
+                  "    var stamp = parseInt(cfg.name.substring(23), 10);",
+                  "    if (stamp && (Date.now() - stamp) > STALE_MS) { stale.push(cfg.id); }",
+                  "  }",
+                  "  pm.expect(mine, 'this run\\'s client is not listed, so the cleanup below cannot run: ' + pm.response.text()).to.be.a('string');",
+                  "  // This run's client first, so it is reclaimed even if the sweep cap is reached.",
+                  "  pm.collectionVariables.set('codeModeInstructionsQueue', JSON.stringify([mine].concat(stale)));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-instructions remove every queued code-mode client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeInstructionsQueue') || '[]');",
+                  "pm.collectionVariables.set('codeModeInstructionsClientId', queue.length ? queue[0] : 'none-queued');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup removes the queued code-mode client', function () {",
+                  "  pm.expect(pm.response.code, 'cleanup failed - a code-mode client is still registered and its meta-tools will be injected into every MCP-bearing request: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "",
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeInstructionsQueue') || '[]');",
+                  "queue.shift();",
+                  "pm.collectionVariables.set('codeModeInstructionsQueue', JSON.stringify(queue));",
+                  "",
+                  "// Bounded self-repeat (the collection's existing idiom) so a stuck delete cannot spin forever.",
+                  "var sweeps = parseInt(pm.collectionVariables.get('codeModeInstructionsSweeps') || '0', 10) + 1;",
+                  "pm.collectionVariables.set('codeModeInstructionsSweeps', String(sweeps));",
+                  "",
+                  "if (queue.length > 0 && sweeps < 10) {",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  // Stopping with anything left is a leak, not a pass: say so rather than exiting quietly.",
+                  "  pm.test('the sweep drained every queued client', function () {",
+                  "    pm.expect(queue.length, 'cleanup stopped after ' + sweeps + ' passes with clients still registered: ' + JSON.stringify(queue)).to.equal(0);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{codeModeInstructionsClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{codeModeInstructionsClientId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "NaN. Client tool_use named web_search/web_fetch stays a function_call (#8078 / PR #8079)",
       "description": "Regression for #8078 / PR #8079. A client (function) tool_use named web_search or web_fetch was converted to a web_search_call / web_fetch_call because the grouped Anthropic converter matched on name only, orphaning its tool_result. Bedrock rejected the replay with 'The number of toolResult blocks ... exceeds the number of toolUse blocks of previous turn'. Each case replays an assistant turn with client tool_use blocks named web_search and web_fetch plus the matching tool_results through /anthropic/v1/messages and expects a successful reply.",
       "item": [
         {

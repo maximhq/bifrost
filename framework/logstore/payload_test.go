@@ -553,3 +553,17 @@ func TestIsPayloadEmpty_PluginLogsOnly(t *testing.T) {
 	assert.True(t, isPayloadEmpty(ExtractPayload(&Log{ID: "empty"})))
 	assert.False(t, isPayloadEmpty(ExtractPayload(&Log{ID: "plugin-only", PluginLogs: `{"guardrails":[{"message":"pii detected"}]}`})))
 }
+
+// TestAgentRawOnlyPayloadOffload verifies raw-only failures are payloads and hidden bytes never stay in the DB row.
+func TestAgentRawOnlyPayloadOffload(t *testing.T) {
+	raw := "/wA="
+	entry := &AgentLog{RawResponse: &raw, ContentHidden: true}
+	require.True(t, AgentLogHasPayload(entry))
+	data, err := MarshalAgentLogPayload(entry)
+	require.NoError(t, err)
+	PrepareAgentLogDBEntry(entry, "raw-object")
+	require.Nil(t, entry.RawResponse)
+	var hydrated AgentLog
+	require.NoError(t, MergeAgentLogPayloadFromJSON(&hydrated, data))
+	require.Equal(t, raw, *hydrated.RawResponse)
+}

@@ -519,6 +519,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_oauth_token_status_reason_column"}, run: migrationAddMCPOauthTokenStatusReasonColumn},
 	{IDs: []string{"add_databricks_key_config_columns"}, run: migrationAddDatabricksKeyConfigColumns},
 	{IDs: []string{"add_github_copilot_config_columns"}, run: migrationAddGithubCopilotConfigColumns},
+	{IDs: []string{"add_oauth_key_config_columns"}, run: migrationAddOAuthKeyConfigColumns},
 	{IDs: []string{"add_mcp_client_endpoint_slug"}, run: migrationAddMCPClientEndpointSlug},
 	{IDs: []string{"add_allow_all_providers_to_virtual_key"}, run: migrationAddAllowAllProvidersToVirtualKey},
 	{IDs: []string{"backfill_vk_allow_all_providers_hash"}, run: migrationBackfillVirtualKeyAllowAllProvidersHash},
@@ -556,6 +557,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_compat_force_reasoning_only_models_to_responses_column"}, run: migrationAddCompatForceReasoningOnlyModelsToResponsesColumn},
 	{IDs: []string{"backfill_compat_force_reasoning_only_models_to_responses"}, run: migrationBackfillCompatForceReasoningOnlyModelsToResponses},
 	{IDs: []string{"add_agent_gateway_tables"}, run: migrationAddAgentGatewayTables},
+	{IDs: []string{"add_a2a_raw_capture_setting"}, run: migrationAddA2ARawCaptureSetting},
 	{IDs: []string{"add_agent_push_config_tenant_column"}, run: migrationAddAgentPushConfigTenantColumn},
 	{IDs: []string{"add_ignore_provider_cost_column"}, run: migrationAddIgnoreProviderCostColumn},
 	{IDs: []string{"add_100k_token_pricing_columns"}, run: migrationAdd100kTokenPricingColumns},
@@ -13958,6 +13960,59 @@ func rollbackGithubCopilotConfigColumns(*gorm.DB) error {
 	return fmt.Errorf("add_github_copilot_config_columns is non-rollbackable: dropping the github_copilot_* columns would permanently delete every stored GitHub App private key, which GitHub only issues once and cannot re-supply; the columns are additive and older binaries safely ignore them")
 }
 
+// oauthKeyConfigColumns are the oauth_key_config columns on the key table.
+var oauthKeyConfigColumns = []string{
+	"oauth_token_url",
+	"oauth_client_id",
+	"oauth_client_secret",
+	"oauth_private_key",
+	"oauth_settings_json",
+}
+
+// migrationAddOAuthKeyConfigColumns adds the oauth_key_config columns to the key table. There
+// is nothing to backfill: no existing key carries an OAuth credential.
+func migrationAddOAuthKeyConfigColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth_key_config_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "postgres" {
+				// ADD COLUMN takes ACCESS EXCLUSIVE on config_keys. During a rolling upgrade a
+				// long transaction can hold the table, and an unbounded wait parks this statement
+				// at the head of the lock queue where every later key read and write waits behind
+				// it. Bounding the wait fails this boot's migration instead, and the next boot
+				// retries it. SET LOCAL reverts with the migration's transaction.
+				if err := tx.Exec("SET LOCAL lock_timeout = '5s'").Error; err != nil {
+					return fmt.Errorf("failed to bound the config_keys lock wait: %w", err)
+				}
+			}
+			for _, column := range oauthKeyConfigColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: rollbackOAuthKeyConfigColumns,
+	}})
+
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// rollbackOAuthKeyConfigColumns refuses rather than dropping, for the same reason as the
+// GitHub Copilot columns: oauth_private_key holds signing keys an identity provider may have
+// issued once. The columns are additive, so an older binary ignores them.
+func rollbackOAuthKeyConfigColumns(*gorm.DB) error {
+	return fmt.Errorf("add_oauth_key_config_columns is non-rollbackable: dropping the oauth_* columns would permanently delete stored OAuth client secrets and private keys; the columns are additive and older binaries safely ignore them")
+}
+
 // migrationAddHiddenRequestTypesJSONColumn adds the hidden_request_types_json column to
 // config_client so hidden request types can be edited from the UI as well as config.json.
 // Existing rows get an empty list; a value in config.json's client section reconciles in on boot.
@@ -15709,4 +15764,17 @@ func migrationAddCloudflareKeyConfigColumns(ctx context.Context, db *gorm.DB, lo
 		return fmt.Errorf("error while running cloudflare key config columns migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddA2ARawCaptureSetting adds the opt-in raw capture setting for existing stores.
+func migrationAddA2ARawCaptureSetting(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "add_a2a_raw_capture_setting",
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "A2AStoreRawRequestResponse")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "A2AStoreRawRequestResponse")
+		},
+	})
 }
