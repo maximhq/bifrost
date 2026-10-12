@@ -17,7 +17,9 @@ const failClosedTestSentinel = "sk-test-sentinel-should-never-leak-4f19c2"
 // plugin whose shared object cannot be loaded must make loadCustomPlugins return
 // an error, and that error must not carry the plugin's path.
 func TestLoadCustomPluginsFailsClosedOnInstantiateError(t *testing.T) {
+	prevLogger := logger
 	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
 	path := "/no/such/path/" + failClosedTestSentinel + ".so"
 	config := &lib.Config{
 		PluginLoader: plugins.NewSharedObjectPluginLoader(nil),
@@ -39,7 +41,9 @@ func TestLoadCustomPluginsFailsClosedOnInstantiateError(t *testing.T) {
 // TestLoadCustomPluginsFailsClosedOnNilPlugin: a loader that returns (nil, nil)
 // hits the defensive nil-plugin branch, which must also count as a failure.
 func TestLoadCustomPluginsFailsClosedOnNilPlugin(t *testing.T) {
+	prevLogger := logger
 	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
 	path := "/irrelevant/nil-plugin.so"
 	config := &lib.Config{
 		PluginLoader: nilReturningLoader{},
@@ -57,7 +61,9 @@ func TestLoadCustomPluginsFailsClosedOnNilPlugin(t *testing.T) {
 // TestLoadCustomPluginsSkipsEnterprisePluginFailure: enterprise plugins keep
 // today's skip-and-continue behavior and never trip the fail-closed error.
 func TestLoadCustomPluginsSkipsEnterprisePluginFailure(t *testing.T) {
+	prevLogger := logger
 	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
 	path := "/no/such/path/datadog.so"
 	config := &lib.Config{
 		PluginLoader: plugins.NewSharedObjectPluginLoader(nil),
@@ -77,7 +83,9 @@ func TestLoadCustomPluginsSkipsEnterprisePluginFailure(t *testing.T) {
 // TestLoadCustomPluginsReturnsNilWithNoEnabledCustomPlugins: with no enabled
 // custom plugin configured, loadCustomPlugins still returns nil.
 func TestLoadCustomPluginsReturnsNilWithNoEnabledCustomPlugins(t *testing.T) {
+	prevLogger := logger
 	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
 	path := "/no/such/path.so"
 	config := &lib.Config{
 		PluginLoader: plugins.NewSharedObjectPluginLoader(nil),
@@ -92,6 +100,49 @@ func TestLoadCustomPluginsReturnsNilWithNoEnabledCustomPlugins(t *testing.T) {
 
 	if err := server.loadCustomPlugins(context.Background()); err != nil {
 		t.Fatalf("loadCustomPlugins returned an error with zero enabled custom plugins (a disabled plugin only): %v", err)
+	}
+}
+
+// TestLoadCustomPluginsCountsEveryFailureAndKeepsGoing: two enabled custom
+// plugins both fail. The loop must examine BOTH -- returning after the first
+// would leave the second's status unset -- and the aggregate must report the
+// real count, not 1.
+func TestLoadCustomPluginsCountsEveryFailureAndKeepsGoing(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
+	firstPath := "/no/such/path/first-" + failClosedTestSentinel + ".so"
+	secondPath := "/no/such/path/second-" + failClosedTestSentinel + ".so"
+	config := &lib.Config{
+		PluginLoader: plugins.NewSharedObjectPluginLoader(nil),
+		PluginConfigs: []*schemas.PluginConfig{
+			{Enabled: true, Name: "capture", Path: &firstPath},
+			{Enabled: true, Name: "relay", Path: &secondPath},
+		},
+	}
+	server := &BifrostHTTPServer{Config: config}
+
+	err := server.loadCustomPlugins(context.Background())
+	if err == nil {
+		t.Fatal("loadCustomPlugins returned nil error for two enabled custom plugins that both failed to load")
+	}
+	if !strings.Contains(err.Error(), "2 enabled custom plugin(s) failed") {
+		t.Errorf("aggregate error does not report both failures — a loop that returns after the first failure, or counts only one, reads as %q; want a count of 2", err.Error())
+	}
+	// The per-plugin surface is where the detail lives, so both names must carry
+	// an error status: that is what proves the second plugin was reached at all.
+	for _, name := range []string{"capture", "relay"} {
+		status, ok := config.GetPluginStatusByName(name)
+		if !ok {
+			t.Errorf("plugin %q has no status — the loop stopped before reaching it", name)
+			continue
+		}
+		if status.Status != schemas.PluginStatusError {
+			t.Errorf("plugin %q status = %q, want %q", name, status.Status, schemas.PluginStatusError)
+		}
+	}
+	if strings.Contains(err.Error(), failClosedTestSentinel) {
+		t.Errorf("aggregate error leaked plugin-config text (sentinel %q found in %q)", failClosedTestSentinel, err.Error())
 	}
 }
 
