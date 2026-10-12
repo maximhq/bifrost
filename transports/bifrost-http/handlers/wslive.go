@@ -302,13 +302,23 @@ func (r *liveWSRelay) run() {
 	releaseLiveClient(r.clientConn, r.clientGone.Load(), clientDone)
 }
 
-// releaseLiveClient ends the client side once the upstream is gone. Close on a fasthttp hijacked
-// connection does not interrupt a pending read, so a repeated read deadline releases it (a pong
-// pushes one deadline out).
+// liveCloseHandshakeGrace bounds the wait for the client's close reply before its socket is dropped.
+const liveCloseHandshakeGrace = time.Second
+
+// releaseLiveClient ends the client side once the upstream is gone. A client still connected is
+// sent a close frame and given liveCloseHandshakeGrace to answer it: dropping the socket sooner
+// can make its library discard frames read alongside the close frame, losing session.closed.
+// Close on a fasthttp hijacked connection does not interrupt a pending read, so a repeated read
+// deadline releases it after that (a pong pushes one deadline out).
 func releaseLiveClient(clientConn *realtimeClientConn, clientGone bool, clientDone <-chan struct{}) {
 	if !clientGone {
 		// WriteControl is safe alongside the connection's other writers.
 		_ = clientConn.conn.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, "live session ended"), time.Now().Add(realtimeWSWriteTimeout))
+		select {
+		case <-clientDone:
+			return
+		case <-time.After(liveCloseHandshakeGrace):
+		}
 	}
 	for {
 		_ = clientConn.conn.SetReadDeadline(time.Now())
