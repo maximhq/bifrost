@@ -285,7 +285,8 @@ func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider s
 // Responses API unless the model catalog lists the model as a native decisions
 // model: its supports_decisions row, or without a row the decisions model
 // families the providers recognize by name (gpt-6-luna outside OpenRouter,
-// Typesafe's typesafe/ models, Clef on Cloudflare, deciders on Perplexity).
+// Typesafe's typesafe/ models, Clef on Cloudflare, deciders on Perplexity,
+// System One models on Ollama).
 // OpenRouter serves gpt-6-luna's decisions under its own id
 // (openai/gpt-6-luna-decisions, marked by its datasheet row), and rejects its
 // gpt-6-luna chat models on the decisions endpoint, so those are emulated.
@@ -299,7 +300,8 @@ func (p *CompatPlugin) markDecisionForEmulation(ctx *schemas.BifrostContext, pro
 	}
 	fallback := (provider != schemas.OpenRouter && schemas.DefaultSupportsDecisions(model)) || schemas.IsTypesafeModel(model) ||
 		(provider == schemas.Cloudflare && schemas.IsClefModel(model)) ||
-		(provider == schemas.Perplexity && schemas.IsPerplexityDeciderModel(model))
+		(provider == schemas.Perplexity && schemas.IsPerplexityDeciderModel(model)) ||
+		(provider == schemas.Ollama && schemas.IsOllamaDecisionModel(model))
 	if schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback) {
 		return
 	}

@@ -247,3 +247,12 @@ func TestIsPerplexityDeciderModel(t *testing.T) {
 		assert.False(t, IsPerplexityDeciderModel(model), model)
 	}
 }
+
+func TestIsOllamaDecisionModel(t *testing.T) {
+	for _, model := range []string{"nimble", "nimble:latest", "nimble-2", "tev1:0.8b", "tev1-mini", "clef", "clef-flash", "clef-omni", "Clef-Flash:9b", "laya", "laya-multilingual"} {
+		assert.True(t, IsOllamaDecisionModel(model), model)
+	}
+	for _, model := range []string{"llama3.1:latest", "ollama/nimble", "", ":nimble", "tev2"} {
+		assert.False(t, IsOllamaDecisionModel(model), model)
+	}
+}

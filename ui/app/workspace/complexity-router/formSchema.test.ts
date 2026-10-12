@@ -544,12 +544,15 @@ describe("decision model providers", () => {
 	const openrouter = provider({ name: "openrouter" } as Partial<ModelProvider>);
 	const openai = provider({ name: "openai" } as Partial<ModelProvider>);
 	const cloudflare = provider({ name: "cloudflare" } as Partial<ModelProvider>);
+	const perplexity = provider({ name: "perplexity" } as Partial<ModelProvider>);
+	const ollama = provider({ name: "ollama" } as Partial<ModelProvider>);
 	const laya = custom("Laya");
 	const clef = custom("cloudflare clev", "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef");
 	const clefFlash = custom("clef-flash", "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef-flash/");
 
 	test("offers only providers that answer decisions natively", () => {
-		for (const candidate of [typesafe, openrouter, openai, cloudflare, laya, clef]) expect(isDecisionProvider(candidate)).toBe(true);
+		for (const candidate of [typesafe, openrouter, openai, cloudflare, perplexity, ollama, laya, clef])
+			expect(isDecisionProvider(candidate)).toBe(true);
 		expect(isDecisionProvider(provider({ name: "anthropic" } as Partial<ModelProvider>))).toBe(false);
 		expect(
 			isDecisionProvider(
@@ -589,6 +592,9 @@ describe("decision model providers", () => {
 		expect(defaultDecisionModel(openrouter)).toBe("~typesafe/jev-latest");
 		expect(defaultDecisionModel(openai)).toBe("gpt-6-luna");
 		expect(defaultDecisionModel(cloudflare)).toBe("@cf/cloudflare/clef-flash");
+		expect(defaultDecisionModel(perplexity)).toBe("pplx-decider-v1.1-27b");
+		// Only Ollama's listing says which System One models are pulled locally.
+		expect(defaultDecisionModel(ollama)).toBe("");
 		expect(defaultDecisionModel(clefFlash)).toBe("clef-flash");
 		expect(defaultDecisionModel(laya)).toBe("english");
 		expect(defaultDecisionModel(custom("nimble-gpu"))).toBe("nimble-latest");
