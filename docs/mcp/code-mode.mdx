@@ -330,10 +330,26 @@ Reads a virtual `.pyi` file to get compact Python function signatures for tools.
 # youtube server tools
 # Usage: youtube.tool_name(param=value)
 # For detailed docs: use getToolDocs(server="youtube", tool="tool_name")
+#
+# ---- server instructions (from the upstream handshake) ----
+# Prefer search for discovery; call get_video only with an id search returned.
+# ---- end server instructions ----
 
 def search(query: str, maxResults: int = None) -> dict:  # Search for videos
 def get_video(id: str) -> dict:  # Get video details
 ```
+
+If the server described how its tools should be used when it connected, that guidance appears
+above the signatures, so the model reads it right before writing the call. Servers that said
+nothing contribute no block. `listToolFiles` names which servers have guidance, and `getToolDocs`
+repeats it alongside the full tool documentation. Long guidance is trimmed to the server's
+instruction limit.
+
+This is the only place a code mode server's guidance appears. It is deliberately left out of the
+aggregate that non-code-mode servers contribute to (see
+[Server Instructions](/mcp/overview#server-instructions)), which every request carries: in code
+mode that would describe tools the model was not given, and would put back a per-server prompt
+cost that code mode exists to remove.
 
 ### 3. getToolDocs
 

@@ -253998,6 +253998,390 @@
           }
         }
       ]
+    },
+    {
+      "name": "210. Upstream server instructions reach the code mode stub files (code-mode-instructions) [SERIAL]",
+      "description": "Code mode replaces an upstream's tools with four meta-tools (listToolFiles, readToolFile, getToolDocs, executeToolCode) and moves the real tool documentation into a virtual .pyi filesystem. The gateway handshake already forwarded each upstream's `instructions` (folder 172), but the stub files carried none of it: the model was told the server's rules in the system prompt, naming tools it was never sent, and then read a stub that said nothing about them immediately before generating the call. These cases pin that the instructions now ride with the server on every surface that documents it, bounded by the same per-client cap.\n\nSerial, and it provisions its own client: the shared python profile has no code-mode client, and a code-mode client makes the four meta-tools visible to every MCP-bearing request while it exists, so the create and the delete bracket the reads rather than living in the profile. The upstream is the same SSE fixture as sse_mcp (examples/mcps/remote-test-server), which advertises instructions on its initialize handshake.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-instructions provision a code-mode client on the SSE fixture",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Per-run name: two runs against one gateway must not contend for the same client, and the",
+                  "// sweep below keys off this shared prefix to reap anything an interrupted run left behind.",
+                  "pm.collectionVariables.set('codeModeInstructionsClient', 'harness_codemode_instr_' + Date.now());",
+                  "pm.collectionVariables.set('codeModeInstructionsQueue', '[]');",
+                  "pm.collectionVariables.set('codeModeInstructionsSweeps', '0');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode client registers against the SSE fixture', function () {",
+                  "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.be.oneOf([200, 201]);",
+                  "  pm.expect(pm.response.json().status, 'unexpected create status: ' + pm.response.text()).to.eql('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{codeModeInstructionsClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\n    \"echo\",\n    \"add\",\n    \"greet\"\n  ],\n  \"tools_to_auto_execute\": [\n    \"echo\",\n    \"add\",\n    \"greet\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-instructions the handshake aggregate omits the code-mode client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpcResult(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line).result;",
+                  "}",
+                  "",
+                  "pm.test('the handshake aggregate excludes the code mode client', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var result = rpcResult(pm.response);",
+                  "  pm.expect(result, 'no JSON-RPC result: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(result.instructions, 'instructions missing entirely - sse_mcp should still contribute: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(result.instructions, 'a non-code-mode upstream must still be aggregated: ' + result.instructions).to.include('<mcp_server name=\"sse_mcp\">');",
+                  "  // Its tools were replaced by the four meta-tools, so guidance naming them does not belong",
+                  "  // in a block every request pays for. It rides in the server's .pyi stub instead.",
+                  "  pm.expect(result.instructions, 'code mode client leaked into the aggregate: ' + result.instructions).to.not.include(pm.collectionVariables.get('codeModeInstructionsClient'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"harness\",\"version\":\"1\"}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-instructions listToolFiles points at the server without carrying its prose",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var client = pm.collectionVariables.get('codeModeInstructionsClient');",
+                  "pm.test('listing names which servers carry instructions', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'listToolFiles errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  pm.expect(pm.response.text(), 'listing did not point at the server carrying instructions: ' + pm.response.text()).to.include('Servers with their own usage instructions');",
+                  "  pm.expect(pm.response.text(), 'pointer did not name this run\\'s client: ' + pm.response.text()).to.include(client);",
+                  "});",
+                  "pm.test('the listing stays an index, not a copy of every server\\'s prose', function () {",
+                  "  pm.expect(pm.response.text(), 'listing carried the instruction text instead of a pointer: ' + pm.response.text()).to.not.include('Prefer echo for plain text');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-instructions\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"listToolFiles\",\n    \"arguments\": \"{}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-instructions readToolFile carries the server's instructions above the signatures",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// content is a plain JSON string holding the stub, so assert on real lines rather than on the",
+                  "// escaped response body.",
+                  "pm.test('the stub the model re-reads before executeToolCode carries the server rules', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'readToolFile errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var stub = pm.response.json().content;",
+                  "  pm.expect(stub, 'content is not a string, so the stub cannot be inspected: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.collectionVariables.set('codeModeInstructionsStub', stub);",
+                  "  pm.expect(stub, 'stub dropped the upstream instructions:\\n' + stub).to.include('Prefer echo for plain text');",
+                  "  pm.expect(stub, 'stub carried the text with no delimiter:\\n' + stub).to.include('# ---- server instructions (from the upstream handshake) ----');",
+                  "});",
+                  "",
+                  "// Line-anchored on purpose: the stub header contains the phrase 'def names below', so a bare",
+                  "// indexOf('def ') matches that comment instead of the first signature and the check never holds.",
+                  "pm.test('the block sits above the signatures it constrains', function () {",
+                  "  var stub = pm.collectionVariables.get('codeModeInstructionsStub') || '';",
+                  "  var lines = stub.split('\\n');",
+                  "  var blockLine = -1, firstDefLine = -1;",
+                  "  for (var i = 0; i < lines.length; i++) {",
+                  "    if (blockLine === -1 && lines[i].indexOf('# ---- server instructions') === 0) { blockLine = i; }",
+                  "    if (firstDefLine === -1 && lines[i].indexOf('def ') === 0) { firstDefLine = i; }",
+                  "  }",
+                  "  pm.expect(blockLine, 'no instruction block line found:\\n' + stub).to.be.above(-1);",
+                  "  pm.expect(firstDefLine, 'no signature line found in the stub:\\n' + stub).to.be.above(-1);",
+                  "  pm.expect(blockLine, 'instructions landed below the signatures:\\n' + stub).to.be.below(firstDefLine);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-instructions\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"readToolFile\",\n    \"arguments\": \"{\\\"fileName\\\":\\\"servers/{{codeModeInstructionsClient}}.pyi\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-instructions getToolDocs carries the server's instructions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the full-detail escape hatch carries the server rules too', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'getToolDocs errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  pm.expect(pm.response.text(), 'getToolDocs dropped the upstream instructions: ' + pm.response.text()).to.include('Prefer echo for plain text');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-instructions\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"getToolDocs\",\n    \"arguments\": \"{\\\"server\\\":\\\"{{codeModeInstructionsClient}}\\\",\\\"tool\\\":\\\"echo\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-instructions queue this run's client, plus any stale leftovers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var client = pm.collectionVariables.get('codeModeInstructionsClient');",
+                  "// The name carries the run's Date.now(), so a leftover's age is readable from the name itself.",
+                  "// Anything younger than this belongs to a run that may still be reading stubs: never touch it.",
+                  "var STALE_MS = 3600000;",
+                  "pm.test('this run\\'s code-mode client is listed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var clients = pm.response.json().clients || [];",
+                  "  var mine = null, stale = [];",
+                  "  for (var i = 0; i < clients.length; i++) {",
+                  "    var cfg = clients[i].config;",
+                  "    if (!cfg || !cfg.name || cfg.name.indexOf('harness_codemode_instr_') !== 0) { continue; }",
+                  "    if (cfg.name === client) { mine = cfg.id; continue; }",
+                  "    var stamp = parseInt(cfg.name.substring(23), 10);",
+                  "    if (stamp && (Date.now() - stamp) > STALE_MS) { stale.push(cfg.id); }",
+                  "  }",
+                  "  pm.expect(mine, 'this run\\'s client is not listed, so the cleanup below cannot run: ' + pm.response.text()).to.be.a('string');",
+                  "  // This run's client first, so it is reclaimed even if the sweep cap is reached.",
+                  "  pm.collectionVariables.set('codeModeInstructionsQueue', JSON.stringify([mine].concat(stale)));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-instructions remove every queued code-mode client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeInstructionsQueue') || '[]');",
+                  "pm.collectionVariables.set('codeModeInstructionsClientId', queue.length ? queue[0] : 'none-queued');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup removes the queued code-mode client', function () {",
+                  "  pm.expect(pm.response.code, 'cleanup failed - a code-mode client is still registered and its meta-tools will be injected into every MCP-bearing request: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "",
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeInstructionsQueue') || '[]');",
+                  "queue.shift();",
+                  "pm.collectionVariables.set('codeModeInstructionsQueue', JSON.stringify(queue));",
+                  "",
+                  "// Bounded self-repeat (the collection's existing idiom) so a stuck delete cannot spin forever.",
+                  "var sweeps = parseInt(pm.collectionVariables.get('codeModeInstructionsSweeps') || '0', 10) + 1;",
+                  "pm.collectionVariables.set('codeModeInstructionsSweeps', String(sweeps));",
+                  "",
+                  "if (queue.length > 0 && sweeps < 10) {",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  // Stopping with anything left is a leak, not a pass: say so rather than exiting quietly.",
+                  "  pm.test('the sweep drained every queued client', function () {",
+                  "    pm.expect(queue.length, 'cleanup stopped after ' + sweeps + ' passes with clients still registered: ' + JSON.stringify(queue)).to.equal(0);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{codeModeInstructionsClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{codeModeInstructionsClientId}}"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
