@@ -204,6 +204,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Sarvam,
 		schemas.Wafer,
 		schemas.Databricks,
+		schemas.Zro,
 		schemas.GithubCopilot,
 		schemas.Typesafe,
 		ProviderOpenAICustom,
@@ -514,6 +515,14 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Zro:
+		return []schemas.Key{
+			{
+				Value:  *schemas.NewSecretVar("env.ZRO_API_KEY"),
+				Models: []string{"*"},
+				Weight: 1.0,
 			},
 		}, nil
 	case schemas.Databricks:
@@ -934,6 +943,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			},
 		}, nil
 	case schemas.Wafer:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Zro:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,

@@ -619,6 +619,9 @@
         "wafer": {
           "$ref": "#/$defs/provider"
         },
+        "zro": {
+          "$ref": "#/$defs/provider"
+        },
         "typesafe": {
           "$ref": "#/$defs/provider"
         },
@@ -12009,7 +12012,8 @@
             "fireworks",
             "sarvam",
             "wafer",
-            "typesafe"
+            "typesafe",
+            "zro"
           ],
           "description": "Base provider type to extend"
         },
