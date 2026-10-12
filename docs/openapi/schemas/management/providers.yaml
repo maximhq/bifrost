@@ -213,6 +213,15 @@ SglKeyConfig:
   required:
     - url
 
+CloudflareKeyConfig:
+  type: object
+  description: Cloudflare Workers AI-specific key configuration
+  properties:
+    account_id:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+  required:
+    - account_id
+
 VLLMKeyConfig:
   type: object
   description: vLLM-specific key configuration for per-key routing to different vLLM instances
@@ -270,6 +279,8 @@ Key:
       $ref: '#/OllamaKeyConfig'
     sgl_key_config:
       $ref: '#/SglKeyConfig'
+    cloudflare_key_config:
+      $ref: '#/CloudflareKeyConfig'
     replicate_key_config:
       $ref: '#/ReplicateKeyConfig'
     enabled:

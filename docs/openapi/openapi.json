@@ -82072,11 +82072,11 @@
                       "properties": {
                         "provider": {
                           "type": "string",
-                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "model": {
                           "type": "string",
-                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "previous_message_count": {
                           "type": "integer",
@@ -82514,11 +82514,11 @@
                     "properties": {
                       "provider": {
                         "type": "string",
-                        "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                        "description": "Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
                       },
                       "model": {
                         "type": "string",
-                        "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                        "description": "Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
                       },
                       "previous_message_count": {
                         "type": "integer",
@@ -82933,11 +82933,11 @@
                       "properties": {
                         "provider": {
                           "type": "string",
-                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "model": {
                           "type": "string",
-                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "previous_message_count": {
                           "type": "integer",
@@ -83396,11 +83396,11 @@
                       "properties": {
                         "provider": {
                           "type": "string",
-                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "model": {
                           "type": "string",
-                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "previous_message_count": {
                           "type": "integer",
@@ -84634,11 +84634,11 @@
                       "properties": {
                         "provider": {
                           "type": "string",
-                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "model": {
                           "type": "string",
-                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "previous_message_count": {
                           "type": "integer",
@@ -85077,11 +85077,11 @@
                     "properties": {
                       "provider": {
                         "type": "string",
-                        "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                        "description": "Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
                       },
                       "model": {
                         "type": "string",
-                        "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                        "description": "Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
                       },
                       "previous_message_count": {
                         "type": "integer",
@@ -85496,11 +85496,11 @@
                       "properties": {
                         "provider": {
                           "type": "string",
-                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "model": {
                           "type": "string",
-                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "previous_message_count": {
                           "type": "integer",
@@ -85960,11 +85960,11 @@
                       "properties": {
                         "provider": {
                           "type": "string",
-                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "model": {
                           "type": "string",
-                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "previous_message_count": {
                           "type": "integer",
@@ -101815,6 +101815,7 @@
           "sarvam",
           "wafer",
           "databricks",
+          "cloudflare",
           "typesafe"
         ]
       },
@@ -117544,6 +117545,47 @@
             },
             "required": [
               "url"
+            ]
+          },
+          "cloudflare_key_config": {
+            "type": "object",
+            "description": "Cloudflare Workers AI-specific key configuration",
+            "properties": {
+              "account_id": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "required": [
+              "account_id"
             ]
           },
           "replicate_key_config": {
