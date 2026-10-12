@@ -1,0 +1,9 @@
+- feat: add app label to request-level metrics
+- feat: derive metric labels from the enrichment dimension registry
+- feat: key health and rotation metrics follow the new failure classes, including timeout and cancelled
+- feat: implement HTTPTransportResponseHeadersHook as a no-op
+- fix: label error metrics with the effective HTTP status instead of unknown
+- fix: apply plugin custom_labels and resolve the plugin per request after reloads
+- fix: record billed usage from cancelled and failed requests
+- fix: build each metric's label set in a fresh slice so custom labels do not alias
+- chore: upgraded core to v1.12.0 and framework to v1.9.0
