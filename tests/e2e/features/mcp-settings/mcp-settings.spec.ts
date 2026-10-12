@@ -120,7 +120,7 @@ test.describe('MCP Settings', () => {
       await mcpSettingsPage.oauthPrivateAllowlistInput.fill('169.254.169.254')
       await mcpSettingsPage.oauthPrivateAllowlistInput.press('Enter')
       await mcpSettingsPage.saveBtn.click()
-      await expect(mcpSettingsPage.getToast('error')).toContainText('mcp_oauth_private_allowlist')
+      await expect(mcpSettingsPage.getToast('error')).toContainText(/mcp_oauth_private_allowlist: invalid allowlist entry/i)
 
       const saved = (await coreConfigApi.get(request)).client_config.mcp_oauth_private_allowlist as string[] | undefined
       expect(saved ?? []).toEqual(originalAllowlist)
