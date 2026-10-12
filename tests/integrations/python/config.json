@@ -7,8 +7,8 @@
         "name": "sse_mcp",
         "connection_type": "sse",
         "connection_string": "http://localhost:3012/sse",
-        "tools_to_execute": ["*"],
-        "tools_to_auto_execute": ["*"]
+        "tools_to_execute": ["echo", "add", "greet"],
+        "tools_to_auto_execute": ["echo", "add", "greet"]
       }
     ]
   },
@@ -305,6 +305,25 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "cloudflare": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Cloudflare API Token",
+          "value": "env.CLOUDFLARE_API_TOKEN",
+          "weight": 1,
+          "models": ["*"],
+          "cloudflare_key_config": {
+            "account_id": "env.CLOUDFLARE_ACCOUNT_ID"
+          }
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "groq": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
@@ -584,6 +603,58 @@
       "prompt_cache": {
         "auto_inject": true,
         "ttl": "1h"
+      }
+    },
+    "openai_websearch": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "injected_tools": {
+        "web_search": {
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "web_search"
+        }
+      }
+    },
+    "anthropic_websearch": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Anthropic API Key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "injected_tools": {
+        "web_search": {
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "web_search"
+        }
       }
     },
     "gemini_pc_auto": {
@@ -1145,7 +1216,30 @@
         ]
       }
     ],
+    "budgets": [
+      {
+        "id": "harness-cfgbudget-daily",
+        "max_limit": 0.0000001,
+        "reset_duration": "1d",
+        "virtual_key_id": "vk-harness-cfgbudget"
+      }
+    ],
     "virtual_keys": [
+      {
+        "name": "Harness config.json budget key",
+        "id": "vk-harness-cfgbudget",
+        "value": "sk-bf-harness-cfgbudget",
+        "is_active": true,
+        "calendar_aligned": true,
+        "provider_configs": [
+          {
+            "provider": "openai",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          }
+        ]
+      },
       {
         "name": "Test Key",
         "id": "vk-test",
@@ -1214,6 +1308,12 @@
           },
           {
             "provider": "parasail",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "cloudflare",
             "allowed_models": ["*"],
             "key_ids": ["*"],
             "weight": 1.0
@@ -1290,6 +1390,7 @@
   },
   "client": {
     "allow_per_request_raw_override": true,
+    "allow_direct_keys": true,
     "drop_excess_requests": false,
     "initial_pool_size": 300,
     "allowed_origins": ["*"],

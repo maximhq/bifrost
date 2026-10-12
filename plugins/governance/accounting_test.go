@@ -187,6 +187,62 @@ func TestAccounting_FailedAttemptThenSuccessfulRetry(t *testing.T) {
 	assert.Equal(t, int64(250), f.tokens(), "tokens from both attempts accumulate")
 }
 
+// TestAccounting_FailedPrimaryThenSuccessfulFallbackBothBilled pins the bug where a fallback's
+// usage was dropped as already billed. Each provider in the chain restarts the retry counter at 0
+// and keeps the request id, so a primary attempt that failed after the provider reported usage
+// (a stream that timed out or died after its first events) claimed the billing key the fallback's
+// first attempt then settled under, and the fallback that served the request was never charged.
+func TestAccounting_FailedPrimaryThenSuccessfulFallbackBothBilled(t *testing.T) {
+	logger := NewMockLogger()
+	rl := buildRateLimitWithUsage("rl-fallback", 1_000_000, 0, 1_000_000, 0)
+	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-fallback", "Fallback VK", rl)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*rl},
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	ctx := resolverCtx(store, "sk-bf-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyBillingNonce, "nonce-fallback")
+
+	// attempt runs one attempt through the funnel and settles its outcome, as the pipeline does for
+	// every provider in the chain, each starting its retries at 0.
+	attempt := func(fallbackIndex int, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, fallbackIndex)
+		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, 0)
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, newChatRequest())
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit)
+		_, _, err = plugin.PostLLMHook(ctx, result, bifrostErr)
+		require.NoError(t, err)
+		plugin.wg.Wait()
+	}
+
+	// The primary's stream died after the provider had reported 40 tokens.
+	attempt(0, nil, &schemas.BifrostError{
+		StatusCode: schemas.Ptr(504),
+		Error:      &schemas.ErrorField{Message: "stream timed out"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o",
+			BilledUsage:            &schemas.BifrostLLMUsage{PromptTokens: 40, TotalTokens: 40},
+		},
+	})
+	// The first fallback serves the request on its first attempt.
+	attempt(1, countableResponse(), nil)
+
+	counted := store.GetGovernanceData(context.Background()).RateLimits["rl-fallback"]
+	require.NotNil(t, counted)
+	assert.Equal(t, int64(1040), counted.TokenCurrentUsage, "the failed primary's tokens and the fallback's are both counted")
+	assert.Equal(t, int64(1), counted.RequestCurrentUsage, "the fallback that served counts as the request")
+}
+
 // TestAccounting_NoDoubleBillSuccessVsCancelTerminal: when both a success
 // terminal and a cancellation terminal fire for the SAME physical call
 // (RequestID+attempt), the budget is charged exactly once.

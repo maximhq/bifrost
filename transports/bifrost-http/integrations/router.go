@@ -975,6 +975,23 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 	}
 }
 
+// directKeyListModelsProvider is the provider a drop-in model listing asks when the caller sent a
+// direct key and named no provider. The key is the caller's credential for the provider whose SDK
+// called the route; listing every provider would send it to each of them, which ListAllModels
+// refuses. A route type that implies no single provider returns "", so that listing needs
+// x-bf-model-provider.
+func directKeyListModelsProvider(routeType RouteConfigType) schemas.ModelProvider {
+	switch routeType {
+	case RouteConfigTypeOpenAI:
+		return schemas.OpenAI
+	case RouteConfigTypeAnthropic:
+		return schemas.Anthropic
+	case RouteConfigTypeGenAI:
+		return schemas.Gemini
+	}
+	return ""
+}
+
 // handleNonStreamingRequest handles regular (non-streaming) requests
 func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, bifrostReq *schemas.BifrostRequest, bifrostCtx *schemas.BifrostContext) {
 	// Use the cancellable context from ConvertToBifrostContext
@@ -998,7 +1015,21 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		listModelsProvider := strings.ToLower(string(ctx.Request.Header.Peek("x-bf-model-provider")))
 		switch listModelsProvider {
 		case "":
-			// keep any provider already set on the request
+			// keep any provider already set on the request; a direct key with none asks the
+			// route's own provider (see directKeyListModelsProvider)
+			if bifrostReq.ListModelsRequest.Provider == "" {
+				if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+					if provider := directKeyListModelsProvider(config.Type); provider != "" {
+						if !g.handlerStore.IsProviderConfigured(provider) {
+							g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostErrorWithCode(nil,
+								fmt.Sprintf("provider %s is not configured: a model listing with a direct key asks only this route's provider; name a configured one with x-bf-model-provider", provider),
+								fasthttp.StatusBadRequest))
+							return
+						}
+						bifrostReq.ListModelsRequest.Provider = provider
+					}
+				}
+			}
 		case "all":
 			bifrostReq.ListModelsRequest.Provider = ""
 		default:
@@ -1107,7 +1138,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		}
 
 		// Convert Bifrost response to integration-specific format and send
-		response, err = config.ChatResponseConverter(bifrostCtx, chatResponse)
+		response, err = config.ChatResponseConverter(bifrostCtx, chatResponseForConverter(bifrostCtx, chatResponse))
 		bifrostExtraFields = chatResponse.ExtraFields
 	case bifrostReq.ResponsesRequest != nil:
 		responsesResponse, bifrostErr := g.client.ResponsesRequest(bifrostCtx, bifrostReq.ResponsesRequest)
@@ -1131,7 +1162,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		}
 
 		// Convert Bifrost response to integration-specific format and send
-		response, err = config.ResponsesResponseConverter(bifrostCtx, responsesResponse)
+		response, err = config.ResponsesResponseConverter(bifrostCtx, responsesResponseForConverter(bifrostCtx, responsesResponse))
 		bifrostExtraFields = responsesResponse.ExtraFields
 	case bifrostReq.EmbeddingRequest != nil:
 		embeddingResponse, bifrostErr := g.client.EmbeddingRequest(bifrostCtx, bifrostReq.EmbeddingRequest)
@@ -2764,9 +2795,7 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 
 	// Forward provider response headers stored in context by streaming handlers
 	if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-		for key, value := range headers {
-			ctx.Response.Header.Set(key, value)
-		}
+		lib.ForwardProviderResponseHeaders(ctx, headers)
 	}
 
 	// Routed-identity headers from the context snapshot — routing is final once
@@ -3645,6 +3674,9 @@ func (g *GenericRouter) handlePassthroughNonStream(
 
 	ctx.SetStatusCode(resp.StatusCode)
 	for k, v := range resp.Headers {
+		if lib.IsGatewayOwnedResponseHeader(k) {
+			continue
+		}
 		switch strings.ToLower(k) {
 		case "connection", "transfer-encoding", "set-cookie", "proxy-authenticate", "www-authenticate":
 			// drop
@@ -3753,6 +3785,9 @@ func (g *GenericRouter) handlePassthroughStream(
 	ctx.Response.Header.Set("Connection", "keep-alive")
 	ctx.Response.Header.Set("X-Accel-Buffering", "no")
 	for k, v := range passthroughResp.Headers {
+		if lib.IsGatewayOwnedResponseHeader(k) {
+			continue
+		}
 		switch strings.ToLower(k) {
 		case "connection", "transfer-encoding", "content-length", "content-type",
 			"cache-control", "x-accel-buffering",
@@ -3822,4 +3857,28 @@ func (g *GenericRouter) handlePassthroughStream(
 			}
 		}
 	}()
+}
+
+// chatResponseForConverter is the response an integration converter gets. Several
+// converters answer with the raw upstream bytes when they are present. After
+// provider-injected tools ran, the response is assembled from several model turns and
+// RawResponse holds only the last one, so the converter gets a copy without it. The
+// original keeps the raw bytes; logging has already read them in the post-hooks.
+func chatResponseForConverter(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
+	if executed, _ := ctx.Value(schemas.BifrostContextKeyInjectedToolsExecuted).(bool); !executed || resp == nil || resp.ExtraFields.RawResponse == nil {
+		return resp
+	}
+	assembled := *resp
+	assembled.ExtraFields.RawResponse = nil
+	return &assembled
+}
+
+// responsesResponseForConverter is the Responses API counterpart of chatResponseForConverter.
+func responsesResponseForConverter(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) *schemas.BifrostResponsesResponse {
+	if executed, _ := ctx.Value(schemas.BifrostContextKeyInjectedToolsExecuted).(bool); !executed || resp == nil || resp.ExtraFields.RawResponse == nil {
+		return resp
+	}
+	assembled := *resp
+	assembled.ExtraFields.RawResponse = nil
+	return &assembled
 }

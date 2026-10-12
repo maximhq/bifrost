@@ -411,6 +411,16 @@ export const sglKeyConfigSchema = z
 		path: ["url"],
 	});
 
+// Cloudflare key config schema
+export const cloudflareKeyConfigSchema = z
+	.object({
+		account_id: secretVarSchema.optional(),
+	})
+	.refine((data) => isSecretVarSet(data.account_id), {
+		message: "Account ID is required",
+		path: ["account_id"],
+	});
+
 // Databricks key config schema
 export const databricksKeyConfigSchema = z
 	.object({
@@ -524,6 +534,7 @@ export const modelProviderKeySchema = z
 		sgl_key_config: sglKeyConfigSchema.optional(),
 		databricks_key_config: databricksKeyConfigSchema.optional(),
 		github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
+		cloudflare_key_config: cloudflareKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 		use_anthropic_endpoints: z.boolean().optional(),
 		use_openai_endpoints: z.boolean().optional(),
@@ -834,6 +845,26 @@ export const promptCacheFormSchema = z.object({
 
 export type PromptCacheFormSchema = z.infer<typeof promptCacheFormSchema>;
 
+export const injectedToolsConfigSchema = z.object({
+	web_search: z
+		.object({
+			mcp_client_name: z.string().min(1, "Pick an MCP server"),
+			tool_name: z.string().min(1, "Pick a tool"),
+		})
+		.optional(),
+});
+
+// The web search tab saves one injected tool. Removing it is the Remove button's job, so
+// a form is savable only with a server, its resolved name and a tool: a half-filled form
+// must never reach Save, which would otherwise clear the saved setting.
+export const injectedWebSearchFormSchema = z.object({
+	mcp_client_id: z.string().min(1, "Pick an MCP server"),
+	mcp_client_name: z.string().min(1, "Waiting for the MCP server to load"),
+	tool_name: z.string().min(1, "Pick the tool this MCP server should run as web search"),
+});
+
+export type InjectedWebSearchFormSchema = z.infer<typeof injectedWebSearchFormSchema>;
+
 // Allowed requests schema
 export const allowedRequestsSchema = z.object({
 	text_completion: z.boolean(),
@@ -930,6 +961,7 @@ export const modelProviderConfigSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	ignore_provider_cost: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 });
 
@@ -947,6 +979,7 @@ export const formModelProviderConfigSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	ignore_provider_cost: z.boolean().optional(),
 	custom_provider_config: formCustomProviderConfigSchema.optional(),
 });
 
@@ -965,9 +998,11 @@ export const addProviderRequestSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	ignore_provider_cost: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
+	injected_tools: injectedToolsConfigSchema.nullable().optional(),
 });
 
 // Update provider request schema
@@ -979,9 +1014,11 @@ export const updateProviderRequestSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	ignore_provider_cost: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
+	injected_tools: injectedToolsConfigSchema.nullable().optional(),
 });
 
 // Cache config schema
@@ -992,6 +1029,7 @@ const baseCacheConfigSchema = z.object({
 	exclude_system_prompt: z.boolean().optional(),
 	cache_by_model: z.boolean().default(false),
 	cache_by_provider: z.boolean().default(false),
+	disable_identity_scoping: z.boolean().optional(),
 	vector_store_namespace: z.string().min(1).optional(),
 	default_cache_key: z.string().min(1).optional(),
 	created_at: z.string().optional(),
@@ -1105,6 +1143,13 @@ export const debuggingFormSchema = z.object({
 });
 
 export type DebuggingFormSchema = z.infer<typeof debuggingFormSchema>;
+
+// Pricing tab (provider-reported cost handling)
+export const pricingFormSchema = z.object({
+	ignore_provider_cost: z.boolean(),
+});
+
+export type PricingFormSchema = z.infer<typeof pricingFormSchema>;
 
 // Beta Headers tab
 export const betaHeadersFormSchema = z.object({

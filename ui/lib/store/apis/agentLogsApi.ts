@@ -7,6 +7,7 @@ import type {
 	AgentLogOperationResponse,
 	AgentLogStats,
 	AgentPagination,
+	AgentTopAgentsResponse,
 } from "@/lib/types/agentLogs";
 import { getRangeForPeriod } from "@/lib/utils/timeRange";
 import { baseApi } from "./baseApi";
@@ -117,6 +118,12 @@ export const agentLogsApi = baseApi.injectEndpoints({
 			providesTags: ["AgentLogs"],
 		}),
 
+		// Agents ranked by operation count for the current filters.
+		getAgentTopAgents: builder.query<AgentTopAgentsResponse, { filters: AgentLogFilters }>({
+			query: ({ filters }) => `/agents/history/top-agents?${buildAgentHistoryQuery(filters)}`,
+			providesTags: ["AgentLogs"],
+		}),
+
 		// Hydrate one history entry with request/response/event bodies.
 		getAgentLogById: builder.query<AgentLogDetail, string>({
 			query: (id) => `/agents/history/${encodeURIComponent(id)}`,
@@ -155,6 +162,7 @@ export const {
 	useGetAgentLogOperationByIdQuery,
 	useGetAgentLogStatsQuery,
 	useGetAgentHistogramQuery,
+	useGetAgentTopAgentsQuery,
 	useGetAgentLogByIdQuery,
 	useLazyGetAgentLogByIdQuery,
 	useGetAgentFilterDataQuery,

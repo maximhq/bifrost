@@ -80,6 +80,10 @@ ClientConfig:
           type: boolean
           default: true
           description: Convert chat completion requests to responses for models whose datasheet sets supports_reasoning_with_tool_calls to false, so reasoning is kept instead of being forced off
+        convert_decision_to_responses:
+          type: boolean
+          default: false
+          description: "Emulate decision requests through the model's Responses API (a forced function tool) when the provider does not serve the model on a native decisions endpoint. Off by default: without it, such requests fail with unsupported_operation"
       additionalProperties: false
     log_retention_days:
       type: integer

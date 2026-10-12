@@ -1,5 +1,6 @@
 import {
 	countActiveSidekiqJobs,
+	finishedSidekiqJobIds,
 	isNotificationsUnavailable,
 	isSidekiqJobsUnavailable,
 	shouldHideNotificationTrigger,
@@ -9,6 +10,7 @@ import {
 import SidekiqJobsSection from "@/components/sidekiqJobsSection";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scrollArea";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
 	clearAllNotifications,
 	getErrorMessage,
@@ -50,6 +52,7 @@ export default function NotificationCenter() {
 	const dispatch = useAppDispatch();
 	const navigate = useNavigate();
 	const [open, setOpen] = useState(false);
+	const [tab, setTab] = useState<"notifications" | "jobs">("notifications");
 	const notifications = useAppSelector(selectVisibleNotifications);
 	const unreadCount = useAppSelector(selectUnreadNotificationsCount);
 	const { readIds, dismissedIds } = useAppSelector(selectNotificationPreferences);
@@ -61,11 +64,13 @@ export default function NotificationCenter() {
 	const { data: jobsData, error: jobsError } = useGetSidekiqJobsQuery(undefined, { pollingInterval: pollMs });
 	const [cancelJob, { originalArgs: cancellingId, isLoading: isCancelling }] = useCancelSidekiqJobMutation();
 	// A 403/503 means this caller never gets jobs; drop the section rather than show an error.
+	const jobsAvailable = !isSidekiqJobsUnavailable(jobsError);
 	const jobs = useMemo(
-		() => (isSidekiqJobsUnavailable(jobsError) ? [] : visibleSidekiqJobs(jobsData?.jobs ?? [], dismissedIds)),
-		[jobsData, jobsError, dismissedIds],
+		() => (jobsAvailable ? visibleSidekiqJobs(jobsData?.jobs ?? [], dismissedIds) : []),
+		[jobsAvailable, jobsData, dismissedIds],
 	);
 	const activeJobCount = countActiveSidekiqJobs(jobs);
+	const finishedJobIds = finishedSidekiqJobIds(jobs);
 	useEffect(() => {
 		setPollMs(sidekiqPollInterval({ open, activeCount: activeJobCount }));
 	}, [open, activeJobCount]);
@@ -86,7 +91,13 @@ export default function NotificationCenter() {
 	if (shouldHideNotificationTrigger({ open, isLoading })) return null;
 
 	return (
-		<Popover open={open} onOpenChange={setOpen}>
+		<Popover
+			open={open}
+			onOpenChange={(next) => {
+				if (next) setTab("notifications");
+				setOpen(next);
+			}}
+		>
 			<PopoverTrigger asChild>
 				<button
 					type="button"
@@ -118,134 +129,177 @@ export default function NotificationCenter() {
 				</button>
 			</PopoverTrigger>
 			<PopoverContent align="end" sideOffset={2} className="w-[min(24rem,calc(100vw-1rem))] p-0" data-testid="notification-tray">
-				<div className="flex h-12 items-center justify-between border-b px-4">
-					<div className="flex items-center gap-2">
-						<h2 className="text-sm font-semibold">Notifications</h2>
-						{isFetching && !isLoading && <RefreshCw className="text-muted-foreground size-3 animate-spin" />}
+				<Tabs value={tab} onValueChange={(value) => setTab(value as typeof tab)} className="gap-0">
+					<div className="flex h-12 items-center justify-between gap-2 border-b px-3">
+						<div className="flex min-w-0 flex-1 items-center gap-2">
+							{jobsAvailable ? (
+								// TabsList caches trigger widths on mount; remount when a count badge appears or goes so they are re-measured.
+								<TabsList key={`${unreadCount > 0}-${activeJobCount > 0}`} className="h-8 rounded-sm">
+									<TabsTrigger value="notifications" className="rounded-sm px-2.5 text-xs" data-testid="notification-tab-notifications">
+										Notifications
+										{unreadCount > 0 && <TabCount count={unreadCount} />}
+									</TabsTrigger>
+									<TabsTrigger value="jobs" className="rounded-sm px-2.5 text-xs" data-testid="notification-tab-jobs">
+										Background jobs
+										{activeJobCount > 0 && <TabCount count={activeJobCount} />}
+									</TabsTrigger>
+								</TabsList>
+							) : (
+								<h2 className="px-1 text-sm font-semibold">Notifications</h2>
+							)}
+							{isFetching && !isLoading && <RefreshCw className="text-muted-foreground size-3 shrink-0 animate-spin" />}
+						</div>
+						{tab === "notifications" && notifications.length > 0 && (
+							<button
+								type="button"
+								onClick={() => dispatch(markAllNotificationsRead())}
+								className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer text-xs whitespace-nowrap transition-colors"
+								data-testid="notifications-mark-all-read"
+							>
+								Mark all read
+							</button>
+						)}
+						{tab === "jobs" && finishedJobIds.length > 0 && (
+							<button
+								type="button"
+								onClick={() => finishedJobIds.forEach((id) => dispatch(removeNotification(id)))}
+								className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer text-xs whitespace-nowrap transition-colors"
+								data-testid="sidekiq-jobs-clear-finished"
+							>
+								Clear finished
+							</button>
+						)}
 					</div>
-					{notifications.length > 0 && (
-						<button
-							type="button"
-							onClick={() => dispatch(markAllNotificationsRead())}
-							className="text-muted-foreground hover:text-foreground cursor-pointer text-xs transition-colors"
-							data-testid="notifications-mark-all-read"
-						>
-							Mark all read
-						</button>
+
+					{jobsAvailable && (
+						<TabsContent value="jobs">
+							<SidekiqJobsSection
+								jobs={jobs}
+								cancellingId={isCancelling ? cancellingId : undefined}
+								onCancel={async (id) => {
+									try {
+										const result = await cancelJob(id).unwrap();
+										if (!result.cancelled) toast.info("That job had already finished");
+									} catch (error) {
+										toast.error("Couldn't cancel the job", { description: getErrorMessage(error) });
+									}
+								}}
+								onDismiss={(ids) => ids.forEach((id) => dispatch(removeNotification(id)))}
+							/>
+						</TabsContent>
 					)}
-				</div>
 
-				<SidekiqJobsSection
-					jobs={jobs}
-					cancellingId={isCancelling ? cancellingId : undefined}
-					onCancel={async (id) => {
-						try {
-							const result = await cancelJob(id).unwrap();
-							if (!result.cancelled) toast.info("That job had already finished");
-						} catch (error) {
-							toast.error("Couldn't cancel the job", { description: getErrorMessage(error) });
-						}
-					}}
-					onDismiss={(ids) => ids.forEach((id) => dispatch(removeNotification(id)))}
-				/>
-
-				{isLoading ? (
-					<div className="text-muted-foreground flex h-44 items-center justify-center gap-2 text-sm">
-						<RefreshCw className="size-4 animate-spin" /> Loading notifications
-					</div>
-				) : isError ? (
-					<div className="flex h-44 flex-col items-center justify-center gap-3 px-6 text-center">
-						<p className="text-muted-foreground text-sm">Notifications could not be loaded.</p>
-						<button type="button" onClick={() => refetch()} className="text-primary cursor-pointer text-sm font-medium hover:underline">
-							Try again
-						</button>
-					</div>
-				) : notifications.length === 0 ? (
-					<div className="flex h-44 flex-col items-center justify-center gap-2 px-6 text-center" data-testid="notifications-empty-state">
-						<span className="bg-muted text-muted-foreground flex size-9 items-center justify-center rounded-full">
-							<Check className="size-4" />
-						</span>
-						<p className="text-sm font-medium">You&apos;re all caught up</p>
-						<p className="text-muted-foreground text-xs">New notifications will appear here.</p>
-					</div>
-				) : (
-					<ScrollArea className="h-[min(26rem,calc(100vh-8rem))]">
-						<div className="divide-y">
-							{notifications.map((notification) => {
-								const Icon = severityIcons[notification.severity];
-								const isRead = readIds.includes(notification.id);
-								return (
-									// Open and dismiss are sibling native buttons, never nested. A
-									// <button> may not contain interactive content, and role="button"
-									// makes the same promise to assistive tech, so a dismiss control
-									// inside the row control leaves screen readers announcing one
-									// widget where there are two. Siblings also mean Enter and Space
-									// come from the platform instead of a hand-rolled key handler.
-									<div
-										key={notification.id}
-										data-testid={`notification-item-${notification.id}`}
-										className={cn(
-											"group relative flex transition-colors",
-											isRead ? "hover:bg-accent/60" : "bg-accent/25 hover:bg-accent/60",
-										)}
-									>
-										<button
-											type="button"
-											onClick={() => openNotification(notification.id, notification.action_path)}
-											data-testid={`notification-open-${notification.id}`}
-											className="focus-visible:ring-ring flex min-w-0 flex-1 cursor-pointer gap-3 px-4 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset"
-										>
-											<span
+					<TabsContent value="notifications">
+						{isLoading ? (
+							<div className="text-muted-foreground flex h-44 items-center justify-center gap-2 text-sm">
+								<RefreshCw className="size-4 animate-spin" /> Loading notifications
+							</div>
+						) : isError ? (
+							<div className="flex h-44 flex-col items-center justify-center gap-3 px-6 text-center">
+								<p className="text-muted-foreground text-sm">Notifications could not be loaded.</p>
+								<button type="button" onClick={() => refetch()} className="text-primary cursor-pointer text-sm font-medium hover:underline">
+									Try again
+								</button>
+							</div>
+						) : notifications.length === 0 ? (
+							<div
+								className="flex h-44 flex-col items-center justify-center gap-2 px-6 text-center"
+								data-testid="notifications-empty-state"
+							>
+								<span className="bg-muted text-muted-foreground flex size-9 items-center justify-center rounded-full">
+									<Check className="size-4" />
+								</span>
+								<p className="text-sm font-medium">You&apos;re all caught up</p>
+								<p className="text-muted-foreground text-xs">New notifications will appear here.</p>
+							</div>
+						) : (
+							<ScrollArea className="h-[min(26rem,calc(100vh-8rem))]">
+								<div className="divide-y">
+									{notifications.map((notification) => {
+										const Icon = severityIcons[notification.severity];
+										const isRead = readIds.includes(notification.id);
+										return (
+											// Open and dismiss are sibling native buttons, never nested. A
+											// <button> may not contain interactive content, and role="button"
+											// makes the same promise to assistive tech, so a dismiss control
+											// inside the row control leaves screen readers announcing one
+											// widget where there are two. Siblings also mean Enter and Space
+											// come from the platform instead of a hand-rolled key handler.
+											<div
+												key={notification.id}
+												data-testid={`notification-item-${notification.id}`}
 												className={cn(
-													"mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full",
-													severityStyles[notification.severity],
+													"group relative flex transition-colors",
+													isRead ? "hover:bg-accent/60" : "bg-accent/25 hover:bg-accent/60",
 												)}
 											>
-												<Icon className="size-3.5" />
-											</span>
-											<span className="min-w-0 flex-1 pr-5">
-												<span className="flex items-start gap-2">
-													<span className={cn("min-w-0 flex-1 text-sm", !isRead && "font-semibold")}>{notification.title}</span>
-													{!isRead && <span className="bg-primary mt-1.5 size-1.5 shrink-0 rounded-full" aria-label="Unread" />}
-												</span>
-												<span className="text-muted-foreground mt-0.5 line-clamp-3 block text-xs leading-relaxed">
-													{notification.message}
-												</span>
-												<span className="text-muted-foreground mt-1.5 flex items-center gap-2 text-[11px]">
-													<span>{formatDistanceToNow(new Date(notification.created_at), { addSuffix: true })}</span>
-													{notification.action_label && <span className="text-primary font-medium">{notification.action_label}</span>}
-												</span>
-											</span>
-										</button>
-										<button
-											type="button"
-											aria-label={`Dismiss ${notification.title}`}
-											onClick={() => dispatch(removeNotification(notification.id))}
-											data-testid={`notification-dismiss-${notification.id}`}
-											className="text-muted-foreground hover:bg-muted hover:text-foreground absolute top-2.5 right-2.5 cursor-pointer rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
-										>
-											<X className="size-3" />
-										</button>
-									</div>
-								);
-							})}
-						</div>
-					</ScrollArea>
-				)}
+												<button
+													type="button"
+													onClick={() => openNotification(notification.id, notification.action_path)}
+													data-testid={`notification-open-${notification.id}`}
+													className="focus-visible:ring-ring flex min-w-0 flex-1 cursor-pointer gap-3 px-4 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset"
+												>
+													<span
+														className={cn(
+															"mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full",
+															severityStyles[notification.severity],
+														)}
+													>
+														<Icon className="size-3.5" />
+													</span>
+													<span className="min-w-0 flex-1 pr-5">
+														<span className="flex items-start gap-2">
+															<span className={cn("min-w-0 flex-1 text-sm", !isRead && "font-semibold")}>{notification.title}</span>
+															{!isRead && <span className="bg-primary mt-1.5 size-1.5 shrink-0 rounded-full" aria-label="Unread" />}
+														</span>
+														<span className="text-muted-foreground mt-0.5 line-clamp-3 block text-xs leading-relaxed">
+															{notification.message}
+														</span>
+														<span className="text-muted-foreground mt-1.5 flex items-center gap-2 text-[11px]">
+															<span>{formatDistanceToNow(new Date(notification.created_at), { addSuffix: true })}</span>
+															{notification.action_label && <span className="text-primary font-medium">{notification.action_label}</span>}
+														</span>
+													</span>
+												</button>
+												<button
+													type="button"
+													aria-label={`Dismiss ${notification.title}`}
+													onClick={() => dispatch(removeNotification(notification.id))}
+													data-testid={`notification-dismiss-${notification.id}`}
+													className="text-muted-foreground hover:bg-muted hover:text-foreground absolute top-2.5 right-2.5 cursor-pointer rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+												>
+													<X className="size-3" />
+												</button>
+											</div>
+										);
+									})}
+								</div>
+							</ScrollArea>
+						)}
 
-				{notifications.length > 0 && (
-					<div className="flex h-10 items-center justify-end border-t px-4">
-						<button
-							type="button"
-							onClick={() => dispatch(clearAllNotifications())}
-							className="text-muted-foreground hover:text-destructive cursor-pointer text-xs transition-colors"
-							data-testid="notifications-clear-all"
-						>
-							Clear all
-						</button>
-					</div>
-				)}
+						{notifications.length > 0 && (
+							<div className="flex h-10 items-center justify-end border-t px-4">
+								<button
+									type="button"
+									onClick={() => dispatch(clearAllNotifications())}
+									className="text-muted-foreground hover:text-destructive cursor-pointer text-xs transition-colors"
+									data-testid="notifications-clear-all"
+								>
+									Clear all
+								</button>
+							</div>
+						)}
+					</TabsContent>
+				</Tabs>
 			</PopoverContent>
 		</Popover>
+	);
+}
+
+function TabCount({ count }: { count: number }) {
+	return (
+		<span className="bg-primary/10 text-primary min-w-4 rounded-full px-1 text-center text-[10px] leading-4 font-semibold tabular-nums">
+			{count > 99 ? "99+" : count}
+		</span>
 	);
 }

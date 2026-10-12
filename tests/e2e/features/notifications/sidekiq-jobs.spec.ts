@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from '../../core/fixtures/base.fixture'
 
-// The notification panel's "Background jobs" section renders whatever
+// The notification panel's "Background jobs" tab renders whatever
 // GET /api/sidekiq/jobs returns. The endpoint is mocked so a job can be held in
 // the running state, which a real one never stays in long enough to assert on.
 
@@ -47,13 +47,34 @@ async function mockJobs(page: Page, jobs: MockJob[]) {
   return cancelled
 }
 
+async function openJobsTab(page: Page) {
+  await page.getByTestId('topbar-notifications-btn').click()
+  await page.getByTestId('notification-tab-jobs').click()
+}
+
 test.describe('Notification panel background jobs', () => {
+  test('opens on the notifications tab, even after the jobs tab was last open', async ({ page }) => {
+    await mockJobs(page, [runningJob()])
+    await page.goto('/workspace/dashboard')
+
+    await page.getByTestId('topbar-notifications-btn').click()
+    await expect(page.getByTestId('notification-tab-notifications')).toHaveAttribute('data-state', 'active')
+    await expect(page.getByTestId('sidekiq-jobs-section')).toHaveCount(0)
+
+    await page.getByTestId('notification-tab-jobs').click()
+    await expect(page.getByTestId('sidekiq-jobs-section')).toBeVisible()
+
+    await page.keyboard.press('Escape')
+    await page.getByTestId('topbar-notifications-btn').click()
+    await expect(page.getByTestId('notification-tab-notifications')).toHaveAttribute('data-state', 'active')
+  })
+
   test('shows a running job with its progress and a badge on the trigger', async ({ page }) => {
     await mockJobs(page, [runningJob()])
     await page.goto('/workspace/dashboard')
 
     await expect(page.getByTestId('topbar-notifications-badge')).toBeVisible()
-    await page.getByTestId('topbar-notifications-btn').click()
+    await openJobsTab(page)
 
     const section = page.getByTestId('sidekiq-jobs-section')
     await expect(section).toBeVisible()
@@ -79,7 +100,7 @@ test.describe('Notification panel background jobs', () => {
       finished('job-cancelled', 'cancelled', { progress: { done: 30, total: 100 } }),
     ])
     await page.goto('/workspace/dashboard')
-    await page.getByTestId('topbar-notifications-btn').click()
+    await openJobsTab(page)
 
     await expect(page.getByTestId('sidekiq-job-status-job-done')).toHaveText('Completed')
     // Totals are approximate, so a completed job reads Done rather than 90 / 100.
@@ -94,7 +115,7 @@ test.describe('Notification panel background jobs', () => {
   test('cancelling takes a confirmation and then shows the job as cancelled', async ({ page }) => {
     const cancelled = await mockJobs(page, [runningJob()])
     await page.goto('/workspace/dashboard')
-    await page.getByTestId('topbar-notifications-btn').click()
+    await openJobsTab(page)
 
     await page.getByTestId('sidekiq-job-cancel-job-running').click()
     // First click only asks; nothing has been sent yet.
@@ -115,7 +136,7 @@ test.describe('Notification panel background jobs', () => {
       route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { message: 'database is down' } }) }),
     )
     await page.goto('/workspace/dashboard')
-    await page.getByTestId('topbar-notifications-btn').click()
+    await openJobsTab(page)
 
     await page.getByTestId('sidekiq-job-cancel-job-running').click()
     await page.getByTestId('sidekiq-job-cancel-confirm-job-running').click()
@@ -129,7 +150,7 @@ test.describe('Notification panel background jobs', () => {
   test('declining the confirmation keeps the job running', async ({ page }) => {
     const cancelled = await mockJobs(page, [runningJob()])
     await page.goto('/workspace/dashboard')
-    await page.getByTestId('topbar-notifications-btn').click()
+    await openJobsTab(page)
 
     await page.getByTestId('sidekiq-job-cancel-job-running').click()
     await page.getByRole('button', { name: 'Keep' }).click()
@@ -139,7 +160,7 @@ test.describe('Notification panel background jobs', () => {
     expect(cancelled).toEqual([])
   })
 
-  test('hides the section for a caller the endpoint forbids', async ({ page }) => {
+  test('hides the jobs tab for a caller the endpoint forbids', async ({ page }) => {
     await page.route('**/api/sidekiq/jobs', (route) =>
       route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'forbidden' }) }),
     )
@@ -147,6 +168,7 @@ test.describe('Notification panel background jobs', () => {
     await page.getByTestId('topbar-notifications-btn').click()
 
     await expect(page.getByTestId('notification-tray')).toBeVisible()
+    await expect(page.getByTestId('notification-tab-jobs')).toHaveCount(0)
     await expect(page.getByTestId('sidekiq-jobs-section')).toHaveCount(0)
   })
 
@@ -162,11 +184,13 @@ test.describe('Notification panel background jobs', () => {
     })
     const cancelled = await mockJobs(page, [runningJob(), finished('job-done', 'completed'), finished('job-failed', 'failed'), finished('job-stopped', 'cancelled')])
     await page.goto('/workspace/dashboard')
-    await page.getByTestId('topbar-notifications-btn').click()
+    await openJobsTab(page)
 
     // A running job offers Cancel, never Dismiss.
     await expect(page.getByTestId('sidekiq-job-dismiss-job-running')).toHaveCount(0)
 
+    // The dismiss button has no width until its row is hovered.
+    await page.getByTestId('sidekiq-job-job-done').hover()
     await page.getByTestId('sidekiq-job-dismiss-job-done').click()
     await expect(page.getByTestId('sidekiq-job-job-done')).toHaveCount(0)
     await expect(page.getByTestId('sidekiq-job-job-failed')).toBeVisible()

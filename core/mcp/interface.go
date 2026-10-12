@@ -59,6 +59,13 @@ type MCPManagerInterface interface {
 	ExecuteChatTool(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError)
 	ExecuteResponsesTool(ctx *schemas.BifrostContext, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError)
 
+	// GetInjectedTool resolves a provider-injected tool (ProviderConfig.InjectedTools)
+	// by client name and unprefixed tool name, bypassing tool filters.
+	GetInjectedTool(clientName, toolName string) (schemas.ChatTool, error)
+
+	// GetMaxAgentDepth returns the configured cap on model turns in a tool loop.
+	GetMaxAgentDepth() int
+
 	// Client Management
 	// GetClients returns all MCP clients
 	GetClients() []schemas.MCPClientState

@@ -20,6 +20,7 @@ type fakeLiveRunner struct {
 	posts    []fakeLivePost
 	cleanups int
 	refuse   bool
+	keyIDs   map[string][]string
 }
 
 type fakeLiveOpen struct {
@@ -37,6 +38,7 @@ type fakeLivePost struct {
 	kind         string
 	end          bool
 	delegationID string
+	failed       bool // the provider refused to run the unit's delegation
 	resp         *schemas.BifrostResponsesResponse
 	live         *schemas.LiveSessionLog
 	err          *schemas.BifrostError
@@ -53,6 +55,9 @@ func (f *fakeLiveRunner) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, re
 	if f.refuse {
 		return nil, newRealtimeWireBifrostError(402, "budget_exceeded", "Budget exceeded: virtual key budget spent")
 	}
+	if ids, restricted := f.keyIDs[model]; restricted {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, ids)
+	}
 	return &bifrost.RealtimeTurnHooks{
 		PostHookRunner: func(postCtx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 			f.mu.Lock()
@@ -64,6 +69,7 @@ func (f *fakeLiveRunner) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, re
 			post.kind, _ = postCtx.Value(schemas.BifrostContextKeyLiveUnit).(string)
 			post.end, _ = postCtx.Value(schemas.BifrostContextKeyLiveSessionEnd).(bool)
 			post.delegationID, _ = postCtx.Value(schemas.BifrostContextKeyLiveDelegationID).(string)
+			post.failed, _ = postCtx.Value(schemas.BifrostContextKeyLiveDelegationFailed).(bool)
 			if result != nil {
 				post.resp = result.ResponsesResponse
 				post.live = result.LiveSession
@@ -286,6 +292,54 @@ func TestLiveMeterSumsBackendUsageWhileRefused(t *testing.T) {
 	assert.Equal(t, 220, backend.Usage.TotalTokens)
 }
 
+func TestLiveMeterFailedDelegationClosesItsUnitWithTheError(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+
+	refused := newRealtimeWireBifrostError(400, "responses_validation_failed", "The model does not exist")
+	require.Nil(t, meter.failBackend(refused))
+
+	opens, posts, _ := runner.snapshot()
+	require.Len(t, posts, 1, "the refused delegation closes as a backend unit")
+	assert.Equal(t, liveUnitBackend, posts[0].kind)
+	assert.Equal(t, "gpt-5.6-luna", posts[0].model)
+	assert.True(t, posts[0].continuation)
+	require.NotNil(t, posts[0].err)
+	assert.Equal(t, "The model does not exist", posts[0].err.Error.Message)
+	assert.Nil(t, posts[0].resp, "nothing ran")
+	assert.True(t, posts[0].failed, "plugins can tell a refused delegation from a refused session")
+	assert.Len(t, opens, 3, "the next backend unit is admitted before the failed one closes")
+
+	// The session goes on: the next response bills on the new unit.
+	response := &schemas.BifrostResponsesResponse{ID: new("resp_1"), Model: "gpt-5.6-luna", Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}}
+	require.Nil(t, meter.onBackendResponse(response, "item_1", 0))
+	_, posts, _ = runner.snapshot()
+	require.Len(t, posts, 2)
+	assert.Nil(t, posts[1].err)
+	assert.False(t, posts[1].failed)
+	assert.Equal(t, 12, posts[1].resp.Usage.TotalTokens)
+
+	// A next unit governance refuses ends the session instead, as a billed response would. The
+	// refused delegation is still on record with its error, not closed later as a success.
+	runner.setRefuse(true)
+	assert.NotNil(t, meter.failBackend(refused))
+	_, posts, _ = runner.snapshot()
+	require.Len(t, posts, 3, "the refused delegation closes with its error even though its successor was refused")
+	require.NotNil(t, posts[2].err)
+	assert.Equal(t, "The model does not exist", posts[2].err.Error.Message)
+	assert.True(t, posts[2].failed)
+	assert.Nil(t, posts[2].resp)
+	meter.finish(0)
+	opens, posts, cleanups := runner.snapshot()
+	require.Len(t, posts, 4, "finish closes the voice unit only; the failed delegation's unit is already settled")
+	assert.Equal(t, liveUnitVoice, posts[3].kind)
+	assert.True(t, posts[3].end)
+	assert.Equal(t, len(opens)-1, cleanups, "every admitted unit cleans up; the refused one never had hooks")
+}
+
 func TestLiveMeterSwitchBackend(t *testing.T) {
 	t.Parallel()
 
@@ -414,4 +468,196 @@ func TestLiveMeterMarksSessionBoundariesForPlugins(t *testing.T) {
 	assert.True(t, posts[1].end)
 	require.NotNil(t, posts[1].err)
 	assert.Equal(t, "upstream refused", posts[1].err.Error.Message)
+}
+
+func (f *fakeLiveRunner) restrictKeys(model string, ids []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.keyIDs == nil {
+		f.keyIDs = make(map[string][]string)
+	}
+	f.keyIDs[model] = ids
+}
+
+func TestLiveMeterBackendSwitchEnforcesPinnedKey(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		keys   []string
+		reject bool
+	}{
+		{name: "different key", keys: []string{"key-2"}, reject: true},
+		{name: "no keys", keys: []string{}, reject: true},
+		{name: "pinned key allowed", keys: []string{"key-1", "key-2"}},
+		{name: "unrestricted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeLiveRunner{}
+			keys := map[string][]string{"gpt-live-1": {"key-1", "key-2"}, "gpt-5.6-luna": {"key-1"}}
+			if tc.keys != nil {
+				keys["gpt-5.6-terra"] = tc.keys
+			}
+			runner.keyIDs = keys
+			meter := newLiveMeter(runner, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.OpenAI, schemas.Key{}, "bf-session-1")
+			require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+			meter.setKey(schemas.Key{ID: "key-1", Models: schemas.WhiteList{"*"}})
+			defer meter.finish(0)
+			controller := newTestLiveController(fakeLiveModels{allowed: true}, meter, nil)
+			checked, refusal := controller.admitSessionUpdate([]byte(`{"type":"session.update","session":{"delegation":{"responses":{"model":"gpt-5.6-terra"}}}}`))
+			if tc.reject {
+				require.NotNil(t, refusal, "the update cannot use a different upstream key")
+				assert.Equal(t, 403, *refusal.StatusCode)
+				assert.Nil(t, checked, "a refused update must not be forwarded")
+				assert.Equal(t, "gpt-5.6-luna", meter.activeBackend)
+				assert.NotContains(t, meter.backends, "gpt-5.6-terra")
+				assert.Equal(t, []string{"key-1"}, meter.allowedKeys, "a refused unit must not narrow admitted units' keys")
+				_, posts, cleanups := runner.snapshot()
+				require.Len(t, posts, 1)
+				assert.NotNil(t, posts[0].err)
+				assert.Nil(t, posts[0].resp, "a refused unit bills no usage")
+				assert.True(t, posts[0].continuation)
+				assert.False(t, posts[0].end, "rejecting an update leaves the session open")
+				assert.Equal(t, 1, cleanups)
+				// Retrying with a permitted grant must succeed without stale restrictions or lanes.
+				keys["gpt-5.6-terra"] = []string{"key-1"}
+				require.Nil(t, meter.switchBackend("gpt-5.6-terra"))
+			} else {
+				require.Nil(t, refusal)
+				assert.NotEmpty(t, checked)
+			}
+			assert.Equal(t, "gpt-5.6-terra", meter.activeBackend)
+			require.Nil(t, meter.onUsage(30), "voice renewal must still use its permitted pinned key")
+			meter.finish(30)
+			opens, posts, cleanups := runner.snapshot()
+			assert.Len(t, posts, len(opens), "every admitted pre-hook has a post-hook")
+			assert.Equal(t, len(opens), cleanups, "every admitted unit is cleaned exactly once")
+		})
+	}
+}
+
+func TestLiveMeterRenewalEnforcesPinnedKey(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{liveUnitVoice, liveUnitBackend} {
+		t.Run(kind, func(t *testing.T) {
+			runner := &fakeLiveRunner{}
+			keys := map[string][]string{"gpt-live-1": {"key-1"}, "gpt-5.6-luna": {"key-1"}}
+			runner.keyIDs = keys
+			meter := newLiveMeter(runner, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.OpenAI, schemas.Key{}, "bf-session-1")
+			require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+			meter.setKey(schemas.Key{ID: "key-1"})
+			var refusal *schemas.BifrostError
+			if kind == liveUnitVoice {
+				keys["gpt-live-1"] = []string{"key-2"}
+				refusal = meter.onUsage(30)
+			} else {
+				keys["gpt-5.6-luna"] = []string{"key-2"}
+				refusal = meter.onBackendResponse(&schemas.BifrostResponsesResponse{ID: new("resp-1"), Model: "gpt-5.6-luna", Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}}, "delegation-1", 10)
+			}
+			require.NotNil(t, refusal, "a renewal cannot continue on a key excluded by its grant")
+			assert.Same(t, refusal, meter.refusal)
+			meter.finish(meter.lastReportedSeconds())
+			meter.finish(100)
+			opens, posts, cleanups := runner.snapshot()
+			require.Len(t, posts, 3)
+			assert.Equal(t, len(opens), cleanups)
+			assert.NotNil(t, posts[0].err, "the refused renewal closes with an error")
+			if kind == liveUnitVoice {
+				assert.Equal(t, 30.0, postSeconds(t, posts[2]), "already spent voice usage is settled")
+			} else {
+				require.NotNil(t, posts[1].resp)
+				assert.Equal(t, 15, posts[1].resp.Usage.TotalTokens, "already spent backend usage is settled")
+			}
+		})
+	}
+}
+
+func TestLiveMeterTerminalBackendFailure(t *testing.T) {
+	t.Parallel()
+	for _, withUsage := range []bool{true, false} {
+		name := "without usage"
+		if withUsage {
+			name = "with usage"
+		}
+		t.Run(name, func(t *testing.T) {
+			runner := &fakeLiveRunner{}
+			meter := newTestLiveMeter(runner)
+			require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+			failure := &schemas.BifrostResponsesResponse{
+				ID: new("resp_failed"), Model: "gpt-5.6-luna", Status: new(schemas.ResponsesResponseStatusFailed),
+				Error:  &schemas.ResponsesResponseError{Code: "server_error", Message: "backend execution failed"},
+				Output: []schemas.ResponsesMessage{{ID: new("partial"), Type: new(schemas.ResponsesMessageTypeMessage)}},
+			}
+			if withUsage {
+				failure.Usage = &schemas.ResponsesResponseUsage{InputTokens: 8, OutputTokens: 2, TotalTokens: 10}
+			}
+			require.Nil(t, meter.onBackendResponse(failure, "delegation_failed", 100))
+			require.Nil(t, meter.onBackendResponse(failure, "delegation_failed", 100))
+			_, posts, _ := runner.snapshot()
+			require.Len(t, posts, 1, "a failed response closes one unit even without usage; replay closes none")
+			failed := posts[0]
+			require.NotNil(t, failed.resp)
+			assert.Equal(t, failure.Status, failed.resp.Status)
+			assert.Equal(t, failure.Error, failed.resp.Error)
+			assert.Equal(t, failure.Output, failed.resp.Output)
+			assert.Equal(t, "delegation_failed", failed.delegationID)
+			assert.Equal(t, "resp_failed", *failed.resp.ID)
+			wantTokens := 0
+			if withUsage {
+				wantTokens = 10
+			}
+			assert.Equal(t, wantTokens, failed.resp.Usage.TotalTokens)
+			assert.Nil(t, failed.err, "the backend response carries its own error")
+
+			success := &schemas.BifrostResponsesResponse{
+				ID: new("resp_recovered"), Model: "gpt-5.6-luna", Status: new(schemas.ResponsesResponseStatusCompleted),
+				Usage: &schemas.ResponsesResponseUsage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5},
+			}
+			require.Nil(t, meter.onBackendResponse(success, "delegation_recovered", 200))
+			meter.finish(3)
+			opens, posts, cleanups := runner.snapshot()
+			require.Len(t, posts, len(opens))
+			assert.Equal(t, len(opens), cleanups)
+			require.NotNil(t, posts[1].resp)
+			assert.Equal(t, success.Status, posts[1].resp.Status)
+			assert.Nil(t, posts[1].resp.Error, "the next response does not inherit the failure")
+			assert.Equal(t, 5, posts[1].resp.Usage.TotalTokens)
+			assert.Equal(t, "delegation_recovered", posts[1].delegationID)
+			assert.Nil(t, posts[2].resp.Error, "the empty backend unit does not repeat the failure")
+		})
+	}
+}
+
+func TestLiveMeterTerminalBackendFailureSurvivesRenewalRefusal(t *testing.T) {
+	t.Parallel()
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+	runner.setRefuse(true)
+	failure := &schemas.BifrostResponsesResponse{
+		ID: new("resp_failed"), Model: "gpt-5.6-luna", Status: new(schemas.ResponsesResponseStatusFailed),
+		Error: &schemas.ResponsesResponseError{Code: "server_error", Message: "backend execution failed"},
+		Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, TotalTokens: 10},
+	}
+	require.NotNil(t, meter.onBackendResponse(failure, "delegation_failed", 100))
+	meter.finish(3)
+	_, posts, _ := runner.snapshot()
+	require.Len(t, posts, 2)
+	assert.Equal(t, failure.Status, posts[0].resp.Status)
+	assert.Equal(t, failure.Error, posts[0].resp.Error)
+	assert.Equal(t, 10, posts[0].resp.Usage.TotalTokens)
+}
+
+func TestLiveMeterTerminalBackendFailureWithoutErrorDetails(t *testing.T) {
+	t.Parallel()
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+	failure := &schemas.BifrostResponsesResponse{
+		ID: new("resp_failed"), Model: "gpt-5.6-luna", Status: new(schemas.ResponsesResponseStatusFailed),
+	}
+	require.Nil(t, meter.onBackendResponse(failure, "delegation_failed", 100))
+	_, posts, _ := runner.snapshot()
+	require.Len(t, posts, 1)
+	assert.Equal(t, failure.Status, posts[0].resp.Status)
+	assert.Zero(t, posts[0].resp.Usage.TotalTokens)
 }

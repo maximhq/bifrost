@@ -65,6 +65,8 @@ type ModelCapabilities struct {
 	SupportsForcedToolChoice        *bool `json:"supports_forced_tool_choice,omitempty"`       // false ⇒ tool_choice any/tool rejected (Fable 5.1+)
 	SupportsPromptCacheBreakpoints  *bool `json:"supports_prompt_cache_breakpoints,omitempty"` // Responses input_text accepts prompt_cache_breakpoint (Claude via OpenRouter, gpt-5.6+)
 	SupportsAsyncTools              *bool `json:"supports_async_tools,omitempty"`              // accepts OpenAI async on tools and replayed call items
+	SupportsCustomTools             *bool `json:"supports_custom_tools,omitempty"`             // accepts OpenAI custom (freeform) tools; false ⇒ rewritten as function tools
+	SupportsDecisions               *bool `json:"supports_decisions,omitempty"`                // served on the provider's native decisions endpoint (OpenAI POST /v1/decisions); absent ⇒ DefaultSupportsDecisions
 
 	// Baseline request-surface flags. These drive the compat plugin's
 	// parameter allowlist rather than provider request shaping, so they are
@@ -264,6 +266,15 @@ type ModelCapabilities struct {
 	// the hardcoded per-provider fallback in core/providers/openai outright; absent
 	// or empty means the fallback applies.
 	ReservedToolNamespaces []string `json:"reserved_tool_namespaces,omitempty"`
+
+	// Tool-schema `pattern` accepts lookaround assertions; false ⇒ they are stripped before dispatch.
+	SupportsRegexLookaround *bool `json:"supports_regex_lookaround,omitempty"`
+
+	// Tool-schema `pattern` accepts the `\0` escape; false ⇒ it is rewritten to `\x00` before dispatch.
+	SupportsRegexNULEscape *bool `json:"supports_regex_nul_escape,omitempty"`
+
+	// String `format` values tool schemas may carry; any other is dropped before dispatch.
+	SupportedSchemaFormats []string `json:"supported_schema_formats,omitempty"`
 
 	// ---- Aliasing & regional inference profiles ----
 

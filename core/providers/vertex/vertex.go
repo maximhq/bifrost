@@ -2655,13 +2655,13 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	return bifrostResp, nil
 }
 
-// vertexVideoModelPath returns the escaped "projects/.../models/{model}" prefix of a video operation name.
-func vertexVideoModelPath(taskID string) (string, *schemas.BifrostError) {
+// vertexVideoOperationURL returns the fetchPredictOperation URL for a video operation name, on the operation's own region.
+func vertexVideoOperationURL(taskID string) (string, *schemas.BifrostError) {
 	parts, bifrostErr := parseVertexResourceName(taskID, "video_id", "projects", "", "locations", "", "publishers", "", "models", "", "operations", "")
 	if bifrostErr != nil {
 		return "", bifrostErr
 	}
-	return strings.Join(parts[:8], "/"), nil
+	return getVertexAPIBaseURL(parts[3], "v1") + "/" + strings.Join(parts[:8], "/") + ":fetchPredictOperation", nil
 }
 
 // VideoRetrieve retrieves the status of a video generation operation.
@@ -2670,24 +2670,14 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 
-	region := resolveVertexRegion(ctx, key)
-	if region == "" {
-		return nil, providerUtils.NewConfigurationError("region is not set in key config")
-	}
-
-	baseURL := getVertexAPIBaseURL(region, "v1")
-
-	// Construct the URL for fetching the operation status
 	// The operation name (bifrostReq.ID) already contains the full path:
 	// projects/PROJECT_ID/locations/REGION/publishers/google/models/MODEL_ID/operations/OPERATION_ID
+	// Its region, not the selected key's, decides the host: keys rotate across regions on model-less polls.
 	taskID := providerUtils.StripVideoIDProviderSuffix(bifrostReq.ID, provider.GetProviderKey())
-	modelPath, idErr := vertexVideoModelPath(taskID)
+	completeURL, idErr := vertexVideoOperationURL(taskID)
 	if idErr != nil {
 		return nil, idErr
 	}
-
-	// Construct the URL: https://{vertex-api-host}/v1/{modelPath}:fetchPredictOperation
-	completeURL := fmt.Sprintf("%s/%s:fetchPredictOperation", baseURL, modelPath)
 
 	// Auth query is used to pass the API key in the query string
 	authQuery := ""

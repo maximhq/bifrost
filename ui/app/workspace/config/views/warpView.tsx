@@ -68,7 +68,7 @@ const DEFAULT_HISTORY_RETENTION_DAYS = 30;
 const DEFAULT_TEMPERATURE = 1;
 const DEFAULT_EMBEDDING_DIMENSION = 1536;
 const DEFAULT_VECTOR_NAMESPACE = "BifrostWarpLogs";
-const DEFAULT_SEARCH_THRESHOLD = 0.7;
+const DEFAULT_SEARCH_THRESHOLD = 0.5;
 const DEFAULT_SEARCH_LIMIT = 10;
 const DEFAULT_BACKFILL_PERIOD = "7d";
 
@@ -927,7 +927,7 @@ export default function WarpView() {
 								<WarpField
 									label="Similarity threshold"
 									htmlFor="warp-search-threshold"
-									hint="0.01 to 1. Higher returns fewer, closer matches."
+									hint="0.01 to 1, where 0.5 is unrelated and 1 is identical. Higher returns fewer, closer matches."
 								>
 									<Input
 										id="warp-search-threshold"

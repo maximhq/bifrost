@@ -1270,9 +1270,22 @@ func TestCodeModeResourceLink(t *testing.T) {
 }
 
 func TestCodeModeToolLogPreview(t *testing.T) {
-	preview := formatResultForLog(strings.Repeat("x", 100_000))
-	if len(preview) > 4096 || !strings.Contains(preview, "truncated") {
-		t.Fatalf("unbounded tool log preview: %d bytes", len(preview))
+	// The bound has to hold after encoding: escaping turns one control byte into six, and a
+	// non-string result never reaches the input truncation at all.
+	for _, tc := range []struct {
+		name   string
+		result interface{}
+	}{
+		{name: "long string", result: strings.Repeat("x", 100_000)},
+		{name: "control bytes expand when escaped", result: strings.Repeat("\x00", 2048)},
+		{name: "non-string result", result: map[string]any{"body": strings.Repeat("\x00", 2048)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			preview := formatResultForLog(tc.result)
+			if len(preview) > codeModeDiagnosticBytes || !strings.Contains(preview, "truncated") {
+				t.Fatalf("unbounded tool log preview: %d bytes", len(preview))
+			}
+		})
 	}
 }
 

@@ -2188,6 +2188,32 @@ func TestTableKey_SGLUnresolvedSecretVar_RoundTrip(t *testing.T) {
 	assert.True(t, found.SGLKeyConfig.URL.IsFromSecret())
 }
 
+func TestTableKey_CloudflareUnresolvedSecretVar_RoundTrip(t *testing.T) {
+	require.NoError(t, os.Unsetenv("FAKE_CLOUDFLARE_ACCOUNT_ID_FOR_TEST"))
+
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "cloudflare-unresolved-env",
+		ProviderID: 1,
+		Provider:   "cloudflare",
+		KeyID:      "cloudflare-env-uuid-1",
+		Value:      *schemas.NewSecretVar("cf-token"),
+		CloudflareKeyConfig: &schemas.CloudflareKeyConfig{
+			AccountID: *schemas.NewSecretVar("env.FAKE_CLOUDFLARE_ACCOUNT_ID_FOR_TEST"),
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	require.NotNil(t, found.CloudflareKeyConfig, "CloudflareKeyConfig was wiped on reload")
+	assert.Equal(t, "env.FAKE_CLOUDFLARE_ACCOUNT_ID_FOR_TEST", found.CloudflareKeyConfig.AccountID.GetRawRef())
+	assert.True(t, found.CloudflareKeyConfig.AccountID.IsFromSecret())
+}
+
 // TestTableKey_VertexPlainValue_RoundTrip is a sanity check ensuring that plain
 // (non-env-backed) values still round-trip cleanly through the persistence layer
 // after the IsSet() change. Both branches of the BeforeSave check matter.

@@ -141,6 +141,18 @@ export interface AgentLogStats {
 	average_latency: number; // milliseconds
 }
 
+// Mirrors logstore.AgentTopAgentResult.
+export interface AgentTopAgent {
+	agent_name: string;
+	count: number;
+	error_count: number;
+	average_latency: number; // milliseconds
+}
+
+export interface AgentTopAgentsResponse {
+	agents: AgentTopAgent[];
+}
+
 // Mirrors logstore.AgentHistogramResult. Structurally compatible with the shape
 // LogsVolumeChart already accepts for MCP, so the chart is reused as-is.
 export interface AgentHistogramBucket {

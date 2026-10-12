@@ -39,6 +39,7 @@ const ProviderEndpoints: Partial<Record<BaseProvider, Partial<Record<RequestType
 		image_edit_stream: "/v1/images/edits",
 		image_variation: "/v1/images/variations",
 		count_tokens: "/v1/responses/tokens",
+		decisions: "/v1/decisions",
 	},
 	anthropic: {
 		chat_completion: "/v1/messages",

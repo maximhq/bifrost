@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -28,13 +29,14 @@ func newAgentAggregateFixture(t *testing.T) (*RDBLogStore, time.Time) {
 	latency := func(v float64) *float64 { return &v }
 	requestTask := "task-search-parent"
 	eventArtifact := "artifact-only-on-event"
+	searchEventType := "artifact_update"
 	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(context.Background(), []*AgentLog{
 		{ID: "a-1", Timestamp: now, RecordKind: "request", Operation: "SendMessage", Status: "success", AgentName: "alpha", RequestID: "req-1", TaskID: &taskA, Latency: latency(100)},
 		{ID: "a-2", Timestamp: now.Add(time.Minute), RecordKind: "request", Operation: "SendMessage", Status: "error", AgentName: "alpha", RequestID: "req-2", TaskID: &taskA, Latency: latency(300)},
 		{ID: "a-3", Timestamp: now.Add(2 * time.Minute), RecordKind: "request", Operation: "GetTask", Status: "processing", AgentName: "alpha", RequestID: "req-3", TaskID: &taskA},
 		{ID: "b-1", Timestamp: now.Add(3 * time.Minute), RecordKind: "request", Operation: "SendMessage", Status: "success", AgentName: "beta", RequestID: "req-4", TaskID: &taskB, Latency: latency(500)},
 		{ID: "search-parent", Timestamp: now.Add(4 * time.Minute), RecordKind: "request", Operation: "SendStreamingMessage", Status: "success", AgentName: "alpha", RequestID: "req-search", TaskID: &requestTask},
-		{ID: "search-event", Timestamp: now.Add(5 * time.Minute), RecordKind: "event", Operation: "SendStreamingMessage", Status: "success", AgentName: "alpha", RequestID: "req-search", TaskID: &requestTask, ArtifactID: &eventArtifact},
+		{ID: "search-event", Timestamp: now.Add(5 * time.Minute), RecordKind: "event", Operation: "SendStreamingMessage", Status: "success", AgentName: "alpha", RequestID: "req-search", TaskID: &requestTask, ArtifactID: &eventArtifact, EventType: &searchEventType},
 	})))
 	return store, now
 }
@@ -86,6 +88,86 @@ func TestGetAgentLogStatsAppliesFilters(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 0, none.TotalEntries)
 	require.Zero(t, none.SuccessRate)
+}
+
+// TestGetAgentTopAgentsRanksRequestRows verifies per-Agent counts, errors,
+// latency, ordering, and that filters narrow the ranking like the operation list.
+func TestGetAgentTopAgentsRanksRequestRows(t *testing.T) {
+	store, now := newAgentAggregateFixture(t)
+	ctx := context.Background()
+
+	ranked, err := store.GetAgentTopAgents(ctx, agentWindow(now), 10)
+	require.NoError(t, err)
+	require.Len(t, ranked.Agents, 2)
+	// The alpha stream event must not inflate its request count.
+	require.Equal(t, "alpha", ranked.Agents[0].AgentName)
+	require.EqualValues(t, 4, ranked.Agents[0].Count)
+	require.EqualValues(t, 1, ranked.Agents[0].ErrorCount)
+	require.InDelta(t, 200, ranked.Agents[0].AverageLatency, 0.01)
+	require.Equal(t, "beta", ranked.Agents[1].AgentName)
+	require.EqualValues(t, 1, ranked.Agents[1].Count)
+	require.InDelta(t, 500, ranked.Agents[1].AverageLatency, 0.01)
+
+	limited, err := store.GetAgentTopAgents(ctx, agentWindow(now), 1)
+	require.NoError(t, err)
+	require.Len(t, limited.Agents, 1)
+
+	filter := agentWindow(now)
+	filter.AgentName = []string{"beta"}
+	scoped, err := store.GetAgentTopAgents(ctx, filter, 10)
+	require.NoError(t, err)
+	require.Len(t, scoped.Agents, 1)
+	require.Equal(t, "beta", scoped.Agents[0].AgentName)
+
+	// Agents with equal counts rank by name so the top-N cut is deterministic.
+	// "aaa" is inserted after "alpha", so only the tiebreak can put it first.
+	var tiedRows []*AgentLog
+	for i := 0; i < 4; i++ {
+		id := fmt.Sprintf("tie-%d", i)
+		tiedRows = append(tiedRows, &AgentLog{ID: id, Timestamp: now.Add(10 * time.Minute), RecordKind: "request", Operation: "GetTask", Status: "success", AgentName: "aaa", RequestID: "req-" + id})
+	}
+	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, tiedRows)))
+	tiedRank, err := store.GetAgentTopAgents(ctx, agentWindow(now), 1)
+	require.NoError(t, err)
+	require.Len(t, tiedRank.Agents, 1)
+	require.Equal(t, "aaa", tiedRank.Agents[0].AgentName)
+	require.EqualValues(t, 4, tiedRank.Agents[0].Count)
+
+	// A search matching only a child event still ranks its parent operation.
+	search := agentWindow(now)
+	search.Search = "artifact-only-on-event"
+	matched, err := store.GetAgentTopAgents(ctx, search, 10)
+	require.NoError(t, err)
+	require.Len(t, matched.Agents, 1)
+	require.Equal(t, "alpha", matched.Agents[0].AgentName)
+	require.EqualValues(t, 1, matched.Agents[0].Count)
+
+	// An event type only present on a child event still ranks its parent operation.
+	byEventType := agentWindow(now)
+	byEventType.EventType = []string{"artifact_update"}
+	typed, err := store.GetAgentTopAgents(ctx, byEventType, 10)
+	require.NoError(t, err)
+	require.Len(t, typed.Agents, 1)
+	require.Equal(t, "alpha", typed.Agents[0].AgentName)
+	require.EqualValues(t, 1, typed.Agents[0].Count)
+}
+
+// TestListAgentLogOperationsMatchesEventTypeOnChildEvents verifies that the
+// operation list resolves an event type filter through child events.
+func TestListAgentLogOperationsMatchesEventTypeOnChildEvents(t *testing.T) {
+	store, now := newAgentAggregateFixture(t)
+	filter := agentWindow(now)
+	filter.EventType = []string{"artifact_update"}
+	result, err := store.ListAgentLogOperations(context.Background(), filter, PaginationOptions{Limit: 10, Order: "desc"})
+	require.NoError(t, err)
+	require.Len(t, result.Logs, 1)
+	require.Equal(t, "search-parent", result.Logs[0].ID)
+	require.Len(t, result.Logs[0].Events, 1)
+
+	filter.EventType = []string{"no_such_event_type"}
+	none, err := store.ListAgentLogOperations(context.Background(), filter, PaginationOptions{Limit: 10, Order: "desc"})
+	require.NoError(t, err)
+	require.Empty(t, none.Logs)
 }
 
 // The free-text search must match DB-resident metadata columns, case-insensitively.
@@ -239,4 +321,27 @@ func TestGetAgentHistogramBucketsAndScope(t *testing.T) {
 	require.EqualValues(t, 6, stats.TotalEntries)
 	_, err = store.GetAgentHistogram(context.Background(), AgentLogHistoryFilter{}, 3600)
 	require.NoError(t, err)
+}
+
+// TestListAgentLogHistoryEventTypeKeepsOnlyMatchingEvents verifies that listing
+// request and event rows together does not return events of other types.
+func TestListAgentLogHistoryEventTypeKeepsOnlyMatchingEvents(t *testing.T) {
+	store, now := newAgentAggregateFixture(t)
+	statusType := "status_update"
+	task := "task-search-parent"
+	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(context.Background(), []*AgentLog{
+		{ID: "search-status-event", Timestamp: now.Add(6 * time.Minute), RecordKind: "event", Operation: "SendStreamingMessage", Status: "success", AgentName: "alpha", RequestID: "req-search", TaskID: &task, EventType: &statusType},
+	})))
+
+	filter := agentWindow(now)
+	filter.RecordKind = []string{"request", "event"}
+	filter.EventType = []string{"artifact_update"}
+	result, err := store.ListAgentLogHistory(context.Background(), filter, PaginationOptions{Limit: 20, Order: "desc"})
+	require.NoError(t, err)
+
+	ids := make([]string, 0, len(result.Logs))
+	for _, log := range result.Logs {
+		ids = append(ids, log.ID)
+	}
+	require.ElementsMatch(t, []string{"search-parent", "search-event"}, ids)
 }

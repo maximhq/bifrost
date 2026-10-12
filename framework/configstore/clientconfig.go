@@ -51,9 +51,11 @@ type CompatConfig struct {
 	ShouldConvertParams                 bool `json:"should_convert_params"`
 	AzureDeepseek                       bool `json:"azure_deepseek"`
 	ForceReasoningOnlyModelsToResponses bool `json:"force_reasoning_only_models_to_responses"`
+	ConvertDecisionToResponses          bool `json:"convert_decision_to_responses"`
 }
 
-// UnmarshalJSON defaults all bool fields to true when absent from JSON.
+// UnmarshalJSON defaults all bool fields to true when absent from JSON, except
+// ConvertDecisionToResponses: emulating a decision through a chat model is opt-in.
 func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 	type compatConfig struct {
 		ConvertTextToChat                   *bool `json:"convert_text_to_chat"`
@@ -62,6 +64,7 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 		ShouldConvertParams                 *bool `json:"should_convert_params"`
 		AzureDeepseek                       *bool `json:"azure_deepseek"`
 		ForceReasoningOnlyModelsToResponses *bool `json:"force_reasoning_only_models_to_responses"`
+		ConvertDecisionToResponses          *bool `json:"convert_decision_to_responses"`
 	}
 	var s compatConfig
 	if err := sonic.Unmarshal(data, &s); err != nil {
@@ -73,6 +76,7 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
 	c.AzureDeepseek = s.AzureDeepseek == nil || *s.AzureDeepseek
 	c.ForceReasoningOnlyModelsToResponses = s.ForceReasoningOnlyModelsToResponses == nil || *s.ForceReasoningOnlyModelsToResponses
+	c.ConvertDecisionToResponses = s.ConvertDecisionToResponses != nil && *s.ConvertDecisionToResponses
 	return nil
 }
 
@@ -225,6 +229,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 	if !c.Compat.ForceReasoningOnlyModelsToResponses {
 		hash.Write([]byte("compatForceReasoningOnlyModelsToResponses:false"))
+	}
+	if c.Compat.ConvertDecisionToResponses {
+		hash.Write([]byte("compatConvertDecisionToResponses:true"))
 	}
 
 	// Only hash non-default value to avoid legacy config hash churn.
@@ -570,9 +577,11 @@ type ProviderConfig struct {
 	SendBackRawRequest       bool                              `json:"send_back_raw_request"`                 // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
+	IgnoreProviderCost       bool                              `json:"ignore_provider_cost"`                  // Ignore provider-reported usage.cost and price from Bifrost's catalog
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`                // Prompt-cache breakpoint injection
+	InjectedTools            *schemas.InjectedToolsConfig      `json:"injected_tools,omitempty"`              // MCP tools injected and auto-executed server side
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -591,9 +600,11 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		SendBackRawRequest:       p.SendBackRawRequest,
 		SendBackRawResponse:      p.SendBackRawResponse,
 		StoreRawRequestResponse:  p.StoreRawRequestResponse,
+		IgnoreProviderCost:       p.IgnoreProviderCost,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
 		PromptCache:              p.PromptCache,
+		InjectedTools:            p.InjectedTools,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,
@@ -787,6 +798,13 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			redactedConfig.Keys[i].SGLKeyConfig = sglConfig
 		}
 
+		if key.CloudflareKeyConfig != nil {
+			cloudflareConfig := &schemas.CloudflareKeyConfig{}
+			// The account ID is an identifier, not a credential — surface it in plaintext.
+			cloudflareConfig.AccountID = *key.CloudflareKeyConfig.AccountID.RedactedIfSecret()
+			redactedConfig.Keys[i].CloudflareKeyConfig = cloudflareConfig
+		}
+
 		// Redact Databricks key config if present
 		if key.DatabricksKeyConfig != nil {
 			databricksConfig := &schemas.DatabricksKeyConfig{
@@ -883,6 +901,15 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 		hash.Write(data)
 	}
 
+	// Hash InjectedTools
+	if p.InjectedTools != nil {
+		data, err := sonic.Marshal(p.InjectedTools)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
 	// Hash SendBackRawRequest
 	if p.SendBackRawRequest {
 		hash.Write([]byte("sendBackRawRequest"))
@@ -896,6 +923,11 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash StoreRawRequestResponse
 	if p.StoreRawRequestResponse {
 		hash.Write([]byte("storeRawRequestResponse"))
+	}
+
+	// Hash IgnoreProviderCost
+	if p.IgnoreProviderCost {
+		hash.Write([]byte("ignoreProviderCost"))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
@@ -1010,6 +1042,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash SGLKeyConfig
 	if key.SGLKeyConfig != nil {
 		data, err := sonic.Marshal(key.SGLKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash CloudflareKeyConfig
+	if key.CloudflareKeyConfig != nil {
+		data, err := sonic.Marshal(key.CloudflareKeyConfig)
 		if err != nil {
 			return "", err
 		}
@@ -1521,12 +1561,12 @@ func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (C
 		hashes.ClassifierSettings = settingsHash
 	}
 
-	if normalized.Jev != nil {
-		settingsHash, err := hashComplexityValue(normalized.Jev)
+	if normalized.Decision != nil {
+		settingsHash, err := hashComplexityValue(normalized.Decision)
 		if err != nil {
-			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash jev settings: %w", err)
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash decision settings: %w", err)
 		}
-		hashes.JevSettings = settingsHash
+		hashes.DecisionSettings = settingsHash
 	}
 
 	if normalized.LLM != nil {

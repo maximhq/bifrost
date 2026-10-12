@@ -37,6 +37,12 @@ interface ProviderSelectorBaseProps {
 	values?: readonly ProviderSelectorValue[];
 	/** Last word on which configured providers make the list, e.g. embedding-capable only. */
 	filter?: (provider: ModelProvider) => boolean;
+	/**
+	 * Overrides the mark for a configured provider, for a call site that knows more than the name
+	 * and base type do. Return undefined to keep the standard mark. Keep the function stable
+	 * (module-level or memoized): it feeds the option list's memo.
+	 */
+	resolveIconKey?: (provider: ModelProvider) => ProviderIconType | undefined;
 	/** Values to drop, for picking one that has not been configured yet. */
 	excludeValues?: string[];
 	/**
@@ -124,6 +130,7 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 		source = "configured",
 		values,
 		filter,
+		resolveIconKey,
 		excludeValues,
 		extraOptions,
 		footerOptions,
@@ -179,13 +186,13 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 				.map((provider) => ({
 					value: provider.name,
 					label: getProviderLabel(provider.name),
-					iconKey: resolveProviderIconKey(provider.name, provider.custom_provider_config?.base_provider_type),
+					iconKey: resolveIconKey?.(provider) ?? resolveProviderIconKey(provider.name, provider.custom_provider_config?.base_provider_type),
 					isCustom: Boolean(provider.custom_provider_config),
 				}));
 		}
 		const names: readonly ProviderSelectorValue[] = source === "catalog" ? VisibleProviderNames : (values ?? []);
 		return names.filter(Boolean).map(normalizeValueOption);
-	}, [source, providers, filter, values]);
+	}, [source, providers, filter, resolveIconKey, values]);
 
 	const options = useMemo<ProviderSelectorOption[]>(() => {
 		const excluded = new Set(excludeValues ?? []);

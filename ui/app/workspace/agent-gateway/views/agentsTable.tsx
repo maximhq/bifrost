@@ -258,7 +258,7 @@ export default function AgentsTable({
 	};
 
 	// Rendered on the empty branch too so the topbar keeps its title.
-	const pageTitle = <PageTitle title="Agent Gateway">Manage upstream A2A agents served through the gateway.</PageTitle>;
+	const pageTitle = <PageTitle title="Agent Catalog">Manage upstream A2A agents served through the gateway.</PageTitle>;
 
 	const sheet = sheetOpen && <AgentSheet agent={selectedAgent ?? undefined} onClose={() => setSheetOpen(false)} onSaved={handleSaved} />;
 

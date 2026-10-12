@@ -631,7 +631,7 @@ export interface RoutingCall {
 }
 
 export interface RoutingMetadata {
-	// One entry per billable semantic embed or classifier call, including Jev decisions.
+	// One entry per billable semantic embed or classifier call, including decision-model calls.
 	calls?: RoutingCall[];
 }
 
@@ -699,7 +699,9 @@ export interface KeyAttemptRecord {
 	attempt: number;
 	key_id: string;
 	key_name: string;
-	fail_reason?: string | null; // null/undefined on the final (successful or last) attempt
+	fail_reason?: string | null; // why the key failed; null on a served attempt and on a cancelled one
+	failure_class?: string | null; // what the attempt told Bifrost (e.g. rate_limit, timeout, cancelled); null on a served attempt
+	status_code?: number | null; // the status the class was derived from
 }
 
 export interface RedactionMapping {
@@ -760,7 +762,7 @@ export interface LogEntry {
 	routing_rule_id?: string;
 	routing_rule_name?: string;
 	complexity_tier?: string; // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); absent when no routing rule referenced complexity_tier
-	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "jev", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
+	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "decision", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
 	complexity_score?: number; // Classifier score: the semantic classifier's similarity to the nearest reference phrase
 	session_id?: string; // Raw opaque session ID resolved by Bifrost for key stickiness and request correlation
 	routing_engine_logs?: string; // Human-readable routing decision logs
@@ -875,7 +877,7 @@ export interface LogFilters {
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	tool_call_names?: string[]; // Requests whose response called any of these function names
 	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, jev, llm, session, skipped)
+	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, decision, llm, session, skipped)
 	agent_names?: string[]; // Registered Agents whose context IDs correlate the matching logs
 	session_id?: string; // Exact session ID used for key stickiness and request correlation
 	agent_correlation_id?: string; // Exact Agent correlation ID shared across related protocol activity
@@ -1170,6 +1172,10 @@ export type ResponsesMessageType =
 	| "code_interpreter_call"
 	| "local_shell_call"
 	| "local_shell_call_output"
+	| "shell_call"
+	| "shell_call_output"
+	| "apply_patch_call"
+	| "apply_patch_call_output"
 	| "mcp_call"
 	| "custom_tool_call"
 	| "custom_tool_call_output"

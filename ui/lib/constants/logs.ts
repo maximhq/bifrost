@@ -31,6 +31,7 @@ export const KnownProvidersNames = [
 	"sarvam",
 	"wafer",
 	"databricks",
+	"cloudflare",
 	"github-copilot",
 	"typesafe",
 ] as const;
@@ -69,6 +70,7 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"vertex",
 	"vllm",
 	"databricks",
+	"cloudflare",
 ] as const;
 
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
@@ -178,6 +180,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	sarvam: "Sarvam AI",
 	wafer: "Wafer",
 	databricks: "Databricks",
+	cloudflare: "Cloudflare",
 	"github-copilot": "GitHub Copilot",
 	typesafe: "TypeSafe",
 } as const;

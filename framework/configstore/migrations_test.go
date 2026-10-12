@@ -2424,6 +2424,36 @@ func TestMigrationAddCompatForceReasoningOnlyModelsToResponsesColumn(t *testing.
 	assert.True(t, rows[0].CompatForceReasoningOnlyModelsToResponses, "existing rows must have the toggle on by default")
 }
 
+func TestMigrationAddCompatConvertDecisionToResponsesColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	err = db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+
+	// Simulate the pre-migration schema
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "compat_convert_decision_to_responses"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "compat_convert_decision_to_responses"))
+
+	now := time.Now()
+	require.NoError(t, db.Exec(`INSERT INTO config_client (created_at, updated_at) VALUES (?, ?)`, now, now).Error)
+
+	require.NoError(t, migrationAddCompatConvertDecisionToResponsesColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "compat_convert_decision_to_responses"))
+
+	type row struct {
+		CompatConvertDecisionToResponses bool `gorm:"column:compat_convert_decision_to_responses"`
+	}
+	var rows []row
+	require.NoError(t, db.Table("config_client").Select("compat_convert_decision_to_responses").Order("id").Find(&rows).Error)
+	require.Len(t, rows, 1)
+	assert.False(t, rows[0].CompatConvertDecisionToResponses, "existing rows must keep decision emulation off")
+}
+
 // setupCalendarAlignedPreMigrationDB creates a SQLite DB with governance_virtual_keys,
 // governance_budgets, and governance_rate_limits tables, then drops the calendar_aligned
 // column from budgets and rate_limits to simulate the pre-migration schema state.
@@ -4540,4 +4570,182 @@ func TestMigrationAddVirtualKeyDeleteAfterExpireColumn(t *testing.T) {
 	// Idempotent: a re-run with the column already present must not fail.
 	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_virtual_key_delete_after_expire_column").Error)
 	require.NoError(t, migrationAddVirtualKeyDeleteAfterExpireColumn(ctx, db, testMigrationLogger))
+}
+
+// Rolling back add_ignore_provider_cost_column is refused rather than performed:
+// the column holds an operator's per-provider choice, and dropping it would
+// silently send those providers back to trusting their reported usage.cost.
+func TestMigrationAddIgnoreProviderCostColumn_NonRollbackable(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableProvider{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableProvider{}, "ignore_provider_cost"))
+	require.NoError(t, migrationAddIgnoreProviderCostColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableProvider{}, "ignore_provider_cost"))
+
+	require.NoError(t, db.Create(&tables.TableProvider{Name: "cortecs", IgnoreProviderCost: true}).Error)
+
+	err := rollbackIgnoreProviderCostColumn(db, testMigrationLogger)
+	require.Error(t, err, "rollback must refuse: dropping the column discards the operator's setting")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&tables.TableProvider{}, "ignore_provider_cost"),
+		"a refused rollback must leave the column in place")
+}
+
+// Directly owned virtual key limits move onto the key's model config tiers.
+func TestMigrationMoveConfigJSONVKLimitsToModelConfigs(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}, &tables.TableVirtualKeyProviderConfig{},
+		&tables.TableBudget{}, &tables.TableRateLimit{}, &tables.TableModelConfig{}))
+
+	tokenMax, tokenDur := int64(100), "1d"
+	rateLimit := func(id string) *tables.TableRateLimit {
+		return &tables.TableRateLimit{ID: id, TokenMaxLimit: &tokenMax, TokenResetDuration: &tokenDur}
+	}
+	for _, id := range []string{"rl-key", "rl-pc", "rl-file", "rl-tier"} {
+		require.NoError(t, db.Create(rateLimit(id)).Error)
+	}
+
+	// The shape config.json reconciliation wrote.
+	require.NoError(t, db.Create(&tables.TableVirtualKey{
+		ID: "vk-cal", Name: "vk-cal", Value: *schemas.NewSecretVar("sk-bf-cal"),
+		CalendarAligned: true, RateLimitID: schemas.Ptr("rl-key"),
+	}).Error)
+	providerConfig := &tables.TableVirtualKeyProviderConfig{
+		VirtualKeyID: "vk-cal", Provider: "openai", RateLimitID: schemas.Ptr("rl-pc"),
+	}
+	require.NoError(t, db.Create(providerConfig).Error)
+
+	// Tier already holds an API-set rate limit while the key still references the file's.
+	require.NoError(t, db.Create(&tables.TableVirtualKey{
+		ID: "vk-tiered", Name: "vk-tiered", Value: *schemas.NewSecretVar("sk-bf-tiered"),
+		RateLimitID: schemas.Ptr("rl-file"),
+	}).Error)
+	require.NoError(t, db.Create(&tables.TableModelConfig{
+		ID: "mc-tiered", ModelName: tables.ModelConfigAllModels, Scope: tables.ModelConfigScopeVirtualKey,
+		ScopeID: schemas.Ptr("vk-tiered"), RateLimitID: schemas.Ptr("rl-tier"),
+	}).Error)
+
+	lastReset := time.Now().UTC().Add(-72 * time.Hour).Truncate(time.Second)
+	require.NoError(t, db.Create(&tables.TableBudget{
+		ID: "b-key", MaxLimit: 10, ResetDuration: "1M", CurrentUsage: 7, LastReset: lastReset,
+		VirtualKeyID: schemas.Ptr("vk-cal"),
+	}).Error)
+	require.NoError(t, db.Create(&tables.TableBudget{
+		ID: "b-pc", MaxLimit: 20, ResetDuration: "1M", CurrentUsage: 3, LastReset: lastReset,
+		ProviderConfigID: &providerConfig.ID,
+	}).Error)
+	// Already on a model config.
+	require.NoError(t, db.Create(&tables.TableModelConfig{
+		ID: "mc-done", ModelName: "gpt-4o", Scope: tables.ModelConfigScopeVirtualKey, ScopeID: schemas.Ptr("vk-cal"),
+	}).Error)
+	require.NoError(t, db.Create(&tables.TableBudget{
+		ID: "b-done", MaxLimit: 5, ResetDuration: "1d", ModelConfigID: schemas.Ptr("mc-done"),
+	}).Error)
+	// Orphan: its key is gone.
+	require.NoError(t, db.Exec(
+		`INSERT INTO governance_budgets (id, max_limit, reset_duration, virtual_key_id, created_at, updated_at)
+		 VALUES ('b-orphan', 1, '1d', 'vk-gone', ?, ?)`, time.Now(), time.Now()).Error)
+
+	require.NoError(t, migrationMoveConfigJSONVKLimitsToModelConfigs(ctx, db, testMigrationLogger))
+
+	tier := func(vkID string, provider *string) tables.TableModelConfig {
+		t.Helper()
+		q := db.Where("scope = ? AND scope_id = ? AND model_name = ?",
+			tables.ModelConfigScopeVirtualKey, vkID, tables.ModelConfigAllModels)
+		if provider == nil {
+			q = q.Where("provider IS NULL")
+		} else {
+			q = q.Where("provider = ?", *provider)
+		}
+		var rows []tables.TableModelConfig
+		require.NoError(t, q.Find(&rows).Error)
+		require.Len(t, rows, 1, "expected exactly one all-models tier for %s provider %v", vkID, provider)
+		return rows[0]
+	}
+	budget := func(id string) tables.TableBudget {
+		t.Helper()
+		var b tables.TableBudget
+		require.NoError(t, db.First(&b, "id = ?", id).Error)
+		return b
+	}
+
+	openai := "openai"
+	keyTier, providerTier := tier("vk-cal", nil), tier("vk-cal", &openai)
+
+	// Only the owning FK moves.
+	moved := budget("b-key")
+	require.NotNil(t, moved.ModelConfigID)
+	assert.Equal(t, keyTier.ID, *moved.ModelConfigID)
+	assert.Nil(t, moved.VirtualKeyID)
+	assert.EqualValues(t, 7, moved.CurrentUsage)
+	assert.WithinDuration(t, lastReset, moved.LastReset, time.Second)
+
+	movedPC := budget("b-pc")
+	require.NotNil(t, movedPC.ModelConfigID, "a budget owned by a provider config was never migrated before")
+	assert.Equal(t, providerTier.ID, *movedPC.ModelConfigID)
+	assert.Nil(t, movedPC.ProviderConfigID)
+	assert.EqualValues(t, 3, movedPC.CurrentUsage)
+
+	// The tiers carry the key's calendar alignment.
+	assert.True(t, keyTier.CalendarAligned)
+	assert.True(t, providerTier.CalendarAligned)
+
+	// Rate limits move to their tier; direct references dropped.
+	require.NotNil(t, keyTier.RateLimitID)
+	assert.Equal(t, "rl-key", *keyTier.RateLimitID)
+	require.NotNil(t, providerTier.RateLimitID)
+	assert.Equal(t, "rl-pc", *providerTier.RateLimitID)
+	var vkCal tables.TableVirtualKey
+	require.NoError(t, db.Select("id", "rate_limit_id").First(&vkCal, "id = ?", "vk-cal").Error)
+	assert.Nil(t, vkCal.RateLimitID)
+	var reloadedPC tables.TableVirtualKeyProviderConfig
+	require.NoError(t, db.First(&reloadedPC, "id = ?", providerConfig.ID).Error)
+	assert.Nil(t, reloadedPC.RateLimitID)
+
+	// A tier with a rate limit keeps it, and the key keeps the reference this migration did not move.
+	tiered := tier("vk-tiered", nil)
+	require.NotNil(t, tiered.RateLimitID)
+	assert.Equal(t, "rl-tier", *tiered.RateLimitID, "the tier's own rate limit is the one in force")
+	var vkTiered tables.TableVirtualKey
+	require.NoError(t, db.Select("id", "rate_limit_id").First(&vkTiered, "id = ?", "vk-tiered").Error)
+	require.NotNil(t, vkTiered.RateLimitID, "a reference the migration did not relocate was dropped, orphaning the row")
+	assert.Equal(t, "rl-file", *vkTiered.RateLimitID)
+
+	// Untouched.
+	done := budget("b-done")
+	require.NotNil(t, done.ModelConfigID)
+	assert.Equal(t, "mc-done", *done.ModelConfigID)
+	orphan := budget("b-orphan")
+	assert.Nil(t, orphan.ModelConfigID, "a budget whose key is gone was moved onto a model config")
+	var orphanTiers int64
+	require.NoError(t, db.Model(&tables.TableModelConfig{}).Where("scope_id = ?", "vk-gone").Count(&orphanTiers).Error)
+	assert.Zero(t, orphanTiers, "a model config was minted for a key that no longer exists")
+
+	// Idempotent.
+	var tiersBefore int64
+	require.NoError(t, db.Model(&tables.TableModelConfig{}).Count(&tiersBefore).Error)
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "move_config_json_vk_limits_to_model_configs").Error)
+	require.NoError(t, migrationMoveConfigJSONVKLimitsToModelConfigs(ctx, db, testMigrationLogger))
+	var tiersAfter int64
+	require.NoError(t, db.Model(&tables.TableModelConfig{}).Count(&tiersAfter).Error)
+	assert.Equal(t, tiersBefore, tiersAfter, "a re-run created another tier")
+}
+
+// TestEnsureVKLimitModelConfigSkipsAMissingKey: the tier is scoped to the key by a column with no
+// foreign key, so a key that is gone must yield no tier rather than an orphan the delete cannot reach.
+func TestEnsureVKLimitModelConfigSkipsAMissingKey(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}, &tables.TableModelConfig{}))
+
+	for _, provider := range []*string{nil, schemas.Ptr("openai")} {
+		mcID, err := ensureVKLimitModelConfig(db, "vk-gone", provider)
+		require.NoError(t, err, "a missing key is not an error, it is nothing to move")
+		assert.Empty(t, mcID, "a tier was minted for a key that does not exist")
+	}
+	var tiers int64
+	require.NoError(t, db.Model(&tables.TableModelConfig{}).Where("scope_id = ?", "vk-gone").Count(&tiers).Error)
+	assert.Zero(t, tiers, "an orphaned tier was left behind")
 }

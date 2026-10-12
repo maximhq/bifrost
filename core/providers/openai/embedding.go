@@ -58,7 +58,7 @@ func ToOpenAIEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest, provi
 		return nil, nil
 	}
 
-	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams(string(providerName)); err != nil {
+	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams(); err != nil {
 		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 
@@ -84,11 +84,11 @@ func ToOpenAIEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest, provi
 						tokens = append(tokens, part.Tokens...)
 					}
 				default:
-					return nil, providerUtils.InvalidRequestErrorf("openai embedding does not support %q input", part.Type)
+					return nil, providerUtils.InvalidRequestErrorf("this provider does not support %q embedding input", part.Type)
 				}
 			}
 			if sb.Len() > 0 && len(tokens) > 0 {
-				return nil, providerUtils.InvalidRequestErrorf("openai embedding does not support mixing text and token inputs within a single content entry")
+				return nil, providerUtils.InvalidRequestErrorf("this provider does not support mixing text and token embedding inputs within a single content entry")
 			}
 			if sb.Len() > 0 {
 				texts = append(texts, sb.String())
@@ -98,7 +98,7 @@ func ToOpenAIEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest, provi
 		}
 
 		if len(texts) > 0 && len(tokenBatches) > 0 {
-			return nil, providerUtils.InvalidRequestErrorf("openai embedding does not support mixing text and token inputs in the same request")
+			return nil, providerUtils.InvalidRequestErrorf("this provider does not support mixing text and token embedding inputs in the same request")
 		}
 		switch {
 		case len(texts) == 1:
@@ -118,7 +118,8 @@ func ToOpenAIEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest, provi
 	}
 
 	if bifrostReq.Params != nil {
-		openaiReq.EmbeddingParameters = *bifrostReq.Params
+		openaiReq.EncodingFormat = bifrostReq.Params.EncodingFormat
+		openaiReq.Dimensions = bifrostReq.Params.Dimensions
 		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
 	}
 

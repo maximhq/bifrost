@@ -556,6 +556,14 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_compat_force_reasoning_only_models_to_responses_column"}, run: migrationAddCompatForceReasoningOnlyModelsToResponsesColumn},
 	{IDs: []string{"backfill_compat_force_reasoning_only_models_to_responses"}, run: migrationBackfillCompatForceReasoningOnlyModelsToResponses},
 	{IDs: []string{"add_agent_gateway_tables"}, run: migrationAddAgentGatewayTables},
+	{IDs: []string{"add_agent_push_config_tenant_column"}, run: migrationAddAgentPushConfigTenantColumn},
+	{IDs: []string{"add_ignore_provider_cost_column"}, run: migrationAddIgnoreProviderCostColumn},
+	{IDs: []string{"add_100k_token_pricing_columns"}, run: migrationAdd100kTokenPricingColumns},
+	{IDs: []string{"add_decisions_pricing_columns"}, run: migrationAddDecisionsPricingColumns},
+	{IDs: []string{"add_injected_tools_json_column"}, run: migrationAddInjectedToolsJSONColumn},
+	{IDs: []string{"add_compat_convert_decision_to_responses_column"}, run: migrationAddCompatConvertDecisionToResponsesColumn},
+	{IDs: []string{"add_cloudflare_key_config_columns"}, run: migrationAddCloudflareKeyConfigColumns},
+	{IDs: []string{"move_config_json_vk_limits_to_model_configs"}, run: migrationMoveConfigJSONVKLimitsToModelConfigs},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1022,6 +1030,21 @@ func migrationAddAgentGatewayTables(ctx context.Context, db *gorm.DB, logger sch
 			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "A2AExternalClientURL")
 		},
 		Rollback: rollbackAgentGatewayTables,
+	})
+}
+
+// migrationAddAgentPushConfigTenantColumn preserves the downstream interface
+// tenant independently of the tenant selected for the upstream Agent interface.
+func migrationAddAgentPushConfigTenantColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_agent_push_config_tenant_column"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableAgentPushConfig{}, "tenant")
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the tenant column would permanently delete the only stored copy of each push configuration's tenant", migrationName)
+		},
 	})
 }
 
@@ -7793,6 +7816,29 @@ func migrationAddPromptCacheJSONColumn(ctx context.Context, db *gorm.DB, logger 
 	return nil
 }
 
+// migrationAddInjectedToolsJSONColumn adds the injected_tools_json column to the
+// provider table, backing ProviderConfig.InjectedTools.
+func migrationAddInjectedToolsJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_injected_tools_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "InjectedToolsJSON")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableProvider{}, "injected_tools_json")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
 // migrationAddPromptVariablesColumns adds variables_json column to prompt_sessions and prompt_versions
 func migrationAddPromptVariablesColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_prompt_variables_columns"
@@ -14216,6 +14262,208 @@ func migrationMigrateVKStandaloneLimitsToModelConfigs(ctx context.Context, db *g
 	return nil
 }
 
+// migrationMoveConfigJSONVKLimitsToModelConfigs moves directly owned virtual key budgets and rate limits onto the key's model config tiers.
+func migrationMoveConfigJSONVKLimitsToModelConfigs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "move_config_json_vk_limits_to_model_configs"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	// One transaction per tier, not one for all of them. Safe to re-run: only still-direct rows move.
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	runErr := RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Not a union: a typed NULL for the key tier's absent provider makes Postgres pad real values.
+			type tier struct {
+				VirtualKeyID string
+				Provider     *string
+			}
+			var keyTiers []string
+			if err := tx.Raw(`
+				SELECT DISTINCT vk.id
+				FROM governance_virtual_keys vk
+				WHERE vk.rate_limit_id IS NOT NULL
+				   OR EXISTS (
+					SELECT 1 FROM governance_budgets b
+					WHERE b.virtual_key_id = vk.id AND b.model_config_id IS NULL
+				   )
+			`).Scan(&keyTiers).Error; err != nil {
+				return fmt.Errorf("failed to query virtual keys holding limits directly: %w", err)
+			}
+			var providerTiers []tier
+			if err := tx.Raw(`
+				SELECT DISTINCT pc.virtual_key_id AS virtual_key_id, pc.provider AS provider
+				FROM governance_virtual_key_provider_configs pc
+				JOIN governance_virtual_keys vk ON vk.id = pc.virtual_key_id
+				WHERE pc.rate_limit_id IS NOT NULL
+				   OR EXISTS (
+					SELECT 1 FROM governance_budgets b
+					WHERE b.provider_config_id = pc.id AND b.model_config_id IS NULL
+				   )
+			`).Scan(&providerTiers).Error; err != nil {
+				return fmt.Errorf("failed to query provider configs holding limits directly: %w", err)
+			}
+
+			tiers := make([]tier, 0, len(keyTiers)+len(providerTiers))
+			for _, vkID := range keyTiers {
+				tiers = append(tiers, tier{VirtualKeyID: vkID})
+			}
+			tiers = append(tiers, providerTiers...)
+			if len(tiers) == 0 {
+				return nil
+			}
+
+			movedBudgets, movedRateLimits := 0, 0
+			for _, t := range tiers {
+				if err := tx.Transaction(func(txn *gorm.DB) error {
+					return moveVKTierLimits(txn, t.VirtualKeyID, t.Provider, &movedBudgets, &movedRateLimits)
+				}); err != nil {
+					return err
+				}
+			}
+			logger.Info("[configstore] %s: moved %d budget(s) and %d rate limit(s) onto %d virtual key model config tier(s)",
+				migrationName, movedBudgets, movedRateLimits, len(tiers))
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: it moves budget and rate-limit ownership onto model config tiers and does not record which owner each row came from, so the original ownership cannot be restored", migrationName)
+		},
+	})
+	if runErr != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, runErr)
+	}
+	return nil
+}
+
+// moveVKTierLimits moves one tier's directly owned budgets and rate limit onto its model config.
+func moveVKTierLimits(tx *gorm.DB, vkID string, provider *string, movedBudgets, movedRateLimits *int) error {
+	mcID, err := ensureVKLimitModelConfig(tx, vkID, provider)
+	if err != nil {
+		return err
+	}
+	if mcID == "" {
+		// The key disappeared between the scan and here.
+		return nil
+	}
+	// Lock the provider configs before their budgets, the order DeleteVirtualKeyProviderConfig takes:
+	// it locks the config then deletes the budgets, so moving the budgets first would deadlock it.
+	// Ordered by id so two of these cannot take the same rows in opposite orders.
+	if provider != nil {
+		var providerConfigIDs []uint
+		if err := dbForUpdate(tx).Table("governance_virtual_key_provider_configs").
+			Where("virtual_key_id = ? AND provider = ?", vkID, *provider).
+			Order("id").Pluck("id", &providerConfigIDs).Error; err != nil {
+			return fmt.Errorf("failed to lock the provider configs of virtual key %s: %w", vkID, err)
+		}
+	}
+	// Only the owning FK moves. Raw SQL skips BeforeSave, so clear the direct column here.
+	var res *gorm.DB
+	if provider == nil {
+		res = tx.Exec(`
+			UPDATE governance_budgets SET model_config_id = ?, virtual_key_id = NULL
+			WHERE virtual_key_id = ? AND model_config_id IS NULL
+		`, mcID, vkID)
+	} else {
+		res = tx.Exec(`
+			UPDATE governance_budgets SET model_config_id = ?, provider_config_id = NULL
+			WHERE model_config_id IS NULL AND provider_config_id IN (
+				SELECT id FROM governance_virtual_key_provider_configs
+				WHERE virtual_key_id = ? AND provider = ?
+			)
+		`, mcID, vkID, *provider)
+	}
+	if res.Error != nil {
+		return fmt.Errorf("failed to move budgets of virtual key %s onto model config %s: %w", vkID, mcID, res.Error)
+	}
+	*movedBudgets += int(res.RowsAffected)
+
+	moved, err := moveVKTierRateLimit(tx, vkID, provider, mcID)
+	if err != nil {
+		return err
+	}
+	*movedRateLimits += moved
+	return nil
+}
+
+// ensureVKLimitModelConfig find-or-creates a key's all-models tier. "" when the key is gone.
+func ensureVKLimitModelConfig(tx *gorm.DB, vkID string, provider *string) (string, error) {
+	// Serialize against a concurrent DeleteVirtualKey, as CreateModelConfig does: scope_id carries no
+	// foreign key, so without the lock a tier inserted here can outlive the key it is scoped to.
+	var owner []string
+	if err := dbForUpdate(tx).Table("governance_virtual_keys").
+		Where("id = ?", vkID).Limit(1).Pluck("id", &owner).Error; err != nil {
+		return "", fmt.Errorf("failed to lock virtual key %s: %w", vkID, err)
+	}
+	if len(owner) == 0 {
+		return "", nil
+	}
+	q := tx.Table("governance_model_configs").
+		Where("scope = ? AND scope_id = ? AND model_name = ?",
+			tables.ModelConfigScopeVirtualKey, vkID, tables.ModelConfigAllModels)
+	if provider == nil {
+		q = q.Where("provider IS NULL")
+	} else {
+		q = q.Where("provider = ?", *provider)
+	}
+	var ids []string
+	if err := q.Limit(1).Pluck("id", &ids).Error; err != nil {
+		return "", fmt.Errorf("failed to query model config of virtual key %s: %w", vkID, err)
+	}
+	if len(ids) > 0 {
+		return ids[0], nil
+	}
+	mcID := uuid.NewString()
+	now := time.Now()
+	res := tx.Exec(`
+		INSERT INTO governance_model_configs (id, model_name, scope, scope_id, provider, calendar_aligned, created_at, updated_at)
+		SELECT ?, ?, ?, vk.id, ?, vk.calendar_aligned, ?, ?
+		FROM governance_virtual_keys vk WHERE vk.id = ?
+	`, mcID, tables.ModelConfigAllModels, tables.ModelConfigScopeVirtualKey, provider, now, now, vkID)
+	if res.Error != nil {
+		return "", fmt.Errorf("failed to create model config for virtual key %s: %w", vkID, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return "", nil
+	}
+	return mcID, nil
+}
+
+// moveVKTierRateLimit moves a directly referenced rate limit onto the tier. A tier that has one keeps it.
+func moveVKTierRateLimit(tx *gorm.DB, vkID string, provider *string, mcID string) (int, error) {
+	ownerTable, ownerWhere := "governance_virtual_keys", "id = ?"
+	ownerArgs := []any{vkID}
+	if provider != nil {
+		ownerTable, ownerWhere = "governance_virtual_key_provider_configs", "virtual_key_id = ? AND provider = ?"
+		ownerArgs = []any{vkID, *provider}
+	}
+	var rateLimitIDs []string
+	if err := tx.Table(ownerTable).Where(ownerWhere, ownerArgs...).
+		Where("rate_limit_id IS NOT NULL").Limit(1).Pluck("rate_limit_id", &rateLimitIDs).Error; err != nil {
+		return 0, fmt.Errorf("failed to read rate limit of virtual key %s: %w", vkID, err)
+	}
+	if len(rateLimitIDs) == 0 {
+		return 0, nil
+	}
+	res := tx.Exec(`
+		UPDATE governance_model_configs SET rate_limit_id = ? WHERE id = ? AND rate_limit_id IS NULL
+	`, rateLimitIDs[0], mcID)
+	if res.Error != nil {
+		return 0, fmt.Errorf("failed to attach rate limit %s to model config %s: %w", rateLimitIDs[0], mcID, res.Error)
+	}
+	// Only when the tier took it: dropping a reference this migration did not relocate would leave
+	// the operator's row owned by nobody.
+	if res.RowsAffected > 0 {
+		if err := tx.Table(ownerTable).Where(ownerWhere, ownerArgs...).
+			Update("rate_limit_id", nil).Error; err != nil {
+			return 0, fmt.Errorf("failed to clear rate limit reference of virtual key %s: %w", vkID, err)
+		}
+	}
+	return int(res.RowsAffected), nil
+}
+
 // migrationAddVirtualKeyBusinessUnitColumn adds business_unit_id to governance_virtual_keys, the
 // third owner a key can have alongside a team and a customer. A business unit is an enterprise
 // table this module does not model, so the column is a bare indexed varchar with no foreign key:
@@ -15257,6 +15505,35 @@ func migrationAddCompatForceReasoningOnlyModelsToResponsesColumn(ctx context.Con
 	return nil
 }
 
+// migrationAddCompatConvertDecisionToResponsesColumn adds compat_convert_decision_to_responses
+// to config_client. No backfill: decision emulation is opt-in, so existing rows stay false.
+func migrationAddCompatConvertDecisionToResponsesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_compat_convert_decision_to_responses_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "CompatConvertDecisionToResponses"); err != nil {
+				return fmt.Errorf("failed to add compat_convert_decision_to_responses column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "compat_convert_decision_to_responses"); err != nil {
+				return fmt.Errorf("failed to drop compat_convert_decision_to_responses column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
 // migrationBackfillCompatForceReasoningOnlyModelsToResponses sets compat_force_reasoning_only_models_to_responses
 // TRUE on existing config_client rows so the toggle is on for existing deployments.
 func migrationBackfillCompatForceReasoningOnlyModelsToResponses(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
@@ -15279,6 +15556,135 @@ func migrationBackfillCompatForceReasoningOnlyModelsToResponses(ctx context.Cont
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddIgnoreProviderCostColumn adds the ignore_provider_cost column to config_providers.
+func migrationAddIgnoreProviderCostColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_ignore_provider_cost_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "ignore_provider_cost"); err != nil {
+				return fmt.Errorf("failed to add ignore_provider_cost column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackIgnoreProviderCostColumn(tx, logger)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("failed to run migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// rollbackIgnoreProviderCostColumn refuses to undo add_ignore_provider_cost_column.
+func rollbackIgnoreProviderCostColumn(*gorm.DB, schemas.Logger) error {
+	return fmt.Errorf("add_ignore_provider_cost_column is non-rollbackable: dropping ignore_provider_cost would discard every operator's per-provider setting and silently send those providers back to trusting their reported usage.cost; the column is additive and older binaries safely ignore it")
+}
+
+// migrationAdd100kTokenPricingColumns adds the rates for prompts above 100k
+// tokens (Claude Haiku 5.5). Nullable so models without them keep base rates.
+func migrationAdd100kTokenPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_100k_token_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"input_cost_per_token_above_100k_tokens",
+		"output_cost_per_token_above_100k_tokens",
+		"cache_creation_input_token_cost_above_100k_tokens",
+		"cache_read_input_token_cost_above_100k_tokens",
+		"cache_creation_input_token_cost_above_1hr_above_100k_tokens",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddDecisionsPricingColumns adds the rates for decision requests on a
+// row of another mode (OpenAI gpt-6-luna, a chat row served on /v1/decisions).
+// Nullable so models without them keep pricing decisions at their normal rates.
+func migrationAddDecisionsPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_decisions_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"input_cost_per_token_decisions",
+		"output_cost_per_token_decisions",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddCloudflareKeyConfigColumns adds the Cloudflare per-key account ID column.
+func migrationAddCloudflareKeyConfigColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_cloudflare_key_config_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableKey{}, "cloudflare_account_id")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableKey{}, "cloudflare_account_id")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running cloudflare key config columns migration: %s", err.Error())
 	}
 	return nil
 }

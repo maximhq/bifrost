@@ -145,6 +145,64 @@ func TestListAllModelsUnreachableProviderDoesNotBlockAggregate(t *testing.T) {
 	}
 }
 
+// A direct key is the caller's own credential for one provider. Listing every provider would send it
+// to each of them, so the aggregate refuses a request carrying one before any provider is asked,
+// while a listing that names its provider still uses the key there, and only there.
+func TestListAllModelsRefusesADirectKey(t *testing.T) {
+	const directKey = "sk-caller-direct-key"
+	var openAIAuth, groqAuth []string
+	recording := func(seen *[]string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			*seen = append(*seen, r.Header.Get("Authorization"))
+			openAIStyleModelsHandler("model-a")(w, r)
+		}
+	}
+	openAISrv := httptest.NewServer(recording(&openAIAuth))
+	t.Cleanup(openAISrv.Close)
+	groqSrv := httptest.NewServer(recording(&groqAuth))
+	t.Cleanup(groqSrv.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, openAISrv.URL)
+	account.AddProviderWithBaseURL(schemas.Groq, 1, 10, groqSrv.URL)
+	account.SetKeysForProvider(schemas.OpenAI, wildcardKey(schemas.OpenAI))
+	account.SetKeysForProvider(schemas.Groq, wildcardKey(schemas.Groq))
+	tuneProviderForTest(t, account, schemas.OpenAI)
+	tuneProviderForTest(t, account, schemas.Groq)
+	client := newListModelsTestClient(t, account, nil)
+
+	withDirectKey := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "header-provided", Name: "header-provided", Value: *schemas.NewSecretVar(directKey), Weight: 1})
+		return ctx
+	}
+
+	ctx := withDirectKey()
+	defer ctx.Cancel()
+	resp, bfErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	if bfErr == nil {
+		t.Fatalf("ListAllModels with a direct key returned %v; want a refusal naming the provider requirement (openai saw %v, groq saw %v)", modelIDs(resp), openAIAuth, groqAuth)
+	}
+	if bfErr.StatusCode == nil || *bfErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %v, want 400: %s", bfErr.StatusCode, bfErr.GetErrorString())
+	}
+	if len(openAIAuth) != 0 || len(groqAuth) != 0 {
+		t.Fatalf("the direct key was sent to providers the caller never named: openai=%v groq=%v", openAIAuth, groqAuth)
+	}
+
+	named := withDirectKey()
+	defer named.Cancel()
+	if _, bfErr := client.ListModelsRequest(named, &schemas.BifrostListModelsRequest{Provider: schemas.OpenAI}); bfErr != nil {
+		t.Fatalf("listing a named provider with a direct key failed: %s", bfErr.GetErrorString())
+	}
+	if len(openAIAuth) != 1 || openAIAuth[0] != "Bearer "+directKey {
+		t.Fatalf("openai saw %v; want the direct key once", openAIAuth)
+	}
+	if len(groqAuth) != 0 {
+		t.Fatalf("groq saw %v; a named listing must not reach another provider", groqAuth)
+	}
+}
+
 // staticListerCatalog is a schemas.ModelInfoProvider that also implements the
 // optional per-provider model listing the aggregate falls back on, mimicking
 // the framework's ModelCatalog.

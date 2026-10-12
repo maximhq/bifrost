@@ -86,8 +86,10 @@ func (provider *OpenAIProvider) CreateLiveWebRTCSession(ctx *schemas.BifrostCont
 	if err := schemas.Unmarshal(resp.Body(), &created); err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to parse live session create response", err)
 	}
-	if created.Session == nil || created.Session.ID == "" || created.Transport == nil || created.Transport.SDP == "" {
-		return nil, providerUtils.NewBifrostOperationError("live session create response has no session id or SDP answer", nil)
+	// A 2xx with a session id is a created, billable session even without a usable answer; the
+	// caller settles it, so only the id is required here.
+	if created.Session == nil || created.Session.ID == "" {
+		return nil, providerUtils.NewBifrostOperationError("live session create response has no session id", nil)
 	}
 	return &created, nil
 }

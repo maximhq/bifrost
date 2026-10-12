@@ -824,6 +824,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			ShouldConvertParams:                 newCompat.ShouldConvertParams,
 			AzureDeepseek:                       newCompat.AzureDeepseek,
 			ForceReasoningOnlyModelsToResponses: newCompat.ForceReasoningOnlyModelsToResponses,
+			ConvertDecisionToResponses:          newCompat.ConvertDecisionToResponses,
 		}
 		if err := h.configManager.ReloadPlugin(ctx, compat.PluginName, nil, compatCfg, nil, nil); err != nil {
 			logger.Warn("failed to load compat plugin: %v", err)

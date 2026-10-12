@@ -479,6 +479,13 @@ type ConfigStore interface {
 	// Budget CRUD
 	GetBudgets(ctx context.Context) ([]tables.TableBudget, error)
 	GetBudget(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableBudget, error)
+	// GetVirtualKeyBudgets returns the budgets a virtual key holds directly, through virtual_key_id:
+	// the ones config.json declares inline on the key. Budgets held through a model config are not
+	// included.
+	GetVirtualKeyBudgets(ctx context.Context, virtualKeyID string, tx ...*gorm.DB) ([]tables.TableBudget, error)
+	// GetVirtualKeyProviderConfigBudgets returns the budgets a virtual key provider config holds
+	// directly, through provider_config_id. Budgets held through a model config are not included.
+	GetVirtualKeyProviderConfigBudgets(ctx context.Context, providerConfigID uint, tx ...*gorm.DB) ([]tables.TableBudget, error)
 	CreateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error
 	UpdateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error
 	// UpdateBudgetOverride updates only the override state and returns the refreshed budget.

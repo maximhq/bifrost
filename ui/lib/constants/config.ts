@@ -67,6 +67,7 @@ export const ModelPlaceholders = {
 	sarvam: "e.g. sarvam-30b, sarvam-105b",
 	wafer: "e.g. glm-5.2, kimi-k2.6",
 	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
+	cloudflare: "e.g. @cf/meta/llama-4-scout-17b-16e-instruct, @cf/baai/bge-large-en-v1.5",
 	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
 	typesafe: "e.g. jev-1.13.0, jev-latest, jev-preview",
 };
@@ -103,6 +104,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	sarvam: true,
 	wafer: true,
 	databricks: false,
+	cloudflare: true,
 	"github-copilot": false,
 	typesafe: true,
 };
@@ -197,6 +199,7 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"image_edit_stream",
 		"image_variation",
 		"count_tokens",
+		"decisions",
 		"video_generation",
 		"video_edit",
 		"video_retrieve",
@@ -204,6 +207,7 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"video_delete",
 		"video_list",
 		"video_remix",
+		"live",
 	],
 	anthropic: [
 		"list_models",

@@ -150,6 +150,7 @@ type Key struct {
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
 	DatabricksKeyConfig    *DatabricksKeyConfig    `json:"databricks_key_config,omitempty"`     // Databricks-specific key configuration
 	GithubCopilotKeyConfig *GithubCopilotKeyConfig `json:"github_copilot_key_config,omitempty"` // GitHub Copilot-specific key configuration
+	CloudflareKeyConfig    *CloudflareKeyConfig    `json:"cloudflare_key_config,omitempty"`     // Cloudflare Workers AI-specific key configuration
 	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
 	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	UseAnthropicEndpoints  *bool                   `json:"use_anthropic_endpoints,omitempty"`   // Whether to use anthropic endpoints for this key
@@ -544,13 +545,6 @@ func IsOpenAIModelFamily(ctx *BifrostContext, model string) bool {
 // IsAnthropicModelFamily for usage notes.
 func IsElevenlabsSoundModelFamily(ctx *BifrostContext, model string) bool {
 	return IsElevenlabsSoundModel(ResolveCanonicalModel(ctx, model))
-}
-
-// IsTypesafeModelFamily reports whether the current attempt resolves to a
-// TypeSafe System One model. It honors aliases by resolving the canonical
-// model name first. See IsAnthropicModelFamily for usage notes.
-func IsTypesafeModelFamily(ctx *BifrostContext, model string) bool {
-	return IsTypesafeModel(ResolveCanonicalModel(ctx, model))
 }
 
 // IsMistralModelFamily reports whether the current attempt resolves to the
@@ -960,6 +954,12 @@ type OllamaKeyConfig struct {
 // enabling per-key routing and round-robin load balancing across multiple SGLang instances.
 type SGLKeyConfig struct {
 	URL SecretVar `json:"url"` // SGLang server base URL (required, supports env. prefix)
+}
+
+// CloudflareKeyConfig represents the Cloudflare Workers AI-specific key configuration.
+// It allows each key to target a different Cloudflare account.
+type CloudflareKeyConfig struct {
+	AccountID SecretVar `json:"account_id"` // Cloudflare account ID (required, supports env. prefix)
 }
 
 // DatabricksAPIFormat selects which Databricks inference surface a key targets. Both surfaces

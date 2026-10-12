@@ -28,6 +28,7 @@ const (
 	TokenTierAbove272K = 272000
 	TokenTierAbove200K = 200000
 	TokenTierAbove128K = 128000
+	TokenTierAbove100K = 100000
 )
 
 // retryBackoffMin is the initial wait before the first retry; subsequent
@@ -111,6 +112,10 @@ type Options struct {
 	OutputCostPerTokenUltrafast *float64 `json:"output_cost_per_token_ultrafast,omitempty"`
 	InputCostPerTokenFlex       *float64 `json:"input_cost_per_token_flex,omitempty"`
 	OutputCostPerTokenFlex      *float64 `json:"output_cost_per_token_flex,omitempty"`
+	// Decision requests on a model whose row is another mode (OpenAI's gpt-6-luna
+	// is a chat row served natively on /v1/decisions). See computeDecisionCost.
+	InputCostPerTokenDecisions  *float64 `json:"input_cost_per_token_decisions,omitempty"`
+	OutputCostPerTokenDecisions *float64 `json:"output_cost_per_token_decisions,omitempty"`
 	// Fast mode (Anthropic research preview, speed:"fast" on Opus 4.6/4.7/4.8).
 	// Flat rate across the full context window — no 128k/200k/272k tiering.
 	InputCostPerTokenFast  *float64 `json:"input_cost_per_token_fast,omitempty"`
@@ -122,6 +127,9 @@ type Options struct {
 	InputCostPerVideoPerSecondAbove128kTokens *float64 `json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
 	InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
 	OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
+	// Costs - 100k Tier
+	InputCostPerTokenAbove100kTokens  *float64 `json:"input_cost_per_token_above_100k_tokens,omitempty"`
+	OutputCostPerTokenAbove100kTokens *float64 `json:"output_cost_per_token_above_100k_tokens,omitempty"`
 	// Costs - 200k Tier
 	InputCostPerTokenAbove200kTokens          *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
 	InputCostPerTokenAbove200kTokensPriority  *float64 `json:"input_cost_per_token_above_200k_tokens_priority,omitempty"`
@@ -145,6 +153,9 @@ type Options struct {
 	CacheReadInputTokenCostAbove200kTokensPriority     *float64 `json:"cache_read_input_token_cost_above_200k_tokens_priority,omitempty"`
 	CacheCreationInputTokenCostAbove1hr                *float64 `json:"cache_creation_input_token_cost_above_1hr,omitempty"`
 	CacheCreationInputTokenCostAbove1hrAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_1hr_above_200k_tokens,omitempty"`
+	CacheCreationInputTokenCostAbove100kTokens         *float64 `json:"cache_creation_input_token_cost_above_100k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove100kTokens             *float64 `json:"cache_read_input_token_cost_above_100k_tokens,omitempty"`
+	CacheCreationInputTokenCostAbove1hrAbove100kTokens *float64 `json:"cache_creation_input_token_cost_above_1hr_above_100k_tokens,omitempty"`
 	CacheCreationInputAudioTokenCost                   *float64 `json:"cache_creation_input_audio_token_cost,omitempty"`
 	CacheReadInputTokenCostPriority                    *float64 `json:"cache_read_input_token_cost_priority,omitempty"`
 	CacheReadInputTokenCostUltrafast                   *float64 `json:"cache_read_input_token_cost_ultrafast,omitempty"`
@@ -302,7 +313,10 @@ func LookupScopesFromContext(ctx *schemas.BifrostContext, provider string) *Look
 	if ctx == nil {
 		return nil
 	}
-	userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
+	userID := grantUserID(ctx)
+	if userID == "" {
+		userID, _ = ctx.Value(schemas.BifrostContextKeyUserID).(string)
+	}
 	virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
 	selectedKeyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
 	billedAt, _ := ctx.Value(schemas.BifrostContextKeyRequestStartTime).(time.Time)
@@ -313,6 +327,24 @@ func LookupScopesFromContext(ctx *schemas.BifrostContext, provider string) *Look
 		Provider:      provider,
 		BilledAt:      billedAt,
 	}
+}
+
+// grantUserID returns the user the request's grant attributes it to, or "" when
+// the context carries no grant, no identity, or no user. Callers fall back to the
+// deprecated BifrostContextKeyUserID for contexts built without a grant.
+func grantUserID(ctx *schemas.BifrostContext) string {
+	g := ctx.Grant()
+	if g == nil {
+		return ""
+	}
+	identity := g.Identity()
+	if identity == nil {
+		return ""
+	}
+	if user := identity.User(); user != nil {
+		return user.ID
+	}
+	return ""
 }
 
 // ScopeKind identifies which governance scope an override applies to.
@@ -484,6 +516,10 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 // API. Many models carry a datasheet row under only one of the two modes (e.g.
 // bedrock's openai.gpt-5.5 ships as responses-only), so a lookup that misses in
 // its own mode retries under the counterpart rather than pricing at zero.
+// Decision requests retry under chat: a model served natively on a decisions
+// endpoint carries its decision rates on its chat row (see computeDecisionCost), and
+// one answered by emulation is billed as the chat call it is. A model with
+// only a responses row stays unpriced for decisions.
 // Returns false for request types with no such counterpart.
 func chatResponsesFallbackMode(reqType schemas.RequestType) (string, bool) {
 	switch reqType {
@@ -491,6 +527,8 @@ func chatResponsesFallbackMode(reqType schemas.RequestType) (string, bool) {
 		return normalizeRequestType(schemas.ChatCompletionRequest), true
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		return normalizeRequestType(schemas.ResponsesRequest), true
+	case schemas.DecisionRequest:
+		return normalizeRequestType(schemas.ChatCompletionRequest), true
 	}
 	return "", false
 }
@@ -706,6 +744,8 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerTokenUltrafast:                entry.OutputCostPerTokenUltrafast,
 		InputCostPerTokenFlex:                      entry.InputCostPerTokenFlex,
 		OutputCostPerTokenFlex:                     entry.OutputCostPerTokenFlex,
+		InputCostPerTokenDecisions:                 entry.InputCostPerTokenDecisions,
+		OutputCostPerTokenDecisions:                entry.OutputCostPerTokenDecisions,
 		InputCostPerTokenFast:                      entry.InputCostPerTokenFast,
 		OutputCostPerTokenFast:                     entry.OutputCostPerTokenFast,
 		InputCostPerTokenAbove200kTokens:           entry.InputCostPerTokenAbove200kTokens,
@@ -726,6 +766,8 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		InputCostPerVideoPerSecondAbove128kTokens:  entry.InputCostPerVideoPerSecondAbove128kTokens,
 		InputCostPerAudioPerSecondAbove128kTokens:  entry.InputCostPerAudioPerSecondAbove128kTokens,
 		OutputCostPerTokenAbove128kTokens:          entry.OutputCostPerTokenAbove128kTokens,
+		InputCostPerTokenAbove100kTokens:           entry.InputCostPerTokenAbove100kTokens,
+		OutputCostPerTokenAbove100kTokens:          entry.OutputCostPerTokenAbove100kTokens,
 
 		CacheCreationInputTokenCost:                         entry.CacheCreationInputTokenCost,
 		CacheReadInputTokenCost:                             entry.CacheReadInputTokenCost,
@@ -734,6 +776,9 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		CacheReadInputTokenCostAbove200kTokensPriority:      entry.CacheReadInputTokenCostAbove200kTokensPriority,
 		CacheCreationInputTokenCostAbove1hr:                 entry.CacheCreationInputTokenCostAbove1hr,
 		CacheCreationInputTokenCostAbove1hrAbove200kTokens:  entry.CacheCreationInputTokenCostAbove1hrAbove200kTokens,
+		CacheCreationInputTokenCostAbove100kTokens:          entry.CacheCreationInputTokenCostAbove100kTokens,
+		CacheReadInputTokenCostAbove100kTokens:              entry.CacheReadInputTokenCostAbove100kTokens,
+		CacheCreationInputTokenCostAbove1hrAbove100kTokens:  entry.CacheCreationInputTokenCostAbove1hrAbove100kTokens,
 		CacheCreationInputAudioTokenCost:                    entry.CacheCreationInputAudioTokenCost,
 		CacheReadInputTokenCostPriority:                     entry.CacheReadInputTokenCostPriority,
 		CacheReadInputTokenCostUltrafast:                    entry.CacheReadInputTokenCostUltrafast,
@@ -835,6 +880,8 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerTokenUltrafast:                pricing.OutputCostPerTokenUltrafast,
 		InputCostPerTokenFlex:                      pricing.InputCostPerTokenFlex,
 		OutputCostPerTokenFlex:                     pricing.OutputCostPerTokenFlex,
+		InputCostPerTokenDecisions:                 pricing.InputCostPerTokenDecisions,
+		OutputCostPerTokenDecisions:                pricing.OutputCostPerTokenDecisions,
 		InputCostPerTokenFast:                      pricing.InputCostPerTokenFast,
 		OutputCostPerTokenFast:                     pricing.OutputCostPerTokenFast,
 		InputCostPerTokenAbove200kTokens:           pricing.InputCostPerTokenAbove200kTokens,
@@ -855,6 +902,8 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		InputCostPerVideoPerSecondAbove128kTokens:  pricing.InputCostPerVideoPerSecondAbove128kTokens,
 		InputCostPerAudioPerSecondAbove128kTokens:  pricing.InputCostPerAudioPerSecondAbove128kTokens,
 		OutputCostPerTokenAbove128kTokens:          pricing.OutputCostPerTokenAbove128kTokens,
+		InputCostPerTokenAbove100kTokens:           pricing.InputCostPerTokenAbove100kTokens,
+		OutputCostPerTokenAbove100kTokens:          pricing.OutputCostPerTokenAbove100kTokens,
 
 		CacheCreationInputTokenCost:                         pricing.CacheCreationInputTokenCost,
 		CacheReadInputTokenCost:                             pricing.CacheReadInputTokenCost,
@@ -863,6 +912,9 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		CacheReadInputTokenCostAbove200kTokensPriority:      pricing.CacheReadInputTokenCostAbove200kTokensPriority,
 		CacheCreationInputTokenCostAbove1hr:                 pricing.CacheCreationInputTokenCostAbove1hr,
 		CacheCreationInputTokenCostAbove1hrAbove200kTokens:  pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens,
+		CacheCreationInputTokenCostAbove100kTokens:          pricing.CacheCreationInputTokenCostAbove100kTokens,
+		CacheReadInputTokenCostAbove100kTokens:              pricing.CacheReadInputTokenCostAbove100kTokens,
+		CacheCreationInputTokenCostAbove1hrAbove100kTokens:  pricing.CacheCreationInputTokenCostAbove1hrAbove100kTokens,
 		CacheCreationInputAudioTokenCost:                    pricing.CacheCreationInputAudioTokenCost,
 		CacheReadInputTokenCostPriority:                     pricing.CacheReadInputTokenCostPriority,
 		CacheReadInputTokenCostUltrafast:                    pricing.CacheReadInputTokenCostUltrafast,

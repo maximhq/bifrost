@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -233,6 +234,41 @@ func (s *Service) stopHistoryCleanup() {
 	})
 }
 
+// storedErrorCodes are the codes a filed error may lead with. Anything else
+// before a colon is part of a message, never a code.
+var storedErrorCodes = map[string]bool{
+	ErrNotConfigured: true, ErrUpstream: true, ErrAccessDenied: true, ErrBudgetExceeded: true, ErrRateLimited: true,
+	ErrModelBlocked: true, ErrToolFailed: true, ErrMaxIterations: true, ErrTimeout: true, ErrCancelled: true,
+}
+
+// encodeStoredError files an error frame's code with its message in the one
+// error column, as code:message, so a reopened thread can headline it the way
+// the live turn did without a schema change. A message with no code that would
+// itself read as code:message is filed behind a bare colon, so it always
+// decodes as a message.
+func encodeStoredError(code, message string) string {
+	if code != "" {
+		return code + ":" + message
+	}
+	if decoded, _ := decodeStoredError(message); decoded != "" || strings.HasPrefix(message, ":") {
+		return ":" + message
+	}
+	return message
+}
+
+// decodeStoredError splits a filed error back into code and message. A row
+// filed before codes were kept holds a bare message, which may contain a colon
+// of its own, so only a known code counts as one.
+func decodeStoredError(stored string) (code, message string) {
+	if strings.HasPrefix(stored, ":") {
+		return "", stored[1:]
+	}
+	if prefix, rest, found := strings.Cut(stored, ":"); found && storedErrorCodes[prefix] {
+		return prefix, rest
+	}
+	return "", stored
+}
+
 // conversationDetailFromRow renders a stored thread for the API.
 func conversationDetailFromRow(row *logstore.WarpConversation) schemas.WarpConversationDetail {
 	messages := make([]schemas.WarpStoredMessage, 0, len(row.Messages))
@@ -245,12 +281,12 @@ func conversationDetailFromRow(row *logstore.WarpConversation) schemas.WarpConve
 		stored := schemas.WarpStoredMessage{
 			Role:         message.Role,
 			Content:      message.Content,
-			Error:        message.Error,
 			FinishReason: message.FinishReason,
 			TotalTokens:  message.TotalTokens,
 			Cost:         message.Cost,
 			CreatedAt:    message.CreatedAt,
 		}
+		stored.ErrorCode, stored.Error = decodeStoredError(message.Error)
 		if message.ToolCallsJSON != "" {
 			// A transcript is still worth showing without its tool trace, so a
 			// decode failure drops the trace rather than the message.
@@ -329,6 +365,7 @@ func (s *Service) recordTurn(ctx context.Context, turn *Turn, response ChatRespo
 	stored := schemas.WarpStoredMessage{Role: "assistant", Content: response.Answer}
 	if response.Error != nil {
 		stored.Error = response.Error.Message
+		stored.ErrorCode = response.Error.Code
 	}
 	// A turn that ended by asking is filed with the question as its content,
 	// regardless of whether the model also emitted preamble text before
@@ -469,7 +506,7 @@ func (s *Service) persistTurn(ctx context.Context, conversationID string, isNew 
 		{ID: uuid.NewString(), Role: questionRole, Content: question, CreatedAt: now},
 		{
 			ID: uuid.NewString(), Role: "assistant", Content: answer.Content,
-			ToolCallsJSON: toolCallsJSON, QuestionJSON: questionJSON, Error: answer.Error, FinishReason: answer.FinishReason,
+			ToolCallsJSON: toolCallsJSON, QuestionJSON: questionJSON, Error: encodeStoredError(answer.ErrorCode, answer.Error), FinishReason: answer.FinishReason,
 			TotalTokens: answer.TotalTokens, Cost: answer.Cost, CreatedAt: now,
 		},
 	}

@@ -247,6 +247,16 @@ export const DefaultSGLKeyConfig: SGLKeyConfig = {
 	url: { value: "", ref: "" },
 } as const satisfies Required<SGLKeyConfig>;
 
+// CloudflareKeyConfig matching Go's schemas.CloudflareKeyConfig
+export interface CloudflareKeyConfig {
+	account_id: SecretVar;
+}
+
+// Default CloudflareKeyConfig
+export const DefaultCloudflareKeyConfig: CloudflareKeyConfig = {
+	account_id: { value: "", ref: "" },
+} as const satisfies Required<CloudflareKeyConfig>;
+
 // DatabricksKeyConfig matching Go's schemas.DatabricksKeyConfig
 export interface DatabricksKeyConfig {
 	workspace_url: SecretVar;
@@ -309,6 +319,7 @@ export interface ModelProviderKey {
 	sgl_key_config?: SGLKeyConfig;
 	databricks_key_config?: DatabricksKeyConfig;
 	github_copilot_key_config?: GithubCopilotKeyConfig;
+	cloudflare_key_config?: CloudflareKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
@@ -501,6 +512,18 @@ export interface PromptCacheConfig {
 	cache_control_injection_points?: CacheControlInjectionPoint[];
 }
 
+// InjectedToolRef names one MCP tool by client name and its unprefixed tool name.
+export interface InjectedToolRef {
+	mcp_client_name: string;
+	tool_name: string;
+}
+
+// InjectedToolsConfig names MCP tools Bifrost adds to every chat and responses request
+// for the provider and executes server side when the model calls them.
+export interface InjectedToolsConfig {
+	web_search?: InjectedToolRef;
+}
+
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {
 	network_config?: NetworkConfig;
@@ -509,9 +532,11 @@ export interface ModelProviderConfig {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	ignore_provider_cost?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	injected_tools?: InjectedToolsConfig | null;
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
 }
@@ -538,9 +563,11 @@ export interface AddProviderRequest {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	ignore_provider_cost?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	injected_tools?: InjectedToolsConfig | null;
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -551,9 +578,11 @@ export interface UpdateProviderRequest {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	ignore_provider_cost?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	injected_tools?: InjectedToolsConfig | null;
 }
 
 export interface CreateProviderKeyRequest extends ModelProviderKey {}
@@ -707,6 +736,7 @@ export interface CompatConfig {
 	should_convert_params: boolean;
 	azure_deepseek: boolean;
 	force_reasoning_only_models_to_responses: boolean;
+	convert_decision_to_responses: boolean;
 }
 
 // Per-execution code mode limits; an omitted or 0 field uses the server default.
@@ -804,6 +834,7 @@ export const DefaultCoreConfig: CoreConfig = {
 		should_convert_params: false,
 		azure_deepseek: false,
 		force_reasoning_only_models_to_responses: true,
+		convert_decision_to_responses: false,
 	},
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,
@@ -832,6 +863,7 @@ interface BaseCacheConfig {
 	exclude_system_prompt?: boolean;
 	cache_by_model: boolean;
 	cache_by_provider: boolean;
+	disable_identity_scoping?: boolean;
 	vector_store_namespace?: string;
 	default_cache_key?: string;
 	created_at?: string;
@@ -840,8 +872,8 @@ interface BaseCacheConfig {
 
 export interface DirectCacheConfig extends BaseCacheConfig {
 	dimension: 1;
-	provider?: undefined;
-	embedding_model?: undefined;
+	provider?: "";
+	embedding_model?: "";
 }
 
 export interface ProviderBackedCacheConfig extends BaseCacheConfig {

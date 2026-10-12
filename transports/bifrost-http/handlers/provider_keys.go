@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"regexp"
 	"slices"
@@ -174,6 +175,11 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if err := validateWeight(key.Weight); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid weight: %v", err))
+		return
+	}
+
 	if key.ID == "" {
 		key.ID = uuid.NewString()
 	}
@@ -286,6 +292,11 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 
 	if err := mergedKey.Aliases.Validate(baseProvider); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid aliases: %v", err))
+		return
+	}
+
+	if err := validateWeight(mergedKey.Weight); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid weight: %v", err))
 		return
 	}
 
@@ -498,6 +509,7 @@ func decodeKeyUpdate(body []byte, oldRawKey schemas.Key) (schemas.Key, error) {
 		"sgl_key_config":            func() { updateKey.SGLKeyConfig = oldRawKey.SGLKeyConfig },
 		"databricks_key_config":     func() { updateKey.DatabricksKeyConfig = oldRawKey.DatabricksKeyConfig },
 		"github_copilot_key_config": func() { updateKey.GithubCopilotKeyConfig = oldRawKey.GithubCopilotKeyConfig },
+		"cloudflare_key_config":     func() { updateKey.CloudflareKeyConfig = oldRawKey.CloudflareKeyConfig },
 		"enabled":                   func() { updateKey.Enabled = oldRawKey.Enabled },
 		"use_for_batch_api":         func() { updateKey.UseForBatchAPI = oldRawKey.UseForBatchAPI },
 		"use_anthropic_endpoints":   func() { updateKey.UseAnthropicEndpoints = oldRawKey.UseAnthropicEndpoints },
@@ -688,6 +700,16 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 		}
 	}
 
+	if mergedKey.CloudflareKeyConfig != nil {
+		var stored *schemas.SecretVar
+		if oldRawKey.CloudflareKeyConfig != nil {
+			stored = &oldRawKey.CloudflareKeyConfig.AccountID
+		}
+		if err := preserve(&mergedKey.CloudflareKeyConfig.AccountID, stored, "cloudflare_key_config.account_id"); err != nil {
+			return schemas.Key{}, err
+		}
+	}
+
 	if mergedKey.DatabricksKeyConfig != nil {
 		var workspaceURL, clientID, clientSecret *schemas.SecretVar
 		if oldRawKey.DatabricksKeyConfig != nil {
@@ -840,6 +862,17 @@ func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
 	return decoded, nil
 }
 
+// validateWeight rejects a provider key or virtual key provider-config weight that weighted
+// selection cannot draw by: a negative one, or one that is not a finite number. Selection counts such
+// a weight as zero, but storing it would leave an entry that is never drawn beside weighted siblings
+// while reading as configured.
+func validateWeight(weight float64) error {
+	if weight < 0 || math.IsNaN(weight) || math.IsInf(weight, 0) {
+		return fmt.Errorf("must be a finite number greater than or equal to 0, got %v", weight)
+	}
+	return nil
+}
+
 // validateProviderKeyServerURLs holds the key-level server URLs (Ollama/SGL/VLLM) to the
 // same destination rule as a provider base URL: link-local (cloud metadata) and unspecified
 // addresses are refused; private and loopback hosts stay allowed because a self-hosted
@@ -928,6 +961,10 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 	case schemas.SGL:
 		if key.SGLKeyConfig == nil || !key.SGLKeyConfig.URL.IsSet() {
 			return fmt.Errorf("sgl_key_config.url is required for SGL keys")
+		}
+	case schemas.Cloudflare:
+		if key.CloudflareKeyConfig == nil || !key.CloudflareKeyConfig.AccountID.IsSet() {
+			return fmt.Errorf("cloudflare_key_config.account_id is required for Cloudflare keys")
 		}
 	case schemas.GithubCopilot:
 		// A Copilot API token in value is a valid alternative to the GitHub App bundle. But a

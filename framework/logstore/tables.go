@@ -62,7 +62,7 @@ type SearchFilters struct {
 	VirtualKeyIDs        []string   `json:"virtual_key_ids,omitempty"`
 	RoutingRuleIDs       []string   `json:"routing_rule_ids,omitempty"`
 	ComplexityTiers      []string   `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	ComplexityMechanisms []string   `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, jev, llm, session, skipped)
+	ComplexityMechanisms []string   `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, decision, llm, session, skipped)
 	AgentNames           []string   `json:"agent_names,omitempty"`           // Registered Agents whose context IDs correlate the matching LLM logs
 	SessionID            string     `json:"session_id,omitempty"`            // Exact Bifrost session ID used for key stickiness and request correlation
 	AgentCorrelationID   string     `json:"agent_correlation_id,omitempty"`  // Exact caller-supplied agent correlation ID
@@ -261,7 +261,7 @@ type Log struct {
 	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_ts,priority:1" json:"routing_rule_id"` // (routing_rule_id, timestamp) composite; replaces idx_logs_routing_rule_id
 	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
 	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                                                               // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule demanded complexity. Partial index, matching its performanceIndexes entry
-	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"`                                                // How the complexity tier was classified ("semantic", "jev", "llm", "session", "skipped"). NULL means no routing rule referenced complexity_tier, so classification never ran. Partial index, matching its performanceIndexes entry
+	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"`                                                // How the complexity tier was classified ("semantic", "decision", "llm", "session", "skipped"). NULL means no routing rule referenced complexity_tier, so classification never ran. Partial index, matching its performanceIndexes entry
 	ComplexityScore         *float64  `gorm:"column:complexity_score" json:"complexity_score,omitempty"`                                                                                                                        // Raw complexity score behind the tier; unindexed (detail-view only)
 	SessionID               *string   `gorm:"type:varchar(255);index:idx_logs_session_id,where:session_id IS NOT NULL;index:idx_logs_session_id_timestamp,priority:1,where:session_id IS NOT NULL" json:"session_id,omitempty"` // Raw opaque session identity resolved at ingress for key stickiness and log correlation
 	AgentCorrelationID      *string   `gorm:"type:varchar(255);index:idx_logs_agent_correlation_id,where:agent_correlation_id IS NOT NULL" json:"agent_correlation_id,omitempty"`                                               // Caller-supplied correlation identity from x-bf-agent-correlation-id
@@ -1406,6 +1406,12 @@ func (l *Log) assembleCostBreakdown() {
 	if l.InputCost == 0 && l.OutputCost == 0 && l.AdditionalCost == 0 && total > 0 {
 		inputCost = total
 	}
+	// A provider-reported opaque total (no split) is not an input cost; leave the
+	// split empty so the UI shows only the total.
+	if l.TokenUsageParsed != nil && isOpaqueTotalCost(l.TokenUsageParsed.Cost) &&
+		l.OutputCost == 0 && l.AdditionalCost == 0 && costsReconcile(l.TokenUsageParsed.Cost.TotalCost, total) {
+		inputCost = 0
+	}
 	cb := &schemas.BifrostCost{
 		InputCost:      inputCost,
 		OutputCost:     l.OutputCost,
@@ -1425,6 +1431,11 @@ func (l *Log) assembleCostBreakdown() {
 		}
 	}
 	l.CostBreakdown = cb
+}
+
+// isOpaqueTotalCost reports whether a cost carries only a total with no input/output/additional split.
+func isOpaqueTotalCost(c *schemas.BifrostCost) bool {
+	return c != nil && c.TotalCost > 0 && c.InputCost == 0 && c.OutputCost == 0 && c.AdditionalCost == 0
 }
 
 // costsReconcile reports whether two cost figures match within float noise, used
@@ -1488,6 +1499,19 @@ type AgentLogStats struct {
 	ErrorCount     int64   `json:"error_count"`
 	SuccessRate    float64 `json:"success_rate"`    // Percentage of terminal entries that succeeded
 	AverageLatency float64 `json:"average_latency"` // Average latency in milliseconds
+}
+
+// AgentTopAgentResult is one Agent's operation totals in a top-Agents ranking.
+type AgentTopAgentResult struct {
+	AgentName      string  `json:"agent_name"`
+	Count          int64   `json:"count"`
+	ErrorCount     int64   `json:"error_count"`
+	AverageLatency float64 `json:"average_latency"` // Average latency in milliseconds
+}
+
+// AgentTopAgentsResult ranks Agents by operation count.
+type AgentTopAgentsResult struct {
+	Agents []AgentTopAgentResult `json:"agents"`
 }
 
 // AgentHistogramBucket is one time bucket of the A2A volume chart.
@@ -2994,7 +3018,8 @@ type DimensionRankingResult struct {
 	Dimension RankingDimension            `json:"dimension"`
 	// TotalActualRequests / TotalAttributedRequests are set for every rollup
 	// dimension (team / business unit / customer / user / virtual key), and both
-	// include the "Unassigned" bucket that owner-less traffic falls into.
+	// include the "Unassigned" bucket that owner-less traffic falls into and the
+	// "Other" bucket holding traffic whose entity the caller may not be shown.
 	//
 	// TotalActualRequests is the real number of requests in the window.
 	// TotalAttributedRequests is the sum of every ranking row. For team /
