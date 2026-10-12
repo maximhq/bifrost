@@ -271,7 +271,7 @@ Session-aware routing keeps the **tier** stable, not the provider, key, or promp
 
 ## Fallback classifiers
 
-When Semantic produces no tier (no confident match, or the classifier is unavailable or times out), a fallback can answer. Set `semantic.fallback` to `decision` or `llm`. Both see the same user text Semantic did.
+When Semantic produces no tier (no confident match, or the classifier is unavailable or times out), a fallback can answer. Set `semantic.fallback` to `decision` or `llm`. Each reads recent user messages through its own history setting (`decision.previous_message_count` or `llm.message_history_count`), which can differ from `semantic.message_history_count`, so the fallback may see more or fewer messages than Semantic embedded.
 
 ### Decision model fallback classifier
 

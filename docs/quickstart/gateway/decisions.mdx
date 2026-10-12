@@ -32,7 +32,7 @@ Write models as `provider/model` to pick the provider explicitly. Switching prov
 
 Every provider also answers on `/openai/v1/decisions` and `/typesafe/v1/systemone` when you send a `provider/model` name, so an OpenAI or TypeSafe SDK can reach any of them. Each provider page covers its setup.
 
-Chat models (for example `openai/gpt-4o`) have no decisions endpoint and return `400` with code `unsupported_operation`.
+Chat models (for example `openai/gpt-4o`) have no decisions endpoint. By default they return `400` with code `unsupported_operation`; with the compat setting `convert_decision_to_responses` on, Bifrost emulates the answer through the model's Responses API. See [Decision-to-Responses Emulation](/features/compat-plugin#4-decision-to-responses-emulation).
 
 ## Basic Request
 

@@ -139,7 +139,7 @@ func main() {
 
 A model that cannot read part of a request (an image or any other non-text part sent to a TypeSafe or custom TypeSafe-based model) rejects that attempt with a 400, so a fallback can serve it. Fallbacks work like every other request type via the `Fallbacks` field.
 
-A chat model with no native decisions endpoint (for example `openai/gpt-4o-mini`) returns `unsupported_operation`.
+A chat model with no native decisions endpoint (for example `openai/gpt-4o-mini`) returns `unsupported_operation` unless the compat plugin is registered with `compat.Config{ConvertDecisionToResponses: true}`, which emulates the answer through the model's Responses API. See [Decision-to-Responses Emulation](/features/compat-plugin#4-decision-to-responses-emulation).
 
 ## Answers
 

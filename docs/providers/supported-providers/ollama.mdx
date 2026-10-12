@@ -103,7 +103,7 @@ Lists models currently loaded in Ollama with capabilities and context informatio
 
 # 6. Decisions
 
-Ollama can run System One decision models locally: `nimble`, `tev1`, `clef`, `clef-flash`, and `laya`, with or without a tag (`tev1:0.8b`). Pull the model in Ollama, then call [`/v1/decisions`](/quickstart/gateway/decisions):
+Ollama can run System One decision models locally: `nimble`, `tev1`, `clef`, `clef-flash`, and `laya`, with or without a tag (`tev1:0.8b`). Pull the model in Ollama, then call [`/v1/decisions`](/quickstart/gateway/decisions). Each model needs a minimum Ollama server version: `nimble` and `tev1` need 0.35 or later, `clef` and `clef-flash` need 0.35.1 or later, and `laya` needs 0.40.0 or later.
 
 ```bash
 curl http://localhost:8080/v1/decisions \
