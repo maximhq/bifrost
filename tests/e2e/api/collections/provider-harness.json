@@ -25071,7 +25071,7 @@
               }
             },
             {
-              "name": "Azure: service_tier scale",
+              "name": "Azure: service_tier flex passthrough [EXPECT-4XX]",
               "request": {
                 "method": "POST",
                 "header": [
@@ -188741,8 +188741,86 @@
     },
     {
       "name": "138. Provider endpoint updates require dashboard auth (provider-endpoint-updates)",
-      "description": "Management-plane regression for the default harness profile (tests/integrations/python/config.json, dashboard auth unconfigured, setup_token set). A caller with no credential must not be able to point the global proxy or a provider key's endpoint at a new host, and nothing may persist after the refusal. Under the OSS setup lock that caller is refused with 401 before the handler runs, so the write rows strip the X-Bifrost-Setup-Token header the harness injects: a request carrying the token is authenticated and is allowed, and its write would persist. No provider calls are made; the openai keyword is only a harness filter label. Under a profile with dashboard auth enabled the write rows return a 401 without the setup-lock message and fail loudly on purpose - run them against the default profile.",
+      "description": "Management-plane regression for the default harness profile (tests/integrations/python/config.json, dashboard auth unconfigured, setup_token set). A caller with no credential must not be able to point the global proxy or a provider key's endpoint at a new host, and nothing may persist after the refusal. Under the OSS setup lock that caller is refused with 401 before the handler runs, so the write rows strip the X-Bifrost-Setup-Token header the harness injects: a request carrying the token is authenticated and is allowed, and its write would persist. No provider calls are made; the openai keyword is only a harness filter label. Under a profile with dashboard auth enabled the write rows return a 401 without the setup-lock message and fail loudly on purpose - run them against the default profile. The first and last rows clean up, with the setup token: they delete any harness-endpoint-guard key and, if the proxy URL is the sentinel http://127.0.0.1:3128 a refused write would have stored, restore the proxy captured at the start, so a write that gets through fails this run without poisoning other Azure rows or later runs.",
       "item": [
+        {
+          "name": "[EXPECT-200] openai provider-endpoint-updates setup clears a guard key or proxy left by an earlier run",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var base = pm.variables.get('baseUrl');",
+                  "var SENTINEL = 'http://127.0.0.1:3128';",
+                  "pm.collectionVariables.set('providerEndpointUpdatesCleanupErrors', '');",
+                  "function note(msg) { pm.collectionVariables.set('providerEndpointUpdatesCleanupErrors', (pm.collectionVariables.get('providerEndpointUpdatesCleanupErrors') || '') + msg + '\\n'); }",
+                  "pm.sendRequest({ url: base + '/api/providers/azure/keys', method: 'GET' }, function (err, res) {",
+                  "  if (err || res.code !== 200) { note('list azure keys: ' + (err ? err : res.code + ' ' + res.text())); return; }",
+                  "  var j = res.json();",
+                  "  var keys = Array.isArray(j) ? j : (j.keys || []);",
+                  "  keys.filter(function (k) { return k && k.name === 'harness-endpoint-guard'; }).forEach(function (k) {",
+                  "    pm.sendRequest({ url: base + '/api/providers/azure/keys/' + encodeURIComponent(k.id), method: 'DELETE' }, function (e2, r2) {",
+                  "      if (e2 || r2.code < 200 || r2.code >= 300) { note('delete guard key ' + k.id + ': ' + (e2 ? e2 : r2.code + ' ' + r2.text())); }",
+                  "    });",
+                  "  });",
+                  "});",
+                  "pm.sendRequest({ url: base + '/api/proxy-config', method: 'GET' }, function (err, res) {",
+                  "  if (err || res.code !== 200) { note('get proxy config: ' + (err ? err : res.code + ' ' + res.text())); return; }",
+                  "  var cfg = res.json();",
+                  "  var clean = cfg.url === SENTINEL ? { enabled: false, type: 'http' } : cfg;",
+                  "  pm.collectionVariables.set('providerEndpointUpdatesProxySnapshot', JSON.stringify(clean));",
+                  "  if (cfg.url !== SENTINEL) { return; }",
+                  "  var restore = clean;",
+                  "  pm.sendRequest({ url: base + '/api/proxy-config', method: 'PUT', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify(restore) } }, function (e2, r2) {",
+                  "    if (e2 || r2.code !== 200) { note('restore proxy config: ' + (e2 ? e2 : r2.code + ' ' + r2.text())); }",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider-endpoint-updates setup left no guard key and no sentinel proxy', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var errs = pm.collectionVariables.get('providerEndpointUpdatesCleanupErrors') || '';",
+                  "  pm.expect(errs, 'cleanup failed: ' + errs).to.equal('');",
+                  "  var j = pm.response.json();",
+                  "  var keys = Array.isArray(j) ? j : (j.keys || []);",
+                  "  var left = keys.filter(function (k) { return k && k.name === 'harness-endpoint-guard'; });",
+                  "  pm.expect(left.length, 'failed: ' + pm.response.text()).to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/azure/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "azure",
+                "keys"
+              ]
+            }
+          }
+        },
         {
           "name": "[EXPECT-401] openai provider-endpoint-updates proxy url change refused without dashboard auth",
           "protocolProfileBehavior": {
@@ -188915,6 +188993,85 @@
                   "  var leaked = keys.filter(function (k) { return k && k.name === 'harness-endpoint-guard'; });",
                   "  pm.expect(leaked.length, 'failed: ' + pm.response.text()).to.equal(0);",
                   "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/azure/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "azure",
+                "keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai provider-endpoint-updates teardown removes the guard key and restores the proxy",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var base = pm.variables.get('baseUrl');",
+                  "var SENTINEL = 'http://127.0.0.1:3128';",
+                  "pm.collectionVariables.set('providerEndpointUpdatesCleanupErrors', '');",
+                  "function note(msg) { pm.collectionVariables.set('providerEndpointUpdatesCleanupErrors', (pm.collectionVariables.get('providerEndpointUpdatesCleanupErrors') || '') + msg + '\\n'); }",
+                  "pm.sendRequest({ url: base + '/api/providers/azure/keys', method: 'GET' }, function (err, res) {",
+                  "  if (err || res.code !== 200) { note('list azure keys: ' + (err ? err : res.code + ' ' + res.text())); return; }",
+                  "  var j = res.json();",
+                  "  var keys = Array.isArray(j) ? j : (j.keys || []);",
+                  "  keys.filter(function (k) { return k && k.name === 'harness-endpoint-guard'; }).forEach(function (k) {",
+                  "    pm.sendRequest({ url: base + '/api/providers/azure/keys/' + encodeURIComponent(k.id), method: 'DELETE' }, function (e2, r2) {",
+                  "      if (e2 || r2.code < 200 || r2.code >= 300) { note('delete guard key ' + k.id + ': ' + (e2 ? e2 : r2.code + ' ' + r2.text())); }",
+                  "    });",
+                  "  });",
+                  "});",
+                  "pm.sendRequest({ url: base + '/api/proxy-config', method: 'GET' }, function (err, res) {",
+                  "  if (err || res.code !== 200) { note('get proxy config: ' + (err ? err : res.code + ' ' + res.text())); return; }",
+                  "  var cfg = res.json();",
+                  "  if (cfg.url !== SENTINEL) { return; }",
+                  "  var restore = { enabled: false, type: 'http' };",
+                  "  try { var snap = JSON.parse(pm.collectionVariables.get('providerEndpointUpdatesProxySnapshot') || 'null'); if (snap && snap.url !== SENTINEL) { restore = snap; } } catch (e) {}",
+                  "  pm.sendRequest({ url: base + '/api/proxy-config', method: 'PUT', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify(restore) } }, function (e2, r2) {",
+                  "    if (e2 || r2.code !== 200) { note('restore proxy config: ' + (e2 ? e2 : r2.code + ' ' + r2.text())); }",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider-endpoint-updates teardown left no guard key and no sentinel proxy', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var errs = pm.collectionVariables.get('providerEndpointUpdatesCleanupErrors') || '';",
+                  "  pm.expect(errs, 'cleanup failed: ' + errs).to.equal('');",
+                  "  var j = pm.response.json();",
+                  "  var keys = Array.isArray(j) ? j : (j.keys || []);",
+                  "  var left = keys.filter(function (k) { return k && k.name === 'harness-endpoint-guard'; });",
+                  "  pm.expect(left.length, 'failed: ' + pm.response.text()).to.equal(0);",
+                  "});",
+                  "pm.collectionVariables.unset('providerEndpointUpdatesProxySnapshot');",
+                  "pm.collectionVariables.unset('providerEndpointUpdatesCleanupErrors');"
                 ]
               }
             }
@@ -194660,7 +194817,7 @@
           ]
         },
         {
-          "name": "152.10b [EXPECT-4XX] bedrock cohere.embed-english-v3 rejects the v4 truncate value RIGHT (cohere v3)",
+          "name": "152.10b [EXPECT-4XX] bedrock cohere.embed-english-v3 rejects an unknown truncate value MIDDLE (cohere v3)",
           "request": {
             "method": "POST",
             "header": [
@@ -194671,7 +194828,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/cohere.embed-english-v3\",\n  \"input\": \"cohere v3 truncate enum probe\",\n  \"input_type\": \"search_document\",\n  \"truncate\": \"RIGHT\"\n}"
+              "raw": "{\n  \"model\": \"bedrock/cohere.embed-english-v3\",\n  \"input\": \"cohere v3 truncate enum probe\",\n  \"input_type\": \"search_document\",\n  \"truncate\": \"MIDDLE\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/embeddings",
@@ -195289,7 +195446,7 @@
           ]
         },
         {
-          "name": "153.5 [EXPECT-400] anthropic native unknown anthropic-beta value is forwarded and rejected by Anthropic (explicit beta list)",
+          "name": "153.5 anthropic native bare anthropic-beta header is not forwarded without a header allowlist (explicit beta list)",
           "request": {
             "method": "POST",
             "header": [
@@ -195333,7 +195490,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var j = pm.response.json();",
-                  "pm.test('Anthropic error envelope names the anthropic-beta header', function () { pm.expect(j.type, pm.response.text()).to.equal('error'); pm.expect(JSON.stringify(j), 'rejection does not mention the beta header: ' + pm.response.text()).to.match(/anthropic-beta|beta/i); });"
+                  "pm.test('unknown bare anthropic-beta was dropped, so Anthropic answered normally', function () { pm.expect(j.type, 'the invalid beta reached Anthropic; bare anthropic-beta must only be forwarded when a header allowlist permits it: ' + pm.response.text().slice(0, 600)).to.equal('message'); });"
                 ]
               }
             }

@@ -2703,7 +2703,13 @@ export function LogDetailView({
 								requestType={log.object}
 							/>
 						)}
-						{log.live_session && <LiveSessionView session={log.live_session} mapping={activeOutputRevealMapping} />}
+						{log.live_session && (
+							<LiveSessionView
+								session={log.live_session}
+								mapping={activeOutputRevealMapping}
+								visibleRoles={visibleRoles.size < allRoles.length ? visibleRoles : undefined}
+							/>
+						)}
 
 						{isPassthrough && passthroughRequestBody && (
 							<CollapsibleBox
