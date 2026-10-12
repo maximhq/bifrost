@@ -1,6 +1,6 @@
 ---
 title: "Bifrost Edge"
-description: "Governance for AI on every machine. Bifrost Edge runs on every computer of your organization and routes all AI traffic - chat apps, browser AI, coding agents, and MCP servers - through your Bifrost so security and compliance stay intact everywhere."
+description: "Governance for AI on every machine. Bifrost Edge routes supported traffic from chat apps, browser AI, coding agents, and MCP servers through your Bifrost so security and compliance extend to user devices."
 icon: "globe"
 ---
 
@@ -10,7 +10,7 @@ icon: "globe"
 
 ---
 
-Bifrost Edge extends your AI gateway all the way to the endpoint. Instead of relying on every user to point their tools at Bifrost, Edge runs quietly on each machine and brings **all** AI traffic under governance automatically: desktop chat apps, AI in the browser, coding agents in the terminal and IDE, and the MCP servers those tools connect to. Your existing virtual keys, budgets, audit logs, and guardrails now apply to the AI people actually use, not just the traffic that happened to be configured.
+Bifrost Edge extends your AI gateway all the way to the endpoint. Instead of relying on every user to point their tools at Bifrost, Edge runs quietly on each machine and brings traffic from **supported** desktop chat apps, browser AI, coding agents, and MCP servers under governance automatically. Your existing virtual keys, audit logs, guardrails, and applicable budgets now reach the AI people actually use, not just the traffic they configured manually.
 
 <Note>
 Bifrost Edge runs natively on <img src="/media/edge/mac.png" alt="macOS" height="16" style={{display:'inline',height:'1.1em',margin:'0 0.15em',verticalAlign:'-0.15em'}} noZoom /> **macOS**, <img src="/media/edge/windows.png" alt="Windows" height="16" style={{display:'inline',height:'1.1em',margin:'0 0.15em',verticalAlign:'-0.15em'}} noZoom /> **Windows**, and <img src="/media/edge/linux.png" alt="Linux" height="16" style={{display:'inline',height:'1.1em',margin:'0 0.15em',verticalAlign:'-0.15em'}} noZoom /> **Linux**.
@@ -19,7 +19,7 @@ Bifrost Edge runs natively on <img src="/media/edge/mac.png" alt="macOS" height=
 ```mermaid
 flowchart LR
     subgraph Laptop["Every computer in your organization"]
-        Apps["AI apps and surfaces<br/>Claude Desktop and Claude Code<br/>ChatGPT app and ChatGPT web<br/>Codex, Cursor, Gemini<br/>MCP servers in each app"]
+        Apps["Supported AI apps and surfaces<br/>Claude Desktop and Claude Code<br/>ChatGPT app and ChatGPT web<br/>Codex, Cursor, Gemini<br/>MCP servers in each app"]
         Edge["Bifrost Edge"]
         Apps --> Edge
     end
@@ -52,7 +52,10 @@ flowchart LR
 
 <CardGroup cols={2}>
   <Card title="How it works" icon="route" href="/edge/how-it-works">
-    The user experience: one browser sign-in, a menu-bar agent, and every AI request routed through Bifrost.
+    The user experience: one browser sign-in, a menu-bar agent, and supported AI requests routed through Bifrost.
+  </Card>
+  <Card title="Supported applications" icon="list" href="/edge/supported-applications">
+    See what Edge configures for each application and whether it can be routed through Bifrost without Edge.
   </Card>
   <Card title="Govern AI apps" icon="shield-halved" href="/edge/app-governance">
     Decide which AI applications are allowed on company machines, and what happens when one is blocked.
@@ -85,7 +88,7 @@ Edge is the endpoint layer of the same platform that powers the [Bifrost gateway
 ## Next steps
 
 - See the day-to-day experience in [How it works](/edge/how-it-works).
+- Compare Edge-managed and manual setup in [Supported applications](/edge/supported-applications).
 - Apply your guardrails everywhere in [Security & guardrails](/edge/security).
 - Plan a rollout in [Deploy with MDM](/edge/deployment-mdm).
 - Check coverage in [Supported applications](/edge/supported-applications).
-- Want in? Use the alpha CTA at the top of this page.

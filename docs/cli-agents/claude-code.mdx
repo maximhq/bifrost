@@ -6,6 +6,10 @@ icon: "star-of-life"
 
 [Claude Code](https://www.claude.com/product/claude-code) brings AI-powered coding capabilities directly to your terminal.
 
+<Tip>
+Using Bifrost Edge? Gateway mode maintains the configuration below and uses a provider key selected by Bifrost. **Require Anthropic login** preserves native application login but does not make that credential the gateway-mode inference credential. Subscription pass-through preserves Claude Code's native credential and catalog, then routes captured inference through Bifrost's `/anthropic_passthrough` endpoint. See [Edge routing modes](/edge/supported-applications#edge-routing-modes).
+</Tip>
+
 **Tested on Claude Code versions:**
 
 | Version | Released   |
@@ -57,7 +61,21 @@ All code snippets below use this method.
 
 Set `ANTHROPIC_CUSTOM_HEADERS` to `x-bf-vk: your-virtual-key`. This passes the virtual key as a custom header instead of the `Authorization` header.
 
-**Caveat:** Because the virtual key is sent as a custom header rather than as the bearer token, Claude Code falls back to standard Anthropic account authentication for the `Authorization` header. This means you still need to log in with an Anthropic account. No credits are needed on the Anthropic account since billing goes through your Bifrost virtual key, but the account login is still required.
+**Caveat:** The separate header leaves `Authorization` available for Claude Code's Anthropic login. When `Authorization` contains a recognized Anthropic OAuth token (`sk-ant-oat…`), Bifrost forwards that token only to native Anthropic and does not select a provider key for the request. The Anthropic account owns the upstream usage. Use `ANTHROPIC_AUTH_TOKEN` instead when Bifrost should select a provider key configured on the gateway.
+
+### Use a Claude subscription through Bifrost
+
+To keep a user's Claude subscription while routing Claude Code through Bifrost:
+
+1. Set `ANTHROPIC_BASE_URL` to `https://<your-bifrost-host>/anthropic`.
+2. Set `ANTHROPIC_CUSTOM_HEADERS` to `x-bf-vk: <your-bifrost-virtual-key>` so Bifrost identity is separate from provider authentication.
+3. Do not set `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY`; sign in to Claude Code with the user's Anthropic account instead.
+
+Claude Code then sends the Anthropic OAuth token in `Authorization` and the Bifrost virtual key in `x-bf-vk`. Bifrost uses the virtual key for gateway identity and forwards the OAuth token to Anthropic. This only works with native Anthropic models; an Anthropic subscription credential cannot authenticate to Bedrock, Vertex, OpenAI, or another provider.
+
+<Note>
+Use the regular `/anthropic` route for this manual configuration. With Bifrost Edge, use **subscription pass-through** when the user's native credential should fund inference; Edge routes that traffic through `/anthropic_passthrough` and requires direct API keys to be enabled. **Require Anthropic login** by itself only preserves native login while gateway mode continues to use a Bifrost-selected provider key. See [Edge routing modes](/edge/supported-applications#edge-routing-modes).
+</Note>
 
 ## Configuring Claude Code to work with Bifrost
 
@@ -73,7 +91,7 @@ Claude Code sends `x-claude-code-session-id` on every request, so a session stic
 	- Start Claude Code, run the `/logout` command, then restart Claude Code.
 	- When prompted to choose an authentication method:
 		- If you are using `ANTHROPIC_AUTH_TOKEN` (recommended), no Anthropic account login is required, so you can skip this step.
-		- If you are using `ANTHROPIC_CUSTOM_HEADERS`, select **"Anthropic Console account · API usage billing"** when prompted.
+		- If you are using `ANTHROPIC_CUSTOM_HEADERS`, complete Anthropic sign-in with the account that should own the upstream usage. Bifrost uses `x-bf-vk` for gateway identity and preserves the Anthropic OAuth credential in `Authorization`.
 		<Frame>
 			<img src="/media/cli/select-api-claude-code.png" alt="Claude cli API selection" />
 		</Frame>

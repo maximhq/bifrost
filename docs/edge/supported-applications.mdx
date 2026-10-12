@@ -1,10 +1,10 @@
 ---
 title: "Supported applications"
-description: "The AI apps and surfaces Bifrost Edge governs today, across desktop apps, coding agents, browser AI, providers, and MCP discovery. Don't see your app? Request it in one click."
+description: "Reference for how Bifrost Edge routes each supported application, which credentials are used, and how to configure the same application without Edge when manual gateway routing is available."
 icon: "list"
 ---
 
-Bifrost Edge governs a growing list of AI applications and surfaces out of the box. The categories below cover what Edge can route and govern today. If an app you rely on is missing, request support and we will prioritize it.
+This page is the configuration reference for applications supported by Bifrost Edge. It explains what Edge changes in each application, what happens in gateway and pass-through modes, and whether the same application can be pointed at Bifrost without Edge.
 
 <button
   data-tally-open="QK4pxG"
@@ -20,33 +20,72 @@ Bifrost Edge governs a growing list of AI applications and surfaces out of the b
   </svg>
 </button>
 
-## Desktop apps
+## With Edge and without Edge
 
-| Application | What Edge does |
-| --- | --- |
-| Claude Desktop | Routes and governs AI traffic from the Claude desktop app. |
-| ChatGPT (desktop) | Routes and governs AI traffic from the ChatGPT desktop app. |
-| Cursor | Routes and governs AI requests from the Cursor editor. |
-| Codex (desktop) | Routes and governs AI traffic from the Codex desktop app. |
+The difference is configuration ownership. Edge captures supported application traffic and applies the route selected by the administrator. Without Edge, each application must expose a compatible custom endpoint and each user or administrator must keep its settings correct.
 
-## Coding agents
+| Configuration responsibility | With Edge | Without Edge |
+| --- | --- | --- |
+| Point the application at Bifrost | Edge intercepts supported inference traffic and sends it to the correct Bifrost integration. Users do not set a base URL in each application. | Configure every application separately. The required URL suffix and setting location differ by application, and some applications do not expose a custom inference endpoint. |
+| Authenticate to Bifrost | Edge sends the selected virtual key or the signed-in Edge identity separately from the application's provider credential. | Put a Bifrost credential in the application's config, environment, or custom headers. If the application also uses a native provider credential, keep the two credentials in separate headers. |
+| Select the upstream credential | In **gateway mode**, Bifrost selects a provider key configured on the gateway. In **subscription pass-through**, Edge preserves the application's native provider credential and Bifrost forwards that credential only to the matching provider. | A normal gateway configuration uses a Bifrost-managed provider key. Direct-key or subscription forwarding requires a compatible application, a passthrough URL, separate Bifrost authentication, and the direct-key opt-in. |
+| Maintain models and settings | In gateway mode, Edge maintains supported model pickers and reconciles the application settings it owns. In pass-through, the application's native model catalog remains authoritative. | Add or map models in every configurable application and update the settings when endpoints, credentials, or available models change. |
+| Cover applications without a custom endpoint | Edge can route the supported surfaces listed below at the device layer. | Those surfaces continue to use their native destination and do not traverse Bifrost. |
 
-| Application | What Edge does |
-| --- | --- |
-| Claude Code | Routes and governs AI traffic from the Claude Code CLI agent. |
-| Codex CLI | Routes and governs AI traffic from the Codex command-line agent. |
-| OpenCode | Routes and governs AI traffic from the OpenCode agent. |
+## Edge routing modes
 
-## AI in the browser
+Provider-login settings and application routing mode are separate controls. For example, **Require Anthropic login** preserves the user's Claude login in gateway mode; it does not switch Claude Code to subscription pass-through.
 
-| Surface | What Edge does |
-| --- | --- |
-| ChatGPT web | Governs AI conversations on chatgpt.com. |
-| Claude web | Governs AI traffic on claude.ai. |
+| Behavior | Gateway mode | Subscription pass-through |
+| --- | --- | --- |
+| Inference path | Application → Edge → regular Bifrost integration such as `/anthropic`, `/openai`, or `/genai` → selected provider | Application → Edge → Bifrost subscription endpoint such as `/anthropic_passthrough`, `/openai_passthrough`, or `/genai_passthrough` → the matching native provider |
+| Provider credential | Edge removes provider credentials from the captured inference request and authenticates the request to Bifrost. Bifrost selects a key from its configured provider keys. Requiring native login does not change this inference credential path. | Edge preserves the application's native API key or subscription credential and marks it as a direct provider key. The provider account owns the upstream usage. |
+| Bifrost identity | Edge sends the selected virtual key or signed-in agent identity. | Edge sends the Bifrost identity separately so the provider credential remains available for the upstream provider. |
+| Logs and attribution | Bifrost logs the request under the resolved user and application, subject to the configured logging and content-retention policy. | The inference request still traverses Bifrost. Edge supplies user and source-application attribution, and Bifrost logging still runs. |
+| Governance that still runs | Bifrost's normal gateway and plugin policies apply. | The Bifrost plugin pipeline still runs, including application policy and any user/access-profile, provider, model, budget, rate-limit, or guardrail policy that can be evaluated for the provider-native request. Raw provider payloads can limit policies that require Bifrost to parse or rewrite a field. |
+| What Bifrost does not manage | The user's native provider catalog and account-only features are not automatically imported into the gateway catalog. | Bifrost does not select or rotate a provider key, load balance across its key pool, route a model or inference request to another provider, or apply cross-provider fallbacks. Native model catalogs and vendor control-plane requests continue to use their native destination. |
+| Prerequisites | A working Edge sign-in or virtual key and the provider credentials configured in Bifrost. | A supported pass-through application, a valid native provider credential, and **Allow Direct API Keys** enabled in Bifrost security settings. |
+
+<Warning>
+Subscription pass-through is not a bypass around Bifrost. Turning it on changes which credential and model catalog the application uses; captured inference still passes through Bifrost. To send traffic directly to the vendor without Bifrost, the application must be outside Edge interception or Edge routing must be disabled.
+</Warning>
+
+Pass-through is currently available for Claude Code, Claude Desktop and Cowork, Codex CLI and desktop, and Gemini CLI. It is not currently an Edge routing option for Cursor, OpenCode, ChatGPT web, Claude web, or the general ChatGPT desktop surface.
+
+## Supported application configuration
+
+### Desktop apps
+
+| Application | With Edge | Without Edge |
+| --- | --- | --- |
+| [Claude Desktop](/cli-agents/claude-desktop) | Gateway mode routes supported native inference and Code surfaces through Bifrost, uses gateway-managed provider credentials, and applies permitted models. Subscription pass-through preserves the native Claude credential and model catalog while captured inference still traverses Bifrost. Edge can also provision supported login-free desktop configuration through managed OS policy. | **Partial.** Configure the Code surface in `~/.claude/settings.json`. Native inference requires the **Developer → Gateway** provider. The Chat surface does not expose a general custom inference route; its MCP tools can be connected separately. |
+| ChatGPT (desktop) | Edge routes supported desktop inference through Bifrost while keeping the ChatGPT session separate from Bifrost authentication. Subscription pass-through is not offered for the general desktop surface. | **No documented custom inference endpoint.** The desktop application otherwise uses its native OpenAI connection. |
+| [Cursor](/cli-agents/cursor) | Edge routes supported Cursor agent and inference operations through Bifrost and applies permitted models. Cursor does not currently support Edge subscription pass-through. | **Partial.** In **Settings → Models**, set a virtual key, override the OpenAI base URL with `<gateway>/cursor`, and add the permitted `provider/model` names. Only operations supported by Cursor's override can use this path. |
+| Codex (desktop) | Gateway mode uses the governed model picker and Bifrost-managed credentials. Requiring ChatGPT login preserves the native application login but does not use it as the gateway-mode inference credential. Subscription pass-through preserves the native ChatGPT credential and model catalog while inference still traverses Bifrost. | **No standalone Bifrost setup is currently documented.** A Codex CLI provider entry does not configure the desktop application. |
+
+### Coding agents
+
+| Application | With Edge | Without Edge |
+| --- | --- | --- |
+| [Claude Code](/cli-agents/claude-code) | Gateway mode maintains the `/anthropic` route and governed model picker, and Bifrost selects a configured provider key. **Require Anthropic login** preserves the user's native application login but does not use that credential for gateway-mode inference. Subscription pass-through uses `/anthropic_passthrough`, the native Claude credential, and the native model catalog while keeping inference on the Bifrost path. | Run `bifrost run claude`, or maintain `ANTHROPIC_BASE_URL`, Bifrost authentication, and model mappings in Claude settings. A native subscription through Bifrost also requires provider and Bifrost credentials to remain separate. |
+| [Codex CLI](/cli-agents/codex-cli) | Gateway mode maintains the Bifrost Responses route and governed model picker. Subscription pass-through uses the native ChatGPT credential and catalog while routing inference through Bifrost's ChatGPT/OpenAI passthrough path. | Run `bifrost run codex`, or create a named provider in `~/.codex/config.toml` with `base_url = "<gateway>/openai/v1"` and a Bifrost credential. Existing OpenAI OAuth can otherwise take precedence. |
+| [OpenCode](/cli-agents/opencode) | Edge maintains the Bifrost provider, gateway identity, and allowed models. Subscription pass-through is not currently supported for OpenCode. | Run `bifrost run opencode`, or add a provider to `~/.config/opencode/opencode.json` with `<gateway>/openai`, a Bifrost credential, and every selectable model. |
+| [Gemini CLI](/cli-agents/gemini-cli) | Gateway mode maintains the `/genai` route, gateway identity, and allowed model picker. Subscription pass-through uses `/genai_passthrough` with the user's Gemini API key. Google OAuth/Code Assist and Vertex-specific endpoints are not adapted by this mode. | Run `bifrost run gemini`, or set `GEMINI_API_KEY` to a Bifrost virtual key and `GOOGLE_GEMINI_BASE_URL=<gateway>/genai`. Google OAuth and Vertex modes do not authenticate to that gateway route. |
+
+<Note>
+Support is application-specific, not a guarantee that every feature inside an application is available. For example, Edge routes supported Cursor agent and inference operations, while unsupported Cursor run variants, Tab completion, and edit-and-apply fail closed instead of bypassing governance.
+</Note>
+
+### AI in the browser
+
+| Surface | With Edge | Without Edge |
+| --- | --- | --- |
+| ChatGPT web | Edge routes supported conversation traffic on `chatgpt.com` through Bifrost while retaining the browser session. Subscription pass-through is not a selectable mode for this surface. | ChatGPT web has no custom gateway URL; inference goes directly to OpenAI. |
+| Claude web | Edge routes supported conversation traffic on `claude.ai` through Bifrost while retaining the browser session. Subscription pass-through is not a selectable mode for this surface. | Claude web has no custom gateway URL; inference goes directly to Anthropic. |
 
 ## Providers
 
-Edge governs traffic to every provider Bifrost supports, so requests from any tool pointed at them stay under your policies. See the full capability matrix in [Supported providers](/providers/supported-providers/overview).
+In gateway mode, Edge can route a supported application's requests to providers supported by the application's protocol and required capabilities. Native credentials used in subscription pass-through are restricted to their matching provider: an Anthropic subscription credential cannot authenticate to Bedrock, Vertex, OpenAI, or another provider. See the full capability matrix in [Supported providers](/providers/supported-providers/overview).
 
 <CardGroup cols={3}>
   <Card title="OpenAI" icon="openai" href="/providers/supported-providers/openai" />
@@ -93,4 +132,6 @@ Edge inventories the MCP servers configured inside these apps so you can allow o
 ## Next steps
 
 - See how routing works in [How it works](/edge/how-it-works).
+- Configure routing policy in [Set up Edge control](/edge/setup-edge-control).
+- Review provider-native API behavior in [Passthrough endpoints](/integrations/passthrough).
 - Set policy in [Govern AI apps](/edge/app-governance) and [Govern MCP servers](/edge/mcp-governance).

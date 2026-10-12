@@ -6,6 +6,10 @@ icon: "openai"
 
 [Codex CLI](https://developers.openai.com/codex/cli/) provides powerful code generation and completion capabilities directly in your terminal.
 
+<Tip>
+Using Bifrost Edge? Gateway mode maintains the Codex route and governed model settings described below. Subscription pass-through preserves the native ChatGPT credential and model catalog while routing captured inference through Bifrost. See [Supported applications](/edge/supported-applications#edge-routing-modes).
+</Tip>
+
 <Note>
 If your Allowed Headers are already set to `*`, you can skip this note. If not, and you face issues integrating Bifrost with Codex CLI, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
 </Note>

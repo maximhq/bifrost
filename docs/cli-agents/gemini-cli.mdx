@@ -6,6 +6,9 @@ icon: "diamond"
 
 [Gemini CLI](https://github.com/google-gemini/gemini-cli) is Google's powerful coding assistant with advanced reasoning capabilities.
 
+<Tip>
+Using Bifrost Edge? Gateway mode maintains the Gemini CLI gateway URL, Bifrost identity, and allowed model picker. Subscription pass-through preserves the user's Gemini API key and sends captured inference through `/genai_passthrough`; Google OAuth/Code Assist and Vertex endpoints are not adapted by this mode. Without Edge, apply the manual settings below. See [Supported applications](/edge/supported-applications#supported-application-configuration).
+</Tip>
 
 <Note>
 If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with Gemini CLI, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.

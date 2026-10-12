@@ -40,7 +40,7 @@ After either path, confirm that the CA shows **Active** and record its SHA-256 f
 | **Agent sync poll interval** | How frequently agents check for configuration changes. The default is 60 seconds and the minimum is 5 seconds. |
 | **Allow pending apps and MCP servers** | When enabled, newly discovered pending items continue to work. When disabled, they are blocked until approved. |
 | **Allow virtual key sign-in** | Whether a user can enter a Bifrost virtual key when no IdP sign-in is available. |
-| **App routing modes** | Whether supported apps use managed gateway routing or, where offered, subscription passthrough. |
+| **[App routing modes](/edge/supported-applications#edge-routing-modes)** | Whether a supported application uses gateway mode with Bifrost-managed provider credentials or subscription pass-through with its native credential. Both modes send captured inference through Bifrost. Pass-through requires **Allow Direct API Keys**. |
 | **Edge traffic interception** | Confirm that the global state is **Interception Active** before testing. Scoped user or team decisions can still override the global state. |
 
 Save any changes before continuing.
