@@ -884,7 +884,9 @@ func contractScheduled(t *testing.T, s Store) {
 // not after it was published.
 func contractRetentionFromDeathAndDueTime(t *testing.T, s Store) {
 	ctx := context.Background()
-	const keep = 300 * time.Millisecond
+	// keep is also the slack between the kill or ack and the purge that must not
+	// remove the row yet; under -race against ClickHouse 300ms was not enough.
+	const keep = 2 * time.Second
 	policy := PurgePolicy{DeadRetention: keep, AckedRetention: keep}
 	purgeAll := func() {
 		for range 20 {

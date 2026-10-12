@@ -1640,260 +1640,127 @@ func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider 
 	}
 	switch {
 	case r.ListModelsResponse != nil:
-		r.ListModelsResponse.ExtraFields.RequestType = requestType
-		r.ListModelsResponse.ExtraFields.Provider = provider
-		r.ListModelsResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ListModelsResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ListModelsResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ModelRetrieveResponse != nil:
-		r.ModelRetrieveResponse.ExtraFields.RequestType = requestType
-		r.ModelRetrieveResponse.ExtraFields.Provider = provider
-		r.ModelRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ModelRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ModelRetrieveResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.TextCompletionResponse != nil:
-		r.TextCompletionResponse.ExtraFields.RequestType = requestType
-		r.TextCompletionResponse.ExtraFields.Provider = provider
-		r.TextCompletionResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.TextCompletionResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.TextCompletionResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ChatResponse != nil:
-		r.ChatResponse.ExtraFields.RequestType = requestType
-		r.ChatResponse.ExtraFields.Provider = provider
-		r.ChatResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ChatResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ChatResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ResponsesResponse != nil:
-		r.ResponsesResponse.ExtraFields.RequestType = requestType
-		r.ResponsesResponse.ExtraFields.Provider = provider
-		r.ResponsesResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ResponsesResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ResponsesResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ResponsesDeleteResponse != nil:
-		r.ResponsesDeleteResponse.ExtraFields.RequestType = requestType
-		r.ResponsesDeleteResponse.ExtraFields.Provider = provider
-		r.ResponsesDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ResponsesDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ResponsesDeleteResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ResponsesInputItemsResponse != nil:
-		r.ResponsesInputItemsResponse.ExtraFields.RequestType = requestType
-		r.ResponsesInputItemsResponse.ExtraFields.Provider = provider
-		r.ResponsesInputItemsResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ResponsesInputItemsResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ResponsesInputItemsResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ResponsesStreamResponse != nil:
-		r.ResponsesStreamResponse.ExtraFields.RequestType = requestType
-		r.ResponsesStreamResponse.ExtraFields.Provider = provider
-		r.ResponsesStreamResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ResponsesStreamResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ResponsesStreamResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.CountTokensResponse != nil:
-		r.CountTokensResponse.ExtraFields.RequestType = requestType
-		r.CountTokensResponse.ExtraFields.Provider = provider
-		r.CountTokensResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.CountTokensResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.CountTokensResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.CompactionResponse != nil:
-		r.CompactionResponse.ExtraFields.RequestType = requestType
-		r.CompactionResponse.ExtraFields.Provider = provider
-		r.CompactionResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.CompactionResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.CompactionResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.EmbeddingResponse != nil:
-		r.EmbeddingResponse.ExtraFields.RequestType = requestType
-		r.EmbeddingResponse.ExtraFields.Provider = provider
-		r.EmbeddingResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.EmbeddingResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.EmbeddingResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.RerankResponse != nil:
-		r.RerankResponse.ExtraFields.RequestType = requestType
-		r.RerankResponse.ExtraFields.Provider = provider
-		r.RerankResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.RerankResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.RerankResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.DecisionResponse != nil:
-		r.DecisionResponse.ExtraFields.RequestType = requestType
-		r.DecisionResponse.ExtraFields.Provider = provider
-		r.DecisionResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.DecisionResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.DecisionResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.SpeechResponse != nil:
-		r.SpeechResponse.ExtraFields.RequestType = requestType
-		r.SpeechResponse.ExtraFields.Provider = provider
-		r.SpeechResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.SpeechResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.SpeechResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.SpeechStreamResponse != nil:
-		r.SpeechStreamResponse.ExtraFields.RequestType = requestType
-		r.SpeechStreamResponse.ExtraFields.Provider = provider
-		r.SpeechStreamResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.SpeechStreamResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.SpeechStreamResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.TranscriptionResponse != nil:
-		r.TranscriptionResponse.ExtraFields.RequestType = requestType
-		r.TranscriptionResponse.ExtraFields.Provider = provider
-		r.TranscriptionResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.TranscriptionResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.TranscriptionResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.TranscriptionStreamResponse != nil:
-		r.TranscriptionStreamResponse.ExtraFields.RequestType = requestType
-		r.TranscriptionStreamResponse.ExtraFields.Provider = provider
-		r.TranscriptionStreamResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.TranscriptionStreamResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.TranscriptionStreamResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ImageGenerationResponse != nil:
-		r.ImageGenerationResponse.ExtraFields.RequestType = requestType
-		r.ImageGenerationResponse.ExtraFields.Provider = provider
-		r.ImageGenerationResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ImageGenerationResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ImageGenerationResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ImageGenerationStreamResponse != nil:
-		r.ImageGenerationStreamResponse.ExtraFields.RequestType = requestType
-		r.ImageGenerationStreamResponse.ExtraFields.Provider = provider
-		r.ImageGenerationStreamResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ImageGenerationStreamResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ImageGenerationStreamResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.VideoGenerationResponse != nil:
-		r.VideoGenerationResponse.ExtraFields.RequestType = requestType
-		r.VideoGenerationResponse.ExtraFields.Provider = provider
-		r.VideoGenerationResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.VideoGenerationResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.VideoGenerationResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.VideoDownloadResponse != nil:
-		r.VideoDownloadResponse.ExtraFields.RequestType = requestType
-		r.VideoDownloadResponse.ExtraFields.Provider = provider
-		r.VideoDownloadResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.VideoDownloadResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.VideoDownloadResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.VideoListResponse != nil:
-		r.VideoListResponse.ExtraFields.RequestType = requestType
-		r.VideoListResponse.ExtraFields.Provider = provider
-		r.VideoListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.VideoListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.VideoListResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.VideoDeleteResponse != nil:
-		r.VideoDeleteResponse.ExtraFields.RequestType = requestType
-		r.VideoDeleteResponse.ExtraFields.Provider = provider
-		r.VideoDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.VideoDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.VideoDeleteResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.FileUploadResponse != nil:
-		r.FileUploadResponse.ExtraFields.RequestType = requestType
-		r.FileUploadResponse.ExtraFields.Provider = provider
-		r.FileUploadResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.FileUploadResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.FileUploadResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.FileListResponse != nil:
-		r.FileListResponse.ExtraFields.RequestType = requestType
-		r.FileListResponse.ExtraFields.Provider = provider
-		r.FileListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.FileListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.FileListResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.FileRetrieveResponse != nil:
-		r.FileRetrieveResponse.ExtraFields.RequestType = requestType
-		r.FileRetrieveResponse.ExtraFields.Provider = provider
-		r.FileRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.FileRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.FileRetrieveResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.FileDeleteResponse != nil:
-		r.FileDeleteResponse.ExtraFields.RequestType = requestType
-		r.FileDeleteResponse.ExtraFields.Provider = provider
-		r.FileDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.FileDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.FileDeleteResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.FileContentResponse != nil:
-		r.FileContentResponse.ExtraFields.RequestType = requestType
-		r.FileContentResponse.ExtraFields.Provider = provider
-		r.FileContentResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.FileContentResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.FileContentResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.LiveContentResponse != nil:
-		r.LiveContentResponse.ExtraFields.RequestType = requestType
-		r.LiveContentResponse.ExtraFields.Provider = provider
-		r.LiveContentResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.LiveContentResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.LiveContentResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.BatchCreateResponse != nil:
-		r.BatchCreateResponse.ExtraFields.RequestType = requestType
-		r.BatchCreateResponse.ExtraFields.Provider = provider
-		r.BatchCreateResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.BatchCreateResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.BatchCreateResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.BatchListResponse != nil:
-		r.BatchListResponse.ExtraFields.RequestType = requestType
-		r.BatchListResponse.ExtraFields.Provider = provider
-		r.BatchListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.BatchListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.BatchListResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.BatchRetrieveResponse != nil:
-		r.BatchRetrieveResponse.ExtraFields.RequestType = requestType
-		r.BatchRetrieveResponse.ExtraFields.Provider = provider
-		r.BatchRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.BatchRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.BatchRetrieveResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.BatchCancelResponse != nil:
-		r.BatchCancelResponse.ExtraFields.RequestType = requestType
-		r.BatchCancelResponse.ExtraFields.Provider = provider
-		r.BatchCancelResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.BatchCancelResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.BatchCancelResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.BatchDeleteResponse != nil:
-		r.BatchDeleteResponse.ExtraFields.RequestType = requestType
-		r.BatchDeleteResponse.ExtraFields.Provider = provider
-		r.BatchDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.BatchDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.BatchDeleteResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.BatchResultsResponse != nil:
-		r.BatchResultsResponse.ExtraFields.RequestType = requestType
-		r.BatchResultsResponse.ExtraFields.Provider = provider
-		r.BatchResultsResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.BatchResultsResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.BatchResultsResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerCreateResponse != nil:
-		r.ContainerCreateResponse.ExtraFields.RequestType = requestType
-		r.ContainerCreateResponse.ExtraFields.Provider = provider
-		r.ContainerCreateResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerCreateResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerCreateResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerListResponse != nil:
-		r.ContainerListResponse.ExtraFields.RequestType = requestType
-		r.ContainerListResponse.ExtraFields.Provider = provider
-		r.ContainerListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerListResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerRetrieveResponse != nil:
-		r.ContainerRetrieveResponse.ExtraFields.RequestType = requestType
-		r.ContainerRetrieveResponse.ExtraFields.Provider = provider
-		r.ContainerRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerRetrieveResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerDeleteResponse != nil:
-		r.ContainerDeleteResponse.ExtraFields.RequestType = requestType
-		r.ContainerDeleteResponse.ExtraFields.Provider = provider
-		r.ContainerDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerDeleteResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerFileCreateResponse != nil:
-		r.ContainerFileCreateResponse.ExtraFields.RequestType = requestType
-		r.ContainerFileCreateResponse.ExtraFields.Provider = provider
-		r.ContainerFileCreateResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerFileCreateResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerFileCreateResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerFileListResponse != nil:
-		r.ContainerFileListResponse.ExtraFields.RequestType = requestType
-		r.ContainerFileListResponse.ExtraFields.Provider = provider
-		r.ContainerFileListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerFileListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerFileListResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerFileRetrieveResponse != nil:
-		r.ContainerFileRetrieveResponse.ExtraFields.RequestType = requestType
-		r.ContainerFileRetrieveResponse.ExtraFields.Provider = provider
-		r.ContainerFileRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerFileRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerFileRetrieveResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerFileContentResponse != nil:
-		r.ContainerFileContentResponse.ExtraFields.RequestType = requestType
-		r.ContainerFileContentResponse.ExtraFields.Provider = provider
-		r.ContainerFileContentResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerFileContentResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerFileContentResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerFileDeleteResponse != nil:
-		r.ContainerFileDeleteResponse.ExtraFields.RequestType = requestType
-		r.ContainerFileDeleteResponse.ExtraFields.Provider = provider
-		r.ContainerFileDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerFileDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerFileDeleteResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.OCRResponse != nil:
-		r.OCRResponse.ExtraFields.RequestType = requestType
-		r.OCRResponse.ExtraFields.Provider = provider
-		r.OCRResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.OCRResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.OCRResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.PassthroughResponse != nil:
-		r.PassthroughResponse.ExtraFields.RequestType = requestType
-		r.PassthroughResponse.ExtraFields.Provider = provider
-		r.PassthroughResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.PassthroughResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.PassthroughResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.CachedContentCreateResponse != nil:
-		r.CachedContentCreateResponse.ExtraFields.RequestType = requestType
-		r.CachedContentCreateResponse.ExtraFields.Provider = provider
-		r.CachedContentCreateResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.CachedContentCreateResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.CachedContentCreateResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.CachedContentListResponse != nil:
-		r.CachedContentListResponse.ExtraFields.RequestType = requestType
-		r.CachedContentListResponse.ExtraFields.Provider = provider
-		r.CachedContentListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.CachedContentListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.CachedContentListResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.CachedContentRetrieveResponse != nil:
-		r.CachedContentRetrieveResponse.ExtraFields.RequestType = requestType
-		r.CachedContentRetrieveResponse.ExtraFields.Provider = provider
-		r.CachedContentRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.CachedContentRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.CachedContentRetrieveResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.CachedContentUpdateResponse != nil:
-		r.CachedContentUpdateResponse.ExtraFields.RequestType = requestType
-		r.CachedContentUpdateResponse.ExtraFields.Provider = provider
-		r.CachedContentUpdateResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.CachedContentUpdateResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.CachedContentUpdateResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.CachedContentDeleteResponse != nil:
-		r.CachedContentDeleteResponse.ExtraFields.RequestType = requestType
-		r.CachedContentDeleteResponse.ExtraFields.Provider = provider
-		r.CachedContentDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.CachedContentDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.CachedContentDeleteResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
+	}
+}
+
+// setCoreExtraFields writes the four core-owned fields, skipping any that already hold the
+// value. Core calls PopulateExtraFields again after RunPostLLMHooks, while plugins (governance,
+// logging, telemetry) may still be reading the same response from goroutines their post-hooks
+// started. The values almost always match the pre-hook population, so writing only on change
+// keeps that second pass read-only and race-free without changing the result.
+func setCoreExtraFields(ef *BifrostResponseExtraFields, requestType RequestType, provider ModelProvider, originalModelRequested, resolvedModelUsed string) {
+	if ef.RequestType != requestType {
+		ef.RequestType = requestType
+	}
+	if ef.Provider != provider {
+		ef.Provider = provider
+	}
+	if ef.OriginalModelRequested != originalModelRequested {
+		ef.OriginalModelRequested = originalModelRequested
+	}
+	if ef.ResolvedModelUsed != resolvedModelUsed {
+		ef.ResolvedModelUsed = resolvedModelUsed
 	}
 }
 

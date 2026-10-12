@@ -2133,8 +2133,7 @@ func TestMergeGovernanceConfig_AppliesComplexityAnalyzerConfigWhenHashesAreEmpty
 		GovernanceConfig: dbGovernance,
 	}
 	fileConfig := testFileComplexityAnalyzerConfig()
-	// Startup reconciliation hashes the normalized file, including classifier defaults.
-	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(fileConfig.Normalized()))
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
 	require.NoError(t, err)
 	configData := &ConfigData{
 		Governance: &configstore.GovernanceConfig{
@@ -2175,7 +2174,7 @@ func TestMergeGovernanceConfig_PreservesComplexityAnalyzerConfigWhenSectionHashe
 
 	store := NewMockConfigStore()
 	fileConfig := testFileComplexityAnalyzerConfig()
-	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(fileConfig.Normalized()))
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
 	require.NoError(t, err)
 
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
@@ -2225,7 +2224,7 @@ func TestMergeGovernanceConfig_MergesComplexityKeywordsWhenSectionHashesChange(t
 		GovernanceConfig: dbGovernance,
 	}
 	fileConfig := testFileComplexityAnalyzerConfig()
-	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(fileConfig.Normalized()))
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
 	require.NoError(t, err)
 	configData := &ConfigData{
 		Governance: &configstore.GovernanceConfig{
@@ -2250,7 +2249,7 @@ func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) 
 
 	store := NewMockConfigStore()
 	oldFileConfig := testFileComplexityAnalyzerConfig()
-	oldFileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(oldFileConfig.Normalized()))
+	oldFileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(oldFileConfig)
 	require.NoError(t, err)
 
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
@@ -2268,7 +2267,7 @@ func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) 
 
 	newFileConfig := testFileComplexityAnalyzerConfig()
 	newFileConfig.Keywords.MediumKeywords = []string{"file-code", "file-code-new"}
-	newFileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(newFileConfig.Normalized()))
+	newFileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(newFileConfig)
 	require.NoError(t, err)
 	configData := &ConfigData{
 		Governance: &configstore.GovernanceConfig{
@@ -2350,7 +2349,7 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONUsesComplexityFileConfig(t
 		GovernanceConfig: dbGovernance,
 	}
 	fileConfig := testFileComplexityAnalyzerConfig()
-	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(fileConfig.Normalized()))
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
 	require.NoError(t, err)
 	configData := &ConfigData{
 		SourceOfTruth: SourceOfTruthConfigJSON,
@@ -2369,8 +2368,9 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONUsesComplexityFileConfig(t
 	require.Equal(t, fileHashes, stored.ConfigHashes)
 }
 
-// Split-mode startup compares the effective file classifier, including its semantic
-// default, with the last file hash. Dashboard edits survive when that hash matches.
+// Split-mode startup compares the classifier as written in the file with the last file
+// hash. An omitted classifier is "no opinion" and never overrides the dashboard; only an
+// explicit file classifier whose hash changed is applied.
 func TestMergeGovernanceConfig_ReconcilesComplexityClassifier(t *testing.T) {
 	initTestLogger()
 
@@ -2382,12 +2382,18 @@ func TestMergeGovernanceConfig_ReconcilesComplexityClassifier(t *testing.T) {
 		wantClassifier     string
 	}{
 		{
-			name:           "omitted classifier with empty previous hash defaults to semantic",
-			wantClassifier: configstore.ComplexityClassifierSemantic,
+			name:           "omitted classifier with empty previous hash preserves dashboard decision",
+			wantClassifier: configstore.ComplexityClassifierDecision,
 		},
 		{
-			name:               "removing explicit decision defaults to semantic",
+			name:               "removing explicit decision from the file preserves dashboard decision",
 			previousClassifier: configstore.ComplexityClassifierDecision,
+			wantClassifier:     configstore.ComplexityClassifierDecision,
+		},
+		{
+			name:               "explicit semantic in file replaces dashboard decision",
+			previousClassifier: configstore.ComplexityClassifierDecision,
+			fileClassifier:     configstore.ComplexityClassifierSemantic,
 			wantClassifier:     configstore.ComplexityClassifierSemantic,
 		},
 		{
@@ -2438,10 +2444,14 @@ func TestMergeGovernanceConfig_ReconcilesComplexityClassifier(t *testing.T) {
 			require.Equal(t, tc.wantClassifier, stored.Classifier)
 			require.NotNil(t, stored.Decision, "switching classifiers retains decision settings")
 			require.Equal(t, tc.wantClassifier, config.GovernanceConfig.ComplexityAnalyzerConfig.Classifier)
-			if tc.omitAnalyzer {
+			switch {
+			case tc.omitAnalyzer:
 				require.Equal(t, previousHashes, stored.ConfigHashes)
-			} else {
-				fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(fileConfig.Normalized()))
+			case tc.fileClassifier == "":
+				// No opinion in the file: the classifier hash is left as it was.
+				require.Equal(t, previousHashes.ClassifierSettings, stored.ConfigHashes.ClassifierSettings)
+			default:
+				fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
 				require.NoError(t, err)
 				require.Equal(t, fileHashes.ClassifierSettings, stored.ConfigHashes.ClassifierSettings)
 			}
