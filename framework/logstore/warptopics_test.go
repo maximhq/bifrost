@@ -726,3 +726,47 @@ func TestListLogsForWarpTopicsReadsPastOneChunk(t *testing.T) {
 		assert.EqualValues(t, 3, count)
 	})
 }
+
+// The job reads a request's columns back from the store; the indexer holds
+// the row already and projects it in Go. The two must agree, or a request
+// filed live and the same request filed by a run would differ.
+func TestWarpTopicAssignmentFromLogMatchesTheStoreProjection(t *testing.T) {
+	forEachWarpTopicStore(t, func(t *testing.T, store LogStore) {
+		ctx := context.Background()
+		base := warpTopicTestTime()
+		logs := []*Log{
+			{
+				ID: "full", Timestamp: base, CreatedAt: base.Add(time.Second),
+				Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "success",
+				SessionID: strPtrP("s1"), UserID: strPtrP("u1"), TeamID: strPtrP("team-a"),
+				VirtualKeyID: strPtrP("vk1"), CustomerID: strPtrP("c1"), BusinessUnitID: strPtrP("bu1"),
+				App: strPtrP("cursor"), Cost: f64PtrP(0.42), Latency: f64PtrP(310.5), TotalTokens: 99,
+				TeamIDsParsed: []string{"team-a", "team-b"}, CustomerIDsParsed: []string{"c1", "c2"}, BusinessUnitIDsParsed: []string{"bu1", "bu2"},
+			},
+			{ID: "bare", Timestamp: base.Add(time.Hour), CreatedAt: base.Add(time.Hour), Object: "chat.completion", Provider: "anthropic", Model: "claude", Status: "error"},
+		}
+		for _, entry := range logs {
+			require.NoError(t, store.Create(ctx, entry))
+		}
+		rows, err := store.ListLogsForWarpTopics(ctx, []string{"full", "bare"}, time.Time{}, time.Time{})
+		require.NoError(t, err)
+		require.Len(t, rows, 2)
+		byID := map[string]WarpTopicAssignment{}
+		for _, row := range rows {
+			byID[row.LogID] = row
+		}
+		// The arrays reach the store's projection, so the comparison below
+		// checks them rather than two nils.
+		full := byID["full"]
+		require.NotNil(t, full.TeamIDs)
+		require.NotNil(t, full.CustomerIDs)
+		require.NotNil(t, full.BusinessUnitIDs)
+		for _, entry := range logs {
+			want, got := byID[entry.ID], WarpTopicAssignmentFromLog(entry)
+			require.True(t, got.Timestamp.Equal(want.Timestamp), entry.ID)
+			require.True(t, got.LogCreatedAt.Equal(want.LogCreatedAt), entry.ID)
+			got.Timestamp, got.LogCreatedAt = want.Timestamp, want.LogCreatedAt
+			require.Equal(t, want, got, entry.ID)
+		}
+	})
+}
