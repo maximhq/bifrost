@@ -362,12 +362,28 @@ type GovernanceInMemoryStore struct {
 	Config *lib.Config
 }
 
-// GetConfiguredProviders returns the configured provider map.
+// GetConfiguredProviders returns a snapshot of the configured provider map, built under the read
+// lock. Provider edits write to the live map in place, and the governance plugin indexes what
+// this returns after the lock is released (batchBaseProvider, modelMatcher), so handing back the
+// live map would be a concurrent map read and write, which is fatal rather than merely stale.
+// The copy is shallow: the configs themselves are shared and never modified by readers.
 func (s *GovernanceInMemoryStore) GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig {
-	// Use read lock for thread-safe access - no need to copy on hot path
 	s.Config.Mu.RLock()
 	defer s.Config.Mu.RUnlock()
-	return s.Config.Providers
+	snapshot := make(map[schemas.ModelProvider]configstore.ProviderConfig, len(s.Config.Providers))
+	for provider, config := range s.Config.Providers {
+		snapshot[provider] = config
+	}
+	return snapshot
+}
+
+// GetConfiguredProvider returns one provider's configuration, read under the lock without copying
+// the map, for the per-request model check that needs only that provider.
+func (s *GovernanceInMemoryStore) GetConfiguredProvider(provider schemas.ModelProvider) (configstore.ProviderConfig, bool) {
+	s.Config.Mu.RLock()
+	defer s.Config.Mu.RUnlock()
+	config, ok := s.Config.Providers[provider]
+	return config, ok
 }
 
 // GetConfiguredProviderNames builds the name slice under the lock, because provider edits write to
@@ -3367,7 +3383,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		// No auth runs in this mode, so mark every API request as bypassed; otherwise the
 		// handlers that require genuine auth for dangerous changes see an unmarked request and
 		// let it through.
-		apiMiddlewares = append(apiMiddlewares, handlers.AuthBypassedMiddleware())
+		apiMiddlewares = append(apiMiddlewares, handlers.AuthBypassedMiddleware(s.Config.ClientConfig.AllowedOrigins, s.Config.ClientConfig.WhitelistedRoutes))
 	} else {
 		// Use a signed (stateless) ticket store when an encryption key is configured
 		// so tickets are verifiable across nodes; otherwise fall back to in-memory.

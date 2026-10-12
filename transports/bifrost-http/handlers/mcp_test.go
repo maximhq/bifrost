@@ -27,8 +27,14 @@ import (
 // dialer for this package: the MCP OAuth tests here register against
 // loopback-bound httptest.Server instances, which the production guard in
 // framework/oauth2 refuses to dial. The guard has its own coverage there.
+//
+// It also installs the package logger before any test runs. Production sets
+// it at startup, and code such as the WebSocket panic recovery logs through it
+// unconditionally, so a test that reaches that code must not depend on an
+// earlier test in the run having set it.
 func TestMain(m *testing.M) {
 	oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+	SetLogger(&mockLogger{})
 	os.Exit(m.Run())
 }
 

@@ -65,6 +65,7 @@ func (f fakeLiveModels) KeySupportsModel(_ schemas.ModelProvider, _ schemas.Key,
 
 type liveRelayFixture struct {
 	runner *fakeLiveRunner
+	relay  *liveWSRelay
 	app    *ws.Conn // the caller's end
 	openai *ws.Conn // the fake provider's end
 	done   chan struct{}
@@ -113,7 +114,7 @@ func startLiveRelay(t *testing.T, models liveModelChecker, backendModel string) 
 		_ = openai.UnderlyingConn().Close()
 		<-done
 	})
-	return &liveRelayFixture{runner: runner, app: app, openai: openai, done: done}
+	return &liveRelayFixture{runner: runner, relay: relay, app: app, openai: openai, done: done}
 }
 
 func readFrame(t *testing.T, conn *ws.Conn) string {
@@ -765,4 +766,93 @@ func TestLiveSidebandIsARequestOfItsOwn(t *testing.T) {
 	closeSideband(ctx, hooks, schemas.OpenAI, schemas.Key{}, time.Now(), dialErr)
 	assert.True(t, recorder.postErr)
 	assert.Equal(t, schemas.RequestType(""), dialErr.ExtraFields.RequestType, "the error sent to the caller is not rewritten")
+}
+
+// panickingLiveModels stands in for a model check that panics, the way a plugin hook on the
+// client pump might.
+type panickingLiveModels struct{}
+
+func (panickingLiveModels) KeySupportsModel(schemas.ModelProvider, schemas.Key, string) bool {
+	panic("model check exploded")
+}
+
+// The client pump runs on its own goroutine, past the recover deferred by the upgrade callback.
+// A panic there ends this session, with the client told and the usage still billed, instead of
+// ending the process.
+func TestLiveRelayEndsSessionWhenClientPumpPanics(t *testing.T) {
+	t.Parallel()
+	f := startLiveRelay(t, panickingLiveModels{}, "gpt-5.6-luna")
+
+	sendFrame(t, f.app, `{"type":"session.update","session":{"delegation":{"type":"responses","responses":{"model":"gpt-5.6-sol"}}}}`)
+	errFrame := readFrame(t, f.app)
+	assert.Contains(t, errFrame, `"type":"error"`)
+	assert.Contains(t, errFrame, "internal error")
+	assert.NotContains(t, errFrame, "exploded", "the panic value is not echoed to the client")
+
+	assert.Equal(t, `{"type":"session.close"}`, readFrame(t, f.openai), "Bifrost ends the session itself")
+	sendFrame(t, f.openai, `{"type":"session.closed","reason":"close_requested","usage":{"seconds":4}}`)
+	f.waitDone(t)
+	assert.Equal(t, []float64{4}, f.voiceSeconds(t), "the usage so far is still billed")
+}
+
+// The upstream pump runs on the upgrade callback's goroutine, whose recover keeps the process
+// alive, but a panic there (a billing post-hook) must still end the session properly: the
+// stale watcher must be released and the client told, instead of leaking a watcher per failure.
+func TestLiveRelayEndsSessionWhenUpstreamPumpPanics(t *testing.T) {
+	t.Parallel()
+	f := startLiveRelay(t, fakeLiveModels{allowed: true}, "")
+
+	f.runner.setPanicOnPost(true)
+	sendFrame(t, f.openai, `{"type":"session.usage.updated","usage":{"seconds":31}}`)
+	errFrame := readFrame(t, f.app)
+	assert.Contains(t, errFrame, `"type":"error"`)
+	assert.NotContains(t, errFrame, "exploded", "the panic value is not echoed to the client")
+	f.waitDone(t)
+	select {
+	case <-f.relay.upstreamDone:
+	default:
+		t.Fatal("upstreamDone was not closed after the upstream pump panicked; the stale watcher is leaked")
+	}
+
+	// The panic hit the post hook of a window rotation, after the next unit was admitted. That unit
+	// is still the lane's: ending the session bills and cleans it, and the session end is recorded.
+	opens, posts, cleanups := f.runner.snapshot()
+	assert.Equal(t, len(opens), cleanups, "every admitted unit is cleaned up, including the one opened by the rotation that panicked")
+	ended := false
+	for _, post := range posts {
+		if post.end {
+			ended = true
+		}
+	}
+	assert.True(t, ended, "the session end is recorded on the unit the rotation admitted")
+}
+
+// Session close bills every lane, backends first and the voice lane last, since the voice unit
+// carries the session's end. A backend post hook that panics there must not cost the lanes after
+// it: each admitted unit is still billed and cleaned, and the session end is still recorded.
+func TestLiveRelayClosesEveryLaneWhenABackendPostHookPanicsAtSessionEnd(t *testing.T) {
+	t.Parallel()
+	f := startLiveRelay(t, fakeLiveModels{allowed: true}, "gpt-5.6-luna")
+
+	for _, frame := range []string{
+		`{"type":"session.started","session":{"id":"live_close_panic","model":"gpt-live-1"}}`,
+		`{"type":"session.usage.updated","usage":{"seconds":9}}`,
+	} {
+		sendFrame(t, f.openai, frame)
+		readFrame(t, f.app)
+	}
+	f.runner.setPanicOnPost(true)
+	sendFrame(t, f.openai, `{"type":"session.closed","reason":"close_requested","usage":{"seconds":12}}`)
+	f.waitDone(t)
+
+	opens, posts, cleanups := f.runner.snapshot()
+	require.GreaterOrEqual(t, len(opens), 2, "the session admitted a voice and a backend unit")
+	assert.Equal(t, len(opens), cleanups, "every admitted unit is cleaned up even though a backend post hook panicked")
+	ended := false
+	for _, post := range posts {
+		if post.end {
+			ended = true
+		}
+	}
+	assert.True(t, ended, "the voice unit still records the session end")
 }

@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/maximhq/bifrost/plugins/otel"
 	"net"
 	"strings"
 	"testing"
@@ -187,6 +189,130 @@ func TestUpdatePlugin_RejectsCustomPathWhenAuthBypassed(t *testing.T) {
 	}
 	if store.capturedConfig != nil || store.capturedEnabled {
 		t.Error("UpdatePlugin should not have been called on the config store")
+	}
+}
+
+// TestPluginConfigDialTargetsRequireGenuineAuth pins that a caller admitted without a credential
+// check cannot make a built-in plugin send the gateway's secrets anywhere: an env./vault.
+// reference anywhere in the config, or an outbound endpoint (the OTEL collector and metrics
+// endpoints, the telemetry push gateway), may be set or changed only by a genuinely authenticated
+// request. Values identical to the stored config, removals and other fields still pass, so a
+// bypassed caller can toggle a plugin or edit it without moving its destination.
+func TestPluginConfigDialTargetsRequireGenuineAuth(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	const collector = "https://otel.internal:4318"
+	const realAuth = "Basic-REAL-SUPER-SECRET-VALUE"
+	maskedAuth := schemas.NewSecretVar(realAuth).Redacted().GetValue()
+	otelStored := map[string]any{"service_name": "bifrost", "collector_url": collector, "headers": map[string]any{"Authorization": realAuth}}
+	telemetryStored := map[string]any{"custom_labels": []any{"team"}}
+
+	cases := []struct {
+		name      string
+		plugin    string
+		create    bool
+		genuine   bool // a real credential, not the fail-open bypass
+		stored    map[string]any
+		config    map[string]any
+		want      int
+		wantNamed string
+	}{
+		{name: "create otel with a collector", plugin: "otel", create: true, config: map[string]any{"collector_url": collector}, want: fasthttp.StatusForbidden, wantNamed: "collector_url"},
+		{name: "move the collector", plugin: "otel", stored: otelStored, config: map[string]any{"collector_url": "https://evil.example/v1/traces"}, want: fasthttp.StatusForbidden, wantNamed: "collector_url"},
+		{name: "set a metrics endpoint", plugin: "otel", stored: otelStored, config: map[string]any{"metrics_enabled": true, "metrics_endpoint": "https://evil.example/v1/metrics"}, want: fasthttp.StatusForbidden, wantNamed: "metrics_endpoint"},
+		{name: "add an env header", plugin: "otel", stored: otelStored, config: map[string]any{"headers": map[string]any{"Authorization": realAuth, "x-leak": "env.OPENAI_API_KEY"}}, want: fasthttp.StatusForbidden, wantNamed: "headers.x-leak"},
+		{name: "add a vault header", plugin: "otel", stored: otelStored, config: map[string]any{"trace_headers": map[string]any{"x-leak": "vault.secret/data/openai#key"}}, want: fasthttp.StatusForbidden, wantNamed: "trace_headers.x-leak"},
+		{name: "move the collector inside a profile", plugin: "otel", stored: otelStored, config: map[string]any{"profiles": []any{map[string]any{"service_name": "x", "collector_url": "https://evil.example"}}}, want: fasthttp.StatusForbidden, wantNamed: "profiles[0].collector_url"},
+		{name: "set the push gateway", plugin: "telemetry", stored: telemetryStored, config: map[string]any{"push_gateway": map[string]any{"enabled": true, "push_gateway_url": "https://evil.example:9091"}}, want: fasthttp.StatusForbidden, wantNamed: "push_gateway.push_gateway_url"},
+		{name: "set an env basic-auth password", plugin: "telemetry", stored: telemetryStored, config: map[string]any{"push_gateway": map[string]any{"basic_auth": map[string]any{"username": "bifrost", "password": "env.PG_PASSWORD"}}}, want: fasthttp.StatusForbidden, wantNamed: "push_gateway.basic_auth.password"},
+		{name: "same collector echoed back", plugin: "otel", stored: otelStored, config: map[string]any{"service_name": "renamed", "collector_url": collector}, want: fasthttp.StatusOK},
+		{name: "masked header echoed back", plugin: "otel", stored: otelStored, config: map[string]any{"collector_url": collector, "headers": map[string]any{"Authorization": maskedAuth}}, want: fasthttp.StatusOK},
+		{name: "collector removed", plugin: "otel", stored: otelStored, config: map[string]any{"collector_url": ""}, want: fasthttp.StatusOK},
+		{name: "genuinely authenticated collector move", plugin: "otel", genuine: true, stored: otelStored, config: map[string]any{"collector_url": "https://otel.other.internal:4318"}, want: fasthttp.StatusOK},
+		// The plugin is not loaded here, so nothing normalizes SecretVar-shaped objects into strings;
+		// the plugin's loader still reads them, so the gate reads them too.
+		{name: "collector as a SecretVar object on an unloaded plugin", plugin: "otel", stored: otelStored, config: map[string]any{"collector_url": map[string]any{"value": "https://evil.example/v1/traces"}}, want: fasthttp.StatusForbidden, wantNamed: "collector_url"},
+		{name: "env reference in the legacy env_var shape", plugin: "otel", stored: otelStored, config: map[string]any{"headers": map[string]any{"Authorization": realAuth, "x-leak": map[string]any{"value": "", "env_var": "OPENAI_API_KEY", "from_env": true}}}, want: fasthttp.StatusForbidden, wantNamed: "headers.x-leak"},
+		{name: "env reference as a SecretVar ref", plugin: "otel", stored: otelStored, config: map[string]any{"headers": map[string]any{"Authorization": realAuth, "x-leak": map[string]any{"value": "", "ref": "env.OPENAI_API_KEY", "type": "env"}}}, want: fasthttp.StatusForbidden, wantNamed: "headers.x-leak"},
+		{name: "same collector echoed back as a SecretVar object", plugin: "otel", stored: otelStored, config: map[string]any{"collector_url": map[string]any{"value": collector}}, want: fasthttp.StatusOK},
+		// The explicit type decides what a ref is; the env. prefix is only inferred when no type is given.
+		{name: "env reference by explicit type without the prefix", plugin: "telemetry", stored: telemetryStored, config: map[string]any{"push_gateway": map[string]any{"basic_auth": map[string]any{"username": "bifrost", "password": map[string]any{"value": "", "ref": "OPENAI_API_KEY", "type": "env"}}}}, want: fasthttp.StatusForbidden, wantNamed: "push_gateway.basic_auth.password"},
+		{name: "vault reference by explicit type without the prefix", plugin: "telemetry", stored: telemetryStored, config: map[string]any{"push_gateway": map[string]any{"basic_auth": map[string]any{"username": "bifrost", "password": map[string]any{"value": "", "ref": "secret/data/openai#key", "type": "vault"}}}}, want: fasthttp.StatusForbidden, wantNamed: "push_gateway.basic_auth.password"},
+		// SecretVar.UnmarshalJSON accepts both object forms without a value field.
+		{name: "typed env reference with no value field", plugin: "telemetry", stored: telemetryStored, config: map[string]any{"push_gateway": map[string]any{"basic_auth": map[string]any{"username": "bifrost", "password": map[string]any{"ref": "OPENAI_API_KEY", "type": "env"}}}}, want: fasthttp.StatusForbidden, wantNamed: "push_gateway.basic_auth.password"},
+		{name: "legacy env_var reference with no value field", plugin: "telemetry", stored: telemetryStored, config: map[string]any{"push_gateway": map[string]any{"basic_auth": map[string]any{"username": "bifrost", "password": map[string]any{"env_var": "OPENAI_API_KEY", "from_env": true}}}}, want: fasthttp.StatusForbidden, wantNamed: "push_gateway.basic_auth.password"},
+		// SecretVar.UnmarshalJSON ignores fields it does not know, so they cannot hide a reference.
+		{name: "typed env reference with an extra field", plugin: "telemetry", stored: telemetryStored, config: map[string]any{"push_gateway": map[string]any{"basic_auth": map[string]any{"username": "bifrost", "password": map[string]any{"ref": "OPENAI_API_KEY", "type": "env", "extra": true}}}}, want: fasthttp.StatusForbidden, wantNamed: "push_gateway.basic_auth.password"},
+		{name: "endpoint object with an extra field", plugin: "telemetry", stored: telemetryStored, config: map[string]any{"push_gateway": map[string]any{"push_gateway_url": map[string]any{"value": "https://evil.example:9091", "note": "x"}}}, want: fasthttp.StatusForbidden, wantNamed: "push_gateway.push_gateway_url"},
+		// The explicit type decides, as SecretVar.UnmarshalJSON reads it: switching a referenced
+		// endpoint to plain_text with a new value moves the destination.
+		{name: "endpoint switched from a reference to plain_text", plugin: "telemetry", stored: map[string]any{"push_gateway": map[string]any{"push_gateway_url": map[string]any{"ref": "env.PUSH_GATEWAY_URL", "type": "env", "value": ""}}}, config: map[string]any{"push_gateway": map[string]any{"push_gateway_url": map[string]any{"ref": "env.PUSH_GATEWAY_URL", "type": "plain_text", "value": "https://evil.example:9091"}}}, want: fasthttp.StatusForbidden, wantNamed: "push_gateway.push_gateway_url"},
+		// The same reference written as an object over a stored string is unchanged.
+		{name: "unchanged reference written as an object", plugin: "otel", stored: map[string]any{"collector_url": "https://otel.internal:4318", "headers": map[string]any{"x-leak": "env.OPENAI_API_KEY"}}, config: map[string]any{"headers": map[string]any{"x-leak": map[string]any{"ref": "env.OPENAI_API_KEY", "type": "env"}}}, want: fasthttp.StatusOK},
+		{name: "plain-text SecretVar with a ref-looking value", plugin: "telemetry", stored: telemetryStored, config: map[string]any{"push_gateway": map[string]any{"basic_auth": map[string]any{"username": "bifrost", "password": map[string]any{"value": "hunter2", "type": "plain_text"}}}}, want: fasthttp.StatusOK},
+		// A header map is not a SecretVar because its header names happen to be SecretVar field
+		// names: OTEL sends a header named ref and resolves its env. value like any other header.
+		{name: "headers named like SecretVar fields", plugin: "otel", stored: otelStored, config: map[string]any{"headers": map[string]any{"ref": "env.OPENAI_API_KEY", "type": "plain_text"}}, want: fasthttp.StatusForbidden, wantNamed: "headers.ref"},
+		// The typed loaders decode JSON keys case-insensitively, the way encoding/json and sonic do,
+		// so a case variant of an endpoint key still sets the endpoint.
+		{name: "push gateway under an uppercase key", plugin: "telemetry", stored: telemetryStored, config: map[string]any{"push_gateway": map[string]any{"enabled": true, "PUSH_GATEWAY_URL": "https://evil.example:9091"}}, want: fasthttp.StatusForbidden, wantNamed: "push_gateway.PUSH_GATEWAY_URL"},
+		{name: "collector under a mixed-case key", plugin: "otel", stored: otelStored, config: map[string]any{"Collector_URL": "https://evil.example/v1/traces"}, want: fasthttp.StatusForbidden, wantNamed: "Collector_URL"},
+		{name: "push gateway under a case-folded key", plugin: "telemetry", stored: telemetryStored, config: map[string]any{"push_gateway": map[string]any{"pu\u017fh_gateway_url": "https://evil.example:9091"}}, want: fasthttp.StatusForbidden, wantNamed: "push_gateway.pu\u017fh_gateway_url"},
+		{name: "env reference under uppercase SecretVar fields", plugin: "telemetry", stored: telemetryStored, config: map[string]any{"push_gateway": map[string]any{"basic_auth": map[string]any{"username": "bifrost", "password": map[string]any{"value": "", "REF": "OPENAI_API_KEY", "TYPE": "env"}}}}, want: fasthttp.StatusForbidden, wantNamed: "push_gateway.basic_auth.password"},
+		// Two keys folding to one field are decided by their order in the request, which the parsed
+		// config no longer has, so the object counts as changed unless it is identical to the stored one.
+		{name: "SecretVar field given twice in different case", plugin: "telemetry", stored: telemetryStored, config: map[string]any{"push_gateway": map[string]any{"basic_auth": map[string]any{"username": "bifrost", "password": map[string]any{"ref": "PLAIN", "REF": "OPENAI_API_KEY", "type": "env"}}}}, want: fasthttp.StatusForbidden, wantNamed: "push_gateway.basic_auth.password"},
+		{name: "duplicated SecretVar field echoed back unchanged", plugin: "telemetry", stored: map[string]any{"push_gateway": map[string]any{"basic_auth": map[string]any{"password": map[string]any{"ref": "PLAIN", "REF": "OPENAI_API_KEY", "type": "env"}}}}, config: map[string]any{"push_gateway": map[string]any{"basic_auth": map[string]any{"password": map[string]any{"ref": "PLAIN", "REF": "OPENAI_API_KEY", "type": "env"}}}}, want: fasthttp.StatusOK},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &capturePluginsStore{}
+			if tc.stored != nil {
+				store.existingPlugin = &configstoreTables.TablePlugin{Name: tc.plugin, Enabled: true, Config: tc.stored}
+			}
+			h := &PluginsHandler{pluginsLoader: noopPluginsLoader{}, configStore: store}
+			body := map[string]any{"enabled": true, "config": tc.config}
+			var ctx *fasthttp.RequestCtx
+			if tc.create {
+				body["name"] = tc.plugin
+				ctx = buildCreateRequest(t, body)
+			} else {
+				ctx = buildUpdateRequest(t, body)
+				ctx.SetUserValue("name", tc.plugin)
+			}
+			if !tc.genuine {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
+			if tc.create {
+				h.createPlugin(ctx)
+			} else {
+				h.updatePlugin(ctx)
+			}
+
+			got := ctx.Response.StatusCode()
+			if tc.want == fasthttp.StatusOK && tc.create {
+				tc.want = fasthttp.StatusCreated
+			}
+			if got != tc.want {
+				t.Fatalf("status got %d, want %d; body=%s", got, tc.want, ctx.Response.Body())
+			}
+			if tc.want == fasthttp.StatusForbidden {
+				if tc.wantNamed != "" && !bytes.Contains(ctx.Response.Body(), []byte(tc.wantNamed)) {
+					t.Fatalf("the refusal must name %s, got %s", tc.wantNamed, ctx.Response.Body())
+				}
+				if tc.create && store.existingPlugin != nil {
+					t.Fatal("a refused create must not reach the config store")
+				}
+				if !tc.create && store.capturedConfig != nil {
+					t.Fatalf("a refused update must not reach the config store, stored %v", store.capturedConfig)
+				}
+				return
+			}
+			if !tc.create && store.capturedConfig == nil {
+				t.Fatal("an admitted update must reach the config store")
+			}
+		})
 	}
 }
 
@@ -913,5 +1039,80 @@ func TestCreatePlugin_DimensionMismatchAnswers400(t *testing.T) {
 	}
 	if len(store.deleted) != 1 || store.deleted[0] != "semantic_cache" {
 		t.Fatalf("expected the created row to be removed, got deletes %v", store.deleted)
+	}
+}
+
+// otelMarshallerLoader is noopPluginsLoader with the real OTEL storage marshaller installed for
+// "otel", as a loaded OTEL plugin would have it: a legacy single-profile config is normalized into
+// profiles[0] on the way to storage.
+type otelMarshallerLoader struct{ noopPluginsLoader }
+
+func (otelMarshallerLoader) NormalizePluginConfig(name string, config map[string]any) (map[string]any, error) {
+	if name != otel.PluginName {
+		return nil, nil
+	}
+	return (&otel.OtelPlugin{}).MarshalConfigForStorage(config)
+}
+
+// A plugin provisioned through config.json in the legacy single-profile shape is stored as written,
+// while an update is normalized into profiles[0]. The stored config is read the same way before
+// the two are compared, so a bypassed caller toggling the plugin or echoing its unchanged
+// collector is not refused for a destination that did not move, and a moved collector still is.
+func TestPluginConfigDialTargetsCompareNormalizedStoredConfig(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const collector = "https://otel.internal:4318"
+	legacy := map[string]any{"service_name": "bifrost", "collector_url": collector, "trace_type": "otel", "protocol": "http"}
+	for _, tc := range []struct {
+		name   string
+		config map[string]any
+		want   int
+	}{
+		{"toggle with no config", map[string]any{}, fasthttp.StatusOK},
+		{"unchanged collector echoed back", map[string]any{"service_name": "bifrost", "collector_url": collector}, fasthttp.StatusOK},
+		{"collector moved", map[string]any{"collector_url": "https://evil.example/v1/traces"}, fasthttp.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &capturePluginsStore{existingPlugin: &configstoreTables.TablePlugin{Name: otel.PluginName, Enabled: true, Config: legacy}}
+			h := &PluginsHandler{pluginsLoader: otelMarshallerLoader{}, configStore: store}
+			ctx := buildUpdateRequest(t, map[string]any{"enabled": false, "config": tc.config})
+			ctx.SetUserValue("name", otel.PluginName)
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			h.updatePlugin(ctx)
+			if got := ctx.Response.StatusCode(); got != tc.want {
+				t.Fatalf("status got %d, want %d; body=%s", got, tc.want, ctx.Response.Body())
+			}
+		})
+	}
+}
+
+// An update for a plugin with no row used to create an empty row before the request was read, so
+// a refused update still left a row behind and a later create of that name met a conflict. A
+// refused update now writes nothing.
+func TestUpdatePluginRefusedForAMissingPluginWritesNothing(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := &capturePluginsStore{}
+	h := &PluginsHandler{pluginsLoader: noopPluginsLoader{}, configStore: store}
+	ctx := buildUpdateRequest(t, map[string]any{"enabled": true, "config": map[string]any{"collector_url": "https://evil.example/v1/traces"}})
+	ctx.SetUserValue("name", "otel")
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	h.updatePlugin(ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if store.existingPlugin != nil {
+		t.Fatalf("a refused update must not create the plugin row, created %+v", store.existingPlugin)
+	}
+
+	// A malformed body for a missing plugin writes nothing either.
+	bad := &fasthttp.RequestCtx{}
+	bad.Request.Header.SetMethod("PUT")
+	bad.Request.SetBody([]byte("{not json"))
+	bad.SetUserValue("name", "otel")
+	h.updatePlugin(bad)
+	if bad.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", bad.Response.StatusCode(), bad.Response.Body())
+	}
+	if store.existingPlugin != nil {
+		t.Fatalf("a malformed update must not create the plugin row, created %+v", store.existingPlugin)
 	}
 }

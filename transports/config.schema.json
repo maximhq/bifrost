@@ -204,7 +204,7 @@
         "max_request_body_size_mb": {
           "type": "integer",
           "minimum": 1,
-          "description": "Maximum request body size in MB"
+          "description": "Maximum request body size in MB. Also the ceiling for what a compressed request body may decompress to: within it a body may expand to at most 100 times its compressed size (1 MiB floor), and at most four times this cap of decompressed request bytes are held in flight at once"
         },
         "compat": {
           "type": "object",

@@ -567,6 +567,9 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_cloudflare_key_config_columns"}, run: migrationAddCloudflareKeyConfigColumns},
 	{IDs: []string{"move_config_json_vk_limits_to_model_configs"}, run: migrationMoveConfigJSONVKLimitsToModelConfigs},
 	{IDs: []string{"add_mcp_oauth_private_allowlist_column"}, run: migrationAddMCPOAuthPrivateAllowlistColumn},
+	{IDs: []string{"add_provider_objects_table"}, run: migrationAddProviderObjectsTable},
+	{IDs: []string{"add_batch_jobs_file_id_indexes"}, run: migrationAddBatchJobsFileIDIndexes},
+	{IDs: []string{"add_provider_objects_object_id_index"}, run: migrationAddProviderObjectsObjectIDIndex},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -994,6 +997,107 @@ func migrationAddWarpConfigTable(ctx context.Context, db *gorm.DB, logger schema
 			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableWarpConfig{})
 		},
 	})
+}
+
+// migrationAddProviderObjectsTable creates the provider_objects table that records
+// which virtual key created a provider-side object (file, video, container, cached
+// content, batch), so later requests for that object can be bound to its creator.
+func migrationAddProviderObjectsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_provider_objects_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, providerObjectsTableMigration(ctx, migrationName))
+}
+
+// providerObjectsTableMigration is the migration migrationAddProviderObjectsTable runs.
+func providerObjectsTableMigration(ctx context.Context, migrationName string) *migrator.Migration {
+	return &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableProviderObject{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping provider_objects would forget the creating virtual key of every recorded file, container and cached content, and those objects would become reachable to every virtual key allowed on the provider; the table is additive and older binaries ignore it", migrationName)
+		},
+	}
+}
+
+// migrationAddBatchJobsFileIDIndexes indexes batch_jobs.input_file_id, output_file_id and
+// error_file_id. The file-ownership fallback (GetProviderJobsByFileIDs) filters on them for every
+// virtual-key file request whose file has no ownership row; without the indexes each one scans
+// the provider's whole batch history. Built concurrently so the upgrade never blocks writes.
+func migrationAddBatchJobsFileIDIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_batch_jobs_file_id_indexes"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, batchJobsFileIDIndexesMigration(ctx, migrationName)); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// batchJobsFileIDIndexesMigration builds the migration applied by
+// migrationAddBatchJobsFileIDIndexes, so tests exercise its callbacks.
+func batchJobsFileIDIndexesMigration(ctx context.Context, migrationName string) *migrator.Migration {
+	indexes := map[string]string{
+		"idx_batch_jobs_input_file_id":  "input_file_id",
+		"idx_batch_jobs_output_file_id": "output_file_id",
+		"idx_batch_jobs_error_file_id":  "error_file_id",
+	}
+	return &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for name, column := range indexes {
+				if err := ensureIndexConcurrently(tx, "batch_jobs", name, column, false); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for name := range indexes {
+				if err := dropIndexConcurrently(tx, "batch_jobs", name); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// migrationAddProviderObjectsObjectIDIndex indexes provider_objects by (kind, object_id), the
+// lookup a live-session ownership check makes on every control route: by the session id under
+// any provider name. The table's other index leads with (kind, provider), which this lookup
+// cannot use past kind, and session rows stay after sessions end.
+func migrationAddProviderObjectsObjectIDIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_provider_objects_object_id_index"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, providerObjectsObjectIDIndexMigration(ctx, migrationName)); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// providerObjectsObjectIDIndexMigration builds the migration applied by
+// migrationAddProviderObjectsObjectIDIndex, so tests exercise its callbacks.
+func providerObjectsObjectIDIndexMigration(ctx context.Context, migrationName string) *migrator.Migration {
+	const name = "idx_provider_objects_kind_object_id"
+	return &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return ensureIndexConcurrently(tx.WithContext(ctx), "provider_objects", name, "kind, object_id", false)
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropIndexConcurrently(tx.WithContext(ctx), "provider_objects", name)
+		},
+	}
 }
 
 func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {

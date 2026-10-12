@@ -1211,7 +1211,16 @@ func keyMatchesSigningAlgorithm(key crypto.PrivateKey, alg string) error {
 // credentials, keyed by its JSON path. It reads every provider's config block, not just the
 // key's own provider: an unused block is harmless to include and fails closed, while a
 // provider-type list silently misses new fields (Databricks workspace_url, Bedrock endpoints,
-// Copilot github_domain and the per-alias Azure endpoint were all missed that way). Unset values are omitted.
+// Copilot github_domain, the per-alias Azure endpoint and the Vertex credential JSON were all
+// missed that way). Unset values are omitted.
+//
+// A Vertex auth_credentials JSON is a dial target as a whole, not only a secret: the Google
+// client takes its destinations from it (a service account's token_uri, an impersonated
+// account's impersonation URL, an external account's token_url and a credential_source file or
+// url it reads and posts there). The value may be an env or vault reference the handler cannot
+// open, and every accepted credential type carries a destination, so the field is compared
+// whole rather than parsed for URLs. The aws_workload_identity block is not listed: its
+// exchange goes to Google's fixed STS endpoint and it holds no URL.
 func keyDialTargets(key schemas.Key) map[string]*schemas.SecretVar {
 	targets := make(map[string]*schemas.SecretVar)
 	add := func(name string, v *schemas.SecretVar) {
@@ -1249,6 +1258,9 @@ func keyDialTargets(key schemas.Key) map[string]*schemas.SecretVar {
 	}
 	if c := key.OAuthKeyConfig; c != nil {
 		add("oauth_key_config.token_url", &c.TokenURL)
+	}
+	if c := key.VertexKeyConfig; c != nil {
+		add("vertex_key_config.auth_credentials", &c.AuthCredentials)
 	}
 	if c := key.BedrockKeyConfig; c != nil {
 		addBedrockEndpoints("bedrock_key_config.endpoints", c.Endpoints)
@@ -1306,7 +1318,7 @@ func requireGenuineAuthForEndpointChange(ctx *fasthttp.RequestCtx, oldKey *schem
 	if len(changed) == 0 {
 		return false
 	}
-	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Changing a provider key's endpoint (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", strings.Join(changed, ", ")))
+	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Changing where a provider key dials (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", strings.Join(changed, ", ")))
 	return true
 }
 

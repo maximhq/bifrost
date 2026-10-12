@@ -2586,6 +2586,20 @@ func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *sch
 			},
 		}
 	}
+	// A batch's work is named once. No provider runs inline requests beside a file: OpenAI, Azure
+	// and Bedrock submit the file and drop them, Gemini and Vertex refuse the mix. Refusing it here
+	// covers every route that creates a batch, the HTTP handler, the SDK integration routes and the
+	// Go SDK alike, and keeps governance's file batch rule from being judged on items that would
+	// never run.
+	if (req.InputFileID != "" || hasInputBlob) && len(req.Requests) > 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     schemas.Ptr(400),
+			Error: &schemas.ErrorField{
+				Message: "input_file_id or input_blob and requests are exclusive: name the batch's work as a file, a blob, or inline requests, not both",
+			},
+		}
+	}
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
@@ -10626,8 +10640,19 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 		}
 	}
 
-	// Single key: no rotation possible, skip session stickiness (no KV write needed).
+	// Single key: no rotation possible, so the session cannot choose. It is still asked, so it can
+	// drop a binding to a key that left the pool, except by a realtime pick, which never writes
+	// the session's bindings, and by a pool a second model or the batch and file APIs narrowed,
+	// which says nothing about the keys the session's own requests can use.
 	if len(supportedKeys) == 1 {
+		if len(additionalModels) == 0 &&
+			requestType != schemas.RealtimeRequest &&
+			requestType != schemas.WebSocketResponsesRequest &&
+			!isBatchRequestType(requestType) &&
+			!isFileRequestType(requestType) &&
+			schemas.IsSessionAffinityActive(ctx) {
+			bifrost.sessionAffinity.ResolveKey(ctx, providerKey, model, supportedKeys)
+		}
 		return []schemas.Key{supportedKeys[0]}, false, nil
 	}
 
