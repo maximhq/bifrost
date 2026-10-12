@@ -3397,3 +3397,32 @@ func messageType(msg schemas.ResponsesMessage) string {
 	}
 	return string(*msg.Type)
 }
+
+func BenchmarkGroupedConversion_ToolUseBlocks(b *testing.B) {
+	assistant := schemas.ResponsesMessageRoleType(AnthropicMessageRoleAssistant)
+	blocks := []AnthropicContentBlock{
+		{
+			Type:  AnthropicContentBlockTypeToolUse,
+			ID:    schemas.Ptr("toolu_client"),
+			Name:  schemas.Ptr(string(AnthropicToolNameWebSearch)),
+			Input: json.RawMessage(`{"query":"bifrost"}`),
+		},
+		{
+			Type:  AnthropicContentBlockTypeServerToolUse,
+			ID:    schemas.Ptr("srvtoolu_server"),
+			Name:  schemas.Ptr(string(AnthropicToolNameWebFetch)),
+			Input: json.RawMessage(`{"url":"https://example.com"}`),
+		},
+		{
+			Type:  AnthropicContentBlockTypeToolUse,
+			ID:    schemas.Ptr("toolu_other"),
+			Name:  schemas.Ptr("get_time"),
+			Input: json.RawMessage(`{"timezone":"UTC"}`),
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = convertAnthropicContentBlocksToResponsesMessagesGrouped(blocks, &assistant, true)
+	}
+}
