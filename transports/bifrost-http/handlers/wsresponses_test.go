@@ -2,7 +2,13 @@ package handlers
 
 import (
 	"errors"
+	"github.com/fasthttp/websocket"
+	bifrost "github.com/maximhq/bifrost/core"
+	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -323,4 +329,57 @@ func TestHasWebSocketForwardedHeaders(t *testing.T) {
 		"x-trace-id": {"abc-123"},
 	})
 	assert.True(t, hasWebSocketForwardedHeaders(ctx))
+}
+
+// A session pins the pooled upstream it borrowed so later turns reuse it. When the session ends,
+// normally or after a recovered panic, that connection must go back through the pool exactly once:
+// closing it on the session alone leaves it counted in flight, and a pool at its limit then refuses
+// every later borrow and pushes requests onto the HTTP bridge.
+func TestEndSessionReleasesThePinnedPoolConnection(t *testing.T) {
+	SetLogger(bifrost.NewDefaultLogger(schemas.LogLevelError))
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		up := newWSTestUpgrader()
+		c, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		for {
+			if _, _, err := c.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer upstreamSrv.Close()
+	clientSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		up := newWSTestUpgrader()
+		c, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		for {
+			if _, _, err := c.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer clientSrv.Close()
+
+	pool := bfws.NewPool(&schemas.WSPoolConfig{MaxTotalConnections: 1})
+	defer pool.Close()
+	h := &WSResponsesHandler{pool: pool, sessions: bfws.NewSessionManager(10)}
+	key := bfws.PoolKey{Provider: schemas.OpenAI, KeyID: "key-1", Endpoint: "ws" + strings.TrimPrefix(upstreamSrv.URL, "http")}
+
+	for i := 0; i < 3; i++ {
+		clientConn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(clientSrv.URL, "http"), nil)
+		require.NoError(t, err)
+		session, err := h.sessions.Create(clientConn)
+		require.NoError(t, err)
+		upstream, err := pool.Get(key, nil, nil)
+		require.NoError(t, err, "session %d could not borrow: the previous session's connection was never released", i)
+		session.SetUpstream(upstream)
+		h.endSession(clientConn)
+		assert.True(t, upstream.IsClosed(), "the pinned connection is closed with its session")
+	}
 }

@@ -391,6 +391,164 @@ export const githubCopilotKeyConfigSchema = z
 		}
 	});
 
+// oauthKeyConfigComplete reports whether the block carries a usable credential for its grant.
+// It is the check the outer key schema uses to decide whether an empty key value is fine.
+export const oauthKeyConfigComplete = (data: Record<string, unknown> | undefined): boolean => {
+	if (!data) return false;
+	const d = data as {
+		grant_type?: string;
+		token_url?: { value?: string; ref?: string };
+		client_id?: { value?: string; ref?: string };
+		client_secret?: { value?: string; ref?: string };
+		private_key?: { value?: string; ref?: string };
+		issuer?: string;
+		audience?: string;
+	};
+	if (!isSecretVarSet(d.token_url)) return false;
+	if (d.grant_type === "client_credentials") return isSecretVarSet(d.client_id) && isSecretVarSet(d.client_secret);
+	if (d.grant_type === "jwt_bearer") return isSecretVarSet(d.private_key) && !!d.issuer?.trim() && !!d.audience?.trim();
+	return false;
+};
+
+const ASYMMETRIC_PEM_PRIVATE_KEY = /^-----BEGIN (RSA PRIVATE KEY|EC PRIVATE KEY|PRIVATE KEY)-----\s*\n([\s\S]*?)\n\s*-----END \1-----$/;
+const isLiteralAsymmetricPEM = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	if (!isSecretVarSet(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
+	const body = (v?.value ?? "").replace(/\\n/g, "\n").trim();
+	const match = ASYMMETRIC_PEM_PRIVATE_KEY.exec(body);
+	return !!match && isCompleteDERSequence(match[2]);
+};
+// isCompleteDERSequence reports whether a PEM body decodes to exactly one DER SEQUENCE, the outer
+// shape of every RSA and EC private key encoding the server accepts. A pasted key cut short keeps
+// its markers and still decodes, but its declared length no longer matches, which is what the
+// server's parser rejects at save. The full key structure is left to the server.
+const isCompleteDERSequence = (b64: string): boolean => {
+	let bytes: string;
+	try {
+		bytes = atob(b64.replace(/\s+/g, ""));
+	} catch {
+		return false;
+	}
+	if (bytes.length < 2 || bytes.charCodeAt(0) !== 0x30) return false;
+	const first = bytes.charCodeAt(1);
+	if (first < 0x80) return 2 + first === bytes.length;
+	const lengthBytes = first & 0x7f;
+	if (lengthBytes < 1 || lengthBytes > 3 || bytes.length < 2 + lengthBytes) return false;
+	let length = 0;
+	for (let i = 0; i < lengthBytes; i++) length = length * 256 + bytes.charCodeAt(2 + i);
+	return 2 + lengthBytes + length === bytes.length;
+};
+const parseLiteralURL = (v: { value?: string; ref?: string; type?: string } | undefined): URL | undefined => {
+	try {
+		return new URL((v?.value ?? "").trim());
+	} catch {
+		return undefined;
+	}
+};
+// Mirrors the server: the URL is shown in plain text wherever the key is read back, so it may
+// not hide a credential, and a token endpoint takes its parameters through extra_params.
+const literalURLCarriesForbiddenParts = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	if (!isSecretVarSet(v)) return false;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return false;
+	const u = parseLiteralURL(v);
+	return !!u && (u.username !== "" || u.password !== "" || u.search !== "" || u.hash !== "");
+};
+const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	if (!isSecretVarSet(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
+	const raw = (v?.value ?? "").trim();
+	try {
+		const u = new URL(raw);
+		if (u.protocol === "https:") return true;
+		// Same loopback rule as the server (net.IP.IsLoopback): any 127.x.x.x, ::1, or localhost.
+		const host = u.hostname.toLowerCase();
+		return (
+			u.protocol === "http:" &&
+			(host === "localhost" || host === "[::1]" || host === "::1" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host))
+		);
+	} catch {
+		return false;
+	}
+};
+
+// OAuth key config schema. Honoured by openai-based providers: the key value may be empty
+// when this block is whole for its grant. Literal values are shape-checked so a typo fails in
+// the form rather than at the first inference call; references resolve elsewhere.
+export const oauthKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["api_key", "oauth"]).optional(),
+		grant_type: z.enum(["client_credentials", "jwt_bearer"]).optional(),
+		token_url: secretVarSchema.optional(),
+		client_id: secretVarSchema.optional(),
+		client_secret: secretVarSchema.optional(),
+		private_key: secretVarSchema.optional(),
+		scopes: z.array(z.string()).optional(),
+		audience: z.string().optional(),
+		issuer: z.string().optional(),
+		subject: z.string().optional(),
+		key_id: z.string().optional(),
+		signing_algorithm: z.enum(["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"]).optional(),
+		auth_style: z.enum(["header", "body"]).optional(),
+		extra_params: z.record(z.string(), z.string()).optional(),
+		// Range-checked in superRefine, only while JWT bearer is active: the field is hidden on
+		// the other tabs, and a stale value in it must not block saving. 0 means "default".
+		assertion_lifetime_seconds: z.number().int().optional(),
+	})
+	.superRefine((data, ctx) => {
+		// The API-key tab leaves this block inert; only an OAuth block is checked.
+		if (data._auth_type === "api_key") return;
+		const started =
+			data._auth_type === "oauth" ||
+			isSecretVarSet(data.token_url) ||
+			isSecretVarSet(data.client_id) ||
+			isSecretVarSet(data.client_secret) ||
+			isSecretVarSet(data.private_key);
+		if (!started) return;
+		if (!data.grant_type) {
+			ctx.addIssue({ code: "custom", path: ["grant_type"], message: "Choose a grant type" });
+		}
+		if (!isSecretVarSet(data.token_url)) {
+			ctx.addIssue({ code: "custom", path: ["token_url"], message: "Token URL is required" });
+		} else if (!isLiteralHTTPSOrLoopbackURL(data.token_url)) {
+			ctx.addIssue({ code: "custom", path: ["token_url"], message: "Token URL must be an https URL" });
+		} else if (literalURLCarriesForbiddenParts(data.token_url)) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["token_url"],
+				message: "Token URL must not carry userinfo, a query or a fragment; send extra parameters through extra_params",
+			});
+		}
+		if (data.grant_type === "client_credentials") {
+			if (!isSecretVarSet(data.client_id)) {
+				ctx.addIssue({ code: "custom", path: ["client_id"], message: "Client ID is required for client credentials" });
+			}
+			if (!isSecretVarSet(data.client_secret)) {
+				ctx.addIssue({ code: "custom", path: ["client_secret"], message: "Client Secret is required for client credentials" });
+			}
+		}
+		if (data.grant_type === "jwt_bearer") {
+			if (!isSecretVarSet(data.private_key)) {
+				ctx.addIssue({ code: "custom", path: ["private_key"], message: "Private key is required for JWT bearer" });
+			} else if (!isLiteralAsymmetricPEM(data.private_key)) {
+				ctx.addIssue({ code: "custom", path: ["private_key"], message: "Private key must be an RSA or EC PEM block" });
+			}
+			if (!data.issuer?.trim()) {
+				ctx.addIssue({ code: "custom", path: ["issuer"], message: "Issuer is required for JWT bearer" });
+			}
+			if (!data.audience?.trim()) {
+				ctx.addIssue({ code: "custom", path: ["audience"], message: "Audience is required for JWT bearer" });
+			}
+			const lifetime = data.assertion_lifetime_seconds;
+			if (lifetime !== undefined && lifetime !== 0 && (lifetime < 1 || lifetime > 3600)) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["assertion_lifetime_seconds"],
+					message: "Assertion lifetime must be between 1 and 3600 seconds (0 for the default)",
+				});
+			}
+		}
+	});
+
 // Ollama key config schema
 export const ollamaKeyConfigSchema = z
 	.object({
@@ -409,6 +567,16 @@ export const sglKeyConfigSchema = z
 	.refine((data) => isSecretVarSet(data.url), {
 		message: "Server URL is required",
 		path: ["url"],
+	});
+
+// Cloudflare key config schema
+export const cloudflareKeyConfigSchema = z
+	.object({
+		account_id: secretVarSchema.optional(),
+	})
+	.refine((data) => isSecretVarSet(data.account_id), {
+		message: "Account ID is required",
+		path: ["account_id"],
 	});
 
 // Databricks key config schema
@@ -524,6 +692,8 @@ export const modelProviderKeySchema = z
 		sgl_key_config: sglKeyConfigSchema.optional(),
 		databricks_key_config: databricksKeyConfigSchema.optional(),
 		github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
+		cloudflare_key_config: cloudflareKeyConfigSchema.optional(),
+		oauth_key_config: oauthKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 		use_anthropic_endpoints: z.boolean().optional(),
 		use_openai_endpoints: z.boolean().optional(),
@@ -533,6 +703,16 @@ export const modelProviderKeySchema = z
 		(data) => {
 			if (data.vllm_key_config || data.ollama_key_config || data.sgl_key_config) {
 				return true;
+			}
+			// An OAuth-minted key needs no value. Decided from the credentials when the UI
+			// discriminator is absent, for the same reset reason as Databricks below.
+			if (data.oauth_key_config) {
+				if (data.oauth_key_config._auth_type === "oauth") {
+					return true;
+				}
+				if (data.oauth_key_config._auth_type === undefined && oauthKeyConfigComplete(data.oauth_key_config)) {
+					return true;
+				}
 			}
 			// Databricks authenticates with a personal access token (the key value) or with an
 			// OAuth M2M service principal; only require a key value on the token path.
@@ -834,25 +1014,60 @@ export const promptCacheFormSchema = z.object({
 
 export type PromptCacheFormSchema = z.infer<typeof promptCacheFormSchema>;
 
-export const injectedToolsConfigSchema = z.object({
-	web_search: z
-		.object({
-			mcp_client_name: z.string().min(1, "Pick an MCP server"),
-			tool_name: z.string().min(1, "Pick a tool"),
-		})
-		.optional(),
-});
+// INJECTED_TOOL_NAME_PATTERN mirrors config.schema.json: the function name every
+// supported provider accepts.
+export const INJECTED_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
-// The web search tab saves one injected tool. Removing it is the Remove button's job, so
-// a form is savable only with a server, its resolved name and a tool: a half-filled form
-// must never reach Save, which would otherwise clear the saved setting.
-export const injectedWebSearchFormSchema = z.object({
+// The saved injected_tools list, as the provider API returns and accepts it.
+export const injectedToolsConfigSchema = z.array(
+	z.object({
+		name: z.string().regex(INJECTED_TOOL_NAME_PATTERN, "Use 1-64 letters, digits, _ or -"),
+		mcp_client_name: z.string().min(1, "Pick an MCP server"),
+		tool_name: z.string().min(1, "Pick a tool"),
+	}),
+);
+
+// One row of the provider Tools tab. mcp_client_id drives the server picker; only the
+// name, client name and tool name are saved. A row is savable only once its server's
+// name has resolved and a tool is picked, so Save never writes a half-filled row.
+export const injectedToolRowSchema = z.object({
+	name: z.string().regex(INJECTED_TOOL_NAME_PATTERN, "Use 1-64 letters, digits, _ or -"),
 	mcp_client_id: z.string().min(1, "Pick an MCP server"),
 	mcp_client_name: z.string().min(1, "Waiting for the MCP server to load"),
-	tool_name: z.string().min(1, "Pick the tool this MCP server should run as web search"),
+	tool_name: z.string().min(1, "Pick a tool"),
 });
 
-export type InjectedWebSearchFormSchema = z.infer<typeof injectedWebSearchFormSchema>;
+// The name is what the model calls and what decides which client tool a row replaces,
+// so it must be unique. The same MCP tool twice would offer the model one tool under two
+// names. The server rejects both; these flag them on the row instead.
+export const injectedToolsFormSchema = z
+	.object({
+		tools: z.array(injectedToolRowSchema),
+	})
+	.superRefine((data, ctx) => {
+		const names = new Map<string, number>();
+		const refs = new Map<string, number>();
+		data.tools.forEach((tool, index) => {
+			if (tool.name !== "") {
+				if (names.has(tool.name)) {
+					ctx.addIssue({ code: "custom", path: ["tools", index, "name"], message: "Another tool already uses this name" });
+				} else {
+					names.set(tool.name, index);
+				}
+			}
+			if (tool.mcp_client_name !== "" && tool.tool_name !== "") {
+				const ref = `${tool.mcp_client_name}\u0000${tool.tool_name}`;
+				if (refs.has(ref)) {
+					ctx.addIssue({ code: "custom", path: ["tools", index, "tool_name"], message: "This MCP tool is already injected" });
+				} else {
+					refs.set(ref, index);
+				}
+			}
+		});
+	});
+
+export type InjectedToolRowSchema = z.infer<typeof injectedToolRowSchema>;
+export type InjectedToolsFormSchema = z.infer<typeof injectedToolsFormSchema>;
 
 // Allowed requests schema
 export const allowedRequestsSchema = z.object({
@@ -1078,6 +1293,7 @@ export const coreConfigSchema = z.object({
 		})
 		.optional(),
 	mcp_enable_temp_token_auth: z.boolean().default(false),
+	mcp_oauth_private_allowlist: z.array(z.string()).optional(),
 });
 
 // Bifrost config schema

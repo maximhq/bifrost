@@ -81,7 +81,7 @@ func TestInjectedChatStream_TextThenInjectedCallThenAnswer(t *testing.T) {
 	turn1 := feed(s, "turn-1",
 		chatDelta{role: "assistant", text: "Let me "},
 		chatDelta{text: "search."},
-		chatDelta{call: callStart(0, "c1", "tavily-search")},
+		chatDelta{call: callStart(0, "c1", "web_search")},
 		chatDelta{call: callArgs(0, `{"query":`)},
 		chatDelta{call: callArgs(0, `"paris"}`)},
 		chatDelta{finish: "tool_calls"},
@@ -126,7 +126,7 @@ func TestInjectedChatStream_ClientCallBeforeInjectedCallIsDropped(t *testing.T) 
 	emits := feed(s, "t",
 		chatDelta{call: callStart(0, "c1", "get_weather")},
 		chatDelta{call: callArgs(0, `{}`)},
-		chatDelta{call: callStart(1, "c2", "tavily-search")},
+		chatDelta{call: callStart(1, "c2", "web_search")},
 		chatDelta{call: callArgs(1, `{"query":"x"}`)},
 		chatDelta{finish: "tool_calls", usage: usage(5)},
 	)
@@ -163,7 +163,7 @@ func TestInjectedChatStream_StopsAtMaxDepth(t *testing.T) {
 	set.maxDepth = 1
 	s := newInjectedChatStream(set)
 	emits := feed(s, "t",
-		chatDelta{call: callStart(0, "c1", "tavily-search")},
+		chatDelta{call: callStart(0, "c1", "web_search")},
 		chatDelta{finish: "tool_calls", usage: usage(5)},
 	)
 	assert.False(t, s.continues())
@@ -275,9 +275,9 @@ func TestInjectedResponsesStream_TwoTurnsBecomeOneResponse(t *testing.T) {
 		t1.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, textItem("msg_1", "")),
 		t1.textDelta(0, "msg_1", "Searching."),
 		t1.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, textItem("msg_1", "Searching.")),
-		t1.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 1, responsesFunctionCall("c1", "tavily-search")),
+		t1.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 1, responsesFunctionCall("c1", "web_search")),
 		t1.argsDelta(1, "fc_c1", `{"query":"q"}`),
-		t1.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 1, responsesFunctionCall("c1", "tavily-search")),
+		t1.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 1, responsesFunctionCall("c1", "web_search")),
 		t1.completed(10),
 	)
 	require.True(t, s.continues())
@@ -356,8 +356,8 @@ func TestInjectedResponsesStream_ClientCallBeforeInjectedCallIsDropped(t *testin
 		r.created(),
 		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, responsesFunctionCall("c1", "get_weather")),
 		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, responsesFunctionCall("c1", "get_weather")),
-		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 1, responsesFunctionCall("c2", "tavily-search")),
-		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 1, responsesFunctionCall("c2", "tavily-search")),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 1, responsesFunctionCall("c2", "web_search")),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 1, responsesFunctionCall("c2", "web_search")),
 		r.completed(5),
 	)
 	require.Len(t, emits, 1, "only response.created reaches the client")
@@ -406,8 +406,8 @@ func TestInjectedResponsesStream_HeldTextReleasedWhenInjectedCallDropsClientCall
 		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, responsesFunctionCall("c1", "get_weather")),
 		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 1, textItem("msg_1", "")),
 		r.textDelta(1, "msg_1", "Checking."),
-		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 2, responsesFunctionCall("c2", "tavily-search")),
-		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 2, responsesFunctionCall("c2", "tavily-search")),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 2, responsesFunctionCall("c2", "web_search")),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 2, responsesFunctionCall("c2", "web_search")),
 		r.completed(5),
 	)
 	require.True(t, s.continues())
@@ -429,8 +429,8 @@ func TestInjectedResponsesStream_CompletedKeepsFirstTurnCreatedAt(t *testing.T) 
 	created := t1.created()
 	created.Response.CreatedAt = 100
 	feedResponses(s, created,
-		t1.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, responsesFunctionCall("c1", "tavily-search")),
-		t1.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, responsesFunctionCall("c1", "tavily-search")),
+		t1.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, responsesFunctionCall("c1", "web_search")),
+		t1.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, responsesFunctionCall("c1", "web_search")),
 		t1.completed(10),
 	)
 	s.endTurn()
@@ -510,8 +510,8 @@ func TestInjectedResponsesStream_ReleasedClientCallEndsTheLoop(t *testing.T) {
 		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, responsesFunctionCall("c1", "get_weather")),
 		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 1, textItem("msg_1", "")),
 		r.textDelta(1, "msg_1", "a long answer that keeps going"),
-		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 2, responsesFunctionCall("c2", "tavily-search")),
-		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 2, responsesFunctionCall("c2", "tavily-search")),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 2, responsesFunctionCall("c2", "web_search")),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 2, responsesFunctionCall("c2", "web_search")),
 		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, responsesFunctionCall("c1", "get_weather")),
 		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 3, responsesFunctionCall("c3", "get_time")),
 		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 3, responsesFunctionCall("c3", "get_time")),
@@ -541,8 +541,8 @@ func TestInjectedResponsesStream_ClientCallsSurviveAtMaxDepth(t *testing.T) {
 		r.created(),
 		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, responsesFunctionCall("c1", "get_weather")),
 		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, responsesFunctionCall("c1", "get_weather")),
-		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 1, responsesFunctionCall("c2", "tavily-search")),
-		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 1, responsesFunctionCall("c2", "tavily-search")),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 1, responsesFunctionCall("c2", "web_search")),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 1, responsesFunctionCall("c2", "web_search")),
 		r.completed(5),
 	)
 	assert.False(t, s.continues())
@@ -557,8 +557,8 @@ func TestInjectedResponsesStream_FailureEventCarriesEarlierUsage(t *testing.T) {
 	s := newInjectedResponsesStream(testInjectedSet(t))
 	t1 := &responsesEvents{respID: "resp_1"}
 	feedResponses(s, t1.created(),
-		t1.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, responsesFunctionCall("c1", "tavily-search")),
-		t1.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, responsesFunctionCall("c1", "tavily-search")),
+		t1.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, responsesFunctionCall("c1", "web_search")),
+		t1.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, responsesFunctionCall("c1", "web_search")),
 		t1.completed(10),
 	)
 	s.endTurn()

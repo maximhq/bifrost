@@ -283,6 +283,7 @@ func (p *OAuth2Provider) performExchange(ctx *schemas.BifrostContext, config *sc
 // *schemas.TokenExchangeRejectedError so callers can distinguish "fix the
 // credential" from transient failures.
 func (p *OAuth2Provider) rawExchange(ctx context.Context, config *schemas.MCPClientConfig, form func(*schemas.TokenExchangeIdP) (url.Values, error)) (*schemas.OAuth2TokenExchangeResponse, error) {
+	ctx = withRequirePublicTarget(ctx, config == nil || config.RequirePublicTarget)
 	resolver := p.tokenExchangeIdPResolver()
 	if resolver == nil || !resolver.Available() {
 		return nil, schemas.ErrTokenExchangeUnavailable

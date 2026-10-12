@@ -847,6 +847,7 @@ test.describe("LLM Logs", () => {
     // a success, and a provider's refusal reads as its fail_reason (PR #8231).
     test('should show each attempt with its class or reason and its status', async ({ logsPage, page }) => {
       await page.goto('/workspace/logs')
+      await expect(logsPage.tableRows).toHaveCount(1)
       await logsPage.viewLogDetails(0)
       await logsPage.logDetailSheet.getByRole('tab', { name: /Routing/ }).click()
 

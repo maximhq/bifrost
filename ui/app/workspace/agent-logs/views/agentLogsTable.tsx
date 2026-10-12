@@ -14,11 +14,19 @@ import { cn } from "@/lib/utils";
 import type { ColumnOrderState, ColumnPinningState, VisibilityState } from "@tanstack/react-table";
 import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
 import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
-import { useCallback, useState } from "react";
+import { Fragment, useCallback, useState } from "react";
 
 interface DataTableProps {
 	columns: ColumnDef<AgentLogSummary>[];
 	data: AgentLogSummary[];
+	memberIds?: Set<string>;
+	sessionExpansion?: {
+		members: Record<string, AgentLogSummary[]>;
+		expandedIds: Set<string>;
+		loadingIds: Set<string>;
+		hasMoreIds: Set<string>;
+		onLoadMore: (id: string) => void;
+	};
 	totalItems: number;
 	loading?: boolean;
 	pagination: AgentPagination;
@@ -41,6 +49,8 @@ interface DataTableProps {
 export function AgentLogsDataTable({
 	columns,
 	data,
+	memberIds,
+	sessionExpansion,
 	totalItems,
 	loading = false,
 	pagination,
@@ -99,6 +109,7 @@ export function AgentLogsDataTable({
 
 	const table = useReactTable({
 		data,
+		getRowId: (log) => log.id,
 		columns,
 		getCoreRowModel: getCoreRowModel(),
 		manualPagination: true,
@@ -146,7 +157,7 @@ export function AgentLogsDataTable({
 										<DraggableColumnHeader
 											key={header.id}
 											header={header}
-											isConfigurable
+											isConfigurable={header.column.id !== "expand"}
 											pinStyle={buildPinStyle(header.column, pinOffsets)}
 											pinnedHeaderClassName="bg-[#f9f9f9] dark:bg-[#27272a]"
 											className={cn(
@@ -182,28 +193,62 @@ export function AgentLogsDataTable({
 							</TableRow>
 							{table.getRowModel().rows.length ? (
 								table.getRowModel().rows.map((row) => (
-									<TableRow key={row.id} className="hover:bg-muted/50 group/table-row h-12 cursor-pointer">
-										{row.getVisibleCells().map((cell) => {
-											const pinned = cell.column.getIsPinned();
-											const size = cell.column.getSize();
-											return (
-												<TableCell
-													onClick={() => onRowClick?.(row.original)}
-													key={cell.id}
-													style={{ width: size, minWidth: size, maxWidth: size, ...buildPinStyle(cell.column, pinOffsets) }}
-													className={cn(
-														!pinned && "overflow-hidden",
-														pinned && "bg-card",
-														cell.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
-														cell.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
-														"group-hover/table-row:bg-[#f7f7f7] dark:group-hover/table-row:bg-[#232327]",
-													)}
-												>
-													{flexRender(cell.column.columnDef.cell, cell.getContext())}
-												</TableCell>
-											);
-										})}
-									</TableRow>
+									<Fragment key={row.id}>
+										<TableRow
+											key={row.id}
+											className={cn(
+												"hover:bg-muted/50 group/table-row h-12 cursor-pointer",
+												memberIds?.has(row.original.id) && "bg-muted/30",
+											)}
+										>
+											{row.getVisibleCells().map((cell, cellIndex) => {
+												const pinned = cell.column.getIsPinned();
+												const size = cell.column.getSize();
+												return (
+													<TableCell
+														onClick={() => {
+															if (cell.column.id !== "expand") onRowClick?.(row.original);
+														}}
+														key={cell.id}
+														style={{ width: size, minWidth: size, maxWidth: size, ...buildPinStyle(cell.column, pinOffsets) }}
+														className={cn(
+															cell.column.id === "expand" ? "relative px-0 py-0" : !pinned && "overflow-hidden",
+															memberIds?.has(row.original.id) &&
+																cellIndex === 0 &&
+																"shadow-[inset_2px_0_0_0_#93c5fd] dark:shadow-[inset_2px_0_0_0_#1d4ed8]",
+															pinned && "bg-card",
+															cell.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
+															cell.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
+															"group-hover/table-row:bg-[#f7f7f7] dark:group-hover/table-row:bg-[#232327]",
+														)}
+													>
+														{flexRender(cell.column.columnDef.cell, cell.getContext())}
+													</TableCell>
+												);
+											})}
+										</TableRow>
+										{sessionExpansion &&
+											[...sessionExpansion.hasMoreIds]
+												.filter(
+													(id) =>
+														sessionExpansion.expandedIds.has(id) && (sessionExpansion.members[id]?.at(-1)?.id ?? id) === row.original.id,
+												)
+												.map((id) => (
+													<TableRow key={`more-${id}`}>
+														<TableCell colSpan={row.getVisibleCells().length} className="text-center">
+															<Button
+																variant="ghost"
+																size="sm"
+																disabled={sessionExpansion.loadingIds.has(id)}
+																onClick={() => sessionExpansion.onLoadMore(id)}
+																data-testid="agent-logs-session-load-more-btn"
+															>
+																{sessionExpansion.loadingIds.has(id) ? "Loading..." : "Load more operations"}
+															</Button>
+														</TableCell>
+													</TableRow>
+												))}
+									</Fragment>
 								))
 							) : loading ? null : (
 								<TableRow>
@@ -218,7 +263,8 @@ export function AgentLogsDataTable({
 				{/* Pagination Footer */}
 				<div className="flex items-center justify-between text-xs" data-testid="pagination">
 					<div className="text-muted-foreground flex items-center gap-2">
-						{startItemDisplay.toLocaleString()}-{endItemDisplay.toLocaleString()} of {totalItems.toLocaleString()} entries
+						{startItemDisplay.toLocaleString()}-{endItemDisplay.toLocaleString()} of {totalItems.toLocaleString()}{" "}
+						{sessionExpansion ? "groups" : "entries"}
 					</div>
 
 					<div className="flex items-center gap-2">

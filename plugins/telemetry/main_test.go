@@ -15,6 +15,9 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -175,6 +178,109 @@ func TestTokenExtractionParityWithLogging(t *testing.T) {
 
 			waitForCounter(t, p.registry, "bifrost_input_tokens_total", tc.wantIn)
 			waitForCounter(t, p.registry, "bifrost_output_tokens_total", tc.wantOut)
+		})
+	}
+}
+
+// TestCancelledStreamRecordsBilledUsage pins Prometheus to the BilledUsage that logging and
+// governance already bill on a mid-stream cancel: a terminal error with no result must still
+// add its tokens, cache tokens and cost, not just the error count.
+func TestCancelledStreamRecordsBilledUsage(t *testing.T) {
+	ds := datasheet.NewTestStore(nil)
+	ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+		{Model: "claude-test", Provider: string(schemas.Anthropic), Mode: "chat", InputCostPerToken: new(3e-6), OutputCostPerToken: new(15e-6)},
+	})
+	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	p, err := Init(&Config{}, mc, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// Anthropic message_start usage: exact input and cache tokens, placeholder output token.
+	billed := &schemas.BifrostLLMUsage{
+		PromptTokens:     30,
+		CompletionTokens: 1,
+		TotalTokens:      31,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:        6,
+			CachedWriteTokens:       4,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens5m: 4},
+		},
+	}
+	cancelErr := &schemas.BifrostError{
+		StatusCode: new(499),
+		Error:      &schemas.ErrorField{Message: "Request cancelled: client disconnected", Type: new(schemas.RequestCancelled)},
+	}
+	cancelErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+	cancelErr.ExtraFields.Provider = schemas.Anthropic
+	cancelErr.ExtraFields.OriginalModelRequested = "claude-test"
+	cancelErr.ExtraFields.BilledUsage = billed
+
+	ctx := newHookContext(schemas.ChatCompletionStreamRequest)
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	if _, _, err := p.PostLLMHook(ctx, nil, cancelErr); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+
+	waitForCounter(t, p.registry, "bifrost_error_requests_total", 1)
+	waitForCounter(t, p.registry, "bifrost_input_tokens_total", 30)
+	waitForCounter(t, p.registry, "bifrost_output_tokens_total", 1)
+	waitForCounter(t, p.registry, "bifrost_cache_read_input_tokens_total", 6)
+	waitForCounter(t, p.registry, "bifrost_cache_write_input_tokens_total", 4)
+	waitForCounter(t, p.registry, "bifrost_cache_write_input_tokens_5m_total", 4)
+
+	wantCost := mc.CalculateCostForUsage(billed, schemas.Anthropic, "claude-test", schemas.ChatCompletionStreamRequest, nil)
+	if wantCost <= 0 {
+		t.Fatalf("CalculateCostForUsage = %v, want > 0 (pricing row not matched)", wantCost)
+	}
+	waitForCounter(t, p.registry, "bifrost_cost_total", wantCost)
+}
+
+// TestCancelledStreamPricesResolvedModel pins billed-usage pricing to the wire model, matching
+// the logs table: the requested model is an unpriced alias name, or the primary's model on a
+// fallback attempt, and pricing it records zero cost.
+func TestCancelledStreamPricesResolvedModel(t *testing.T) {
+	cases := []struct {
+		name      string
+		requested string
+	}{
+		{name: "key alias", requested: "fast"},
+		{name: "fallback attempt", requested: "gpt-test"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := datasheet.NewTestStore(nil)
+			ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+				{Model: "claude-test", Provider: string(schemas.Anthropic), Mode: "chat", InputCostPerToken: new(3e-6), OutputCostPerToken: new(15e-6)},
+			})
+			mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+			p, err := Init(&Config{}, mc, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+
+			billed := &schemas.BifrostLLMUsage{PromptTokens: 30, CompletionTokens: 1, TotalTokens: 31}
+			cancelErr := &schemas.BifrostError{
+				StatusCode: new(499),
+				Error:      &schemas.ErrorField{Message: "Request cancelled: client disconnected", Type: new(schemas.RequestCancelled)},
+			}
+			cancelErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+			cancelErr.ExtraFields.Provider = schemas.Anthropic
+			cancelErr.ExtraFields.OriginalModelRequested = tc.requested
+			cancelErr.ExtraFields.ResolvedModelUsed = "claude-test"
+			cancelErr.ExtraFields.BilledUsage = billed
+
+			ctx := newHookContext(schemas.ChatCompletionStreamRequest)
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			if _, _, err := p.PostLLMHook(ctx, nil, cancelErr); err != nil {
+				t.Fatalf("PostLLMHook: %v", err)
+			}
+
+			wantCost := mc.CalculateCostForUsage(billed, schemas.Anthropic, "claude-test", schemas.ChatCompletionStreamRequest, nil)
+			if wantCost <= 0 {
+				t.Fatalf("CalculateCostForUsage = %v, want > 0 (pricing row not matched)", wantCost)
+			}
+			waitForCounter(t, p.registry, "bifrost_cost_total", wantCost)
 		})
 	}
 }

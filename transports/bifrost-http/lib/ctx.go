@@ -754,6 +754,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatShouldConvertParams)
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatAzureDeepseek)
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses)
+			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatConvertDecisionToResponses)
 			valueStr := strings.TrimSpace(string(value))
 			if valueStr == "true" {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertTextToChat, true)
@@ -762,6 +763,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses, true)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertDecisionToResponses, true)
 			} else if strings.HasPrefix(valueStr, "[") {
 				var features []string
 				if err := json.Unmarshal([]byte(valueStr), &features); err == nil {
@@ -772,6 +774,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertDecisionToResponses, true)
 					} else {
 						for _, f := range features {
 							switch f {
@@ -787,6 +790,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
 							case "force_reasoning_only_models_to_responses":
 								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses, true)
+							case "convert_decision_to_responses":
+								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertDecisionToResponses, true)
 							}
 						}
 					}

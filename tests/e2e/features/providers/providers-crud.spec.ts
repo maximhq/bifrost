@@ -1,3 +1,4 @@
+import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "../../core/fixtures/base.fixture";
 import {
   createCustomProviderData,
@@ -7,6 +8,45 @@ import {
 // Track created resources for cleanup
 const createdKeys: { provider: string; keyName: string }[] = [];
 const createdProviders: string[] = [];
+
+/** The shape of a stored key as GET /api/providers/{provider}/keys returns it (secrets masked). */
+type SavedOAuthKey = {
+  name: string;
+  value?: { value?: string };
+  oauth_key_config?: {
+    grant_type: string;
+    token_url?: { value?: string };
+    client_id?: { value?: string };
+    client_secret?: { value?: string };
+    private_key?: { value?: string };
+    scopes?: string[];
+    audience?: string;
+    issuer?: string;
+    subject?: string;
+    key_id?: string;
+    signing_algorithm?: string;
+    auth_style?: string;
+    assertion_lifetime_seconds?: number;
+  } | null;
+};
+
+async function fetchOAuthKey(
+  request: APIRequestContext,
+  providerName: string,
+  keyName: string,
+): Promise<SavedOAuthKey | undefined> {
+  const response = await request.get(`/api/providers/${encodeURIComponent(providerName)}/keys`);
+  expect(response.ok()).toBeTruthy();
+  const body = await response.json();
+  return (body.keys as SavedOAuthKey[]).find((k) => k.name === keyName);
+}
+
+/** Throwaway P-256 key generated for the test; it signs nothing real. */
+const E2E_EC_PRIVATE_KEY_PEM = `-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgPRGI14LQwtUx25rt
++1l02+TsYAezzwKs49T6XLM37ZmhRANCAAS06cNQlnL0IAiijz4O5dkVNBWh2Fl9
+rjGqe06oXP1NPnB+MN9wC8Cizwjv6UqvGsOMvuu3CITydqgXaGnQlU50
+-----END PRIVATE KEY-----`;
 
 test.describe("Providers", () => {
   test.describe.configure({ mode: "serial" });
@@ -244,6 +284,49 @@ test.describe("Providers", () => {
       await providersPage.keyCancelBtn.click();
       await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
     });
+
+    test("should save a Cloudflare key with its account ID", async ({
+      providersPage,
+      page,
+    }) => {
+      if (!(await providersPage.providerExists("cloudflare"))) {
+        await providersPage.addKnownProviderFromDropdown("cloudflare");
+        createdProviders.push("cloudflare");
+      }
+      await expect(providersPage.getProviderItem("cloudflare")).toBeVisible({
+        timeout: 15000,
+      });
+      await providersPage.selectProvider("cloudflare");
+
+      const keyName = `Cloudflare-Key-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const accountId = "0123456789abcdef0123456789abcdef";
+      createdKeys.push({ provider: "cloudflare", keyName });
+
+      await providersPage.dismissToasts();
+      await providersPage.addKeyBtn.click();
+      await expect(providersPage.keyForm).toBeVisible();
+
+      await page.getByLabel("Name").fill(keyName);
+      await page.getByLabel("API Key").fill("e2e-cloudflare-api-token");
+      const accountIdInput = page.getByTestId("key-input-cloudflare-account-id");
+      await expect(accountIdInput).toBeVisible();
+      await accountIdInput.fill(accountId);
+
+      // Model discovery runs on save and fails against a fake token; the key must still save.
+      await providersPage.keySaveBtn.click();
+      await providersPage.waitForSuccessToast();
+      await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+      expect(await providersPage.keyExists(keyName)).toBe(true);
+
+      const keysResponse = await page.request.get("/api/providers/cloudflare/keys");
+      expect(keysResponse.ok()).toBe(true);
+      const provider = (await keysResponse.json()) as {
+        keys: { name: string; cloudflare_key_config?: { account_id?: { value?: string } } }[];
+      };
+      const saved = provider.keys.find((k) => k.name === keyName);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      expect(saved?.cloudflare_key_config?.account_id?.value).toBe(accountId);
+    });
   });
 
   test.describe("Custom Providers", () => {
@@ -337,6 +420,203 @@ test.describe("Providers", () => {
       expect(saved.custom_provider_config?.allowed_requests?.decisions).toBe(true);
       expect(saved.custom_provider_config?.allowed_requests?.list_models).toBe(true);
       expect(saved.custom_provider_config?.allowed_requests?.chat_completion).toBe(false);
+    });
+
+    test("should add an OAuth client-credentials key to a custom OpenAI-compatible provider", async ({
+      providersPage,
+      request,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-oauth-${Date.now()}`,
+        baseProviderType: "openai",
+        baseUrl: "https://api.openai.com/v1",
+      });
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await providersPage.selectProvider(providerData.name);
+
+      const keyName = `oauth-key-${Date.now()}`;
+      await providersPage.addOAuthClientCredentialsKey({
+        name: keyName,
+        tokenUrl: "https://idp.example.com/oauth2/token",
+        clientId: "e2e-client-id",
+        clientSecret: "e2e-client-secret",
+        scopes: ["inference"],
+      });
+      await expect(providersPage.getKeyRow(keyName)).toBeVisible();
+
+      // The API stores the block and returns it with the secret redacted.
+      const response = await request.get(`/api/providers/${encodeURIComponent(providerData.name)}/keys`);
+      expect(response.ok()).toBeTruthy();
+      const body = await response.json();
+      const saved = (body.keys as Array<{ name: string; oauth_key_config?: { grant_type: string; token_url?: { value?: string }; client_secret?: { value?: string }; scopes?: string[] } }>).find(
+        (k) => k.name === keyName,
+      );
+      expect(saved?.oauth_key_config?.grant_type).toBe("client_credentials");
+      expect(saved?.oauth_key_config?.token_url?.value).toBe("https://idp.example.com/oauth2/token");
+      expect(saved?.oauth_key_config?.scopes).toEqual(["inference"]);
+      expect(saved?.oauth_key_config?.client_secret?.value).not.toBe("e2e-client-secret");
+    });
+
+    test("should add an OAuth client-credentials key with form-body placement and an audience", async ({
+      providersPage,
+      request,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-oauth-body-${Date.now()}`,
+        baseProviderType: "openai",
+        baseUrl: "https://api.openai.com/v1",
+      });
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await providersPage.selectProvider(providerData.name);
+
+      const keyName = `oauth-body-key-${Date.now()}`;
+      await providersPage.addOAuthClientCredentialsKey({
+        name: keyName,
+        tokenUrl: "https://idp.example.com/oauth2/token",
+        clientId: "e2e-client-id",
+        clientSecret: "e2e-client-secret",
+        credentialPlacement: "body",
+        audience: "api://e2e-llm-gateway",
+        scopes: ["inference", "models.read"],
+      });
+      await expect(providersPage.getKeyRow(keyName)).toBeVisible();
+
+      const saved = await fetchOAuthKey(request, providerData.name, keyName);
+      expect(saved?.oauth_key_config?.grant_type).toBe("client_credentials");
+      expect(saved?.oauth_key_config?.auth_style).toBe("body");
+      expect(saved?.oauth_key_config?.audience).toBe("api://e2e-llm-gateway");
+      expect(saved?.oauth_key_config?.scopes).toEqual(["inference", "models.read"]);
+      expect(saved?.oauth_key_config?.client_secret?.value).not.toBe("e2e-client-secret");
+    });
+
+    test("should add an OAuth JWT bearer key with a PEM private key", async ({
+      providersPage,
+      request,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-oauth-jwt-${Date.now()}`,
+        baseProviderType: "openai",
+        baseUrl: "https://api.openai.com/v1",
+      });
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await providersPage.selectProvider(providerData.name);
+
+      const keyName = `oauth-jwt-key-${Date.now()}`;
+      await providersPage.addOAuthJWTBearerKey({
+        name: keyName,
+        tokenUrl: "https://idp.example.com/oauth2/token",
+        privateKeyPem: E2E_EC_PRIVATE_KEY_PEM,
+        issuer: "e2e-issuer",
+        subject: "e2e-subject",
+        audience: "https://idp.example.com/oauth2/token",
+        keyId: "e2e-kid-1",
+        signingAlgorithm: "ES256",
+        assertionLifetimeSeconds: 120,
+        scopes: ["inference"],
+      });
+      await expect(providersPage.getKeyRow(keyName)).toBeVisible();
+
+      const saved = await fetchOAuthKey(request, providerData.name, keyName);
+      expect(saved?.oauth_key_config?.grant_type).toBe("jwt_bearer");
+      expect(saved?.oauth_key_config?.issuer).toBe("e2e-issuer");
+      expect(saved?.oauth_key_config?.subject).toBe("e2e-subject");
+      expect(saved?.oauth_key_config?.audience).toBe("https://idp.example.com/oauth2/token");
+      expect(saved?.oauth_key_config?.key_id).toBe("e2e-kid-1");
+      expect(saved?.oauth_key_config?.signing_algorithm).toBe("ES256");
+      expect(saved?.oauth_key_config?.assertion_lifetime_seconds).toBe(120);
+      expect(saved?.oauth_key_config?.scopes).toEqual(["inference"]);
+      // The PEM is a credential: it comes back masked and never in the clear.
+      expect(saved?.oauth_key_config?.private_key?.value ?? "").not.toContain("BEGIN PRIVATE KEY");
+      expect(JSON.stringify(saved)).not.toContain("MIGHAgEAMBMGByqGSM49AgEG");
+    });
+
+    test("should edit an OAuth key without disturbing its masked credentials", async ({
+      providersPage,
+      request,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-oauth-edit-${Date.now()}`,
+        baseProviderType: "openai",
+        baseUrl: "https://api.openai.com/v1",
+      });
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await providersPage.selectProvider(providerData.name);
+
+      const keyName = `oauth-edit-key-${Date.now()}`;
+      await providersPage.addOAuthClientCredentialsKey({
+        name: keyName,
+        tokenUrl: "https://idp.example.com/oauth2/token",
+        clientId: "e2e-client-id",
+        clientSecret: "e2e-client-secret",
+        credentialPlacement: "body",
+        audience: "api://before",
+        scopes: ["inference"],
+      });
+      await expect(providersPage.getKeyRow(keyName)).toBeVisible();
+      const before = await fetchOAuthKey(request, providerData.name, keyName);
+      expect(before?.oauth_key_config?.audience).toBe("api://before");
+
+      // Change only the audience; the masked client_id / client_secret go back as masks.
+      await providersPage.editOAuthKey(keyName, { audience: "api://after", scopes: ["models.read"] });
+
+      const after = await fetchOAuthKey(request, providerData.name, keyName);
+      expect(after?.oauth_key_config?.grant_type).toBe("client_credentials");
+      expect(after?.oauth_key_config?.audience).toBe("api://after");
+      expect(after?.oauth_key_config?.scopes).toEqual(["inference", "models.read"]);
+      expect(after?.oauth_key_config?.auth_style).toBe("body");
+      expect(after?.oauth_key_config?.token_url?.value).toBe("https://idp.example.com/oauth2/token");
+      // Sending the masks back must resolve to the stored secret, not clear it: the block
+      // still carries both credentials, still masked, and the key is still valueless.
+      expect(after?.oauth_key_config?.client_id?.value ?? "").not.toBe("");
+      expect(after?.oauth_key_config?.client_secret?.value ?? "").not.toBe("");
+      expect(after?.oauth_key_config?.client_secret?.value).not.toBe("e2e-client-secret");
+      expect(after?.value?.value ?? "").toBe("");
+    });
+
+    test("should switch an OAuth key back to a static API key", async ({
+      providersPage,
+      request,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-oauth-switch-${Date.now()}`,
+        baseProviderType: "openai",
+        baseUrl: "https://api.openai.com/v1",
+      });
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await providersPage.selectProvider(providerData.name);
+
+      const keyName = `oauth-switch-key-${Date.now()}`;
+      await providersPage.addOAuthClientCredentialsKey({
+        name: keyName,
+        tokenUrl: "https://idp.example.com/oauth2/token",
+        clientId: "e2e-client-id",
+        clientSecret: "e2e-client-secret",
+      });
+      await expect(providersPage.getKeyRow(keyName)).toBeVisible();
+      expect((await fetchOAuthKey(request, providerData.name, keyName))?.oauth_key_config?.grant_type).toBe("client_credentials");
+
+      await providersPage.switchOAuthKeyToApiKey(keyName, "sk-e2e-static-key");
+
+      // The API-key path sends an explicit null block on edit, so the stored key drops it.
+      const after = await fetchOAuthKey(request, providerData.name, keyName);
+      expect(after?.oauth_key_config ?? null).toBeNull();
+      expect(after?.value?.value ?? "").not.toBe("");
+      expect(after?.value?.value).not.toBe("sk-e2e-static-key");
     });
 
     test("should cancel custom provider creation", async ({

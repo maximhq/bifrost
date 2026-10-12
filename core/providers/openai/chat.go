@@ -109,13 +109,11 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	// strips. Same translation as the Responses path (applyResponsesCacheBreakpoints),
 	// resolved on the base provider so a custom provider built on OpenAI is not
 	// sent down the strip-only default.
+	// The request stays in the provider's default mode: see
+	// responsesIsOpenAIFamilyBreakpointTarget for why Bifrost never sets explicit mode.
 	if chatUsesPromptCacheBreakpoints(caps, schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel) {
-		openaiReq.Messages = applyChatCacheBreakpoints(openaiReq.Messages)
-		if openaiReq.ChatParameters.PromptCacheOptions == nil && chatHasPromptCacheBreakpoint(openaiReq.Messages) {
-			openaiReq.ChatParameters.PromptCacheOptions = &schemas.PromptCacheOptions{
-				Mode: schemas.Ptr(PromptCacheBreakpointModeExplicit),
-			}
-		}
+		ceiling := promptCacheBreakpointCeiling(ctx, true, openaiReq.ChatParameters.PromptCacheOptions, openaiReq.ExtraParams)
+		openaiReq.Messages = applyChatCacheBreakpoints(openaiReq.Messages, ceiling)
 	}
 
 	switch bifrostReq.Provider {
@@ -404,7 +402,7 @@ func (req *OpenAIChatRequest) applyXAICompatibility(caps schemas.ModelCaps) {
 }
 
 // chatUsesPromptCacheBreakpoints is the Chat Completions half of the gate behind
-// responsesUsesPromptCacheOptions: the OpenAI family on gpt-5.6 and later. OpenRouter
+// responsesIsOpenAIFamilyBreakpointTarget: the OpenAI family on gpt-5.6 and later. OpenRouter
 // is deliberately absent, since it accepts cache_control verbatim on this path.
 func chatUsesPromptCacheBreakpoints(caps schemas.ModelCaps, provider schemas.ModelProvider, model string) bool {
 	switch provider {
@@ -415,32 +413,17 @@ func chatUsesPromptCacheBreakpoints(caps schemas.ModelCaps, provider schemas.Mod
 	}
 }
 
-// chatHasPromptCacheBreakpoint reports whether any content part carries a breakpoint,
-// so explicit mode is only switched on when there is a boundary for it to honour.
-func chatHasPromptCacheBreakpoint(messages []OpenAIMessage) bool {
-	for i := range messages {
-		if messages[i].Content == nil {
-			continue
-		}
-		for j := range messages[i].Content.ContentBlocks {
-			if messages[i].Content.ContentBlocks[j].PromptCacheBreakpoint != nil {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // applyChatCacheBreakpoints rewrites ephemeral cache_control markers on text parts
 // into prompt_cache_breakpoint, for every role including tool messages, which is where
 // an agent loop's per-turn marker lands after a tool call. Only text parts are
 // marked: that is the one Chat Completions part type with a verified breakpoint
 // field, and a rejected field costs more than the miss it would fix. The same
-// four-breakpoint ceiling and keep-the-latest rule as the Responses path apply.
+// ceiling (promptCacheBreakpointCeiling) and keep-the-latest rule as the Responses
+// path apply.
 //
 // Messages, their Content pointers and the part arrays alias bifrostReq.Input, which
 // plugins and the fallback chain reuse, so everything touched is copied first.
-func applyChatCacheBreakpoints(messages []OpenAIMessage) []OpenAIMessage {
+func applyChatCacheBreakpoints(messages []OpenAIMessage, ceiling int) []OpenAIMessage {
 	type blockRef struct{ msg, block int }
 	var refs []blockRef
 	existing := 0
@@ -463,7 +446,7 @@ func applyChatCacheBreakpoints(messages []OpenAIMessage) []OpenAIMessage {
 	if len(refs) == 0 {
 		return messages
 	}
-	budget := maxResponsesCacheBreakpoints - existing
+	budget := ceiling - existing
 	if budget <= 0 {
 		return messages
 	}

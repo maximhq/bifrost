@@ -79,6 +79,8 @@ func (m *MockClientManager) GetToolPerClient(ctx context.Context) map[string][]s
 	return make(map[string][]schemas.ChatTool)
 }
 
+func (m *MockClientManager) InstructionCaps() InstructionCaps { return InstructionCaps{} }
+
 func (m *MockClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
 	return nil
 }
@@ -579,6 +581,8 @@ func (m *MockAutoClientManager) GetClientByName(clientName string) *schemas.MCPC
 func (m *MockAutoClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
 	return make(map[string][]schemas.ChatTool)
 }
+
+func (m *MockAutoClientManager) InstructionCaps() InstructionCaps { return InstructionCaps{} }
 
 func (m *MockAutoClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
 	return nil

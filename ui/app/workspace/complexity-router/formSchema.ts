@@ -5,8 +5,10 @@ import {
 	DEFAULT_DECISION_MODEL,
 	DecisionGuidanceDefaults,
 	DecisionTier,
+	CLOUDFLARE_DECISION_MODEL,
 	OPENAI_DECISION_MODEL,
-	OPENROUTER_DECISION_MODELS,
+	OPENROUTER_DECISION_MODEL,
+	PERPLEXITY_DECISION_MODEL,
 	SELF_HOSTED_DECISION_MODELS,
 	MAX_DECISION_CRITERIA_ITEM_CHARACTERS,
 	MAX_DECISION_CRITERIA_ITEMS,
@@ -118,25 +120,19 @@ const decisionGuidanceSchema = z.object({
 	}),
 });
 
-const decisionSchema = z
-	.object({
-		provider: z.string().trim().min(1, "Select the provider serving the decision model"),
-		model: z.string().trim().min(1, "Select the decision model"),
-		previous_message_count: z
-			.number()
-			.int("Must be a whole number")
-			.min(0, "Must be at least 0")
-			.max(MAX_DECISION_PREVIOUS_MESSAGE_COUNT, `Must be at most ${MAX_DECISION_PREVIOUS_MESSAGE_COUNT}`),
-		timeout: z
-			.string()
-			.min(1, "Enter a decision-model timeout")
-			.refine((value) => isPositiveDurationString(value), "Enter a timeout greater than 0"),
-	})
-	// OpenRouter's decisions endpoint serves only its Jev models; any other model it lists is a chat model.
-	.refine((decision) => decision.provider !== "openrouter" || (OPENROUTER_DECISION_MODELS as readonly string[]).includes(decision.model), {
-		message: "Select one of OpenRouter's Jev models",
-		path: ["model"],
-	});
+const decisionSchema = z.object({
+	provider: z.string().trim().min(1, "Select the provider serving the decision model"),
+	model: z.string().trim().min(1, "Select the decision model"),
+	previous_message_count: z
+		.number()
+		.int("Must be a whole number")
+		.min(0, "Must be at least 0")
+		.max(MAX_DECISION_PREVIOUS_MESSAGE_COUNT, `Must be at most ${MAX_DECISION_PREVIOUS_MESSAGE_COUNT}`),
+	timeout: z
+		.string()
+		.min(1, "Enter a decision-model timeout")
+		.refine((value) => isPositiveDurationString(value), "Enter a timeout greater than 0"),
+});
 
 const llmSchema = z.object({
 	provider: z.string(),
@@ -535,14 +531,17 @@ export function isRouterConfigured(config: AnalyzerConfig | undefined): boolean 
 export type DecisionProviderState = "missing" | "failing" | "no-enabled-key" | "configured";
 
 // isDecisionProvider reports a provider that answers /v1/decisions natively:
-// Typesafe, OpenRouter, OpenAI or a custom provider built on it (their
-// decision models, such as gpt-6-luna), or a custom provider built on the
-// Typesafe base (Laya, Nimble, Clef). Other providers would only emulate
+// Typesafe, OpenRouter, Cloudflare (Clef), OpenAI or a custom provider built on
+// it (their decision models, such as gpt-6-luna), or a custom provider built on
+// the Typesafe base (Laya, Nimble, Clef). Other providers would only emulate
 // decisions through chat, which is what the LLM classifier is for.
 export function isDecisionProvider(provider: ModelProvider): boolean {
 	return (
 		provider.name === "typesafe" ||
 		provider.name === "openrouter" ||
+		provider.name === "cloudflare" ||
+		provider.name === "perplexity" ||
+		provider.name === "ollama" ||
 		isOpenAIDecisionProvider(provider) ||
 		provider.custom_provider_config?.base_provider_type === "typesafe"
 	);
@@ -563,15 +562,18 @@ export function selfHostedModelGroups(providerName: string): SelfHostedModelGrou
 }
 
 // defaultDecisionModel is the model a newly selected provider starts on: Jev's
-// latest alias (named per provider), OpenAI's decision model (a custom
-// OpenAI-based provider starts empty, as only its listing says what it serves),
-// the Clef model a Cloudflare URL serves, or
+// latest alias (named per provider), Clef Flash on Cloudflare, OpenAI's decision
+// model (a custom OpenAI-based provider starts empty, as only its listing says
+// what it serves), the Clef model a custom provider's Cloudflare URL serves, or
 // the first checkpoint of the model a self-hosted provider is named after (Laya
 // starts on english). A provider whose name says nothing starts empty, since only
 // the operator knows which model it runs.
 export function defaultDecisionModel(provider: ModelProvider | undefined): string {
 	if (provider?.name === "typesafe") return DEFAULT_DECISION_MODEL;
-	if (provider?.name === "openrouter") return OPENROUTER_DECISION_MODELS[0];
+	if (provider?.name === "openrouter") return OPENROUTER_DECISION_MODEL;
+	if (provider?.name === "cloudflare") return CLOUDFLARE_DECISION_MODEL;
+	if (provider?.name === "perplexity") return PERPLEXITY_DECISION_MODEL;
+	if (provider?.name === "ollama") return "";
 	if (provider?.name === "openai") return OPENAI_DECISION_MODEL;
 	if (isOpenAIDecisionProvider(provider)) return "";
 	return clefModelFromProvider(provider) ?? namedSelfHostedGroup(provider?.name ?? "")?.models[0] ?? "";
@@ -584,12 +586,10 @@ export function getDecisionProviderState(
 ): DecisionProviderState {
 	const provider = (providers ?? []).find((candidate) => candidate.name === providerName);
 	if (!provider) return "missing";
-	// The provider failed to initialise, or could not list models with its keys:
-	// both mean its credentials or settings are wrong. A provider with model
-	// listing turned off (Laya, Clef) never lists, so a stale listing failure on
-	// it says nothing about its decisions endpoint.
-	const listsModels = provider.custom_provider_config?.allowed_requests?.list_models !== false;
-	if (provider.provider_status !== "active" || (listsModels && provider.status === "list_models_failed")) return "failing";
+	// The provider failed to initialise. A model-listing failure is not checked:
+	// it says nothing about the decisions endpoint, and the provider-level listing
+	// status can be stale while the provider's keys work.
+	if (provider.provider_status !== "active") return "failing";
 	// A keyless custom provider (a self-hosted Laya, for one) needs no key.
 	if (provider.custom_provider_config?.is_key_less) return "configured";
 	// A key omits `enabled` when unset, which the Go side reads as enabled.

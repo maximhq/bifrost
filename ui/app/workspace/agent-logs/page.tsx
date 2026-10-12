@@ -64,6 +64,7 @@ export default function AgentLogsPage() {
 	const [deleteLogs] = useDeleteAgentLogsMutation();
 	// Lazy query kept only for handleLogNavigate (fetches adjacent pages on demand)
 	const [triggerGetLogs] = useLazyGetAgentLogsQuery();
+	const [triggerGetSessionMembers] = useLazyGetAgentLogsQuery();
 
 	const defaultTimeRange = useMemo(() => dateUtils.getDefaultTimeRange(), []);
 
@@ -97,6 +98,7 @@ export default function AgentLogsPage() {
 			offset: parseAsInteger.withDefault(0),
 			sort_by: parseAsString.withDefault("timestamp"),
 			order: parseAsString.withDefault("desc"),
+			grouped: parseAsBoolean.withDefault(false),
 			polling: parseAsBoolean.withDefault(true).withOptions({ clearOnDefault: false }),
 			period: parseAsString.withDefault(hasExplicitTimeRange ? "" : "1h").withOptions({ clearOnDefault: false }),
 			selected_log: parseAsString.withDefault(""),
@@ -111,6 +113,7 @@ export default function AgentLogsPage() {
 	const selectedLogId = urlState.selected_log || null;
 	const selectedContextId = urlState.selected_session || null;
 	const polling = urlState.polling;
+	const grouped = urlState.grouped && !TEXT_FILTER_KEYS.some((key) => Boolean(urlState[key]));
 	// Rows opened from the detail-sheet timeline may not be on the current table
 	// page; this holds their summary so the sheet can still render them.
 	const [selectedOverride, setSelectedOverride] = useState<AgentLogSummary | null>(null);
@@ -190,7 +193,7 @@ export default function AgentLogsPage() {
 		error: logsError,
 		refetch: refetchLogs,
 	} = useGetAgentLogsQuery(
-		{ filters, pagination },
+		{ filters, pagination, groupSessions: grouped },
 		{
 			pollingInterval: polling ? 10000 : 0,
 			skipPollingIfUnfocused: true,
@@ -277,8 +280,107 @@ export default function AgentLogsPage() {
 	// Derive data directly from RTK
 	const logs = useMemo(() => logsData?.logs ?? [], [logsData]);
 	const totalItems = logsData?.pagination?.total_count ?? 0;
+	const [expandedSessionIds, setExpandedSessionIds] = useState<Set<string>>(new Set());
+	const [loadingSessionIds, setLoadingSessionIds] = useState<Set<string>>(new Set());
+	const [sessionMembers, setSessionMembers] = useState<Record<string, AgentLogSummary[]>>({});
+	const [sessionPages, setSessionPages] = useState<Record<string, { nextOffset: number; total: number }>>({});
+	const expansionGeneration = useRef(0);
 
-	const selectedPageLog = useMemo(() => (selectedLogId ? logs.find((log) => log.id === selectedLogId) : undefined), [selectedLogId, logs]);
+	// Filter and page changes invalidate both cached members and in-flight reads.
+	useEffect(() => {
+		expansionGeneration.current++;
+		setExpandedSessionIds(new Set());
+		setLoadingSessionIds(new Set());
+		setSessionMembers({});
+		setSessionPages({});
+	}, [filters, pagination, grouped]);
+
+	const loadSessionMembers = useCallback(
+		async (log: AgentLogSummary, offset = 0) => {
+			if (!log.context_id || loadingSessionIds.has(log.id)) return;
+			const generation = expansionGeneration.current;
+			setLoadingSessionIds((prev) => new Set(prev).add(log.id));
+			const result = await triggerGetSessionMembers({
+				filters: { ...filters, context_id: log.context_id },
+				pagination: { limit: 100, offset, sort_by: "timestamp", order: "asc" },
+			});
+			if (generation !== expansionGeneration.current) return;
+			setLoadingSessionIds((prev) => {
+				const next = new Set(prev);
+				next.delete(log.id);
+				return next;
+			});
+			if (result.data) {
+				const page = result.data;
+				const members = page.logs.filter((member) => member.id !== log.id);
+				setSessionMembers((prev) => ({ ...prev, [log.id]: offset === 0 ? members : [...(prev[log.id] ?? []), ...members] }));
+				setSessionPages((prev) => ({
+					...prev,
+					[log.id]: { nextOffset: offset + page.logs.length, total: page.pagination.total_count },
+				}));
+			} else if (result.error) {
+				setError(getErrorMessage(result.error));
+				if (offset === 0)
+					setExpandedSessionIds((prev) => {
+						const next = new Set(prev);
+						next.delete(log.id);
+						return next;
+					});
+			}
+		},
+		[filters, loadingSessionIds, triggerGetSessionMembers],
+	);
+
+
+	const handleToggleSession = useCallback(
+		(log: AgentLogSummary) => {
+			setExpandedSessionIds((prev) => {
+				const next = new Set(prev);
+				if (next.has(log.id)) next.delete(log.id);
+				else next.add(log.id);
+				return next;
+			});
+			if (!expandedSessionIds.has(log.id) && !sessionMembers[log.id]) void loadSessionMembers(log);
+		},
+		[expandedSessionIds, sessionMembers, loadSessionMembers],
+	);
+
+	const displayLogs = useMemo(
+		() =>
+			grouped
+				? logs.flatMap((log) => {
+						const members = expandedSessionIds.has(log.id) ? (sessionMembers[log.id] ?? []) : [];
+						return [
+							log,
+							...members.map((member, index) => ({ ...member, __sessionTurn: index + 2, __isLast: index === members.length - 1 })),
+						];
+					})
+				: logs,
+		[logs, grouped, expandedSessionIds, sessionMembers],
+	);
+	const sessionMemberIds = useMemo(
+		() =>
+			new Set(
+				Object.values(sessionMembers)
+					.flat()
+					.map((log) => log.id),
+			),
+		[sessionMembers],
+	);
+	const hasMoreSessionIds = useMemo(
+		() =>
+			new Set(
+				Object.entries(sessionPages)
+					.filter(([, page]) => page.nextOffset < page.total)
+					.map(([id]) => id),
+			),
+		[sessionPages],
+	);
+
+	const selectedPageLog = useMemo(
+		() => (selectedLogId ? displayLogs.find((log) => log.id === selectedLogId) : undefined),
+		[selectedLogId, displayLogs],
+	);
 	const { data: selectedLogById } = useGetAgentLogByIdQuery(selectedLogId ?? "", {
 		skip: !selectedLogId || Boolean(selectedPageLog) || selectedOverride?.id === selectedLogId,
 	});
@@ -423,7 +525,20 @@ export default function AgentLogsPage() {
 		[deleteLogs, hasDeleteAccess, urlState.selected_log, setUrlState, refreshAllData],
 	);
 
-	const columns = useMemo(() => createAgentColumns(hasDeleteAccess ? handleDelete : undefined), [hasDeleteAccess, handleDelete]);
+	const columns = useMemo(
+		() =>
+			createAgentColumns(
+				hasDeleteAccess ? handleDelete : undefined,
+				grouped
+					? {
+							expandedIds: expandedSessionIds,
+							loadingIds: loadingSessionIds,
+							onToggle: handleToggleSession,
+						}
+					: undefined,
+			),
+		[hasDeleteAccess, handleDelete, grouped, expandedSessionIds, loadingSessionIds, handleToggleSession],
+	);
 
 	const columnIds = useMemo(
 		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
@@ -443,10 +558,16 @@ export default function AgentLogsPage() {
 		columnIds,
 		paramName: "agent_cols",
 		storageKey: "bifrost.agent_logs.cols",
-		fixedColumns: hasDeleteAccess ? { right: ["actions"] } : undefined,
+		fixedColumns: {
+			...(grouped ? { left: ["expand"] } : {}),
+			...(hasDeleteAccess ? { right: ["actions"] } : {}),
+		},
 	});
 
-	const selectedLogIndex = useMemo(() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1), [selectedLogId, logs]);
+	const selectedLogIndex = useMemo(
+		() => (selectedLogId ? displayLogs.findIndex((l) => l.id === selectedLogId) : -1),
+		[selectedLogId, displayLogs],
+	);
 
 	const openLog = useCallback(
 		(row: AgentLogSummary) => {
@@ -481,7 +602,7 @@ export default function AgentLogsPage() {
 			const currentLogId = selectedLogId || "";
 			if (direction === "prev") {
 				if (selectedLogIndex > 0) {
-					const target = logs[selectedLogIndex - 1];
+					const target = displayLogs[selectedLogIndex - 1];
 					setSelectedOverride(target);
 					setUrlState({ selected_log: target.id }, replaceHistory);
 				} else if (pagination.offset > 0) {
@@ -489,6 +610,7 @@ export default function AgentLogsPage() {
 					setUrlState({ offset: newOffset, selected_log: "" }, replaceHistory);
 					triggerGetLogs({
 						filters,
+						groupSessions: grouped,
 						pagination: { ...pagination, offset: newOffset },
 					}).then((result) => {
 						const pageLogs = result.data?.logs;
@@ -503,8 +625,8 @@ export default function AgentLogsPage() {
 					});
 				}
 			} else {
-				if (selectedLogIndex >= 0 && selectedLogIndex < logs.length - 1) {
-					const target = logs[selectedLogIndex + 1];
+				if (selectedLogIndex >= 0 && selectedLogIndex < displayLogs.length - 1) {
+					const target = displayLogs[selectedLogIndex + 1];
 					setSelectedOverride(target);
 					setUrlState({ selected_log: target.id }, replaceHistory);
 				} else if (pagination.offset + pagination.limit < totalItems) {
@@ -512,6 +634,7 @@ export default function AgentLogsPage() {
 					setUrlState({ offset: newOffset, selected_log: "" }, replaceHistory);
 					triggerGetLogs({
 						filters,
+						groupSessions: grouped,
 						pagination: { ...pagination, offset: newOffset },
 					}).then((result) => {
 						const pageLogs = result.data?.logs;
@@ -527,7 +650,7 @@ export default function AgentLogsPage() {
 				}
 			}
 		},
-		[selectedLogId, selectedLogIndex, logs, pagination, totalItems, filters, setUrlState, triggerGetLogs],
+		[selectedLogId, selectedLogIndex, displayLogs, pagination, totalItems, filters, grouped, setUrlState, triggerGetLogs],
 	);
 
 	const displayError = error ?? (logsError ? getErrorMessage(logsError as Parameters<typeof getErrorMessage>[0]) : null);
@@ -553,6 +676,8 @@ export default function AgentLogsPage() {
 								onPeriodChange={handlePeriodChange}
 								polling={polling}
 								onPollToggle={handlePollToggle}
+								grouped={grouped}
+								onGroupedToggle={(enabled) => setUrlState({ grouped: enabled, offset: 0 })}
 								onRefresh={refreshAllData}
 								loading={logsIsFetching}
 								columnEntries={columnEntries}
@@ -606,7 +731,22 @@ export default function AgentLogsPage() {
 
 						<AgentLogsDataTable
 							columns={columns}
-							data={logs}
+							data={displayLogs}
+							memberIds={sessionMemberIds}
+							sessionExpansion={
+								grouped
+									? {
+											members: sessionMembers,
+											expandedIds: expandedSessionIds,
+											loadingIds: loadingSessionIds,
+											hasMoreIds: hasMoreSessionIds,
+											onLoadMore: (id) => {
+												const root = logs.find((log) => log.id === id);
+												if (root) void loadSessionMembers(root, sessionPages[id]?.nextOffset ?? 0);
+											},
+										}
+									: undefined
+							}
 							totalItems={totalItems}
 							loading={logsIsFetching}
 							pagination={pagination}
@@ -637,7 +777,9 @@ export default function AgentLogsPage() {
 						}}
 						onNavigate={handleLogNavigate}
 						hasPrev={selectedLogIndex > 0 || (selectedLogIndex !== -1 && pagination.offset > 0)}
-						hasNext={selectedLogIndex !== -1 && (selectedLogIndex < logs.length - 1 || pagination.offset + pagination.limit < totalItems)}
+						hasNext={
+							selectedLogIndex !== -1 && (selectedLogIndex < displayLogs.length - 1 || pagination.offset + pagination.limit < totalItems)
+						}
 					/>
 					<AgentContextDetailsSheet
 						contextId={selectedContextId}
