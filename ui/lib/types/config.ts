@@ -247,6 +247,16 @@ export const DefaultSGLKeyConfig: SGLKeyConfig = {
 	url: { value: "", ref: "" },
 } as const satisfies Required<SGLKeyConfig>;
 
+// CloudflareKeyConfig matching Go's schemas.CloudflareKeyConfig
+export interface CloudflareKeyConfig {
+	account_id: SecretVar;
+}
+
+// Default CloudflareKeyConfig
+export const DefaultCloudflareKeyConfig: CloudflareKeyConfig = {
+	account_id: { value: "", ref: "" },
+} as const satisfies Required<CloudflareKeyConfig>;
+
 // DatabricksKeyConfig matching Go's schemas.DatabricksKeyConfig
 export interface DatabricksKeyConfig {
 	workspace_url: SecretVar;
@@ -309,6 +319,7 @@ export interface ModelProviderKey {
 	sgl_key_config?: SGLKeyConfig;
 	databricks_key_config?: DatabricksKeyConfig;
 	github_copilot_key_config?: GithubCopilotKeyConfig;
+	cloudflare_key_config?: CloudflareKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;

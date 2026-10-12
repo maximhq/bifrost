@@ -25,6 +25,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/bedrockmantle"
 	"github.com/maximhq/bifrost/core/providers/cerebras"
+	"github.com/maximhq/bifrost/core/providers/cloudflare"
 	"github.com/maximhq/bifrost/core/providers/cohere"
 	"github.com/maximhq/bifrost/core/providers/databricks"
 	"github.com/maximhq/bifrost/core/providers/deepseek"
@@ -4976,6 +4977,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return deepseek.NewDeepSeekProvider(config, bifrost.logger)
 	case schemas.Wafer:
 		return wafer.NewWaferProvider(config, bifrost.logger)
+	case schemas.Cloudflare:
+		return cloudflare.NewCloudflareProvider(config, bifrost.logger)
 	case schemas.Gemini:
 		return gemini.NewGeminiProvider(config, bifrost.logger), nil
 	case schemas.OpenRouter:

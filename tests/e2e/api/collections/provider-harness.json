@@ -298,7 +298,7 @@
           "  // JSON or multipart body, or from the path on the Gemini-shaped routes, up to the last colon since",
           "  // a Bedrock id can contain one. Only standard provider names count as a prefix: a namespaced",
           "  // model such as meta-llama/Llama-3.1-8B names no provider, and a custom provider is not known here.",
-          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'typesafe'];",
+          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe'];",
           "  var __model = null;",
           "  try {",
           "    var __raw = pm.request && pm.request.body && pm.request.body.mode === 'raw' ? pm.request.body.raw : '';",
@@ -250616,6 +250616,353 @@
               ]
             },
             "description": "Customer Claude Code reproduction, turn 3 of three. Two small system markers and a rolling tool-result marker; the first tool result carries {{cachePrefix}} (~5.9K tokens), subsequent results are short. Only the newest tool result is marked. Read at least 85% of the preceding prompt and write at most 15%, so system-only reuse and full-history rewrites both fail. Uses the configured OpenAI Responses provider and a shared prompt_cache_key for separate cache accounting. State dependencies keep this chain together when filtering/rerunning/sharding. Also verify all three translated native breakpoints and absence of inferred explicit-only policy. Implicit cache hits depend on provider availability; a cache miss fails visibly with counters for diagnosis."
+          }
+        }
+      ]
+    },
+    {
+      "name": "197. Cloudflare Workers AI provider (cloudflare-workers-ai)",
+      "description": "Cloudflare Workers AI serves chat completions and embeddings on OpenAI-compatible endpoints scoped to an account:\n\n  {base}/accounts/{account_id}/ai/v1/chat/completions\n  {base}/accounts/{account_id}/ai/v1/embeddings\n\nThe account ID comes from each key's cloudflare_key_config.account_id. Responses go through the chat endpoint. List models reads the native /ai/models/search, keeps the Text Generation and Text Embeddings tasks, and leaves out the Clef decision models. Errors arrive in Cloudflare's {success:false, errors:[...]} envelope and their messages are surfaced.",
+      "item": [
+        {
+          "name": "cloudflare/@cf/meta/llama-4-scout-17b-16e-instruct /v1/chat/completions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat completes on the Workers AI account named by the key', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.choices, 'no choices returned').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(json.usage, 'usage missing; Workers AI returns the OpenAI usage object').to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cloudflare/@cf/meta/llama-4-scout-17b-16e-instruct\", \"max_tokens\": 32, \"messages\": [{\"role\": \"user\", \"content\": \"What is 2+2? Answer with just the number.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cloudflare/@cf/meta/llama-4-scout-17b-16e-instruct /v1/chat/completions streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream emits OpenAI-shaped SSE chunks', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(body, 'no SSE data frames').to.include('data:');",
+                  "  pm.expect(body, 'no chat.completion.chunk objects in the stream').to.include('chat.completion.chunk');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cloudflare/@cf/meta/llama-4-scout-17b-16e-instruct\", \"max_tokens\": 32, \"stream\": true, \"messages\": [{\"role\": \"user\", \"content\": \"Count to three.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cloudflare/@cf/meta/llama-4-scout-17b-16e-instruct /v1/chat/completions tool call",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('tool calls survive the OpenAI-compatible round trip', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var msg = pm.response.json().choices[0].message;",
+                  "  pm.expect(msg.tool_calls, 'no tool_calls returned').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(msg.tool_calls[0].function.name).to.eql('get_weather');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cloudflare/@cf/meta/llama-4-scout-17b-16e-instruct\", \"max_tokens\": 128, \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather in Paris? Use the tool.\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get the weather for a city\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}], \"tool_choice\": \"auto\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cloudflare/@cf/meta/llama-4-scout-17b-16e-instruct /v1/responses through chat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responses requests are answered through the chat completions endpoint', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.output, 'no output items returned').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cloudflare/@cf/meta/llama-4-scout-17b-16e-instruct\", \"max_output_tokens\": 64, \"input\": \"What is 2+2? Answer with just the number.\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cloudflare/@cf/meta/llama-4-scout-17b-16e-instruct /v1/responses streaming through chat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responses stream emits response.created and response.completed', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(body, 'no response.created event: ' + body).to.include('response.created');",
+                  "  pm.expect(body, 'no response.completed event: ' + body).to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cloudflare/@cf/meta/llama-4-scout-17b-16e-instruct\", \"max_output_tokens\": 64, \"stream\": true, \"input\": \"Count to three.\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cloudflare/@cf/baai/bge-large-en-v1.5 /v1/embeddings",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('embeddings return a vector', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.data, 'no embedding data returned').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(json.data[0].embedding, 'embedding vector is empty').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cloudflare/@cf/baai/bge-large-en-v1.5\", \"input\": \"What is Workers AI?\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cloudflare /v1/models lists chat and embedding models, not Clef",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('list models keeps the OpenAI-compatible tasks and leaves out the Clef decision models', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.eql(200);",
+                  "  var ids = (pm.response.json().data || []).map(function (m) { return m.id; });",
+                  "  pm.expect(ids, 'chat model missing: ' + body).to.include('cloudflare/@cf/meta/llama-4-scout-17b-16e-instruct');",
+                  "  pm.expect(ids, 'embedding model missing: ' + body).to.include('cloudflare/@cf/baai/bge-large-en-v1.5');",
+                  "  ids.forEach(function (id) { pm.expect(id.indexOf('cloudflare/@cf/cloudflare/clef'), 'Clef must not be listed as a chat model: ' + id).to.eql(-1); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=cloudflare",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "cloudflare"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] cloudflare/@cf/meta/does-not-exist /v1/chat/completions unknown model surfaces the upstream error",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an unknown model is reported as a client error carrying the Workers AI message', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'expected a 4xx for an unknown model; got: ' + body).to.be.within(400, 499);",
+                  "  pm.expect(body, 'the Workers AI error envelope message was not surfaced: ' + body).to.include('No such model');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cloudflare/@cf/meta/does-not-exist\", \"max_tokens\": 16, \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
           }
         }
       ]

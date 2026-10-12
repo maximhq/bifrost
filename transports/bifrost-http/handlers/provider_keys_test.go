@@ -342,9 +342,10 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
 			SecretKey: secret("mantle-secret-key-current"),
 		},
-		VLLMKeyConfig:   &schemas.VLLMKeyConfig{URL: secret("https://current.vllm.example.com")},
-		OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: secret("https://current.ollama.example.com")},
-		SGLKeyConfig:    &schemas.SGLKeyConfig{URL: secret("https://current.sgl.example.com")},
+		VLLMKeyConfig:       &schemas.VLLMKeyConfig{URL: secret("https://current.vllm.example.com")},
+		OllamaKeyConfig:     &schemas.OllamaKeyConfig{URL: secret("https://current.ollama.example.com")},
+		SGLKeyConfig:        &schemas.SGLKeyConfig{URL: secret("https://current.sgl.example.com")},
+		CloudflareKeyConfig: &schemas.CloudflareKeyConfig{AccountID: secret("0123456789abcdef0123456789abcdef")},
 	}
 	update := schemas.Key{
 		AzureKeyConfig: &schemas.AzureKeyConfig{
@@ -361,9 +362,10 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
 			SecretKey: staleMask("mant", "0006"),
 		},
-		VLLMKeyConfig:   &schemas.VLLMKeyConfig{URL: staleMask("vllm", "0007")},
-		OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: staleMask("olla", "0008")},
-		SGLKeyConfig:    &schemas.SGLKeyConfig{URL: staleMask("sgla", "0009")},
+		VLLMKeyConfig:       &schemas.VLLMKeyConfig{URL: staleMask("vllm", "0007")},
+		OllamaKeyConfig:     &schemas.OllamaKeyConfig{URL: staleMask("olla", "0008")},
+		SGLKeyConfig:        &schemas.SGLKeyConfig{URL: staleMask("sgla", "0009")},
+		CloudflareKeyConfig: &schemas.CloudflareKeyConfig{AccountID: staleMask("0123", "cdef")},
 	}
 
 	merged := merge(oldRaw, update)
@@ -381,6 +383,7 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		{"vllm url", merged.VLLMKeyConfig.URL.GetValue(), oldRaw.VLLMKeyConfig.URL.GetValue()},
 		{"ollama url", merged.OllamaKeyConfig.URL.GetValue(), oldRaw.OllamaKeyConfig.URL.GetValue()},
 		{"sgl url", merged.SGLKeyConfig.URL.GetValue(), oldRaw.SGLKeyConfig.URL.GetValue()},
+		{"cloudflare account id", merged.CloudflareKeyConfig.AccountID.GetValue(), oldRaw.CloudflareKeyConfig.AccountID.GetValue()},
 	}
 	for _, check := range checks {
 		if check.got != check.want {

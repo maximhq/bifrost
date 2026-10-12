@@ -411,6 +411,16 @@ export const sglKeyConfigSchema = z
 		path: ["url"],
 	});
 
+// Cloudflare key config schema
+export const cloudflareKeyConfigSchema = z
+	.object({
+		account_id: secretVarSchema.optional(),
+	})
+	.refine((data) => isSecretVarSet(data.account_id), {
+		message: "Account ID is required",
+		path: ["account_id"],
+	});
+
 // Databricks key config schema
 export const databricksKeyConfigSchema = z
 	.object({
@@ -524,6 +534,7 @@ export const modelProviderKeySchema = z
 		sgl_key_config: sglKeyConfigSchema.optional(),
 		databricks_key_config: databricksKeyConfigSchema.optional(),
 		github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
+		cloudflare_key_config: cloudflareKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 		use_anthropic_endpoints: z.boolean().optional(),
 		use_openai_endpoints: z.boolean().optional(),

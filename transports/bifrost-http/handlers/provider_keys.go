@@ -509,6 +509,7 @@ func decodeKeyUpdate(body []byte, oldRawKey schemas.Key) (schemas.Key, error) {
 		"sgl_key_config":            func() { updateKey.SGLKeyConfig = oldRawKey.SGLKeyConfig },
 		"databricks_key_config":     func() { updateKey.DatabricksKeyConfig = oldRawKey.DatabricksKeyConfig },
 		"github_copilot_key_config": func() { updateKey.GithubCopilotKeyConfig = oldRawKey.GithubCopilotKeyConfig },
+		"cloudflare_key_config":     func() { updateKey.CloudflareKeyConfig = oldRawKey.CloudflareKeyConfig },
 		"enabled":                   func() { updateKey.Enabled = oldRawKey.Enabled },
 		"use_for_batch_api":         func() { updateKey.UseForBatchAPI = oldRawKey.UseForBatchAPI },
 		"use_anthropic_endpoints":   func() { updateKey.UseAnthropicEndpoints = oldRawKey.UseAnthropicEndpoints },
@@ -695,6 +696,16 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 			stored = &oldRawKey.SGLKeyConfig.URL
 		}
 		if err := preserve(&mergedKey.SGLKeyConfig.URL, stored, "sgl_key_config.url"); err != nil {
+			return schemas.Key{}, err
+		}
+	}
+
+	if mergedKey.CloudflareKeyConfig != nil {
+		var stored *schemas.SecretVar
+		if oldRawKey.CloudflareKeyConfig != nil {
+			stored = &oldRawKey.CloudflareKeyConfig.AccountID
+		}
+		if err := preserve(&mergedKey.CloudflareKeyConfig.AccountID, stored, "cloudflare_key_config.account_id"); err != nil {
 			return schemas.Key{}, err
 		}
 	}
@@ -950,6 +961,10 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 	case schemas.SGL:
 		if key.SGLKeyConfig == nil || !key.SGLKeyConfig.URL.IsSet() {
 			return fmt.Errorf("sgl_key_config.url is required for SGL keys")
+		}
+	case schemas.Cloudflare:
+		if key.CloudflareKeyConfig == nil || !key.CloudflareKeyConfig.AccountID.IsSet() {
+			return fmt.Errorf("cloudflare_key_config.account_id is required for Cloudflare keys")
 		}
 	case schemas.GithubCopilot:
 		// A Copilot API token in value is a valid alternative to the GitHub App bundle. But a

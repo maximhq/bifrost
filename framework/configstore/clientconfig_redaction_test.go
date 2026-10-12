@@ -374,6 +374,9 @@ func TestProviderConfig_Redacted_SurfacesLiteralIdentifiers(t *testing.T) {
 			SGLKeyConfig: &schemas.SGLKeyConfig{
 				URL: *schemas.NewSecretVar("http://sgl.internal.example.com:30000"),
 			},
+			CloudflareKeyConfig: &schemas.CloudflareKeyConfig{
+				AccountID: *schemas.NewSecretVar("0123456789abcdef0123456789abcdef"),
+			},
 		}},
 	}
 
@@ -388,6 +391,7 @@ func TestProviderConfig_Redacted_SurfacesLiteralIdentifiers(t *testing.T) {
 	assert.Equal(t, "http://vllm.internal.example.com:8000", key.VLLMKeyConfig.URL.GetValue())
 	assert.Equal(t, "http://ollama.internal.example.com:11434", key.OllamaKeyConfig.URL.GetValue())
 	assert.Equal(t, "http://sgl.internal.example.com:30000", key.SGLKeyConfig.URL.GetValue())
+	assert.Equal(t, "0123456789abcdef0123456789abcdef", key.CloudflareKeyConfig.AccountID.GetValue())
 
 	// The redacted copy must not alias the live config: these are pointer
 	// fields, and an API response handing out the live SecretVar would let a

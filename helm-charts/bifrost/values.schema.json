@@ -1186,7 +1186,8 @@
                         "perplexity",
                         "sgl",
                         "huggingface",
-                        "databricks"
+                        "databricks",
+                        "cloudflare"
                       ]
                     },
                     "embedding_model": {
@@ -7189,6 +7190,19 @@
             }
           },
           "required": ["app_id", "installation_id", "repository_id", "private_key"],
+          "additionalProperties": false
+        },
+        "cloudflare_key_config": {
+          "type": "object",
+          "description": "Cloudflare key configuration. Required on every key of a cloudflare provider.",
+          "properties": {
+            "account_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Cloudflare account ID that serves Workers AI (can use env. prefix)"
+            }
+          },
+          "required": ["account_id"],
           "additionalProperties": false
         },
         "aliases": {
