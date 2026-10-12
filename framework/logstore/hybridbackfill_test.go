@@ -43,6 +43,15 @@ func (s *blockingBackfillObjectStore) Put(ctx context.Context, key string, data 
 	return s.InMemoryObjectStore.Put(ctx, key, data, tags)
 }
 
+type stalledBackfillReadStore struct {
+	*RDBLogStore
+}
+
+func (s *stalledBackfillReadStore) FindByID(ctx context.Context, id string) (*Log, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 // seedLegacyLog inserts a full-payload row straight through the inner store so
 // it looks like a row written before hybrid storage was enabled.
 func seedLegacyLog(t *testing.T, inner LogStore, id string, ts time.Time, contentHidden bool) *Log {
@@ -193,6 +202,55 @@ func TestBackfill_RespectsExcludedFields(t *testing.T) {
 	raw, err := objStore.Get(ctx, ObjectKey("bf", row.Timestamp, "bf-excl"))
 	require.NoError(t, err)
 	assert.NotContains(t, string(raw), `"raw_request"`)
+}
+
+func TestBackfill_ClearsAllOffloadedPayloadColumns(t *testing.T) {
+	cases := []struct {
+		name     string
+		excluded []string
+		resident bool
+	}{
+		{name: "offloaded"},
+		{name: "excluded", excluded: []string{"embedding_input", "live_session", "plugin_logs"}, resident: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hybrid, inner, objStore, cleanup := newBackfillHybrid(t, tc.excluded)
+			defer cleanup()
+			ctx := context.Background()
+
+			entry := seedLegacyLog(t, inner, "bf-all-payloads-"+tc.name, time.Now().UTC().Add(-24*time.Hour), false)
+			require.NoError(t, inner.Update(ctx, entry.ID, map[string]interface{}{
+				"embedding_input": `["embedding-secret"]`,
+				"live_session":    `{"session":"live-secret"}`,
+				"plugin_logs":     `{"plugin":"plugin-secret"}`,
+			}))
+
+			result, err := hybrid.BackfillObjects(ctx, BackfillOptions{})
+			require.NoError(t, err)
+			assert.Equal(t, int64(1), result.Migrated)
+
+			row, err := inner.FindByID(ctx, entry.ID)
+			require.NoError(t, err)
+			raw, err := objStore.Get(ctx, ObjectKey("bf", entry.Timestamp, entry.ID))
+			require.NoError(t, err)
+			if tc.resident {
+				assert.Contains(t, row.EmbeddingInput, "embedding-secret")
+				assert.Contains(t, row.LiveSession, "live-secret")
+				assert.Contains(t, row.PluginLogs, "plugin-secret")
+				assert.NotContains(t, string(raw), "embedding-secret")
+				assert.NotContains(t, string(raw), "live-secret")
+				assert.NotContains(t, string(raw), "plugin-secret")
+			} else {
+				assert.Empty(t, row.EmbeddingInput)
+				assert.Empty(t, row.LiveSession)
+				assert.Empty(t, row.PluginLogs)
+				assert.Contains(t, string(raw), "embedding-secret")
+				assert.Contains(t, string(raw), "live-secret")
+				assert.Contains(t, string(raw), "plugin-secret")
+			}
+		})
+	}
 }
 
 func TestBackfill_RespectsExcludedRequestTypes(t *testing.T) {
@@ -385,6 +443,32 @@ func TestBackfill_ProgressAndSummary(t *testing.T) {
 	assert.Greater(t, calls, 0)
 }
 
+func TestBackfill_ProgressReportsOnlyLatestError(t *testing.T) {
+	hybrid, inner, objStore, cleanup := newBackfillHybrid(t, nil)
+	defer cleanup()
+	ctx := context.Background()
+	objStore.PutErr = assert.AnError
+
+	for i := 0; i < 3; i++ {
+		seedLegacyLog(t, inner, fmt.Sprintf("bf-progress-fail-%d", i), time.Now().UTC().Add(-24*time.Hour), false)
+	}
+
+	errorCallbacks := 0
+	result, err := hybrid.BackfillObjects(ctx, BackfillOptions{
+		Concurrency: 3,
+		Progress: func(progress BackfillResult) {
+			assert.LessOrEqual(t, len(progress.Errors), 1)
+			if len(progress.Errors) == 1 {
+				errorCallbacks++
+			}
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), result.Failed)
+	assert.Len(t, result.Errors, 3)
+	assert.Equal(t, 3, errorCallbacks)
+}
+
 func TestBackfill_ContextCancellationFinishesAcceptedWork(t *testing.T) {
 	ctx := context.Background()
 	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "cancel.db")}, hybridTestLogger{})
@@ -504,6 +588,54 @@ func TestBackfill_ZeroTimestampCursorAdvances(t *testing.T) {
 	result, err := hybrid.BackfillObjects(ctx, BackfillOptions{BatchSize: 1, Concurrency: 1})
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), result.Skipped)
+	assert.Zero(t, result.Migrated)
+}
+
+func TestBackfill_ReadTimeoutBoundsAcceptedWork(t *testing.T) {
+	ctx := context.Background()
+	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "read-timeout.db")}, hybridTestLogger{})
+	require.NoError(t, err)
+	seedLegacyLog(t, inner, "bf-read-timeout", time.Now().UTC().Add(-24*time.Hour), false)
+
+	objects := objectstore.NewInMemoryObjectStore()
+	hybrid := newHybridLogStore(&stalledBackfillReadStore{RDBLogStore: inner}, objects, "bf", hybridTestLogger{}, nil, nil)
+	defer hybrid.Close(context.Background())
+
+	originalTimeout := backfillReadTimeout
+	backfillReadTimeout = 20 * time.Millisecond
+	defer func() { backfillReadTimeout = originalTimeout }()
+
+	started := time.Now()
+	result, err := hybrid.BackfillObjects(ctx, BackfillOptions{Concurrency: 1})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), result.Failed)
+	require.Len(t, result.Errors, 1)
+	assert.ErrorIs(t, result.Errors[0].Err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(started), time.Second)
+}
+
+func TestBackfill_ClickHouseDryRunCursorKeepsMilliseconds(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	objects := objectstore.NewInMemoryObjectStore()
+	hybrid := newHybridLogStore(store, objects, "bf", hybridTestLogger{}, nil, nil)
+	t.Cleanup(func() { _ = hybrid.Close(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	second := time.Now().UTC().Truncate(time.Second)
+	for i, offset := range []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 300 * time.Millisecond} {
+		entry := chTestLog(fmt.Sprintf("bf-ch-cursor-%d", i), second.Add(offset))
+		require.NoError(t, store.CreateIfNotExists(ctx, entry))
+	}
+	includeMCP := false
+	result, err := hybrid.BackfillObjects(ctx, BackfillOptions{
+		BatchSize:   1,
+		Concurrency: 1,
+		DryRun:      true,
+		IncludeMCP:  &includeMCP,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), result.Skipped)
 	assert.Zero(t, result.Migrated)
 }
 

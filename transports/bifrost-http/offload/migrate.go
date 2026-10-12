@@ -59,32 +59,26 @@ func RunMigrateOffload(args []string) int {
 	// default when -app-dir is omitted.
 	dir := bifrostServer.GetDefaultConfigDir(*appDir)
 
-	// Load the same config the gateway uses, so object_storage and
-	// object_storage_exclude_fields are guaranteed to match the online path.
-	cfg, err := lib.LoadConfig(context.Background(), dir)
+	// Load only the log-store configuration. The maintenance path deliberately
+	// avoids gateway startup reconciliation, including clearing restart_required.
+	logsConfig, store, err := lib.LoadLogStoreForMaintenance(context.Background(), dir, logger)
 	if err != nil {
-		logger.Error("failed to load config from %s: %v", *appDir, err)
+		logger.Error("failed to load log store from %s: %v", dir, err)
 		return 1
 	}
-	if cfg.LogsStoreConfig == nil || !cfg.LogsStoreConfig.Enabled {
-		logger.Error("logs_store is not enabled in %s/config.json; nothing to migrate", *appDir)
+	if logsConfig == nil || !logsConfig.Enabled || store == nil {
+		logger.Error("logs_store is not enabled in %s/config.json; nothing to migrate", dir)
 		return 1
 	}
-	if cfg.LogsStoreConfig.ObjectStorage == nil {
+	if logsConfig.ObjectStorage == nil {
+		_ = store.Close(context.Background())
 		logger.Error("logs_store.object_storage is not configured; enable it first, then run this command")
 		return 1
 	}
 
-	// LoadConfig already built the log store through the same factory the
-	// server uses: this yields a HybridLogStore when object_storage is set.
-	store := cfg.LogsStore
-	if store == nil {
-		logger.Error("failed to open log store")
-		return 1
-	}
 	hybrid, ok := store.(*logstore.HybridLogStore)
 	if !ok {
-		logger.Error("log store %s is not object-storage-backed (hybrid mode requires object_storage); nothing to migrate", cfg.LogsStoreConfig.Type)
+		logger.Error("log store %s is not object-storage-backed (hybrid mode requires object_storage); nothing to migrate", logsConfig.Type)
 		_ = store.Close(context.Background())
 		return 1
 	}

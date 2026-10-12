@@ -29,6 +29,10 @@ const (
 	backfillUploadRetries = 3
 )
 
+// backfillReadTimeout bounds the initial row lookup for accepted work. It is a
+// variable so timeout behavior can be covered without a 30-second test.
+var backfillReadTimeout = 30 * time.Second
+
 // BackfillOptions controls a one-time migration of existing DB-resident log
 // payloads into the object store. The result matches what the online hybrid
 // write path produces: a lightweight DB row plus one object per log.
@@ -49,7 +53,8 @@ type BackfillOptions struct {
 	// DryRun scans and reports without uploading or modifying rows.
 	DryRun bool
 	// Progress is invoked after each processed row with a serialized running
-	// result snapshot. May be nil.
+	// result snapshot. Errors contains at most the error from that row; the final
+	// BackfillResult retains all errors. May be nil.
 	Progress func(result BackfillResult)
 }
 
@@ -155,7 +160,7 @@ func (h *HybridLogStore) BackfillObjects(ctx context.Context, opts BackfillOptio
 		backfillErrors = append(backfillErrors, e)
 	}
 	var progressMu sync.Mutex
-	notifyProgress := func() {
+	notifyProgress := func(latestError *BackfillError) {
 		if opts.Progress == nil {
 			return
 		}
@@ -170,9 +175,9 @@ func (h *HybridLogStore) BackfillObjects(ctx context.Context, opts BackfillOptio
 			BytesOffloaded: bytesOffloaded.Load(),
 			Duration:       time.Since(start),
 		}
-		errMu.Lock()
-		snapshot.Errors = append([]BackfillError(nil), backfillErrors...)
-		errMu.Unlock()
+		if latestError != nil {
+			snapshot.Errors = []BackfillError{*latestError}
+		}
 		opts.Progress(snapshot)
 	}
 
@@ -186,6 +191,7 @@ func (h *HybridLogStore) BackfillObjects(ctx context.Context, opts BackfillOptio
 			for w := range workCh {
 				var bytes int64
 				var err error
+				var progressError *BackfillError
 				if w.mcp {
 					bytes, err = h.backfillMCPRow(workCtx, w.row, opts.DryRun)
 				} else {
@@ -199,9 +205,11 @@ func (h *HybridLogStore) BackfillObjects(ctx context.Context, opts BackfillOptio
 					skipped.Add(1)
 				default:
 					failed.Add(1)
-					appendErr(BackfillError{LogID: w.row.ID, MCP: w.mcp, Err: err})
+					backfillErr := BackfillError{LogID: w.row.ID, MCP: w.mcp, Err: err}
+					appendErr(backfillErr)
+					progressError = &backfillErr
 				}
-				notifyProgress()
+				notifyProgress(progressError)
 			}
 		}()
 	}
@@ -304,10 +312,12 @@ func scanBackfillCandidates(ctx context.Context, db *gorm.DB, table string, afte
 		Order("timestamp ASC, id ASC").
 		Limit(pageSize)
 	if after.Set {
-		query = query.Where("timestamp > ? OR (timestamp = ? AND id > ?)", after.Timestamp, after.Timestamp, after.ID)
+		placeholder, timestampArg := timestampBound(db.Dialector.Name(), after.Timestamp, cursorTimeBound)
+		query = query.Where("timestamp > "+placeholder+" OR (timestamp = "+placeholder+" AND id > ?)", timestampArg, timestampArg, after.ID)
 	}
 	if !cutoff.IsZero() {
-		query = query.Where("timestamp <= ?", cutoff)
+		placeholder, timestampArg := timestampBound(db.Dialector.Name(), cutoff, upperTimeBound)
+		query = query.Where("timestamp <= "+placeholder, timestampArg)
 	}
 	var rows []backfillRow
 	if err := query.Find(&rows).Error; err != nil {
@@ -320,7 +330,9 @@ func scanBackfillCandidates(ctx context.Context, db *gorm.DB, table string, afte
 // success, errBackfillNothingToOffload when there is nothing to upload, or an
 // error describing the failure (DB row untouched in that case).
 func (h *HybridLogStore) backfillLogRow(ctx context.Context, row backfillRow, dryRun bool) (int64, error) {
-	entry, err := h.inner.FindByID(ctx, row.ID)
+	readCtx, cancel := context.WithTimeout(ctx, backfillReadTimeout)
+	entry, err := h.inner.FindByID(readCtx, row.ID)
+	cancel()
 	if err != nil {
 		return 0, fmt.Errorf("failed to load row: %w", err)
 	}
@@ -374,7 +386,9 @@ func (h *HybridLogStore) backfillLogRow(ctx context.Context, row backfillRow, dr
 
 // backfillMCPRow migrates one MCP tool-log row.
 func (h *HybridLogStore) backfillMCPRow(ctx context.Context, row backfillRow, dryRun bool) (int64, error) {
-	entry, err := h.inner.FindMCPToolLog(ctx, row.ID)
+	readCtx, cancel := context.WithTimeout(ctx, backfillReadTimeout)
+	entry, err := h.inner.FindMCPToolLog(readCtx, row.ID)
+	cancel()
 	if err != nil {
 		return 0, fmt.Errorf("failed to load row: %w", err)
 	}
@@ -415,8 +429,8 @@ func (h *HybridLogStore) backfillMCPRow(ctx context.Context, row backfillRow, dr
 	if !ok {
 		return 0, fmt.Errorf("logstore: inner store does not support conditional backfill updates")
 	}
-	updateCtx, cancel := context.WithTimeout(ctx, backfillUpdateTimeout)
-	defer cancel()
+	updateCtx, updateCancel := context.WithTimeout(ctx, backfillUpdateTimeout)
+	defer updateCancel()
 	updated, err := updater.updateMCPForBackfill(updateCtx, entry.ID, updates)
 	if err != nil {
 		return 0, fmt.Errorf("failed to rewrite DB row (object %s is orphaned and safe to delete): %w", key, err)
@@ -469,6 +483,7 @@ func (h *HybridLogStore) rewriteLogRow(ctx context.Context, id string, dbEntry *
 		"responses_input_history":   dbEntry.ResponsesInputHistory,
 		"output_message":            dbEntry.OutputMessage,
 		"responses_output":          dbEntry.ResponsesOutput,
+		"embedding_input":           dbEntry.EmbeddingInput,
 		"embedding_output":          dbEntry.EmbeddingOutput,
 		"rerank_output":             dbEntry.RerankOutput,
 		"ocr_input":                 dbEntry.OCRInput,
@@ -492,6 +507,7 @@ func (h *HybridLogStore) rewriteLogRow(ctx context.Context, id string, dbEntry *
 		"video_download_output":     dbEntry.VideoDownloadOutput,
 		"video_list_output":         dbEntry.VideoListOutput,
 		"video_delete_output":       dbEntry.VideoDeleteOutput,
+		"live_session":              dbEntry.LiveSession,
 		"cache_debug":               dbEntry.CacheDebug,
 		"guardrail_debug":           dbEntry.GuardrailDebug,
 		"routing_metadata":          dbEntry.RoutingMetadata,
@@ -502,6 +518,7 @@ func (h *HybridLogStore) rewriteLogRow(ctx context.Context, id string, dbEntry *
 		"passthrough_request_body":  dbEntry.PassthroughRequestBody,
 		"passthrough_response_body": dbEntry.PassthroughResponseBody,
 		"routing_engine_logs":       dbEntry.RoutingEngineLogs,
+		"plugin_logs":               dbEntry.PluginLogs,
 		"content_summary":           dbEntry.ContentSummary,
 		"has_object":                true,
 	})
