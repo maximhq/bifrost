@@ -123,6 +123,10 @@ Never expose Bifrost's HTTP port directly to the internet. Put a reverse proxy (
 
 See the [Nginx reverse proxy guide](/deployment-guides/how-to/nginx-reverse-proxy) for streaming-safe proxy settings, and bind Bifrost itself to an internal interface so it is only reachable through the proxy.
 
+### Serving HTTPS without a proxy
+
+For a single host where a proxy would only be there to hold the certificate, Bifrost can terminate TLS itself with `-tls-cert` and `-tls-key`, and reload renewed certificates without a restart. See [Serve HTTPS directly](/deployment-guides/how-to/native-tls) for setup, including obtaining and renewing a Let's Encrypt certificate.
+
 ---
 
 ## 5. Send security headers from the reverse proxy
