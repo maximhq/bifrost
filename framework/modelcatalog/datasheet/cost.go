@@ -2286,7 +2286,7 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 //   - All providers: chat and responses requests retry in each other's mode, since a model served over both APIs often has a datasheet row under only one of them.
 //   - All providers: decision requests retry in chat mode, since a decision served natively or by emulation is priced from the model's chat row.
 //   - All providers: for ImageEdit/ImageVariation requests, retries the lookup in image-generation mode.
-//   - All providers: live requests retry in "realtime" mode, where the datasheet feed files GPT Live models.
+//   - All providers: realtime requests prefer "realtime" rows before the responses/chat lookups; live requests retry in "realtime" mode.
 //
 // The method acquires a read lock for the duration of the lookup.
 //
@@ -2310,6 +2310,16 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	// bedrock_mantle lookups run entirely against "bedrock".
 	if provider == string(schemas.BedrockMantle) {
 		provider = string(schemas.Bedrock)
+	}
+
+	// Realtime voice rates take precedence over responses/chat rates for the
+	// same model. Retain those existing lookups when no realtime row exists.
+	if requestType == schemas.RealtimeRequest {
+		for _, candidate := range []string{model, strings.ToLower(model)} {
+			if pricing, ok := s.pricingData[makeKey(candidate, provider, "realtime")]; ok {
+				return &pricing, true
+			}
+		}
 	}
 
 	pricing, ok := s.pricingData[makeKey(model, provider, mode)]
@@ -2410,7 +2420,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 
 	// The feed files GPT Live models under the Realtime API's mode.
 	if requestType == schemas.LiveRequest {
-		s.logger.Debug("primary lookup failed, trying realtime mode for the same live model")
+		s.logger.Debug("primary lookup failed, trying realtime mode for the same voice model")
 		pricing, ok = s.pricingData[makeKey(model, provider, "realtime")]
 		if ok {
 			return &pricing, true
