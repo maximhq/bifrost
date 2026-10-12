@@ -637,7 +637,40 @@ WarpLogIndexStatus:
       allOf:
         - $ref: '#/WarpBackfillStatus'
       description: The in-flight or latest backfill for the current namespace, when one exists.
+    topics:
+      allOf:
+        - $ref: '#/WarpTopicHealth'
+      description: How live topic filing is doing, when the index is usable and the log store keeps topics.
   required: [state, vector_store_connected, embedding_configured]
+
+WarpTopicHealth:
+  type: object
+  description: |
+    The state of live topic filing for the embedding model in use, over the
+    requests the caller may see. A rising unmatched share is the sign the
+    topics no longer fit the traffic and a discovery or a new build is due.
+  properties:
+    active_topics:
+      type: integer
+    themes:
+      type: integer
+    pooled:
+      type: integer
+      format: int64
+      description: Requests waiting in the pool for a topic to be discovered.
+    requests_24h:
+      type: integer
+      format: int64
+      description: Requests filed in the last 24 hours.
+    unmatched_24h:
+      type: integer
+      format: int64
+      description: Of those, the requests that matched no topic.
+    unmatched_share_24h:
+      type: number
+      format: double
+      description: unmatched_24h over requests_24h, or 0 when nothing was filed.
+  required: [active_topics, themes, pooled, requests_24h, unmatched_24h, unmatched_share_24h]
 
 WarpConversation:
   type: object

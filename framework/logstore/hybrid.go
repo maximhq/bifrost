@@ -850,7 +850,9 @@ func (h *HybridLogStore) DeleteLog(ctx context.Context, id string) error {
 	if findErr != nil && !errors.Is(findErr, ErrNotFound) {
 		return findErr
 	}
-	if err := h.inner.DeleteLog(ctx, id); err != nil {
+	// A partial delete still removed the row, so its payload goes too.
+	err := h.inner.DeleteLog(ctx, id)
+	if err != nil && !errors.Is(err, ErrPartialLogDelete) {
 		return err
 	}
 	if log != nil && log.HasObject {
@@ -864,7 +866,7 @@ func (h *HybridLogStore) DeleteLog(ctx context.Context, id string) error {
 			h.logger.Warn("objectstore: failed to delete object for log %s: %v", id, delErr)
 		}
 	}
-	return nil
+	return err
 }
 
 // DeleteLogs removes many log rows from the DB and batches a single
@@ -883,7 +885,9 @@ func (h *HybridLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 			keys = append(keys, h.withAlternateKeys(h.logKey(log.Timestamp, log.ID))...)
 		}
 	}
-	if err := h.inner.DeleteLogs(ctx, ids); err != nil {
+	// A partial delete still removed the rows, so their payloads go too.
+	err := h.inner.DeleteLogs(ctx, ids)
+	if err != nil && !errors.Is(err, ErrPartialLogDelete) {
 		return err
 	}
 	if len(keys) > 0 {
@@ -891,7 +895,7 @@ func (h *HybridLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 			h.logger.Warn("objectstore: failed to batch delete %d objects: %v", len(keys), delErr)
 		}
 	}
-	return nil
+	return err
 }
 
 // DeleteLogsBatch deletes old DB rows older than cutoff in batches of
@@ -2542,6 +2546,17 @@ func (h *HybridLogStore) PruneWarpTopicUnmatched(ctx context.Context, olderThan 
 // DeleteWarpTopicUnmatchedBatch deletes expired pool rows in batches.
 func (h *HybridLogStore) DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
 	return h.inner.DeleteWarpTopicUnmatchedBatch(ctx, cutoff, batchSize)
+}
+
+// DeleteWarpTopicUnmatchedExcept drops the pool rows of every other embedding
+// model.
+func (h *HybridLogStore) DeleteWarpTopicUnmatchedExcept(ctx context.Context, embeddingSignature string) (int64, error) {
+	return h.inner.DeleteWarpTopicUnmatchedExcept(ctx, embeddingSignature)
+}
+
+// DeleteWarpTopics removes topic and theme rows outright.
+func (h *HybridLogStore) DeleteWarpTopics(ctx context.Context, ids []string) error {
+	return h.inner.DeleteWarpTopics(ctx, ids)
 }
 
 // ListLogsForWarpTopics returns the assignment columns of the given logs.
