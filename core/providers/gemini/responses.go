@@ -360,6 +360,9 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 		if candidate.LogprobsResult != nil {
 			extraFields["logprobsResult"] = candidate.LogprobsResult
 		}
+		if candidate.URLContextMetadata != nil {
+			extraFields["urlContextMetadata"] = candidate.URLContextMetadata
+		}
 		if len(response.Candidates) > 1 {
 			extraFields["additionalCandidates"] = response.Candidates[1:]
 		}
@@ -727,6 +730,9 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 			if target.AvgLogprobs == 0 {
 				target.AvgLogprobs = terminal.AvgLogprobs
 			}
+			if target.URLContextMetadata == nil {
+				target.URLContextMetadata = terminal.URLContextMetadata
+			}
 		} else {
 			candidates = append(candidates, terminal)
 		}
@@ -871,9 +877,32 @@ func buildGeminiTerminalCandidate(
 		if logprobs := extractGeminiLogprobsResult(bifrostResp.ProviderExtraFields["logprobsResult"]); logprobs != nil {
 			candidate.LogprobsResult = logprobs
 		}
+		if urlContext := extractGeminiURLContextMetadata(bifrostResp.ProviderExtraFields["urlContextMetadata"]); urlContext != nil {
+			candidate.URLContextMetadata = urlContext
+		}
 	}
 
 	return candidate
+}
+
+// extractGeminiURLContextMetadata recovers *URLContextMetadata from
+// ProviderExtraFields["urlContextMetadata"], from the in-memory pointer or a JSON-decoded map.
+func extractGeminiURLContextMetadata(v interface{}) *URLContextMetadata {
+	if v == nil {
+		return nil
+	}
+	if meta, ok := v.(*URLContextMetadata); ok {
+		return meta
+	}
+	b, err := providerUtils.MarshalSorted(v)
+	if err != nil {
+		return nil
+	}
+	var meta URLContextMetadata
+	if err := sonic.Unmarshal(b, &meta); err != nil {
+		return nil
+	}
+	return &meta
 }
 
 // extractGeminiLogprobsResult recovers *LogprobsResult from ProviderExtraFields["logprobsResult"],
@@ -1283,6 +1312,9 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 				if avgLogprobs, ok := extractGeminiAvgLogprobs(bifrostResp.Response.ProviderExtraFields["avgLogprobs"]); ok {
 					candidate.AvgLogprobs = avgLogprobs
 				}
+				if urlContext := extractGeminiURLContextMetadata(bifrostResp.Response.ProviderExtraFields["urlContextMetadata"]); urlContext != nil {
+					candidate.URLContextMetadata = urlContext
+				}
 				if responseID, ok := bifrostResp.Response.ProviderExtraFields["responseId"].(string); ok && responseID != "" {
 					streamResp.ResponseID = responseID
 				}
@@ -1358,8 +1390,9 @@ type GeminiResponsesStreamState struct {
 	// Candidate metadata that only arrives on the terminal chunk (alongside finishReason).
 	// Preserved here so closeGeminiOpenItems can stash them onto the response.completed
 	// event's ProviderExtraFields for the reverse (Bifrost -> Gemini) conversion to restore.
-	SafetyRatings []*SafetyRating
-	AvgLogprobs   float64
+	SafetyRatings      []*SafetyRating
+	AvgLogprobs        float64
+	URLContextMetadata *URLContextMetadata // may arrive on any chunk, not only the terminal one
 
 	// Finish reason from a chunk that could not close the stream (no item opened yet);
 	// FinalizeGeminiResponsesStream reports it instead of an unknown finish.
@@ -1467,6 +1500,7 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.ResponseID = nil
 	state.SafetyRatings = nil
 	state.AvgLogprobs = 0
+	state.URLContextMetadata = nil
 	state.PendingFinishReason = ""
 	state.PendingFinishMessage = ""
 	state.CreatedAt = int(time.Now().Unix())
@@ -1580,6 +1614,9 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 		}
 		if candidate.AvgLogprobs != 0 {
 			state.AvgLogprobs = candidate.AvgLogprobs
+		}
+		if candidate.URLContextMetadata != nil {
+			state.URLContextMetadata = candidate.URLContextMetadata
 		}
 
 		// Check for finish reason (indicates end of generation)
@@ -2732,6 +2769,9 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 	}
 	if state.AvgLogprobs != 0 {
 		extraFields["avgLogprobs"] = state.AvgLogprobs
+	}
+	if state.URLContextMetadata != nil {
+		extraFields["urlContextMetadata"] = state.URLContextMetadata
 	}
 	if len(extraFields) > 0 {
 		completedResp.ProviderExtraFields = extraFields
