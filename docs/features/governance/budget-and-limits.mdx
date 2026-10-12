@@ -51,7 +51,7 @@ Provider Config (has independent budget + rate limits)
 **Key Capabilities:**
 - **Virtual Keys** - Primary access control via `x-bf-vk` header (exclusive team OR customer attachment)
 - **Budget Management** - Independent budget limits at each hierarchy level with cumulative checking
-- **Rate Limiting** - Request and token-based throttling at both VK and provider config levels
+- **Rate Limiting** - Request and token-based throttling at the provider config, virtual key, team, and customer levels
 - **Provider-Level Governance** - Granular budgets and rate limits per AI provider within a virtual key
 - **Model/Provider Filtering** - Granular access control per virtual key  
 - **Usage Tracking** - Real-time monitoring and audit trails
@@ -103,7 +103,7 @@ When a request is made with a virtual key, Bifrost checks **all applicable budge
 - **All applicable budgets must pass** - any single budget failure blocks the request
 - **Budgets are independent** - each tracks its own usage and limits
 - **Costs are deducted from all applicable budgets** - same cost applied to each level
-- **Rate limits checked at provider config and VK levels** - teams and customers have no rate limits
+- **Rate limits checked at every level that has one** - provider config, virtual key, team, and customer
 - **Provider selection** - providers that exceed their budget or rate limits are excluded from [routing](./routing)
 
 **Example:**
@@ -122,7 +122,7 @@ When a request is made with a virtual key, Bifrost checks **all applicable budge
 
 ## Rate Limiting
 
-Rate limits protect your system from abuse and manage traffic by setting thresholds on request frequency and token usage over a specific time window. Rate limits can be configured at **both the Virtual Key level and Provider Config level** for granular control.
+Rate limits protect your system from abuse and manage traffic by setting thresholds on request frequency and token usage over a specific time window. Rate limits can be configured at the **Provider Config**, **Virtual Key**, **Team**, and **Customer** levels. A team or customer has at most one rate limit of its own.
 
 Bifrost supports two types of rate limits that work in parallel:
 - **Request Limits**: Control the maximum number of API calls that can be made within a set duration (e.g., 100 requests per minute).
@@ -134,6 +134,8 @@ Rate limits are checked in hierarchical order:
 ```
 1. ✓ Provider Config Rate Limits (if provider config has rate limits)
 2. ✓ Virtual Key Rate Limits (if VK has rate limits)
+3. ✓ Team Rate Limit (if the VK's team has one)
+4. ✓ Customer Rate Limit (if the customer has one)
 ```
 
 For a request to be allowed, it must pass both the request limit and token limit checks at **all applicable levels**. If a provider config exceeds its rate limits, that provider is excluded from routing, but other providers within the same virtual key remain available.
@@ -185,7 +187,7 @@ Alignment only applies to durations that have a calendar boundary: `1d`, `1w`, `
 
 Turning calendar alignment **on** for an existing owner **keeps its accumulated usage**. Each open window is adopted onto the calendar grid instead of being reset: its start moves forward to the boundary it now follows, its usage carries over untouched, and its first aligned reset happens at the **next** boundary.
 
-So a monthly budget with $42 of spend, aligned on 5 February, keeps the $42 and resets on 1 March. Nothing is cleared at the switch, and nothing is forgiven.
+So a monthly budget with \$42 of spend, aligned on 5 February, keeps the \$42 and resets on 1 March. Nothing is cleared at the switch, and nothing is forgiven.
 
 Two details follow from each window being adopted on its own terms:
 
@@ -797,7 +799,7 @@ Provider configurations with budget-based failover:
 ```
 
 **Behavior:**
-- Primary: Use cheap provider until $10 daily budget exhausted
+- Primary: Use cheap provider until \$10 daily budget exhausted
 - Fallback: Automatically switch to premium provider when cheap option unavailable. To enable this, you should not send `provider` name in the request body, read [Routing](./routing#automatic-fallbacks) for more details.
 - Cost containment: Prevent unexpected overspend on premium resources and limit the number of requests to the premium provider
 
