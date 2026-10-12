@@ -7077,6 +7077,134 @@ func TestScenarioSingleKeyProviderSkipsTheKeyLevel(t *testing.T) {
 	requireHits(t, u, map[string]int{"sk-c1": 5, "sk-c2": 0})
 }
 
+// A session's key removed from its provider is dropped on the next turn, and the session rebinds to
+// the key that served, whether one key or several are left. Added back, the removed key does not
+// take the session back: it stays on the key it rebound to, though a free pick would land on the
+// returning key (plan row KS-22; one subtest per pool size).
+func TestScenarioSessionKeyRemovedThenAddedBack(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		left []string // the keys left once a2 is removed
+	}{
+		{"one key left", []string{"a1"}},
+		{"two keys left", []string{"a1", "a3"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newScenarioUpstream(t)
+			kv := newMockKVStore()
+			all := append([]string{"a2"}, tc.left...)
+			keysOf := func(names []string, weightOf func(string) float64) []schemas.Key {
+				keys := make([]schemas.Key, 0, len(names))
+				for _, name := range names {
+					keys = append(keys, scenarioKey(name, weightOf(name)))
+				}
+				return keys
+			}
+			even := func(string) float64 { return 1 }
+			account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{provA: keysOf(all, even)})
+			client := scenarioClient(t, account, nil, kv)
+			bindSession(t, kv, "s", SessionStateKindKey, provA, "m", "a2")
+
+			account.SetKeysForProvider(provA, keysOf(tc.left, even))
+			ctx := sessionCtx("s")
+			served, err := scenarioChat(client, ctx, provA, "m")
+			requireServed(t, served, err, provA)
+			if !strings.Contains(routingLogs(ctx), "no longer eligible") {
+				t.Fatalf("the removed key's binding should be reported as dropped:\n%s", routingLogs(ctx))
+			}
+			rebound, _ := sessionState(kv, "s", SessionStateKindKey, provA, "m")
+			if !slices.Contains(tc.left, rebound) {
+				t.Fatalf("the session should rebind to a key left on the provider, holds %q", rebound)
+			}
+
+			// a2 returns as the only key with weight, so only the binding keeps a turn off it.
+			account.SetKeysForProvider(provA, keysOf(all, func(name string) float64 {
+				if name == "a2" {
+					return 1
+				}
+				return 0
+			}))
+			u.clearHits()
+			for range 5 {
+				served, err := scenarioChat(client, sessionCtx("s"), provA, "m")
+				requireServed(t, served, err, provA)
+			}
+			requireHits(t, u, map[string]int{"sk-" + rebound: 5, "sk-a2": 0})
+			requireSessionState(t, kv, "s", SessionStateKindKey, provA, "m", rebound)
+		})
+	}
+}
+
+// batchOnlyA2 is a provider whose keys both serve chat, but only a2 is enabled for the batch and file
+// APIs, so a batch or file pool holds a2 alone.
+func batchOnlyA2() []schemas.Key {
+	a2 := scenarioKey("a2", 1)
+	a2.UseForBatchAPI = schemas.Ptr(true)
+	return []schemas.Key{scenarioKey("a1", 1), a2}
+}
+
+// A one-key pool that does not hold the session's key leaves the binding alone when the pool says
+// nothing about the session's own requests, each case on its own guard: a pool a second model
+// narrowed, or a batch or file pool cut to its batch-enabled keys, where the bound key still serves
+// the session's HTTP turns, and a realtime or WebSocket Responses pick, which never writes the
+// session's bindings, though there the bound key is gone (plan rows KS-20 and KS-22).
+func TestScenarioOneKeyPoolKeepsTheSessionKeyWhenItSaysNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		requestType schemas.RequestType
+		keys        func() []schemas.Key
+		extraModels []string
+	}{
+		{
+			name:        "a chat pool a second model narrowed",
+			requestType: schemas.ChatCompletionRequest,
+			keys: func() []schemas.Key {
+				a1 := scenarioKey("a1", 1)
+				a1.Models = schemas.WhiteList{"m"}
+				return []schemas.Key{a1, scenarioKey("a2", 1)}
+			},
+			extraModels: []string{"m2"},
+		},
+		{
+			name:        "a realtime pick",
+			requestType: schemas.RealtimeRequest,
+			keys:        func() []schemas.Key { return []schemas.Key{scenarioKey("a2", 1)} },
+		},
+		{
+			name:        "a WebSocket Responses pick",
+			requestType: schemas.WebSocketResponsesRequest,
+			keys:        func() []schemas.Key { return []schemas.Key{scenarioKey("a2", 1)} },
+		},
+		{
+			name:        "a batch pool of the one batch-enabled key",
+			requestType: schemas.BatchCreateRequest,
+			keys:        batchOnlyA2,
+		},
+		{
+			name:        "a file pool of the one batch-enabled key",
+			requestType: schemas.FileUploadRequest,
+			keys:        batchOnlyA2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newScenarioUpstream(t)
+			kv := newMockKVStore()
+			client := scenarioClient(t, scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{provA: tc.keys()}), nil, kv)
+			bindSession(t, kv, "s", SessionStateKindKey, provA, "m", "a1")
+
+			ctx := sessionCtx("s")
+			key, err := client.SelectKeyForProviderRequestType(ctx, tc.requestType, provA, "m", tc.extraModels...)
+			if err != nil || key.ID != "a2" {
+				t.Fatalf("the pick got %q (err %v), want a2, the one key in the pool", key.ID, err)
+			}
+			requireSessionState(t, kv, "s", SessionStateKindKey, provA, "m", "a1")
+			if logs := routingLogs(ctx); strings.Contains(logs, "no longer eligible") {
+				t.Fatalf("the pool should not judge the session's key:\n%s", logs)
+			}
+		})
+	}
+}
+
 // A fallback picks its key without the session, so the key binding the session already held on the
 // fallback's provider is replaced by the key that served there, and the binding the request followed
 // on the failed primary is dropped (plan row KS-15).
