@@ -2,7 +2,7 @@ import { expect, test } from '../../core/fixtures/base.fixture'
 
 test.describe('Complexity Router', () => {
   test.describe('Decision Model Picker', () => {
-    // The saved config, the providers (OpenRouter, Cloudflare and a custom OpenAI-based one),
+    // The saved config, the providers (OpenRouter, Cloudflare, Perplexity, Ollama and a custom OpenAI-based one),
     // and the model listing are mocked, so the test does not depend on decisions
     // access or on which models the catalog holds. The listing answers with the
     // decision models only when the picker asks for them, which is what proves
@@ -38,7 +38,7 @@ test.describe('Complexity Router', () => {
           })
         },
       )
-      // The configured providers, plus OpenRouter, Cloudflare and a custom provider built on OpenAI.
+      // The configured providers, plus OpenRouter, Cloudflare, Perplexity, Ollama and a custom provider built on OpenAI.
       await page.route(
         (url) => url.pathname === '/api/providers',
         async (route) => {
@@ -47,10 +47,12 @@ test.describe('Complexity Router', () => {
           const body = await response.json()
           body.providers = [
             ...(body.providers ?? []).filter(
-              (p: { name: string }) => p.name !== CUSTOM_OPENAI && p.name !== 'openrouter' && p.name !== 'cloudflare',
+              (p: { name: string }) => ![CUSTOM_OPENAI, 'openrouter', 'cloudflare', 'perplexity', 'ollama'].includes(p.name),
             ),
             { name: 'openrouter', provider_status: 'active', keys: [] },
             { name: 'cloudflare', provider_status: 'active', keys: [] },
+            { name: 'perplexity', provider_status: 'active', keys: [] },
+            { name: 'ollama', provider_status: 'active', keys: [] },
             {
               name: CUSTOM_OPENAI,
               provider_status: 'active',
@@ -101,6 +103,20 @@ test.describe('Complexity Router', () => {
         saved: '@cf/cloudflare/clef-flash',
         decisions: ['@cf/cloudflare/clef', '@cf/cloudflare/clef-flash'],
         chat: ['@cf/meta/llama-4-scout-17b-16e-instruct'],
+      },
+      // Perplexity's catalog is its Sonar chat models plus the deciders; only the deciders are offered.
+      {
+        provider: 'perplexity',
+        saved: 'pplx-decider-v1.1-27b',
+        decisions: ['pplx-decider-v1-27b', 'pplx-decider-v1.1-27b'],
+        chat: ['sonar-pro'],
+      },
+      // Ollama lists every locally pulled model; only the System One models are offered.
+      {
+        provider: 'ollama',
+        saved: 'tev1:0.8b-q8_0',
+        decisions: ['tev1:0.8b-q8_0', 'nimble'],
+        chat: ['llama3.1:latest'],
       },
     ]
 

@@ -2426,6 +2426,23 @@ func IsPerplexityDeciderModel(model string) bool {
 	return strings.HasPrefix(strings.ToLower(model), "pplx-decider")
 }
 
+// ollamaDecisionModelPrefixes are the System One model families in Ollama's
+// library, served on its /v1/systemone endpoint rather than chat.
+var ollamaDecisionModelPrefixes = []string{"nimble", "tev1", "clef", "laya"}
+
+// IsOllamaDecisionModel checks if the model is one of Ollama's System One
+// models ("nimble", "clef-flash", "tev1:0.8b"). Any name in a System One family
+// matches, so new variants work without a code change.
+func IsOllamaDecisionModel(model string) bool {
+	model = strings.ToLower(model)
+	for _, prefix := range ollamaDecisionModelPrefixes {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {
