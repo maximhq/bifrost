@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/fasthttp/router"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -606,4 +608,65 @@ func TestCreateRoutingRuleRejectsInvalidFallbacks(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, rules, "a rejected create must not store a rule")
 	require.Empty(t, manager.reloaded)
+}
+
+// TestCreateRoutingRuleCustomProviderMustBeRegistered pins the write-time provider check against
+// the registry: a custom provider is unknown until core registers it (which happens once it has a
+// key), so a rule naming it is refused in both fallback forms and accepted as soon as it is known.
+func TestCreateRoutingRuleCustomProviderMustBeRegistered(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &RoutingHandler{configStore: store, routingManager: &reloadRecordingRoutingManager{}}
+
+	const custom = "handler-late-custom"
+	schemas.UnregisterKnownProvider(custom)
+	t.Cleanup(func() { schemas.UnregisterKnownProvider(custom) })
+
+	forms := map[string]string{
+		"string": `["` + custom + `/m"]`,
+		"object": `[{"provider":"` + custom + `","model":"m","key_id":"k-1"}]`,
+	}
+	priority := 0
+	create := func(name, fallbacks string) *fasthttp.RequestCtx {
+		priority++
+		ctx := newTestRequestCtx(`{"name":"` + name + `","priority":` + strconv.Itoa(priority) + `,"cel_expression":"true","targets":[{"provider":"openai","weight":1}],"fallbacks":` + fallbacks + `}`)
+		handler.createRoutingRule(ctx)
+		return ctx
+	}
+	for form, fallbacks := range forms {
+		ctx := create("unregistered-"+form, fallbacks)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "%s form before registration: %s", form, ctx.Response.Body())
+	}
+	rules, err := store.GetRoutingRules(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, rules)
+
+	schemas.RegisterKnownProvider(custom)
+	for form, fallbacks := range forms {
+		ctx := create("registered-"+form, fallbacks)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "%s form after registration: %s", form, ctx.Response.Body())
+	}
+}
+
+// TestCreateRoutingRuleTrimsPaddedPinnedObject pins that padding inside an object fallback is
+// trimmed before it is stored, next to legacy strings that must stay untouched, so a restart
+// re-parses the row exactly as the API returned it.
+func TestCreateRoutingRuleTrimsPaddedPinnedObject(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &RoutingHandler{configStore: store, routingManager: &reloadRecordingRoutingManager{}}
+
+	ctx := newTestRequestCtx(`{"name":"padded","cel_expression":"true","targets":[{"provider":"openai","weight":1}],` +
+		`"fallbacks":["anthropic/claude-sonnet-4",{"provider":" vertex ","model":" gemini-2.5-pro ","key_id":" k-1 "},"azure/"]}`)
+	handler.createRoutingRule(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	want := `["anthropic/claude-sonnet-4",{"provider":"vertex","model":"gemini-2.5-pro","key_id":"k-1"},"azure/"]`
+	require.Equal(t, want, ruleFallbacksJSON(t, ctx))
+
+	rules, err := store.GetRoutingRules(context.Background())
+	require.NoError(t, err)
+	require.Len(t, rules, 1)
+	require.NotNil(t, rules[0].Fallbacks)
+	require.Equal(t, want, *rules[0].Fallbacks)
+	require.Equal(t, "k-1", rules[0].ParsedFallbacks[1].Resolved().KeyID)
 }

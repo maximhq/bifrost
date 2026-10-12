@@ -4278,6 +4278,15 @@ func TestFallbackKeyPinMatrix(t *testing.T) {
 			wantKeys: []string{"sk-unpinned"},
 		},
 		{
+			name: "pin to a key that belongs to another provider is skipped, next fallback serves",
+			fallbacks: func(p schemas.ModelProvider) []schemas.Fallback {
+				// "primary-key" exists on the Anthropic primary, not on the fallback provider, so
+				// the pin is refused for this provider's pool and must not be matched by id alone.
+				return []schemas.Fallback{{Provider: p, Model: "fb-model", KeyID: "primary-key"}, {Provider: p, Model: "fb-model"}}
+			},
+			wantKeys: []string{"sk-unpinned"},
+		},
+		{
 			name: "pin does not leak into the next fallback",
 			fallbacks: func(p schemas.ModelProvider) []schemas.Fallback {
 				// The first attempt's model is refused by both keys, so it fails before upstream and

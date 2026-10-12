@@ -488,3 +488,49 @@ func TestApplyRoutingRules_SkippedFallbackIsLogged(t *testing.T) {
 		})
 	}
 }
+
+// TestApplyRoutingRules_TargetPinStaysOffFallbacks pins the two halves of a rule apart: the
+// target's key_id lands on the routing pin context key, while each fallback carries only its own
+// pin, so an unpinned fallback is not silently narrowed to the target's key.
+func TestApplyRoutingRules_TargetPinStaysOffFallbacks(t *testing.T) {
+	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	require.NoError(t, err)
+	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+		ID:            "target-pin-1",
+		Name:          "Target pin with mixed fallbacks",
+		CelExpression: "model == 'gpt-4o'",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), KeyID: bifrost.Ptr("target-key"), Weight: 1.0},
+		},
+		ParsedFallbacks: []configstoreTables.RoutingFallback{
+			{Fallback: schemas.Fallback{Provider: "azure", Model: "gpt-4o-mini"}},
+			{Fallback: schemas.Fallback{Provider: "azure", Model: "gpt-4o-mini", KeyID: "fallback-key"}},
+		},
+		Enabled:  bifrost.Ptr(true),
+		Scope:    "global",
+		Priority: 0,
+	}))
+
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	require.NoError(t, err)
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"},
+	}
+	root := schemas.NewBifrostContext(context.Background(), time.Now())
+	root.BlockRestrictedWrites()
+	pluginName := PluginName
+
+	decision, err := plugin.applyRoutingRules(root.WithPluginScope(&pluginName), req, rules.GovernanceScope{})
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	assert.Equal(t, "target-key", decision.KeyID)
+	ctxKeyID, _ := root.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string)
+	assert.Equal(t, "target-key", ctxKeyID)
+
+	fallbacks := req.ChatRequest.Fallbacks
+	require.Len(t, fallbacks, 2)
+	assert.Empty(t, fallbacks[0].KeyID, "an unpinned fallback must not inherit the target's key")
+	assert.Equal(t, "fallback-key", fallbacks[1].KeyID)
+}
