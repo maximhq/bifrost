@@ -3,9 +3,11 @@ package live
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // Sidebands: a second connection that steers a session it does not own.
@@ -165,6 +167,15 @@ func TestAttach_SidebandIsHeldToTheVirtualKey(t *testing.T) {
 	assert.Equal(t, s.ID(), sideband.WaitFor("session.started").Get("session.id").Str)
 	assert.Equal(t, []string{"Bearer sk-fake-split-backend"}, s.SidebandAuths(), "the sideband dials with the key the virtual key allows")
 	sideband.Close()
+
+	// Each attempt is a row of its own naming the session and the key: the refusal, and the sideband.
+	refused := findSidebandLog(t, s.ID(), owner.ID)
+	assert.Equal(t, "error", refused.Get("status").Str)
+	row := findSidebandLog(t, s.ID(), scoped.ID)
+	assert.Equal(t, "success", row.Get("status").Str)
+	assert.Equal(t, splitProvider, row.Get("provider").Str)
+	assert.Equal(t, "split-backend", row.Get("selected_key_name").Str)
+	assert.False(t, row.Get("live_session").Exists(), "a sideband is not a session")
 }
 
 // A sideband spends nothing: the session it joins already counted as the key's request, and the
@@ -187,4 +198,72 @@ func TestAttach_SidebandIsNotASpendingRequest(t *testing.T) {
 	s.WaitConnections(t, 2)
 	assert.Equal(t, s.ID(), sideband.WaitFor("session.started").Get("session.id").Str)
 	sideband.Close()
+}
+
+// Attach attempts log independently of the primary session, even before it ends or when no
+// local session exists. The record describes the handshake, not another billable conversation.
+func TestAttach_LogsItsOwnRequest(t *testing.T) {
+	requireFake(t)
+	vk := createVirtualKey(t, virtualKeySpec{})
+	primary, s := openFakeSession(t, webrtcTransport, vk, backendModel, nil)
+	defer primary.CloseSession()
+
+	var sidebands []*liveClient
+	for range 2 {
+		sideband, status, err := attachSideband(t, s.ID(), vkHeaders(vk))
+		require.NoError(t, err, "attach (HTTP %d)", status)
+		sideband.WaitFor("session.started")
+		sidebands = append(sidebands, sideband)
+	}
+	// A sideband's row is written once it detaches.
+	for _, sideband := range sidebands {
+		sideband.Close()
+	}
+	rows := waitAttachLogs(t, s.ID(), 2)
+	assert.NotEqual(t, rows[0].Get("id").Str, rows[1].Get("id").Str)
+	for _, row := range rows {
+		assert.Equal(t, "live_sideband", row.Get("object").Str)
+		assert.Equal(t, "success", row.Get("status").Str)
+		assert.Equal(t, "openai", row.Get("provider").Str)
+		assert.Equal(t, vk.ID, row.Get("virtual_key_id").Str)
+		assert.NotEmpty(t, row.Get("selected_key_id").Str)
+		assert.GreaterOrEqual(t, row.Get("latency").Float(), 0.0)
+		assert.Zero(t, row.Get("cost").Float())
+		assert.False(t, row.Get("token_usage").Exists())
+		assert.False(t, row.Get("live_session").Exists())
+	}
+}
+
+func TestAttach_FailedRequestIsLoggedWithoutAParentSession(t *testing.T) {
+	requireFake(t)
+	vk := createVirtualKey(t, virtualKeySpec{})
+	sessionID := "live_missing_" + vk.ID
+	_, status, err := attachSideband(t, sessionID, vkHeaders(vk))
+	require.Error(t, err)
+	require.Equal(t, http.StatusNotFound, status)
+	row := waitAttachLogs(t, sessionID, 1)[0]
+	assert.Equal(t, "error", row.Get("status").Str)
+	assert.Equal(t, "openai", row.Get("provider").Str)
+	assert.Equal(t, vk.ID, row.Get("virtual_key_id").Str)
+	assert.Equal(t, int64(http.StatusNotFound), row.Get("error_details.status_code").Int())
+	assert.Zero(t, row.Get("cost").Float())
+}
+
+func waitAttachLogs(t *testing.T, providerSessionID string, count int) []gjson.Result {
+	t.Helper()
+	var matches []gjson.Result
+	require.Eventually(t, func() bool {
+		status, raw, err := apiCall(http.MethodGet, "/api/logs?objects=live_sideband&limit=500&start_time="+suiteStart.Format(time.RFC3339Nano), nil, nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status, "list logs: %s", raw)
+		matches = nil
+		for _, summary := range gjson.GetBytes(raw, "logs").Array() {
+			row := fetchLog(t, summary.Get("id").Str)
+			if row.Get("metadata.provider_session_id").Str == providerSessionID {
+				matches = append(matches, row)
+			}
+		}
+		return len(matches) == count
+	}, rowWaitTimeout, 300*time.Millisecond, "expected %d live_sideband rows for %s", count, providerSessionID)
+	return matches
 }

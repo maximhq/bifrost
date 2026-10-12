@@ -210,6 +210,7 @@ const (
 	RealtimeRequest                RequestType = "realtime"
 	LiveRequest                    RequestType = "live"
 	LiveContentRequest             RequestType = "live_content"
+	LiveSidebandRequest            RequestType = "live_sideband"
 )
 
 // BifrostContextKey is a type for context keys used in Bifrost.

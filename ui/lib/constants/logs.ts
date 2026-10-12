@@ -146,6 +146,7 @@ export const RequestTypes = [
 	"live",
 	"live.session",
 	"live_content",
+	"live_sideband",
 ] as const;
 
 export const ProviderLabels: Record<ProviderName, string> = {
@@ -371,6 +372,7 @@ export const RequestTypeLabels = {
 	live: "Live",
 	"live.session": "Live Session",
 	live_content: "Live Recording",
+	live_sideband: "Live Sideband",
 } as const;
 
 export const RequestTypeColors = {
@@ -466,6 +468,7 @@ export const RequestTypeColors = {
 	live: "bg-violet-100 text-violet-800",
 	"live.session": "bg-violet-100 text-violet-800",
 	live_content: "bg-blue-100 text-blue-800",
+	live_sideband: "bg-blue-100 text-blue-800",
 } as const;
 
 export const RoutingEngineUsedLabels = {
