@@ -315,3 +315,25 @@ func TestExtractSupportedParams_NoneReasoningEffort(t *testing.T) {
 		t.Errorf("expected supported params to omit \"supports_none_reasoning_effort\" when unset, got %v", got)
 	}
 }
+
+// TestExtractSupportedParams_ReasoningSummaryFlags guards the per-value summary flags:
+// each is listed unless the datasheet sets it explicitly false.
+func TestExtractSupportedParams_ReasoningSummaryFlags(t *testing.T) {
+	params := []string{"reasoning_summary_detailed", "reasoning_summary_concise", "reasoning_summary_auto"}
+	got := extractSupportedParams(&schemas.ModelCapabilities{})
+	for _, param := range params {
+		if !slices.Contains(got, param) {
+			t.Errorf("expected %q when unset, got %v", param, got)
+		}
+	}
+	got = extractSupportedParams(&schemas.ModelCapabilities{
+		SupportsReasoningSummaryDetailed: capabilityBoolPtr(false),
+		SupportsReasoningSummaryConcise:  capabilityBoolPtr(false),
+		SupportsReasoningSummaryAuto:     capabilityBoolPtr(false),
+	})
+	for _, param := range params {
+		if slices.Contains(got, param) {
+			t.Errorf("expected %q omitted when false, got %v", param, got)
+		}
+	}
+}

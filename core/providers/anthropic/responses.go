@@ -6920,7 +6920,7 @@ func normalizeInlineFunctionTool(tool *schemas.ResponsesTool) (*schemas.Response
 	if tool == nil || tool.ResponsesToolFunction == nil || tool.ResponsesToolFunction.Parameters == nil {
 		return tool, nil
 	}
-	normalized, err := normalizeAnthropicToolInputSchema(tool.ResponsesToolFunction.Parameters)
+	normalized, err := NormalizeAnthropicToolInputSchema(tool.ResponsesToolFunction.Parameters)
 	if err != nil {
 		return nil, err
 	}
@@ -9410,7 +9410,7 @@ func convertBifrostToolsToAnthropic(caps schemas.ModelCaps, tools []schemas.Resp
 			toolForConversion = &toolCopy
 		}
 		if tool.ResponsesToolFunction != nil && tool.ResponsesToolFunction.Parameters != nil {
-			normalized, err := normalizeAnthropicToolInputSchema(tool.ResponsesToolFunction.Parameters)
+			normalized, err := NormalizeAnthropicToolInputSchema(tool.ResponsesToolFunction.Parameters)
 			if err != nil {
 				return nil, nil, err
 			}
