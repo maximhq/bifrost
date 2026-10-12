@@ -94,6 +94,23 @@ type responsesAPIAdapter struct {
 	makeReq         func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError)
 }
 
+// addExecutedToolResult preserves one result per tool call, grouping repeated tool names by call ID.
+func addExecutedToolResult(toolResults map[string]interface{}, toolCallIDsByName map[string]string, toolName, toolCallID string, output interface{}) {
+	firstCallID, repeatedName := toolCallIDsByName[toolName]
+	if !repeatedName {
+		toolCallIDsByName[toolName] = toolCallID
+		toolResults[toolName] = output
+		return
+	}
+
+	resultsByCallID, grouped := toolResults[toolName].(map[string]interface{})
+	if !grouped {
+		resultsByCallID = map[string]interface{}{firstCallID: toolResults[toolName]}
+		toolResults[toolName] = resultsByCallID
+	}
+	resultsByCallID[toolCallID] = output
+}
+
 // Chat API adapter implementations
 func (c *chatAPIAdapter) getConversationHistory() []interface{} {
 	history := make([]interface{}, 0)
@@ -203,6 +220,7 @@ func (c *chatAPIAdapter) applyUsage(response interface{}, usage *schemas.Bifrost
 //
 // Returns:
 //   - *schemas.BifrostChatResponse: A new chat response with executed results and pending tool calls
+// createChatResponseWithExecutedToolsAndNonAutoExecutableCalls builds the Chat Completions response for executed and pending tools.
 func createChatResponseWithExecutedToolsAndNonAutoExecutableCalls(
 	originalResponse *schemas.BifrostChatResponse,
 	executedToolResults []*schemas.ChatMessage,
@@ -236,13 +254,13 @@ func createChatResponseWithExecutedToolsAndNonAutoExecutableCalls(
 	// Build content text showing executed tool results
 	var contentText string
 	if len(executedToolResults) > 0 {
-		// Format tool results as JSON-like structure
 		toolResultsMap := make(map[string]interface{})
+		toolCallIDsByName := make(map[string]string)
 		for _, toolResult := range executedToolResults {
 			// Get tool name from tool call ID mapping
-			var toolName string
+			var toolCallID, toolName string
 			if toolResult.ChatToolMessage != nil && toolResult.ChatToolMessage.ToolCallID != nil {
-				toolCallID := *toolResult.ChatToolMessage.ToolCallID
+				toolCallID = *toolResult.ChatToolMessage.ToolCallID
 				if name, ok := toolCallIDToName[toolCallID]; ok {
 					toolName = name
 				} else {
@@ -271,7 +289,7 @@ func createChatResponseWithExecutedToolsAndNonAutoExecutableCalls(
 					output = blocks
 				}
 			}
-			toolResultsMap[toolName] = output
+			addExecutedToolResult(toolResultsMap, toolCallIDsByName, toolName, toolCallID, output)
 		}
 
 		// Convert to JSON string for display
@@ -425,6 +443,7 @@ func (r *responsesAPIAdapter) applyUsage(response interface{}, usage *schemas.Bi
 //
 // Returns:
 //   - *schemas.BifrostResponsesResponse: A new responses response with executed results and pending tool calls
+// createResponsesResponseWithExecutedToolsAndNonAutoExecutableCalls builds the Responses API output for executed and pending tools.
 func createResponsesResponseWithExecutedToolsAndNonAutoExecutableCalls(
 	originalResponse *schemas.BifrostResponsesResponse,
 	executedToolResults []*schemas.ChatMessage,
@@ -482,13 +501,13 @@ func createResponsesResponseWithExecutedToolsAndNonAutoExecutableCalls(
 	// Build content text showing executed tool results
 	var contentText string
 	if len(executedToolResults) > 0 {
-		// Format tool results as JSON-like structure
 		toolResultsMap := make(map[string]interface{})
+		toolCallIDsByName := make(map[string]string)
 		for _, toolResult := range executedToolResults {
 			// Get tool name from tool call ID mapping
-			var toolName string
+			var toolCallID, toolName string
 			if toolResult.ChatToolMessage != nil && toolResult.ChatToolMessage.ToolCallID != nil {
-				toolCallID := *toolResult.ChatToolMessage.ToolCallID
+				toolCallID = *toolResult.ChatToolMessage.ToolCallID
 				if name, ok := toolCallIDToName[toolCallID]; ok {
 					toolName = name
 				} else {
@@ -517,7 +536,7 @@ func createResponsesResponseWithExecutedToolsAndNonAutoExecutableCalls(
 					output = blocks
 				}
 			}
-			toolResultsMap[toolName] = output
+			addExecutedToolResult(toolResultsMap, toolCallIDsByName, toolName, toolCallID, output)
 		}
 
 		// Convert to JSON string for display
