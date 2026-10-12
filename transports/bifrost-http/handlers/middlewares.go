@@ -33,6 +33,7 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
+	"golang.org/x/sync/semaphore"
 )
 
 var loggingSkipPaths = []string{"/health", "/_next", "/api/dev/"}
@@ -373,6 +374,48 @@ func (c *CorsMiddleware) applyHeaders(ctx *fasthttp.RequestCtx, cfg *corsMiddlew
 	return allowed
 }
 
+const (
+	// requestDecompressionMaxRatio bounds how far a compressed request body may expand relative
+	// to the bytes received. Real JSON compresses a few times to a few tens of times; only a bomb
+	// does better than this.
+	requestDecompressionMaxRatio = 100
+	// requestDecompressionFloor is the expansion every body is allowed whatever its size, so a
+	// small, well-compressed request is never refused for compressing well.
+	requestDecompressionFloor = 1 << 20
+	// requestDecompressionBudgetFactor sizes the process-wide budget of decompressed bytes in
+	// flight, as a multiple of the request body cap.
+	requestDecompressionBudgetFactor = 4
+)
+
+// requestBodyCap is the configured request body cap in bytes, 100 MiB when unset.
+func requestBodyCap(config *lib.Config) int {
+	if config != nil && config.ClientConfig != nil && config.ClientConfig.MaxRequestBodySizeMB > 0 {
+		return config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024
+	}
+	return 100 * 1024 * 1024
+}
+
+// decompressionAllowance is what a compressed body of compressedLen bytes may expand to: at
+// most requestDecompressionMaxRatio times its size, never below the floor, never above the cap.
+// A negative length (a chunked body, whose size is unknown) is allowed the cap.
+func decompressionAllowance(compressedLen, maxRequestBodyBytes int) int {
+	if compressedLen < 0 {
+		return maxRequestBodyBytes
+	}
+	// Compared before multiplying: a length past this would overflow int and wrap below the floor.
+	if compressedLen > maxRequestBodyBytes/requestDecompressionMaxRatio {
+		return maxRequestBodyBytes
+	}
+	allowed := compressedLen * requestDecompressionMaxRatio
+	if allowed < requestDecompressionFloor {
+		allowed = requestDecompressionFloor
+	}
+	if allowed > maxRequestBodyBytes {
+		allowed = maxRequestBodyBytes
+	}
+	return allowed
+}
+
 // RequestDecompressionMiddleware transparently decompresses compressed request bodies.
 // Two paths based on compressed Content-Length:
 //   - Large or chunked (CL > threshold or CL unknown): streaming decompression via
@@ -380,7 +423,17 @@ func (c *CorsMiddleware) applyHeaders(ctx *fasthttp.RequestCtx, cfg *corsMiddlew
 //     matching the response-side pattern in core/providers/utils.
 //   - Small (CL ≤ threshold): buffered decompression via io.ReadAll + SetBodyRaw,
 //     with decompression bomb protection via MaxRequestBodySizeMB.
+//
+// This middleware wraps the router, so it runs before route matching and before every auth
+// middleware, for anyone who can reach the listener. The work it does must therefore stay in
+// proportion to what the caller sent: the cap alone is the wire cap too, and lets a few hundred
+// bytes become a 100 MiB buffer. Two bounds keep it proportional. Each body may expand only to
+// its decompressionAllowance, and each buffered decompression reserves that allowance from a
+// process-wide budget for the life of the request, so maximum-size buffers cannot stack up
+// without bound; a request that cannot reserve is answered 503 at once. Streaming bodies are
+// not buffered here and take no reservation.
 func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
+	budget := semaphore.NewWeighted(int64(requestDecompressionBudgetFactor) * int64(requestBodyCap(config)))
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			if len(ctx.Request.Header.ContentEncoding()) == 0 {
@@ -392,13 +445,18 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			// bounds what any codec may expand to, and the zstd decoder itself refuses
 			// frames whose declared window or content size exceeds its bounds before
 			// allocating them (providerUtils.ZstdDecoderMaxWindow).
-			maxRequestBodyBytes := 100 * 1024 * 1024 // default 100 MB (matches decodeRequestBodyWithLimit fallback)
-			if config != nil && config.ClientConfig.MaxRequestBodySizeMB > 0 {
-				maxRequestBodyBytes = config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024
+			maxRequestBodyBytes := requestBodyCap(config)
+			allowed := decompressionAllowance(ctx.Request.Header.ContentLength(), maxRequestBodyBytes)
+			refuseExpansion := func(compressedLen int) {
+				if allowed >= maxRequestBodyBytes {
+					SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("decompressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes))
+					return
+				}
+				SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("decompressed request body exceeds the expansion allowed for a %d-byte compressed body: at most %d bytes (%dx its size, never below %d bytes or above %d bytes)", compressedLen, allowed, requestDecompressionMaxRatio, requestDecompressionFloor, maxRequestBodyBytes))
 			}
 
 			if shouldStreamDecompress(config, ctx) {
-				cleanup, applied, err := streamingDecompress(ctx, maxRequestBodyBytes)
+				cleanup, applied, err := streamingDecompress(ctx, allowed)
 				if providerUtils.IsDecompressionSizeLimitError(err) {
 					SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("compressed request body declares a size beyond the max allowed %d bytes: %v", maxRequestBodyBytes, err))
 					return
@@ -418,10 +476,17 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 				// through to the buffered decompression path below.
 			}
 
-			// Buffered path: small compressed request — materialize fully.
-			body, err := decodeRequestBodyWithLimit(&ctx.Request, maxRequestBodyBytes)
+			// Buffered path: small compressed request — materialize fully. The body is in hand
+			// now, so the allowance follows its real length rather than the declared one.
+			allowed = decompressionAllowance(len(ctx.Request.Body()), maxRequestBodyBytes)
+			if !budget.TryAcquire(int64(allowed)) {
+				SendError(ctx, fasthttp.StatusServiceUnavailable, "too many compressed request bodies are being decompressed at once; retry shortly or send the body uncompressed")
+				return
+			}
+			defer budget.Release(int64(allowed))
+			body, err := decodeRequestBodyWithLimit(&ctx.Request, allowed)
 			if errors.Is(err, errRequestBodyTooLarge) {
-				SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("decompressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes))
+				refuseExpansion(len(ctx.Request.Body()))
 				return
 			}
 			if providerUtils.IsDecompressionSizeLimitError(err) {
