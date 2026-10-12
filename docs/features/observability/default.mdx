@@ -288,6 +288,23 @@ When running the Gateway, access the built-in dashboard at `http://localhost:808
 - Detailed request/response inspection
 - Token and cost analytics
 
+#### Grouped view
+
+The **Group** button in the logs toolbar folds related requests into one row. The row's label says what it holds:
+
+| Label | What it groups | Grouped by |
+|-------|----------------|------------|
+| `2 turns` | Requests in the same session, under the first request | `session_id` |
+| `1 fallback` | Fallback attempts of one request, under the original attempt | `parent_request_id` |
+
+Batch and video requests show `N linked` for the settled-cost row that follows them.
+
+Click the label to expand the row. Session requests have a blue left border and are numbered `turn 2`, `turn 3` and so on. Fallback attempts have a grey border and read `fallback 1`, `fallback 2`. A session request with its own fallbacks gets its own toggle. Hover a label to see which key it groups by.
+
+Grouping is off by default. Your choice is kept in the URL (`grouped=true`). It turns off while you filter to a single `session_id` or `parent_request_id`, since that is already one group. On very large log tables it can load slower than the flat view.
+
+To group through the API, send `roots_only=true`, and add `group_sessions=true` to fold sessions too. Each row returns `child_count`, `session_child_count`, `session_total_cost` and `session_total_tokens`.
+
 ### API Endpoints
 
 Query logs programmatically using the `GET` request.
