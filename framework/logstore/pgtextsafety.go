@@ -31,12 +31,19 @@ var pgTextFieldCache sync.Map
 // pgSafeText makes s storable in a Postgres TEXT or VARCHAR column. Postgres
 // rejects a NUL byte and invalid UTF-8 with SQLSTATE 22021, failing the whole
 // multi-row INSERT, so NUL bytes are dropped and invalid sequences become
-// U+FFFD. A clean string is returned as-is without allocating.
+// U+FFFD. A value made only of NUL bytes becomes U+FFFD rather than "": GORM's
+// struct Updates skips "" as a zero value, which would keep the previous column
+// value (and report no row updated when it was the only field). A clean string
+// is returned as-is without allocating.
 func pgSafeText(s string) string {
 	if strings.IndexByte(s, 0) < 0 && utf8.ValidString(s) {
 		return s
 	}
-	return strings.ToValidUTF8(strings.ReplaceAll(s, "\x00", ""), "\uFFFD")
+	safe := strings.ToValidUTF8(strings.ReplaceAll(s, "\x00", ""), "\uFFFD")
+	if safe == "" {
+		return "\uFFFD"
+	}
+	return safe
 }
 
 // pgSafeColumnValue applies pgSafeText to a column value and, for a column that

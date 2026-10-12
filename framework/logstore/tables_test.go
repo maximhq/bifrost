@@ -596,6 +596,7 @@ func TestPGSafeText(t *testing.T) {
 		{"invalid_byte", "a\xffb", "a\uFFFDb"},
 		{"truncated_rune", "caf\xc3", "caf\uFFFD"},
 		{"nul_and_invalid", "\x00\xfe", "\uFFFD"},
+		{"nul_only_stays_non_empty", "\x00\x00", "\uFFFD"},
 		{"literal_escape_text_untouched", `\u0000`, `\u0000`},
 	}
 	for _, c := range cases {
