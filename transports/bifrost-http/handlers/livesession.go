@@ -107,7 +107,7 @@ func (g *liveGateway) resolveSession(ctx *fasthttp.RequestCtx, req *liveRequest)
 	if req.sessionID == "" {
 		return refuse(newRealtimeWireBifrostError(400, "invalid_request_error", "a session id is required"))
 	}
-	provider, providerKey, bifrostErr := g.controlProvider(req.path)
+	provider, providerKey, bifrostErr := g.controlProvider(req.path, liveControlProviderName(ctx))
 	if bifrostErr != nil {
 		return refuse(bifrostErr)
 	}
@@ -185,12 +185,28 @@ func (g *liveGateway) sessionContext(auth *authHeaders, preReqCtx *schemas.Bifro
 	return ctx, cancel
 }
 
+// liveControlProviderName is the provider a caller names on a route that only carries a session
+// id: the ?provider= query parameter, else the x-model-provider header, as the file, batch and
+// video routes accept.
+func liveControlProviderName(ctx *fasthttp.RequestCtx) string {
+	if named := strings.TrimSpace(string(ctx.QueryArgs().Peek("provider"))); named != "" {
+		return named
+	}
+	return strings.TrimSpace(string(ctx.Request.Header.Peek("x-model-provider")))
+}
+
 // controlProvider resolves the provider a route on an existing session names: the integration
-// prefix, or, on the bare route, the standard OpenAI provider when configured, else the one
-// configured provider that serves live sessions. Custom OpenAI-based providers serve live
-// sessions too, so the bare route cannot be left to a scan alone.
-func (g *liveGateway) controlProvider(path string) (schemas.LiveProvider, schemas.ModelProvider, *schemas.BifrostError) {
+// prefix, else the provider the caller named, else, on the bare route, the standard OpenAI
+// provider when configured, else the one configured provider that serves live sessions. Custom
+// OpenAI-based providers serve live sessions too, so the bare route cannot be left to a scan alone.
+func (g *liveGateway) controlProvider(path, named string) (schemas.LiveProvider, schemas.ModelProvider, *schemas.BifrostError) {
 	providerKey := realtimeDefaultProviderForPath(path)
+	if providerKey == "" && named != "" {
+		providerKey = schemas.ModelProvider(named)
+		if g.client.GetProviderByKey(providerKey) == nil {
+			return nil, "", newRealtimeWireBifrostError(400, "invalid_request_error", fmt.Sprintf("provider %q is not configured", named))
+		}
+	}
 	if providerKey == "" {
 		configured, err := g.client.GetConfiguredProviders()
 		if err != nil {
@@ -218,6 +234,38 @@ func (g *liveGateway) controlProvider(path string) (schemas.LiveProvider, schema
 		return nil, "", newRealtimeWireBifrostError(400, "invalid_request_error", "provider does not support live sessions: "+string(providerKey))
 	}
 	return provider, providerKey, nil
+}
+
+// admitSideband holds a sideband to the caller's virtual key as the primary session is held: the
+// provider must be allowed, and governance publishes the keys the caller may use so selection
+// stays within them. A session's model is not known from its id; evaluated without one, the
+// model gate reads as the provider gate and the published keys are every key held for the provider.
+// Budgets and request limits are not checked: a sideband spends nothing, and the session it joins
+// is what they govern, so an exhausted key keeps control of the session it already has.
+func (g *liveGateway) admitSideband(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider) *schemas.BifrostError {
+	plugin := g.governancePlugin()
+	if plugin == nil {
+		return nil
+	}
+	ctx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+	_, bifrostErr := plugin.Evaluate(ctx, &governance.EvaluationRequest{RequestType: schemas.LiveRequest, Provider: providerKey})
+	return bifrostErr
+}
+
+func (g *liveGateway) governancePlugin() governance.BaseGovernancePlugin {
+	if g.config == nil {
+		return nil
+	}
+	plugins := g.config.BasePlugins.Load()
+	if plugins == nil {
+		return nil
+	}
+	for _, plugin := range *plugins {
+		if governancePlugin, ok := plugin.(governance.BaseGovernancePlugin); ok {
+			return governancePlugin
+		}
+	}
+	return nil
 }
 
 // controlKey selects the key a route on an existing session acts with. Sessions are not yet

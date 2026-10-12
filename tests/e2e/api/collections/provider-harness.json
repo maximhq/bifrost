@@ -254611,6 +254611,168 @@
           }
         }
       ]
+    },
+    {
+      "name": "202. Live content route honours the named provider (live named provider)",
+      "description": "A recording download names only a session id, so on the bare route the caller may name the provider with ?provider= or x-model-provider, as the file, batch and video routes accept. Provider resolution runs before the session is looked up, so an unknown session id reaches it with nothing spent: a provider without live support or an unknown name is refused with 400, the query parameter wins over the header, and the /openai prefix wins over both. Sideband attach shares the resolver but is a WebSocket upgrade the harness cannot drive; tests/live covers it.",
+      "item": [
+        {
+          "name": "[EXPECT-400] /v1/live/sessions/{id}/content?provider=anthropic resolves the named provider before the session lookup - live named provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400: the named provider is resolved before the session is looked up', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('The refusal names the provider the caller asked for, which serves no live sessions', function () { pm.expect(pm.response.text()).to.include('does not support live sessions: anthropic'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/live/sessions/sess_harness_named_provider/content?provider=anthropic",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "live",
+                "sessions",
+                "sess_harness_named_provider",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/live/sessions/{id}/content with x-model-provider naming an unconfigured provider is refused - live named provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400: an unknown provider name is refused', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('The refusal says the named provider is not configured', function () { pm.expect(pm.response.text()).to.include('\"no-such-provider\" is not configured'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-model-provider",
+                "value": "no-such-provider"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/live/sessions/sess_harness_named_provider/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "live",
+                "sessions",
+                "sess_harness_named_provider",
+                "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/live/sessions/{id}/content ?provider= wins over a conflicting x-model-provider header - live named provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400: the query parameter named Anthropic', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('The query parameter, not the header, named the provider', function () { pm.expect(pm.response.text()).to.include('does not support live sessions: anthropic'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-model-provider",
+                "value": "openai"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/live/sessions/sess_harness_named_provider/content?provider=anthropic",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "live",
+                "sessions",
+                "sess_harness_named_provider",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] /openai/v1/live/sessions/{id}/content ignores x-model-provider: the integration prefix wins - live named provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 404: the request reached OpenAI, which has no such session', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(404); });",
+                  "pm.test('The prefix, not the header, chose the provider', function () { pm.expect(pm.response.text()).to.not.include('anthropic'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-model-provider",
+                "value": "anthropic"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/live/sessions/sess_harness_named_provider/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "live",
+                "sessions",
+                "sess_harness_named_provider",
+                "content"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
