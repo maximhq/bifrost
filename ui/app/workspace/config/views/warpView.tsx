@@ -47,6 +47,7 @@ import {
 	isFiniteNumber,
 	retainedWarpBackfillForSpace,
 	retainFinishedWarpBackfill,
+	validateWarpMaxIterations,
 	validateWarpRetentionDays,
 	warpSavedSpaceKey,
 	type RetainedWarpBackfill,
@@ -405,7 +406,8 @@ export default function WarpView() {
 	const modelErrors = validateWarpModelRows(form.models, form.enabled);
 	// Covers missingRequired too: the default row reports it.
 	const modelsInvalid = modelErrors.some((error) => error !== null);
-	const iterationsInvalid = !isFiniteNumber(form.maxIterations) || form.maxIterations < 1 || form.maxIterations > 20;
+	const iterationsError = validateWarpMaxIterations(form.maxIterations);
+	const iterationsInvalid = iterationsError !== true;
 	const timeoutInvalid = !isFiniteNumber(form.requestTimeoutSeconds) || form.requestTimeoutSeconds < 1;
 	// No upper bound: the per-owner conversation cap already limits the table, so
 	// how long a transcript stays readable is a policy choice with no ceiling.
@@ -716,7 +718,7 @@ export default function WarpView() {
 									label="Max iterations"
 									htmlFor="warp-max-iterations"
 									hint="Query-and-reconsider rounds per answer. Each one is billed."
-									error={iterationsInvalid ? "Must be between 1 and 20" : undefined}
+									error={iterationsInvalid ? iterationsError : undefined}
 								>
 									<Input
 										id="warp-max-iterations"
