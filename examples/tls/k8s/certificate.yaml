@@ -1,0 +1,67 @@
+# Kubernetes: let cert-manager obtain and renew the certificate, and mount the
+# Secret it writes. Bifrost notices when kubelet updates the mounted files, so
+# renewals need no rollout. Requires cert-manager (https://cert-manager.io).
+#
+# Most clusters terminate TLS at an Ingress or Gateway instead; this is for
+# exposing Bifrost directly, for example through a LoadBalancer Service.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-cloudflare
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: ops@example.com
+    privateKeySecretRef:
+      name: letsencrypt-cloudflare-account
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              # kubectl -n cert-manager create secret generic cloudflare-api-token \
+              #   --from-literal=api-token=<token with Zone > DNS > Edit>
+              name: cloudflare-api-token
+              key: api-token
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: bifrost-tls
+spec:
+  secretName: bifrost-tls
+  dnsNames:
+    - llm.example.com
+  issuerRef:
+    name: letsencrypt-cloudflare
+    kind: ClusterIssuer
+---
+# The parts of the Bifrost Deployment that use it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bifrost
+spec:
+  selector:
+    matchLabels: {app: bifrost}
+  template:
+    metadata:
+      labels: {app: bifrost}
+    spec:
+      containers:
+        - name: bifrost
+          image: maximhq/bifrost:latest
+          env:
+            - {name: BIFROST_TLS_CERT, value: /etc/bifrost/tls/tls.crt}
+            - {name: BIFROST_TLS_KEY, value: /etc/bifrost/tls/tls.key}
+            - {name: BIFROST_TLS_PORT, value: "8443"}
+          ports:
+            - {name: http, containerPort: 8080}
+            - {name: https, containerPort: 8443}
+          volumeMounts:
+            # Mount the whole Secret, not with subPath: subPath mounts are not
+            # updated when the Secret changes.
+            - {name: tls, mountPath: /etc/bifrost/tls, readOnly: true}
+      volumes:
+        - name: tls
+          secret:
+            secretName: bifrost-tls

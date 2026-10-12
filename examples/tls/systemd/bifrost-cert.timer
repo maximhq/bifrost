@@ -1,0 +1,12 @@
+# Checks twice a day; lego renews only when the certificate is due (a third of
+# its lifetime left, about 30 days for Let's Encrypt), so most runs do nothing.
+[Unit]
+Description=Check the Bifrost TLS certificate for renewal twice a day
+
+[Timer]
+OnCalendar=*-*-* 00,12:00:00
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
