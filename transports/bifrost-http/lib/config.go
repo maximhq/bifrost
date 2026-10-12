@@ -1999,6 +1999,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys 
 					DatabricksKeyConfig:    dbKey.DatabricksKeyConfig,
 					GithubCopilotKeyConfig: dbKey.GithubCopilotKeyConfig,
 					CloudflareKeyConfig:    dbKey.CloudflareKeyConfig,
+					OAuthKeyConfig:         dbKey.OAuthKeyConfig,
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
 					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
@@ -2056,6 +2057,12 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 				if fileKeyHash == dbKey.ConfigHash {
 					// File unchanged - keep DB version (preserves user updates)
 					mergedKeys = append(mergedKeys, dbKey)
+				} else if legacy, err := configstore.KeyHashMatchesLegacyAliasOrder(fileKey, dbKey.ConfigHash); err == nil && legacy {
+					// Same file key, hashed by an older build with unsorted aliases: keep the stored
+					// edits and move the stored hash to the sorted form so this search runs once.
+					logger.Debug("key %s for provider %s carries a pre-sorted alias hash, keeping stored version", fileKey.Name, provider)
+					dbKey.ConfigHash = fileKeyHash
+					mergedKeys = append(mergedKeys, dbKey)
 				} else {
 					// File changed - use file version but preserve ID and set ConfigHash
 					logger.Debug("key %s changed in config file for provider %s, updating", fileKey.Name, provider)
@@ -2085,6 +2092,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 					DatabricksKeyConfig:    dbKey.DatabricksKeyConfig,
 					GithubCopilotKeyConfig: dbKey.GithubCopilotKeyConfig,
 					CloudflareKeyConfig:    dbKey.CloudflareKeyConfig,
+					OAuthKeyConfig:         dbKey.OAuthKeyConfig,
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
 					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
@@ -6456,22 +6464,22 @@ func ResolveFrameworkPricingConfig(
 	}
 
 	return &configstoreTables.TableFrameworkConfig{
-			ID:                     configID,
-			PricingURL:             resolvedPricingURL,
-			PricingSyncInterval:    resolvedSyncSeconds,
-			ModelParametersURL:     resolvedModelParametersURL,
-			MCPLibraryURL:          resolvedMCPLibraryURL,
-			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
-			LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
-			ConfigHash:             persistedHash,
-		}, &modelcatalog.Config{
-			PricingURL:             resolvedPricingURL,
-			PricingSyncInterval:    resolvedSyncSeconds,
-			ModelParametersURL:     resolvedModelParametersURL,
-			MCPLibraryURL:          resolvedMCPLibraryURL,
-			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
-			LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
-		}, needsDBUpdate
+		ID:                     configID,
+		PricingURL:             resolvedPricingURL,
+		PricingSyncInterval:    resolvedSyncSeconds,
+		ModelParametersURL:     resolvedModelParametersURL,
+		MCPLibraryURL:          resolvedMCPLibraryURL,
+		MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
+		LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
+		ConfigHash:             persistedHash,
+	}, &modelcatalog.Config{
+		PricingURL:             resolvedPricingURL,
+		PricingSyncInterval:    resolvedSyncSeconds,
+		ModelParametersURL:     resolvedModelParametersURL,
+		MCPLibraryURL:          resolvedMCPLibraryURL,
+		MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
+		LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
+	}, needsDBUpdate
 }
 
 // initFrameworkConfig initializes framework config and pricing manager from file
@@ -8848,6 +8856,10 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				// The account ID is an identifier, not a credential — surface it in plaintext.
 				cfg.AccountID = *cfg.AccountID.RedactedIfSecret()
 				configStoreKey.CloudflareKeyConfig = &cfg
+			}
+			if key.OAuthKeyConfig != nil {
+				// Token URL readable, credentials and every extra_params value masked.
+				configStoreKey.OAuthKeyConfig = key.OAuthKeyConfig.Redacted()
 			}
 			keys = append(keys, configStoreKey)
 		}

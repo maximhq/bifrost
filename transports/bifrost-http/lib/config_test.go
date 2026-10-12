@@ -25111,3 +25111,43 @@ func TestSQLite_ApiOwnedTierBudgetSurvivesKeyEdit(t *testing.T) {
 	require.NoError(t, c2.ConfigStore.DB().Where("id = ?", "file-budget").First(&fileBudget).Error)
 	require.NotNil(t, fileBudget.ModelConfigID, "the file's own budget stopped funding the tier")
 }
+
+// TestReconcileProviderKeys_LegacyAliasHashKeepsStoredEdits pins the upgrade path from the
+// unsorted alias hash: a stored config_hash computed under any alias order still means
+// "config.json unchanged", so dashboard edits survive the first restart on the sorted
+// encoding and the stored hash is rewritten to the sorted form. A real file edit is still
+// detected under every legacy order.
+func TestReconcileProviderKeys_LegacyAliasHashKeepsStoredEdits(t *testing.T) {
+	SetLogger(&testLogger{})
+	fileKey := schemas.Key{Name: "aliased", Value: *schemas.NewSecretVar("sk"), Weight: 1, Aliases: schemas.KeyAliases{
+		"a": {ModelID: "upstream-a"}, "b": {ModelID: "upstream-b"}, "c": {ModelID: "upstream-c"},
+	}}
+	sorted, err := configstore.GenerateKeyHash(fileKey)
+	require.NoError(t, err)
+	legacy, err := configstore.LegacyAliasOrderKeyHash(fileKey, []string{"c", "a", "b"})
+	require.NoError(t, err)
+	require.NotEqual(t, sorted, legacy)
+
+	t.Run("unchanged file keeps the dashboard edit", func(t *testing.T) {
+		dbKey := fileKey
+		dbKey.ID = "key-1"
+		dbKey.Weight = 0.25 // edited through the API after the last sync
+		dbKey.ConfigHash = legacy
+		merged := reconcileProviderKeys(schemas.OpenAI, []schemas.Key{fileKey}, []schemas.Key{dbKey})
+		require.Len(t, merged, 1)
+		require.Equal(t, 0.25, merged[0].Weight, "the stored edit must survive the hash format change")
+		require.Equal(t, sorted, merged[0].ConfigHash, "the stored hash must be upgraded to the sorted form")
+	})
+
+	t.Run("edited file still wins", func(t *testing.T) {
+		dbKey := fileKey
+		dbKey.ID = "key-1"
+		dbKey.Weight = 0.25
+		dbKey.ConfigHash = legacy
+		editedFile := fileKey
+		editedFile.Weight = 2
+		merged := reconcileProviderKeys(schemas.OpenAI, []schemas.Key{editedFile}, []schemas.Key{dbKey})
+		require.Len(t, merged, 1)
+		require.Equal(t, float64(2), merged[0].Weight, "a changed config.json must still replace the stored key")
+	})
+}
