@@ -7,11 +7,50 @@ package lib
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
+
+// Correlation response headers, written by the tracing middleware on every traced response so a
+// caller can pivot a request into its log row, access log and trace.
+const (
+	// HeaderBifrostRequestID is the request id this gateway logs and traces the request under:
+	// the caller's x-request-id, or the UUID generated when it sent none.
+	HeaderBifrostRequestID = "x-bifrost-request-id"
+	HeaderBifrostTraceID   = "x-bifrost-trace-id"
+	// HeaderRequestID carries the same value as HeaderBifrostRequestID until a provider answers
+	// with its own x-request-id (OpenAI does), which then replaces it. It is deprecated for
+	// callers as a way to read this gateway's request id, and kept for compatibility.
+	HeaderRequestID = "x-request-id"
+)
+
+// gatewayOwnedResponseHeaderPrefix names the response headers this gateway writes about its own
+// handling of a request.
+const gatewayOwnedResponseHeaderPrefix = "x-bifrost-"
+
+// IsGatewayOwnedResponseHeader reports whether name is one of this gateway's x-bifrost-* response
+// headers. A provider's response header with such a name is never forwarded: when the provider is
+// another Bifrost, its x-bifrost-* headers describe its own hop, and forwarding them would replace
+// this hop's correlation ids and routed identity or add values this hop never set.
+func IsGatewayOwnedResponseHeader(name string) bool {
+	return len(name) >= len(gatewayOwnedResponseHeaderPrefix) &&
+		strings.EqualFold(name[:len(gatewayOwnedResponseHeaderPrefix)], gatewayOwnedResponseHeaderPrefix)
+}
+
+// ForwardProviderResponseHeaders copies a provider's response headers onto the response, except
+// the gateway-owned ones (see IsGatewayOwnedResponseHeader). The provider's values still reach
+// the caller in extra_fields.provider_response_headers on routes that return extra_fields.
+func ForwardProviderResponseHeaders(ctx *fasthttp.RequestCtx, headers map[string]string) {
+	for key, value := range headers {
+		if IsGatewayOwnedResponseHeader(key) {
+			continue
+		}
+		ctx.Response.Header.Set(key, value)
+	}
+}
 
 // HTTP response header names for the routed identity. Set on every successful
 // response from any integration so callers can recover the actual provider /
@@ -53,6 +92,27 @@ const (
 	HeaderBifrostRoutingInfoPrimaryProvider         = "x-bifrost-routing-info-primary-provider"
 	HeaderBifrostRoutingInfoPrimaryModel            = "x-bifrost-routing-info-primary-model"
 	HeaderBifrostRoutingInfoServerSideFallbackModel = "x-bifrost-routing-info-server-side-fallback-model"
+	HeaderBifrostRoutingInfoRequestedProvider       = "x-bifrost-routing-info-requested-provider"
+	HeaderBifrostRoutingInfoRequestedModel          = "x-bifrost-routing-info-requested-model"
+)
+
+// Headers mirroring the semantic cache's cache_debug fields 1:1, so a caller whose route returns
+// a provider-native body with no extra_fields (the Anthropic, GenAI, Bedrock and Cohere SDK
+// routes, and their streams) still learns whether the response came from cache and which entry
+// served it. Emitted on every inference route whenever the cache ran a lookup, and never on an
+// error response, matching the body.
+const (
+	HeaderBifrostCacheHit               = "x-bifrost-cache-hit"
+	HeaderBifrostCacheID                = "x-bifrost-cache-id"
+	HeaderBifrostCacheHitType           = "x-bifrost-cache-hit-type"
+	HeaderBifrostCacheHitLatency        = "x-bifrost-cache-hit-latency-ms"
+	HeaderBifrostCacheRequestedProvider = "x-bifrost-cache-requested-provider"
+	HeaderBifrostCacheRequestedModel    = "x-bifrost-cache-requested-model"
+	HeaderBifrostCacheSimilarity        = "x-bifrost-cache-similarity"
+	HeaderBifrostCacheThreshold         = "x-bifrost-cache-threshold"
+	HeaderBifrostCacheProviderUsed      = "x-bifrost-cache-provider-used"
+	HeaderBifrostCacheModelUsed         = "x-bifrost-cache-model-used"
+	HeaderBifrostCacheInputTokens       = "x-bifrost-cache-input-tokens"
 )
 
 // ApplyBifrostStreamResponseHeaders emits the routed-identity headers for a
@@ -60,7 +120,9 @@ const (
 // ExtraFields on chunks — none exist at header-write time — so the identity
 // comes from the RoutingInfo snapshot core stashes in the context at stream
 // setup (BifrostContextKeyRoutingInfo). Absent snapshot (e.g. a plugin
-// short-circuited the stream) emits only the request-type header.
+// short-circuited the stream) emits only the request-type header. The cache
+// headers come the same way, from the lookup the semantic cache recorded
+// before the stream started, since cache_debug only rides on the last chunk.
 func ApplyBifrostStreamResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, requestType schemas.RequestType) {
 	if bifrostCtx == nil {
 		return
@@ -69,7 +131,42 @@ func ApplyBifrostStreamResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *sch
 	if ri, ok := bifrostCtx.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo); ok {
 		extra = ri.ToExtraFields(requestType)
 	}
+	if lookup, ok := schemas.CacheLookupFromContext(bifrostCtx); ok {
+		extra.CacheDebug = lookup
+	}
 	ApplyBifrostResponseHeaders(ctx, bifrostCtx, extra)
+}
+
+// applyCacheMetadataHeaders writes one x-bifrost-cache-* header per cache_debug field the
+// metadata carries. cache_hit is always written, so its presence alone says a lookup ran.
+func applyCacheMetadataHeaders(ctx *fasthttp.RequestCtx, metadata *schemas.BifrostCacheMetadata) {
+	if metadata == nil {
+		return
+	}
+	ctx.Response.Header.Set(HeaderBifrostCacheHit, strconv.FormatBool(metadata.CacheHit))
+	setIfPresent := func(name string, value *string) {
+		if value != nil && *value != "" {
+			ctx.Response.Header.Set(name, *value)
+		}
+	}
+	setIfPresent(HeaderBifrostCacheID, metadata.CacheID)
+	setIfPresent(HeaderBifrostCacheHitType, metadata.HitType)
+	setIfPresent(HeaderBifrostCacheRequestedProvider, metadata.RequestedProvider)
+	setIfPresent(HeaderBifrostCacheRequestedModel, metadata.RequestedModel)
+	setIfPresent(HeaderBifrostCacheProviderUsed, metadata.ProviderUsed)
+	setIfPresent(HeaderBifrostCacheModelUsed, metadata.ModelUsed)
+	if metadata.CacheHitLatency != nil {
+		ctx.Response.Header.Set(HeaderBifrostCacheHitLatency, strconv.FormatInt(*metadata.CacheHitLatency, 10))
+	}
+	if metadata.Similarity != nil {
+		ctx.Response.Header.Set(HeaderBifrostCacheSimilarity, strconv.FormatFloat(*metadata.Similarity, 'f', -1, 64))
+	}
+	if metadata.Threshold != nil {
+		ctx.Response.Header.Set(HeaderBifrostCacheThreshold, strconv.FormatFloat(*metadata.Threshold, 'f', -1, 64))
+	}
+	if metadata.InputTokens != nil {
+		ctx.Response.Header.Set(HeaderBifrostCacheInputTokens, strconv.Itoa(*metadata.InputTokens))
+	}
 }
 
 // ApplyBifrostErrorResponseHeaders emits the routed-identity headers on an
@@ -105,9 +202,7 @@ func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 			defer t.EndSpan(h, schemas.SpanStatusOk, "")
 		}
 	}
-	for key, value := range extra.ProviderResponseHeaders {
-		ctx.Response.Header.Set(key, value)
-	}
+	ForwardProviderResponseHeaders(ctx, extra.ProviderResponseHeaders)
 	if extra.Provider != "" {
 		ctx.Response.Header.Set(HeaderBifrostProvider, string(extra.Provider))
 	}
@@ -154,6 +249,12 @@ func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 	if ri.ServerSideFallbackModel != nil && *ri.ServerSideFallbackModel != "" {
 		ctx.Response.Header.Set(HeaderBifrostRoutingInfoServerSideFallbackModel, *ri.ServerSideFallbackModel)
 	}
+	if ri.RequestedProvider != "" {
+		ctx.Response.Header.Set(HeaderBifrostRoutingInfoRequestedProvider, string(ri.RequestedProvider))
+	}
+	if ri.RequestedModel != "" {
+		ctx.Response.Header.Set(HeaderBifrostRoutingInfoRequestedModel, ri.RequestedModel)
+	}
 	// Fallback index lives on the request context, not the response struct.
 	// 0 = primary provider succeeded; non-zero = which fallback fired
 	// (1-indexed). Only emit when non-zero so the absence of the header is
@@ -167,4 +268,5 @@ func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 				strconv.FormatFloat(float64(upstream)/float64(time.Millisecond), 'f', 3, 64))
 		}
 	}
+	applyCacheMetadataHeaders(ctx, extra.CacheDebug)
 }

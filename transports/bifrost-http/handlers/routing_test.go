@@ -51,6 +51,10 @@ func (m *mockRoutingManager) ReloadComplexityAnalyzerConfig(_ context.Context, c
 	return m.reloadErr
 }
 
+func (m *mockRoutingManager) ReloadRoutingRule(_ context.Context, _ string) error {
+	return nil
+}
+
 func testComplexityAnalyzerPayload(t *testing.T, cfg complexity.AnalyzerConfig) string {
 	t.Helper()
 	body, err := json.Marshal(cfg)
@@ -226,6 +230,32 @@ func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
 	if stored.Session == nil || !stored.Session.Enabled {
 		t.Fatalf("expected enabled session config to persist, got %+v", stored.Session)
 	}
+}
+
+// TestComplexityAnalyzerConfigPutPersistsDecision verifies the API accepts and stores the decision-model classifier payload.
+func TestComplexityAnalyzerConfigPutPersistsDecision(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &mockRoutingManager{}
+	handler := &RoutingHandler{configStore: store, routingManager: manager}
+
+	cfg := complexity.DefaultAnalyzerConfig()
+	cfg.Classifier = complexity.ClassifierDecision
+	count := 1
+	cfg.Decision = &complexity.DecisionConfig{PreviousMessageCount: &count, Timeout: 400 * time.Millisecond}
+	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, cfg))
+	handler.updateComplexityAnalyzerConfig(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, complexity.ClassifierDecision, stored.Classifier)
+	require.NotNil(t, stored.Decision)
+	require.NotNil(t, stored.Decision.PreviousMessageCount)
+	require.Equal(t, 1, *stored.Decision.PreviousMessageCount)
+	require.Equal(t, 400*time.Millisecond, stored.Decision.Timeout)
+	require.Equal(t, 1, manager.reloadCalls)
 }
 
 func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
@@ -606,4 +636,143 @@ func TestCreateRoutingRuleRejectsInvalidFallbacks(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, rules, "a rejected create must not store a rule")
 	require.Empty(t, manager.reloaded)
+}
+
+// TestRoutingRuleDuplicatePriorityIsAConflict pins that a create or update colliding with another
+// rule's priority in the same scope answers 409 naming the priority, not a 500, and changes nothing.
+func TestRoutingRuleDuplicatePriorityIsAConflict(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &reloadRecordingRoutingManager{}
+	handler := &RoutingHandler{configStore: store, routingManager: manager}
+
+	create := func(t *testing.T, name string, priority int) *fasthttp.RequestCtx {
+		t.Helper()
+		ctx := newTestRequestCtx(fmt.Sprintf(`{"name":%q,"cel_expression":"true","targets":[{"provider":"openai","weight":1}],"priority":%d}`, name, priority))
+		handler.createRoutingRule(ctx)
+		return ctx
+	}
+	ruleID := func(t *testing.T, ctx *fasthttp.RequestCtx) string {
+		t.Helper()
+		var resp struct {
+			Rule tables.TableRoutingRule `json:"rule"`
+		}
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		require.NotEmpty(t, resp.Rule.ID)
+		return resp.Rule.ID
+	}
+
+	first := create(t, "first", 3)
+	require.Equal(t, fasthttp.StatusOK, first.Response.StatusCode(), string(first.Response.Body()))
+
+	dup := create(t, "duplicate", 3)
+	require.Equal(t, fasthttp.StatusConflict, dup.Response.StatusCode(), string(dup.Response.Body()))
+	require.Contains(t, string(dup.Response.Body()), "priority 3 already exists")
+
+	other := create(t, "other", 4)
+	require.Equal(t, fasthttp.StatusOK, other.Response.StatusCode(), string(other.Response.Body()))
+	otherID := ruleID(t, other)
+
+	put := newTestRequestCtx(`{"priority":3}`)
+	put.SetUserValue("rule_id", otherID)
+	handler.updateRoutingRule(put)
+	require.Equal(t, fasthttp.StatusConflict, put.Response.StatusCode(), string(put.Response.Body()))
+	require.Contains(t, string(put.Response.Body()), "priority 3 already exists")
+
+	rules, err := store.GetRoutingRules(context.Background())
+	require.NoError(t, err)
+	require.Len(t, rules, 2, "a conflicting create must not store a rule")
+	for _, r := range rules {
+		if r.ID == otherID {
+			require.Equal(t, 4, r.Priority, "a conflicting update must not change the stored priority")
+		}
+	}
+	require.Equal(t, []string{ruleID(t, first), otherID}, manager.reloaded, "only accepted writes reload the rule")
+
+	// A scoped rule reusing another's name in the same scope conflicts on the name, not the
+	// priority: still a 409, but advice to change the priority could not resolve it.
+	require.NoError(t, store.CreateTeam(context.Background(), &tables.TableTeam{ID: "team-1", Name: "Team 1"}))
+	scoped := func(t *testing.T, name string, priority int) *fasthttp.RequestCtx {
+		t.Helper()
+		ctx := newTestRequestCtx(fmt.Sprintf(`{"name":%q,"cel_expression":"true","targets":[{"provider":"openai","weight":1}],"priority":%d,"scope":"team","scope_id":"team-1"}`, name, priority))
+		handler.createRoutingRule(ctx)
+		return ctx
+	}
+	named := scoped(t, "team rule", 10)
+	require.Equal(t, fasthttp.StatusOK, named.Response.StatusCode(), string(named.Response.Body()))
+	sameName := scoped(t, "team rule", 11)
+	require.Equal(t, fasthttp.StatusConflict, sameName.Response.StatusCode(), string(sameName.Response.Body()))
+	require.NotContains(t, string(sameName.Response.Body()), "priority", "a name conflict must not be blamed on the priority")
+
+	renamed := scoped(t, "another team rule", 12)
+	require.Equal(t, fasthttp.StatusOK, renamed.Response.StatusCode(), string(renamed.Response.Body()))
+	rename := newTestRequestCtx(`{"name":"team rule"}`)
+	rename.SetUserValue("rule_id", ruleID(t, renamed))
+	handler.updateRoutingRule(rename)
+	require.Equal(t, fasthttp.StatusConflict, rename.Response.StatusCode(), string(rename.Response.Body()))
+	require.NotContains(t, string(rename.Response.Body()), "priority", "a name conflict must not be blamed on the priority")
+}
+
+// TestRoutingTargetTTFTTimeoutValidation pins a target's ttft_timeout_ms on
+// create and update: 1..300000 is stored, 0 means "off", targets are replaced
+// wholesale on update so omitting it there clears it, and anything else is a 400.
+func TestRoutingTargetTTFTTimeoutValidation(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &RoutingHandler{configStore: store, routingManager: &mockRoutingManager{}}
+
+	targets := func(ttft string) string {
+		return fmt.Sprintf(`[{"provider":"openai","model":"gpt-4o-mini","weight":1%s}]`, ttft)
+	}
+	create := func(t *testing.T, name, ttft string) (int, string) {
+		t.Helper()
+		body := fmt.Sprintf(`{"name":%q,"cel_expression":"true","targets":%s,"priority":%d}`, name, targets(ttft), len(name))
+		ctx := newTestRequestCtx(body)
+		handler.createRoutingRule(ctx)
+		var resp struct {
+			Rule tables.TableRoutingRule `json:"rule"`
+		}
+		_ = json.Unmarshal(ctx.Response.Body(), &resp)
+		return ctx.Response.StatusCode(), resp.Rule.ID
+	}
+	update := func(t *testing.T, id, body string) int {
+		t.Helper()
+		ctx := newTestRequestCtx(body)
+		ctx.SetUserValue("rule_id", id)
+		handler.updateRoutingRule(ctx)
+		return ctx.Response.StatusCode()
+	}
+	stored := func(t *testing.T, id string) *int {
+		t.Helper()
+		rule, err := store.GetRoutingRule(context.Background(), id)
+		require.NoError(t, err)
+		require.Len(t, rule.Targets, 1)
+		return rule.Targets[0].TTFTTimeoutMs
+	}
+
+	status, id := create(t, "ttft-set", `,"ttft_timeout_ms":1500`)
+	require.Equal(t, fasthttp.StatusOK, status)
+	require.NotNil(t, stored(t, id))
+	require.Equal(t, 1500, *stored(t, id))
+
+	status, offID := create(t, "ttft-zero", `,"ttft_timeout_ms":0`)
+	require.Equal(t, fasthttp.StatusOK, status)
+	require.Nil(t, stored(t, offID), "0 must mean no TTFT deadline")
+
+	for _, bad := range []string{`,"ttft_timeout_ms":-1`, `,"ttft_timeout_ms":300001`} {
+		status, _ = create(t, "ttft-bad"+bad[len(bad)-2:], bad)
+		require.Equal(t, fasthttp.StatusBadRequest, status, "create with %s", bad)
+	}
+
+	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"description":"no targets field"}`))
+	require.Equal(t, 1500, *stored(t, id), "an update that omits targets must keep them and their deadline")
+
+	require.Equal(t, fasthttp.StatusBadRequest, update(t, id, `{"targets":`+targets(`,"ttft_timeout_ms":999999`)+`}`))
+	require.Equal(t, 1500, *stored(t, id), "a rejected update must not change it")
+
+	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"targets":`+targets(`,"ttft_timeout_ms":250`)+`}`))
+	require.Equal(t, 250, *stored(t, id))
+
+	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"targets":`+targets(`,"ttft_timeout_ms":0`)+`}`))
+	require.Nil(t, stored(t, id), "0 on update must clear the deadline")
 }

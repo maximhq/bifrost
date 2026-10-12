@@ -35,12 +35,7 @@ export function RoutingRulesEmptyState({ onAddClick, canCreate = true }: Routing
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button
-						aria-label="Create your first routing rule"
-						data-testid="create-routing-rule-btn"
-						onClick={onAddClick}
-						disabled={!canCreate}
-					>
+					<Button data-testid="create-routing-rule-btn" onClick={onAddClick} disabled={!canCreate}>
 						New Rule
 					</Button>
 				</div>

@@ -71,11 +71,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	const satellites = useMCPClientFormSatellites();
 
 	const connectionType = watch("connection_type");
-	const authType = watch("auth_type");
 	const headers = watch("headers");
 
 	const headersValidationError =
-		connectionType === "http" || connectionType === "sse" ? getHeadersValidationError(authType, headers) : null;
+		connectionType === "http" || connectionType === "sse" ? getHeadersValidationError(headers) : null;
 
 	// Reset form state when the sheet opens
 	const { reset: resetSatellites } = satellites;

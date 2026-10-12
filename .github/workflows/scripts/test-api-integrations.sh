@@ -4,6 +4,8 @@ set -euo pipefail
 # API integrations test: compiles bifrost-http, runs it against PostgreSQL using
 # tests/config.json (with a runtime config_store/logs_store overlay), then runs
 # the api-management newman collection via tests/e2e/api/runners/run-newman-api-tests.sh.
+# The Warp, routing-wiring and model-catalog-wiring collections follow, each on a
+# server of its own.
 
 if command -v readlink >/dev/null 2>&1 && readlink -f "$0" >/dev/null 2>&1; then
   SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
@@ -57,6 +59,10 @@ if ! command -v newman >/dev/null 2>&1; then
   echo "❌ newman is required (npm install -g newman newman-reporter-htmlextra)" >&2
   exit 1
 fi
+
+# Pin collection assertion behavior and provider/secret-field coverage before
+# spending time building the gateway or starting backing services.
+node "$REPO_ROOT/tests/e2e/api/collections/collection-scripts.test.mjs"
 
 source "$SCRIPT_DIR/setup-go-workspace.sh"
 
@@ -166,6 +172,10 @@ jq --arg host "$POSTGRES_HOST" --arg port "$POSTGRES_PORT" --arg user "$POSTGRES
 export BIFROST_SETUP_TOKEN="${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup-token}"
 export BIFROST_E2E_SETUP_TOKEN="$BIFROST_SETUP_TOKEN"
 
+# Match the API management collection's synthetic canary, including local runs.
+# It must be exported before starting the gateway so env-backed fields resolve.
+export BIFROST_SECRET_REDACTION_CANARY="${BIFROST_SECRET_REDACTION_CANARY:-synthetic-secretvar-harness-canary-0123456789}"
+
 echo "🚀 Starting bifrost-http on port $PORT..."
 "$BIFROST_BINARY" --app-dir "$TEMP_DIR" --port "$PORT" --log-level debug > "$SERVER_LOG" 2>&1 &
 BIFROST_PID=$!
@@ -209,3 +219,22 @@ echo "🧪 Running api-management newman collection..."
 echo ""
 echo "🧪 Running Warp newman collection..."
 "$REPO_ROOT/tests/e2e/api/runners/individual/run-newman-warp-tests.sh" --binary "$BIFROST_BINARY" --port "$((PORT + 8))" $REPORT_ARGS
+
+# The wiring collections each boot a clean server (no providers, sqlite stores):
+# routing-wiring creates the global standard providers (openai, azure, bedrock,
+# vertex), which the server above already configures from tests/config.json.
+# Both call real providers through the job's keys, and send BIFROST_SETUP_TOKEN
+# on /api calls, since their servers inherit it and have no admin.
+echo ""
+echo "🧪 Running routing-wiring newman collection..."
+"$REPO_ROOT/tests/e2e/api/runners/individual/run-newman-routing-wiring-tests.sh" --binary "$BIFROST_BINARY" --port "$((PORT + 9))"
+
+echo ""
+echo "🧪 Running model-catalog-wiring newman collection..."
+"$REPO_ROOT/tests/e2e/api/runners/individual/run-newman-model-catalog-wiring-tests.sh" --binary "$BIFROST_BINARY" --port "$((PORT + 10))"
+
+# The semantic cache suite boots two clean servers of its own, one on the compose
+# stack's Redis and one on its Weaviate, and runs the collection against both at once.
+echo ""
+echo "🧪 Running semantic cache wiring newman collection (Redis and Weaviate)..."
+"$REPO_ROOT/tests/e2e/api/runners/individual/run-newman-semantic-cache-wiring-tests.sh" --binary "$BIFROST_BINARY" --port "$((PORT + 11))" --store both $REPORT_ARGS

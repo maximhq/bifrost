@@ -2618,3 +2618,38 @@ func TestToAnthropicChatRequest_AllowedToolsNoneNameableStillMeansNone(t *testin
 	assert.Equal(t, 0, countFunctionTools(filtered), "no function tool was allowed, so the choice must be none")
 	assert.Len(t, filtered, 2, "both server tools are still there")
 }
+
+// TestStopSequence_ChatResponseEgress verifies that a chat response's StopString becomes
+// stop_reason "stop_sequence" with the matched string, while a plain stop maps to end_turn.
+func TestStopSequence_ChatResponseEgress(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		stopString *string
+		wantReason AnthropicStopReason
+		wantSeq    *string
+	}{
+		{"matched sequence", schemas.Ptr("###"), AnthropicStopReasonStopSequence, schemas.Ptr("###")},
+		{"plain stop", nil, AnthropicStopReasonEndTurn, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := ToAnthropicChatResponse(&schemas.BifrostChatResponse{
+				Model: "claude-sonnet-4-5",
+				Choices: []schemas.BifrostResponseChoice{{
+					FinishReason: schemas.Ptr(string(schemas.BifrostFinishReasonStop)),
+					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+						Message: &schemas.ChatMessage{
+							Role:    schemas.ChatMessageRoleAssistant,
+							Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("1 2 3")},
+						},
+						StopString: tt.stopString,
+					},
+				}},
+			})
+			assertStopFields(t, result.StopReason, result.StopSequence, tt.wantReason, tt.wantSeq)
+		})
+	}
+}

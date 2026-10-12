@@ -7,6 +7,21 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// governanceSnapshotTarget describes the persisted request-time attribution shared
+// by MCP and A2A logs.
+type governanceSnapshotTarget struct {
+	virtualKeyID, virtualKeyName       **string
+	userID, userName                   **string
+	teamID, teamName                   **string
+	customerID, customerName           **string
+	businessUnitID, businessUnitName   **string
+	projectID, projectName             **string
+	teamIDs, teamNames                 *[]string
+	customerIDs, customerNames         *[]string
+	businessUnitIDs, businessUnitNames *[]string
+	budgetIDs, rateLimitIDs            *[]string
+}
+
 // ApplyGovernanceContext records the request's governance attribution on the entry: every id the
 // request settled, and the name that id had at the time.
 //
@@ -19,19 +34,55 @@ import (
 // knew. And changing an id clears the name beside it, because a name belongs to the id it was read
 // with — an id paired with some other entity's name is worse than an id with no name at all.
 func (l *MCPToolLog) ApplyGovernanceContext(ctx *schemas.BifrostContext) {
-	if l == nil || ctx == nil {
+	if l == nil {
+		return
+	}
+	applyGovernanceContext(ctx, governanceSnapshotTarget{
+		virtualKeyID: &l.VirtualKeyID, virtualKeyName: &l.VirtualKeyName,
+		userID: &l.UserID, userName: &l.UserName,
+		teamID: &l.TeamID, teamName: &l.TeamName,
+		customerID: &l.CustomerID, customerName: &l.CustomerName,
+		businessUnitID: &l.BusinessUnitID, businessUnitName: &l.BusinessUnitName,
+		projectID: &l.ProjectID, projectName: &l.ProjectName,
+		teamIDs: &l.TeamIDsParsed, teamNames: &l.TeamNamesParsed,
+		customerIDs: &l.CustomerIDsParsed, customerNames: &l.CustomerNamesParsed,
+		businessUnitIDs: &l.BusinessUnitIDsParsed, businessUnitNames: &l.BusinessUnitNamesParsed,
+		budgetIDs: &l.BudgetIDsParsed, rateLimitIDs: &l.RateLimitIDsParsed,
+	})
+}
+
+func (l *AgentLog) ApplyGovernanceContext(ctx *schemas.BifrostContext) {
+	if l == nil {
+		return
+	}
+	applyGovernanceContext(ctx, governanceSnapshotTarget{
+		virtualKeyID: &l.VirtualKeyID, virtualKeyName: &l.VirtualKeyName,
+		userID: &l.UserID, userName: &l.UserName,
+		teamID: &l.TeamID, teamName: &l.TeamName,
+		customerID: &l.CustomerID, customerName: &l.CustomerName,
+		businessUnitID: &l.BusinessUnitID, businessUnitName: &l.BusinessUnitName,
+		projectID: &l.ProjectID, projectName: &l.ProjectName,
+		teamIDs: &l.TeamIDsParsed, teamNames: &l.TeamNamesParsed,
+		customerIDs: &l.CustomerIDsParsed, customerNames: &l.CustomerNamesParsed,
+		businessUnitIDs: &l.BusinessUnitIDsParsed, businessUnitNames: &l.BusinessUnitNamesParsed,
+		budgetIDs: &l.BudgetIDsParsed, rateLimitIDs: &l.RateLimitIDsParsed,
+	})
+}
+
+func applyGovernanceContext(ctx *schemas.BifrostContext, target governanceSnapshotTarget) {
+	if ctx == nil {
 		return
 	}
 	for _, dimension := range []struct {
 		idKey, nameKey schemas.BifrostContextKey
 		id, name       **string
 	}{
-		{schemas.BifrostContextKeyGovernanceVirtualKeyID, schemas.BifrostContextKeyGovernanceVirtualKeyName, &l.VirtualKeyID, &l.VirtualKeyName},
-		{schemas.BifrostContextKeyUserID, schemas.BifrostContextKeyUserName, &l.UserID, &l.UserName},
-		{schemas.BifrostContextKeyGovernanceTeamID, schemas.BifrostContextKeyGovernanceTeamName, &l.TeamID, &l.TeamName},
-		{schemas.BifrostContextKeyGovernanceCustomerID, schemas.BifrostContextKeyGovernanceCustomerName, &l.CustomerID, &l.CustomerName},
-		{schemas.BifrostContextKeyGovernanceBusinessUnitID, schemas.BifrostContextKeyGovernanceBusinessUnitName, &l.BusinessUnitID, &l.BusinessUnitName},
-		{schemas.BifrostContextKeyGovernanceProjectID, schemas.BifrostContextKeyGovernanceProjectName, &l.ProjectID, &l.ProjectName},
+		{schemas.BifrostContextKeyGovernanceVirtualKeyID, schemas.BifrostContextKeyGovernanceVirtualKeyName, target.virtualKeyID, target.virtualKeyName},
+		{schemas.BifrostContextKeyUserID, schemas.BifrostContextKeyUserName, target.userID, target.userName},
+		{schemas.BifrostContextKeyGovernanceTeamID, schemas.BifrostContextKeyGovernanceTeamName, target.teamID, target.teamName},
+		{schemas.BifrostContextKeyGovernanceCustomerID, schemas.BifrostContextKeyGovernanceCustomerName, target.customerID, target.customerName},
+		{schemas.BifrostContextKeyGovernanceBusinessUnitID, schemas.BifrostContextKeyGovernanceBusinessUnitName, target.businessUnitID, target.businessUnitName},
+		{schemas.BifrostContextKeyGovernanceProjectID, schemas.BifrostContextKeyGovernanceProjectName, target.projectID, target.projectName},
 	} {
 		id := bifrost.GetStringFromContext(ctx, dimension.idKey)
 		if id == "" {
@@ -51,9 +102,9 @@ func (l *MCPToolLog) ApplyGovernanceContext(ctx *schemas.BifrostContext) {
 		idsKey, namesKey schemas.BifrostContextKey
 		ids, names       *[]string
 	}{
-		{schemas.BifrostContextKeyGovernanceTeamIDs, schemas.BifrostContextKeyGovernanceTeamNames, &l.TeamIDsParsed, &l.TeamNamesParsed},
-		{schemas.BifrostContextKeyGovernanceCustomerIDs, schemas.BifrostContextKeyGovernanceCustomerNames, &l.CustomerIDsParsed, &l.CustomerNamesParsed},
-		{schemas.BifrostContextKeyGovernanceBusinessUnitIDs, schemas.BifrostContextKeyGovernanceBusinessUnitNames, &l.BusinessUnitIDsParsed, &l.BusinessUnitNamesParsed},
+		{schemas.BifrostContextKeyGovernanceTeamIDs, schemas.BifrostContextKeyGovernanceTeamNames, target.teamIDs, target.teamNames},
+		{schemas.BifrostContextKeyGovernanceCustomerIDs, schemas.BifrostContextKeyGovernanceCustomerNames, target.customerIDs, target.customerNames},
+		{schemas.BifrostContextKeyGovernanceBusinessUnitIDs, schemas.BifrostContextKeyGovernanceBusinessUnitNames, target.businessUnitIDs, target.businessUnitNames},
 	} {
 		ids, _ := ctx.Value(set.idsKey).([]string)
 		if len(ids) == 0 {
@@ -69,8 +120,8 @@ func (l *MCPToolLog) ApplyGovernanceContext(ctx *schemas.BifrostContext) {
 		key    schemas.BifrostContextKey
 		target *[]string
 	}{
-		{schemas.BifrostContextKeyGovernanceBudgetIDs, &l.BudgetIDsParsed},
-		{schemas.BifrostContextKeyGovernanceRateLimitIDs, &l.RateLimitIDsParsed},
+		{schemas.BifrostContextKeyGovernanceBudgetIDs, target.budgetIDs},
+		{schemas.BifrostContextKeyGovernanceRateLimitIDs, target.rateLimitIDs},
 	} {
 		if ids, _ := ctx.Value(set.key).([]string); len(ids) > 0 {
 			*set.target = slices.Clone(ids)

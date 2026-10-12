@@ -258,8 +258,37 @@ You are not limited to Anthropic-family models. Any provider Bifrost supports ca
 
 <Warning>
 	Whichever model you pin, it must support the **tool-calling features** the operations you intend to run rely on (file edits, bash, web
-	search, computer use, citations). Non-Claude models might not implement Claude-specific server-side tools like `computer_use` — if your workflow needs those, try sticking to Claude-family models on a provider that fully supports them.
+	search, computer use, citations). Non-Claude models might not implement Claude-specific server-side tools like `computer_use`. If your workflow needs those, use a Claude-family model on a provider that supports them.
 </Warning>
+
+## Auto mode classifier compatibility
+
+Claude Code can perform eligible auto mode classifier checks on the server without separate classifier requests. This requires both a supported Claude Code model name and an upstream platform that has server-side checks enabled.
+
+When you use a Bifrost model alias, keep a recognizable Claude model name in the value sent by Claude Code. Provider prefixes are supported, so values such as `bedrock/claude-sonnet-5-5` can work. An arbitrary alias such as `sonnet-model` can route to the same model in Bifrost but may not be recognized by Claude Code as an auto mode-compatible model.
+
+For Bedrock models that require an inference profile, you can expose a recognizable alias from the Bedrock key and map it to the profile ID:
+
+```text
+Claude Code model: bedrock/claude-sonnet-5-5
+Bedrock key alias: claude-sonnet-5-5
+Inference profile: global.anthropic.claude-sonnet-5-5
+```
+
+The exact profile name depends on the AWS account and region. Use a profile that the configured credentials can invoke.
+
+<Note>
+	Model naming is only one eligibility check. Anthropic enables server-side checks by platform, region, and credential. A correctly named model can still use local classifier requests if the upstream platform has not enabled the feature for that environment.
+</Note>
+
+To verify the active session, run `/status` in Claude Code. `Auto mode server` should read `Enabled`. If Claude Code reports that the session is not eligible:
+
+1. Confirm `/model` shows the intended provider and recognizable Claude model name.
+2. Confirm the provider key maps that alias to a callable deployment or inference profile.
+3. Check whether the upstream response contains `delta.safeguard_results`.
+4. Make sure `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` is not set to `1`.
+
+If the upstream platform does not support server-side checks, set `CLAUDE_CODE_AUTO_MODE_SERVER=0` to suppress the notice and use Claude Code's local classifier. Those classifier requests remain billable. Anthropic documents the current behavior and version requirements in [Auto mode classifier request charges](https://code.claude.com/docs/en/auto-mode-classifier-billing).
 
 ## Model Configuration
 

@@ -238,3 +238,20 @@ export const budgetSignature = (budgets?: BudgetComparisonEntry[]) =>
 		})
 		.sort()
 		.join("|");
+
+export type GovernanceAction = "create" | "edit" | "delete" | "rotate";
+
+/**
+ * Why a governance action is disabled, or undefined when it is allowed. A reason
+ * that is not about permissions (e.g. the entity is managed elsewhere) wins, since
+ * granting the permission would not unblock the action.
+ */
+export function actionDisabledReason(
+	allowed: boolean,
+	action: GovernanceAction,
+	entityPlural: string,
+	blockedReason?: string,
+): string | undefined {
+	if (blockedReason) return blockedReason;
+	return allowed ? undefined : `You don't have permission to ${action} ${entityPlural}.`;
+}

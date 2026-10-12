@@ -407,7 +407,7 @@ export function SkillsListView({
 							Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 						</Button>
 						{hasCreateAccess && (
-							<Button aria-label="Add your first skill" data-testid="skill-create-btn" onClick={onCreateNew}>
+							<Button data-testid="skill-create-btn" onClick={onCreateNew}>
 								<Plus className="h-4 w-4" />
 								Add Skill
 							</Button>

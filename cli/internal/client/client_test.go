@@ -233,7 +233,7 @@ func TestClientAuthorization(t *testing.T) {
 	}
 }
 
-// TestClientAgentInferenceAuthorization mirrors the Edge gateway-mode bearer and selection headers.
+// TestClientAgentInferenceAuthorization verifies CLI SSO bearer and assigned-key selection headers.
 func TestClientAgentInferenceAuthorization(t *testing.T) {
 	var received *http.Request
 	api := New("https://gateway.example", Credentials{
@@ -264,8 +264,8 @@ func TestClientAgentInferenceAuthorization(t *testing.T) {
 	}
 }
 
-// TestClientAgentInferencePrecedesRawVirtualKey verifies the CLI mirrors the
-// Edge agent when both user-session and legacy inference credentials exist.
+// TestClientAgentInferencePrecedesRawVirtualKey verifies CLI SSO takes
+// precedence when both user-session and legacy inference credentials exist.
 func TestClientAgentInferencePrecedesRawVirtualKey(t *testing.T) {
 	var received *http.Request
 	api := New("https://gateway.example", Credentials{

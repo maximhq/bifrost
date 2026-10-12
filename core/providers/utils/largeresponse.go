@@ -335,6 +335,25 @@ func ParseOpenAIUsageFromBytes(data []byte) *schemas.BifrostLLMUsage {
 	return result
 }
 
+// WrapStreamingResponseBody hands a streamed response body to the transport as one reader:
+// decompressed, failing after the stream idle timeout when the provider stalls, closed when the
+// request context ends, and releasing resp on Close. The caller must not release resp itself.
+func WrapStreamingResponseBody(ctx *schemas.BifrostContext, resp *fasthttp.Response) *LargeResponseReader {
+	reader, releaseGzip := DecompressStreamBody(resp)
+	reader, stopIdleTimeout := NewIdleTimeoutReader(reader, resp.BodyStream(), GetStreamIdleTimeout(ctx), ctx)
+	stopCancellation := SetupStreamCancellation(ctx, resp.BodyStream(), nil)
+	return &LargeResponseReader{
+		Reader: reader,
+		Resp:   resp,
+		ctx:    ctx,
+		cleanup: func() {
+			stopCancellation()
+			stopIdleTimeout()
+			releaseGzip()
+		},
+	}
+}
+
 // SetupStreamingPassthrough configures large response passthrough for streaming
 // responses when large payload mode is active. Wraps the response body stream
 // in a LargeResponseReader and sets context keys for the transport layer.

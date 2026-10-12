@@ -57,6 +57,9 @@ icon: "road-barrier"
   <Card title="Singulr AI" icon="/media/singulr-logo-card.svg" href="/integrations/guardrails/singulr-ai">
     Policy-driven prompt-injection, PII, and PHI enforcement with allow, block, and span-based redaction decisions.
   </Card>
+  <Card title="A10 Guardrails" icon="/media/a10-logo-card.svg" href="/integrations/guardrails/a10">
+    Firewall-enforced policies that block or rewrite prompts and completions.
+  </Card>
 </CardGroup>
 
 ### Core Concepts
@@ -66,7 +69,7 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 | Concept | Description |
 |---------|-------------|
 | **Rules** | Custom policies defined using CEL (Common Expression Language) that determine which LLM requests or MCP tool executions to validate and when. Rules can apply to inputs, outputs, or both, and can be linked to one or more profiles for evaluation. |
-| **Profiles** | Configurations for guardrail providers, including Bifrost-managed providers (Prompt Guardrails, Custom Regex, Secrets Detection) and external providers (Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Check Point's AI Agent Security, Repello Argus, and Singulr AI). Profiles are reusable and can be shared across multiple rules. |
+| **Profiles** | Configurations for guardrail providers, including Bifrost-managed providers (Prompt Guardrails, Custom Regex, Secrets Detection) and external providers (Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Check Point's AI Agent Security, Repello Argus, Singulr AI, and A10 Guardrails). Profiles are reusable and can be shared across multiple rules. |
 
 **How They Work Together:**
 - **Profiles** define *how* content is evaluated using native Bifrost checks or external provider capabilities
@@ -78,7 +81,7 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 
 | Feature | Description |
 |---------|-------------|
-| **Multi-Provider Support** | Bifrost-managed Prompt Guardrails, Custom Regex, and Secrets Detection, plus Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Check Point's AI Agent Security, Repello Argus, and Singulr AI integrations |
+| **Multi-Provider Support** | Bifrost-managed Prompt Guardrails, Custom Regex, and Secrets Detection, plus Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Check Point's AI Agent Security, Repello Argus, Singulr AI, and A10 Guardrails integrations |
 | **Dual-Stage Validation** | Guard LLM prompts and responses or MCP tool arguments and results |
 | **Real-Time Processing** | Synchronous and asynchronous validation modes |
 | **CEL-Based Rules** | Define custom policies using Common Expression Language |
@@ -537,7 +540,7 @@ Profiles are reusable configurations for guardrail providers. External providers
 | Property | Type | Required | Description |
 |----------|------|----------|-------------|
 | `id` | integer | Yes | Unique identifier for the profile |
-| `provider_name` | string | Yes | Provider type: `regex`, `secrets`, `prompt-guardrail`, `presidio`, `azure-pii`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, `patronus-ai`, `lakera`, `repelloai-argus`, or `singulr-ai` |
+| `provider_name` | string | Yes | Provider type: `regex`, `secrets`, `prompt-guardrail`, `presidio`, `azure-pii`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, `patronus-ai`, `lakera`, `repelloai-argus`, `singulr-ai`, or `a10` |
 | `policy_name` | string | Yes | Descriptive name for the policy |
 | `enabled` | boolean | Yes | Whether the profile is active |
 | `config` | object | No | Provider-specific configuration |
@@ -570,7 +573,7 @@ Profiles are reusable configurations for guardrail providers. External providers
 </Tab>
 <Tab title="API">
 
-Profiles are managed per provider type at `/api/guardrails/{provider}`, where `{provider}` is one of `secrets`, `regex`, `prompt-guardrail`, `presidio`, `azure-pii`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, `patronus-ai`, `lakera`, `repelloai-argus`, or `singulr-ai`. The API assigns the configuration ID after creation.
+Profiles are managed per provider type at `/api/guardrails/{provider}`, where `{provider}` is one of `secrets`, `regex`, `prompt-guardrail`, `presidio`, `azure-pii`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, `patronus-ai`, `lakera`, `repelloai-argus`, `singulr-ai`, or `a10`. The API assigns the configuration ID after creation.
 
 **Create a Profile:**
 ```bash

@@ -334,6 +334,148 @@ curl --location 'http://localhost:8080/v1/audio/transcriptions' \
 --form 'timestamp_granularities[]=segment'
 ```
 
+## Multimodal Embeddings
+
+Bifrost supports multimodal embeddings — generating vector representations that capture text, images, audio, video, and documents together. The HTTP `input` field accepts a string, an array of strings, or a full `EmbeddingContent` array for multimodal content.
+
+### Text Embedding (all providers)
+
+The simplest form — pass a string or array of strings directly in `input`:
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "cohere/embed-v4.0",
+    "input": ["a golden retriever playing fetch"],
+    "input_type": "search_document"
+  }'
+```
+
+### Image + Text Embedding
+
+For multimodal content, pass `input` as a `[]EmbeddingContent` array. Each item is an array of typed parts:
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "cohere/embed-v4.0",
+    "input": [
+      [
+        { "type": "text",  "text": "a golden retriever in a park" },
+        { "type": "image", "image": { "url": "data:image/jpeg;base64,<base64-encoded-jpeg>" } }
+      ]
+    ],
+    "input_type": "image"
+  }'
+```
+
+### Multimodal Embedding
+
+Gemini supports text, image, audio, video, and PDF in the same content entry:
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini/gemini-embedding-2-preview",
+    "input": [
+      [
+        { "type": "text",  "text": "transcript of the audio" },
+        { "type": "audio", "audio": { "url": "https://example.com/speech.mp3" } }
+      ]
+    ]
+  }'
+```
+
+For PDFs, use the `file` part type:
+
+```bash
+"input": [
+  [
+    { "type": "file", "file": { "url": "https://example.com/doc.pdf", "mime_type": "application/pdf" } }
+  ]
+]
+```
+
+### Image + Text + Video Embedding
+
+`multimodalembedding@001` accepts text, image, and video parts. Images and videos must be GCS URIs (`gs://`) or base64 data URIs. The response contains a separate embedding per modality.
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "vertex/multimodalembedding@001",
+    "input": [
+      [
+        { "type": "text",  "text": "product photo" },
+        { "type": "image", "image": { "url": "gs://my-bucket/photo.jpg" } }
+      ]
+    ],
+    "project_id": "my-gcp-project",
+    "region": "us-central1"
+  }'
+```
+
+**Response** contains separate vectors per modality:
+
+```json
+{
+  "data": [
+    { "index": 0, "modality": "text",  "embedding": [0.12, -0.34, ...] },
+    { "index": 1, "modality": "image", "embedding": [0.56, -0.78, ...] }
+  ]
+}
+```
+
+For video, provide a `video` part with an optional segment config:
+
+```bash
+"input": [
+  [
+    {
+      "type": "video",
+      "video": { "url": "gs://my-bucket/clip.mp4" },
+      "video_config": { "start_offset_sec": 0, "end_offset_sec": 30 }
+    }
+  ]
+]
+```
+
+### Per-Item Parameters
+
+Every entry in `input` may instead be an object carrying its own `params`, which override the
+request-level ones for that entry alone. Use it when the items need *different* parameters —
+a query embedded with `RETRIEVAL_QUERY` alongside documents embedded with
+`RETRIEVAL_DOCUMENT`, say. Plain entries and entries with params can be mixed freely.
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini/gemini-embedding-001",
+    "dimensions": 768,
+    "input": [
+      { "content": [{ "type": "text", "text": "how do I reset my password?" }],
+        "params": { "task_type": "RETRIEVAL_QUERY", "dimensions": 768 } },
+      { "content": [{ "type": "text", "text": "Password reset guide" }],
+        "params": { "task_type": "RETRIEVAL_DOCUMENT", "dimensions": 256 } },
+      [ { "type": "text", "text": "a plain entry, using the request-level params" } ]
+    ]
+  }'
+```
+
+An item's `params` **replaces** the request-level params rather than merging field by field,
+so repeat any request-level value you still want (as `dimensions` is repeated above).
+
+<Warning>
+Only providers whose wire format has one parameter block per item can honour this — currently
+Gemini (`:batchEmbedContents`). Everything else returns a 400 naming the offending item index
+rather than silently ignoring the override and returning a correct-looking but wrong vector.
+</Warning>
+
 <Info>
 Check the [Supported Providers](/providers/supported-providers/overview) page for more information on multimodal capabilities supported by each provider.
 </Info>

@@ -40,44 +40,60 @@ func emulationFunctionCallResponse(args string) *schemas.BifrostResponsesRespons
 	}
 }
 
-// structuredDecisionRequest carries every allowed criteria type in every slot:
-// string | object | array for noul keys and score levels, plus null for choice
-// options - the same matrix the typesafe converter and the harness cases pin.
+// structuredDecisionRequest carries every allowed description type in every
+// slot: string | object | array for predicate outcomes and score levels, plus
+// null for a choice option - the same matrix the typesafe converter and the
+// harness cases pin.
 func structuredDecisionRequest() *schemas.BifrostDecisionRequest {
 	return &schemas.BifrostDecisionRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o-mini",
-		State:    "Customer message: I was double charged and want a refund.",
-		Questions: map[string]schemas.DecisionQuestion{
-			"approve": {
-				Kind:         schemas.DecisionKindNoul,
-				Instructions: "Approve a billing review?",
-				Criteria: map[string]any{
-					"true":  map[string]any{"meaning": "clear billing error"},
-					"false": []any{"no billing issue", "general inquiry"},
+		Input:    schemas.DecisionInput{Text: schemas.Ptr("Customer message: I was double charged and want a refund.")},
+		Questions: []schemas.DecisionQuestion{
+			{
+				Type:         schemas.DecisionTypePredicate,
+				Name:         schemas.Ptr("approve"),
+				Instructions: schemas.NewDecisionText("Approve a billing review?"),
+				Criteria: &schemas.DecisionCriteria{
+					True:  &schemas.DecisionText{Structured: map[string]any{"meaning": "clear billing error"}},
+					False: &schemas.DecisionText{Structured: []any{"no billing issue", "general inquiry"}},
 				},
 			},
-			"category": {
-				Kind:         schemas.DecisionKindChoice,
-				Instructions: "Pick the ticket category",
-				Criteria: map[string]any{
-					"billing": map[string]any{"rubric": "money issues"},
-					"bug":     []any{"crash", "defect"},
-					"support": "service questions",
-					"other":   nil,
+			{
+				Type:         schemas.DecisionTypeChoice,
+				Name:         schemas.Ptr("category"),
+				Instructions: schemas.NewDecisionText("Pick the ticket category"),
+				Choices: []schemas.DecisionChoice{
+					{Value: schemas.DecisionScalar{Str: schemas.Ptr("billing")}, Description: &schemas.DecisionText{Structured: map[string]any{"rubric": "money issues"}}},
+					{Value: schemas.DecisionScalar{Str: schemas.Ptr("bug")}, Description: &schemas.DecisionText{Structured: []any{"crash", "defect"}}},
+					{Value: schemas.DecisionScalar{Str: schemas.Ptr("other")}},
+					{Value: schemas.DecisionScalar{Str: schemas.Ptr("support")}, Description: schemas.NewDecisionText("service questions")},
 				},
 			},
-			"urgency": {
-				Kind:         schemas.DecisionKindScore,
-				Instructions: "How urgent?",
-				Criteria: []any{
-					"low",
-					map[string]any{"level": "high", "examples": []any{"outage"}},
-					[]any{"critical", "churn risk"},
+			{
+				Type:         schemas.DecisionTypeScore,
+				Name:         schemas.Ptr("urgency"),
+				Instructions: schemas.NewDecisionText("How urgent?"),
+				Levels: []schemas.DecisionLevel{
+					{Label: "0", Description: schemas.NewDecisionText("low")},
+					{Label: "1", Description: &schemas.DecisionText{Structured: map[string]any{"level": "high", "examples": []any{"outage"}}}},
+					{Label: "2", Description: &schemas.DecisionText{Structured: []any{"critical", "churn risk"}}},
 				},
 			},
 		},
 	}
+}
+
+// decisionAnswerNamed returns the answer to the named question.
+func decisionAnswerNamed(t *testing.T, resp *schemas.BifrostDecisionResponse, name string) schemas.DecisionAnswer {
+	t.Helper()
+	for _, answer := range resp.Answers {
+		if answer.Name != nil && *answer.Name == name {
+			return answer
+		}
+	}
+	t.Fatalf("no answer named %q in %+v", name, resp.Answers)
+	return schemas.DecisionAnswer{}
 }
 
 // questionDescription walks the emit_decision tool schema down to the value
@@ -157,15 +173,15 @@ func TestEmulateDecisionForwardsStructuredCriteria(t *testing.T) {
 	}
 
 	// Inbound: answers typed per kind, structured legend rendered as JSON.
-	if resp.Answers["approve"].Kind != schemas.DecisionKindNoul || resp.Answers["approve"].Value.(float64) != 0.9 {
-		t.Errorf("noul answer = %+v", resp.Answers["approve"])
+	if approve := decisionAnswerNamed(t, resp, "approve"); approve.Type != schemas.DecisionTypePredicate || *approve.Probability != 0.9 {
+		t.Errorf("noul answer = %+v", approve)
 	}
-	if resp.Answers["category"].Value.(string) != "billing" {
-		t.Errorf("choice answer = %+v", resp.Answers["category"])
+	if category := decisionAnswerNamed(t, resp, "category"); *category.Choice.Str != "billing" {
+		t.Errorf("choice answer = %+v", category)
 	}
-	urgency := resp.Answers["urgency"]
+	urgency := decisionAnswerNamed(t, resp, "urgency")
 	// Score derives from the distribution: 0*0.1 + 1*0.1 + 2*0.8 = 1.7.
-	if math.Abs(urgency.Value.(float64)-1.7) > 1e-9 {
+	if math.Abs(*urgency.Score-1.7) > 1e-9 {
 		t.Errorf("score answer = %+v", urgency)
 	}
 	// The legend echoes each level's description verbatim, matching the native
@@ -200,26 +216,24 @@ func TestEmulateDecisionStructuredOutputFallbackPath(t *testing.T) {
 	if bifrostErr != nil {
 		t.Fatalf("unexpected error: %v", bifrostErr)
 	}
-	if resp.Answers["category"].Value.(string) != "support" {
-		t.Errorf("choice answer = %+v", resp.Answers["category"])
+	if category := decisionAnswerNamed(t, resp, "category"); *category.Choice.Str != "support" {
+		t.Errorf("choice answer = %+v", category)
 	}
-	if resp.Answers["urgency"].Legend["0"] != "low" {
-		t.Errorf("string legend level lost: %+v", resp.Answers["urgency"].Legend)
+	if urgency := decisionAnswerNamed(t, resp, "urgency"); urgency.Legend["0"] != "low" {
+		t.Errorf("string legend level lost: %+v", urgency.Legend)
 	}
 }
 
 func TestEmulateDecisionRejectsMalformedCriteriaBeforeDispatch(t *testing.T) {
-	// A choice question whose criteria is not a map fails schema building; the
-	// request must 400 locally without ever reaching the provider.
+	// A choice question without choices fails schema building; the request
+	// must 400 locally without ever reaching the provider.
 	req := structuredDecisionRequest()
-	question := req.Questions["category"]
-	question.Criteria = []any{"not", "a", "map"}
-	req.Questions["category"] = question
+	req.Questions[1].Choices = nil
 
 	provider := &decisionEmulationProvider{}
 	var b Bifrost
 	_, bifrostErr := b.emulateDecisionViaResponses(nil, provider, schemas.Key{}, req)
-	if bifrostErr == nil || bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "choice criteria must be a map of options") {
+	if bifrostErr == nil || bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "at least one option") {
 		t.Fatalf("expected local criteria rejection, got %+v", bifrostErr)
 	}
 	if provider.lastRequest != nil {
@@ -290,8 +304,8 @@ func TestEmulateDecisionRefusesPassthroughExtensions(t *testing.T) {
 	req := &schemas.BifrostDecisionRequest{
 		Provider:    schemas.OpenAI,
 		Model:       "gpt-4o-mini",
-		State:       "Describe this photo.",
-		Questions:   map[string]schemas.DecisionQuestion{"approve": {Kind: schemas.DecisionKindNoul, Instructions: "Approve?"}},
+		Input:       schemas.DecisionInput{Text: schemas.Ptr("Describe this photo.")},
+		Questions:   []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("approve"), Instructions: schemas.NewDecisionText("Approve?")}},
 		ExtraParams: map[string]interface{}{"images": []string{"data:image/png;base64,iVBORw0KGgo="}},
 	}
 
@@ -314,5 +328,85 @@ func TestEmulateDecisionRefusesPassthroughExtensions(t *testing.T) {
 	plain := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	if _, bifrostErr := b.emulateDecisionViaResponses(plain, provider, schemas.Key{}, req); bifrostErr != nil {
 		t.Fatalf("unexpected error without passthrough: %v", bifrostErr)
+	}
+}
+
+// TestEmulateDecisionListOnlyDetails pins that emulation honours what only a
+// list-shaped request carries: an unnamed question is asked under a generated
+// name and answered without one, a boolean choice is answered with its
+// boolean, and a level label reaches the model with its level.
+func TestEmulateDecisionListOnlyDetails(t *testing.T) {
+	args := `{
+		"question_1": {"value": 0.2, "confidence": 0.9},
+		"refund":     {"choice": "true", "confidence": 0.8, "probabilities": {"true": 0.8, "false": 0.2}},
+		"severity":   {"value": 1, "confidence": 0.7, "probabilities": {"0": 0.1, "1": 0.9}}
+	}`
+	provider := &decisionEmulationProvider{response: emulationFunctionCallResponse(args)}
+	req := &schemas.BifrostDecisionRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input:    schemas.DecisionInput{Text: schemas.Ptr("Customer message: please refund me.")},
+		Questions: []schemas.DecisionQuestion{
+			{Type: schemas.DecisionTypePredicate, Instructions: schemas.NewDecisionText("Is the customer angry?")},
+			{Type: schemas.DecisionTypeChoice, Name: schemas.Ptr("refund"), Instructions: schemas.NewDecisionText("Refund?"), Choices: []schemas.DecisionChoice{
+				{Value: schemas.DecisionScalar{Bool: schemas.Ptr(true)}, Description: schemas.NewDecisionText("refund now")},
+				{Value: schemas.DecisionScalar{Bool: schemas.Ptr(false)}},
+			}},
+			{Type: schemas.DecisionTypeScore, Name: schemas.Ptr("severity"), Instructions: schemas.NewDecisionText("How bad?"), Levels: []schemas.DecisionLevel{
+				{Label: "Cosmetic"}, {Label: "Blocked", Description: schemas.NewDecisionText("nothing works")},
+			}},
+		},
+	}
+
+	var b Bifrost
+	resp, bifrostErr := b.emulateDecisionViaResponses(nil, provider, schemas.Key{}, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	if desc := questionDescription(t, provider.lastRequest, "severity", "value"); !strings.Contains(desc, "0=Cosmetic") || !strings.Contains(desc, "1=Blocked: nothing works") {
+		t.Errorf("level labels did not reach the model: %q", desc)
+	}
+	if len(resp.Answers) != 3 {
+		t.Fatalf("answers = %+v", resp.Answers)
+	}
+	if first := resp.Answers[0]; first.Name != nil || first.Probability == nil || *first.Probability != 0.2 {
+		t.Errorf("unnamed answer = %+v", first)
+	}
+	if refund := resp.Answers[1]; refund.Choice == nil || refund.Choice.Bool == nil || !*refund.Choice.Bool || *refund.Probabilities[0].Value.Bool != true {
+		t.Errorf("boolean choice answer = %+v", refund)
+	}
+	if severity := resp.Answers[2]; severity.Probabilities[1].Label == nil || *severity.Probabilities[1].Label != "Blocked" {
+		t.Errorf("score answer = %+v", severity)
+	}
+}
+
+// TestEmulateDecisionRejectsNonTextInput pins that an image, or a part of a
+// type Bifrost does not model such as audio, is refused before the model is
+// called, since emulation sends the input as text and the model would answer
+// without reading it. The audio part is synthetic.
+func TestEmulateDecisionRejectsNonTextInput(t *testing.T) {
+	for partType, input := range map[string]string{
+		"input_image": `[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]`,
+		"input_audio": `[{"role":"user","content":[{"type":"input_text","text":"listen"},{"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}]}]`,
+		"untyped":     `[{"role":"user","content":[{"image_url":"data:image/png;base64,AAAA"}]}]`,
+	} {
+		provider := &decisionEmulationProvider{}
+		req := &schemas.BifrostDecisionRequest{
+			Provider:  schemas.OpenAI,
+			Model:     "gpt-4o-mini",
+			Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("cat"), Instructions: schemas.NewDecisionText("Is this a cat?")}},
+		}
+		if err := schemas.Unmarshal([]byte(input), &req.Input); err != nil {
+			t.Fatalf("decode %s: %v", partType, err)
+		}
+
+		var b Bifrost
+		_, bifrostErr := b.emulateDecisionViaResponses(nil, provider, schemas.Key{}, req)
+		if bifrostErr == nil || bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, partType) {
+			t.Errorf("expected %s rejection, got %+v", partType, bifrostErr)
+		}
+		if provider.lastRequest != nil {
+			t.Errorf("the emulating model must not be called for %s", partType)
+		}
 	}
 }

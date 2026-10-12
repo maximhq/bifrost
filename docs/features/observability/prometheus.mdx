@@ -234,7 +234,7 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 | `bifrost_overhead_latency_microseconds` | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) |
 | `bifrost_overhead_component_microseconds` | Histogram | That same overhead broken down by internal component via the `overhead_component` label. Opt-in, and populated only when tracing is active — see [Overhead Breakdown](#overhead-breakdown) |
 | `bifrost_success_requests_total` | Counter | Successful provider requests |
-| `bifrost_error_requests_total` | Counter | Failed requests, by raw `status_code` and normalized `error_type` — see [Error Types](#error-types) |
+| `bifrost_error_requests_total` | Counter | Failed requests, by effective `status_code` and normalized `error_type` — see [Error Types](#error-types) |
 | `bifrost_input_tokens_total` | Counter | Total input tokens processed |
 | `bifrost_output_tokens_total` | Counter | Total output tokens generated |
 | `bifrost_cost_total` | Counter | Total cost in USD |
@@ -247,10 +247,16 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 | `bifrost_request_retries` | Histogram | Number of retries used per request (observed once per request; buckets `0,1,2,3,5,10`). |
 | `bifrost_routing_embedding_requests_total` | Counter | Embedding calls made by semantic complexity routing. Labels: `provider`, `model` (the embedding provider/model, not the request's), `phase` (`request` classification vs `warmup` exemplar embedding). |
 | `bifrost_routing_embedding_cost_total` | Counter | Cost in USD of semantic routing embeddings (same labels as above). Recorded regardless of whether embedding usage counts toward budgets. |
+| `bifrost_routing_llm_requests_total` | Counter | Chat completions made by the semantic router's LLM fallback. Labels: `provider`, `model`. |
+| `bifrost_routing_llm_cost_total` | Counter | Cost in USD of those LLM fallback completions (same labels as above). Recorded regardless of whether usage counts toward budgets. |
 
 ### Error Types
 
-`bifrost_error_requests_total` carries two error dimensions. `status_code` is the raw fact. `error_type` is the normalized interpretation: a closed, low-cardinality vocabulary that answers **whose fault was it**, which is what alarms actually need.
+`bifrost_error_requests_total` carries two error dimensions. `status_code` is the status the failure resolves to — the caller's status over HTTP, including the 500s Bifrost raises internally, but not for an error delivered inside an already-committed stream, where the caller saw a 200 and the error arrived in the event body. `error_type` is the normalized interpretation: a closed, low-cardinality vocabulary that answers **whose fault was it**, which is what alarms actually need.
+
+<Note>
+Before Bifrost 2.2.2, a failure Bifrost raised itself — a request-conversion error, or an empty or unparseable provider response — carried no status of its own and was labelled `status_code="unknown"`, even though the caller received a 500. 5xx dashboards and alerts under-counted these. They are now labelled `status_code="500"`; repoint anything keyed on `status_code="unknown"`, which is no longer emitted on this path.
+</Note>
 
 Values are prefixed by fault domain, so a success-rate alarm that should ignore caller mistakes is one clause rather than a list of reasons that grows over time:
 
@@ -393,7 +399,7 @@ Most request-level Bifrost LLM metrics include these labels (the `bifrost_key_ro
 - `routing_engine_used` - Comma-separated list of routing engines that contributed to the decision (e.g. `governance`, `routing-rule`, `loadbalancing`, `model-catalog`, `core`). `core` is emitted when the Bifrost orchestrator itself makes a routing decision — fallback transitions or retry transitions.
 - `routing_rule_id` / `routing_rule_name` - Routing rule that matched the request
 - `complexity_tier` - Complexity tier used for routing (`SIMPLE` / `MEDIUM` / `COMPLEX`); empty when no routing rule referenced `complexity_tier`
-- `complexity_mechanism` - How the effective complexity tier was determined (`semantic`, `llm`, `session`, or `skipped` when no tier was produced). The raw complexity score is deliberately not a label because it has unbounded cardinality; it remains available in request logs and trace attributes
+- `complexity_mechanism` - How the effective complexity tier was determined (`semantic`, `decision`, `llm`, `session`, or `skipped` when no tier was produced). Semantic similarity is not a label because it has unbounded cardinality; it remains available in request logs and trace attributes. Decision-model confidence is recorded in the routing decision log
 - `selected_key_id` / `selected_key_name` - API key that successfully served the request (`""` when all attempts failed)
 - `fallback_index` - Fallback position
 - `team_id` / `team_name` - Team identifiers (empty when governance is not used)

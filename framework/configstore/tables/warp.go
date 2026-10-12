@@ -26,6 +26,9 @@ type TableWarpConfig struct {
 	// is nothing here worth encrypting.
 	APIKeyID string `gorm:"type:varchar(255)" json:"api_key_id,omitempty"`
 
+	// AdditionalModels is a JSON array of schemas.WarpModel, nil when there are none.
+	AdditionalModels *string `gorm:"type:text" json:"additional_models,omitempty"`
+
 	MaxIterations         int `gorm:"default:0" json:"max_iterations,omitempty"`
 	RequestTimeoutSeconds int `gorm:"default:0" json:"request_timeout_seconds,omitempty"`
 	// HistoryRetentionDays expires saved chats. Zero means the default; see

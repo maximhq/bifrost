@@ -1,5 +1,5 @@
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
-import { ModelAccessSelector, summarizeModelAccess } from "@/components/modelAccess";
+import { ModelAccessSelector, summarizeGrantModelAccess } from "@/components/modelAccess";
 import { Label } from "@/components/ui/label";
 import { ModelSelector } from "@/components/ui/modelSelector";
 import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets";
@@ -203,7 +203,7 @@ export function ProviderConfigCard({
 		: value.keyIds.length > 0
 			? `${value.keyIds.length} key${value.keyIds.length > 1 ? "s" : ""}`
 			: "No keys";
-	const modelsSummary = summarizeModelAccess(value.allowedModels, "allow");
+	const modelsSummary = summarizeGrantModelAccess(value.allowedModels, value.blacklistedModels);
 	const hasRl = value.rateLimit?.token_max_limit != null || value.rateLimit?.request_max_limit != null;
 	const rlSummary = hasRl ? "Rate limits set" : "No rate limits";
 
@@ -214,6 +214,7 @@ export function ProviderConfigCard({
 				role="button"
 				tabIndex={0}
 				onClick={toggleOpen}
+				data-testid={`${tid}-provider-header-${index}`}
 				onKeyDown={(e) => {
 					if (e.key === "Enter" || e.key === " ") {
 						e.preventDefault();
@@ -518,7 +519,7 @@ export function ProviderConfigCard({
 					>
 						<span className="text-muted-foreground/50 text-sm">└</span>
 						<span className="text-muted-foreground text-sm font-medium whitespace-nowrap">Access & rate limits</span>
-						<span className="text-muted-foreground/60 min-w-0 flex-1 truncate text-sm">
+						<span className="text-muted-foreground/60 min-w-0 flex-1 truncate text-sm" data-testid={`${tid}-access-summary-${index}`}>
 							{keysSummary} · {modelsSummary} · {rlSummary}
 						</span>
 						<ChevronDown className={cn("text-muted-foreground/60 h-3.5 w-3.5 shrink-0 transition-transform", accessOpen && "rotate-180")} />

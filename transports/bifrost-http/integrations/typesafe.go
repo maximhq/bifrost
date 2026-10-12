@@ -57,7 +57,9 @@ func CreateTypesafeRouteConfigs(pathPrefix string) []RouteConfig {
 			return nil, errors.New("invalid request type")
 		},
 		DecisionResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostDecisionResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.Typesafe {
+			// Custom providers report their own name, so match on the base
+			// provider type that served the attempt.
+			if schemas.ResolveBaseProvider(ctx, resp.ExtraFields.Provider) == schemas.Typesafe {
 				if resp.ExtraFields.RawResponse != nil {
 					return resp.ExtraFields.RawResponse, nil
 				}

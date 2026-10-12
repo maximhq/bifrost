@@ -50,6 +50,7 @@ type TestScenarios struct {
 	Transcription                bool // Speech-to-text functionality
 	TranscriptionStream          bool // Streaming speech-to-text functionality
 	Embedding                    bool // Embedding functionality
+	MultimodalEmbedding          bool // Multimodal embedding functionality (text + image)
 	Reasoning                    bool // Reasoning/thinking functionality via Responses API
 	PromptCaching                bool // Prompt caching functionality
 	ListModels                   bool // List available models functionality
@@ -115,6 +116,7 @@ type ComprehensiveTestConfig struct {
 	VisionModel              string
 	ReasoningModel           string
 	EmbeddingModel           string
+	MultimodalEmbeddingModel string // Model for multimodal embedding tests (text + image)
 	RerankModel              string
 	DecisionModel            string
 	DecisionEmulationModel   string // a general LLM model used to emulate a decision
@@ -202,6 +204,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Sarvam,
 		schemas.Wafer,
 		schemas.Databricks,
+		schemas.Cloudflare,
 		schemas.GithubCopilot,
 		schemas.Typesafe,
 		ProviderOpenAICustom,
@@ -386,7 +389,17 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:  *schemas.NewSecretVar("env.VERTEX_API_KEY"),
-				Models: []string{"text-multilingual-embedding-002", "gemini-2.5-pro", "gemini-2.5-flash-image", "imagen-4.0-generate-001", "semantic-ranker-default@latest", "semantic-ranker-default-004"},
+				Models: []string{"text-multilingual-embedding-002", "gemini-2.5-pro", "gemini-2.5-flash-image", "imagen-4.0-generate-001", "semantic-ranker-default@latest", "semantic-ranker-default-004", "multimodalembedding@001"},
+				Weight: 1.0,
+				VertexKeyConfig: &schemas.VertexKeyConfig{
+					ProjectID:       *schemas.NewSecretVar("env.VERTEX_PROJECT_ID"),
+					Region:          *schemas.NewSecretVar(getEnvWithDefault("VERTEX_REGION", "us-central1")),
+					AuthCredentials: *schemas.NewSecretVar("env.VERTEX_CREDENTIALS"),
+				},
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+			{
+				Models: []string{"gemini-embedding-2-preview"},
 				Weight: 1.0,
 				VertexKeyConfig: &schemas.VertexKeyConfig{
 					ProjectID:       *schemas.NewSecretVar("env.VERTEX_PROJECT_ID"),
@@ -519,6 +532,18 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
+	case schemas.Cloudflare:
+		return []schemas.Key{
+			{
+				Value:  *schemas.NewSecretVar("env.CLOUDFLARE_API_TOKEN"),
+				Models: []string{"*"},
+				Weight: 1.0,
+				CloudflareKeyConfig: &schemas.CloudflareKeyConfig{
+					AccountID: *schemas.NewSecretVar("env.CLOUDFLARE_ACCOUNT_ID"),
+				},
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
 	case schemas.GithubCopilot:
 		// Server-to-server auth: the credential is the GitHub App bundle, not a key value.
 		// GITHUB_COPILOT_API_KEY is the alternative direct-token mode and is left unset here.
@@ -603,16 +628,17 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Typesafe:
 		return []schemas.Key{
 			{
-				Value:  *schemas.NewSecretVar("env.TYPESAFE_API_KEY"),
-				Models: []string{"*"},
-				Weight: 1.0,
+				Value:          *schemas.NewSecretVar("env.TYPESAFE_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.Fireworks:
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewSecretVar("env.FIREWORKS_API_KEY"),
-				Models:         []string{"accounts/fireworks/models/kimi-k2p7-code", "fireworks/qwen3-embedding-8b"},
+				Models:         []string{"accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/deepseek-v4p1-flash", "fireworks/qwen3-embedding-8b"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -935,6 +961,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			},
 		}, nil
 	case schemas.Databricks:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Cloudflare:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
@@ -1515,8 +1554,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 	},
 	{
 		Provider:       schemas.Fireworks,
-		ChatModel:      "accounts/fireworks/models/kimi-k2p7-code",
-		TextModel:      "accounts/fireworks/models/kimi-k2p7-code",
+		ChatModel:      "accounts/fireworks/models/gpt-oss-120b",
+		TextModel:      "accounts/fireworks/models/deepseek-v4p1-flash",
 		EmbeddingModel: "fireworks/qwen3-embedding-8b",
 		Scenarios: TestScenarios{
 			TextCompletion:        true,

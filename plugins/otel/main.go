@@ -131,6 +131,10 @@ type Profile struct {
 	// requires store_raw_request_response and is suppressed by disable_content_logging.
 	ExportRawPayloads bool `json:"export_raw_payloads,omitempty"`
 
+	// ExcludedAttributes lists span-attribute names to drop before export, matched
+	// exactly (e.g. "gen_ai.request.tools"). Unknown names are a no-op.
+	ExcludedAttributes []string `json:"excluded_attributes,omitempty"`
+
 	// GroupTracesBySession, when true, groups all requests sharing the same x-bf-session-id
 	// header into a single OTEL trace: every span adopts a session-derived trace ID and each
 	// request's root span becomes a top-level sibling under one synthetic session parent
@@ -299,6 +303,8 @@ type profileForStorage struct {
 	OverheadBreakdownEnabled bool              `json:"overhead_breakdown_enabled,omitempty"`
 	RequestHeaders           []string          `json:"request_headers,omitempty"`
 	DisableContentLogging    bool              `json:"disable_content_logging,omitempty"`
+	ExportRawPayloads        bool              `json:"export_raw_payloads,omitempty"`
+	ExcludedAttributes       []string          `json:"excluded_attributes,omitempty"`
 	GroupTracesBySession     bool              `json:"group_traces_by_session,omitempty"`
 	DisableRootSpanContent   bool              `json:"disable_root_span_content,omitempty"`
 }
@@ -343,6 +349,8 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			OverheadBreakdownEnabled: p.OverheadBreakdownEnabled,
 			RequestHeaders:           p.RequestHeaders,
 			DisableContentLogging:    p.DisableContentLogging,
+			ExportRawPayloads:        p.ExportRawPayloads,
+			ExcludedAttributes:       p.ExcludedAttributes,
 			GroupTracesBySession:     p.GroupTracesBySession,
 			DisableRootSpanContent:   p.DisableRootSpanContent,
 		})
@@ -425,6 +433,7 @@ type otelTarget struct {
 	requestHeaders           []string
 	disableContentLogging    bool
 	exportRawPayloads        bool
+	excludedAttributes       []string
 	groupTracesBySession     bool
 	disableRootSpanContent   bool
 	overheadBreakdownEnabled bool
@@ -627,6 +636,7 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		requestHeaders:           slices.Clone(profile.RequestHeaders),
 		disableContentLogging:    profile.DisableContentLogging,
 		exportRawPayloads:        profile.ExportRawPayloads,
+		excludedAttributes:       profile.ExcludedAttributes,
 		groupTracesBySession:     profile.GroupTracesBySession,
 		disableRootSpanContent:   profile.DisableRootSpanContent,
 		overheadBreakdownEnabled: profile.OverheadBreakdownEnabled,
@@ -780,6 +790,11 @@ func (p *OtelPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *sch
 	return nil
 }
 
+// HTTPTransportResponseHeadersHook leaves response headers unchanged.
+func (p *OtelPlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+	return nil
+}
+
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged
 func (p *OtelPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	return chunk, nil
@@ -883,6 +898,38 @@ func (p *OtelPlugin) ConsumesOverheadSpans() bool {
 }
 
 // ConsumesRawPayloads opts in when any profile exports raw bodies.
+// stripExcludedFromResourceSpan drops denied attributes from converted spans,
+// matched exactly against the exported key.
+func stripExcludedFromResourceSpan(rs *ResourceSpan, excluded []string) {
+	if rs == nil || len(excluded) == 0 {
+		return
+	}
+	denied := make(map[string]struct{}, len(excluded))
+	for _, k := range excluded {
+		if k != "" {
+			denied[k] = struct{}{}
+		}
+	}
+	if len(denied) == 0 {
+		return
+	}
+	for _, ss := range rs.ScopeSpans {
+		for _, span := range ss.Spans {
+			if span == nil || len(span.Attributes) == 0 {
+				continue
+			}
+			kept := span.Attributes[:0]
+			for _, kv := range span.Attributes {
+				if _, bad := denied[kv.GetKey()]; bad {
+					continue
+				}
+				kept = append(kept, kv)
+			}
+			span.Attributes = kept
+		}
+	}
+}
+
 func (p *OtelPlugin) ConsumesRawPayloads() bool {
 	for _, t := range p.targets {
 		// Raw bodies ride spans: a nil client means metrics-only, and
@@ -911,11 +958,17 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 			if t.metricsExporter != nil {
 				p.recordMetricsFromTrace(ctx, t.metricsExporter, trace, t.overheadBreakdownEnabled)
 				p.recordMCPMetricsFromTrace(ctx, t.metricsExporter, trace)
+				p.recordA2AMetricsFromTrace(ctx, t.metricsExporter, trace)
 			}
 			if t.client == nil || t.breakerOpen() {
 				return
 			}
-			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.exportRawPayloads, t.groupTracesBySession, t.disableRootSpanContent)
+			// Free when unconfigured: an empty list returns the trace unchanged.
+			traceForTarget := schemas.StripTraceAttributes(trace, t.excludedAttributes)
+			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, traceForTarget, t.requestHeaders, t.disableContentLogging, t.exportRawPayloads, t.groupTracesBySession, t.disableRootSpanContent)
+			// Again after conversion: it adds root-span attributes of its own
+			// (session.id, request id, instance attrs, captured headers).
+			stripExcludedFromResourceSpan(resourceSpan, t.excludedAttributes)
 			// The caller passes context.Background(), so this deadline is the only bound
 			// on the export — and the only bound at all on the gRPC path.
 			emitCtx, cancel := context.WithTimeout(ctx, t.exportTimeout)
@@ -1256,6 +1309,63 @@ func (p *OtelPlugin) recordMCPMetricsFromTrace(ctx context.Context, exporter *Me
 	}
 }
 
+// buildA2ASpanAttrs builds the duration-metric dimensions for one Agent
+// operation span. Every sample carries the Bifrost operation name; JSON-RPC
+// operations additionally carry their strict-v1 method name.
+func buildA2ASpanAttrs(span *schemas.Span) []attribute.KeyValue {
+	attrs := span.Attributes
+	out := []attribute.KeyValue{
+		attribute.String(schemas.AttrBifrostA2AOperationName, schemas.GetStringAttr(attrs, schemas.AttrBifrostA2AOperationName)),
+	}
+	if method := schemas.GetStringAttr(attrs, schemas.AttrA2AMethodName); method != "" {
+		out = append(out, attribute.String(schemas.AttrA2AMethodName, method))
+	}
+	if transport := schemas.GetStringAttr(attrs, schemas.AttrBifrostA2AUpstreamTransport); transport != "" {
+		out = append(out, attribute.String(schemas.AttrBifrostA2AUpstreamTransport, transport))
+	}
+	// Governance identity: bifrost.* span attrs → flat metric label names.
+	for spanKey, labelKey := range mcpGovernanceLabelMap {
+		if v := schemas.GetStringAttr(attrs, spanKey); v != "" {
+			out = append(out, attribute.String(labelKey, v))
+		}
+	}
+	return out
+}
+
+// recordA2AMetricsFromTrace records the duration metric once per A2A op span.
+// Called from Inject alongside recordMCPMetricsFromTrace.
+func (p *OtelPlugin) recordA2AMetricsFromTrace(ctx context.Context, exporter *MetricsExporter, trace *schemas.Trace) {
+	if trace == nil || exporter == nil {
+		return
+	}
+	for _, span := range trace.Spans {
+		if span == nil || span.Kind != schemas.SpanKindA2AOperation {
+			continue
+		}
+		// Skip un-enriched spans so we never emit an empty operation dimension.
+		if schemas.GetStringAttr(span.Attributes, schemas.AttrBifrostA2AOperationName) == "" {
+			continue
+		}
+		a2aAttrs := buildA2ASpanAttrs(span)
+		if span.Status == schemas.SpanStatusError {
+			errorType := schemas.GetStringAttr(span.Attributes, schemas.AttrErrorTypeSpec)
+			if errorType == "" {
+				errorType = "_OTHER"
+			}
+			a2aAttrs = append(a2aAttrs, attribute.String(schemas.AttrErrorTypeSpec, errorType))
+		}
+		// Prefer the gateway-measured wire latency over span wall-time (which
+		// covers the PostHooks). Fall back to wall-time when it's absent.
+		var durationSeconds float64
+		if opMs := schemas.GetIntAttr(span.Attributes, schemas.AttrBifrostA2AOperationDurationMs); opMs > 0 {
+			durationSeconds = float64(opMs) / 1000.0
+		} else if !span.StartTime.IsZero() && !span.EndTime.IsZero() {
+			durationSeconds = span.EndTime.Sub(span.StartTime).Seconds()
+		}
+		exporter.RecordA2AOperationDuration(ctx, durationSeconds, a2aAttrs...)
+	}
+}
+
 // recordMetricsFromTrace extracts metrics data from a completed trace and records them
 // via the OTEL metrics exporter. This is called from Inject after trace emission.
 //
@@ -1294,7 +1404,14 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 			if code := schemas.GetIntAttr(span.Attributes, schemas.AttrHTTPResponseStatusCode); code != 0 {
 				statusCode = strconv.Itoa(code)
 			}
-			errorAttrs := append(spanAttrs[:len(spanAttrs):len(spanAttrs)], attribute.String("status_code", statusCode))
+			// error_type mirrors Prometheus: status_code alone cannot attribute fault.
+			errorType := schemas.GetStringAttr(span.Attributes, schemas.AttrBifrostErrorType)
+			if errorType == "" {
+				errorType = string(schemas.ErrorTypeOther)
+			}
+			errorAttrs := append(spanAttrs[:len(spanAttrs):len(spanAttrs)],
+				attribute.String("status_code", statusCode),
+				attribute.String("error_type", errorType))
 			exporter.RecordErrorRequest(ctx, errorAttrs...)
 		} else {
 			exporter.RecordSuccessRequest(ctx, spanAttrs...)

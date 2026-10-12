@@ -3,14 +3,146 @@ package utils
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
+// ErrStreamFirstTokenTimeout closes the socket of a stream attempt that missed
+// its first-token deadline.
+var ErrStreamFirstTokenTimeout = errors.New(schemas.ErrStreamFirstTokenTimeout)
+
+// AttemptAbort cuts off one stream attempt that produces no output before its
+// first-token deadline, without cancelling the request context the primary,
+// retries and fallbacks share. Cancelling that context would end the whole
+// request and block fallbacks (RequestCancelled).
+//
+// Bifrost stores it on the context under BifrostContextKeyStreamAttemptAbort
+// for one attempt. The header-wait watcher (contextTransport), the body
+// watcher (SetupStreamCancellation), net/http requests (DoHTTPRequest) and the
+// first-chunk checks all select on Done. Disarm, called when the first output
+// chunk arrives, releases them. Fired and Disarm race on one atomic, so
+// exactly one of "timed out" and "first token arrived" wins.
+type AttemptAbort struct {
+	timeout time.Duration
+	state   atomic.Int32 // attemptAbortArmed, attemptAbortFired or attemptAbortDisarmed
+	done    chan struct{}
+	stopped chan struct{}
+	timer   *time.Timer
+}
+
+const (
+	attemptAbortArmed int32 = iota
+	attemptAbortFired
+	attemptAbortDisarmed
+)
+
+// NewAttemptAbort arms a first-token deadline of d. It returns nil when d <= 0;
+// every method is safe on a nil receiver and then never fires.
+func NewAttemptAbort(d time.Duration) *AttemptAbort {
+	if d <= 0 {
+		return nil
+	}
+	a := &AttemptAbort{
+		timeout: d,
+		done:    make(chan struct{}),
+		stopped: make(chan struct{}),
+	}
+	a.timer = time.AfterFunc(d, a.fire)
+	return a
+}
+
+func (a *AttemptAbort) fire() {
+	if a.state.CompareAndSwap(attemptAbortArmed, attemptAbortFired) {
+		close(a.done)
+	}
+}
+
+// Expire fires the deadline now, as if it had elapsed, so every watcher cuts
+// the attempt. A no-op once the deadline fired or was disarmed.
+func (a *AttemptAbort) Expire() {
+	if a == nil {
+		return
+	}
+	a.timer.Stop()
+	a.fire()
+}
+
+// Done closes when the deadline fires. A nil receiver returns a nil channel,
+// which a select never picks.
+func (a *AttemptAbort) Done() <-chan struct{} {
+	if a == nil {
+		return nil
+	}
+	return a.done
+}
+
+// Stopped closes when Disarm wins, so watchers can stop waiting on Done.
+func (a *AttemptAbort) Stopped() <-chan struct{} {
+	if a == nil {
+		return nil
+	}
+	return a.stopped
+}
+
+// Disarm stops the deadline because the attempt produced output. It returns
+// false when the deadline already fired: the attempt must then be treated as
+// timed out even if a chunk is in hand. Idempotent.
+func (a *AttemptAbort) Disarm() bool {
+	if a == nil {
+		return true
+	}
+	if a.state.CompareAndSwap(attemptAbortArmed, attemptAbortDisarmed) {
+		a.timer.Stop()
+		close(a.stopped)
+		return true
+	}
+	return a.state.Load() == attemptAbortDisarmed
+}
+
+// Fired reports whether the deadline fired.
+func (a *AttemptAbort) Fired() bool {
+	return a != nil && a.state.Load() == attemptAbortFired
+}
+
+// Timeout returns the configured first-token deadline.
+func (a *AttemptAbort) Timeout() time.Duration {
+	if a == nil {
+		return 0
+	}
+	return a.timeout
+}
+
+// AttemptAbortFromContext returns the abort handle for the current stream
+// attempt, or nil when the attempt has no first-token deadline.
+func AttemptAbortFromContext(ctx context.Context) *AttemptAbort {
+	if ctx == nil {
+		return nil
+	}
+	abort, _ := ctx.Value(schemas.BifrostContextKeyStreamAttemptAbort).(*AttemptAbort)
+	return abort
+}
+
+// NewFirstTokenTimeoutError is the error for a stream attempt that missed its
+// first-token deadline. IsBifrostError stops the retry loop on the same
+// provider, and AllowFallbacks stays unset so the next fallback runs.
+func NewFirstTokenTimeoutError(d time.Duration) *schemas.BifrostError {
+	err := NewBifrostTimeoutError(fmt.Sprintf("%s of %s", schemas.ErrStreamFirstTokenTimeout, d), ErrStreamFirstTokenTimeout)
+	err.Error.Code = new(schemas.FirstTokenTimeoutErrorCode)
+	return err
+}
+
 const (
 	maxStreamPreambleChunks = 64
 	maxStreamPreambleBytes  = 256 * 1024
+	// response.created and response.in_progress each echo the request's
+	// instructions and tools, so a large request passes 256 KB on its second
+	// startup event. Under a TTFT deadline a full buffer ends the attempt, so
+	// the budget must fit that echo.
+	maxStreamPreambleBytesUnderDeadline = 4 * 1024 * 1024
 )
 
 // Include the source channel to isolate attempts sharing a request ID.
@@ -28,20 +160,89 @@ type streamPreambleBuffer struct {
 // The owner must delete its entry on error, cancellation, or replay completion.
 var streamPreambles sync.Map // map[streamPreambleKey]*streamPreambleBuffer
 
-// tryAppend returns false when the caller should commit the stream.
-// On false, the chunk remains unbuffered; the caller must forward it
-// after replaying the buffered prefix.
-func (buffer *streamPreambleBuffer) tryAppend(chunk *schemas.BifrostStreamChunk) bool {
-	if len(buffer.chunks)+1 >= maxStreamPreambleChunks {
-		return false
-	}
-	encoded, err := MarshalSorted(chunk)
-	if err != nil || len(encoded) >= maxStreamPreambleBytes-buffer.bytes {
+// tryAppend returns false when the buffer cannot hold chunk within maxBytes
+// or the chunk cap. On false, the chunk remains unbuffered; the caller either
+// commits the stream (forwarding it after the buffered prefix) or, under a
+// TTFT deadline, ends the attempt.
+func (buffer *streamPreambleBuffer) tryAppend(chunk *schemas.BifrostStreamChunk, maxBytes int) bool {
+	size, ok := fitStreamPreamble(len(buffer.chunks), buffer.bytes, chunk, maxBytes)
+	if !ok {
 		return false
 	}
 	buffer.chunks = append(buffer.chunks, chunk)
-	buffer.bytes += len(encoded)
+	buffer.bytes += size
 	return true
+}
+
+// fitStreamPreamble reports whether chunk fits the startup buffer, and its encoded size.
+func fitStreamPreamble(count, bytes int, chunk *schemas.BifrostStreamChunk, maxBytes int) (int, bool) {
+	if count+1 >= maxStreamPreambleChunks {
+		return 0, false
+	}
+	encoded, err := MarshalSorted(chunk)
+	if err != nil || len(encoded) >= maxBytes-bytes {
+		return 0, false
+	}
+	return len(encoded), true
+}
+
+// isStreamStartupError reports whether err fails a stream attempt not yet committed to the client.
+func isStreamStartupError(err *schemas.BifrostError) bool {
+	return err != nil && err.Error != nil &&
+		(err.Error.Message != "" || err.Error.Code != nil || err.Error.Type != nil)
+}
+
+// StreamStartupState tracks whether the retry reader will hold an attempt's
+// startup events or release its output. Only the attempt's producer uses it;
+// it stores counters, never chunks, and needs no synchronization.
+type StreamStartupState struct {
+	isPreamble    func(*schemas.BifrostStreamChunk) bool
+	maxBytes      int
+	underDeadline bool
+	count         int
+	bytes         int
+	committed     bool
+	ended         bool
+}
+
+// NewStreamStartupState tracks one attempt; isPreamble is nil when only the first chunk is checked.
+func NewStreamStartupState(isPreamble func(*schemas.BifrostStreamChunk) bool, underDeadline bool) *StreamStartupState {
+	maxBytes := maxStreamPreambleBytes
+	if underDeadline {
+		maxBytes = maxStreamPreambleBytesUnderDeadline
+	}
+	return &StreamStartupState{isPreamble: isPreamble, maxBytes: maxBytes, underDeadline: underDeadline}
+}
+
+// IsStartupError reports whether the retry reader will reject err before
+// returning the stream to the caller. Retry eligibility is decided separately.
+func (c *StreamStartupState) IsStartupError(err *schemas.BifrostError) bool {
+	return !c.committed && isStreamStartupError(err)
+}
+
+// ObserveResult records a post-hook result as ProcessAndSendResponse and
+// ProcessAndSendBifrostError would send it.
+func (c *StreamStartupState) ObserveResult(ctx context.Context, resp *schemas.BifrostResponse, err *schemas.BifrostError) {
+	if c.committed || c.ended || isStreamControlSkip(err) {
+		return
+	}
+	chunk := BuildClientStreamChunk(ctx, resp, err)
+	if isStreamStartupError(chunk.BifrostError) {
+		return
+	}
+	if c.isPreamble != nil && c.isPreamble(chunk) {
+		if size, ok := fitStreamPreamble(c.count, c.bytes, chunk, c.maxBytes); ok {
+			c.count++
+			c.bytes += size
+			return
+		}
+		if c.underDeadline {
+			// The checker ends this attempt rather than committing it.
+			c.ended = true
+			return
+		}
+	}
+	c.committed = true
 }
 
 // replayStreamPreamble transfers buffer ownership to the forwarding goroutine.
@@ -144,13 +345,25 @@ func CheckStreamPreambleForError(
 		return done
 	}
 
+	// A first-token deadline on this attempt fires abort. Startup chunks do not
+	// disarm it; only the chunk that commits the stream does.
+	abort := AttemptAbortFromContext(ctx)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return nil, drain(), newStreamContextError(ctx)
 
+		case <-abort.Done():
+			return nil, drain(), NewFirstTokenTimeoutError(abort.Timeout())
+
 		case chunk, ok := <-stream:
 			if !ok {
+				if !abort.Disarm() {
+					// The deadline fired as the provider closed the stream, which
+					// cutting the socket can cause. Not an empty success.
+					return nil, drain(), NewFirstTokenTimeoutError(abort.Timeout())
+				}
 				if len(buffer.chunks) == 0 {
 					release()
 					done := make(chan struct{})
@@ -163,12 +376,28 @@ func CheckStreamPreambleForError(
 			if chunk == nil {
 				continue
 			}
-			if err := chunk.BifrostError; err != nil && err.Error != nil &&
-				(err.Error.Message != "" || err.Error.Code != nil || err.Error.Type != nil) {
-				return nil, drain(), err
+			if isStreamStartupError(chunk.BifrostError) {
+				return nil, drain(), chunk.BifrostError
 			}
-			if isPreamble(chunk) && buffer.tryAppend(chunk) {
-				continue
+			if isPreamble(chunk) {
+				if abort == nil {
+					if buffer.tryAppend(chunk, maxStreamPreambleBytes) {
+						continue
+					}
+				} else {
+					if buffer.tryAppend(chunk, maxStreamPreambleBytesUnderDeadline) {
+						continue
+					}
+					// Committing would disarm the deadline with no output, and
+					// buffering on would be unbounded. End the attempt as a TTFT
+					// miss now; the next fallback runs.
+					abort.Expire()
+					return nil, drain(), NewFirstTokenTimeoutError(abort.Timeout())
+				}
+			}
+			if !abort.Disarm() {
+				// The deadline fired while this chunk was in flight.
+				return nil, drain(), NewFirstTokenTimeoutError(abort.Timeout())
 			}
 			wrapped, done := replayStreamPreamble(ctx, key, buffer, chunk)
 			return wrapped, done, nil
@@ -240,6 +469,7 @@ func CheckFirstStreamChunkForError(
 		close(done)
 		return nil, done, nil
 	}
+	abort := AttemptAbortFromContext(ctx)
 	var firstChunk *schemas.BifrostStreamChunk
 	var ok bool
 	select {
@@ -257,9 +487,16 @@ func CheckFirstStreamChunkForError(
 			// out the provider's stream idle timeout. Drain in the background
 			// so the producer's eventual send and close still complete.
 			return nil, drainInBackground(stream), newStreamContextError(ctx)
+		case <-abort.Done():
+			return nil, drainInBackground(stream), NewFirstTokenTimeoutError(abort.Timeout())
 		}
 	}
 	if !ok {
+		if !abort.Disarm() {
+			// The deadline fired as the provider closed the stream, which
+			// cutting the socket can cause. Not an empty success.
+			return nil, drainInBackground(stream), NewFirstTokenTimeoutError(abort.Timeout())
+		}
 		// Channel closed immediately (empty stream) — return nil so callers
 		// can distinguish this from a live stream channel.
 		done := make(chan struct{})
@@ -268,10 +505,14 @@ func CheckFirstStreamChunkForError(
 	}
 
 	// Check if first chunk is an error
-	if firstChunk.BifrostError != nil && firstChunk.BifrostError.Error != nil &&
-		(firstChunk.BifrostError.Error.Message != "" || firstChunk.BifrostError.Error.Code != nil || firstChunk.BifrostError.Error.Type != nil) {
+	if isStreamStartupError(firstChunk.BifrostError) {
 		// Drain source channel to let the provider goroutine exit cleanly
 		return nil, drainInBackground(stream), firstChunk.BifrostError
+	}
+
+	if !abort.Disarm() {
+		// The deadline fired while this chunk was in flight.
+		return nil, drainInBackground(stream), NewFirstTokenTimeoutError(abort.Timeout())
 	}
 
 	// First chunk is valid data — wrap channel to re-inject it

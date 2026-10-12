@@ -365,6 +365,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 
 									<NumberAndSelect
 										id="tokenMaxLimit"
+										dataTestId="customer-token-max-limit-input"
 										label="Maximum Tokens"
 										value={formData.tokenMaxLimit}
 										selectValue={formData.tokenResetDuration}
@@ -375,6 +376,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 
 									<NumberAndSelect
 										id="requestMaxLimit"
+										dataTestId="customer-request-max-limit-input"
 										label="Maximum Requests"
 										value={formData.requestMaxLimit}
 										selectValue={formData.requestResetDuration}

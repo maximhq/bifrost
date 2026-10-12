@@ -43,6 +43,8 @@ Every failed attempt gets a `failure_class`, recorded on the `attempt_trail` (se
 | `transient` | Network error, or `500`/`502`/`503`/`504`/`529` | Yes | No, same key |
 | `caller_fault` | The request itself was refused: `400`/`409`/`413`/`415`/`422` with a provider error body and no rate-limit wording, or a `404` naming a request field (a file, a previous response). A `403` refused by a guardrail or moderation stays `credential`, since guardrails can be set per key or workspace and another key may serve the request | No | No |
 | `unknown` | A `4xx` with no signal Bifrost recognises, such as a bodyless or HTML `404` from a proxy or a wrong base URL | No | No |
+| `timeout` | The attempt ran out of time: the provider did not answer within the request timeout, a stream produced no first token within its TTFT limit, or the request's own deadline passed. Recorded with status `504` and `fail_reason` `request_timed_out` (a stream cut by a TTFT limit keeps `ttft_timeout`). Fallbacks run after a provider or TTFT timeout; an expired request deadline ends the request, so no fallback runs | No | No |
+| `cancelled` | The caller cancelled the request or disconnected while the attempt was in flight. Recorded with status `499` and no `fail_reason`, since nothing was refused. Fallbacks do not run | No | No |
 
 ### Azure streaming errors before output
 
@@ -94,6 +96,10 @@ The value is clamped to between 1 second and 5 minutes, and the field is absent 
 The same hint is recorded per attempt on the `attempt_trail` as `retry_after_ms`, so a key that was rotated away from still shows how long it asked for. The request's final error only carries the answer from the key it ended on.
 
 The hint is informational: Bifrost's own retries still wait according to the [backoff formula](#backoff-formula) below.
+
+<Note>
+In Bifrost Enterprise, [Adaptive Load Balancing](/enterprise/adaptive-load-balancing#how-long-a-key-is-held) uses the hint as how long to hold the refused key out of rotation for later requests, never less than 10 seconds.
+</Note>
 
 ### Backoff formula
 
@@ -488,7 +494,7 @@ Primary: a premium model for quality. Fallback: a cost-effective alternative. Go
 
 **Scenario 5: Revoked credential**
 
-OpenAI key 1 was rotated out-of-band and now returns `401`. Bifrost marks key 1 permanently dead for this request and immediately rotates to key 2 (no backoff, and no `max_retries` needed), which succeeds. Future requests will retry key 1 again: the dead-key set is per-request, not persistent. If every configured key was revoked and the retry budget outlasted the pool, Bifrost would return `502 upstream_credentials_exhausted` instead of bubbling up the raw `401` (which would falsely suggest the *caller's* Bifrost API key is the problem).
+OpenAI key 1 was rotated out-of-band and now returns `401`. Bifrost marks key 1 permanently dead for this request and immediately rotates to key 2 (no backoff, and no `max_retries` needed), which succeeds. Future requests will retry key 1 again: the dead-key set is per-request, not persistent. In Bifrost Enterprise, [Adaptive Load Balancing](/enterprise/adaptive-load-balancing#held-keys) remembers the refusal instead: key 1 is held out of rotation on every node, and one request checks it again after a wait. If every configured key was revoked and the retry budget outlasted the pool, Bifrost would return `502 upstream_credentials_exhausted` instead of bubbling up the raw `401` (which would falsely suggest the *caller's* Bifrost API key is the problem).
 
 **Scenario 6: Deployment missing on one key**
 

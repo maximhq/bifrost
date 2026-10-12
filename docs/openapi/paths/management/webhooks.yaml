@@ -273,6 +273,12 @@ webhooks-test:
               $ref: '../../schemas/management/webhooks.yaml#/TestWebhookResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: The endpoint allows private-network delivery and the caller is not authenticated (dashboard auth unconfigured)
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '404':
         $ref: '../../openapi.yaml#/components/responses/NotFound'
     security:

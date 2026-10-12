@@ -2,6 +2,7 @@ package vectorstore
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -608,4 +609,76 @@ func TestVectorStoreFactory_Pinecone(t *testing.T) {
 	pineconeStore, ok := store.(*PineconeStore)
 	assert.True(t, ok)
 	assert.NotNil(t, pineconeStore)
+}
+
+// TestPineconeStore_CreateNamespaceRejectsDimensionChange pins the guard every store shares. A
+// Pinecone index has one dimension for all its namespaces, so a namespace asked for at any other
+// size can never hold its vectors and is refused when it is opened.
+func TestPineconeStore_CreateNamespaceRejectsDimensionChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewPineconeTestSetup(t)
+	defer setup.Cleanup(t)
+
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, PineconeTestNamespace, PineconeTestDimension, nil))
+
+	err := setup.Store.CreateNamespace(setup.ctx, PineconeTestNamespace, 1, nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrDimensionMismatch)
+	assert.Contains(t, err.Error(), fmt.Sprintf("already exists with dimension %d but config requires 1", PineconeTestDimension))
+
+	// The store is shared, so a refused size must leave it as it was: GetAll queries with a zero
+	// vector of the stored dimension, which the index refuses at any other size.
+	_, _, err = setup.Store.GetAll(setup.ctx, PineconeTestNamespace, nil, nil, nil, 10)
+	assert.NoError(t, err, "a refused CreateNamespace must not change the store's dimension")
+}
+
+// TestPineconeStore_GetNearestScoresCosineSimilarity pins GetNearest's threshold and score to
+// cosine similarity, the scale every store uses. The index has one dimension, so the vectors are
+// padded to it with zeros.
+func TestPineconeStore_GetNearestScoresCosineSimilarity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewPineconeTestSetup(t)
+	defer setup.Cleanup(t)
+
+	namespace := PineconeTestNamespace + "-cosine"
+	defer func() { _ = setup.Store.DeleteNamespace(setup.ctx, namespace) }()
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, namespace, PineconeTestDimension, nil))
+
+	require.NoError(t, setup.Store.Add(setup.ctx, namespace, generateUUID(), unitVectorAtCosine(PineconeTestDimension, 0.9), map[string]interface{}{"label": "close"}))
+	require.NoError(t, setup.Store.Add(setup.ctx, namespace, generateUUID(), unitVectorAtCosine(PineconeTestDimension, 0.7), map[string]interface{}{"label": "far"}))
+
+	// Pinecone reads are eventually consistent, so wait until both writes are visible.
+	query := unitVectorAtCosine(PineconeTestDimension, 1)
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		all, err := setup.Store.GetNearest(setup.ctx, namespace, query, nil, []string{"label"}, 0, 10)
+		require.NoError(c, err)
+		assert.Len(c, all, 2)
+	}, 15*time.Second, 250*time.Millisecond)
+
+	results, err := setup.Store.GetNearest(setup.ctx, namespace, query, nil, []string{"label"}, 0.8, 10)
+	require.NoError(t, err)
+	require.Len(t, results, 1, "only the vector at cosine 0.9 clears a 0.8 threshold")
+	assert.Equal(t, "close", results[0].Properties["label"])
+	require.NotNil(t, results[0].Score)
+	assert.InDelta(t, 0.9, *results[0].Score, 1e-3)
+}
+
+// TestPineconeStore_DeleteMissingIDSucceeds pins deleting an id that was never written as a no-op,
+// the contract every store shares so clearing an unknown cache entry is not a server error.
+func TestPineconeStore_DeleteMissingIDSucceeds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewPineconeTestSetup(t)
+	defer setup.Cleanup(t)
+
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, PineconeTestNamespace, PineconeTestDimension, nil))
+	assert.NoError(t, setup.Store.Delete(setup.ctx, PineconeTestNamespace, generateUUID()))
 }

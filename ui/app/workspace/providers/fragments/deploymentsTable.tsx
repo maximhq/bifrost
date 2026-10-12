@@ -238,12 +238,15 @@ function VertexSection({ config, onChange, disabled }: ProviderSectionProps) {
 			</FieldRow>
 			<div className="flex items-start justify-between gap-4 rounded-md border p-3">
 				<div className="space-y-0.5">
-					<label className="text-sm font-medium">Force single region</label>
+					<label htmlFor="force-single-region" className="text-sm font-medium">
+						Force single region
+					</label>
 					<p className="text-muted-foreground text-xs">
 						Call the region above as-is and skip multi-region promotion of multi-region-only models. Use for provisioned throughput.
 					</p>
 				</div>
 				<Switch
+					id="force-single-region"
 					checked={config.force_single_region ?? false}
 					onCheckedChange={(checked) => onChange({ force_single_region: checked })}
 					disabled={disabled}

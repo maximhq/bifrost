@@ -11,7 +11,7 @@ import { resolveVariables } from "./lib/resolve-variables.mjs";
 const require = createRequire(import.meta.url);
 
 // Shared with newman-reporter-dbverify so provider alias normalization stays in sync.
-const { resolvePricingEntry } = require("../lib/pricing");
+const { resolvePricingEntry, expectedCostFromRow } = require("../lib/pricing");
 const { readLogsDbUrl } = require("../lib/logs-db-url");
 
 const args = Object.fromEntries(
@@ -73,6 +73,45 @@ const pricingUrl =
 // OpenAI family — the fix still bills Bedrock whenever metadata arrives before failure.
 const EARLY_USAGE_PROVIDERS = new Set(["anthropic"]);
 
+// An early-usage cancel carries the message_start usage that logs and governance bill;
+// /metrics must count it too, not only the error.
+const BILLED_CANCEL_COUNTERS = ["bifrost_error_requests_total", "bifrost_input_tokens_total", "bifrost_cost_total"];
+
+// /metrics sits behind the API auth chain: the OSS setup lock, or dashboard credentials once auth is on.
+const adminAuthHeader = process.env.BIFROST_E2E_AUTH_HEADER || "";
+const setupToken = (process.env.BIFROST_E2E_SETUP_TOKEN || process.env.BIFROST_SETUP_TOKEN || "bifrost-e2e-setup-token").trim();
+const metricsHeaders = {
+  ...(adminAuthHeader ? { Authorization: adminAuthHeader } : {}),
+  ...(setupToken ? { "X-Bifrost-Setup-Token": setupToken } : {}),
+};
+
+// Sums each BILLED_CANCEL_COUNTERS family across every series labelled with provider.
+async function scrapeProviderCounters(provider) {
+  const res = await fetch(`${baseUrl}/metrics`, { headers: metricsHeaders });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`GET /metrics returned HTTP ${res.status}: ${text.slice(0, 300)}`);
+  const sums = Object.fromEntries(BILLED_CANCEL_COUNTERS.map((n) => [n, 0]));
+  const providerLabel = new RegExp(`(^|,)provider="${provider}"(,|$)`);
+  for (const line of text.split("\n")) {
+    const m = /^(\w+)\{([^}]*)\}\s+(\S+)/.exec(line);
+    if (m && m[1] in sums && providerLabel.test(m[2])) sums[m[1]] += Number(m[3]);
+  }
+  return sums;
+}
+
+// Polls /metrics until the cancel's input tokens and cost land (the telemetry
+// post-hook records asynchronously). Returns an error string, or undefined on success.
+async function verifyCancelMetrics(provider, before) {
+  let delta = {};
+  for (const ms of [300, 700, 1200, 2000]) {
+    await new Promise((r) => setTimeout(r, ms));
+    const after = await scrapeProviderCounters(provider);
+    delta = Object.fromEntries(BILLED_CANCEL_COUNTERS.map((n) => [n, after[n] - before[n]]));
+    if (delta.bifrost_input_tokens_total > 0 && delta.bifrost_cost_total > 0) return undefined;
+  }
+  return `cancelled ${provider} stream billed usage missing from /metrics: ${BILLED_CANCEL_COUNTERS.map((n) => `${n} +${delta[n]}`).join(", ")}`;
+}
+
 // ─── logs DB + datasheet helpers (cost verification) ──────────────────────────
 function resolveLogsDbUrl() {
   return logsDbUrlArg || readLogsDbUrl(configPathArg, serverWorkingDir);
@@ -102,7 +141,7 @@ async function connectLogsDb(url) {
 
 async function pollLogRow(db, id) {
   const sql =
-    "SELECT cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens, token_usage, model, provider, status FROM logs WHERE id = $1";
+    "SELECT cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens, token_usage, model, provider, status, service_tier FROM logs WHERE id = $1";
   let last = null;
   for (const ms of [300, 700, 1200, 2000]) {
     await new Promise((r) => setTimeout(r, ms));
@@ -115,30 +154,10 @@ async function pollLogRow(db, id) {
   return last;
 }
 
+// Shared with the dbverify reporter via lib/pricing: recomputes at the rates of
+// the served tier recorded in the row's service_tier column.
 function expectedCost(entry, row) {
-  const input = entry.input_cost_per_token || 0,
-    output = entry.output_cost_per_token || 0;
-  const cr = entry.cache_read_input_token_cost || 0,
-    cw = entry.cache_creation_input_token_cost || 0;
-  const prompt = Number(row.prompt_tokens || 0),
-    completion = Number(row.completion_tokens || 0);
-  let cachedRead = Number(row.cached_read_tokens || 0),
-    cachedWrite = 0;
-  if (row.token_usage) {
-    try {
-      const d = JSON.parse(row.token_usage)?.prompt_tokens_details;
-      if (d) {
-        if (cachedRead === 0 && d.cached_read_tokens) cachedRead = Number(d.cached_read_tokens);
-        if (d.cached_write_tokens) cachedWrite = Number(d.cached_write_tokens);
-      }
-    } catch (_) {
-      /* ignore */
-    }
-  }
-  cachedRead = Math.min(cachedRead, prompt);
-  cachedWrite = Math.min(cachedWrite, Math.max(0, prompt - cachedRead));
-  const nonCached = Math.max(0, prompt - cachedRead - cachedWrite);
-  return nonCached * input + cachedRead * cr + cachedWrite * cw + completion * output;
+  return expectedCostFromRow(entry, row);
 }
 
 // A streaming cancel is logged status=cancelled (dedicated status since #4930;
@@ -317,6 +336,9 @@ async function runCase(testCase) {
   const requestId = `stream-cancel-${testCase.provider}-${crypto.randomUUID()}`;
 
   try {
+    const metricsBefore = EARLY_USAGE_PROVIDERS.has(testCase.provider)
+      ? await scrapeProviderCounters(testCase.provider)
+      : null;
     const response = await fetch(`${baseUrl}${testCase.path}`, {
       method: "POST",
       headers: {
@@ -368,15 +390,17 @@ async function runCase(testCase) {
     controller.abort(new Error("intentional downstream abort after first stream bytes"));
     await reader.cancel("intentional downstream abort").catch(() => {});
 
+    const metricsError =
+      bytesRead > 0 && metricsBefore ? await verifyCancelMetrics(testCase.provider, metricsBefore) : undefined;
     return {
       ...testCase,
       requestId,
-      ok: bytesRead > 0,
+      ok: bytesRead > 0 && !metricsError,
       status: response.status,
       contentType,
       bytesRead,
       aborted: true,
-      error: bytesRead > 0 ? undefined : "stream ended before any bytes were read",
+      error: bytesRead > 0 ? metricsError : "stream ended before any bytes were read",
     };
   } catch (err) {
     return {

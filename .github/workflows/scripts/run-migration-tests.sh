@@ -900,6 +900,10 @@ governance_model_pricing|input_cost_per_token_ultrafast|NULL|id = 1
 governance_model_pricing|output_cost_per_token_ultrafast|NULL|id = 1
 governance_model_pricing|cache_read_input_token_cost_ultrafast|NULL|id = 1
 governance_model_pricing|cache_creation_input_token_cost_ultrafast|NULL|id = 1
+governance_model_pricing|input_cost_per_token_above_272k_tokens_ultrafast|NULL|id = 1
+governance_model_pricing|output_cost_per_token_above_272k_tokens_ultrafast|NULL|id = 1
+governance_model_pricing|cache_read_input_token_cost_above_272k_tokens_ultrafast|NULL|id = 1
+governance_model_pricing|cache_creation_input_token_cost_above_272k_tokens_ultrafast|NULL|id = 1
 governance_model_pricing|output_cost_per_image_above_4_megapixels|NULL|id = 1
 governance_model_pricing|output_cost_per_image_above_8_megapixels|NULL|id = 1
 governance_model_pricing|output_cost_per_image_above_16_megapixels|NULL|id = 1
@@ -1121,6 +1125,7 @@ append_v220_fixtures() {
     fi
   done <<'V220_COLUMNS'
 config_keys|use_openai_endpoints|false|name = 'migration-test-key-anthropic'
+config_keys|cloudflare_account_id|NULL|name = 'migration-test-key-anthropic'
 governance_model_pricing|off_peak_cost_multiplier|NULL|id = 1
 governance_model_pricing|peak_hours|NULL|id = 1
 mcp_tool_logs|user_name|'Migration Test User'|id = 'mcp-log-migration-001'
@@ -2544,6 +2549,7 @@ append_dynamic_columns_postgres() {
     cache_creation_input_token_cost_flex \
     cache_creation_input_token_cost_flex_above_272k_tokens \
     cache_creation_input_token_cost_priority \
+    cache_creation_input_token_cost_above_272k_tokens_priority \
     cache_creation_input_token_cost_fast \
     cache_creation_input_token_cost_above_1hr_fast \
     cache_read_input_token_cost_fast \
@@ -2592,6 +2598,7 @@ append_dynamic_columns_postgres() {
     cache_creation_input_token_cost_flex \
     cache_creation_input_token_cost_flex_above_272k_tokens \
     cache_creation_input_token_cost_priority \
+    cache_creation_input_token_cost_above_272k_tokens_priority \
     cache_creation_input_token_cost_fast \
     cache_creation_input_token_cost_above_1hr_fast \
     cache_read_input_token_cost_fast \
@@ -3804,6 +3811,7 @@ append_dynamic_columns_sqlite() {
       cache_creation_input_token_cost_flex \
       cache_creation_input_token_cost_flex_above_272k_tokens \
       cache_creation_input_token_cost_priority \
+      cache_creation_input_token_cost_above_272k_tokens_priority \
       cache_creation_input_token_cost_fast \
       cache_creation_input_token_cost_above_1hr_fast \
       cache_read_input_token_cost_fast \

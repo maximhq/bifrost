@@ -280,7 +280,7 @@ func TestDatabricksAIGatewayModelPrefix(t *testing.T) {
 			embeddingRequest := &schemas.BifrostEmbeddingRequest{
 				Provider: schemas.Databricks,
 				Model:    tt.model,
-				Input:    &schemas.EmbeddingInput{Text: schemas.Ptr("hi")},
+				Input:    []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("hi")}}}},
 			}
 			if _, bErr := provider.Embedding(ctx, key, embeddingRequest); bErr != nil {
 				t.Fatalf("Embedding returned an error: %v", bErr)

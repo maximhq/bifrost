@@ -328,6 +328,26 @@ func (s *RDBConfigStore) GetLatestSidekiqJobByKind(ctx context.Context, kind str
 	return &job, nil
 }
 
+// ListSidekiqJobs returns every pending or running job plus the jobs that reached a
+// terminal status at or after terminalSince, newest first, capped at limit. It feeds
+// the notification panel: active work stays visible however old it is, while finished
+// jobs age out of the window instead of accumulating forever.
+func (s *RDBConfigStore) ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int) ([]tables.TableSidekiqJob, error) {
+	var jobs []tables.TableSidekiqJob
+	q := s.DB().WithContext(ctx).
+		Where("status IN ? OR (status IN ? AND completed_at >= ?)",
+			[]string{tables.SidekiqStatusPending, tables.SidekiqStatusRunning},
+			tables.SidekiqTerminalStatuses, terminalSince).
+		Order("created_at DESC")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	if err := q.Find(&jobs).Error; err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
 // MarkStaleSidekiqJobsFailed flips any running job whose heartbeat (updated_at) is
 // older than staleBefore to failed. This is the safety net for a goroutine or node
 // that died without marking its job: the job stops looking "running" and becomes

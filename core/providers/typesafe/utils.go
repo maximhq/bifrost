@@ -80,9 +80,13 @@ func ToTypesafeNativeListModelsResponse(resp *schemas.BifrostListModelsResponse)
 	for _, model := range typesafeModels {
 		catalog[model.ID] = model
 	}
-	prefix := string(schemas.Typesafe) + "/"
 	for _, model := range resp.Data {
-		name := strings.TrimPrefix(model.ID, prefix)
+		// IDs are "<provider>/<name>", where provider is "typesafe" or the
+		// custom provider's name; the native shape carries the bare name.
+		name := model.ID
+		if _, bare, ok := strings.Cut(model.ID, "/"); ok {
+			name = bare
+		}
 		entry := TypesafeNativeModel{Name: name}
 		var upstream TypesafeNativeModel
 		if len(model.ProviderExtra) > 0 && sonic.Unmarshal(model.ProviderExtra, &upstream) == nil {

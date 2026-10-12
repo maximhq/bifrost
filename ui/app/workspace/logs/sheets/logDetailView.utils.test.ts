@@ -1,10 +1,14 @@
+import { registerReservedMetadataPrefix } from "@/lib/registries/logs";
 import { describe, expect, it } from "vitest";
 import {
+	decisionQuestions,
 	extractProviderErrorMessage,
+	findLastPendingClientCallIndex,
 	hasNoToolArguments,
 	isClientToolCallItem,
 	nextSessionLookupStart,
 	isResponsesToolCallItem,
+	isShownMetadataKey,
 	parseRoutingDecisionLine,
 	pickNextSessionLog,
 	resolveRawJsonNoticeState,
@@ -158,10 +162,51 @@ describe("isClientToolCallItem", () => {
 		// back as computer_call_output / local_shell_call_output next request.
 		expect(isClientToolCallItem("computer_call")).toBe(true);
 		expect(isClientToolCallItem("local_shell_call")).toBe(true);
+		expect(isClientToolCallItem("shell_call")).toBe(true);
+		expect(isClientToolCallItem("apply_patch_call")).toBe(true);
+		expect(isClientToolCallItem("shell_call_output")).toBe(false);
 		expect(isClientToolCallItem("computer_call_output")).toBe(false);
 		expect(isClientToolCallItem("web_search_call")).toBe(false);
 		expect(isClientToolCallItem("function_call_output")).toBe(false);
 		expect(isClientToolCallItem(undefined)).toBe(false);
+	});
+});
+
+describe("findLastPendingClientCallIndex", () => {
+	const input = { msg: { type: "message" as const, role: "user" as const }, fromOutput: false };
+
+	it("links under a local shell_call, whose result comes in the next request", () => {
+		const entries = [input, { msg: { type: "shell_call" as const, call_id: "call_sh" }, fromOutput: true }];
+		expect(findLastPendingClientCallIndex(entries)).toBe(1);
+	});
+
+	it("links under an apply_patch_call", () => {
+		const entries = [input, { msg: { type: "apply_patch_call" as const, call_id: "call_ap" }, fromOutput: true }];
+		expect(findLastPendingClientCallIndex(entries)).toBe(1);
+	});
+
+	it("picks the last pending call when the response made several", () => {
+		const entries = [
+			input,
+			{ msg: { type: "function_call" as const, call_id: "call_fn" }, fromOutput: true },
+			{ msg: { type: "shell_call" as const, call_id: "call_sh" }, fromOutput: true },
+			{ msg: { type: "message" as const, role: "assistant" as const }, fromOutput: true },
+		];
+		expect(findLastPendingClientCallIndex(entries)).toBe(2);
+	});
+
+	it("skips a hosted shell_call whose output is already in the response", () => {
+		const entries = [
+			input,
+			{ msg: { type: "shell_call" as const, call_id: "call_sh" }, fromOutput: true },
+			{ msg: { type: "shell_call_output" as const, call_id: "call_sh" }, fromOutput: true },
+		];
+		expect(findLastPendingClientCallIndex(entries)).toBe(-1);
+	});
+
+	it("ignores calls replayed in the input", () => {
+		const entries = [{ msg: { type: "shell_call" as const, call_id: "call_sh" }, fromOutput: false }];
+		expect(findLastPendingClientCallIndex(entries)).toBe(-1);
 	});
 });
 
@@ -256,5 +301,48 @@ describe("nextSessionLookupStart", () => {
 
 	it("keeps a timestamp it cannot parse as it is", () => {
 		expect(nextSessionLookupStart("not a time")).toBe("not a time");
+	});
+});
+describe("isShownMetadataKey", () => {
+	it("shows the caller's own keys", () => {
+		expect(isShownMetadataKey("team", false)).toBe(true);
+		expect(isShownMetadataKey("team", true)).toBe(true);
+	});
+
+	it("hides the async marker", () => {
+		expect(isShownMetadataKey("isAsyncRequest", false)).toBe(false);
+	});
+
+	it("hides a realtime turn's own keys only on a realtime turn, which shows them in its header", () => {
+		expect(isShownMetadataKey("realtime_voice", true)).toBe(false);
+		expect(isShownMetadataKey("realtime_voice", false)).toBe(true);
+	});
+
+	it("hides every key under a reserved prefix, which a registered panel shows its own way", () => {
+		registerReservedMetadataPrefix("ext_");
+		for (const key of ["ext_v", "ext_decision", "ext_some_future_key"]) {
+			expect(isShownMetadataKey(key, false)).toBe(false);
+		}
+		expect(isShownMetadataKey("extra", false)).toBe(true);
+	});
+});
+describe("decisionQuestions", () => {
+	const named = { urgency: { kind: "score", instructions: "How urgent?", criteria: ["low", "high"] } };
+	const ordered = [{ type: "predicate", name: "frustrated", instructions: "Is the customer frustrated?" }];
+
+	it("returns the questions of an older log keyed by name", () => {
+		expect(decisionQuestions("decisions", named)).toEqual({ value: named, count: 1 });
+	});
+
+	it("returns the questions in request order", () => {
+		expect(decisionQuestions("decisions", ordered)).toEqual({ value: ordered, count: 1 });
+	});
+
+	it("returns null for other request types and for empty or missing params", () => {
+		expect(decisionQuestions("chat.completion", named)).toBeNull();
+		expect(decisionQuestions("decisions", {})).toBeNull();
+		expect(decisionQuestions("decisions", [])).toBeNull();
+		expect(decisionQuestions("decisions", undefined)).toBeNull();
+		expect(decisionQuestions("decisions", "x")).toBeNull();
 	});
 });

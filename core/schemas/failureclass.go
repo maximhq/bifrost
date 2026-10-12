@@ -45,6 +45,14 @@ const (
 	// FailureClassUnknown: a failure carrying no signal Bifrost recognises. Neither
 	// retried nor rotated away from.
 	FailureClassUnknown FailureClass = "unknown"
+	// FailureClassTimeout: the attempt ran out of time before it was answered: the provider's
+	// own timeout, the request's deadline, or a stream that produced no first token in time.
+	// Bifrost ended the attempt, so it is neither retried nor rotated away from, and the next
+	// fallback runs unless the request's own deadline has passed.
+	FailureClassTimeout FailureClass = "timeout"
+	// FailureClassCancelled: the caller abandoned the request while the attempt was in flight.
+	// It says nothing about the key or the route, so its attempt carries no FailReason.
+	FailureClassCancelled FailureClass = "cancelled"
 )
 
 // IsPerKey reports whether the failure is bound to the key that made the attempt, so a
@@ -61,6 +69,16 @@ func (c FailureClass) IsPermanentPerKey() bool {
 		return true
 	}
 	return false
+}
+
+// CoversAllModels reports whether the failure holds for every model on the key, not only the
+// one that was refused: the key itself was rejected, or the account behind it is out of credit
+// or over a billing cap. It measures how broad the failure is, where IsPerKey says whose fault
+// it is: model access, a retired model and a rate limit are the key's fault but bind it only for
+// one model, and a per-model quota is classified as a rate limit. A consumer that holds keys
+// across requests can hold the whole key on this alone.
+func (c FailureClass) CoversAllModels() bool {
+	return c == FailureClassCredential || c == FailureClassQuota
 }
 
 // FailReason returns the attempt-trail label for the classes that name what the provider

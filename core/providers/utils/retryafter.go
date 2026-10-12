@@ -41,6 +41,20 @@ func ApplyRetryAfter(bifrostErr *schemas.BifrostError, headers *fasthttp.Respons
 	}
 }
 
+// ApplyRetryAfterHTTP is ApplyRetryAfter for a net/http response, used by the token exchanges
+// that run on an *http.Client rather than fasthttp.
+func ApplyRetryAfterHTTP(bifrostErr *schemas.BifrostError, headers http.Header) {
+	if bifrostErr == nil || headers == nil || bifrostErr.ExtraFields.RetryAfter != 0 {
+		return
+	}
+	header := func(name string) string {
+		return strings.TrimSpace(headers.Get(name))
+	}
+	if hint, ok := retryAfterHint(header, time.Now()); ok {
+		SetRetryAfter(bifrostErr, hint)
+	}
+}
+
 // SetRetryAfter records a provider's retry hint on the error, in milliseconds, clamped to
 // between minRetryAfter and maxRetryAfter.
 func SetRetryAfter(bifrostErr *schemas.BifrostError, hint time.Duration) {

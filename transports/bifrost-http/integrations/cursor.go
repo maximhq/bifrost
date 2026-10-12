@@ -231,16 +231,32 @@ func convertResponsesStreamToChatChunk(resp *schemas.BifrostResponsesStreamRespo
 			}},
 		}, nil
 
-	case schemas.ResponsesStreamResponseTypeCompleted:
+	// response.incomplete is terminal too: a truncated or filtered turn must still emit
+	// the final chunk with finish_reason and usage.
+	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
 		finishReason := "stop"
-		// If the response contains function call items, use "tool_calls" finish reason
-		if resp.Response != nil {
+		if resp.Response != nil && resp.Response.IncompleteDetails != nil {
+			switch resp.Response.IncompleteDetails.Reason {
+			case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
+				finishReason = "length"
+			case schemas.ResponsesResponseIncompleteReasonContentFilter:
+				finishReason = "content_filter"
+			}
+		} else if resp.Response != nil && resp.Type == schemas.ResponsesStreamResponseTypeCompleted {
+			// If the completed response contains function call items, use "tool_calls" finish reason.
+			// An incomplete one may carry truncated arguments, so it is never inferred as tool_calls.
 			for _, item := range resp.Response.Output {
 				if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeFunctionCall {
 					finishReason = "tool_calls"
 					break
 				}
 			}
+		}
+		finishReasonPtr := &finishReason
+		// An incomplete turn whose reason is missing or unrecognized must not read as a clean stop.
+		if resp.Type == schemas.ResponsesStreamResponseTypeIncomplete && resp.Response != nil &&
+			finishReason == "stop" {
+			finishReasonPtr = nil
 		}
 		chunk := &cursorChatChunk{
 			ID:      cursorChunkID(&resp.ExtraFields),
@@ -250,7 +266,7 @@ func convertResponsesStreamToChatChunk(resp *schemas.BifrostResponsesStreamRespo
 			Choices: []cursorChatChoice{{
 				Index:        0,
 				Delta:        cursorChatDelta{},
-				FinishReason: &finishReason,
+				FinishReason: finishReasonPtr,
 			}},
 		}
 		// Include usage from the completed response if available
@@ -1049,6 +1065,7 @@ func NewCursorRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, acc
 
 	// Add OpenAI list models route for /cursor/v1/models
 	routes = append(routes, CreateOpenAIListModelsRouteConfigs("/cursor", handlerStore)...)
+	routes = append(routes, CreateOpenAIModelRetrieveRouteConfigs("/cursor", handlerStore)...)
 
 	// Add Anthropic routes for /cursor/anthropic/...
 	routes = append(routes, CreateAnthropicRouteConfigs("/cursor", logger)...)

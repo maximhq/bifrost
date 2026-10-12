@@ -254,8 +254,6 @@ export class MCPRegistryPage extends BasePage {
     // Select connection type if specified
     if (config.connectionType) {
       await this.selectConnectionType(config.connectionType)
-      // Wait for the form to update after connection type change
-      await this.page.waitForTimeout(500)
     }
 
     // Toggle code mode if specified (Radix Switch uses data-state="checked"/"unchecked")
@@ -288,15 +286,12 @@ export class MCPRegistryPage extends BasePage {
       // Select auth type if specified
       if (config.authType) {
         await this.selectAuthType(config.authType)
-        await this.page.waitForTimeout(500)
       }
 
       // Fill connection URL
       if (config.connectionUrl) {
         await expect(this.connectionUrlInput).toBeVisible({ timeout: 5000 })
         await this.connectionUrlInput.fill(config.connectionUrl)
-        // Wait for React to process the input
-        await this.page.waitForTimeout(500)
       }
 
       // Fill headers when auth_type is 'headers' (required for SSE test; export MCP_SSE_HEADERS in your environment)
@@ -315,13 +310,11 @@ export class MCPRegistryPage extends BasePage {
           await keyInput.scrollIntoViewIfNeeded()
           await keyInput.click()
           await keyInput.fill(key)
-          await this.page.waitForTimeout(400)
           const valueEl = valueInput.first()
           await valueEl.waitFor({ state: 'visible', timeout: 3000 })
           await valueEl.scrollIntoViewIfNeeded()
           await valueEl.click()
           await valueEl.fill(valueStr)
-          await this.page.waitForTimeout(500)
         }
       }
 
@@ -349,8 +342,6 @@ export class MCPRegistryPage extends BasePage {
       if (config.command) {
         await expect(this.commandInput).toBeVisible({ timeout: 5000 })
         await this.commandInput.fill(config.command)
-        // Wait for React to process the input
-        await this.page.waitForTimeout(500)
       }
       if (config.args) {
         await expect(this.argsInput).toBeVisible({ timeout: 5000 })
@@ -373,9 +364,6 @@ export class MCPRegistryPage extends BasePage {
 
     // Fill the form
     await this.fillClientForm(config)
-
-    // Wait for form validation to complete
-    await this.page.waitForTimeout(1500)
 
     // Wait for save button to be enabled (validation passed)
     await expect(this.saveBtn).toBeEnabled({ timeout: 10000 })
@@ -490,7 +478,6 @@ export class MCPRegistryPage extends BasePage {
     await expect(this.sheet).toBeVisible({ timeout: 5000 })
 
     await this.fillClientForm(config)
-    await this.page.waitForTimeout(1500)
     await expect(this.saveBtn).toBeEnabled({ timeout: 10000 })
 
     const responsePromise = this.page.waitForResponse(
@@ -564,7 +551,6 @@ export class MCPRegistryPage extends BasePage {
     await this.closeSheet()
     await this.dismissToasts()
     await this.table.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {})
-    await this.page.waitForTimeout(500)
 
     for (const name of names) {
       const tryDelete = async (): Promise<void> => {
@@ -704,12 +690,11 @@ export class MCPRegistryPage extends BasePage {
    */
   async getClientStatus(name: string): Promise<string> {
     const row = this.getClientRow(name)
-    const statusBadge = row
-      .locator('[class*="badge"]')
-      .or(row.locator('span').filter({ hasText: /connected|disconnected|connecting|error/i }))
-      .last()
-    const statusText = await statusBadge.textContent()
-    return statusText?.toLowerCase().trim() || ''
+    // The State column shows a badge such as "Healthy" or "Needs Reauth".
+    const headers = await this.page.locator('table thead th').allTextContents()
+    const index = headers.findIndex((h) => h.trim().startsWith('State'))
+    const statusText = await row.locator('td').nth(index).locator('[data-slot="badge"]').first().textContent()
+    return statusText?.toLowerCase().trim().replace(/\s+/g, '_') || ''
   }
 
   /**
@@ -733,10 +718,11 @@ export class MCPRegistryPage extends BasePage {
    * Assumes the detail sheet is already open
    */
   async getToolsCount(): Promise<number> {
-    // Tools are displayed in a table in the detail sheet
+    // Tools live in a table on the detail sheet's Tools tab.
+    await this.detailSheet.getByTestId('mcpclient-tab-tools').click()
     const toolRows = this.detailSheet.locator('table tbody tr')
-    const count = await toolRows.count()
-    return count
+    await toolRows.first().waitFor({ timeout: 10000 }).catch(() => {})
+    return await toolRows.count()
   }
 
   /**
