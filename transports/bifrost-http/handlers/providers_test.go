@@ -1330,6 +1330,45 @@ func TestListModels_DecisionsOpenRouterFollowsDatasheet(t *testing.T) {
 	}
 }
 
+// TestListModels_DecisionsCloudflareListsClef pins that decisions=true lists Cloudflare's
+// Clef models and nothing else, and that a datasheet row marking one as not a decision
+// model wins over the name.
+func TestListModels_DecisionsCloudflareListsClef(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	notDecisions := false
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if model == "@cf/cloudflare/clef" {
+			return &schemas.ModelCapabilities{SupportsDecisions: &notDecisions}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	models := []string{"@cf/cloudflare/clef", "@cf/cloudflare/clef-flash", "@cf/meta/llama-4-scout-17b-16e-instruct", "@cf/baai/bge-large-en-v1.5"}
+	h := providerHandlerForTest(schemas.Cloudflare, []schemas.Key{{ID: "key-a"}}, models, models)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=cloudflare&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	if want := []string{"@cf/cloudflare/clef-flash"}; !slices.Equal(names, want) {
+		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
 // TestListModels_DecisionsSkipsProvidersDenyingDecisions pins that
 // decisions=true lists nothing from a custom provider whose allowed requests
 // exclude decisions, since its Decision call is denied rather than served:

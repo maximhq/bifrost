@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
+	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -269,4 +270,85 @@ func (provider *CloudflareProvider) Embedding(ctx *schemas.BifrostContext, key s
 		parseCloudflareError,
 		provider.logger,
 	)
+}
+
+// Decision runs a Clef decision on Workers AI. Clef binds the model to the URL and requires
+// the same bare name in the body. Every model is sent as is; Workers AI rejects one it does
+// not serve, and that error is passed through.
+func (provider *CloudflareProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	accountURL, bifrostErr := provider.accountURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToCloudflareDecisionRequest(request)
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(accountURL + providerUtils.GetPathFromContext(ctx, cloudflareDecisionPathPrefix+clefModelName(request.Model)))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+	req.SetBody(jsonData)
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.EnrichError(ctx, parseCloudflareError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	respBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		rawErrBody := append([]byte(nil), resp.Body()...)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	var decisionResp CloudflareDecisionResponse
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, respBody, &decisionResp, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if !decisionResp.Success || decisionResp.Result == nil {
+		return nil, providerUtils.EnrichError(ctx, parseCloudflareError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	bifrostResp, bifrostErr := typesafe.ToBifrostDecisionResponse(decisionResp.Result, request)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, respBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResp.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	if sendBackRawRequest {
+		bifrostResp.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResp, nil
 }

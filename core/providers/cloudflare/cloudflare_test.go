@@ -4,16 +4,21 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/cloudflare"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -35,6 +40,7 @@ func TestCloudflare(t *testing.T) {
 		ChatModel:      "@cf/meta/llama-4-scout-17b-16e-instruct",
 		TextModel:      "", // Cloudflare's OpenAI-compatible API has no text completions
 		EmbeddingModel: "@cf/baai/bge-large-en-v1.5",
+		DecisionModel:  "clef-flash",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -51,6 +57,7 @@ func TestCloudflare(t *testing.T) {
 			CompleteEnd2End:       true,
 			Embedding:             true,
 			ListModels:            true,
+			Decision:              true,
 		},
 	}
 
@@ -186,7 +193,7 @@ func TestChatCompletion_ParsesErrorEnvelope(t *testing.T) {
 	}
 }
 
-func TestListModels_PagesAndFiltersTasks(t *testing.T) {
+func TestListModels_PagesFiltersTasksAndListsClef(t *testing.T) {
 	// A full first page forces a second request; the second page carries the
 	// models that must be filtered out.
 	firstPage := make([]string, 0, 100)
@@ -196,6 +203,7 @@ func TestListModels_PagesAndFiltersTasks(t *testing.T) {
 	secondPage := []string{
 		`{"name":"@cf/baai/bge-large-en-v1.5","description":"embeddings","task":{"name":"Text Embeddings"}}`,
 		`{"name":"@cf/cloudflare/clef-flash","task":{"name":"Text Generation"}}`,
+		`{"name":"@cf/cloudflare/clef-omni","task":{"name":"Text Generation"}}`,
 		`{"name":"@cf/black-forest-labs/flux-1-schnell","task":{"name":"Text-to-Image"}}`,
 	}
 
@@ -225,8 +233,8 @@ func TestListModels_PagesAndFiltersTasks(t *testing.T) {
 	if strings.Join(pages, ",") != "1,2" {
 		t.Errorf("pages requested = %v, want [1 2]", pages)
 	}
-	if len(resp.Data) != 101 {
-		t.Fatalf("models = %d, want 101 (100 chat + 1 embedding)", len(resp.Data))
+	if len(resp.Data) != 103 {
+		t.Fatalf("models = %d, want 103 (100 chat + 1 embedding + clef-flash + clef-omni)", len(resp.Data))
 	}
 	byID := make(map[string]schemas.Model, len(resp.Data))
 	for _, model := range resp.Data {
@@ -235,10 +243,322 @@ func TestListModels_PagesAndFiltersTasks(t *testing.T) {
 	if _, ok := byID["cloudflare/@cf/baai/bge-large-en-v1.5"]; !ok {
 		t.Fatal("embedding model missing")
 	}
-	for _, excluded := range []string{"cloudflare/@cf/cloudflare/clef-flash", "cloudflare/@cf/black-forest-labs/flux-1-schnell"} {
+	for _, clef := range []string{"cloudflare/@cf/cloudflare/clef-flash", "cloudflare/@cf/cloudflare/clef-omni"} {
+		if _, ok := byID[clef]; !ok {
+			t.Fatalf("%s must be listed under its Cloudflare ID", clef)
+		}
+	}
+	for _, excluded := range []string{"cloudflare/clef-flash", "cloudflare/@cf/black-forest-labs/flux-1-schnell"} {
 		if _, ok := byID[excluded]; ok {
 			t.Errorf("%s must not be listed", excluded)
 		}
+	}
+}
+
+const clefDecisionResponseBody = `{"result":{"model":"clef-flash","answers":{"is_red":{"type":"noul","noul":0.97}},"usage":{"input_tokens":210,"output_tokens":0}},"success":true,"errors":[],"messages":[]}`
+
+const testImageURL = "data:image/png;base64,iVBORw0KGgo="
+
+func newDecisionRequest(model string, input schemas.DecisionInput) *schemas.BifrostDecisionRequest {
+	return &schemas.BifrostDecisionRequest{
+		Provider: schemas.Cloudflare,
+		Model:    model,
+		Input:    input,
+		Questions: []schemas.DecisionQuestion{
+			{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("is_red"), Instructions: schemas.NewDecisionText("Is the image mostly red?")},
+		},
+	}
+}
+
+func textPart(text string) schemas.DecisionInputPart {
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr(text)}
+}
+
+func imagePart(url string) schemas.DecisionInputPart {
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr(url)}
+}
+
+func userMessage(parts ...schemas.DecisionInputPart) schemas.DecisionInputMessage {
+	return schemas.DecisionInputMessage{Role: "user", Content: schemas.DecisionInputContent{Parts: parts}}
+}
+
+// encodeDecisionBody encodes a converted request the way the provider sends it.
+func encodeDecisionBody(t *testing.T, request *schemas.BifrostDecisionRequest) map[string]any {
+	t.Helper()
+	native, err := cloudflare.ToCloudflareDecisionRequest(request)
+	if err != nil {
+		t.Fatalf("ToCloudflareDecisionRequest: %v", err)
+	}
+	data, err := providerUtils.MarshalProviderRequest(native)
+	if err != nil {
+		t.Fatalf("MarshalProviderRequest: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(data, &body); err != nil {
+		t.Fatalf("body is not JSON: %v", err)
+	}
+	return body
+}
+
+func bodyKeys(body map[string]any) []string {
+	keys := make([]string, 0, len(body))
+	for key := range body {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// TestToCloudflareDecisionRequest_EncodesOnlyClefFields pins Clef's body to its schema.
+// Clef rejects unknown fields with a 422, so a field added to Typesafe's request, which
+// this body embeds, must fail here first.
+func TestToCloudflareDecisionRequest_EncodesOnlyClefFields(t *testing.T) {
+	text := encodeDecisionBody(t, newDecisionRequest("clef-flash", schemas.DecisionInput{Text: schemas.Ptr("The sky is blue.")}))
+	if got, want := bodyKeys(text), []string{"model", "questions", "state"}; !slices.Equal(got, want) {
+		t.Errorf("text-only body keys = %v, want %v", got, want)
+	}
+	withImage := encodeDecisionBody(t, newDecisionRequest("clef-flash", schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{userMessage(textPart("Look"), imagePart(testImageURL))}}))
+	if got, want := bodyKeys(withImage), []string{"images", "model", "questions", "state"}; !slices.Equal(got, want) {
+		t.Errorf("image body keys = %v, want %v", got, want)
+	}
+}
+
+func TestToCloudflareDecisionRequest_MovesImagesOutOfTheInput(t *testing.T) {
+	second := "data:image/jpeg;base64,/9j/4AAQ"
+	request := newDecisionRequest("clef-flash", schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+		userMessage(textPart("Compare these"), imagePart(testImageURL)),
+		userMessage(imagePart(second)),
+	}})
+	before, err := json.Marshal(request.Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := encodeDecisionBody(t, request)
+
+	if got := body["images"]; !reflect.DeepEqual(got, []any{testImageURL, second}) {
+		t.Errorf("images = %v, want both data URLs in order", got)
+	}
+	state, err := json.Marshal(body["state"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `[{"content":[{"text":"Compare these","type":"input_text"}],"role":"user"}]`; string(state) != want {
+		t.Errorf("state = %s, want only the text message %s", state, want)
+	}
+	after, err := json.Marshal(request.Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("conversion modified the request input:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+func TestToCloudflareDecisionRequest_ImageOnlyInputSendsEmptyState(t *testing.T) {
+	body := encodeDecisionBody(t, newDecisionRequest("clef-flash", schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{userMessage(imagePart(testImageURL))}}))
+	if state, ok := body["state"]; !ok || state != "" {
+		t.Errorf("state = %#v, want an empty string (Clef rejects a null state)", state)
+	}
+}
+
+func TestToCloudflareDecisionRequest_KeepsStructuredInput(t *testing.T) {
+	structured := map[string]any{"ticket": "A-4021", "charges": []any{149.0, 149.0}}
+	body := encodeDecisionBody(t, newDecisionRequest("clef-flash", schemas.DecisionInput{Structured: structured}))
+	if !reflect.DeepEqual(body["state"], structured) {
+		t.Errorf("state = %v, want the structured input unchanged %v", body["state"], structured)
+	}
+	if _, ok := body["images"]; ok {
+		t.Error("a structured input must not carry images")
+	}
+}
+
+func TestToCloudflareDecisionRequest_RejectsUnreadableParts(t *testing.T) {
+	for name, part := range map[string]schemas.DecisionInputPart{
+		"image without url": {Type: schemas.DecisionInputPartTypeImage},
+		"audio":             {Type: "input_audio"},
+		"untyped":           {},
+	} {
+		request := newDecisionRequest("clef-flash", schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{userMessage(textPart("hi"), part)}})
+		if _, err := cloudflare.ToCloudflareDecisionRequest(request); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
+func TestDecision_SendsBareClefNameInURLAndBody(t *testing.T) {
+	for _, model := range []string{"clef", "clef-flash", "@cf/cloudflare/clef", "@cf/cloudflare/clef-flash"} {
+		t.Run(model, func(t *testing.T) {
+			var capturedPath string
+			var capturedBody map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedPath = r.URL.Path
+				_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, clefDecisionResponseBody)
+			}))
+			defer server.Close()
+
+			provider := newTestProvider(t, server.URL)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp, bifrostErr := provider.Decision(ctx, newTestKey("acct-1"), newDecisionRequest(model, schemas.DecisionInput{Text: schemas.Ptr("hi")}))
+			if bifrostErr != nil {
+				t.Fatalf("Decision: %v", bifrostErr.Error.Message)
+			}
+
+			bare := strings.TrimPrefix(model, "@cf/cloudflare/")
+			if want := "/accounts/acct-1/ai/run/@cf/cloudflare/" + bare; capturedPath != want {
+				t.Errorf("path = %q, want %q", capturedPath, want)
+			}
+			if capturedBody["model"] != bare {
+				t.Errorf("body model = %v, want %q", capturedBody["model"], bare)
+			}
+			if len(resp.Answers) != 1 || resp.Usage == nil || resp.Usage.PromptTokens != 210 {
+				t.Errorf("unexpected response: %+v", resp)
+			}
+		})
+	}
+}
+
+func TestDecision_PreservesProviderResponseHeaders(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cf-Ray", "ray-123")
+				w.Header().Set("Connection", "close")
+				if status == http.StatusTooManyRequests {
+					w.Header().Set("Retry-After", "7")
+					w.WriteHeader(status)
+					_, _ = fmt.Fprint(w, `{"success":false,"errors":[{"code":1015,"message":"rate limited"}]}`)
+					return
+				}
+				_, _ = fmt.Fprint(w, clefDecisionResponseBody)
+			}))
+			defer server.Close()
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp, bifrostErr := newTestProvider(t, server.URL).Decision(ctx, newTestKey("acct-1"), newDecisionRequest("clef-flash", schemas.DecisionInput{Text: schemas.Ptr("red apple")}))
+			if status == http.StatusOK {
+				if bifrostErr != nil {
+					t.Fatalf("Decision: %v", bifrostErr)
+				}
+				if got := resp.ExtraFields.ProviderResponseHeaders["Cf-Ray"]; got != "ray-123" {
+					t.Errorf("response Cf-Ray = %q, want ray-123", got)
+				}
+			} else if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != status {
+				t.Fatalf("Decision error = %v, want status %d", bifrostErr, status)
+			}
+
+			headers, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
+			if got := headers["Cf-Ray"]; got != "ray-123" {
+				t.Errorf("context Cf-Ray = %q, want ray-123", got)
+			}
+			if status == http.StatusTooManyRequests && headers["Retry-After"] != "7" {
+				t.Errorf("Retry-After = %q, want 7", headers["Retry-After"])
+			}
+			if _, ok := headers["Connection"]; ok {
+				t.Error("hop-by-hop Connection header must be filtered")
+			}
+		})
+	}
+}
+
+func TestDecision_ResolvedAliasUsesTheClefTarget(t *testing.T) {
+	var capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, clefDecisionResponseBody)
+	}))
+	defer server.Close()
+
+	provider := newTestProvider(t, server.URL)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	// Core has already replaced the alias with its target before the provider runs.
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: "my-classifier", Config: &schemas.AliasConfig{ModelID: "clef-flash"}})
+	if _, bifrostErr := provider.Decision(ctx, newTestKey("acct-1"), newDecisionRequest("clef-flash", schemas.DecisionInput{Text: schemas.Ptr("hi")})); bifrostErr != nil {
+		t.Fatalf("Decision: %v", bifrostErr.Error.Message)
+	}
+	if want := "/accounts/acct-1/ai/run/@cf/cloudflare/clef-flash"; capturedPath != want {
+		t.Errorf("path = %q, want %q", capturedPath, want)
+	}
+}
+
+// TestDecision_SendsAnyModelAndPassesTheErrorThrough pins that Decision does not gate on
+// the model name: a model Workers AI does not serve is sent, and its error comes back as is.
+func TestDecision_SendsAnyModelAndPassesTheErrorThrough(t *testing.T) {
+	const message = "AiError: No such model: No such model @cf/cloudflare/Clef-Flash or task (req-1)"
+	var capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		payload, _ := json.Marshal(map[string]any{"errors": []map[string]any{{"message": message, "code": 5007}}, "success": false, "result": map[string]any{}})
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+
+	provider := newTestProvider(t, server.URL)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := provider.Decision(ctx, newTestKey("acct-1"), newDecisionRequest("Clef-Flash", schemas.DecisionInput{Text: schemas.Ptr("hi")}))
+
+	if want := "/accounts/acct-1/ai/run/@cf/cloudflare/Clef-Flash"; capturedPath != want {
+		t.Errorf("path = %q, want %q (the model is sent, not rejected locally)", capturedPath, want)
+	}
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected the upstream 400, got %+v", bifrostErr)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Message != message {
+		t.Errorf("message = %q, want the Workers AI message", bifrostErr.Error.Message)
+	}
+}
+
+func TestDecision_EnvelopeWithoutResultIsError(t *testing.T) {
+	for name, body := range map[string]string{
+		"success false":  `{"result":{},"success":false,"errors":[{"code":5000,"message":"upstream failed"}]}`,
+		"missing result": `{"success":true,"errors":[]}`,
+		"null result":    `{"result":null,"success":true,"errors":[]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, body)
+			}))
+			defer server.Close()
+
+			provider := newTestProvider(t, server.URL)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.Decision(ctx, newTestKey("acct-1"), newDecisionRequest("clef-flash", schemas.DecisionInput{Text: schemas.Ptr("hi")}))
+			if bifrostErr == nil {
+				t.Fatal("expected an error for an envelope without a result")
+			}
+		})
+	}
+}
+
+func TestDecision_PassesClefValidationErrorsThrough(t *testing.T) {
+	const message = `AiError: AiError: {"error":{"type":"invalid_request","message":"Request body failed validation","details":{"formErrors":[],"fieldErrors":{"images":["image must be an embedded base64 data URI"]}}}} (req-1)`
+	for _, status := range []int{http.StatusUnprocessableEntity, http.StatusRequestEntityTooLarge} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				payload, _ := json.Marshal(map[string]any{"errors": []map[string]any{{"message": message, "code": 5012}}, "success": false, "result": map[string]any{}})
+				_, _ = w.Write(payload)
+			}))
+			defer server.Close()
+
+			provider := newTestProvider(t, server.URL)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.Decision(ctx, newTestKey("acct-1"), newDecisionRequest("clef-flash", schemas.DecisionInput{Text: schemas.Ptr("hi")}))
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != status {
+				t.Fatalf("expected status %d, got %+v", status, bifrostErr)
+			}
+			if bifrostErr.Error == nil || bifrostErr.Error.Message != message {
+				t.Errorf("message = %q, want Clef's message", bifrostErr.Error.Message)
+			}
+		})
 	}
 }
 
@@ -265,5 +585,27 @@ func TestListModels_DecodesCompressedPages(t *testing.T) {
 	}
 	if len(resp.Data) != 1 || resp.Data[0].ID != "cloudflare/@cf/baai/bge-large-en-v1.5" {
 		t.Fatalf("models = %+v, want the one embedding model", resp.Data)
+	}
+}
+
+// TestListModels_MatchesAllowListAgainstCloudflareIDs pins that a key whose allow-list is
+// written in Cloudflare's IDs still lists Clef, since listing keeps those IDs unchanged.
+func TestListModels_MatchesAllowListAgainstCloudflareIDs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"success":true,"errors":[],"result":[{"name":"@cf/cloudflare/clef-flash","task":{"name":"Text Generation"}},{"name":"@cf/baai/bge-large-en-v1.5","task":{"name":"Text Embeddings"}}]}`)
+	}))
+	defer server.Close()
+
+	key := newTestKey("acct-1")
+	key.Models = []string{"regex:^@cf/cloudflare/.*"}
+	provider := newTestProvider(t, server.URL)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.ListModels(ctx, []schemas.Key{key}, &schemas.BifrostListModelsRequest{Provider: schemas.Cloudflare})
+	if bifrostErr != nil {
+		t.Fatalf("ListModels: %v", bifrostErr.Error.Message)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != "cloudflare/@cf/cloudflare/clef-flash" {
+		t.Fatalf("models = %+v, want only Clef under its Cloudflare ID", resp.Data)
 	}
 }

@@ -256,11 +256,14 @@ func TestConfigForceReasoningOnlyModelsToResponsesDefaultsOn(t *testing.T) {
 // on (config or x-bf-compat override), the compat plugin marks a decision for
 // emulation unless the model catalog lists the model as a native decisions model:
 // a supports_decisions row decides in either direction, and without a row the
-// gpt-6-luna and Typesafe families are native. Typesafe and other request types
+// gpt-6-luna, Typesafe and Clef on Cloudflare are native. Typesafe and other request types
 // are never marked.
 func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
-	rows := map[string]bool{"microsoft/decision-1": true, "typesafe/jev-router": false}
-	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+	rows := map[string]bool{"microsoft/decision-1": true, "typesafe/jev-router": false, "clef": false}
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider == schemas.Ollama && model == "clef" {
+			return &schemas.ModelCapabilities{SupportsDecisions: schemas.Ptr(true)}
+		}
 		if supports, ok := rows[model]; ok {
 			return &schemas.ModelCapabilities{SupportsDecisions: &supports}
 		}
@@ -297,6 +300,14 @@ func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 		{name: "typesafe model on openrouter is native", enabled: true, req: decision(schemas.OpenRouter, "~typesafe/jev-latest")},
 		{name: "true row is native", enabled: true, req: decision(schemas.OpenRouter, "microsoft/decision-1")},
 		{name: "false row overrides the typesafe name", enabled: true, req: decision(schemas.OpenRouter, "typesafe/jev-router"), wantConverted: true},
+		{name: "clef on cloudflare is native", enabled: true, req: decision(schemas.Cloudflare, "clef-flash")},
+		{name: "clef full id on cloudflare is native", enabled: true, req: decision(schemas.Cloudflare, "@cf/cloudflare/clef-flash")},
+		{name: "clef on ollama marked", enabled: true, req: decision(schemas.Ollama, "clef-flash"), wantConverted: true},
+		{name: "clef full id on ollama marked", enabled: true, req: decision(schemas.Ollama, "@cf/cloudflare/clef-flash"), wantConverted: true},
+		{name: "clef on openai marked by header", override: true, req: decision(schemas.OpenAI, "clef-flash"), wantConverted: true},
+		{name: "true row overrides provider-scoped clef fallback", enabled: true, req: decision(schemas.Ollama, "clef")},
+		{name: "chat model on cloudflare marked", enabled: true, req: decision(schemas.Cloudflare, "@cf/meta/llama-4-scout-17b-16e-instruct"), wantConverted: true},
+		{name: "false row overrides the clef name", enabled: true, req: decision(schemas.Cloudflare, "clef"), wantConverted: true},
 		{name: "typesafe provider never marked", enabled: true, req: decision(schemas.Typesafe, "jev-latest")},
 		{name: "chat request untouched", enabled: true, req: chat},
 	}

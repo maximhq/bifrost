@@ -296,9 +296,10 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 	const provider = providers.find((candidate) => candidate.name === providerName);
 	const servesJev = providerName === "typesafe";
 	const servesOpenRouter = providerName === "openrouter";
+	const servesCloudflare = providerName === "cloudflare";
 	const servesOpenAI = provider ? isOpenAIDecisionProvider(provider) : providerName === "openai";
 	const servesClef = clefModelFromProvider(provider) !== undefined;
-	const selfHosted = provider !== undefined && !servesJev && !servesOpenRouter && !servesOpenAI && !servesClef;
+	const selfHosted = provider !== undefined && !servesJev && !servesOpenRouter && !servesCloudflare && !servesOpenAI && !servesClef;
 
 	const { data: listed } = useGetModelsQuery(
 		{ provider: providerName, keys: providerKeyIds.length > 0 ? providerKeyIds : undefined, limit: 50 },
@@ -315,7 +316,7 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 			<div className="space-y-2">
 				<FieldLabel
 					htmlFor="decision-provider"
-					tooltip="Typesafe for Jev, OpenRouter for the decision models it serves, OpenAI or a custom provider with base format OpenAI for OpenAI's decision models, or a custom provider with base format Typesafe serving Laya, Nimble, or Clef."
+					tooltip="Typesafe for Jev, OpenRouter for the decision models it serves, Cloudflare for Clef, OpenAI or a custom provider with base format OpenAI for OpenAI's decision models, or a custom provider with base format Typesafe serving Laya, Nimble, or Clef."
 				>
 					Provider
 				</FieldLabel>
@@ -359,10 +360,10 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 					control={control}
 					name="decision.model"
 					render={({ field }) => {
-						if (servesOpenAI || servesOpenRouter) {
-							// OpenAI's and OpenRouter's catalogs (and a custom OpenAI-based provider's)
-							// are mostly chat models, which the decisions endpoint rejects, so only the
-							// models the datasheet marks as decision models are listed.
+						if (servesOpenAI || servesOpenRouter || servesCloudflare) {
+							// OpenAI's, OpenRouter's and Cloudflare's catalogs (and a custom OpenAI-based
+							// provider's) are mostly chat models, which the decisions endpoint rejects, so
+							// only their decision models are listed.
 							return (
 								<ModelSelector
 									inputId="decision-model"

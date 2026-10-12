@@ -250883,20 +250883,21 @@
           }
         },
         {
-          "name": "cloudflare /v1/models lists chat and embedding models, not Clef",
+          "name": "cloudflare /v1/models lists chat, embedding and every Clef model",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('list models keeps the OpenAI-compatible tasks and leaves out the Clef decision models', function () {",
+                  "pm.test('list models keeps the OpenAI-compatible tasks and every Clef model', function () {",
                   "  var body = pm.response.text() || '';",
                   "  pm.expect(pm.response.code, 'request failed: ' + body).to.eql(200);",
                   "  var ids = (pm.response.json().data || []).map(function (m) { return m.id; });",
                   "  pm.expect(ids, 'chat model missing: ' + body).to.include('cloudflare/@cf/meta/llama-4-scout-17b-16e-instruct');",
                   "  pm.expect(ids, 'embedding model missing: ' + body).to.include('cloudflare/@cf/baai/bge-large-en-v1.5');",
-                  "  ids.forEach(function (id) { pm.expect(id.indexOf('cloudflare/@cf/cloudflare/clef'), 'Clef must not be listed as a chat model: ' + id).to.eql(-1); });",
+                  "  pm.expect(ids, 'Clef missing: ' + body).to.include('cloudflare/@cf/cloudflare/clef-flash');",
+                  "  pm.expect(ids, 'clef-omni missing: ' + body).to.include('cloudflare/@cf/cloudflare/clef-omni');",
                   "});"
                 ]
               }
@@ -250961,6 +250962,278 @@
                 "v1",
                 "chat",
                 "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "198. Cloudflare Clef decisions (cloudflare-clef-decisions)",
+      "description": "The cloudflare provider serves Clef decisions on Workers AI: POST {base}/accounts/{account_id}/ai/run/@cf/cloudflare/{model}, with the bare model name repeated in the body. On /v1/decisions, input_image parts become Clef's images. On /typesafe/v1/systemone, a native images field reaches Clef through the route's extra-field passthrough. Clef's own validation (remote image URLs, unknown fields) comes back as its 422.\n\nThe image cases send a solid red square and assert Clef reads it as mostly red, which a text-only answer does not.",
+      "item": [
+        {
+          "name": "/v1/decisions - text decision - cloudflare/clef-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Clef answers a text decision', function () {",
+                  "  pm.expect(pm.response.headers.get('cf-ray'), 'Cloudflare request ID missing: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].name).to.eql('is_red');",
+                  "  pm.expect(a[0].type).to.eql('predicate');",
+                  "  pm.expect(a[0].probability).to.be.within(0, 0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cloudflare/clef-flash\",\n  \"input\": \"The sky is clear and blue today.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - input_image reaches Clef - cloudflare/clef-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an input_image part is sent to Clef as an image', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].probability, 'a solid red image must read as mostly red: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cloudflare/clef-flash\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/typesafe/v1/systemone - native images reach Clef - cloudflare/clef-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a native images field on the Typesafe route reaches Clef', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.answers.is_red.type, 'answers: ' + pm.response.text()).to.eql('noul');",
+                  "  pm.expect(body.answers.is_red.noul, 'a solid red image must read as mostly red: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cloudflare/clef-flash\",\n  \"state\": \"\",\n  \"questions\": {\n    \"is_red\": {\n      \"type\": \"noul\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  },\n  \"images\": [\n    \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/systemone",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "systemone"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] /v1/decisions - remote image URL rejected by Clef - cloudflare/clef-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a remote image URL comes back as the Clef 422', function () {",
+                  "  pm.expect(pm.response.headers.get('cf-ray'), 'Cloudflare request ID missing: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 422, got: ' + pm.response.text()).to.eql(422);",
+                  "  pm.expect(pm.response.text()).to.include('embedded base64');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cloudflare/clef-flash\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"https://example.com/screenshot.png\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] /typesafe/v1/systemone - unknown field rejected by Clef - cloudflare/clef-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an unknown native field comes back as the Clef 422', function () {",
+                  "  pm.expect(pm.response.code, 'expected 422, got: ' + pm.response.text()).to.eql(422);",
+                  "  pm.expect(pm.response.text()).to.include('Extra inputs are not permitted');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cloudflare/clef-flash\",\n  \"state\": \"The sky is blue.\",\n  \"questions\": {\n    \"is_red\": {\n      \"type\": \"noul\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  },\n  \"min_confidence\": 0.5\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/systemone",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "systemone"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "199. Clef decision emulation provider scope",
+      "description": "A Clef name alone must not imply native decisions outside Cloudflare. With compat emulation enabled, an OpenAI request with native images extensions reaches the emulation prevalidation and fails locally with its specific 400, without an upstream model call. Before the fix it incorrectly takes OpenAI's native decision path. Existing Cloudflare Clef cases also pin forwarding cf-ray on success and upstream errors.",
+      "item": [
+        {
+          "name": "[EXPECT-400] /v1/decisions - Clef name outside Cloudflare uses emulation - openai/clef-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a Clef name outside Cloudflare enters decision emulation', function () {",
+                  "  pm.expect(pm.response.code, 'expected emulation refusal, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('decision emulation cannot honor native request extensions (images)');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/clef-flash\",\n  \"input\": \"The sky is blue.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_blue\",\n      \"instructions\": \"Is the sky blue?\"\n    }\n  ],\n  \"images\": []\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
               ]
             }
           }

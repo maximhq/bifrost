@@ -14,12 +14,8 @@ var cloudflareListedTasks = map[string]bool{
 	"Text Embeddings": true,
 }
 
-// cloudflareDecisionModelPrefix names the Clef decision models, which Workers AI
-// files under Text Generation but which do not serve chat completions.
-const cloudflareDecisionModelPrefix = "@cf/cloudflare/clef"
-
 // ToBifrostListModelsResponse converts the Workers AI model search response into
-// Bifrost's list models shape.
+// Bifrost's list models shape, keeping Cloudflare's model IDs as they are.
 func (response *CloudflareListModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
@@ -44,7 +40,7 @@ func (response *CloudflareListModelsResponse) ToBifrostListModelsResponse(allowe
 	included := make(map[string]bool)
 
 	for _, model := range response.Result {
-		if !cloudflareListedTasks[model.Task.Name] || strings.HasPrefix(model.Name, cloudflareDecisionModelPrefix) {
+		if !cloudflareListedTasks[model.Task.Name] {
 			continue
 		}
 		for _, result := range pipeline.FilterModel(model.Name) {
