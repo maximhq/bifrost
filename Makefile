@@ -888,7 +888,7 @@ test-framework: install-gotestsum ## Run framework tests
 			( cd $$dir && gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
 				--junitfile=$(CURDIR)/$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml \
-				-- -v ./... ) || touch $(CURDIR)/$(TEST_REPORTS_DIR)/.framework-failed; \
+				-- -v -timeout 30m ./... ) || touch $(CURDIR)/$(TEST_REPORTS_DIR)/.framework-failed; \
 			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 				if which junit-viewer > /dev/null 2>&1; then \
 					$(ECHO) "$(YELLOW)Generating HTML report for $$pkg_name...$(NC)"; \

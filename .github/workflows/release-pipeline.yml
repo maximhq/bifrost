@@ -1562,6 +1562,8 @@ jobs:
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
+          # stun.l.google.com is the STUN server the WebRTC live tests use for
+          # ICE candidate gathering.
           allowed-endpoints: >
             127.0.0.1:8080
             127.0.0.1:9411
@@ -1575,6 +1577,7 @@ jobs:
             release-assets.githubusercontent.com:443
             releases.astral.sh:443
             storage.googleapis.com:443
+            stun.l.google.com:19302
             sum.golang.org:443
             www.getbifrost.ai:443
 
@@ -1731,13 +1734,17 @@ jobs:
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
+          # getbifrost.ai / www.getbifrost.ai serve the pricing datasheet the
+          # gateway must sync at boot; without them startup is fatal.
           allowed-endpoints: >
             127.0.0.1
+            getbifrost.ai:443
             github.com:443
             proxy.golang.org:443
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
             sum.golang.org:443
+            www.getbifrost.ai:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

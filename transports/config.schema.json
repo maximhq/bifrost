@@ -1579,9 +1579,6 @@
               },
               "prompt_cache": {
                 "$ref": "#/$defs/prompt_cache"
-              },
-              "injected_tools": {
-                "$ref": "#/$defs/injected_tools"
               }
             },
             "required": [
