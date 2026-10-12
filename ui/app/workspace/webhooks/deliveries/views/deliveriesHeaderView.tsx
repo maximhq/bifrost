@@ -108,7 +108,7 @@ export function DeliveriesHeaderView({
 				<Radio className={`h-4 w-4 ${polling ? "animate-pulse" : ""}`} />
 				Live
 			</Button>
-			<div className="border-input flex h-7.5 min-w-[16rem] flex-1 items-center rounded-sm border overflow-hidden">
+			<div className="border-input flex h-7.5 min-w-[16rem] flex-1 items-center overflow-hidden rounded-sm border">
 				<Search className="mr-2 ml-2 size-4" />
 				<Input
 					type="text"

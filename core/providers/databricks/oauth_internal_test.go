@@ -2,7 +2,6 @@ package databricks
 
 import (
 	"context"
-	"crypto/tls"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -70,11 +69,8 @@ func TestOAuthM2M(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// The oauth2 client-credentials flow uses its own HTTP client, which must be told to
-	// trust the test server's certificate.
-	oauthHTTPClient = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
-	defer func() { oauthHTTPClient = nil }()
-
+	// The token exchange runs on the provider's auth client, which takes insecure_skip_verify
+	// from network_config below, so it trusts the test server's certificate too.
 	provider, err := NewDatabricksProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
 			DefaultRequestTimeoutInSeconds: 10,
@@ -229,5 +225,46 @@ func TestParseDatabricksError(t *testing.T) {
 				t.Errorf("code: got %q, want %q", *bErr.Error.Code, tc.code)
 			}
 		})
+	}
+}
+
+// TestDatabricksOAuthTokenGoesThroughProxyConfig pins that the OAuth M2M token exchange
+// leaves through the provider's proxy_config. It used to run on http.DefaultClient, so
+// behind a proxy-only egress every service-principal request failed at token minting.
+// The test proxy records the CONNECT target and refuses the tunnel: only where the
+// token request goes is under test.
+func TestDatabricksOAuthTokenGoesThroughProxyConfig(t *testing.T) {
+	var mu sync.Mutex
+	var connectTargets []string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodConnect {
+			mu.Lock()
+			connectTargets = append(connectTargets, r.Host)
+			mu.Unlock()
+		}
+		http.Error(w, "tunnel refused by test proxy", http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+
+	provider, err := NewDatabricksProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10},
+		ProxyConfig:   &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxy.URL)},
+	}, testLogger{})
+	if err != nil {
+		t.Fatalf("NewDatabricksProvider: %v", err)
+	}
+	key := schemas.Key{DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+		WorkspaceURL: *schemas.NewSecretVar("dbc-test.cloud.databricks.com"),
+		ClientID:     schemas.NewSecretVar("sp-client-id"),
+		ClientSecret: schemas.NewSecretVar("sp-client-secret"),
+	}}
+	if _, bErr := provider.authHeader(key); bErr == nil {
+		t.Fatal("expected token minting to fail against the refusing test proxy")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(connectTargets) != 1 || connectTargets[0] != "dbc-test.cloud.databricks.com:443" {
+		t.Fatalf("proxy saw CONNECT %v, want exactly [dbc-test.cloud.databricks.com:443]", connectTargets)
 	}
 }

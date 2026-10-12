@@ -1,0 +1,924 @@
+import { describe, expect, it } from "vitest";
+import {
+	WARP_COMPOSER_TESTID,
+	decodeTurnError,
+	encodeTurnError,
+	errorMessage,
+	historyForRequest,
+	formatWarpChartValue,
+	formatWarpChartX,
+	formatWarpUsage,
+	indexStatusLabel,
+	isEncodedTurnError,
+	isInternalWarpLink,
+	isPartialAnswer,
+	isPlainLeftClick,
+	isTypingInto,
+	isWarpQuestionFinish,
+	parseWarpChartSpec,
+	parseWarpFrame,
+	pendingWarpQuestion,
+	shouldDrainQueue,
+	splitWarpAnswer,
+	splitWarpCharts,
+	splitWarpFrames,
+	turnsFromStoredMessages,
+	warpErrorDetail,
+	warpTextLength,
+	warpTimeline,
+	warpToolLabel,
+	warpToolStatusLabel,
+} from "./warpStream.utils";
+
+describe("splitWarpFrames", () => {
+	it("returns complete frames and keeps the remainder", () => {
+		const { frames, rest } = splitWarpFrames("event: delta\ndata: {}\n\nevent: done\ndata: {");
+		expect(frames).toEqual(["event: delta\ndata: {}"]);
+		expect(rest).toBe("event: done\ndata: {");
+	});
+
+	it("reassembles a frame split across two reads", () => {
+		const first = splitWarpFrames('event: delta\ndata: {"type":"delta","del');
+		expect(first.frames).toHaveLength(0);
+
+		const second = splitWarpFrames(first.rest + 'ta":"hello"}\n\n');
+		expect(second.frames).toHaveLength(1);
+		expect(parseWarpFrame(second.frames[0])?.delta).toBe("hello");
+	});
+
+	it("ignores blank frames", () => {
+		const { frames } = splitWarpFrames("\n\n\n\ndata: {}\n\n");
+		expect(frames).toEqual(["data: {}"]);
+	});
+});
+
+describe("parseWarpFrame", () => {
+	it("parses an event from the data payload", () => {
+		// tool_id is required: isUsableWarpEvent drops a tool_call_end without one.
+		const event = parseWarpFrame(
+			'event: tool_call_end\ndata: {"type":"tool_call_end","tool_id":"t1","tool_name":"query_metrics","duration_ms":42}',
+		);
+		expect(event).toMatchObject({ type: "tool_call_end", tool_id: "t1", tool_name: "query_metrics", duration_ms: 42 });
+	});
+
+	it("returns null for a heartbeat comment", () => {
+		expect(parseWarpFrame(": heartbeat")).toBeNull();
+	});
+
+	it("returns null for malformed JSON rather than throwing", () => {
+		expect(parseWarpFrame("data: {not json")).toBeNull();
+	});
+
+	it("returns null for the [DONE] sentinel", () => {
+		expect(parseWarpFrame("data: [DONE]")).toBeNull();
+	});
+
+	it("returns null when the payload has no type", () => {
+		expect(parseWarpFrame('data: {"delta":"orphan"}')).toBeNull();
+	});
+});
+
+describe("warpToolLabel", () => {
+	it("maps known tools to readable labels", () => {
+		expect(warpToolLabel("query_metrics")).toBe("Queried metrics");
+	});
+
+	it("uses the present tense while a step is running", () => {
+		expect(warpToolLabel("query_metrics", true)).toBe("Querying metrics");
+		expect(warpToolLabel("count_logs", true)).toBe("Checking log volume");
+		expect(warpToolLabel("count_logs")).toBe("Checked log volume");
+		expect(warpToolLabel("semantic_search_logs", true)).toBe("Performing vector search");
+		expect(warpToolLabel("semantic_search_logs")).toBe("Performed vector search");
+	});
+
+	it("labels every tool the agent exposes", () => {
+		const tools = [
+			"semantic_search_logs",
+			"count_logs",
+			"query_logs",
+			"get_log_detail",
+			"get_request_trace",
+			"query_metrics",
+			"query_usage_by",
+			"query_model_performance",
+			"render_chart",
+			"describe_filter_space",
+			"describe_virtual_key",
+			"ask_user",
+		];
+		for (const tool of tools) {
+			expect(warpToolLabel(tool), `${tool} has no label`).not.toBe(tool);
+			expect(warpToolLabel(tool, true), `${tool} has no running label`).not.toBe(tool);
+		}
+	});
+
+	it("falls back to the raw name for unknown tools", () => {
+		expect(warpToolLabel("query_something_new")).toBe("query_something_new");
+		expect(warpToolLabel("query_something_new", true)).toBe("query_something_new");
+	});
+});
+
+describe("errorMessage", () => {
+	it("offers concrete steps for max_iterations", () => {
+		const detail = warpErrorDetail("max_iterations", "");
+		expect(detail.summary).toContain("could not settle");
+		expect(detail.cause).toContain("research steps");
+		expect(detail.suggestions.join(" ")).toContain("one thing at a time");
+		expect(detail.suggestions.join(" ")).toContain("Max Iterations");
+	});
+
+	it("offers concrete steps for timeout", () => {
+		const detail = warpErrorDetail("timeout", "");
+		expect(detail.suggestions.join(" ")).toContain("shorter time range");
+		expect(detail.suggestions.join(" ")).toContain("Request Timeout");
+	});
+
+	it("does not blame the provider when governance refused the model call", () => {
+		const detail = warpErrorDetail("access_denied", "no model access is configured");
+		expect(detail.summary).toContain("access");
+		expect(detail.cause).not.toContain("unreachable");
+		expect(detail.suggestions.join(" ")).toContain("administrator");
+		expect(detail.raw).toBe("no model access is configured");
+		expect(isEncodedTurnError(encodeTurnError("access_denied", "refused"))).toBe(true);
+	});
+
+	it("headlines a spent budget as a budget, not as missing access", () => {
+		const detail = warpErrorDetail("budget_exceeded", "user budget exceeded: 0.0600 >= 0.0500 dollars");
+		expect(detail.summary).toContain("budget");
+		expect(detail.summary).not.toContain("access");
+		expect(detail.cause).not.toContain("access profile");
+		expect(detail.raw).toBe("user budget exceeded: 0.0600 >= 0.0500 dollars");
+		expect(isEncodedTurnError(encodeTurnError("budget_exceeded", "refused"))).toBe(true);
+	});
+
+	it("headlines rate limits and blocked models as what they are", () => {
+		expect(warpErrorDetail("rate_limited", "").summary).toContain("rate limit");
+		expect(warpErrorDetail("model_blocked", "").summary).toContain("isn't allowed");
+		for (const code of ["rate_limited", "model_blocked"]) {
+			expect(warpErrorDetail(code, "").summary, code).not.toContain("access");
+			expect(isEncodedTurnError(encodeTurnError(code, "refused")), code).toBe(true);
+		}
+	});
+
+	it("keeps the raw server message", () => {
+		expect(warpErrorDetail("upstream_error", "provider exploded").raw).toBe("provider exploded");
+	});
+
+	it("has guidance for every code it recognises", () => {
+		for (const code of [
+			"not_configured",
+			"max_iterations",
+			"timeout",
+			"upstream_error",
+			"access_denied",
+			"budget_exceeded",
+			"rate_limited",
+			"model_blocked",
+			"tool_error",
+		]) {
+			const detail = warpErrorDetail(code, "");
+			expect(detail.summary, code).not.toBe("");
+			expect(detail.cause, code).not.toBe("");
+			expect(detail.suggestions.length, code).toBeGreaterThan(0);
+		}
+	});
+
+	it("falls back to the server message for unknown codes", () => {
+		expect(errorMessage("something_else", "upstream exploded")).toBe("upstream exploded");
+	});
+
+	it("has a message even when the server sends nothing useful", () => {
+		expect(errorMessage(undefined, undefined)).toBe("Something went wrong.");
+	});
+});
+// The SSE spec allows CRLF line endings and an optional space after `data:`.
+describe("SSE wire tolerance", () => {
+	it("splits frames delimited by CRLF", () => {
+		const { frames, rest } = splitWarpFrames('event: delta\r\ndata: {"type":"delta","delta":"hi"}\r\n\r\nevent: done\r\ndata: {');
+		expect(frames).toHaveLength(1);
+		expect(parseWarpFrame(frames[0])?.delta).toBe("hi");
+		expect(rest).toContain("event: done");
+	});
+
+	it("parses a data field with no space after the colon", () => {
+		expect(parseWarpFrame('data:{"type":"delta","delta":"hi"}')?.delta).toBe("hi");
+	});
+
+	it("parses a CRLF frame whose data field has no space", () => {
+		expect(parseWarpFrame('event: delta\r\ndata:{"type":"delta","delta":"hi"}')?.delta).toBe("hi");
+	});
+
+	it("still treats [DONE] as a sentinel without the space", () => {
+		expect(parseWarpFrame("data:[DONE]")).toBeNull();
+	});
+
+	it("keeps multi-line data joined on newlines", () => {
+		expect(parseWarpFrame('data:{"type":"delta",\r\ndata:"delta":"hi"}')?.delta).toBe("hi");
+	});
+});
+
+describe("turn error encoding", () => {
+	it("round-trips a coded error", () => {
+		const { code, message } = decodeTurnError(encodeTurnError("not_configured", ""));
+		expect(code).toBe("not_configured");
+		expect(errorMessage(code, message)).toBe("Warp is not configured yet.");
+	});
+
+	it("keeps a message that has no code", () => {
+		const encoded = encodeTurnError(undefined, "Warp request failed (500)");
+		const { code, message } = decodeTurnError(encoded);
+		expect(code).toBe("");
+		expect(message).toBe("Warp request failed (500)");
+		expect(errorMessage(code, message)).toBe("Warp request failed (500)");
+	});
+
+	it("keeps colons inside the message intact", () => {
+		const { code, message } = decodeTurnError(encodeTurnError(undefined, "connect: connection refused"));
+		expect(code).toBe("");
+		expect(message).toBe("connect: connection refused");
+	});
+
+	it("decodes a legacy bare message as a message, not a code", () => {
+		const { code, message } = decodeTurnError("Warp returned no response body");
+		expect(code).toBe("");
+		expect(message).toBe("Warp returned no response body");
+		expect(errorMessage(code, message)).toBe("Warp returned no response body");
+	});
+});
+// A chunk can split a CRLF, so a trailing CR must wait for the next read.
+describe("splitWarpFrames CR boundaries", () => {
+	it("holds back a trailing CR until the next read decides what it is", () => {
+		const first = splitWarpFrames('data: {"type":"delta",\r');
+		expect(first.frames).toHaveLength(0);
+
+		const second = splitWarpFrames(first.rest + '\ndata: "delta":"hello"}\r\n\r\n');
+		expect(second.frames).toHaveLength(1);
+		expect(parseWarpFrame(second.frames[0])?.delta).toBe("hello");
+	});
+
+	it("still splits a frame whose terminator arrives whole", () => {
+		const { frames } = splitWarpFrames('data: {"type":"delta","delta":"hi"}\r\n\r\n');
+		expect(frames).toHaveLength(1);
+		expect(parseWarpFrame(frames[0])?.delta).toBe("hi");
+	});
+});
+
+describe("isEncodedTurnError", () => {
+	it("recognises what encodeTurnError produces", () => {
+		expect(isEncodedTurnError(encodeTurnError(undefined, "Warp request failed (500)"))).toBe(true);
+		expect(isEncodedTurnError(encodeTurnError("timeout", ""))).toBe(true);
+		expect(isEncodedTurnError(encodeTurnError("upstream_error", "boom"))).toBe(true);
+	});
+
+	it("does not mistake a colon in a message for a code", () => {
+		expect(isEncodedTurnError("connect: connection refused")).toBe(false);
+		expect(isEncodedTurnError("TypeError: Failed to fetch")).toBe(false);
+		expect(isEncodedTurnError("Warp returned no response body")).toBe(false);
+	});
+
+	it("round-trips a colon-bearing message that was encoded", () => {
+		const encoded = encodeTurnError(undefined, "connect: connection refused");
+		expect(isEncodedTurnError(encoded)).toBe(true);
+		expect(decodeTurnError(encoded).message).toBe("connect: connection refused");
+	});
+});
+describe("splitWarpFrames lone-CR delimiters", () => {
+	it("emits a frame that a CR already terminated", () => {
+		// "\r\r" and "\n\r" are both complete delimiters.
+		expect(splitWarpFrames('data: {"type":"delta"}\r\r').frames).toEqual(['data: {"type":"delta"}']);
+		expect(splitWarpFrames('data: {"type":"delta"}\n\r').frames).toEqual(['data: {"type":"delta"}']);
+	});
+
+	it("still holds back a CR that could be half of a CRLF", () => {
+		// A CR after text may be half of "\r\n", so only the next read decides.
+		const first = splitWarpFrames('data: {"type":"delta"}\r');
+		expect(first.frames).toEqual([]);
+		expect(first.rest.endsWith("\r")).toBe(true);
+		expect(splitWarpFrames("\r").rest).toBe("\r");
+		expect(splitWarpFrames(first.rest + '\ndata: {"type":"done"}\n\n').frames).toEqual(['data: {"type":"delta"}\ndata: {"type":"done"}']);
+	});
+});
+
+describe("warpToolStatusLabel", () => {
+	// Announced by the sr-only span beside the status icons.
+	it("names each tool-call state", () => {
+		expect(warpToolStatusLabel({})).toBe("In progress");
+		expect(warpToolStatusLabel({ durationMs: undefined, failed: true })).toBe("In progress");
+		expect(warpToolStatusLabel({ durationMs: 120 })).toBe("Completed");
+		expect(warpToolStatusLabel({ durationMs: 120, failed: false })).toBe("Completed");
+		expect(warpToolStatusLabel({ durationMs: 0, failed: true })).toBe("Failed");
+	});
+});
+
+describe("historyForRequest", () => {
+	it("drops turns that carry no content", () => {
+		// Failed turns have empty content; replaying one tells the model it answered nothing.
+		expect(
+			historyForRequest([
+				{ role: "user", content: "what failed?" },
+				{ role: "assistant", content: "" },
+				{ role: "assistant", content: "   " },
+				{ role: "user", content: "try again" },
+			]),
+		).toEqual([
+			{ role: "user", content: "what failed?" },
+			{ role: "user", content: "try again" },
+		]);
+		// Extra fields survive: the caller maps the question marker onto these turns.
+		expect(historyForRequest([{ role: "assistant", content: "pick one", question: true }])).toEqual([
+			{ role: "assistant", content: "pick one", question: true },
+		]);
+	});
+});
+
+describe("question events", () => {
+	it("parses a structured question with options", () => {
+		const event = parseWarpFrame(
+			'event: question\ndata: {"type":"question","question":{"question":"Which period?","kind":"time_range","options":[{"label":"Last 7 days","hint":"-7d"},{"label":"Last 30 days","hint":"-30d"}],"allow_other":true}}',
+		);
+		expect(event?.type).toBe("question");
+		expect(event?.question?.question).toBe("Which period?");
+		expect(event?.question?.options).toHaveLength(2);
+		// The hint is what goes back, so the answer needs no re-interpretation.
+		expect(event?.question?.options[0].hint).toBe("-7d");
+		expect(event?.question?.allow_other).toBe(true);
+	});
+
+	it("marks the done frame that follows a question", () => {
+		const event = parseWarpFrame('data: {"type":"done","finish_reason":"question","iterations":1}');
+		expect(event?.finish_reason).toBe("question");
+	});
+});
+describe("splitWarpAnswer", () => {
+	it("lifts the provenance block out of the answer", () => {
+		const { answer, provenance } = splitWarpAnswer(
+			"gpt-4o was slowest at 5,106ms p99.\n\n```warp-scope\nWindow: 2026-08-16 00:00-2026-08-17 00:00 UTC\nScope: all users\nFilters: none\n```",
+		);
+		expect(answer).toBe("gpt-4o was slowest at 5,106ms p99.");
+		expect(provenance).toContain("Window:");
+		expect(provenance).toContain("Filters: none");
+	});
+
+	it("leaves an answer without a block untouched", () => {
+		const { answer, provenance } = splitWarpAnswer("Nothing to report.");
+		expect(answer).toBe("Nothing to report.");
+		expect(provenance).toBeUndefined();
+	});
+
+	it("only lifts a trailing block", () => {
+		const content = "```warp-scope\nWindow: x\n```\n\nAnd then some prose.";
+		expect(splitWarpAnswer(content).provenance).toBeUndefined();
+	});
+
+	it("ignores an unterminated block", () => {
+		const content = "Answer.\n\n```warp-scope\nWindow: 2026";
+		expect(splitWarpAnswer(content).provenance).toBeUndefined();
+		expect(splitWarpAnswer(content).answer).toBe(content);
+	});
+
+	it("ignores an empty block", () => {
+		expect(splitWarpAnswer("Answer.\n\n```warp-scope\n```").provenance).toBeUndefined();
+	});
+
+	it("leaves other fenced blocks alone", () => {
+		const content = 'Here:\n\n```json\n{"a":1}\n```';
+		expect(splitWarpAnswer(content).provenance).toBeUndefined();
+	});
+});
+describe("formatWarpUsage", () => {
+	it("reports tokens and cost together", () => {
+		expect(formatWarpUsage({ total_tokens: 12345, cost: { total_cost: 0.42 } })).toBe("12,345 tokens · $0.42");
+	});
+
+	it("keeps a sub-cent cost visible", () => {
+		expect(formatWarpUsage({ total_tokens: 100, cost: { total_cost: 0.0012 } })).toBe("100 tokens · $0.0012");
+	});
+
+	it("falls back to summing prompt and completion tokens", () => {
+		expect(formatWarpUsage({ prompt_tokens: 300, completion_tokens: 200 })).toBe("500 tokens");
+	});
+
+	it("returns null when there is nothing to report", () => {
+		expect(formatWarpUsage(undefined)).toBeNull();
+		expect(formatWarpUsage({})).toBeNull();
+		expect(formatWarpUsage({ total_tokens: 0, cost: { total_cost: 0 } })).toBeNull();
+	});
+});
+describe("formatWarpUsage sub-cent costs", () => {
+	it("marks a positive cost below the display threshold", () => {
+		const label = formatWarpUsage({ total_tokens: 10, cost: { total_cost: 0.00001 } });
+		expect(label).not.toContain("$0.0000");
+		expect(label).toContain("<$0.0001");
+	});
+
+	it("still shows costs the format can express", () => {
+		expect(formatWarpUsage({ total_tokens: 10, cost: { total_cost: 0.0012 } })).toContain("$0.0012");
+		expect(formatWarpUsage({ total_tokens: 10, cost: { total_cost: 0.0123 } })).toContain("$0.01");
+		expect(formatWarpUsage({ total_tokens: 10, cost: { total_cost: 1.5 } })).toContain("$1.50");
+	});
+});
+
+describe("isPartialAnswer", () => {
+	it("recognises the partial finish reason and nothing else", () => {
+		expect(isPartialAnswer("partial")).toBe(true);
+		expect(isPartialAnswer("stop")).toBe(false);
+		expect(isPartialAnswer("question")).toBe(false);
+		expect(isPartialAnswer(undefined)).toBe(false);
+	});
+
+	it("reads it off a done frame", () => {
+		const event = parseWarpFrame('data: {"type":"done","finish_reason":"partial","iterations":8}');
+		expect(event && isPartialAnswer(event.finish_reason)).toBe(true);
+	});
+});
+
+describe("isInternalWarpLink", () => {
+	it("accepts root-relative dashboard paths only", () => {
+		expect(isInternalWarpLink("/workspace/logs?selected_log=abc")).toBe(true);
+		expect(isInternalWarpLink("/workspace/logs")).toBe(true);
+		expect(isInternalWarpLink("//evil.example/x")).toBe(false);
+		expect(isInternalWarpLink("https://github.com/maximhq/bifrost/issues/new")).toBe(false);
+		expect(isInternalWarpLink("javascript:alert(1)")).toBe(false);
+		expect(isInternalWarpLink(undefined)).toBe(false);
+	});
+});
+
+describe("turnsFromStoredMessages", () => {
+	it("reopens a failed turn with the same headline it had live", () => {
+		const message =
+			"This deployment's governance rules refused Warp's model call for your account: user budget exceeded: 0.0600 >= 0.0500 dollars";
+		const [turn] = turnsFromStoredMessages([
+			{ role: "assistant", content: "", error: message, error_code: "budget_exceeded", created_at: "2026-10-09T00:00:00Z" },
+		]);
+		const { code, message: decoded } = decodeTurnError(turn.error ?? "");
+		expect(code).toBe("budget_exceeded");
+		expect(decoded).toBe(message);
+		expect(warpErrorDetail(code, decoded).summary).toBe("You've used up your budget.");
+	});
+
+	it("keeps a stored error with no code whole, colons included", () => {
+		const [turn] = turnsFromStoredMessages([
+			{ role: "assistant", content: "", error: "TypeError: Failed to fetch", created_at: "2026-10-09T00:00:00Z" },
+		]);
+		const { code, message } = decodeTurnError(turn.error ?? "");
+		expect(code).toBe("");
+		expect(message).toBe("TypeError: Failed to fetch");
+	});
+
+	it("maps stored messages onto transcript turns", () => {
+		const turns = turnsFromStoredMessages([
+			{ role: "user", content: "what did we spend?", created_at: "2026-09-05T00:00:00Z" },
+			{
+				role: "assistant",
+				content: "About $12.",
+				tool_calls: [
+					{ name: "query_metrics", duration_ms: 12 },
+					{ name: "count_logs", duration_ms: 3, failed: true },
+				],
+				finish_reason: "partial",
+				total_tokens: 120,
+				cost: 0.0123,
+				created_at: "2026-09-05T00:00:01Z",
+			},
+			{ role: "assistant", content: "", error: "boom", error_code: "upstream_error", created_at: "2026-09-05T00:00:02Z" },
+		]);
+		expect(turns).toHaveLength(3);
+		expect(turns[0]).toMatchObject({ role: "user", content: "what did we spend?" });
+		expect(turns[1]).toMatchObject({ role: "assistant", content: "About $12.", partial: true });
+		expect(turns[1].toolCalls).toEqual([
+			{ id: "stored-1-0", name: "query_metrics", durationMs: 12, failed: undefined },
+			{ id: "stored-1-1", name: "count_logs", durationMs: 3, failed: true },
+		]);
+		expect(turns[1].usage).toEqual({ total_tokens: 120, cost: { total_cost: 0.0123 } });
+		expect(turns[2]).toMatchObject({ role: "assistant", content: "", error: "upstream_error:boom" });
+		expect(turns[2].usage).toBeUndefined();
+		expect(turns[2].partial).toBeUndefined();
+	});
+
+	it("restores a stored question's options and hints", () => {
+		const turns = turnsFromStoredMessages([
+			{
+				role: "assistant",
+				content: "Whose traffic do you mean?",
+				finish_reason: "question",
+				question: {
+					question: "Whose traffic do you mean?",
+					options: [{ label: "Platform team", hint: "team:platform" }],
+					allow_other: true,
+					kind: "scope",
+				},
+				created_at: "2026-09-05T00:00:00Z",
+			},
+			{ role: "assistant", content: "Which window?", finish_reason: "question", created_at: "2026-09-05T00:00:01Z" },
+		]);
+		expect(turns[0].question).toEqual({
+			question: "Whose traffic do you mean?",
+			options: [{ label: "Platform team", hint: "team:platform" }],
+			allow_other: true,
+			kind: "scope",
+		});
+		// Legacy rows without the stored question still come back as a question.
+		expect(turns[1].question).toEqual({ question: "Which window?", options: [] });
+	});
+});
+
+describe("indexStatusLabel", () => {
+	it("names each state and shows progress while indexing", () => {
+		expect(indexStatusLabel({ state: "ready", vector_store_connected: true, embedding_configured: true })).toEqual({
+			label: "Index ready",
+			shortLabel: "Ready",
+			tone: "ok",
+		});
+		expect(indexStatusLabel({ state: "unavailable", vector_store_connected: false, embedding_configured: true })).toEqual({
+			label: "No vector store",
+			tone: "error",
+		});
+		expect(indexStatusLabel({ state: "not_configured", vector_store_connected: true, embedding_configured: false })).toEqual({
+			label: "Search not set up",
+			tone: "muted",
+		});
+		expect(
+			indexStatusLabel({
+				state: "failed",
+				vector_store_connected: true,
+				embedding_configured: true,
+				backfill: {
+					id: "job-1",
+					status: "failed",
+					total: 5000,
+					scanned: 100,
+					indexed: 0,
+					skipped: 0,
+					failed: 100,
+					last_error: "no keys found",
+				},
+			}),
+		).toEqual({ label: "Indexing failed", tone: "error", detail: "no keys found" });
+		expect(
+			indexStatusLabel({
+				state: "indexing",
+				vector_store_connected: true,
+				embedding_configured: true,
+				backfill: { id: "job-2", status: "running", total: 200, scanned: 50, indexed: 40, skipped: 10, failed: 0 },
+			}),
+		).toEqual({ label: "Indexing 25%", tone: "busy" });
+		expect(
+			indexStatusLabel({
+				state: "indexing",
+				vector_store_connected: true,
+				embedding_configured: true,
+				backfill: { id: "job-3", status: "pending", total: 0, scanned: 0, indexed: 0, skipped: 0, failed: 0 },
+			}),
+		).toEqual({ label: "Indexing", tone: "busy" });
+	});
+
+	it("does not read the idle response as a job", () => {
+		// The idle body is zeroed, not absent, and must not render as a 0% job.
+		expect(
+			indexStatusLabel({
+				state: "indexing",
+				vector_store_connected: true,
+				embedding_configured: true,
+				backfill: { status: "idle" },
+			}),
+		).toEqual({ label: "Indexing", tone: "busy" });
+	});
+});
+
+// Shortcuts are document-level because the composer has focus when the question card appears.
+describe("isTypingInto", () => {
+	const composer = (value: string) => ({ tagName: "TEXTAREA", value, dataset: { testid: WARP_COMPOSER_TESTID } });
+
+	it("treats an empty composer as not typing", () => {
+		expect(isTypingInto(composer(""))).toBe(false);
+		expect(isTypingInto(composer("   "))).toBe(false);
+	});
+	it("treats a composer with text, or any input, as typing", () => {
+		expect(isTypingInto(composer("all cust"))).toBe(true);
+		expect(isTypingInto({ tagName: "INPUT", value: "" })).toBe(true);
+		expect(isTypingInto({ tagName: "INPUT", value: "x" })).toBe(true);
+	});
+	it("treats any other textarea as typing, even when empty", () => {
+		expect(isTypingInto({ tagName: "TEXTAREA", value: "" })).toBe(true);
+		expect(isTypingInto({ tagName: "TEXTAREA", value: "", dataset: { testid: "some-other-field" } })).toBe(true);
+	});
+	it("treats anything else as not typing", () => {
+		expect(isTypingInto({ tagName: "DIV" })).toBe(false);
+		expect(isTypingInto(null)).toBe(false);
+	});
+});
+
+describe("shouldDrainQueue", () => {
+	it("sends only on the streaming-to-idle transition", () => {
+		expect(shouldDrainQueue(true, false, 2, false)).toBe(true);
+		expect(shouldDrainQueue(false, false, 2, false)).toBe(false);
+		expect(shouldDrainQueue(true, true, 2, false)).toBe(false);
+		expect(shouldDrainQueue(true, false, 0, false)).toBe(false);
+	});
+
+	it("holds the queue back when the turn that just finished failed", () => {
+		expect(shouldDrainQueue(true, false, 2, false, true)).toBe(false);
+		expect(shouldDrainQueue(true, false, 0, false, true)).toBe(false);
+	});
+});
+
+// URL parsing folds a backslash into a slash, so "/\host" resolves like "//host".
+describe("isInternalWarpLink", () => {
+	it("accepts root-relative paths", () => {
+		expect(isInternalWarpLink("/workspace/logs")).toBe(true);
+		expect(isInternalWarpLink("/workspace/logs?providers=openai")).toBe(true);
+	});
+
+	it("rejects protocol-relative and backslash-folded authorities", () => {
+		for (const href of ["//evil.example/x", "/\\evil.example/x", "/\\\\evil.example/x", "/\\/evil.example"]) {
+			expect(isInternalWarpLink(href)).toBe(false);
+		}
+	});
+
+	it("rejects absolute and empty links", () => {
+		for (const href of ["https://evil.example", "http://evil.example", "javascript:alert(1)", "", undefined]) {
+			expect(isInternalWarpLink(href)).toBe(false);
+		}
+	});
+});
+describe("isTypingInto contenteditable", () => {
+	// A rich-text editor is a DIV, so tagName alone says nothing.
+	it("treats a contenteditable element as typing", () => {
+		expect(isTypingInto({ tagName: "DIV", isContentEditable: true })).toBe(true);
+	});
+
+	it("leaves an ordinary div alone, so the shortcuts still work", () => {
+		expect(isTypingInto({ tagName: "DIV" })).toBe(false);
+		expect(isTypingInto({ tagName: "DIV", isContentEditable: false })).toBe(false);
+	});
+
+	it("keeps the composer exemption", () => {
+		expect(isTypingInto({ tagName: "TEXTAREA", value: "", dataset: { testid: WARP_COMPOSER_TESTID } })).toBe(false);
+		expect(isTypingInto({ tagName: "TEXTAREA", value: "draft", dataset: { testid: WARP_COMPOSER_TESTID } })).toBe(true);
+	});
+});
+describe("isPlainLeftClick", () => {
+	it("leaves modified and non-primary clicks to the browser", () => {
+		// Modified clicks are how users open a cited link in a new tab.
+		expect(isPlainLeftClick({ button: 0 })).toBe(true);
+		expect(isPlainLeftClick({})).toBe(true);
+		expect(isPlainLeftClick({ button: 1 })).toBe(false);
+		expect(isPlainLeftClick({ button: 0, metaKey: true })).toBe(false);
+		expect(isPlainLeftClick({ button: 0, ctrlKey: true })).toBe(false);
+		expect(isPlainLeftClick({ button: 0, shiftKey: true })).toBe(false);
+		expect(isPlainLeftClick({ button: 0, altKey: true })).toBe(false);
+	});
+});
+
+describe("shouldDrainQueue with a pending question", () => {
+	it("holds the queue until the clarification is resolved", () => {
+		// A question also ends streaming; without the gate a queued follow-up would answer it.
+		expect(shouldDrainQueue(true, false, 1)).toBe(true);
+		expect(shouldDrainQueue(true, false, 1, true)).toBe(false);
+		expect(shouldDrainQueue(true, false, 0, false)).toBe(false);
+		expect(shouldDrainQueue(false, false, 2, false)).toBe(false);
+	});
+});
+
+describe("turnsFromStoredMessages question markers", () => {
+	it("marks a reopened turn that asked rather than answered", () => {
+		expect(isWarpQuestionFinish("question")).toBe(true);
+		expect(isWarpQuestionFinish("stop")).toBe(false);
+		expect(isWarpQuestionFinish(undefined)).toBe(false);
+		const turns = turnsFromStoredMessages([
+			{ role: "user", content: "which provider?", created_at: "2026-09-16T09:00:00Z" },
+			{ role: "assistant", content: "Which provider did you mean?", finish_reason: "question", created_at: "2026-09-16T09:00:01Z" },
+		]);
+		// Without the marker the server reads a replayed clarification as an answer.
+		expect(turns[1].question?.question).toBe("Which provider did you mean?");
+		expect(turns[0].question).toBeUndefined();
+	});
+});
+
+describe("pendingWarpQuestion", () => {
+	const asked = {
+		role: "assistant" as const,
+		content: "Whose traffic?",
+		finish_reason: "question",
+		created_at: "2026-09-21T12:30:53Z",
+		question: { question: "Whose traffic?", options: [{ label: "Whole deployment", hint: "all" }, { label: "Team A" }], allow_other: true },
+	};
+
+	it("restores the card for a reopened thread that ended on a question", () => {
+		const turns = turnsFromStoredMessages([{ role: "user", content: "what did I spend?", created_at: "2026-09-21T12:30:52Z" }, asked]);
+		expect(pendingWarpQuestion(turns)).toEqual({
+			question: "Whose traffic?",
+			options: [
+				{ label: "Whole deployment", hint: "all" },
+				{ label: "Team A", hint: undefined },
+			],
+			allow_other: true,
+			kind: undefined,
+		});
+	});
+
+	it("restores nothing once the question was answered, or when it has no options", () => {
+		const answered = turnsFromStoredMessages([asked, { role: "user", content: "all", created_at: "2026-09-21T12:31:05Z" }]);
+		expect(pendingWarpQuestion(answered)).toBeNull();
+		// A card with nothing to pick is worse than the question as text.
+		const bare = turnsFromStoredMessages([
+			{ role: "assistant", content: "Which provider?", finish_reason: "question", created_at: "2026-09-16T09:00:01Z" },
+		]);
+		expect(pendingWarpQuestion(bare)).toBeNull();
+		expect(pendingWarpQuestion([])).toBeNull();
+	});
+});
+
+describe("warpTimeline", () => {
+	const call = (id: string, textOffset?: number) => ({ id, name: "get_request_trace", durationMs: 5, textOffset });
+
+	it("interleaves narration and tool calls in the order they happened", () => {
+		const content = "17 failed \u2014 tracing two.\n\nBoth hit a 400.";
+		// Counted in code points on both sides of the wire.
+		expect(warpTextLength("17 failed \u2014 tracing two.")).toBe(24);
+		expect(warpTextLength("\u{1F53A} up")).toBe(4);
+		expect(warpTimeline(content, [call("c1", 0), call("c2", 24), call("c3", 24)])).toEqual([
+			{ kind: "tools", calls: [call("c1", 0)] },
+			{ kind: "text", text: "17 failed \u2014 tracing two.", final: false },
+			{ kind: "tools", calls: [call("c2", 24), call("c3", 24)] },
+			{ kind: "text", text: "Both hit a 400.", final: true },
+		]);
+	});
+
+	it("keeps calls that followed the last text at the end, where the wait is", () => {
+		expect(warpTimeline("Tracing two.", [call("c1", 12)])).toEqual([
+			{ kind: "text", text: "Tracing two.", final: false },
+			{ kind: "tools", calls: [call("c1", 12)] },
+		]);
+	});
+
+	it("renders rows filed before offsets existed as they always did, and survives bad ones", () => {
+		expect(warpTimeline("The answer.", [call("c1"), call("c2")])).toEqual([
+			{ kind: "tools", calls: [call("c1"), call("c2")] },
+			{ kind: "text", text: "The answer.", final: true },
+		]);
+		// Past the end or out of order: clamped, never lost.
+		expect(warpTimeline("Short.", [call("c1", 900), call("c2", 3)])).toEqual([
+			{ kind: "text", text: "Short.", final: false },
+			{ kind: "tools", calls: [call("c1", 900), call("c2", 3)] },
+		]);
+		expect(warpTimeline("Just text.", undefined)).toEqual([{ kind: "text", text: "Just text.", final: true }]);
+		expect(warpTimeline("", undefined)).toEqual([]);
+	});
+
+	it("carries the stored offset onto a reopened turn", () => {
+		const turns = turnsFromStoredMessages([
+			{
+				role: "assistant",
+				content: "Counting.\n\nDone.",
+				created_at: "2026-09-21T13:00:00Z",
+				tool_calls: [{ name: "count_logs", duration_ms: 3, text_offset: 9 }],
+			},
+		]);
+		expect(turns[0].toolCalls?.[0].textOffset).toBe(9);
+	});
+});
+const chartSpec = {
+	id: "chart-1",
+	kind: "line",
+	title: "Errors per day",
+	metric: "errors",
+	unit: "count",
+	interval: "day",
+	points: [
+		{ x: "2026-09-22T00:00:00Z", y: 5 },
+		{ x: "2026-09-23T00:00:00Z", y: 30 },
+	],
+	window: { start: "2026-09-17T00:00:00Z", end: "2026-09-24T00:00:00Z" },
+	link: "/workspace/logs?status=error",
+};
+
+describe("splitWarpCharts", () => {
+	it("lifts chart blocks out of the text, in order", () => {
+		const text = "Errors spiked on the 23rd.\n\n```warp-chart\n" + JSON.stringify(chartSpec) + "\n```\n\nMost were overloads.";
+		const segments = splitWarpCharts(text, false);
+		expect(segments.map((segment) => segment.kind)).toEqual(["text", "chart", "text"]);
+		expect(segments[1]).toEqual({ kind: "chart", spec: chartSpec });
+	});
+
+	it("shows a pending chart while its block is still streaming", () => {
+		expect(splitWarpCharts('Here it is:\n\n```warp-chart\n{"id":"chart-1","ki', true)).toEqual([
+			{ kind: "text", text: "Here it is:\n\n" },
+			{ kind: "chart-pending" },
+		]);
+	});
+
+	// A finished text will never close its block, so a placeholder would spin forever.
+	it("marks an unclosed block invalid once the text is finished", () => {
+		expect(splitWarpCharts("Here it is:\n\n```warp-chart", false)).toEqual([
+			{ kind: "text", text: "Here it is:\n\n" },
+			{ kind: "chart-invalid" },
+		]);
+	});
+
+	it("keeps the text after an unclosed fence once the text is finished", () => {
+		expect(splitWarpCharts("Here it is:\n\n```warp-chart\nErrors spiked on the 23rd.", false)).toEqual([
+			{ kind: "text", text: "Here it is:\n\n" },
+			{ kind: "chart-invalid" },
+			{ kind: "text", text: "Errors spiked on the 23rd." },
+		]);
+	});
+
+	it("marks a closed block it cannot draw as invalid rather than failing", () => {
+		expect(splitWarpCharts("```warp-chart\nnot json\n```", false)).toEqual([{ kind: "chart-invalid" }]);
+	});
+
+	// Serialized JSON leaves backticks unescaped, so a fenced title must not close the block.
+	it("keeps triple backticks inside a chart title", () => {
+		const spec = { ...chartSpec, title: "Requests using ```code``` fences" };
+		expect(parseWarpChartSpec(JSON.stringify(spec))).toEqual(spec);
+		const text = "Here:\n\n```warp-chart\n" + JSON.stringify(spec) + "\n```\n\nDone.";
+		expect(splitWarpCharts(text, false)).toEqual([
+			{ kind: "text", text: "Here:\n\n" },
+			{ kind: "chart", spec },
+			{ kind: "text", text: "\n\nDone." },
+		]);
+	});
+
+	it("leaves text without charts as one segment", () => {
+		expect(splitWarpCharts("Just prose.", false)).toEqual([{ kind: "text", text: "Just prose." }]);
+	});
+});
+
+describe("parseWarpChartSpec", () => {
+	it("accepts a spec render_chart produced", () => {
+		expect(parseWarpChartSpec(JSON.stringify(chartSpec))).toEqual(chartSpec);
+	});
+
+	it("keeps a bar label only when there is one", () => {
+		const bar = {
+			...chartSpec,
+			kind: "bar",
+			interval: undefined,
+			group: "team",
+			points: [{ x: "team-platform", label: "Platform Engineering", y: 15 }],
+		};
+		expect(parseWarpChartSpec(JSON.stringify(bar))?.points).toEqual([{ x: "team-platform", label: "Platform Engineering", y: 15 }]);
+	});
+
+	it.each([
+		["a kind it cannot draw", { ...chartSpec, kind: "pie" }],
+		["an unknown unit", { ...chartSpec, unit: "furlongs" }],
+		["a non-numeric point", { ...chartSpec, points: [{ x: "a", y: "5" }] }],
+		["missing points", { ...chartSpec, points: undefined }],
+	])("rejects %s", (_, spec) => {
+		expect(parseWarpChartSpec(JSON.stringify(spec))).toBeNull();
+	});
+});
+
+describe("formatWarpChartValue", () => {
+	it.each([
+		["usd", 2.58, "$2.58"],
+		["usd", 0.0004, "$0.0004"],
+		// Below what four places show, a real cost is not rounded down to "$0.0000".
+		["usd", 0.00004, "<$0.0001"],
+		["usd", 0.0001, "$0.0001"],
+		["usd", 0, "$0"],
+		["ms", 45000, "45.00s"],
+		["ms", 320.4, "320ms"],
+		["tokens", 956229, "956.2K"],
+		["count", 30, "30"],
+	] as const)("formats %s %s as %s", (unit, value, want) => {
+		expect(formatWarpChartValue(unit, value)).toBe(want);
+	});
+});
+
+describe("formatWarpChartX", () => {
+	// Buckets are UTC; a local-time label would file traffic under the wrong day.
+	it("labels line points by their UTC bucket", () => {
+		expect(formatWarpChartX({ kind: "line", interval: "day" }, { x: "2026-09-23T00:00:00Z", y: 1 })).toBe("Sep 23");
+		expect(formatWarpChartX({ kind: "line", interval: "hour" }, { x: "2026-09-23T14:00:00Z", y: 1 })).toBe("Sep 23, 14:00");
+	});
+
+	it("labels bars by display name, falling back to the id", () => {
+		expect(formatWarpChartX({ kind: "bar" }, { x: "team-platform", label: "Platform Engineering", y: 1 })).toBe("Platform Engineering");
+		expect(formatWarpChartX({ kind: "bar" }, { x: "anthropic", y: 1 })).toBe("anthropic");
+	});
+});
+describe("weekly and rate charts", () => {
+	it("accepts a weekly error-rate bar chart", () => {
+		const spec = {
+			...chartSpec,
+			kind: "bar",
+			metric: "error_rate",
+			unit: "percent",
+			interval: "week",
+			points: [{ x: "2026-09-14T00:00:00Z", y: 3 }],
+		};
+		expect(parseWarpChartSpec(JSON.stringify(spec))).toEqual(spec);
+	});
+
+	it("formats a rate as a percent", () => {
+		expect(formatWarpChartValue("percent", 2.987)).toBe("2.99%");
+	});
+
+	it("labels weekly points and time bars by date, not as category names", () => {
+		expect(formatWarpChartX({ kind: "bar", interval: "week" }, { x: "2026-09-14T00:00:00Z", y: 1 })).toBe("Wk of Sep 14");
+		expect(formatWarpChartX({ kind: "bar", interval: "day" }, { x: "2026-09-14T00:00:00Z", y: 1 })).toBe("Sep 14");
+	});
+});

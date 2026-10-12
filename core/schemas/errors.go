@@ -95,6 +95,7 @@ var ErrorTypes = []ErrorType{
 // Not plugins/governance.IsModelRequiredForRequest: that asks whether a model is
 // carried at all, has the opposite default, and governs authorization.
 var modelAddressedRequestTypes = map[RequestType]struct{}{
+	ModelRetrieveRequest:         {},
 	TextCompletionRequest:        {},
 	TextCompletionStreamRequest:  {},
 	EmbeddingRequest:             {},
@@ -105,6 +106,7 @@ var modelAddressedRequestTypes = map[RequestType]struct{}{
 	ImageGenerationRequest:       {},
 	ImageGenerationStreamRequest: {},
 	RerankRequest:                {},
+	DecisionRequest:              {},
 	CountTokensRequest:           {},
 }
 
@@ -178,7 +180,7 @@ func nestedErrorType(err *BifrostError) *string {
 // Status, not the provider's error type/code: those disagree across providers and
 // mislabel unrelated failures — OpenAI sends invalid_request_error for a 401.
 //
-// Not derived from perKeyFailureStatusCodes / transientServerStatusCodes despite the
+// Not derived from ClassifyFailure's status lists despite the
 // overlap: those encode retry policy, this encodes fault attribution.
 func classifyProviderStatus(status int, requestType RequestType) (ErrorType, bool) {
 	switch {

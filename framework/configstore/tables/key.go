@@ -40,11 +40,12 @@ type TableKey struct {
 	AzureScopesJSON   *string            `gorm:"column:azure_scopes;type:text" json:"-"` // JSON serialized []string
 
 	// Vertex config fields (embedded)
-	VertexProjectID         *schemas.SecretVar `gorm:"type:text" json:"vertex_project_id,omitempty"`
-	VertexProjectNumber     *schemas.SecretVar `gorm:"type:text" json:"vertex_project_number,omitempty"`
-	VertexRegion            *schemas.SecretVar `gorm:"type:text" json:"vertex_region,omitempty"`
-	VertexAuthCredentials   *schemas.SecretVar `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
-	VertexForceSingleRegion *bool              `gorm:"column:vertex_force_single_region" json:"vertex_force_single_region,omitempty"`
+	VertexProjectID               *schemas.SecretVar `gorm:"type:text" json:"vertex_project_id,omitempty"`
+	VertexProjectNumber           *schemas.SecretVar `gorm:"type:text" json:"vertex_project_number,omitempty"`
+	VertexRegion                  *schemas.SecretVar `gorm:"type:text" json:"vertex_region,omitempty"`
+	VertexAuthCredentials         *schemas.SecretVar `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
+	VertexForceSingleRegion       *bool              `gorm:"column:vertex_force_single_region" json:"vertex_force_single_region,omitempty"`
+	VertexAWSWorkloadIdentityJSON *string            `gorm:"type:text" json:"-"` // JSON serialized schemas.VertexAWSWorkloadIdentityConfig
 
 	// Bedrock config fields (embedded)
 	BedrockAccessKey         *schemas.SecretVar `gorm:"type:text" json:"bedrock_access_key,omitempty"`
@@ -246,12 +247,18 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		}
 		fsr := k.VertexKeyConfig.ForceSingleRegion
 		k.VertexForceSingleRegion = &fsr
+		wif, err := MarshalVertexAWSWorkloadIdentityJSON(k.VertexKeyConfig.AWSWorkloadIdentity)
+		if err != nil {
+			return err
+		}
+		k.VertexAWSWorkloadIdentityJSON = wif
 	} else {
 		k.VertexProjectID = nil
 		k.VertexProjectNumber = nil
 		k.VertexRegion = nil
 		k.VertexAuthCredentials = nil
 		k.VertexForceSingleRegion = nil
+		k.VertexAWSWorkloadIdentityJSON = nil
 	}
 	if k.BedrockKeyConfig != nil {
 		if k.BedrockKeyConfig.AccessKey.IsSet() {
@@ -594,6 +601,9 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptSecretVarPtr(&k.VertexAuthCredentials); err != nil {
 			return fmt.Errorf("failed to encrypt vertex auth credentials: %w", err)
 		}
+		if err := encryptString(k.VertexAWSWorkloadIdentityJSON); err != nil {
+			return fmt.Errorf("failed to encrypt vertex aws workload identity: %w", err)
+		}
 		// Bedrock
 		if err := encryptSecretVarPtr(&k.BedrockAccessKey); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock access key: %w", err)
@@ -741,6 +751,9 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		if err := decryptSecretVarPtr(&k.VertexAuthCredentials); err != nil {
 			return fmt.Errorf("failed to decrypt vertex auth credentials: %w", err)
+		}
+		if err := decryptString(k.VertexAWSWorkloadIdentityJSON); err != nil {
+			return fmt.Errorf("failed to decrypt vertex aws workload identity: %w", err)
 		}
 		// Bedrock
 		if err := decryptSecretVarPtr(&k.BedrockAccessKey); err != nil {
@@ -901,7 +914,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.AzureKeyConfig = azureConfig
 	}
 	// Reconstruct Vertex config if fields are present
-	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil || k.VertexForceSingleRegion != nil {
+	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil || k.VertexForceSingleRegion != nil || (k.VertexAWSWorkloadIdentityJSON != nil && *k.VertexAWSWorkloadIdentityJSON != "") {
 		config := &schemas.VertexKeyConfig{}
 
 		if k.VertexProjectID != nil {
@@ -920,6 +933,13 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		if k.VertexForceSingleRegion != nil {
 			config.ForceSingleRegion = *k.VertexForceSingleRegion
+		}
+		if k.VertexAWSWorkloadIdentityJSON != nil && *k.VertexAWSWorkloadIdentityJSON != "" {
+			var wif schemas.VertexAWSWorkloadIdentityConfig
+			if err := json.Unmarshal([]byte(*k.VertexAWSWorkloadIdentityJSON), &wif); err != nil {
+				return err
+			}
+			config.AWSWorkloadIdentity = &wif
 		}
 		k.VertexKeyConfig = config
 	}
@@ -1091,3 +1111,49 @@ func (k *TableKey) VaultPathKey() string { return k.KeyID }
 // inside BeforeSave and then encrypted in the same hook; the vault store must run at
 // the midpoint between those two steps, which only BeforeSave itself can reach.
 func (k *TableKey) VaultStoreSelfManaged() {}
+
+// vertexAWSWorkloadIdentityRecord is the storage form of the aws_workload_identity block. Each
+// SecretVar is reduced to the same string the SecretVar-backed columns persist through driver.Valuer:
+// the env./vault. reference when the value comes from a secret, otherwise the plain value. The
+// resolved secret therefore never reaches the database, and SecretVar.UnmarshalJSON re-resolves the
+// bare reference string on load.
+type vertexAWSWorkloadIdentityRecord struct {
+	Audience             string `json:"audience,omitempty"`
+	ServiceAccountEmail  string `json:"service_account_email,omitempty"`
+	TokenLifetimeSeconds int    `json:"token_lifetime_seconds,omitempty"`
+	AWSRegion            string `json:"aws_region,omitempty"`
+	AWSRoleARN           string `json:"aws_role_arn,omitempty"`
+}
+
+// secretVarStorageString mirrors SecretVar.Value: the reference for secret-backed values, else the value.
+func secretVarStorageString(sv *schemas.SecretVar) string {
+	if sv == nil {
+		return ""
+	}
+	if sv.IsFromSecret() {
+		return sv.GetRawRef()
+	}
+	return sv.GetValue()
+}
+
+// MarshalVertexAWSWorkloadIdentityJSON serializes the Vertex AWS workload identity block for the
+// vertex_aws_workload_identity_json column in reference-preserving form, returning nil when the block
+// is absent so the column stays NULL for keys that do not federate.
+func MarshalVertexAWSWorkloadIdentityJSON(cfg *schemas.VertexAWSWorkloadIdentityConfig) (*string, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	record := vertexAWSWorkloadIdentityRecord{
+		Audience:             secretVarStorageString(&cfg.Audience),
+		ServiceAccountEmail:  secretVarStorageString(cfg.ServiceAccountEmail),
+		TokenLifetimeSeconds: cfg.TokenLifetimeSeconds,
+		AWSRegion:            secretVarStorageString(cfg.AWSRegion),
+		AWSRoleARN:           secretVarStorageString(cfg.AWSRoleARN),
+	}
+	data, err := sonic.Marshal(record)
+	if err != nil {
+		return nil, err
+	}
+	s := string(data)
+	return &s, nil
+}

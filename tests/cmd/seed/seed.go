@@ -827,10 +827,12 @@ func buildLog(prefix string, shape Shape, index int) logstore.Log {
 	if index%17 == 0 {
 		status = "error"
 	}
+	// Object is the request type, as the gateway's logging plugin writes it - not
+	// the OpenAI response object "chat.completion", which no objects filter matches.
 	return logstore.Log{
 		ID:               fmt.Sprintf("%s-log-%06d", prefix, index),
 		Timestamp:        timestamp,
-		Object:           "chat.completion",
+		Object:           string(schemas.ChatCompletionRequest),
 		Provider:         "openai",
 		Model:            "gpt-4o-mini",
 		SelectedKeyID:    prefix + "-openai-key",

@@ -138,6 +138,38 @@ func deepCopyResponsesStreamResponse(original *schemas.BifrostResponsesStreamRes
 		copy.Arguments = &copyArguments
 	}
 
+	if original.Command != nil {
+		copyCommand := *original.Command
+		copy.Command = &copyCommand
+	}
+
+	if original.Diff != nil {
+		copyDiff := *original.Diff
+		copy.Diff = &copyDiff
+	}
+
+	if original.CommandIndex != nil {
+		copyCommandIndex := *original.CommandIndex
+		copy.CommandIndex = &copyCommandIndex
+	}
+
+	if original.Output != nil {
+		copy.Output = deepCopyShellCallOutput(original.Output)
+	}
+
+	if original.ShellOutputDelta != nil {
+		copyShellOutputDelta := *original.ShellOutputDelta
+		if original.ShellOutputDelta.Stdout != nil {
+			stdout := *original.ShellOutputDelta.Stdout
+			copyShellOutputDelta.Stdout = &stdout
+		}
+		if original.ShellOutputDelta.Stderr != nil {
+			stderr := *original.ShellOutputDelta.Stderr
+			copyShellOutputDelta.Stderr = &stderr
+		}
+		copy.ShellOutputDelta = &copyShellOutputDelta
+	}
+
 	if original.PartialImageB64 != nil {
 		copyPartialImageB64 := *original.PartialImageB64
 		copy.PartialImageB64 = &copyPartialImageB64
@@ -289,8 +321,28 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 
 		copyOptionalStringFieldByName(copy.ResponsesToolMessage, original.ResponsesToolMessage, "Execution")
 
+		if original.ResponsesToolMessage.Async != nil {
+			copy.ResponsesToolMessage.Async = new(*original.ResponsesToolMessage.Async)
+		}
+
 		if original.ResponsesToolMessage.Error != nil {
-			copyError := *original.ResponsesToolMessage.Error
+			copyError := schemas.ResponsesToolMessageError{}
+			if original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStr != nil {
+				copyError.ResponsesToolMessageErrorStr = new(*original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStr)
+			}
+			if original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct != nil {
+				copyErrorStruct := *original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct
+				if copyErrorStruct.Code != nil {
+					copyCode := *copyErrorStruct.Code
+					copyErrorStruct.Code = &copyCode
+				}
+				if copyErrorStruct.Message != nil {
+					copyMessage := *copyErrorStruct.Message
+					copyErrorStruct.Message = &copyMessage
+				}
+				copyErrorStruct.Content = append(json.RawMessage(nil), copyErrorStruct.Content...)
+				copyError.ResponsesToolMessageErrorStruct = &copyErrorStruct
+			}
 			copy.ResponsesToolMessage.Error = &copyError
 		}
 
@@ -308,6 +360,10 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 				for i, block := range original.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
 					copy.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks[i] = deepCopyResponsesMessageContentBlock(block)
 				}
+			}
+
+			if original.ResponsesToolMessage.Output.ResponsesShellCallOutput != nil {
+				copy.ResponsesToolMessage.Output.ResponsesShellCallOutput = deepCopyShellCallOutput(original.ResponsesToolMessage.Output.ResponsesShellCallOutput)
 			}
 
 			if original.ResponsesToolMessage.Output.ResponsesComputerToolCallOutput != nil {
@@ -354,6 +410,20 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 				copy.ResponsesToolMessage.Action.ResponsesLocalShellToolCallAction = &copyAction
 			}
 
+			if original.ResponsesToolMessage.Action.ResponsesShellToolCallAction != nil {
+				copyAction := *original.ResponsesToolMessage.Action.ResponsesShellToolCallAction
+				copyAction.Commands = append([]string(nil), copyAction.Commands...)
+				if copyAction.TimeoutMS != nil {
+					timeoutMS := *copyAction.TimeoutMS
+					copyAction.TimeoutMS = &timeoutMS
+				}
+				if copyAction.MaxOutputLength != nil {
+					maxOutputLength := *copyAction.MaxOutputLength
+					copyAction.MaxOutputLength = &maxOutputLength
+				}
+				copy.ResponsesToolMessage.Action.ResponsesShellToolCallAction = &copyAction
+			}
+
 			if original.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction != nil {
 				copyAction := *original.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction
 				copy.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction = &copyAction
@@ -367,6 +437,28 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 				copyCaller.ToolID = &copyToolID
 			}
 			copy.ResponsesToolMessage.Caller = &copyCaller
+		}
+
+		if original.ResponsesToolMessage.ItemCaller != nil {
+			itemCaller := *original.ResponsesToolMessage.ItemCaller
+			if original.ResponsesToolMessage.ItemCaller.CallerID != nil {
+				callerID := *original.ResponsesToolMessage.ItemCaller.CallerID
+				itemCaller.CallerID = &callerID
+			}
+			copy.ResponsesToolMessage.ItemCaller = &itemCaller
+		}
+
+		if original.ResponsesToolMessage.CreatedBy != nil {
+			createdBy := *original.ResponsesToolMessage.CreatedBy
+			copy.ResponsesToolMessage.CreatedBy = &createdBy
+		}
+
+		if original.ResponsesToolMessage.ResponsesShellCall != nil {
+			copy.ResponsesToolMessage.ResponsesShellCall = deepCopyShellCall(original.ResponsesToolMessage.ResponsesShellCall)
+		}
+
+		if original.ResponsesToolMessage.ResponsesApplyPatchCall != nil {
+			copy.ResponsesToolMessage.ResponsesApplyPatchCall = deepCopyApplyPatchCall(original.ResponsesToolMessage.ResponsesApplyPatchCall)
 		}
 
 		// Deep copy embedded tool call structs
@@ -485,6 +577,55 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 	}
 
 	return copy
+}
+
+// deepCopyShellCallOutput copies a shell_call_output "output" array, pointers included.
+func deepCopyShellCallOutput(original []schemas.ResponsesShellCallOutputContent) []schemas.ResponsesShellCallOutputContent {
+	copied := make([]schemas.ResponsesShellCallOutputContent, len(original))
+	for i, content := range original {
+		copied[i] = content
+		if content.Outcome.ExitCode != nil {
+			exitCode := *content.Outcome.ExitCode
+			copied[i].Outcome.ExitCode = &exitCode
+		}
+		if content.CreatedBy != nil {
+			createdBy := *content.CreatedBy
+			copied[i].CreatedBy = &createdBy
+		}
+	}
+	return copied
+}
+
+// deepCopyShellCall copies the shell_call / shell_call_output fields.
+func deepCopyShellCall(original *schemas.ResponsesShellCall) *schemas.ResponsesShellCall {
+	copied := *original
+	if original.Environment != nil {
+		environment := *original.Environment
+		if original.Environment.ContainerID != nil {
+			containerID := *original.Environment.ContainerID
+			environment.ContainerID = &containerID
+		}
+		copied.Environment = &environment
+	}
+	if original.MaxOutputLength != nil {
+		maxOutputLength := *original.MaxOutputLength
+		copied.MaxOutputLength = &maxOutputLength
+	}
+	return &copied
+}
+
+// deepCopyApplyPatchCall copies the apply_patch_call operation.
+func deepCopyApplyPatchCall(original *schemas.ResponsesApplyPatchCall) *schemas.ResponsesApplyPatchCall {
+	copied := *original
+	if original.Operation != nil {
+		operation := *original.Operation
+		if original.Operation.Diff != nil {
+			diff := *original.Operation.Diff
+			operation.Diff = &diff
+		}
+		copied.Operation = &operation
+	}
+	return &copied
 }
 
 func copyRawMessageFieldByName(dst *schemas.ResponsesMessage, src schemas.ResponsesMessage, fieldName string) {
@@ -1020,8 +1161,13 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 	}
 	// The response envelope carrying service_tier can precede a later usage-only
 	// event, so retain the newest non-nil tier across the stream.
+	reasonChunkIndex := -1
 	tierChunkIndex := -1
 	for _, streamChunk := range accumulator.ResponsesStreamChunks {
+		if streamChunk.FinishReason != nil && streamChunk.ChunkIndex > reasonChunkIndex {
+			data.FinishReason = streamChunk.FinishReason
+			reasonChunkIndex = streamChunk.ChunkIndex
+		}
 		if streamChunk.ServiceTier != nil && streamChunk.ChunkIndex > tierChunkIndex {
 			data.ServiceTier = streamChunk.ServiceTier
 			tierChunkIndex = streamChunk.ChunkIndex
@@ -1087,6 +1233,10 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		}
 		// Store a deep copy of the stream response to prevent shared data mutation between plugins
 		chunk.StreamResponse = deepCopyResponsesStreamResponse(result.ResponsesStreamResponse)
+		// Retain the provider stop reason independently of output text and trailing usage.
+		if response := result.ResponsesStreamResponse.Response; response != nil && response.StopReason != nil {
+			chunk.FinishReason = bifrost.Ptr(*response.StopReason)
+		}
 		// Extract token usage from stream response if available
 		if result.ResponsesStreamResponse.Response != nil &&
 			result.ResponsesStreamResponse.Response.Usage != nil {

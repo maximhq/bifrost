@@ -1221,3 +1221,85 @@ func TestDistributedLock_HolderID(t *testing.T) {
 	assert.NotEmpty(t, lock2.HolderID())
 	assert.NotEqual(t, lock1.HolderID(), lock2.HolderID())
 }
+
+// Acquire is the whole lock cycle for a short critical section: a second caller
+// waits until the first releases, and the release still works when the
+// acquiring request's context has since been cancelled.
+func TestDistributedLockManager_AcquireExcludesUntilReleased(t *testing.T) {
+	store := setupLockTestStore(t)
+	manager := NewDistributedLockManager(store, newMockLogger(), WithRetryInterval(10*time.Millisecond))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	_, release, err := manager.Acquire(ctx, "acquire-key")
+	require.NoError(t, err)
+
+	acquired := make(chan func(), 1)
+	failed := make(chan error, 1)
+	go func() {
+		_, second, err := manager.Acquire(context.Background(), "acquire-key")
+		if err != nil {
+			failed <- err
+			return
+		}
+		acquired <- second
+	}()
+	select {
+	case <-acquired:
+		t.Fatal("second Acquire succeeded while the key was held")
+	case err := <-failed:
+		t.Fatalf("second Acquire failed while waiting on the held key: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	cancel()
+	release()
+	select {
+	case second := <-acquired:
+		second()
+	case err := <-failed:
+		t.Fatalf("second Acquire failed after the key was released: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("release on a cancelled context did not free the lock")
+	}
+	held, err := store.GetLock(context.Background(), "acquire-key")
+	require.NoError(t, err)
+	require.Nil(t, held, "the second holder released too")
+}
+
+// A critical section that outlives the TTL must keep the lock. Without renewal
+// the lease expired mid-write and another instance walked straight in.
+func TestDistributedLockManager_AcquireRenewsWhileHeld(t *testing.T) {
+	store := setupLockTestStore(t)
+	manager := NewDistributedLockManager(store, newMockLogger(), WithDefaultTTL(150*time.Millisecond), WithRetryInterval(10*time.Millisecond))
+
+	held, release, err := manager.Acquire(context.Background(), "renew-key")
+	require.NoError(t, err)
+	defer release()
+
+	time.Sleep(500 * time.Millisecond) // over three TTLs
+	require.NoError(t, held.Err(), "a renewed lock is still held")
+	other, err := manager.NewLock("renew-key")
+	require.NoError(t, err)
+	got, err := other.TryLock(context.Background())
+	require.NoError(t, err)
+	require.False(t, got, "another holder took the key while it was still in use")
+}
+
+// When the lease is gone anyway - the row expired during a store outage, or was
+// removed - the holder must be told, not keep writing as if it were protected.
+func TestDistributedLockManager_AcquireReportsLeaseLoss(t *testing.T) {
+	store := setupLockTestStore(t)
+	manager := NewDistributedLockManager(store, newMockLogger(), WithDefaultTTL(150*time.Millisecond), WithRetryInterval(10*time.Millisecond))
+
+	held, release, err := manager.Acquire(context.Background(), "lost-key")
+	require.NoError(t, err)
+	defer release()
+
+	require.NoError(t, store.DB().Where("lock_key = ?", "lost-key").Delete(&tables.TableDistributedLock{}).Error)
+	select {
+	case <-held.Done():
+		require.ErrorIs(t, context.Cause(held), ErrLockLost)
+	case <-time.After(2 * time.Second):
+		t.Fatal("losing the lease did not cancel the held context")
+	}
+}

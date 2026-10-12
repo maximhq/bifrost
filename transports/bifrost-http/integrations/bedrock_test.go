@@ -69,6 +69,15 @@ func (m *mockHandlerStore) ShouldAllowDirectKeys() bool {
 	return false
 }
 
+func (m *mockHandlerStore) IsProviderConfigured(provider schemas.ModelProvider) bool {
+	for _, p := range m.availableProviders {
+		if p == provider {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *mockHandlerStore) GetMCPExternalServerURL() string {
 	return ""
 }
@@ -531,7 +540,7 @@ func Test_handleStreamingBedrockUnknownErrorResponseFallsBackToEventStreamExcept
 
 	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
 	ctx := &fasthttp.RequestCtx{}
-	cancelCalled := false
+	rec := newCancelRecorder()
 	router.handleStreaming(ctx, nil, RouteConfig{
 		Type: RouteConfigTypeBedrock,
 		StreamConfig: &StreamConfig{
@@ -541,9 +550,7 @@ func Test_handleStreamingBedrockUnknownErrorResponseFallsBackToEventStreamExcept
 				}
 			},
 		},
-	}, stream, func() {
-		cancelCalled = true
-	})
+	}, stream, rec.cancel)
 
 	body, err := io.ReadAll(ctx.Response.BodyStream())
 	require.NoError(t, err)
@@ -555,7 +562,13 @@ func Test_handleStreamingBedrockUnknownErrorResponseFallsBackToEventStreamExcept
 	assert.Equal(t, "exception", eventStreamHeaderString(t, msg.Headers, ":message-type"))
 	assert.Equal(t, "InternalServerException", eventStreamHeaderString(t, msg.Headers, ":exception-type"))
 	assert.JSONEq(t, `{"__type":"InternalServerException","message":"An error occurred while processing your request"}`, string(msg.Payload))
-	assert.False(t, cancelCalled, "fallback write should not cancel unless the client disconnects")
+	// handleStreaming cancels the request context on every exit path, a clean end-of-stream
+	// included, so the client-disconnect watcher goroutine ConvertToBifrostContext started
+	// cannot outlive the request (see Test_handleStreaming_RetentionCancelsAndLeavesNoGoroutine).
+	// The cancel therefore no longer distinguishes a successful fallback write from a real
+	// client disconnect — the frame asserted above is what does: on a disconnect the producer
+	// returns early and no InternalServerException is ever written.
+	rec.requireCancelled(t, "handleStreaming did not cancel the request context after the stream ended")
 }
 
 func eventStreamHeaderString(t *testing.T, headers eventstream.Headers, name string) string {
@@ -1351,4 +1364,94 @@ func createTestBifrostContextWithProvider(provider schemas.ModelProvider) *schem
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bifrostCtx.SetValue(bifrostContextKeyProvider, provider)
 	return bifrostCtx
+}
+
+// Test_createBedrockInvokeRouteConfig_MarksAnthropicInvokeIngress is the transport half of
+// #7649. AWS Converse never reports a thinking-token breakdown, so a request that arrives on
+// the InvokeModel-shaped ingress with thinking requested has to be served by InvokeModel
+// upstream to keep usage.output_tokens_details.thinking_tokens. The ingress cannot pick the
+// upstream API itself (that is the provider's call), so it marks the context and the Bedrock
+// provider's routing predicate keys on the marker. Both invoke routes must set it.
+func Test_createBedrockInvokeRouteConfig_MarksAnthropicInvokeIngress(t *testing.T) {
+	marker := schemas.BifrostContextKey("bedrock-anthropic-invoke-ingress")
+	body := `{"anthropic_version":"bedrock-2023-05-31","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"adaptive"}}`
+
+	for _, tc := range []struct {
+		name  string
+		route RouteConfig
+	}{
+		{name: "invoke", route: createBedrockInvokeRouteConfig("/bedrock", &mockHandlerStore{})},
+		{name: "invoke-with-response-stream", route: createBedrockInvokeWithResponseStreamRouteConfig("/bedrock", &mockHandlerStore{})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &bedrock.BedrockInvokeRequest{}
+			require.NoError(t, sonic.Unmarshal([]byte(body), req))
+			req.ModelID = "bedrock/global.anthropic.claude-sonnet-5"
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ResponsesRequest)
+
+			bifrostReq, err := tc.route.RequestConverter(ctx, req)
+			require.NoError(t, err)
+			require.NotNil(t, bifrostReq.ResponsesRequest)
+			require.NotNil(t, bifrostReq.ResponsesRequest.Params)
+			require.NotNil(t, bifrostReq.ResponsesRequest.Params.Reasoning, "thinking must survive the ingress conversion")
+
+			marked, _ := ctx.Value(marker).(bool)
+			assert.True(t, marked, "the InvokeModel-shaped ingress must mark the context so the Bedrock provider can route thinking requests to InvokeModel upstream")
+		})
+	}
+}
+
+// Test_bedrockPreCallback_ReadsInvokeGuardrailHeaders pins the InvokeModel ingress half of
+// #7696's follow-up: the X-Amzn-Bedrock-Guardrail* request headers, the AWS-native way to
+// name a guardrail on InvokeModel, reach the canonical guardrailConfig extra param.
+func Test_bedrockPreCallback_ReadsInvokeGuardrailHeaders(t *testing.T) {
+	body := `{"anthropic_version":"bedrock-2023-05-31","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`
+	for _, tc := range []struct {
+		name  string
+		route RouteConfig
+	}{
+		{name: "invoke", route: createBedrockInvokeRouteConfig("/bedrock", &mockHandlerStore{})},
+		{name: "invoke-with-response-stream", route: createBedrockInvokeWithResponseStreamRouteConfig("/bedrock", &mockHandlerStore{})},
+	} {
+		t.Run(tc.name+"/headers present", func(t *testing.T) {
+			httpCtx := &fasthttp.RequestCtx{}
+			httpCtx.SetUserValue("modelId", "global.anthropic.claude-haiku-4-5-20251001-v1:0")
+			httpCtx.Request.Header.Set("X-Amzn-Bedrock-GuardrailIdentifier", "gr-header")
+			httpCtx.Request.Header.Set("X-Amzn-Bedrock-GuardrailVersion", "3")
+			httpCtx.Request.Header.Set("X-Amzn-Bedrock-Trace", "enabled")
+
+			req := &bedrock.BedrockInvokeRequest{}
+			require.NoError(t, sonic.Unmarshal([]byte(body), req))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ResponsesRequest)
+			require.NoError(t, tc.route.PreCallback(httpCtx, ctx, req))
+
+			bifrostReq, err := tc.route.RequestConverter(ctx, req)
+			require.NoError(t, err)
+			require.NotNil(t, bifrostReq.ResponsesRequest)
+			require.NotNil(t, bifrostReq.ResponsesRequest.Params)
+			config, ok := bifrostReq.ResponsesRequest.Params.ExtraParams["guardrailConfig"].(map[string]interface{})
+			require.True(t, ok, "guardrail headers must reach the canonical guardrailConfig extra param: %v", bifrostReq.ResponsesRequest.Params.ExtraParams)
+			assert.Equal(t, "gr-header", config["guardrailIdentifier"])
+			assert.Equal(t, "3", config["guardrailVersion"])
+			assert.Equal(t, "enabled", config["trace"])
+		})
+		t.Run(tc.name+"/headers absent", func(t *testing.T) {
+			httpCtx := &fasthttp.RequestCtx{}
+			httpCtx.SetUserValue("modelId", "global.anthropic.claude-haiku-4-5-20251001-v1:0")
+			req := &bedrock.BedrockInvokeRequest{}
+			require.NoError(t, sonic.Unmarshal([]byte(body), req))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ResponsesRequest)
+			require.NoError(t, tc.route.PreCallback(httpCtx, ctx, req))
+			bifrostReq, err := tc.route.RequestConverter(ctx, req)
+			require.NoError(t, err)
+			if bifrostReq.ResponsesRequest.Params != nil {
+				_, has := bifrostReq.ResponsesRequest.Params.ExtraParams["guardrailConfig"]
+				assert.False(t, has, "no guardrail must be invented without headers")
+			}
+		})
+	}
 }

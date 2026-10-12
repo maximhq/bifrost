@@ -228,6 +228,15 @@ func (c ModelCaps) CanDisableReasoning(fallback bool) bool {
 	return fallback
 }
 
+// SupportsBetweenToolsThinking reports whether the model accepts
+// thinking:{type:"between_tools"}, which turns off up-front thinking.
+func (c ModelCaps) SupportsBetweenToolsThinking(fallback bool) bool {
+	if c.record != nil && c.record.SupportsBetweenToolsThinking != nil {
+		return *c.record.SupportsBetweenToolsThinking
+	}
+	return fallback
+}
+
 // SupportsDynamicReasoningBudget reports whether the model accepts a
 // self-managed thinking budget (Gemini's thinkingBudget: -1) rather than an
 // explicit token count.

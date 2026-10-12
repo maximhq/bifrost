@@ -550,9 +550,7 @@ func writeRealtimeClientSecretResponse(ctx *fasthttp.RequestCtx, resp *schemas.B
 		return
 	}
 
-	for key, value := range resp.Headers {
-		ctx.Response.Header.Set(key, value)
-	}
+	lib.ForwardProviderResponseHeaders(ctx, resp.Headers)
 	if len(ctx.Response.Header.ContentType()) == 0 {
 		ctx.SetContentType("application/json")
 	}

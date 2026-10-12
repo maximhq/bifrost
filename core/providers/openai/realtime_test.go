@@ -838,3 +838,21 @@ func TestInputAudioBufferAppendRoundtrip(t *testing.T) {
 		t.Fatalf("audio = %q, want %q", audioStr, b64Audio)
 	}
 }
+
+func TestRealtimeWebRTCUpstreamErrorCarriesRetryHint(t *testing.T) {
+	t.Parallel()
+
+	var resp fasthttp.Response
+	resp.SetStatusCode(fasthttp.StatusTooManyRequests)
+	resp.Header.Set("Retry-After", "7")
+	resp.SetBodyString(`{"error":{"message":"slow down"}}`)
+
+	provider := &OpenAIProvider{}
+	bifrostErr := provider.realtimeWebRTCUpstreamError(schemas.NewBifrostContext(nil, schemas.NoDeadline), &resp)
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != fasthttp.StatusBadGateway {
+		t.Fatalf("StatusCode = %v, want 502", bifrostErr.StatusCode)
+	}
+	if bifrostErr.ExtraFields.RetryAfter != 7000 {
+		t.Fatalf("RetryAfter = %d, want 7000", bifrostErr.ExtraFields.RetryAfter)
+	}
+}

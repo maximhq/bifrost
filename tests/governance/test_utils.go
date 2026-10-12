@@ -89,6 +89,7 @@ type APIResponse struct {
 	StatusCode int
 	Body       map[string]interface{}
 	RawBody    []byte
+	Headers    http.Header // response headers, e.g. x-request-id for follow-up log lookups
 }
 
 // MakeRequest makes an HTTP request to the Bifrost API
@@ -103,6 +104,18 @@ func baseURL() string {
 		return strings.TrimSuffix(override, "/")
 	}
 	return "http://localhost:8080"
+}
+
+// setupToken returns the OSS setup token the governance test server is configured with
+// (tests/governance/config.json setup_token), overridable through the environment.
+func setupToken() string {
+	if v := os.Getenv("BIFROST_E2E_SETUP_TOKEN"); v != "" {
+		return v
+	}
+	if v := os.Getenv("BIFROST_SETUP_TOKEN"); v != "" {
+		return v
+	}
+	return "bifrost-e2e-setup-token"
 }
 
 func MakeRequest(t *testing.T, req APIRequest) *APIResponse {
@@ -124,6 +137,8 @@ func MakeRequest(t *testing.T, req APIRequest) *APIResponse {
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
+	// OSS setup lock: /api needs the setup token while dashboard auth is not active.
+	httpReq.Header.Set("X-Bifrost-Setup-Token", setupToken())
 
 	// Add virtual key header if provided
 	if req.VKHeader != nil {
@@ -154,6 +169,7 @@ func MakeRequest(t *testing.T, req APIRequest) *APIResponse {
 		StatusCode: resp.StatusCode,
 		Body:       responseBody,
 		RawBody:    rawBody,
+		Headers:    resp.Header,
 	}
 }
 
@@ -178,6 +194,8 @@ func MakeRequestWithCustomHeaders(t *testing.T, req APIRequest, customHeaders ma
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
+	// OSS setup lock: /api needs the setup token while dashboard auth is not active.
+	httpReq.Header.Set("X-Bifrost-Setup-Token", setupToken())
 
 	// Add custom headers
 	for key, value := range customHeaders {
@@ -234,6 +252,8 @@ type CreateVirtualKeyRequest struct {
 	ProviderConfigs   []ProviderConfigRequest `json:"provider_configs,omitempty"`
 	CalendarAligned   bool                    `json:"calendar_aligned,omitempty"`
 	AllowAllProviders bool                    `json:"allow_all_providers,omitempty"`
+	// DisableContentLogging is tri-state: nil inherits the client setting, true forces content off.
+	DisableContentLogging *bool `json:"disable_content_logging,omitempty"`
 }
 
 // ProviderConfigRequest represents a provider configuration for a virtual key

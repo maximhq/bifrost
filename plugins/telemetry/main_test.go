@@ -6,11 +6,18 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -171,6 +178,109 @@ func TestTokenExtractionParityWithLogging(t *testing.T) {
 
 			waitForCounter(t, p.registry, "bifrost_input_tokens_total", tc.wantIn)
 			waitForCounter(t, p.registry, "bifrost_output_tokens_total", tc.wantOut)
+		})
+	}
+}
+
+// TestCancelledStreamRecordsBilledUsage pins Prometheus to the BilledUsage that logging and
+// governance already bill on a mid-stream cancel: a terminal error with no result must still
+// add its tokens, cache tokens and cost, not just the error count.
+func TestCancelledStreamRecordsBilledUsage(t *testing.T) {
+	ds := datasheet.NewTestStore(nil)
+	ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+		{Model: "claude-test", Provider: string(schemas.Anthropic), Mode: "chat", InputCostPerToken: new(3e-6), OutputCostPerToken: new(15e-6)},
+	})
+	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	p, err := Init(&Config{}, mc, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// Anthropic message_start usage: exact input and cache tokens, placeholder output token.
+	billed := &schemas.BifrostLLMUsage{
+		PromptTokens:     30,
+		CompletionTokens: 1,
+		TotalTokens:      31,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens:        6,
+			CachedWriteTokens:       4,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens5m: 4},
+		},
+	}
+	cancelErr := &schemas.BifrostError{
+		StatusCode: new(499),
+		Error:      &schemas.ErrorField{Message: "Request cancelled: client disconnected", Type: new(schemas.RequestCancelled)},
+	}
+	cancelErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+	cancelErr.ExtraFields.Provider = schemas.Anthropic
+	cancelErr.ExtraFields.OriginalModelRequested = "claude-test"
+	cancelErr.ExtraFields.BilledUsage = billed
+
+	ctx := newHookContext(schemas.ChatCompletionStreamRequest)
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	if _, _, err := p.PostLLMHook(ctx, nil, cancelErr); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+
+	waitForCounter(t, p.registry, "bifrost_error_requests_total", 1)
+	waitForCounter(t, p.registry, "bifrost_input_tokens_total", 30)
+	waitForCounter(t, p.registry, "bifrost_output_tokens_total", 1)
+	waitForCounter(t, p.registry, "bifrost_cache_read_input_tokens_total", 6)
+	waitForCounter(t, p.registry, "bifrost_cache_write_input_tokens_total", 4)
+	waitForCounter(t, p.registry, "bifrost_cache_write_input_tokens_5m_total", 4)
+
+	wantCost := mc.CalculateCostForUsage(billed, schemas.Anthropic, "claude-test", schemas.ChatCompletionStreamRequest, nil)
+	if wantCost <= 0 {
+		t.Fatalf("CalculateCostForUsage = %v, want > 0 (pricing row not matched)", wantCost)
+	}
+	waitForCounter(t, p.registry, "bifrost_cost_total", wantCost)
+}
+
+// TestCancelledStreamPricesResolvedModel pins billed-usage pricing to the wire model, matching
+// the logs table: the requested model is an unpriced alias name, or the primary's model on a
+// fallback attempt, and pricing it records zero cost.
+func TestCancelledStreamPricesResolvedModel(t *testing.T) {
+	cases := []struct {
+		name      string
+		requested string
+	}{
+		{name: "key alias", requested: "fast"},
+		{name: "fallback attempt", requested: "gpt-test"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := datasheet.NewTestStore(nil)
+			ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+				{Model: "claude-test", Provider: string(schemas.Anthropic), Mode: "chat", InputCostPerToken: new(3e-6), OutputCostPerToken: new(15e-6)},
+			})
+			mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+			p, err := Init(&Config{}, mc, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+
+			billed := &schemas.BifrostLLMUsage{PromptTokens: 30, CompletionTokens: 1, TotalTokens: 31}
+			cancelErr := &schemas.BifrostError{
+				StatusCode: new(499),
+				Error:      &schemas.ErrorField{Message: "Request cancelled: client disconnected", Type: new(schemas.RequestCancelled)},
+			}
+			cancelErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+			cancelErr.ExtraFields.Provider = schemas.Anthropic
+			cancelErr.ExtraFields.OriginalModelRequested = tc.requested
+			cancelErr.ExtraFields.ResolvedModelUsed = "claude-test"
+			cancelErr.ExtraFields.BilledUsage = billed
+
+			ctx := newHookContext(schemas.ChatCompletionStreamRequest)
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			if _, _, err := p.PostLLMHook(ctx, nil, cancelErr); err != nil {
+				t.Fatalf("PostLLMHook: %v", err)
+			}
+
+			wantCost := mc.CalculateCostForUsage(billed, schemas.Anthropic, "claude-test", schemas.ChatCompletionStreamRequest, nil)
+			if wantCost <= 0 {
+				t.Fatalf("CalculateCostForUsage = %v, want > 0 (pricing row not matched)", wantCost)
+			}
+			waitForCounter(t, p.registry, "bifrost_cost_total", wantCost)
 		})
 	}
 }
@@ -374,22 +484,36 @@ func TestMetricsEnabledGating(t *testing.T) {
 
 // TestMarshalConfigForStorageKeepsToggles guards the hand-maintained storage whitelist
 // (Config.MarshalForStorage's configStorage struct): a toggle added to Config must be
-// added there too, or it is silently dropped on save and the UI reverts it. Regression
-// test for overhead_breakdown_enabled, which was initially dropped this way.
+// added there too, or it is silently dropped on save and the UI reverts it. Every *bool
+// field on Config is enumerated by reflection so a new toggle cannot escape this test,
+// which is how overhead_breakdown_enabled and later user_labels_enabled both regressed.
 func TestMarshalConfigForStorageKeepsToggles(t *testing.T) {
 	p := newTestPlugin(t)
-	out, err := p.MarshalConfigForStorage(map[string]any{
-		"overhead_breakdown_enabled": true,
-		"metrics_enabled":            false,
-	})
-	if err != nil {
-		t.Fatalf("MarshalConfigForStorage: %v", err)
-	}
-	if v, ok := out["overhead_breakdown_enabled"].(bool); !ok || !v {
-		t.Errorf("overhead_breakdown_enabled dropped by storage: got %v (%T), want true", out["overhead_breakdown_enabled"], out["overhead_breakdown_enabled"])
-	}
-	if v, ok := out["metrics_enabled"].(bool); !ok || v {
-		t.Errorf("metrics_enabled = %v, want false to survive storage round-trip", out["metrics_enabled"])
+	ct := reflect.TypeOf(Config{})
+	for i := 0; i < ct.NumField(); i++ {
+		f := ct.Field(i)
+		if f.Type.Kind() != reflect.Ptr || f.Type.Elem().Kind() != reflect.Bool {
+			continue
+		}
+		key := strings.Split(f.Tag.Get("json"), ",")[0]
+		if key == "" || key == "-" {
+			t.Fatalf("Config.%s is a toggle with no json tag", f.Name)
+		}
+		// Both values: omitempty would hide a dropped field if only false were sent.
+		for _, want := range []bool{true, false} {
+			out, err := p.MarshalConfigForStorage(map[string]any{key: want})
+			if err != nil {
+				t.Fatalf("MarshalConfigForStorage(%s=%v): %v", key, want, err)
+			}
+			got, ok := out[key].(bool)
+			if !ok {
+				t.Errorf("%s dropped by storage whitelist (Config.%s): got %v (%T), want %v", key, f.Name, out[key], out[key], want)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s = %v after storage round-trip, want %v", key, got, want)
+			}
+		}
 	}
 }
 
@@ -602,5 +726,237 @@ func TestApplyCustomLabels(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSpliceLabelValues pins the final label-value ordering produced for the latency,
+// error, and cache-hit metrics: default labels first, then the metric's extra values
+// (is_success / status_code+error_type / cache_type), then the custom labels. Metric
+// vectors match values to label names purely by position, so any reordering here
+// silently attributes values to the wrong labels.
+func TestSpliceLabelValues(t *testing.T) {
+	defaults := []string{"openai", "gpt-4o", "chat"} // provider, model, method
+	custom := []string{"team-a", "env-prod"}         // custom dimension labels
+	base := append(append([]string{}, defaults...), custom...)
+
+	tests := []struct {
+		name   string
+		in     []string
+		extras []string
+		want   []string
+	}{
+		{
+			name:   "latency is_success between defaults and custom labels",
+			in:     base,
+			extras: []string{"true"},
+			want:   []string{"openai", "gpt-4o", "chat", "true", "team-a", "env-prod"},
+		},
+		{
+			name:   "error status_code and error_type keep their order",
+			in:     base,
+			extras: []string{"429", "rate_limit"},
+			want:   []string{"openai", "gpt-4o", "chat", "429", "rate_limit", "team-a", "env-prod"},
+		},
+		{
+			name:   "cache_type between defaults and custom labels",
+			in:     base,
+			extras: []string{"semantic"},
+			want:   []string{"openai", "gpt-4o", "chat", "semantic", "team-a", "env-prod"},
+		},
+		{
+			name:   "no custom labels appends extras at the end",
+			in:     defaults,
+			extras: []string{"true"},
+			want:   []string{"openai", "gpt-4o", "chat", "true"},
+		},
+		{
+			name:   "no extras returns the input unchanged",
+			in:     base,
+			extras: nil,
+			want:   []string{"openai", "gpt-4o", "chat", "team-a", "env-prod"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := slices.Clone(tt.in)
+			got := spliceLabelValues(tt.in, len(defaults), tt.extras...)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("spliceLabelValues() = %v, want %v", got, tt.want)
+			}
+			if !slices.Equal(tt.in, before) {
+				t.Errorf("input mutated: %v, was %v", tt.in, before)
+			}
+		})
+	}
+}
+
+// gaugeValue gathers the named gauge family and returns the value of the single series whose
+// labels all match, and whether such a series exists at all (a key the plugin never touched
+// has no series, which is the "unchanged" the docs promise for model failures).
+func gaugeValue(t *testing.T, reg *prometheus.Registry, name string, labels map[string]string) (float64, bool) {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range fams {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			matched := 0
+			for _, lp := range m.GetLabel() {
+				if want, ok := labels[lp.GetName()]; ok && lp.GetValue() == want {
+					matched++
+				}
+			}
+			if matched == len(labels) {
+				return m.GetGauge().GetValue(), true
+			}
+		}
+	}
+	return 0, false
+}
+
+// TestProviderKeyUpSkipsModelAndRegionFailures pins the bifrost_provider_key_up contract the
+// docs describe: a failed attempt marks its key 0, except when the failure says nothing about
+// the key's health: a model this key cannot reach or that was retired (model_access,
+// model_gone), or a region block that may be the gateway's location (region_blocked). Those
+// leave the key's gauge untouched. A caller's cancellation carries no fail_reason, since the caller
+// leaving says nothing about the key, so it leaves the gauge untouched too; a timeout carries one and
+// marks the key down. The key that finally served is marked 1 either way.
+func TestProviderKeyUpSkipsModelAndRegionFailures(t *testing.T) {
+	cases := []struct {
+		name       string
+		class      schemas.FailureClass
+		failReason string
+		status     int
+		wantSeries bool
+	}{
+		{"credential failure marks the key down", schemas.FailureClassCredential, "authentication_error", 401, true},
+		{"rate limit marks the key down", schemas.FailureClassRateLimit, "rate_limit_error", 429, true},
+		{"model_access leaves the key untouched", schemas.FailureClassModelAccess, "model_access_error", 404, false},
+		{"model_gone leaves the key untouched", schemas.FailureClassModelGone, "model_retired_error", 404, false},
+		{"region_blocked leaves the key untouched", schemas.FailureClassRegionBlocked, "region_blocked_error", 400, false},
+		{"timeout marks the key down", schemas.FailureClassTimeout, schemas.RequestTimedOut, 504, true},
+		{"a cancellation, with no fail_reason, leaves the key untouched", schemas.FailureClassCancelled, "", 499, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newTestPlugin(t)
+			resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+				Usage: &schemas.BifrostLLMUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+			}}
+			resp.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", "gpt-4o")
+
+			status := tc.status
+			var failReason *string
+			if tc.failReason != "" {
+				failReason = &tc.failReason
+			}
+			ctx := newHookContext(schemas.ChatCompletionRequest)
+			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-b")
+			ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, "Key B")
+			ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, 1)
+			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{
+				{Attempt: 0, KeyID: "key-a", KeyName: "Key A", FailReason: failReason, FailureClass: tc.class, StatusCode: &status, TriggeredRotation: true},
+				{Attempt: 1, KeyID: "key-b", KeyName: "Key B"},
+			})
+			if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+				t.Fatalf("PostLLMHook: %v", err)
+			}
+			// The key-health writes precede this counter in the same goroutine.
+			waitForCounter(t, p.registry, "bifrost_upstream_requests_total", 1)
+
+			got, ok := gaugeValue(t, p.registry, "bifrost_provider_key_up", map[string]string{"provider": "openai", "key_id": "key-a", "key_name": "Key A"})
+			if tc.wantSeries && (!ok || got != 0) {
+				t.Errorf("key-a gauge present=%v value=%v after %s failure, want 0", ok, got, tc.class)
+			}
+			if !tc.wantSeries && ok {
+				t.Errorf("key-a gauge set to %v after %s failure, want untouched (no series): that failure says nothing about the key's health", got, tc.class)
+			}
+			if got, ok := gaugeValue(t, p.registry, "bifrost_provider_key_up", map[string]string{"provider": "openai", "key_id": "key-b", "key_name": "Key B"}); !ok || got != 1 {
+				t.Errorf("key-b gauge present=%v value=%v, want 1 for the key that served", ok, got)
+			}
+		})
+	}
+}
+
+// Metrics built their label sets by appending to one shared slice, so a spliced name
+// (is_success etc.) got overwritten by a custom label and Gather failed with a
+// duplicate. Needs both user_labels_enabled and custom labels to reproduce.
+func TestLabelSetsAreNotAliased(t *testing.T) {
+	log := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	for _, tc := range []struct {
+		name       string
+		userLabels bool
+		custom     []string
+	}{
+		{"both on", true, []string{"user-email"}},
+		{"custom only", false, []string{"user-email"}},
+		{"user labels only", true, nil},
+		{"neither", false, nil},
+		{"several custom", true, []string{"user-email", "tenant", "region"}},
+		{"many custom", true, manyLabels(50)},
+		// A custom label naming one of the per-metric labels used to duplicate it on that
+		// metric and panic during registration, which took the gateway down at boot.
+		{"collides with spliced label", true, []string{"is_success"}},
+		{"collides with error metric labels", false, []string{"status_code", "error_type"}},
+		{"collides with cache label", false, []string{"cache_type"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{CustomLabels: tc.custom}
+			if tc.userLabels {
+				cfg.UserLabelsEnabled = boolPtr(true)
+			}
+			p, err := Init(cfg, nil, log)
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			defer p.Cleanup()
+
+			// The spliced metric is the one that aliased; assert its set directly.
+			want := append(append([]string{}, p.defaultBifrostLabels...), "is_success")
+			want = append(want, p.customLabels...)
+			seen := map[string]bool{}
+			for _, l := range want {
+				if seen[l] {
+					t.Errorf("duplicate label %q in set of %d", l, len(want))
+				}
+				seen[l] = true
+			}
+
+			p.UpstreamLatencySeconds.WithLabelValues(make([]string, len(want))...).Observe(1)
+			if _, err := p.GetMetricsGatherer().Gather(); err != nil {
+				t.Fatalf("Gather failed (/metrics would 500): %v", err)
+			}
+		})
+	}
+}
+
+func manyLabels(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = "custom_" + strconv.Itoa(i)
+	}
+	return out
+}
+
+// Init registers every metric through promauto, which panics rather than returning an
+// error. At boot that killed the process over a stored config value, so Init recovers and
+// reports the failure instead.
+func TestInitReturnsErrorOnRegistrationConflict(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "http_requests_total", Help: "conflicting registration"},
+		[]string{"path", "method", "status"},
+	))
+
+	p, err := Init(&Config{Registry: registry}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err == nil {
+		t.Fatal("Init succeeded despite a conflicting metric registration; a panic here takes the gateway down at boot")
+	}
+	if p != nil {
+		t.Fatalf("Init returned a plugin alongside the error: %v", p)
 	}
 }

@@ -1,19 +1,25 @@
 package schemas
 
-// Route is one provider and model a request can be sent to.
+// Route is one provider and model a request can be sent to, with the provider key pinned for
+// that attempt when a routing rule named one. An empty KeyID leaves the key to selection.
+// The pin belongs to the route: an implementation that reorders a chain moves each route
+// whole, so a pin stays with the provider it was decided for wherever that provider ends up.
 type Route struct {
 	Provider ModelProvider
 	Model    string
+	KeyID    string
 }
 
 // RouteOutcome is how a request ended.
 type RouteOutcome struct {
 	// Served is the route that answered, nil when no route did.
 	Served *Route
-	// KeyID is the key Served used, when key selection ran for it.
+	// KeyID is the pool key Served used, empty when it served on the caller's direct key or on no key.
 	KeyID string
 	// Fallback reports that Served was not the first route of the dispatched chain.
 	Fallback bool
+	// DirectKey reports that the request carried the caller's own key, which only the first route is tried with.
+	DirectKey bool
 	// Err is the failure the request ended in, nil when it was served.
 	Err *BifrostError
 }
@@ -36,8 +42,8 @@ func IsSessionAffinityActive(ctx *BifrostContext) bool {
 // SessionAffinity keeps a request that carries a session id on what served that session
 // before. Core asks it at three points and applies the answers; the policy behind them
 // belongs to the implementation. The one Bifrost ships keeps a session on the provider and
-// key that last served it, as far as the request's own outcome shows, and is installed when
-// nothing else is. A deployment that knows more, such as the health of its providers and
+// key that last served it, as far as the request's own outcome shows, forgets a binding the
+// request followed into a failure, and is installed when nothing else is. A deployment that knows more, such as the health of its providers and
 // keys, registers its own through BifrostConfig.SessionAffinity.
 //
 // Core asks only for requests IsSessionAffinityActive reports as taking part: ones that carry
@@ -53,7 +59,8 @@ type SessionAffinity interface {
 	// ResolveKey is asked once the eligible key pool for a provider attempt has been built
 	// with two or more keys in it. It answers with the key the session's state settles on, or
 	// with ok=false to leave the choice to ordinary key selection. A returned key is used for
-	// every attempt of the request.
+	// every attempt of the request until the provider rejects it outright (a credential, quota
+	// or model-access failure); the request then continues on another eligible key.
 	ResolveKey(ctx *BifrostContext, provider ModelProvider, model string, eligible []Key) (key Key, ok bool)
 	// Observe is told how the request ended, once: for a unary request when its response is
 	// in, for a stream once the upstream has accepted it and started streaming.

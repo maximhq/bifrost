@@ -19,9 +19,45 @@ Use an API key as the bearer token when calling these endpoints from scripts, ba
 5. Create the key.
 6. Copy the generated key and store it in your secret manager.
 
+Keys can also be managed over the API itself — see [Create an API key](/api-reference/api-keys/create-an-api-key). A key's access comes from its scopes alone and never inherits the creator's role, and you can only grant scopes you already hold yourself.
+
 <Warning>
   Copy the generated key when it is shown and follow general security practices.
 </Warning>
+
+## Required Permissions
+
+Every management endpoint in the [API reference](/api-reference) shows a **Required Permissions** table above its Authorizations section, listing each permission as `Resource:Operation` (for example `Dashboard:View`). You do not need to work it out from the URL: open the endpoint page and grant exactly what the table lists.
+
+One permission catalog backs both ways of calling the management API:
+
+| Caller | Where the permission must be granted |
+| --- | --- |
+| Dashboard user or SSO session | The user's [RBAC role](/enterprise/rbac) must include the permission. |
+| Management API key | The key's **scopes** must include the permission. Select the scopes that match the endpoints the key will call when you create it. |
+
+A request whose role or key lacks the permission is rejected with `403 Forbidden`.
+
+### How a permission is derived
+
+- **Resource** is taken from the URL. It is usually the first segment after `/api/` (`/api/webhooks/...` requires `Webhooks`), but several paths map to a different resource. For example, `/api/logs/stats`, `/api/logs/histogram/*`, and `/api/logs/rankings*` require `Dashboard`, not `Logs`, and `/api/governance/audit-logs*` requires `AuditLogs`, not `Governance`.
+- **Operation** defaults to the HTTP method: `GET` requires `View`, `POST` requires `Create`, `PUT` and `PATCH` require `Update`, and `DELETE` requires `Delete`. A few endpoints override this, for example `POST /api/logs/recalculate-cost` requires `Logs:Update` and `POST /api/license` requires `Settings:Update`.
+
+Because these rules have exceptions, always rely on the **Required Permissions** table on the endpoint page rather than the URL.
+
+### Endpoints that list no permission
+
+- **Public** endpoints (for example `GET /health`, `GET /api/version`, `POST /api/session/login`) require no authentication.
+- **Exempt** endpoints (for example `GET /api/config`, `POST /api/session/ws-ticket`, `GET /api/governance/users/me/permissions`) require authentication but skip the permission check, so any authenticated management caller can use them.
+- **Not RBAC-gated** endpoints authenticate with the credential itself rather than a role or scope, such as `GET /api/governance/virtual-keys/quota`, which accepts only a virtual key.
+
+<Info>
+  Permissions and API key scopes are enforced in **Bifrost Enterprise**. Open-source Bifrost has no per-endpoint permissions: any caller that passes management authentication (the admin password or a dashboard session) can use every management endpoint.
+</Info>
+
+<Note>
+  A local admin who signs in with the admin password bypasses RBAC entirely. Separately, [Data Access Control](/enterprise/data-access-control) can narrow *which rows* a permitted caller sees, for example the logs behind `/api/logs/stats`, without changing the permission the endpoint requires.
+</Note>
 
 ## Management API Endpoints
 
@@ -58,4 +94,5 @@ Governance resources moved under the `/api/governance` namespace. Both generatio
 | Audit logs | `/api/governance/audit-logs`, `/api/governance/audit-logs/{id}`, `/api/governance/audit-logs/filterdata`, `/api/governance/audit-logs/export`, `/api/governance/audit-logs/{id}/verify` |
 | Audit logs (deprecated aliases) | `/api/audit-logs`, `/api/audit-logs/{id}`, `/api/audit-logs/filterdata`, `/api/audit-logs/export`, `/api/audit-logs/{id}/verify` |
 | Webhooks | `/api/webhooks`, `/api/webhooks/{id}`, `/api/webhooks/{id}/deliveries`, `/api/webhooks/{id}/rotate-secret`, `/api/webhooks/{id}/test`, `/api/webhooks/deliveries/{id}/redeliver` |
+| API keys | `/api/api-keys`, `/api/api-keys/{id}` |
 | Session and vault operations | `/api/session/logout`, `/api/session/ws-ticket`, `/api/vault/flush-cache` |

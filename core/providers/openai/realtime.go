@@ -141,6 +141,7 @@ func (provider *OpenAIProvider) realtimeWebRTCUpstreamError(ctx *schemas.Bifrost
 	if !providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		bifrostErr.ExtraFields.RawResponse = nil
 	}
+	providerUtils.ApplyRetryAfter(bifrostErr, &resp.Header)
 	return bifrostErr
 }
 

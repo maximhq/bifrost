@@ -28,6 +28,10 @@ Random selection ensures statistical distribution over time
 3. Select key based on cumulative weight ranges
 4. If selected key fails, automatic fallback to next available key
 
+<Note>
+In Bifrost Enterprise, [Adaptive Load Balancing](/enterprise/adaptive-load-balancing) replaces the static weights with measured ones while key selection is on. Either way, it holds a key the provider refused until one request checks it again, and editing a key releases every hold on it, since the provider's answers applied to the key as it was. See [Held Keys](/enterprise/adaptive-load-balancing#held-keys).
+</Note>
+
 ## Model Whitelisting and Filtering
 
 Keys can be restricted to specific models for access control and cost management:

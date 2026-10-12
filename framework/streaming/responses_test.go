@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -16,6 +17,27 @@ func testResponsesAccumulator(tb testing.TB) *Accumulator {
 	acc := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	tb.Cleanup(acc.Cleanup)
 	return acc
+}
+
+func TestDeepCopyResponsesMessageCopiesStructuredErrorPointers(t *testing.T) {
+	original := schemas.ResponsesMessage{ResponsesToolMessage: &schemas.ResponsesToolMessage{Error: &schemas.ResponsesToolMessageError{
+		ResponsesToolMessageErrorStruct: &schemas.ResponsesToolMessageErrorStruct{
+			Type: "http_error", Code: schemas.Ptr(502), Message: schemas.Ptr("upstream failed"),
+		},
+	}}}
+
+	copied := deepCopyResponsesMessage(original)
+	originalError := original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct
+	copiedError := copied.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct
+	require.NotNil(t, copiedError)
+	require.NotSame(t, originalError, copiedError)
+	require.NotSame(t, originalError.Code, copiedError.Code)
+	require.NotSame(t, originalError.Message, copiedError.Message)
+
+	*copiedError.Code = 503
+	*copiedError.Message = "changed"
+	require.Equal(t, 502, *originalError.Code)
+	require.Equal(t, "upstream failed", *originalError.Message)
 }
 
 func TestAccumulatedResponsesStreamPreservesServiceTierBeforeUsageOnlyChunk(t *testing.T) {
@@ -152,6 +174,25 @@ func TestDeepCopyResponsesStreamResponseCopiesToolCaller(t *testing.T) {
 	if copied.Item.ResponsesToolMessage.Caller.ToolID == original.Item.ResponsesToolMessage.Caller.ToolID {
 		t.Fatal("caller tool id pointer was aliased")
 	}
+}
+
+func TestDeepCopyResponsesStreamResponseCopiesAsync(t *testing.T) {
+	original := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeOutputItemDone,
+		Item: &schemas.ResponsesMessage{
+			ID:   schemas.Ptr("fc_1"),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("call_1"),
+				Async:  new(true),
+			},
+		},
+	}
+
+	copied := deepCopyResponsesStreamResponse(original)
+	require.NotNil(t, copied.Item.ResponsesToolMessage.Async)
+	require.True(t, *copied.Item.ResponsesToolMessage.Async)
+	require.NotSame(t, original.Item.ResponsesToolMessage.Async, copied.Item.ResponsesToolMessage.Async)
 }
 
 // TestBuildResponsesMessageAccumulatesReasoningSummary verifies reasoning
@@ -534,4 +575,184 @@ func TestBuildResponsesMessageItemDoneKeepsStreamedText(t *testing.T) {
 	require.Len(t, msgs[0].Content.ContentBlocks, 1)
 	require.NotNil(t, msgs[0].Content.ContentBlocks[0].Text)
 	require.Equal(t, "hello world", *msgs[0].Content.ContentBlocks[0].Text)
+}
+
+// Only output_item.done carries a custom_tool_call's `input`, so the accumulator
+// must take that item wholesale.
+func TestBuildResponsesMessagePreservesCustomToolCallInput(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	const input = `{"cmd":"whoami","max_output_tokens":1000}`
+
+	shell := schemas.ResponsesMessage{
+		ID:   schemas.Ptr("ctc_1"),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeCustomToolCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("call_1"),
+			Name:   schemas.Ptr("exec_command"),
+		},
+	}
+	complete := shell
+	complete.ResponsesToolMessage = &schemas.ResponsesToolMessage{
+		CallID:                  schemas.Ptr("call_1"),
+		Name:                    schemas.Ptr("exec_command"),
+		ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: input},
+	}
+
+	chunks := []*ResponsesStreamChunk{
+		{ChunkIndex: 0, StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &shell}},
+		{ChunkIndex: 1, StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:   schemas.ResponsesStreamResponseTypeCustomToolCallInputDelta,
+			ItemID: schemas.Ptr("ctc_1"), Delta: schemas.Ptr(`{"cmd":"who`)}},
+		{ChunkIndex: 2, StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:   schemas.ResponsesStreamResponseTypeCustomToolCallInputDone,
+			ItemID: schemas.Ptr("ctc_1"), Input: schemas.Ptr(input)}},
+		{ChunkIndex: 3, StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeOutputItemDone, Item: &complete}},
+	}
+
+	msgs := acc.buildCompleteMessageFromResponsesStreamChunks(chunks)
+	if len(msgs) != 1 {
+		t.Fatalf("want 1 message, got %d: %+v", len(msgs), msgs)
+	}
+	tm := msgs[0].ResponsesToolMessage
+	if tm == nil || tm.ResponsesCustomToolCall == nil {
+		t.Fatalf("custom tool call lost: %+v", msgs[0])
+	}
+	if tm.ResponsesCustomToolCall.Input != input {
+		t.Fatalf("input = %q, want %q", tm.ResponsesCustomToolCall.Input, input)
+	}
+}
+
+// TestBuildResponsesMessageKeepsShellCallPayload covers a streamed shell turn.
+// The item deep copy lists every action variant by hand, so a missing shell
+// branch left the assembled log row with an empty action and no commands.
+func TestBuildResponsesMessageKeepsShellCallPayload(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	chunks := []*ResponsesStreamChunk{
+		{
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeOutputItemAdded,
+				Item: &schemas.ResponsesMessage{
+					ID:     schemas.Ptr("shc_1"),
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeShellCall),
+					Status: schemas.Ptr("in_progress"),
+				},
+			},
+		},
+		{
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:         schemas.ResponsesStreamResponseTypeShellCallCommandDone,
+				Command:      schemas.Ptr("ls -la"),
+				CommandIndex: schemas.Ptr(0),
+			},
+		},
+		{
+			StreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeOutputItemDone,
+				Item: &schemas.ResponsesMessage{
+					ID:     schemas.Ptr("shc_1"),
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeShellCall),
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("call_1"),
+						Action: &schemas.ResponsesToolMessageActionStruct{
+							ResponsesShellToolCallAction: &schemas.ResponsesShellToolCallAction{
+								Commands:  []string{"ls -la"},
+								TimeoutMS: schemas.Ptr(5000),
+							},
+						},
+						CreatedBy: schemas.Ptr("asst_1"),
+						ResponsesShellCall: &schemas.ResponsesShellCall{
+							Environment: &schemas.ResponsesShellCallEnvironment{
+								Type:        "container_reference",
+								ContainerID: schemas.Ptr("cntr_1"),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	for i, c := range chunks {
+		c.ChunkIndex = i
+	}
+
+	msgs := acc.buildCompleteMessageFromResponsesStreamChunks(chunks)
+	require.Len(t, msgs, 1)
+	require.NotNil(t, msgs[0].ResponsesToolMessage)
+	action := msgs[0].ResponsesToolMessage.Action
+	require.NotNil(t, action)
+	require.NotNil(t, action.ResponsesShellToolCallAction)
+	require.Equal(t, []string{"ls -la"}, action.ResponsesShellToolCallAction.Commands)
+	require.Equal(t, 5000, *action.ResponsesShellToolCallAction.TimeoutMS)
+
+	// The action must marshal — an empty action struct errors, which used to fail
+	// the whole log write for a streamed shell call.
+	_, err := schemas.Marshal(msgs[0])
+	require.NoError(t, err)
+
+	shellCall := msgs[0].ResponsesToolMessage.ResponsesShellCall
+	require.NotNil(t, shellCall)
+	require.NotNil(t, shellCall.Environment)
+	require.Equal(t, "cntr_1", *shellCall.Environment.ContainerID)
+	require.Equal(t, "asst_1", *msgs[0].ResponsesToolMessage.CreatedBy)
+}
+
+// TestBuildResponsesMessageKeepsShellCallOutput checks the client-sent output
+// items survive accumulation with their outcomes.
+func TestBuildResponsesMessageKeepsShellCallOutput(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	chunks := []*ResponsesStreamChunk{{
+		ChunkIndex: 0,
+		StreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeOutputItemDone,
+			Item: &schemas.ResponsesMessage{
+				ID:   schemas.Ptr("shco_1"),
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeShellCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("call_1"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesShellCallOutput: []schemas.ResponsesShellCallOutputContent{{
+							Stdout:  "hello\n",
+							Outcome: schemas.ResponsesShellCallOutcome{Type: "exit", ExitCode: schemas.Ptr(0)},
+						}},
+					},
+					ResponsesShellCall: &schemas.ResponsesShellCall{MaxOutputLength: schemas.Ptr(1000)},
+				},
+			},
+		},
+	}}
+
+	msgs := acc.buildCompleteMessageFromResponsesStreamChunks(chunks)
+	require.Len(t, msgs, 1)
+	output := msgs[0].ResponsesToolMessage.Output
+	require.NotNil(t, output)
+	require.Len(t, output.ResponsesShellCallOutput, 1)
+	require.Equal(t, "hello\n", output.ResponsesShellCallOutput[0].Stdout)
+	require.Equal(t, 0, *output.ResponsesShellCallOutput[0].Outcome.ExitCode)
+	require.Equal(t, 1000, *msgs[0].ResponsesToolMessage.ResponsesShellCall.MaxOutputLength)
+}
+
+// TestResponsesStreamRetainsStopReason reproduces a synthetic refusal followed by a metadata-only terminal chunk.
+func TestResponsesStreamRetainsStopReason(t *testing.T) {
+	for _, reason := range []string{"refusal", "content_filter", "stop", "future_reason"} {
+		t.Run(reason, func(t *testing.T) {
+			acc := testResponsesAccumulator(t)
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "stop-"+reason)
+			response := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Response: &schemas.BifrostResponsesResponse{StopReason: schemas.Ptr(reason)},
+			}}
+			_, err := acc.processResponsesStreamingResponse(ctx, response, nil)
+			require.NoError(t, err)
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			tail := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{}}
+			tail.ResponsesStreamResponse.ExtraFields.ChunkIndex = 1
+			got, err := acc.processResponsesStreamingResponse(ctx, tail, nil)
+			require.NoError(t, err)
+			require.NotNil(t, got.Data.FinishReason)
+			require.Equal(t, reason, *got.Data.FinishReason)
+		})
+	}
 }

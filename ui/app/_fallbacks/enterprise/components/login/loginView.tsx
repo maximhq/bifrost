@@ -3,6 +3,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useBranding } from "@/lib/hooks/useBranding";
 import { getErrorMessage, useLoginMutation } from "@/lib/store/apis";
+import { DEFAULT_POST_LOGIN_PATH, getLoginGotoFromSearch } from "@/lib/utils/loginGoto";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Eye, EyeOff } from "lucide-react";
@@ -49,7 +50,7 @@ export default function LoginView() {
 		setErrorMessage("");
 		try {
 			await login({ username, password }).unwrap();
-			navigate({ to: "/workspace" });
+			navigate({ href: getLoginGotoFromSearch(window.location.search) ?? DEFAULT_POST_LOGIN_PATH });
 		} catch (error) {
 			const message = getErrorMessage(error);
 			setErrorMessage(message);

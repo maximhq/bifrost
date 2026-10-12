@@ -33,6 +33,7 @@ type ModelCapabilities struct {
 	SupportsCodeExecution           *bool `json:"supports_code_execution,omitempty"`
 	SupportsBashTool                *bool `json:"supports_bash_tool,omitempty"`
 	SupportsTextEditorTool          *bool `json:"supports_text_editor_tool,omitempty"`
+	SupportsComputerToolset         *bool `json:"supports_computer_toolset,omitempty"` // accepts the computer_toolset_20260801 client toolset; absent ⇒ name detection
 	SupportsMemoryTool              *bool `json:"supports_memory_tool,omitempty"`
 	SupportsToolSearch              *bool `json:"supports_tool_search,omitempty"`
 	ToolNameMaxLength               *int  `json:"tool_name_max_length,omitempty"`     // longest tool name the wire accepts; absent falls back to the per-provider default in core/providers/utils (64 for OpenAI-compatible wires and Bedrock, 128 for Anthropic and Gemini)
@@ -45,6 +46,7 @@ type ModelCapabilities struct {
 	SupportsAdaptiveThinking        *bool `json:"supports_adaptive_thinking,omitempty"`
 	SupportsNativeEffort            *bool `json:"supports_native_effort,omitempty"`
 	SupportsMidConversationSystem   *bool `json:"supports_mid_conversation_system_messages,omitempty"`
+	SupportsMidConvOutputConfig     *bool `json:"supports_mid_conversation_output_config,omitempty"`
 	SupportsSamplingParams          *bool `json:"supports_sampling_params,omitempty"` // false ⇒ temperature/top_p/top_k rejected (adaptive-only models)
 	SupportsRedactThinking          *bool `json:"supports_redact_thinking,omitempty"`
 	SupportsTaskBudgets             *bool `json:"supports_task_budgets,omitempty"`
@@ -53,13 +55,18 @@ type ModelCapabilities struct {
 	SupportsInputExamples           *bool `json:"supports_input_examples,omitempty"`
 	SupportsAdvisorTool             *bool `json:"supports_advisor_tool,omitempty"`
 	SupportsInferenceGeo            *bool `json:"supports_inference_geo,omitempty"`
+	SupportsSafeguards              *bool `json:"supports_safeguards,omitempty"` // Claude Code auto-mode classifier (safeguards/safeguard_results), model-gated on Anthropic and cloud surfaces (Sonnet 5, Opus 4.7+, Fable).
 	SupportsPromptCachingScope      *bool `json:"supports_prompt_caching_scope,omitempty"`
 	SupportsExtendedCacheTTL        *bool `json:"supports_extended_cache_ttl,omitempty"`
+	SupportsPromptCacheBreakpoint   *bool `json:"supports_prompt_cache_breakpoint,omitempty"` // accepts OpenAI prompt_cache_breakpoint + prompt_cache_options
 	SupportsReasoningContentBlocks  *bool `json:"supports_reasoning_content_blocks,omitempty"`
 	SupportsMultimodalToolOutput    *bool `json:"supports_multimodal_tool_output,omitempty"`
 	SupportsResponseSchemaWithTools *bool `json:"supports_response_schema_with_tools,omitempty"`
 	SupportsForcedToolChoice        *bool `json:"supports_forced_tool_choice,omitempty"`       // false ⇒ tool_choice any/tool rejected (Fable 5.1+)
 	SupportsPromptCacheBreakpoints  *bool `json:"supports_prompt_cache_breakpoints,omitempty"` // Responses input_text accepts prompt_cache_breakpoint (Claude via OpenRouter, gpt-5.6+)
+	SupportsAsyncTools              *bool `json:"supports_async_tools,omitempty"`              // accepts OpenAI async on tools and replayed call items
+	SupportsCustomTools             *bool `json:"supports_custom_tools,omitempty"`             // accepts OpenAI custom (freeform) tools; false ⇒ rewritten as function tools
+	SupportsDecisions               *bool `json:"supports_decisions,omitempty"`                // served on the provider's native decisions endpoint (OpenAI POST /v1/decisions); absent ⇒ DefaultSupportsDecisions
 
 	// Baseline request-surface flags. These drive the compat plugin's
 	// parameter allowlist rather than provider request shaping, so they are
@@ -85,6 +92,10 @@ type ModelCapabilities struct {
 
 	// Datasheet "mode" for the row (chat, embedding, image_generation, …).
 	Mode *string `json:"mode,omitempty"`
+
+	// Model the provider actually serves for this id when the response does not say
+	// (e.g. DeepSeek's Anthropic endpoint echoes retired ids back).
+	ServerSideModel *string `json:"server_side_model,omitempty"`
 
 	// Endpoints the model is reachable on. Normalised into the catalog's
 	// supported-response-type index.
@@ -178,6 +189,9 @@ type ModelCapabilities struct {
 	// budget. False on models that reject it, which need the config omitted.
 	SupportsReasoningDisable *bool `json:"supports_reasoning_disable,omitempty"`
 
+	// Model accepts thinking:{type:"between_tools"} (no up-front thinking).
+	SupportsBetweenToolsThinking *bool `json:"supports_between_tools_thinking,omitempty"`
+
 	// Model accepts a self-managed thinking budget (Gemini thinkingBudget: -1).
 	SupportsDynamicReasoningBudget *bool `json:"supports_dynamic_reasoning_budget,omitempty"`
 
@@ -252,6 +266,15 @@ type ModelCapabilities struct {
 	// the hardcoded per-provider fallback in core/providers/openai outright; absent
 	// or empty means the fallback applies.
 	ReservedToolNamespaces []string `json:"reserved_tool_namespaces,omitempty"`
+
+	// Tool-schema `pattern` accepts lookaround assertions; false ⇒ they are stripped before dispatch.
+	SupportsRegexLookaround *bool `json:"supports_regex_lookaround,omitempty"`
+
+	// Tool-schema `pattern` accepts the `\0` escape; false ⇒ it is rewritten to `\x00` before dispatch.
+	SupportsRegexNULEscape *bool `json:"supports_regex_nul_escape,omitempty"`
+
+	// String `format` values tool schemas may carry; any other is dropped before dispatch.
+	SupportedSchemaFormats []string `json:"supported_schema_formats,omitempty"`
 
 	// ---- Aliasing & regional inference profiles ----
 

@@ -52,6 +52,62 @@ func IsOpenAIReasoningModel(model string) bool {
 	return strings.Contains(modelLower, "gpt-5") || strings.Contains(modelLower, "gpt-6")
 }
 
+// defaultCanDisableReasoning: reasoning.effort "none" exists from GPT-5.1 on.
+// GPT-6 Sol and Luna support it, while GPT-6 Astra and unknown GPT-6 variants
+// conservatively remain always-reasoning.
+func defaultCanDisableReasoning(model string) bool {
+	m := bareModelLower(model)
+	switch {
+	case strings.Contains(m, "gpt-6-sol"), strings.Contains(m, "gpt-6-luna"):
+		return true
+	case strings.Contains(m, "gpt-6"), acceptsMinimalEffort(m):
+		return false
+	case strings.Contains(m, "gpt-5"):
+		return !strings.Contains(m, "-pro")
+	default:
+		return !IsOpenAIReasoningModel(m) || strings.Contains(m, "gpt-oss")
+	}
+}
+
+// defaultSupportsToolSearch is the name-based fallback for
+// ModelCaps.SupportsToolSearch on OpenAI wires. OpenAI documents tool_search and
+// defer_loading on the Responses API for gpt-5.4 and later
+// (https://developers.openai.com/api/docs/guides/tools-tool-search). Azure and
+// Bedrock serve the same OpenAI models on the same wire; other OpenAI-compatible
+// backends are not assumed to understand defer_loading.
+func defaultSupportsToolSearch(provider schemas.ModelProvider, model string) bool {
+	switch provider {
+	case schemas.OpenAI, schemas.Azure, schemas.Bedrock, schemas.BedrockMantle:
+	default:
+		return false
+	}
+	m := bareModelLower(model)
+	return strings.Contains(m, "gpt-5.4") ||
+		strings.Contains(m, "gpt-5.5") ||
+		strings.Contains(m, "gpt-5.6") ||
+		strings.Contains(m, "gpt-6")
+}
+
+// defaultSupportsAsyncTools: async tool calling is GPT-6 Astra and later.
+func defaultSupportsAsyncTools(model string) bool {
+	return strings.Contains(bareModelLower(model), "gpt-6")
+}
+
+// omittedEffortReasons reports OpenAI reasoning models that still reason when
+// reasoning.effort is omitted. Only GPT-5.1 through GPT-5.4 default to "none";
+// their -pro variants always reason.
+func omittedEffortReasons(model string) bool {
+	if !IsOpenAIReasoningModel(model) {
+		return false
+	}
+	m := bareModelLower(model)
+	if strings.Contains(m, "-pro") {
+		return true
+	}
+	return !strings.Contains(m, "gpt-5.1") && !strings.Contains(m, "gpt-5.2") &&
+		!strings.Contains(m, "gpt-5.3") && !strings.Contains(m, "gpt-5.4")
+}
+
 // defaultEffortControl widens the base low/medium/high ladder with the effort
 // levels a model natively accepts. Only the widening is name-derived; the
 // datasheet's per-level booleans take precedence when a row exists.

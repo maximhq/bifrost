@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +10,9 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // setupOAuth2TestStore extends the base in-memory store with the OAuth2 issuance
@@ -520,6 +524,84 @@ func TestRevokeOAuth2RefreshTokensByMode(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRevokeOAuth2GrantsBySubject(t *testing.T) {
+	s := setupOAuth2TestStore(t)
+	ctx := context.Background()
+	target := makeRefreshToken("v1", "f1", "c", "h-target") // vk / vk-1 from helper default
+	targetOther := makeRefreshToken("v2", "f2", "c", "h-target-2")
+	otherVK := makeRefreshToken("v3", "f3", "c", "h-other-vk")
+	otherVK.BfSub = "vk-2"
+	sameSubOtherMode := makeRefreshToken("u1", "f4", "c", "h-user")
+	sameSubOtherMode.BfMode = "user"
+	for _, rt := range []*tables.TableOAuth2RefreshToken{target, targetOther, otherVK, sameSubOtherMode} {
+		require.NoError(t, s.DB().Create(rt).Error)
+	}
+
+	// Consented-but-unredeemed authorization codes are grants too: one for the
+	// subject being revoked, one for another key.
+	future := time.Now().Add(time.Minute)
+	for _, ar := range []*tables.TableOAuth2AuthorizeRequest{
+		{ID: "ar-vk1", ClientID: "c", RedirectURI: "http://127.0.0.1/cb", State: "s", Scope: "mcp", Resource: "https://bifrost.test/mcp", CodeChallenge: "ch", CodeChallengeMethod: "S256", Status: tables.OAuth2AuthorizeRequestStatusConsented, CodeHash: strPtr("code-vk1"), BfMode: "vk", BfSub: "vk-1", ExpiresAt: future, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{ID: "ar-vk2", ClientID: "c", RedirectURI: "http://127.0.0.1/cb", State: "s", Scope: "mcp", Resource: "https://bifrost.test/mcp", CodeChallenge: "ch", CodeChallengeMethod: "S256", Status: tables.OAuth2AuthorizeRequestStatusConsented, CodeHash: strPtr("code-vk2"), BfMode: "vk", BfSub: "vk-2", ExpiresAt: future, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	} {
+		require.NoError(t, s.DB().Create(ar).Error)
+	}
+
+	require.NoError(t, s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1"))
+
+	// The subject's pending code can no longer be exchanged; another key's still can.
+	err := s.ConsumeOAuth2AuthorizeRequest(ctx, "ar-vk1", makeRefreshToken("v-new-1", "ar-vk1", "c", "h-new-1"))
+	assert.ErrorIs(t, err, ErrNotFound, "a consented code for the revoked subject must not mint a new grant")
+	otherKeyToken := makeRefreshToken("v-new-2", "ar-vk2", "c", "h-new-2")
+	otherKeyToken.BfSub = "vk-2"
+	require.NoError(t, s.ConsumeOAuth2AuthorizeRequest(ctx, "ar-vk2", otherKeyToken))
+	minted, err := s.GetOAuth2RefreshTokenByHash(ctx, "h-new-2")
+	require.NoError(t, err)
+	assert.Equal(t, "vk-2", minted.BfSub, "the other key's code mints a grant for the other key")
+
+	// Every active grant of that identity is revoked, across families...
+	_, err = s.GetOAuth2RefreshTokenByHash(ctx, "h-target")
+	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = s.GetOAuth2RefreshTokenByHash(ctx, "h-target-2")
+	assert.ErrorIs(t, err, ErrNotFound)
+	// ...while another key's grants and the same subject under another mode survive.
+	_, err = s.GetOAuth2RefreshTokenByHash(ctx, "h-other-vk")
+	require.NoError(t, err)
+	_, err = s.GetOAuth2RefreshTokenByHash(ctx, "h-user")
+	require.NoError(t, err)
+
+	// Idempotent on an identity with nothing left to revoke.
+	require.NoError(t, s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1"))
+}
+
+// TestRevokeOAuth2GrantsBySubjectEndsCodesFirst: a revoked identity's consented codes move to a
+// terminal status (not merely an earlier expiry), and they are ended before its refresh tokens are
+// revoked, so an exchange that commits while revocation runs either finds its code already ended or
+// mints a token the later revocation still sees.
+func TestRevokeOAuth2GrantsBySubjectEndsCodesFirst(t *testing.T) {
+	s := setupOAuth2TestStore(t)
+	ctx := context.Background()
+	require.NoError(t, s.DB().Create(makeRefreshToken("v1", "f1", "c", "h-target")).Error)
+	require.NoError(t, s.DB().Create(&tables.TableOAuth2AuthorizeRequest{
+		ID: "ar-vk1", ClientID: "c", RedirectURI: "http://127.0.0.1/cb", State: "s", Scope: "mcp", Resource: "https://bifrost.test/mcp",
+		CodeChallenge: "ch", CodeChallengeMethod: "S256", Status: tables.OAuth2AuthorizeRequestStatusConsented, CodeHash: strPtr("code-vk1"),
+		BfMode: "vk", BfSub: "vk-1", ExpiresAt: time.Now().Add(time.Minute), CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}).Error)
+
+	var updated []string
+	require.NoError(t, s.DB().Callback().Update().After("gorm:update").Register("test:record_update_order", func(db *gorm.DB) {
+		updated = append(updated, db.Statement.Table)
+	}))
+	t.Cleanup(func() { _ = s.DB().Callback().Update().Remove("test:record_update_order") })
+
+	require.NoError(t, s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1"))
+
+	assert.Equal(t, []string{"oauth2_authorize_requests", "oauth2_refresh_tokens"}, updated, "codes are ended before tokens are revoked")
+	ar, err := s.GetOAuth2AuthorizeRequestByID(ctx, "ar-vk1")
+	require.NoError(t, err)
+	assert.Equal(t, tables.OAuth2AuthorizeRequestStatusRevoked, ar.Status, "a revoked code is in a terminal status, not merely expired")
+}
+
 func TestListOAuth2Sessions_JoinsAndExcludesRevoked(t *testing.T) {
 	s := setupOAuth2TestStore(t)
 	ctx := context.Background()
@@ -781,4 +863,183 @@ func TestRefreshOauthTokenFieldsIfActive_StatusGuardStillApplies(t *testing.T) {
 	updated, err := s.RefreshOauthTokenFieldsIfActive(ctx, "tok-2", "rt-original", "at-new", "rt-new", &future, time.Now())
 	require.NoError(t, err)
 	assert.False(t, updated, "a non-'active' row must reject the write even with a matching expectedPriorRefreshToken")
+}
+
+// oauth2StoreBackend pairs a backend name with a fresh OAuth2-capable store.
+type oauth2StoreBackend struct {
+	name string
+	s    *RDBConfigStore
+}
+
+// oauth2StoreBackends returns a fresh OAuth2-capable store per available backend.
+// SQLite is always present; Postgres is attached when reachable on the shared
+// test DSN. Postgres matters for column-bound tests specifically: SQLite ignores
+// varchar(n) length, so a bound that silently passes here only surfaces there.
+func oauth2StoreBackends(t *testing.T) []oauth2StoreBackend {
+	t.Helper()
+	backends := []oauth2StoreBackend{{"sqlite", setupOAuth2TestStore(t)}}
+	if pg := trySetupPostgresOAuth2Store(t); pg != nil {
+		backends = append(backends, oauth2StoreBackend{"postgres", pg})
+	}
+	return backends
+}
+
+// trySetupPostgresOAuth2Store builds a Postgres-backed store with the OAuth2
+// issuance tables in their fresh-install shape (created from the current struct
+// tags). Returns nil, without skipping, when Postgres is unreachable.
+func trySetupPostgresOAuth2Store(t *testing.T) *RDBConfigStore {
+	t.Helper()
+	db, err := gorm.Open(postgres.Open(postgresDSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		return nil
+	}
+	sqlDB, err := db.DB()
+	if err != nil || sqlDB.Ping() != nil {
+		return nil
+	}
+	if db.Exec("CREATE SCHEMA IF NOT EXISTS "+pgTestSchema).Error != nil {
+		return nil
+	}
+	dropOAuth2Tables := func() {
+		db.Exec("DROP TABLE IF EXISTS oauth2_refresh_tokens CASCADE")
+		db.Exec("DROP TABLE IF EXISTS oauth2_authorize_requests CASCADE")
+		db.Exec("DROP TABLE IF EXISTS oauth2_clients CASCADE")
+	}
+	dropOAuth2Tables()
+	require.NoError(t, db.AutoMigrate(
+		&tables.TableOAuth2Client{},
+		&tables.TableOAuth2AuthorizeRequest{},
+		&tables.TableOAuth2RefreshToken{},
+	))
+	t.Cleanup(dropOAuth2Tables)
+
+	s := &RDBConfigStore{logger: nil}
+	s.db.Store(db)
+	s.migrateOnFreshFn = func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error {
+		return fn(ctx, s.DB())
+	}
+	s.refreshPoolFn = func(ctx context.Context) error { return nil }
+	return s
+}
+
+// TestCreateOAuth2AuthorizeRequest_LongStateRoundTrips pins that the state
+// parameter is stored verbatim whatever its length. RFC 6749 §4.1.1 puts no
+// bound on state, and OAuth clients pack connector context into it (a 620-char
+// base64 JSON blob in the reported case). The column was varchar(512), which
+// Postgres enforces and SQLite ignores, so a too-long state surfaced only in
+// production as an opaque server_error at /oauth2/authorize.
+func TestCreateOAuth2AuthorizeRequest_LongStateRoundTrips(t *testing.T) {
+	for _, b := range oauth2StoreBackends(t) {
+		t.Run(b.name, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Now()
+			state := strings.Repeat("s", 4096)
+			req := &tables.TableOAuth2AuthorizeRequest{
+				ID:                  "long-state",
+				ClientID:            "client-1",
+				RedirectURI:         "https://client.example/cb",
+				State:               state,
+				Scope:               "mcp",
+				Resource:            "https://bifrost.test/mcp",
+				CodeChallenge:       "challenge",
+				CodeChallengeMethod: "S256",
+				Status:              tables.OAuth2AuthorizeRequestStatusPending,
+				ExpiresAt:           now.Add(time.Minute),
+				CreatedAt:           now,
+				UpdatedAt:           now,
+			}
+			require.NoError(t, b.s.CreateOAuth2AuthorizeRequest(ctx, req))
+
+			got, err := b.s.GetOAuth2AuthorizeRequestByID(ctx, "long-state")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, state, got.State)
+
+			// The column itself must be text, so the fresh-install schema and the
+			// widened upgrade schema agree.
+			assertTextColumn(t, b.s.DB(), &tables.TableOAuth2AuthorizeRequest{}, "state")
+		})
+	}
+}
+
+// TestOAuth2ClientControlledFields_LongValuesRoundTrip pins that the other
+// client-controlled AS fields are stored verbatim whatever their length. RFC 7591
+// §2 (client_name, scope at registration) and RFC 6749 §3.3 (scope at authorize)
+// put no bound on them, and the registered scope flows unchanged into the
+// authorize request and the refresh token. These columns were varchar(255),
+// which Postgres enforces and SQLite ignores.
+func TestOAuth2ClientControlledFields_LongValuesRoundTrip(t *testing.T) {
+	for _, b := range oauth2StoreBackends(t) {
+		t.Run(b.name, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Now()
+			longName := strings.Repeat("n", 1024)
+			longScope := "mcp " + strings.Repeat("read:x ", 200)
+
+			client := &tables.TableOAuth2Client{
+				ID:           "client-row-long",
+				ClientID:     "client-long",
+				ClientName:   longName,
+				RedirectURIs: []string{"https://client.example/cb"},
+				GrantTypes:   []string{"authorization_code"},
+				Scope:        longScope,
+				CreatedAt:    now,
+			}
+			require.NoError(t, b.s.CreateOAuth2Client(ctx, client))
+			gotClient, err := b.s.GetOAuth2ClientByClientID(ctx, "client-long")
+			require.NoError(t, err)
+			assert.Equal(t, longName, gotClient.ClientName)
+			assert.Equal(t, longScope, gotClient.Scope)
+
+			req := &tables.TableOAuth2AuthorizeRequest{
+				ID:                  "req-long-scope",
+				ClientID:            "client-long",
+				RedirectURI:         "https://client.example/cb",
+				State:               "state",
+				Scope:               longScope,
+				Resource:            "https://bifrost.test/mcp",
+				CodeChallenge:       "challenge",
+				CodeChallengeMethod: "S256",
+				Status:              tables.OAuth2AuthorizeRequestStatusConsented,
+				CodeHash:            strPtr("code-hash-long"),
+				ExpiresAt:           now.Add(time.Minute),
+				CreatedAt:           now,
+				UpdatedAt:           now,
+			}
+			require.NoError(t, b.s.CreateOAuth2AuthorizeRequest(ctx, req))
+			gotReq, err := b.s.GetOAuth2AuthorizeRequestByID(ctx, "req-long-scope")
+			require.NoError(t, err)
+			assert.Equal(t, longScope, gotReq.Scope)
+
+			rt := makeRefreshToken("rt-long", "req-long-scope", "client-long", "hash-long")
+			rt.Scope = longScope
+			require.NoError(t, b.s.ConsumeOAuth2AuthorizeRequest(ctx, "req-long-scope", rt))
+			gotRT, err := b.s.GetOAuth2RefreshTokenByHash(ctx, "hash-long")
+			require.NoError(t, err)
+			assert.Equal(t, longScope, gotRT.Scope)
+
+			assertTextColumn(t, b.s.DB(), &tables.TableOAuth2Client{}, "client_name")
+			assertTextColumn(t, b.s.DB(), &tables.TableOAuth2Client{}, "scope")
+			assertTextColumn(t, b.s.DB(), &tables.TableOAuth2AuthorizeRequest{}, "scope")
+			assertTextColumn(t, b.s.DB(), &tables.TableOAuth2RefreshToken{}, "scope")
+		})
+	}
+}
+
+// assertTextColumn checks that the named column of model is declared text on
+// whatever backend db is. It compares the type name rather than Length(): the
+// postgres driver reports MaxInt64 for text, not "no bound".
+func assertTextColumn(t *testing.T, db *gorm.DB, model any, column string) {
+	t.Helper()
+	cols, err := db.Migrator().ColumnTypes(model)
+	require.NoError(t, err)
+	for _, c := range cols {
+		if c.Name() != column {
+			continue
+		}
+		assert.Truef(t, strings.EqualFold(c.DatabaseTypeName(), "text"),
+			"%s column type is %q; want text", column, c.DatabaseTypeName())
+		return
+	}
+	t.Errorf("%s column not found", column)
 }

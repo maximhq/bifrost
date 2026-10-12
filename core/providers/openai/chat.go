@@ -14,6 +14,12 @@ func (req *OpenAIChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 	if params.MaxCompletionTokens == nil && req.MaxTokens != nil {
 		params.MaxCompletionTokens = req.MaxTokens
 	}
+	// OpenAI chat has no reasoning.summary; on this integration it is only sent via passthrough extra_params.
+	if params.Reasoning != nil && params.Reasoning.Summary != nil {
+		reasoning := *params.Reasoning
+		reasoning.Summary = nil
+		params.Reasoning = &reasoning
+	}
 
 	return &schemas.BifrostChatRequest{
 		Provider:  provider,
@@ -68,10 +74,21 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
 
+		// Models older than GPT-5 reject custom tools with "Invalid value: 'custom'",
+		// so each one is sent as a function tool. Chat has no custom tool call shape,
+		// so the model's call reaches the client as a function call.
+		customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
+		if customToolsAsFunctions {
+			openaiReq.ChatParameters.ToolChoice = chatCustomToolChoiceAsFunction(openaiReq.ChatParameters.ToolChoice)
+		}
+
 		// Normalize tool parameters for deterministic JSON serialization (improves prompt caching)
 		if len(openaiReq.ChatParameters.Tools) > 0 {
 			normalizedTools := make([]schemas.ChatTool, len(openaiReq.ChatParameters.Tools))
 			for i, tool := range openaiReq.ChatParameters.Tools {
+				if customToolsAsFunctions && tool.Type == schemas.ChatToolTypeCustom {
+					tool = chatCustomToolAsFunction(tool)
+				}
 				normalizedTools[i] = tool
 				if tool.Function != nil && tool.Function.Parameters != nil {
 					funcCopy := *tool.Function
@@ -87,9 +104,22 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 	}
 
+	// gpt-5.6 and later take caching intent as prompt_cache_breakpoint on a text
+	// part rather than as Anthropic-style cache_control, which the serializer
+	// strips. Same translation as the Responses path (applyResponsesCacheBreakpoints),
+	// resolved on the base provider so a custom provider built on OpenAI is not
+	// sent down the strip-only default.
+	// The request stays in the provider's default mode: see
+	// responsesIsOpenAIFamilyBreakpointTarget for why Bifrost never sets explicit mode.
+	if chatUsesPromptCacheBreakpoints(caps, schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel) {
+		ceiling := promptCacheBreakpointCeiling(ctx, true, openaiReq.ChatParameters.PromptCacheOptions, openaiReq.ExtraParams)
+		openaiReq.Messages = applyChatCacheBreakpoints(openaiReq.Messages, ceiling)
+	}
+
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:
 		openaiReq.normalizeReasoningEffort(caps)
+		openaiReq.stripUnsupportedSamplingParams(caps)
 		// URL-sourced documents are NOT inlined here. Chat Completions rejects file_url, so they
 		// still have to be resolved before the request goes out - but that is a network fetch that
 		// can fail, and this function has no way to report a failure. Callers invoke
@@ -256,6 +286,32 @@ func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
 			// Clear max_tokens since OpenAI doesn't use it
 			req.ChatParameters.Reasoning.MaxTokens = nil
 		}
+		// A model that always reasons rejects "none"; "minimal" normalizes to its lowest level.
+		if e := req.ChatParameters.Reasoning.Effort; e != nil && *e == schemas.ReasoningEffortNone &&
+			!caps.CanDisableReasoning(defaultCanDisableReasoning(caps.Model())) {
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControl(caps.Model())))
+		}
+	}
+}
+
+// stripUnsupportedSamplingParams drops sampling fields OpenAI rejects at the request's reasoning effort.
+func (req *OpenAIChatRequest) stripUnsupportedSamplingParams(caps schemas.ModelCaps) {
+	effort := ""
+	if req.ChatParameters.Reasoning != nil && req.ChatParameters.Reasoning.Effort != nil {
+		effort = *req.ChatParameters.Reasoning.Effort
+	}
+	model := caps.Model()
+	if samplingParamUnsupported(caps, schemas.FieldTopP, model, effort) {
+		req.ChatParameters.TopP = nil
+	}
+	if samplingParamUnsupported(caps, schemas.FieldTemperature, model, effort) {
+		req.ChatParameters.Temperature = nil
+	}
+	if samplingParamUnsupported(caps, schemas.FieldTopLogprobs, model, effort) {
+		req.ChatParameters.TopLogProbs = nil
+	}
+	if samplingParamUnsupported(caps, schemas.FieldLogprobs, model, effort) {
+		req.ChatParameters.LogProbs = nil
 	}
 }
 
@@ -343,4 +399,75 @@ func (req *OpenAIChatRequest) applyXAICompatibility(caps schemas.ModelCaps) {
 		caps.FieldUnsupported(schemas.FieldReasoningEffort, effortUnsupported) {
 		req.ChatParameters.Reasoning.Effort = nil
 	}
+}
+
+// chatUsesPromptCacheBreakpoints is the Chat Completions half of the gate behind
+// responsesIsOpenAIFamilyBreakpointTarget: the OpenAI family on gpt-5.6 and later. OpenRouter
+// is deliberately absent, since it accepts cache_control verbatim on this path.
+func chatUsesPromptCacheBreakpoints(caps schemas.ModelCaps, provider schemas.ModelProvider, model string) bool {
+	switch provider {
+	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle, schemas.Bedrock:
+		return caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(model))
+	default:
+		return false
+	}
+}
+
+// applyChatCacheBreakpoints rewrites ephemeral cache_control markers on text parts
+// into prompt_cache_breakpoint, for every role including tool messages, which is where
+// an agent loop's per-turn marker lands after a tool call. Only text parts are
+// marked: that is the one Chat Completions part type with a verified breakpoint
+// field, and a rejected field costs more than the miss it would fix. The same
+// ceiling (promptCacheBreakpointCeiling) and keep-the-latest rule as the Responses
+// path apply.
+//
+// Messages, their Content pointers and the part arrays alias bifrostReq.Input, which
+// plugins and the fallback chain reuse, so everything touched is copied first.
+func applyChatCacheBreakpoints(messages []OpenAIMessage, ceiling int) []OpenAIMessage {
+	type blockRef struct{ msg, block int }
+	var refs []blockRef
+	existing := 0
+	for i := range messages {
+		if messages[i].Content == nil {
+			continue
+		}
+		for j, block := range messages[i].Content.ContentBlocks {
+			if block.PromptCacheBreakpoint != nil {
+				existing++
+				continue
+			}
+			if block.CacheControl == nil || block.CacheControl.Type != schemas.CacheControlTypeEphemeral ||
+				block.Type != schemas.ChatContentBlockTypeText || block.Text == nil {
+				continue
+			}
+			refs = append(refs, blockRef{msg: i, block: j})
+		}
+	}
+	if len(refs) == 0 {
+		return messages
+	}
+	budget := ceiling - existing
+	if budget <= 0 {
+		return messages
+	}
+	if len(refs) > budget {
+		refs = refs[len(refs)-budget:]
+	}
+
+	out := make([]OpenAIMessage, len(messages))
+	copy(out, messages)
+	copied := make(map[int]bool, len(refs))
+	for _, ref := range refs {
+		if !copied[ref.msg] {
+			contentCopy := *out[ref.msg].Content
+			contentCopy.ContentBlocks = append(
+				make([]schemas.ChatContentBlock, 0, len(contentCopy.ContentBlocks)), contentCopy.ContentBlocks...)
+			out[ref.msg].Content = &contentCopy
+			copied[ref.msg] = true
+		}
+		out[ref.msg].Content.ContentBlocks[ref.block].PromptCacheBreakpoint = &schemas.PromptCacheBreakpoint{
+			Mode: schemas.Ptr(PromptCacheBreakpointModeExplicit),
+		}
+	}
+	return out
 }

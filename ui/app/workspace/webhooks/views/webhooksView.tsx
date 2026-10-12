@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
 	getErrorMessage,
 	useDeleteWebhookEndpointMutation,
@@ -362,10 +363,21 @@ export default function WebhooksView() {
 						hasActiveFilters={hasActiveFilters}
 						onClearFilters={handleClearFilters}
 						actions={
-							<Button onClick={handleAdd} disabled={!hasCreateAccess} data-testid="create-webhook-btn">
-								<Plus className="h-4 w-4" />
-								Add Endpoint
-							</Button>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										onClick={handleAdd}
+										disabled={!hasCreateAccess}
+										aria-label="Add Endpoint"
+										data-testid="create-webhook-btn"
+										className="size-9 px-0 @5xl/webhooks-toolbar:w-auto @5xl/webhooks-toolbar:px-4"
+									>
+										<Plus className="h-4 w-4" />
+										<span className="hidden @5xl/webhooks-toolbar:inline">Add Endpoint</span>
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent>Add Endpoint</TooltipContent>
+							</Tooltip>
 						}
 					/>
 

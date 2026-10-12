@@ -87,12 +87,14 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 		CustomLabels             []string            `json:"custom_labels,omitempty"`
 		MetricsEnabled           *bool               `json:"metrics_enabled,omitempty"`
 		OverheadBreakdownEnabled *bool               `json:"overhead_breakdown_enabled,omitempty"`
+		UserLabelsEnabled        *bool               `json:"user_labels_enabled,omitempty"`
 		PushGateway              *pushGatewayStorage `json:"push_gateway,omitempty"`
 	}
 	storage := configStorage{
 		CustomLabels:             c.CustomLabels,
 		MetricsEnabled:           c.MetricsEnabled,
 		OverheadBreakdownEnabled: c.OverheadBreakdownEnabled,
+		UserLabelsEnabled:        c.UserLabelsEnabled,
 	}
 	if c.PushGateway != nil {
 		pgw := &pushGatewayStorage{
@@ -287,42 +289,36 @@ var (
 )
 
 // Init creates a new PrometheusPlugin with initialized metrics.
-// userLabelNames are appended to defaultBifrostLabelNames when
-// user_labels_enabled is set.
-var userLabelNames = []string{"user_id", "user_name"}
+// userLabelNames are the unbounded dimensions, added when user_labels_enabled is
+// set. Derived, so promoting a dimension to that tier needs no edit here.
+var userLabelNames = func() []string {
+	safe := map[string]bool{}
+	for _, n := range schemas.MetricSafeEnrichmentDimNames() {
+		safe[n] = true
+	}
+	var out []string
+	for _, n := range schemas.HighCardinalityMetricEnrichmentDimNames() {
+		if !safe[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}()
 
-// defaultBifrostLabelNames is the canonical set of Prometheus labels attached to
-// bifrost.* metrics. It is a package var (not an Init local) so the connector-
-// parity conformance test can assert it against the shared enrichment registry
-// (core/schemas). Metric-tier dimensions only — no high-cardinality (user, arrays).
-var defaultBifrostLabelNames = []string{
-	"provider",
-	"model",
-	"alias",
-	"method",
-	"virtual_key_id",
-	"virtual_key_name",
-	"routing_engine_used",
-	"routing_rule_id",
-	"routing_rule_name",
-	"complexity_tier",
-	"complexity_mechanism",
-	"selected_key_id",
-	"selected_key_name",
-	"fallback_index",
-	"team_id",
-	"team_name",
-	"customer_id",
-	"customer_name",
-	"business_unit_id",
-	"business_unit_name",
-	"project_id",
-	"project_name",
-}
+// defaultBifrostLabelNames is derived from schemas.EnrichmentDims, not hand-listed
+// — the registry used to be advisory and each connector kept its own copy, which
+// is how Splunk fell 2 dimensions behind. Bounded dimensions only; the unbounded
+// ones are opt-in via user_labels_enabled.
+var defaultBifrostLabelNames = schemas.MetricSafeEnrichmentDimNames()
 
 // defaultMCPLabelNames is the label set for bifrost_mcp_* metrics: the MCP semconv
 // dimensions available in the hook plus the governance identity. No network_transport
 // (core stamps it on the span, not context) and no provider/model.
+// perMetricLabelNames are the labels that individual bifrost_* metrics add on top of
+// the default set. A custom label repeating one of these makes Prometheus reject the
+// descriptor, so Init drops them like any other reserved name.
+var perMetricLabelNames = []string{"is_success", "status_code", "error_type", "cache_type"}
+
 var defaultMCPLabelNames = []string{
 	"mcp_client",
 	"mcp_tool_name",
@@ -353,7 +349,13 @@ const (
 	routingEmbeddingPhaseWarmup  = "warmup"
 )
 
-func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (*PrometheusPlugin, error) {
+func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (promPlugin *PrometheusPlugin, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			promPlugin, err = nil, fmt.Errorf("metric registration failed: %v", r)
+		}
+	}()
+
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -393,12 +395,22 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	var filteredCustomLabels []string
 	if len(config.CustomLabels) > 0 {
 		for _, label := range config.CustomLabels {
-			if !containsLabel(defaultBifrostLabels, label) && !containsLabel(defaultHTTPLabels, label) && !containsLabel(defaultMCPLabelNames, label) {
+			if !containsLabel(defaultBifrostLabels, label) && !containsLabel(defaultHTTPLabels, label) && !containsLabel(defaultMCPLabelNames, label) && !containsLabel(perMetricLabelNames, label) {
 				filteredCustomLabels = append(filteredCustomLabels, label)
 			} else {
 				logger.Info("custom label %s is already a default label, it will be ignored", label)
 			}
 		}
+	}
+
+	// bifrostLabels returns a freshly allocated base+extra+custom label set. Fresh
+	// every call: appending to a shared base writes into its spare capacity, so two
+	// metrics built from it would overwrite each other's names.
+	bifrostLabels := func(extra ...string) []string {
+		out := make([]string, 0, len(defaultBifrostLabels)+len(extra)+len(filteredCustomLabels))
+		out = append(out, defaultBifrostLabels...)
+		out = append(out, extra...)
+		return append(out, filteredCustomLabels...)
 	}
 
 	factory := promauto.With(registry)
@@ -447,7 +459,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_upstream_requests_total",
 			Help: "Total number of requests forwarded to upstream providers by Bifrost.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostUpstreamLatencySeconds := factory.NewHistogramVec(
@@ -456,7 +468,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Latency of requests forwarded to upstream providers by Bifrost.",
 			Buckets: upstreamLatencyBuckets, // Extended range for AI model inference times
 		},
-		append(append(defaultBifrostLabels, "is_success"), filteredCustomLabels...),
+		bifrostLabels("is_success"),
 	)
 
 	// Labelled without is_success: unlike upstream latency, overhead is dominated by
@@ -468,7 +480,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Latency added by Bifrost itself, in microseconds: total request time minus time blocked on upstream providers.",
 			Buckets: overheadLatencyBuckets,
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	// Same overhead as above, split by overhead_component (the UI's categories; see
@@ -493,18 +505,19 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_success_requests_total",
 			Help: "Total number of successful requests forwarded to upstream providers by Bifrost.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
-	// error_type is the normalized reason, status_code the raw fact it came from.
+	// status_code is the status the failure resolves to, not always the wire status:
+	// an error sent inside a committed stream reached the caller as a 200.
 	// Cardinality is bounded: error_type is near-determined by status_code for
 	// upstream failures, so it splits few series that were not already split.
 	bifrostErrorRequestsTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bifrost_error_requests_total",
-			Help: "Total number of failed requests, by raw status_code and normalized error_type.",
+			Help: "Total number of failed requests, by effective status_code and normalized error_type.",
 		},
-		append(append(defaultBifrostLabels, "status_code", "error_type"), filteredCustomLabels...),
+		bifrostLabels("status_code", "error_type"),
 	)
 
 	bifrostInputTokensTotal := factory.NewCounterVec(
@@ -512,7 +525,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_input_tokens_total",
 			Help: "Total number of input tokens forwarded to upstream providers by Bifrost.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostOutputTokensTotal := factory.NewCounterVec(
@@ -520,7 +533,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_output_tokens_total",
 			Help: "Total number of output tokens forwarded to upstream providers by Bifrost.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostCacheHitsTotal := factory.NewCounterVec(
@@ -528,7 +541,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cache_hits_total",
 			Help: "Total number of cache hits forwarded to upstream providers by Bifrost, separated by cache type (direct/semantic).",
 		},
-		append(append(defaultBifrostLabels, "cache_type"), filteredCustomLabels...),
+		bifrostLabels("cache_type"),
 	)
 
 	// Provider-side prompt cache tokens (Anthropic/OpenAI/Gemini prompt caching). Distinct
@@ -538,7 +551,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cache_read_input_tokens_total",
 			Help: "Total provider-side prompt-cache read (cached) input tokens. Billed at a reduced rate by the provider.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostCacheWriteInputTokensTotal := factory.NewCounterVec(
@@ -546,7 +559,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cache_write_input_tokens_total",
 			Help: "Total provider-side prompt-cache creation (write) input tokens.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostCacheWriteInputTokens5mTotal := factory.NewCounterVec(
@@ -554,7 +567,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cache_write_input_tokens_5m_total",
 			Help: "Provider-side prompt-cache write input tokens with a 5-minute TTL (Anthropic only). Subset of bifrost_cache_write_input_tokens_total — do not sum with it.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostCacheWriteInputTokens1hTotal := factory.NewCounterVec(
@@ -562,7 +575,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cache_write_input_tokens_1h_total",
 			Help: "Provider-side prompt-cache write input tokens with a 1-hour TTL (Anthropic only). Subset of bifrost_cache_write_input_tokens_total — do not sum with it.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostCostTotal := factory.NewCounterVec(
@@ -570,7 +583,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_cost_total",
 			Help: "Total cost in USD for requests to upstream providers.",
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	// Routing-classification overhead (semantic complexity router embeddings).
@@ -623,7 +636,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Latency of the intermediate tokens of a stream response.",
 			Buckets: interTokenLatencyBuckets,
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostStreamFirstTokenLatencySeconds := factory.NewHistogramVec(
@@ -632,7 +645,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Latency of the first token of a stream response.",
 			Buckets: firstTokenLatencyBuckets,
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	bifrostRequestRetries := factory.NewHistogramVec(
@@ -641,7 +654,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Help:    "Number of retries used per request (observed once per request).",
 			Buckets: []float64{0, 1, 2, 3, 5, 10},
 		},
-		append(defaultBifrostLabels, filteredCustomLabels...),
+		bifrostLabels(),
 	)
 
 	// bifrostKeyRotationEventsTotal counts key-swap events from the attempt trail.
@@ -652,7 +665,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	bifrostKeyRotationEventsTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bifrost_key_rotation_events_total",
-			Help: "Number of key rotations, broken down by provider, key, and failure reason. One increment per per-key failure (rate-limit/auth/billing/permission) that triggered a switch to a different key on the next retry.",
+			Help: "Number of key rotations, broken down by provider, key, and failure reason. One increment per per-key failure (rate limit, rejected credential, exhausted quota, model access, retired model, region block) that triggered a switch to a different key on the next retry.",
 		},
 		[]string{"provider", "requested_model", "key_id", "key_name", "fail_reason"},
 	)
@@ -939,6 +952,11 @@ func (p *PrometheusPlugin) sweepPendingOverheadLabels() {
 	}
 }
 
+// HTTPTransportResponseHeadersHook leaves response headers unchanged.
+func (p *PrometheusPlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+	return nil
+}
+
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged
 func (p *PrometheusPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	return chunk, nil
@@ -1198,10 +1216,12 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// A request is scoped to at most one project, so there is no plural form to canonicalize.
 	projectID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID)
 	projectName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName)
+	app := schemas.DetectAppFromUserAgent(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserAgent))
 
 	// Extract ALL context values BEFORE spawning the goroutine.
 	labelValues := map[string]string{
 		"provider":             string(provider),
+		"app":                  app,
 		"model":                model,
 		"alias":                alias,
 		"method":               string(requestType),
@@ -1283,21 +1303,39 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			}
 		}
 
+		// A failed/cancelled request has no result but may carry usage the provider already billed.
+		var billedUsage *schemas.BifrostLLMUsage
+		if result == nil && bifrostErr != nil {
+			billedUsage = bifrostErr.ExtraFields.BilledUsage
+		}
+
 		cost := 0.0
-		if p.pricingManager != nil && result != nil {
-			cost = p.pricingManager.CalculateCost(result, pricingScopes)
+		if p.pricingManager != nil {
+			if result != nil {
+				cost = p.pricingManager.CalculateCost(result, pricingScopes)
+			} else if billedUsage != nil {
+				// Price the wire model like logging does; the requested one may be an alias or a fallback's primary.
+				pricingModel := resolvedModel
+				if pricingModel == "" {
+					pricingModel = originalModel
+				}
+				cost = p.pricingManager.CalculateCostForUsage(billedUsage, provider, pricingModel, requestType, pricingScopes)
+			}
 		}
 
 		// Emit one rotation counter increment per attempt that actually caused a key swap on the
-		// next try (per-key failure — rate-limit/auth/billing/permission — with retries remaining).
-		// Mark the key unhealthy on any failure, since key health is per-failure not per-rotation.
+		// next try (a per-key failure with a key left to move to). Mark the key unhealthy on any
+		// failure, since key health is per-failure not per-rotation, except when the failure says
+		// nothing about the key's health: a request for a model this key cannot reach, or a
+		// region block that may be the gateway's own location. The walk past those would
+		// otherwise mark every key in the pool down on one caller's typo or one blocked egress.
 		for _, record := range attemptTrail {
 			if record.TriggeredRotation && record.FailReason != nil {
 				p.KeyRotationEventsTotal.WithLabelValues(
 					string(provider), model, record.KeyID, record.KeyName, *record.FailReason,
 				).Inc()
 			}
-			if record.FailReason != nil {
+			if record.FailReason != nil && record.FailureClass != schemas.FailureClassModelAccess && record.FailureClass != schemas.FailureClassModelGone && record.FailureClass != schemas.FailureClassRegionBlocked {
 				p.ProviderKeyUp.WithLabelValues(string(provider), record.KeyID, record.KeyName).Set(0)
 			}
 		}
@@ -1315,10 +1353,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 		// Record latency
 		duration := time.Since(startTime).Seconds()
-		latencyLabelValues := make([]string, 0, len(promLabelValues)+1)
-		latencyLabelValues = append(latencyLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
-		latencyLabelValues = append(latencyLabelValues, strconv.FormatBool(bifrostErr == nil))            // is_success
-		latencyLabelValues = append(latencyLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
+		// Default labels, then is_success, then custom labels.
+		latencyLabelValues := spliceLabelValues(promLabelValues, len(p.defaultBifrostLabels), strconv.FormatBool(bifrostErr == nil))
 		p.UpstreamLatencySeconds.WithLabelValues(latencyLabelValues...).Observe(duration)
 
 		// SDK caller: no transport hooks fire, so this LLM-hook window is all there
@@ -1334,20 +1370,14 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 		// Record error and success counts
 		if bifrostErr != nil {
-			// Add status_code to label values (create new slice to avoid modifying original)
-			statusCode := "unknown"
-			if bifrostErr.StatusCode != nil {
-				statusCode = strconv.Itoa(*bifrostErr.StatusCode)
-			}
+			// Effective, not raw: an internal error has no StatusCode but still returns 500.
+			statusCode := strconv.Itoa(bifrostErr.EffectiveHTTPStatus())
 			// Same requestType that fills the `method` label, so verdict and labels
 			// cannot disagree. Never empty: bifrostErr is non-nil in this branch.
 			errorType := schemas.ClassifyErrorType(bifrostErr, requestType)
 
-			errorPromLabelValues := make([]string, 0, len(promLabelValues)+2)
-			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
-			errorPromLabelValues = append(errorPromLabelValues, statusCode)                                       // status_code
-			errorPromLabelValues = append(errorPromLabelValues, string(errorType))                                // error_type
-			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
+			// Default labels, then status_code and error_type, then custom labels.
+			errorPromLabelValues := spliceLabelValues(promLabelValues, len(p.defaultBifrostLabels), statusCode, string(errorType))
 
 			p.ErrorRequestsTotal.WithLabelValues(errorPromLabelValues...).Inc()
 		} else {
@@ -1464,13 +1494,29 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 					cacheType = *extraFields.CacheDebug.HitType
 				}
 
-				// Add cache_type to label values (create new slice to avoid modifying original)
-				cacheHitLabelValues := make([]string, 0, len(promLabelValues)+1)
-				cacheHitLabelValues = append(cacheHitLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
-				cacheHitLabelValues = append(cacheHitLabelValues, cacheType)                                        // cache_type
-				cacheHitLabelValues = append(cacheHitLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
+				// Default labels, then cache_type, then custom labels (clone so the original is untouched).
+				cacheHitLabelValues := spliceLabelValues(promLabelValues, len(p.defaultBifrostLabels), cacheType)
 
 				p.CacheHitsTotal.WithLabelValues(cacheHitLabelValues...).Inc()
+			}
+		} else if billedUsage != nil {
+			p.InputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(billedUsage.PromptTokens))
+			p.OutputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(billedUsage.CompletionTokens))
+			if d := billedUsage.PromptTokensDetails; d != nil {
+				if d.CachedReadTokens > 0 {
+					p.CacheReadInputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(d.CachedReadTokens))
+				}
+				if d.CachedWriteTokens > 0 {
+					p.CacheWriteInputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(d.CachedWriteTokens))
+				}
+				if w := d.CachedWriteTokenDetails; w != nil {
+					if w.CachedWriteTokens5m > 0 {
+						p.CacheWriteInputTokens5mTotal.WithLabelValues(promLabelValues...).Add(float64(w.CachedWriteTokens5m))
+					}
+					if w.CachedWriteTokens1h > 0 {
+						p.CacheWriteInputTokens1hTotal.WithLabelValues(promLabelValues...).Add(float64(w.CachedWriteTokens1h))
+					}
+				}
 			}
 		}
 	}()

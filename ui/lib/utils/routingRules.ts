@@ -1,7 +1,10 @@
+import type { RoutingTarget } from "@/lib/types/routingRules";
 /**
  * Routing Rules Utility Functions
  * Helper functions for CEL validation, formatting, and rule management
  */
+
+import { RoutingFallbackFormData, RoutingFallbackWire } from "@/lib/types/routingRules";
 
 /**
  * Validates if a CEL expression has basic correct syntax
@@ -48,38 +51,37 @@ export function formatFallback(fallback: string): string {
 }
 
 /**
- * Parses a fallback string into provider and model
- * @param fallback - The fallback string (e.g., "openai/gpt-4o")
- * @returns Object with provider and model, or null if invalid
+ * Normalizes a wire fallback into the provider and model the sheet's two selects need. Unpinned
+ * fallbacks arrive as the bare "provider/model" string.
  */
-export function parseFallback(fallback: string): { provider: string; model: string } | null {
-	if (!fallback) return null;
-	const parts = fallback.split("/");
-	if (parts.length !== 2) return null;
-	return { provider: parts[0], model: parts[1] };
+export function normalizeFallback(fallback: RoutingFallbackWire): RoutingFallbackFormData {
+	if (typeof fallback !== "string") {
+		return {
+			provider: fallback.provider ?? "",
+			model: fallback.model ?? "",
+			key_id: fallback.key_id ?? "",
+		};
+	}
+	const separator = fallback.indexOf("/");
+	if (separator === -1) {
+		return { provider: fallback, model: "", key_id: "" };
+	}
+	return { provider: fallback.slice(0, separator), model: fallback.slice(separator + 1), key_id: "" };
 }
 
 /**
- * Converts fallback array to string format for display/editing
- * @param fallbacks - Array of fallback strings
- * @returns Comma-separated string
+ * Renders a fallback back onto the wire, as the bare string unless it pins a key. Sending the object
+ * form for an unpinned fallback would change the rule's config hash on every save. The trailing
+ * slash is required when the model is empty: a bare "anthropic" parses to an empty provider.
  */
-export function fallbacksToString(fallbacks?: string[]): string {
-	if (!fallbacks || fallbacks.length === 0) return "";
-	return fallbacks.join(", ");
-}
-
-/**
- * Converts comma-separated string to fallback array
- * @param str - Comma-separated fallback string
- * @returns Array of fallback strings
- */
-export function stringToFallbacks(str: string): string[] {
-	if (!str || str.trim().length === 0) return [];
-	return str
-		.split(",")
-		.map((s) => s.trim())
-		.filter((s) => s.length > 0);
+export function denormalizeFallback(fallback: Partial<RoutingFallbackFormData>): RoutingFallbackWire {
+	const provider = (fallback.provider ?? "").trim();
+	const model = (fallback.model ?? "").trim();
+	const keyId = (fallback.key_id ?? "").trim();
+	if (keyId) {
+		return model ? { provider, model, key_id: keyId } : { provider, key_id: keyId };
+	}
+	return `${provider}/${model}`;
 }
 
 /**
@@ -149,4 +151,72 @@ export function detectCELOperators(expression: string): string[] {
 	});
 
 	return operators;
+}
+
+/** Upper bound for a rule's TTFT deadline, mirroring the API's validation. */
+export const MAX_TTFT_TIMEOUT_MS = 300000;
+
+/**
+ * Parses the TTFT deadline input. Empty means "off" (undefined); anything else must be a
+ * whole number of milliseconds in 1..MAX_TTFT_TIMEOUT_MS, or null is returned.
+ */
+export function parseTTFTTimeoutInput(raw: string): number | undefined | null {
+	const trimmed = (raw ?? "").trim();
+	if (trimmed === "") {
+		return undefined;
+	}
+	if (!/^\d+$/.test(trimmed)) {
+		return null;
+	}
+	const ms = Number(trimmed);
+	return ms >= 1 && ms <= MAX_TTFT_TIMEOUT_MS ? ms : null;
+}
+
+/**
+ * The API stores the TTFT deadline per target while the form edits a single value. Returns
+ * the shared deadline, or mixed=true when targets disagree (set vs unset counts as a disagreement).
+ */
+export function summarizeTargetsTTFT(targets: RoutingTarget[] | undefined): { ms: number | undefined; mixed: boolean } {
+	const values = (targets ?? []).map((t) => t.ttft_timeout_ms || undefined);
+	const first = values[0];
+	const mixed = values.some((v) => v !== first);
+	return { ms: mixed ? undefined : first, mixed };
+}
+
+/** Display text for a rule's TTFT deadline, derived from its targets. */
+export function formatTargetsTTFT(targets: RoutingTarget[] | undefined): string {
+	const { ms, mixed } = summarizeTargetsTTFT(targets);
+	if (mixed) {
+		return "Mixed";
+	}
+	return ms ? `${ms} ms (streaming)` : "Off";
+}
+
+/**
+ * Deadline to send for one target. While the input still equals what was loaded, a target keeps
+ * its own stored deadline (so mixed values survive an unrelated save) and a target added since
+ * inherits the shared one. Once the user edits the input, the new value applies to every target,
+ * including an empty one: `edited` separates "cleared on purpose" from "never touched".
+ */
+export function resolveTargetTTFTMs(input: string, loadedInput: string, targetMs?: number | null, edited = false): number {
+	if (!edited && input === loadedInput) {
+		return targetMs || Number(loadedInput) || 0;
+	}
+	return parseTTFTTimeoutInput(input) ?? 0;
+}
+
+/**
+ * What the TTFT field should convey. While untouched it reflects the loaded targets, so a mixed
+ * rule reads "Mixed" and still counts as having a deadline; once edited it follows the input.
+ */
+export function summarizeTTFTDisplay(
+	targets: RoutingTarget[] | undefined,
+	input: string,
+	edited: boolean,
+): { mixed: boolean; active: boolean } {
+	if (edited) {
+		return { mixed: false, active: typeof parseTTFTTimeoutInput(input) === "number" };
+	}
+	const { ms, mixed } = summarizeTargetsTTFT(targets);
+	return { mixed, active: mixed || ms !== undefined };
 }

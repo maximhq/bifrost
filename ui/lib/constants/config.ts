@@ -68,6 +68,7 @@ export const ModelPlaceholders = {
 	wafer: "e.g. glm-5.2, kimi-k2.6",
 	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
 	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
+	typesafe: "e.g. jev-1.13.0, jev-latest, jev-preview",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -103,6 +104,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	wafer: true,
 	databricks: false,
 	"github-copilot": false,
+	typesafe: true,
 };
 
 export const DefaultNetworkConfig = {
@@ -173,6 +175,7 @@ export const MCP_CREDENTIAL_STATUS_COLORS: Record<string, string> = {
 export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 	openai: [
 		"list_models",
+		"model_retrieve",
 		"text_completion",
 		"text_completion_stream",
 		"chat_completion",
@@ -194,6 +197,7 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"image_edit_stream",
 		"image_variation",
 		"count_tokens",
+		"decisions",
 		"video_generation",
 		"video_edit",
 		"video_retrieve",
@@ -201,10 +205,20 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"video_delete",
 		"video_list",
 		"video_remix",
+		"live",
 	],
-	anthropic: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream", "count_tokens"],
+	anthropic: [
+		"list_models",
+		"model_retrieve",
+		"chat_completion",
+		"chat_completion_stream",
+		"responses",
+		"responses_stream",
+		"count_tokens",
+	],
 	gemini: [
 		"list_models",
+		"model_retrieve",
 		"chat_completion",
 		"chat_completion_stream",
 		"responses",
@@ -224,7 +238,16 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"video_list",
 		"video_remix",
 	],
-	cohere: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream", "embedding", "count_tokens"],
+	cohere: [
+		"list_models",
+		"model_retrieve",
+		"chat_completion",
+		"chat_completion_stream",
+		"responses",
+		"responses_stream",
+		"embedding",
+		"count_tokens",
+	],
 	bedrock: [
 		"list_models",
 		"text_completion",
@@ -265,6 +288,7 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"responses_stream",
 		"embedding",
 	],
+	typesafe: ["list_models", "decisions"],
 };
 
 export const IS_ENTERPRISE = process.env.BIFROST_IS_ENTERPRISE === "true";

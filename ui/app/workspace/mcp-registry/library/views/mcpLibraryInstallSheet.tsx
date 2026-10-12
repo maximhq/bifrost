@@ -116,7 +116,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 
 	const authType = watch("auth_type") || "none";
 	const headers = watch("headers");
-	const headersValidationError = getHeadersValidationError(authType, headers);
+	const headersValidationError = getHeadersValidationError(headers);
 
 	const isStdio = server.connection_type === "stdio";
 	// Only the names the entry declares are editable as values; an entry with no

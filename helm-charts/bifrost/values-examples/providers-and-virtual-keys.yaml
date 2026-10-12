@@ -335,13 +335,18 @@ bifrost:
           azure_key_config:
             endpoint: "env.AZURE_ENDPOINT"
 
-    # Google Vertex AI — two auth modes:
+    # Google Vertex AI — three auth modes:
     #   1. vertex-sa-key:       explicit service-account key JSON via env var.
     #   2. vertex-workload-id:  inherits credentials from the environment
     #                           (GKE Workload Identity, GCE metadata server,
     #                           or GOOGLE_APPLICATION_CREDENTIALS path). Omit
     #                           `auth_credentials` and the Google SDK calls
     #                           google.FindDefaultCredentials automatically.
+    #   3. vertex-aws-wif:      running on AWS (EKS IRSA / Pod Identity, ECS,
+    #                           EC2): federate the pod's IAM role into a GCP
+    #                           token via a Workload Identity Pool AWS provider.
+    #                           Pair with serviceAccount.annotations
+    #                           eks.amazonaws.com/role-arn for IRSA.
     vertex:
       keys:
         - name: "vertex-sa-key"
@@ -363,6 +368,21 @@ bifrost:
             project_id: "env.VERTEX_PROJECT_ID"
             region: "us-central1"
             # auth_credentials intentionally omitted -> ADC lookup
+        - name: "vertex-aws-wif"
+          # AWS -> GCP Workload Identity Federation. No GCP key, no AWS key:
+          # the AWS SDK default chain supplies the identity (IRSA / Pod
+          # Identity), Bifrost exchanges it at GCP STS.
+          value: ""
+          weight: 1
+          models: ["*"]
+          vertex_key_config:
+            project_id: "env.VERTEX_PROJECT_ID"
+            region: "us-central1"
+            aws_workload_identity:
+              audience: "env.VERTEX_WIF_AUDIENCE"   # //iam.googleapis.com/projects/N/locations/global/workloadIdentityPools/P/providers/X
+              service_account_email: "env.VERTEX_WIF_SERVICE_ACCOUNT"   # optional; omit for direct access
+              # aws_region: "us-east-1"            # optional; defaults to AWS_REGION, then instance metadata
+              # aws_role_arn: "env.VERTEX_AWS_ROLE_ARN"   # optional AssumeRole hop before the exchange
 
     # AWS Bedrock — three auth modes:
     #   1. bedrock-static:   explicit AWS access/secret keys + S3 batch bucket
@@ -536,7 +556,7 @@ bifrost:
           - provider: "vertex"
             weight: 1
             allowed_models: ["*"]
-            key_ids: ["vertex-sa-key", "vertex-workload-id"]
+            key_ids: ["vertex-sa-key", "vertex-workload-id", "vertex-aws-wif"]
           - provider: "bedrock"
             weight: 1
             allowed_models: ["*"]

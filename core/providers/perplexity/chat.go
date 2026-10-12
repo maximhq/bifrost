@@ -315,6 +315,7 @@ func (response *PerplexityChatResponse) ToBifrostChatResponse(model string) *sch
 		if response.Usage.NumSearchQueries != nil {
 			completionDetails.NumSearchQueries = response.Usage.NumSearchQueries
 			hasCompletionDetails = true
+			usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *response.Usage.NumSearchQueries}}
 		}
 
 		if response.Usage.ReasoningTokens != nil {

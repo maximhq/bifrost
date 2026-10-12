@@ -313,6 +313,52 @@ func TestDropUnsupportedParams_ChatReasoningWithUnsupportedTools(t *testing.T) {
 	}
 }
 
+// A chat request that sets reasoning.mode on OpenAI/Azure is routed to the Responses
+// API by core, where reasoning and tools coexist, so the chat-only tools rewrite must
+// not erase it. Other providers keep the existing rewrite.
+func TestDropUnsupportedParams_ChatReasoningModeSurvivesUnsupportedTools(t *testing.T) {
+	newChat := func(provider schemas.ModelProvider) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: provider,
+				Model:    "reasoning-no-tools-model",
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{Effort: new("high"), Mode: new("pro")},
+					Tools: []schemas.ChatTool{{
+						Type:     schemas.ChatToolTypeFunction,
+						Function: &schemas.ChatToolFunction{Name: "get_weather"},
+					}},
+				},
+			},
+		}
+	}
+	supported := []string{"reasoning", "tools", "supports_none_reasoning_effort"}
+
+	// "my-openai" is a custom key: its base is only known at dispatch, so compat keeps
+	// reasoning and lets core route it or report the drop.
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure, "my-openai"} {
+		req := newChat(provider)
+		dropped := dropUnsupportedParams(newTestContext(), req, supported)
+		reasoning := req.ChatRequest.Params.Reasoning
+		if reasoning == nil || reasoning.Mode == nil || *reasoning.Mode != "pro" || reasoning.Effort == nil || *reasoning.Effort != "high" {
+			t.Fatalf("%s: reasoning = %+v, want effort=high mode=pro preserved for Responses routing", provider, reasoning)
+		}
+		if slices.Contains(dropped, "reasoning") {
+			t.Errorf("%s: reasoning reported in dropped=%v, want absent", provider, dropped)
+		}
+	}
+
+	other := newChat(schemas.Groq)
+	dropped := dropUnsupportedParams(newTestContext(), other, supported)
+	if got := other.ChatRequest.Params.Reasoning; got == nil || got.Effort == nil || *got.Effort != "none" || got.Mode != nil {
+		t.Fatalf("groq: reasoning = %+v, want forced to effort=none", got)
+	}
+	if !slices.Contains(dropped, "reasoning") {
+		t.Errorf("groq: reasoning not reported in dropped=%v, want present", dropped)
+	}
+}
+
 func TestDropUnsupportedParams_ChatReasoningNilForcedToNoneWithUnsupportedTools(t *testing.T) {
 	newChatNoReasoning := func() *schemas.BifrostRequest {
 		return &schemas.BifrostRequest{

@@ -44,7 +44,7 @@ import (
 // default transport. Streamed responses cannot: Response.SetBodyStream resets the
 // body first, and that reset returns fasthttp's pooled request stream to its pool,
 // so the transport parses headers with ResponseHeader.Read and decodes the body
-// itself (chunked via net/http/httputil, Content-Length via io.LimitReader,
+// itself (chunked via net/http/httputil, Content-Length via contentLengthBody,
 // identity until close). The resulting streamBody implements fasthttp's
 // ReadCloserWithError contract that NewIdleTimeoutReader, SetupStreamCancellation,
 // ReleaseStreamingResponse and Response.Body already rely on.
@@ -117,6 +117,12 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return false, ctxErr
 	}
+	// A stream attempt past its first-token deadline must not dial again when
+	// fasthttp retries a pooled socket the abort just closed.
+	abort := AttemptAbortFromContext(ctx)
+	if abort.Fired() {
+		return false, ErrStreamFirstTokenTimeout
+	}
 
 	customSkipBody := resp.SkipBody
 
@@ -133,7 +139,7 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 		return reused && !errors.Is(err, fasthttp.ErrBodyTooLarge)
 	}
 
-	watcher := startCancelWatcher(ctx, conn)
+	watcher := startCancelWatcher(ctx, abort, conn)
 	defer watcher.stop()
 
 	if err = conn.SetWriteDeadline(deadlineFor(hc.WriteTimeout, ctx)); err != nil {
@@ -203,7 +209,7 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 		watcher.stop()
 		if watcher.wasCancelled() {
 			hc.CloseConn(cc)
-			return false, ctx.Err()
+			return false, watcher.cancelErr()
 		}
 		if testHookBeforeConnRelease != nil {
 			testHookBeforeConnRelease()
@@ -231,7 +237,7 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	if watcher.wasCancelled() {
 		hc.ReleaseReader(br)
 		hc.CloseConn(cc)
-		return false, ctx.Err()
+		return false, watcher.cancelErr()
 	}
 	if err = conn.SetDeadline(time.Time{}); err != nil {
 		hc.ReleaseReader(br)
@@ -331,7 +337,7 @@ func newStreamBodyReader(resp *fasthttp.Response, br *bufio.Reader) io.Reader {
 	case contentLength == -1:
 		return &chunkedBody{chunked: httputil.NewChunkedReader(br), br: br, resp: resp}
 	case contentLength >= 0:
-		return io.LimitReader(br, int64(contentLength))
+		return &contentLengthBody{reader: io.LimitedReader{R: br, N: int64(contentLength)}}
 	default:
 		// Identity encoding without a length: the body ends when the peer closes.
 		return br
@@ -341,6 +347,20 @@ func newStreamBodyReader(resp *fasthttp.Response, br *bufio.Reader) io.Reader {
 type eofReader struct{}
 
 func (eofReader) Read([]byte) (int, error) { return 0, io.EOF }
+
+// contentLengthBody bounds reads to the declared length and reports an early
+// EOF as truncation, even when the final read returns both bytes and EOF.
+type contentLengthBody struct {
+	reader io.LimitedReader
+}
+
+func (c *contentLengthBody) Read(p []byte) (int, error) {
+	n, err := c.reader.Read(p)
+	if errors.Is(err, io.EOF) && c.reader.N > 0 {
+		err = io.ErrUnexpectedEOF
+	}
+	return n, err
+}
 
 // chunkedBody decodes a chunked body and consumes the trailer section after the
 // terminating chunk, so a keep-alive connection is left positioned at the next
@@ -402,9 +422,12 @@ func (s *streamBody) Read(p []byte) (int, error) {
 		// an EOF without a terminal marker becomes the retryable 502 truncation
 		// error, while any other read error is a generic stream failure. The
 		// standard-library chunked reader says io.ErrUnexpectedEOF for the same
-		// close, so restore the contract here. fullyRead stays false: the half-read
-		// connection is closed on release, never returned to the pool.
-		err = io.EOF
+		// close, so restore that contract only for chunked bodies. Fixed-length
+		// bodies must preserve the truncation error. fullyRead stays false: the
+		// half-read connection is closed on release, never returned to the pool.
+		if _, chunked := s.reader.(*chunkedBody); chunked {
+			err = io.EOF
+		}
 	}
 	return n, err
 }
@@ -430,29 +453,44 @@ func (s *streamBody) CloseWithError(err error) error {
 	return nil
 }
 
-// cancelWatcher closes the connection when the request context ends while the
-// transport still owns the socket (write phase and header wait). It is stopped
-// once the body is handed over, or when RoundTrip returns.
+// cancelWatcher closes the connection when the request context ends, or when
+// the stream attempt misses its first-token deadline, while the transport still
+// owns the socket (write phase and header wait). It is stopped once the body is
+// handed over, or when RoundTrip returns.
 type cancelWatcher struct {
 	ctx       context.Context
 	cancelled atomic.Bool
+	aborted   atomic.Bool
 	stopCh    chan struct{}
 	done      chan struct{}
 	stopOnce  sync.Once
 }
 
-func startCancelWatcher(ctx context.Context, conn net.Conn) *cancelWatcher {
-	if ctx.Done() == nil {
+func startCancelWatcher(ctx context.Context, abort *AttemptAbort, conn net.Conn) *cancelWatcher {
+	if ctx.Done() == nil && abort == nil {
 		return nil
 	}
 	w := &cancelWatcher{ctx: ctx, stopCh: make(chan struct{}), done: make(chan struct{})}
 	go func() {
 		defer close(w.done)
-		select {
-		case <-ctx.Done():
-			w.cancelled.Store(true)
-			_ = conn.Close()
-		case <-w.stopCh:
+		abortDone, abortStopped := abort.Done(), abort.Stopped()
+		for {
+			select {
+			case <-ctx.Done():
+				w.cancelled.Store(true)
+				_ = conn.Close()
+				return
+			case <-abortDone:
+				w.aborted.Store(true)
+				w.cancelled.Store(true)
+				_ = conn.Close()
+				return
+			case <-abortStopped:
+				// The attempt produced output; keep watching ctx only.
+				abortDone, abortStopped = nil, nil
+			case <-w.stopCh:
+				return
+			}
 		}
 	}()
 	return w
@@ -474,11 +512,22 @@ func (w *cancelWatcher) wasCancelled() bool {
 	return w != nil && w.cancelled.Load()
 }
 
+// cancelErr is the error for a socket the watcher closed.
+func (w *cancelWatcher) cancelErr() error {
+	if w != nil && w.aborted.Load() {
+		return ErrStreamFirstTokenTimeout
+	}
+	return w.ctx.Err()
+}
+
 // classify turns a socket error into what callers already expect: the context
 // error when the watcher closed the socket, fasthttp.ErrTimeout for a deadline
 // expiry, and the raw error otherwise (io.EOF stays io.EOF so HostClient.Do can
 // report ErrConnectionClosed and StaleConnectionRetryIfErr can retry).
 func (w *cancelWatcher) classify(err error) error {
+	if w != nil && w.aborted.Load() {
+		return ErrStreamFirstTokenTimeout
+	}
 	if w != nil && w.cancelled.Load() {
 		if ctxErr := w.ctx.Err(); ctxErr != nil {
 			return ctxErr

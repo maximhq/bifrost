@@ -52,7 +52,7 @@ export default function VirtualMCPsPage() {
 
 	if (isError) {
 		return (
-			<div className="mx-auto w-full max-w-7xl px-4 md:px-0">
+			<div className="no-padding-parent mx-auto w-full px-4 md:px-0">
 				<div className="border-destructive bg-destructive/10 text-destructive rounded-lg border p-6 text-sm">
 					Failed to load Virtual MCPs: {getErrorMessage(error)}
 				</div>
@@ -70,7 +70,7 @@ export default function VirtualMCPsPage() {
 	};
 
 	return (
-		<div className="mx-auto w-full max-w-7xl px-4 md:px-0">
+		<div className="no-padding-parent mx-auto w-full p-4">
 			<VirtualMCPsTable
 				virtualMcps={data?.virtual_mcps ?? []}
 				totalCount={totalCount}

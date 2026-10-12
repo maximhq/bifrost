@@ -338,6 +338,38 @@ func TestChromemStore_DimensionHandling(t *testing.T) {
 	assert.Error(t, ts.Store.CreateNamespace(ts.ctx, "chromem_bad_dim", -1, nil))
 }
 
+// TestChromemStore_CreateNamespaceRejectsDimensionChange pins the guard every store shares: a
+// collection that already holds vectors of one size cannot be reopened at another. chromem keeps
+// no dimension of its own, so the stored vectors are what is compared.
+func TestChromemStore_CreateNamespaceRejectsDimensionChange(t *testing.T) {
+	ts := NewChromemTestSetup(t)
+	defer ts.Cleanup(t)
+
+	namespace := "chromem_dimension_guard"
+	defer func() { _ = ts.Store.DeleteNamespace(ts.ctx, namespace) }()
+
+	require.NoError(t, ts.Store.CreateNamespace(ts.ctx, namespace, 512, nil))
+	// An empty collection has no vectors to compare, so reopening it at another size is allowed.
+	require.NoError(t, ts.Store.CreateNamespace(ts.ctx, namespace, 384, nil))
+	require.NoError(t, ts.Store.CreateNamespace(ts.ctx, namespace, 512, nil))
+
+	require.NoError(t, ts.Store.Add(ts.ctx, namespace, "doc-1", generateTestEmbedding(512), map[string]interface{}{"key": "v"}))
+	require.NoError(t, ts.Store.CreateNamespace(ts.ctx, namespace, 512, nil))
+
+	err := ts.Store.CreateNamespace(ts.ctx, namespace, 384, nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrDimensionMismatch)
+}
+
+// TestChromemStore_DeleteMissingIDSucceeds pins deleting an id that was never written as a no-op,
+// the contract every store shares so clearing an unknown cache entry is not a server error.
+func TestChromemStore_DeleteMissingIDSucceeds(t *testing.T) {
+	ts := NewChromemTestSetup(t)
+	defer ts.Cleanup(t)
+
+	assert.NoError(t, ts.Store.Delete(ts.ctx, ChromemTestNamespace, "never-written"))
+}
+
 func TestChromemStore_ErrorHandling(t *testing.T) {
 	ts := NewChromemTestSetup(t)
 	defer ts.Cleanup(t)

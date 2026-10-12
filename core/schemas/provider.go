@@ -35,6 +35,8 @@ const (
 const (
 	ErrProviderRequestTimedOut      = "request timed out (default is 300 seconds). You can increase it by setting the default_request_timeout_in_seconds in the network_config or in UI - Providers > Provider Name > Network Config."
 	ErrRequestCancelled             = "request cancelled by caller"
+	ErrStreamFirstTokenTimeout      = "TTFT timeout: stream produced no first token before the deadline"
+	FirstTokenTimeoutErrorCode      = "ttft_timeout"
 	ErrRequestBodyConversion        = "failed to convert bifrost request to the expected provider request body"
 	ErrProviderRequestMarshal       = "failed to marshal request body to JSON"
 	ErrProviderCreateRequest        = "failed to create HTTP request to provider API"
@@ -276,7 +278,20 @@ type ProxyConfig struct {
 	URL       *SecretVar `json:"url"`         // URL of the proxy server (supports env.*)
 	Username  *SecretVar `json:"username"`    // Username for proxy authentication (supports env.*)
 	Password  *SecretVar `json:"password"`    // Password for proxy authentication (supports env.*)
-	CACertPEM *SecretVar `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy (supports env.*)
+	CACertPEM *SecretVar `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy, and for the proxy itself when its URL is https:// (supports env.*)
+
+	// NoProxy is a comma-separated list of hosts that connect directly instead of
+	// through the proxy (".example.com" for a domain and its subdomains, "*.example.com"
+	// for subdomains only, "*" for everything). Runtime-only: it is filled in when a
+	// provider inherits the global proxy, whose no_proxy list it carries, and is never
+	// serialized with the provider's own config.
+	NoProxy string `json:"-"`
+
+	// SkipTLSVerify skips verifying the proxy's certificate for an https:// proxy URL
+	// (and, like the global setting it comes from, every TLS session through the
+	// proxy). Runtime-only: it is filled in when a provider inherits a global proxy
+	// with skip_tls_verify on, and is never serialized with the provider's own config.
+	SkipTLSVerify bool `json:"-"`
 }
 
 // MarshalForStorage serializes proxy settings for persistence (e.g. proxy_config_json).
@@ -335,6 +350,7 @@ func (pc *ProxyConfig) Redacted() *ProxyConfig {
 // A non-nil value only allows fields set to true; omitted or false fields are disallowed.
 type AllowedRequests struct {
 	ListModels            bool `json:"list_models"`
+	ModelRetrieve         bool `json:"model_retrieve"`
 	TextCompletion        bool `json:"text_completion"`
 	TextCompletionStream  bool `json:"text_completion_stream"`
 	ChatCompletion        bool `json:"chat_completion"`
@@ -349,6 +365,7 @@ type AllowedRequests struct {
 	Compaction            bool `json:"compaction"`
 	Embedding             bool `json:"embedding"`
 	Rerank                bool `json:"rerank"`
+	Decision              bool `json:"decisions"`
 	OCR                   bool `json:"ocr"`
 	Speech                bool `json:"speech"`
 	SpeechStream          bool `json:"speech_stream"`
@@ -390,6 +407,7 @@ type AllowedRequests struct {
 	PassthroughStream     bool `json:"passthrough_stream"`
 	WebSocketResponses    bool `json:"websocket_responses"`
 	Realtime              bool `json:"realtime"`
+	Live                  bool `json:"live"`
 	CachedContentCreate   bool `json:"cached_content_create"`
 	CachedContentList     bool `json:"cached_content_list"`
 	CachedContentRetrieve bool `json:"cached_content_retrieve"`
@@ -406,6 +424,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 	switch operation {
 	case ListModelsRequest:
 		return ar.ListModels
+	case ModelRetrieveRequest:
+		return ar.ModelRetrieve
 	case TextCompletionRequest:
 		return ar.TextCompletion
 	case TextCompletionStreamRequest:
@@ -434,6 +454,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Embedding
 	case RerankRequest:
 		return ar.Rerank
+	case DecisionRequest:
+		return ar.Decision
 	case OCRRequest:
 		return ar.OCR
 	case SpeechRequest:
@@ -516,6 +538,10 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.WebSocketResponses
 	case RealtimeRequest:
 		return ar.Realtime
+	case LiveRequest:
+		return ar.Live
+	case LiveContentRequest:
+		return ar.Live
 	case CachedContentCreateRequest:
 		return ar.CachedContentCreate
 	case CachedContentListRequest:
@@ -562,9 +588,11 @@ type ProviderConfig struct {
 	SendBackRawRequest      bool                  `json:"send_back_raw_request"`      // Send raw request back in the bifrost response (default: false)
 	SendBackRawResponse     bool                  `json:"send_back_raw_response"`     // Send raw response back in the bifrost response (default: false)
 	StoreRawRequestResponse bool                  `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
+	IgnoreProviderCost      bool                  `json:"ignore_provider_cost"`       // Ignore provider-reported usage.cost and price the request from Bifrost's catalog and overrides (default: false)
 	CustomProviderConfig    *CustomProviderConfig `json:"custom_provider_config,omitempty"`
 	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
 	PromptCache             *PromptCacheConfig    `json:"prompt_cache,omitempty"`
+	InjectedTools           *InjectedToolsConfig  `json:"injected_tools,omitempty"`
 }
 
 // PromptCacheConfig opts a provider into synthesizing prompt-cache breakpoints for
@@ -600,6 +628,8 @@ type CacheControlInjectionPoint struct {
 	// shape does not have to change when they arrive.
 	Location string `json:"location"`
 	// Role matches messages by role ("system", "user", "assistant", "developer").
+	// "user" also matches tool results: Responses function_call_output items and Chat
+	// tool messages are the client-supplied turn that follows a tool call.
 	Role *string `json:"role,omitempty"`
 	// Index matches by position. Negative values count from the end, so -1 is the last
 	// message. Out-of-range indices match nothing rather than erroring - a conversation
@@ -609,6 +639,28 @@ type CacheControlInjectionPoint struct {
 
 // CacheControlInjectionLocationMessage is the only Location value currently honoured.
 const CacheControlInjectionLocationMessage = "message"
+
+// InjectedToolsConfig names MCP tools that Bifrost adds to every chat and responses
+// request served by this provider and executes server side when the model calls them.
+//
+// Each slot has a fixed role. The role is what lets Bifrost replace the matching
+// native tool a client sent (a web_search server tool, web_search_options) with the
+// configured MCP tool, so one search backend serves every model on the provider.
+type InjectedToolsConfig struct {
+	WebSearch *InjectedToolRef `json:"web_search,omitempty"` // MCP tool that replaces native web search
+}
+
+// InjectedToolRef identifies one MCP tool by client name and the tool's own name,
+// without the "<client>-" prefix Bifrost adds when it exposes the tool to a model.
+type InjectedToolRef struct {
+	MCPClientName string `json:"mcp_client_name"`
+	ToolName      string `json:"tool_name"`
+}
+
+// IsEmpty reports whether no injected tool slot is configured.
+func (c *InjectedToolsConfig) IsEmpty() bool {
+	return c == nil || c.WebSearch == nil
+}
 
 // OpenAIConfig holds OpenAI-specific provider configuration.
 type OpenAIConfig struct {
@@ -683,6 +735,8 @@ type Provider interface {
 	GetProviderKey() ModelProvider
 	// ListModels performs a list models request
 	ListModels(ctx *BifrostContext, keys []Key, request *BifrostListModelsRequest) (*BifrostListModelsResponse, *BifrostError)
+	// ModelRetrieve retrieves a single model's metadata (OpenAI-only; other providers return unsupported)
+	ModelRetrieve(ctx *BifrostContext, key Key, request *BifrostModelRetrieveRequest) (*BifrostModelRetrieveResponse, *BifrostError)
 	// TextCompletion performs a text completion request
 	TextCompletion(ctx *BifrostContext, key Key, request *BifrostTextCompletionRequest) (*BifrostTextCompletionResponse, *BifrostError)
 	// TextCompletionStream performs a text completion stream request.
@@ -706,6 +760,8 @@ type Provider interface {
 	Embedding(ctx *BifrostContext, key Key, request *BifrostEmbeddingRequest) (*BifrostEmbeddingResponse, *BifrostError)
 	// Rerank performs a rerank request to reorder documents by relevance to a query
 	Rerank(ctx *BifrostContext, key Key, request *BifrostRerankRequest) (*BifrostRerankResponse, *BifrostError)
+	// Decision performs an decision request against an annotated function-tool definition (Typesafe-only; other providers return unsupported)
+	Decision(ctx *BifrostContext, key Key, request *BifrostDecisionRequest) (*BifrostDecisionResponse, *BifrostError)
 	// OCR performs an optical character recognition request on a document
 	OCR(ctx *BifrostContext, key Key, request *BifrostOCRRequest) (*BifrostOCRResponse, *BifrostError)
 	// Speech performs a text to speech request

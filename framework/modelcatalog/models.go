@@ -175,6 +175,7 @@ func (mc *ModelCatalog) catalogGeneration() uint64 {
 func (mc *ModelCatalog) initCaches() {
 	mc.providersForModel = newProvidersForModelCache(mc)
 	mc.modelsForProvider = newModelsForProviderCache(mc)
+	mc.maxOutputTokens = gencache.New[int](mc.catalogGeneration, catalogMemoMaxEntries)
 }
 
 // Clone-on-return: the resolver sorts the result in place.

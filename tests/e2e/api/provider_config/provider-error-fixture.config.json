@@ -1,0 +1,53 @@
+{
+  "framework": {
+    "pricing": {
+      "pricing_url": "http://127.0.0.1:8791/pricing.json",
+      "model_parameters_url": "http://127.0.0.1:8791/model-parameters.json",
+      "mcp_library_sync_interval": 0
+    }
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "upstream-503",
+            "upstream-429",
+            "upstream-429-ms",
+            "upstream-ok",
+            "upstream-fixed-length-short",
+            "upstream-fixed-length-ok",
+            "gpt-5-pro"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "azure": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "azure-filtered"
+          ],
+          "weight": 1,
+          "azure_key_config": {
+            "endpoint": "http://127.0.0.1:8791"
+          }
+        }
+      ],
+      "network_config": {
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    }
+  }
+}

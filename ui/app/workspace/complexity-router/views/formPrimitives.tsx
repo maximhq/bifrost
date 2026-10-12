@@ -1,6 +1,7 @@
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import { Info } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
@@ -54,12 +55,12 @@ export function FieldLabel({ htmlFor, children, tooltip }: { htmlFor?: string; c
 	);
 }
 
-export function SectionHeading({ title, description, aside }: { title: string; description: string; aside?: ReactNode }) {
+export function SectionHeading({ title, description, aside }: { title: string; description?: string; aside?: ReactNode }) {
 	return (
-		<div className="flex flex-wrap items-start justify-between gap-2">
+		<div className={cn("flex flex-wrap justify-between gap-2", description ? "items-start" : "items-center")}>
 			<div className="space-y-1">
 				<h2 className="text-sm font-semibold">{title}</h2>
-				<p className="text-muted-foreground max-w-2xl text-xs leading-relaxed">{description}</p>
+				{description && <p className="text-muted-foreground max-w-2xl text-xs leading-relaxed">{description}</p>}
 			</div>
 			{aside}
 		</div>

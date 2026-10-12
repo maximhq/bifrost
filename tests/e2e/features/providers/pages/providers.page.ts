@@ -174,6 +174,14 @@ export class ProvidersPage extends BasePage {
    * Create a custom provider
    */
   async createProvider(config: CustomProviderConfig): Promise<void> {
+    await this.fillCustomProviderForm(config)
+    await this.saveCustomProvider()
+  }
+
+  /**
+   * Open the custom provider sheet and fill name, base format and base URL without saving
+   */
+  async fillCustomProviderForm(config: CustomProviderConfig): Promise<void> {
     await this.openCustomProviderSheet()
 
     // Fill in provider name
@@ -190,7 +198,12 @@ export class ProvidersPage extends BasePage {
     if (config.baseUrl) {
       await this.baseUrlInput.fill(config.baseUrl)
     }
+  }
 
+  /**
+   * Save the open custom provider sheet and wait for it to close
+   */
+  async saveCustomProvider(): Promise<void> {
     // Save the provider
     await this.customProviderSaveBtn.click()
 
@@ -409,6 +422,7 @@ export class ProvidersPage extends BasePage {
       gemini: 'Gemini',
       cohere: 'Cohere',
       bedrock: 'AWS Bedrock',
+      typesafe: 'TypeSafe',
     }
     return labels[type] || type
   }
@@ -437,7 +451,7 @@ export class ProvidersPage extends BasePage {
   /**
    * Select a configuration tab
    */
-  async selectConfigTab(tabName: 'network' | 'proxy' | 'performance' | 'governance' | 'debugging'): Promise<void> {
+  async selectConfigTab(tabName: 'network' | 'proxy' | 'performance' | 'governance' | 'debugging' | 'web-search'): Promise<void> {
     await this.openConfigSheet()
 
     const tab = this.page.getByTestId(`provider-tab-${tabName}`)

@@ -192,7 +192,7 @@ Reserved keys are `session-id`, `trace-id`, `trace-name`, `generation-id`, `gene
 
 For tags that should be visible beyond Maxim, use `x-bf-dim-*` instead of `x-bf-maxim-*`.
 
-`x-bf-dim-*` is the canonical per-request dimension prefix in Bifrost. Those dimensions are forwarded to Maxim as tags at lower priority than explicit `x-bf-maxim-*` tags, and they are also propagated to internal logs, OpenTelemetry spans, and Prometheus custom labels.
+`x-bf-dim-*` is the canonical per-request dimension prefix in Bifrost. Those dimensions are forwarded to Maxim as tags at lower priority than explicit `x-bf-maxim-*` tags, and they are also propagated to internal logs, OpenTelemetry spans, Datadog spans, and Prometheus custom labels.
 
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \

@@ -7,6 +7,7 @@ import {
 	type EntityLabelResolverProps,
 	type EntitySelectorModeProps,
 	type EntitySelectorOption,
+	useEntitySelectorPages,
 	useEntitySelectorSearch,
 } from "@/components/entitySelectors/entitySelector";
 import { useGetMCPClientsQuery } from "@/lib/store";
@@ -32,18 +33,23 @@ interface MCPClientSelectorOwnProps extends EntitySelectorCommonProps {
 export type MCPClientSelectorProps = MCPClientSelectorOwnProps & EntitySelectorModeProps;
 
 export function MCPClientSelector({ limit = ENTITY_SELECTOR_PAGE_SIZE, ...props }: MCPClientSelectorProps) {
-	const { open, setOpen, setSearch, debouncedSearch, skip, isDebouncing } = useEntitySelectorSearch();
+	const search = useEntitySelectorSearch();
 
-	const { data, isFetching, isError } = useGetMCPClientsQuery({ limit, search: debouncedSearch || undefined }, { skip });
+	const { currentData, isFetching, isError, refetch } = useGetMCPClientsQuery(
+		{ limit, offset: search.offset, search: search.debouncedSearch || undefined },
+		{ skip: search.skip },
+	);
 
-	const options = useMemo(
+	const entries = useMemo(
 		() =>
-			(data?.clients ?? []).map((client) => ({
+			currentData?.clients?.map((client) => ({
 				value: client.config.client_id,
 				label: client.config.name || client.config.client_id,
 			})),
-		[data],
+		[currentData],
 	);
+
+	const listProps = useEntitySelectorPages(search, { entries, totalCount: currentData?.total_count, isFetching, isError, refetch });
 
 	return (
 		<EntitySelector
@@ -51,14 +57,7 @@ export function MCPClientSelector({ limit = ENTITY_SELECTOR_PAGE_SIZE, ...props 
 			LabelResolver={MCPClientLabelResolver}
 			entityLabel="MCP server"
 			entityLabelPlural="MCP servers"
-			options={options}
-			isFetching={isFetching}
-			isError={isError}
-			open={open}
-			onOpenChange={setOpen}
-			onSearchChange={setSearch}
-			isSearching={isDebouncing || (isFetching && !!debouncedSearch)}
-			debouncedSearch={debouncedSearch}
+			{...listProps}
 		/>
 	);
 }

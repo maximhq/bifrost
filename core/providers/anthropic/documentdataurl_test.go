@@ -1,11 +1,14 @@
 package anthropic
 
 import (
+	"bytes"
 	"encoding/base64"
-	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/tidwall/gjson"
 	"strings"
 	"testing"
+
+	"github.com/maximhq/bifrost/core/internal/memtest"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // TestInlineTextDocumentDataURL verifies base64 transport becomes readable text in both inference APIs.
@@ -58,4 +61,33 @@ func TestNativeJSONDocument(t *testing.T) {
 			t.Fatalf("JSON normalization failed: %s %v", body, err)
 		}
 	}
+}
+
+// TestNormalizeBase64TextSources_AllocationScaling pins the allocation shape of the
+// base64 text-document rewrite.
+//
+// The loop performs three whole-body sjson.SetBytes calls per document source, and each
+// reserialises the entire request, so N text documents cost 3N copies of the body.
+func TestNormalizeBase64TextSources_AllocationScaling(t *testing.T) {
+	memtest.AssertAllocScaling(t, func(docs int) []byte {
+		// A base64 text/plain document source is what the rewrite targets; the payload
+		// grows with N because each document carries its own encoded body.
+		payload := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("t", 300)))
+		var b bytes.Buffer
+		b.WriteString(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":[`)
+		for i := range docs {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(`{"type":"document","source":{"type":"base64","media_type":"text/plain","data":"`)
+			b.WriteString(payload)
+			b.WriteString(`"}}`)
+		}
+		b.WriteString(`]}]}`)
+		return b.Bytes()
+	}, func(body []byte) {
+		if _, err := normalizeBase64TextSources(body); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
 }
