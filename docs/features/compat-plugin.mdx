@@ -10,7 +10,7 @@ The LiteLLM compatibility plugin provides two transformations:
 
 1. **Text-to-Chat Conversion** - Automatically converts text completion requests to chat completion format for models that only support chat APIs
 2. **Chat-to-Responses Conversion** - Automatically converts chat completion requests to responses format for models that only support responses APIs
-3. **Drop Unsupported Params** - Automatically drops unsupported parameters if the model doesn't support them
+3. **Drop Unsupported Params** - Automatically drops unsupported parameters if the model doesn't support them. A `reasoning.summary` value the datasheet marks unsupported (`supports_reasoning_summary_detailed`, `supports_reasoning_summary_concise` or `supports_reasoning_summary_auto` set to `false`) becomes `auto` when the model accepts `auto`, and is dropped otherwise. Reasoning effort is always kept
 4. **Unsupported Parameter Conversion** - Automatically converts unsupported parameters to their supported equivalents
 5. **Reasoning-Only Models to Responses** - Routes chat completion requests to the Responses API for models that cannot reason alongside tool calls on chat completions
 6. **Decision-to-Responses Emulation** - Answers decision requests for models without a native decisions endpoint by prompting the model through the Responses API (off by default)
