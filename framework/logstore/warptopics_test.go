@@ -481,11 +481,18 @@ func TestLogsFilterByWarpTopic(t *testing.T) {
 		ctx := context.Background()
 		base := warpTopicTestTime()
 		require.NoError(t, store.UpsertWarpTopics(ctx, []WarpTopic{
-			{ID: "billing", Label: "Billing", EmbeddingSignature: "sig"},
-			{ID: "invoices", Label: "Invoices", EmbeddingSignature: "sig", Status: WarpTopicStatusMerged, MergedInto: "billing"},
+			{ID: "money", Label: "Money", Kind: WarpTopicKindTheme, EmbeddingSignature: "sig"},
+			{ID: "billing", Label: "Billing", EmbeddingSignature: "sig", ParentID: "money"},
+			{ID: "invoices", Label: "Invoices", EmbeddingSignature: "sig", Status: WarpTopicStatusMerged, MergedInto: "billing", ParentID: "money"},
+			{ID: "refunds", Label: "Refunds", EmbeddingSignature: "sig", ParentID: "money"},
 			{ID: "sql", Label: "SQL", EmbeddingSignature: "sig"},
+			// Retired by a later run. Retiring changes only the status, so the
+			// row keeps the theme and survivor it pointed at; its requests are
+			// no longer the theme's or the survivor's.
+			{ID: "old-billing", Label: "Old billing", EmbeddingSignature: "sig", Status: WarpTopicStatusRetired, ParentID: "money"},
+			{ID: "old-invoices", Label: "Old invoices", EmbeddingSignature: "sig", Status: WarpTopicStatusRetired, MergedInto: "billing"},
 		}))
-		rows := map[string]string{"b1": "billing", "b2": "billing", "i1": "invoices", "s1": "sql", "n1": "", "x1": "retired-topic"}
+		rows := map[string]string{"b1": "billing", "b2": "billing", "i1": "invoices", "r1": "refunds", "s1": "sql", "n1": "", "x1": "retired-topic", "o1": "old-billing", "o2": "old-invoices"}
 		var assignments []WarpTopicAssignment
 		for id, topic := range rows {
 			entry := &Log{ID: id, Timestamp: base, CreatedAt: base, Object: "chat.completion", Status: "success", Provider: "openai", Model: "gpt-4o"}
@@ -514,9 +521,11 @@ func TestLogsFilterByWarpTopic(t *testing.T) {
 		}
 		assert.Equal(t, []string{"b1", "b2", "i1"}, ids(SearchFilters{TopicIDs: []string{"billing"}}), "the merged topic's request counts under its survivor")
 		assert.Equal(t, []string{"b1", "b2", "i1", "s1"}, ids(SearchFilters{TopicIDs: []string{"billing", "sql"}}), "several topics union")
+		assert.Equal(t, []string{"b1", "b2", "i1", "r1"}, ids(SearchFilters{TopicIDs: []string{"money"}}), "a theme is its topics, merged ones included")
 		assert.Equal(t, []string{"b2"}, ids(SearchFilters{TopicIDs: []string{"billing"}, Models: []string{"claude"}}), "the other filters still narrow")
 		assert.Empty(t, ids(SearchFilters{TopicIDs: []string{"nothing"}}))
-		assert.Len(t, ids(SearchFilters{}), 7, "no topic filter hides nothing")
+		assert.Len(t, ids(SearchFilters{}), 10, "no topic filter hides nothing")
+		assert.Equal(t, []string{"o1"}, ids(SearchFilters{TopicIDs: []string{"old-billing"}}), "a retired topic named directly still finds its requests")
 
 		stats, err := store.GetStats(ctx, SearchFilters{TopicIDs: []string{"billing"}})
 		require.NoError(t, err)

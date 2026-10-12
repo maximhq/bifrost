@@ -82,6 +82,9 @@ type BackfillJobMeta struct {
 	MergedByName   int            `json:"merged_by_name,omitempty"`
 	MergeThreshold *float64       `json:"merge_threshold,omitempty"`
 	Topics         []TopicSummary `json:"topics,omitempty"`
+	// Themes is how many themes the active topics were grouped into once
+	// the run had written its topics.
+	Themes int `json:"themes,omitempty"`
 }
 
 // embeddingConfigSignature identifies the embedding space a backfill was frozen

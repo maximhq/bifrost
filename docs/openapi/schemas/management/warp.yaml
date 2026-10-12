@@ -447,6 +447,13 @@ WarpTopicsStatus:
       type: integer
       format: int64
       description: Clusters joined after naming because they were given the same name.
+    themes:
+      type: integer
+      format: int64
+      description: |
+        How many themes the active topics were grouped into once the run had
+        written its topics. Omitted when there were too few topics to group,
+        or the grouping could not run (see last_error).
     merge_threshold:
       type: number
       format: double

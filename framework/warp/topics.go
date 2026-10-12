@@ -96,6 +96,9 @@ const (
 type Topic struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
+	// ThemeID and Theme name the theme the topic is in, when it is in one.
+	ThemeID string `json:"theme_id,omitempty"`
+	Theme   string `json:"theme,omitempty"`
 	// Requests is how many of the window's requests are filed under the topic.
 	Requests int64 `json:"requests"`
 	// Share is Requests over every request of the window that has a place
@@ -159,6 +162,25 @@ type TopicPoint struct {
 	Tokens   int64     `json:"tokens"`
 }
 
+// TopicTheme is a theme as the tool reports it: its topics' counts added
+// up, and the topics themselves.
+type TopicTheme struct {
+	ID         string       `json:"id"`
+	Label      string       `json:"label"`
+	Requests   int64        `json:"requests"`
+	Share      float64      `json:"share"`
+	Sessions   int64        `json:"sessions"` // an upper bound: one session can span its topics
+	Errors     int64        `json:"errors"`
+	Cost       float64      `json:"cost"`
+	Tokens     int64        `json:"tokens"`
+	AvgLatency float64      `json:"avg_latency_ms"`
+	Trend      TopicTrend   `json:"trend"`
+	Series     []TopicPoint `json:"series,omitempty"`
+	Topics     []Topic      `json:"topics"`
+	// Link opens the theme's requests in the Logs view. Set by the tool.
+	Link string `json:"link,omitempty"`
+}
+
 // TopicQuery is what list_topics asks the reader for.
 type TopicQuery struct {
 	// Filter selects the requests counted. StartTime and EndTime are required:
@@ -172,11 +194,21 @@ type TopicQuery struct {
 	// NameContains keeps only topics whose name contains it, ignoring case
 	// and surrounding space, before Limit applies. Empty keeps every topic.
 	NameContains string
+	// ByTheme answers with themes, each holding its topics, Limit applying
+	// to the themes; topics in no theme come back on their own.
+	ByTheme bool
 }
 
 // TopicList is the reader's answer.
 type TopicList struct {
 	Topics []Topic `json:"topics"`
+	// Themes and Ungrouped are the answer to a ByTheme query: the themes,
+	// largest first, and the topics in none. Topics is then empty.
+	Themes    []TopicTheme `json:"themes,omitempty"`
+	Ungrouped []Topic      `json:"ungrouped,omitempty"`
+	// MatchedThemes is how many themes had a request in the window, before
+	// Limit.
+	MatchedThemes int `json:"-"`
 	// Known is how many topics the deployment has for the embedding model in
 	// use, whether or not the window reached any. Zero means none have been
 	// built.
@@ -296,6 +328,17 @@ func (r *TopicReader) ListTopics(ctx context.Context, query TopicQuery) (*TopicL
 		return nil, fmt.Errorf("list merged topics: %w", err)
 	}
 	into := resolveMergedTopics(active, merged)
+	themeRows, err := r.topics.ListWarpTopics(ctx, logstore.WarpTopicFilter{
+		Kinds: []string{logstore.WarpTopicKindTheme}, Statuses: []string{logstore.WarpTopicStatusActive},
+		EmbeddingSignature: embeddingConfigSignature(config), OmitCentroids: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list themes: %w", err)
+	}
+	themeLabel := make(map[string]string, len(themeRows))
+	for _, theme := range themeRows {
+		themeLabel[theme.ID] = theme.Label
+	}
 	ids := make([]string, 0, len(rows)+len(into)+1)
 	for id := range active {
 		ids = append(ids, id)
@@ -348,15 +391,16 @@ func (r *TopicReader) ListTopics(ctx context.Context, query TopicQuery) (*TopicL
 		if list.TotalRequests > 0 {
 			topic.Share = float64(entry.Requests) / float64(list.TotalRequests)
 		}
+		if label, ok := themeLabel[row.ParentID]; ok {
+			topic.ThemeID, topic.Theme = row.ParentID, label
+		}
 		topic.SampleLogIDs = row.ExampleLogIDs()
 		topics = append(topics, topic)
 	}
-	sort.SliceStable(topics, func(i, j int) bool {
-		if topics[i].Requests != topics[j].Requests {
-			return topics[i].Requests > topics[j].Requests
-		}
-		return topics[i].Label < topics[j].Label
-	})
+	sortTopics(topics)
+	if query.ByTheme {
+		return r.listByTheme(ctx, query, list, topics, usage, before, into)
+	}
 	list.Matched = len(topics)
 	if len(topics) > query.Limit {
 		topics = topics[:query.Limit]
@@ -373,6 +417,132 @@ func (r *TopicReader) ListTopics(ctx context.Context, query TopicQuery) (*TopicL
 	return list, nil
 }
 
+// sortTopics orders topics largest first, then by name.
+func sortTopics(topics []Topic) {
+	sort.SliceStable(topics, func(i, j int) bool {
+		if topics[i].Requests != topics[j].Requests {
+			return topics[i].Requests > topics[j].Requests
+		}
+		return topics[i].Label < topics[j].Label
+	})
+}
+
+// listByTheme groups the topics by theme and adds each theme's topics up,
+// largest theme first. A topic in no theme is returned on its own.
+func (r *TopicReader) listByTheme(ctx context.Context, query TopicQuery, list *TopicList, topics []Topic, usage, before map[string]logstore.WarpTopicUsage, into map[string]string) (*TopicList, error) {
+	byTheme := make(map[string]*TopicTheme)
+	var order []string
+	for _, topic := range topics {
+		if topic.ThemeID == "" {
+			list.Ungrouped = append(list.Ungrouped, topic)
+			continue
+		}
+		theme, ok := byTheme[topic.ThemeID]
+		if !ok {
+			theme = &TopicTheme{ID: topic.ThemeID, Label: topic.Theme}
+			byTheme[topic.ThemeID] = theme
+			order = append(order, topic.ThemeID)
+		}
+		theme.Topics = append(theme.Topics, topic)
+	}
+	themes := make([]TopicTheme, 0, len(order))
+	for _, id := range order {
+		theme := byTheme[id]
+		var current, previous logstore.WarpTopicUsage
+		for _, topic := range theme.Topics {
+			current = addTopicUsage(current, usage[topic.ID])
+			previous = addTopicUsage(previous, before[topic.ID])
+		}
+		theme.Requests, theme.Sessions, theme.Errors = current.Requests, current.Sessions, current.Errors
+		theme.Cost, theme.Tokens, theme.AvgLatency = current.Cost, current.Tokens, current.AvgLatency
+		theme.Trend = topicTrend(previous, current)
+		if list.TotalRequests > 0 {
+			theme.Share = float64(current.Requests) / float64(list.TotalRequests)
+		}
+		themes = append(themes, *theme)
+	}
+	sort.SliceStable(themes, func(i, j int) bool {
+		if themes[i].Requests != themes[j].Requests {
+			return themes[i].Requests > themes[j].Requests
+		}
+		return themes[i].Label < themes[j].Label
+	})
+	list.MatchedThemes = len(themes)
+	if len(themes) > query.Limit {
+		themes = themes[:query.Limit]
+	}
+	// Examples and series for every topic shown, then each theme's series
+	// is its topics' added up.
+	shown := make([]Topic, 0, len(topics))
+	for _, theme := range themes {
+		shown = append(shown, theme.Topics...)
+	}
+	shown = append(shown, list.Ungrouped...)
+	if err := r.attachTopicExamples(ctx, shown); err != nil {
+		return nil, err
+	}
+	if query.BucketSeconds > 0 {
+		if err := r.attachTopicSeries(ctx, query, shown, into); err != nil {
+			return nil, err
+		}
+	}
+	index := 0
+	for t := range themes {
+		theme := &themes[t]
+		var series []TopicPoint
+		for m := range theme.Topics {
+			theme.Topics[m] = shown[index]
+			index++
+			series = addTopicSeries(series, theme.Topics[m].Series)
+		}
+		theme.Series = series
+	}
+	list.Ungrouped = shown[index:]
+	list.Themes = themes
+	return list, nil
+}
+
+// addTopicUsage adds one topic's usage into a theme's running total, the
+// latency as a request-weighted mean.
+func addTopicUsage(sum, entry logstore.WarpTopicUsage) logstore.WarpTopicUsage {
+	if sum.Requests+entry.Requests > 0 {
+		sum.AvgLatency = (sum.AvgLatency*float64(sum.Requests) + entry.AvgLatency*float64(entry.Requests)) / float64(sum.Requests+entry.Requests)
+	}
+	sum.Requests += entry.Requests
+	sum.Sessions += entry.Sessions
+	sum.Errors += entry.Errors
+	sum.Cost += entry.Cost
+	sum.Tokens += entry.Tokens
+	return sum
+}
+
+// addTopicSeries adds one series into another, bucket by bucket, keeping
+// the buckets in order.
+func addTopicSeries(sum, series []TopicPoint) []TopicPoint {
+	merged := make([]TopicPoint, 0, len(sum)+len(series))
+	i, j := 0, 0
+	for i < len(sum) || j < len(series) {
+		switch {
+		case j == len(series) || (i < len(sum) && sum[i].Bucket.Before(series[j].Bucket)):
+			merged = append(merged, sum[i])
+			i++
+		case i == len(sum) || series[j].Bucket.Before(sum[i].Bucket):
+			merged = append(merged, series[j])
+			j++
+		default:
+			point := sum[i]
+			point.Requests += series[j].Requests
+			point.Errors += series[j].Errors
+			point.Cost += series[j].Cost
+			point.Tokens += series[j].Tokens
+			merged = append(merged, point)
+			i++
+			j++
+		}
+	}
+	return merged
+}
+
 // foldTopicUsage adds each topic's usage into the topic it was merged into,
 // keyed by the surviving id. Sums add; the session count is a count of
 // distinct sessions and cannot be added across topics, so it is the sum as
@@ -384,16 +554,8 @@ func foldTopicUsage(usage []logstore.WarpTopicUsage, into map[string]string) map
 		if target, ok := into[id]; ok {
 			id = target
 		}
-		sum := folded[id]
+		sum := addTopicUsage(folded[id], entry)
 		sum.TopicID = id
-		if sum.Requests+entry.Requests > 0 {
-			sum.AvgLatency = (sum.AvgLatency*float64(sum.Requests) + entry.AvgLatency*float64(entry.Requests)) / float64(sum.Requests+entry.Requests)
-		}
-		sum.Requests += entry.Requests
-		sum.Sessions += entry.Sessions
-		sum.Errors += entry.Errors
-		sum.Cost += entry.Cost
-		sum.Tokens += entry.Tokens
 		folded[id] = sum
 	}
 	return folded
@@ -669,13 +831,15 @@ func listTopicsTool() Tool {
 			"The window defaults to the last 7 days; filters narrow it to a team, customer, user, virtual key, model, provider, app, status or session, like the other tools. " +
 			"Each topic carries requests, share, distinct sessions, errors, cost, tokens, average latency, a trend block against the period of equal length before the window (has_previous_period, requests_trend, tokens_trend, cost_trend), when it was first seen (new_in_window marks one that appeared inside the window), " +
 			"and example_links that each open one example request. With interval, each topic also carries its series, bucket by bucket. " +
+			"With group_by theme, the answer is the themes the topics are grouped into - broad subjects such as Billing over the topics Refund Requests and Invoice Questions - each with the same counts added up over its topics, and the topics inside it; the call for 'what broad areas', 'what kinds of things', or a deployment with too many topics to list. " +
 			"Requests, shares and sessions count requests and sessions, not people: every model call is one request, so a five-turn chat is five.",
 		schemaJSON: `{
   "type": "object",
   "properties": {
     "filters": ` + TopicFilterSchema + `,
     "interval": {"type": "string", "enum": ["hour", "day"], "description": "Also return each topic's window bucket by bucket - one point per UTC hour or day. The call for 'per day' breakdowns and for how a topic moved inside the window; the trend block already answers 'up or down since the period before'. At most 200 buckets."},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Topics to return, largest first. Default 15."}
+    "group_by": {"type": "string", "enum": ["topic", "theme"], "description": "topic (default) lists topics. theme lists the themes the topics are grouped into, each with its topics inside, and the topics in no theme on their own; limit then counts themes."},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Topics - or with group_by theme, themes - to return, largest first. Default 15."}
   }
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
@@ -703,7 +867,11 @@ func listTopicsTool() Tool {
 			if err != nil {
 				return nil, err
 			}
-			query := TopicQuery{Filter: topicAssignmentFilter(filters), Limit: limit}
+			groupBy, err := enumArg(args, "group_by", "topic", []string{"topic", "theme"})
+			if err != nil {
+				return nil, err
+			}
+			query := TopicQuery{Filter: topicAssignmentFilter(filters), Limit: limit, ByTheme: groupBy == "theme"}
 			if interval != "" {
 				query.BucketSeconds = 3600
 				if interval == "day" {
@@ -717,37 +885,58 @@ func listTopicsTool() Tool {
 			if err != nil {
 				return nil, err
 			}
-			for index := range list.Topics {
+			linkTo := func(id string) string {
 				narrowed := *filters
-				narrowed.TopicIDs = []string{list.Topics[index].ID}
-				list.Topics[index].Link = logsViewLink(&narrowed)
+				narrowed.TopicIDs = []string{id}
+				return logsViewLink(&narrowed)
+			}
+			linkTopics := func(topics []Topic) {
+				for index := range topics {
+					topics[index].Link = linkTo(topics[index].ID)
+				}
+			}
+			linkTopics(list.Topics)
+			linkTopics(list.Ungrouped)
+			for index := range list.Themes {
+				list.Themes[index].Link = linkTo(list.Themes[index].ID)
+				linkTopics(list.Themes[index].Topics)
 			}
 			out := map[string]any{
-				"topics":             list.Topics,
-				"returned":           len(list.Topics),
-				"total_topics":       list.Matched,
 				"total_requests":     list.TotalRequests,
 				"unmatched_requests": list.Unmatched,
 				"window":             resolvedWindow(filters),
 				"previous_window":    formatWindow(list.PreviousStart, list.PreviousEnd),
 				"scope":              scopeNote(filters, deps.scope),
 			}
+			if query.ByTheme {
+				out["themes"] = list.Themes
+				out["returned"] = len(list.Themes)
+				out["total_themes"] = list.MatchedThemes
+				out["ungrouped_topics"] = list.Ungrouped
+				if len(list.Themes) == 0 && len(list.Ungrouped) > 0 {
+					out["hint"] = "The topics are not grouped into themes - there are too few to group, or the grouping has not run since they changed. Answer from ungrouped_topics, which are the topics themselves."
+				}
+			} else {
+				out["topics"] = list.Topics
+				out["returned"] = len(list.Topics)
+				out["total_topics"] = list.Matched
+			}
 			switch {
 			case list.Known == 0:
 				out["hint"] = "No topics have been built yet. An administrator can build them from Warp settings. " +
 					"Until then, take one bounded sample with query_logs (include_content, limit 25) and summarise the themes, saying it is a sample."
-			case len(list.Topics) == 0:
+			case len(list.Topics) == 0 && len(list.Themes) == 0 && len(list.Ungrouped) == 0:
 				out["hint"] = "Topics exist, but no request in this window and scope was filed under one. Say so; a wider window or scope may hold some."
 			default:
 				out["counts"] = "requests, share, total_requests and unmatched_requests count requests, and sessions counts sessions. Every model call is one request, so a chat of five turns " +
 					"or an agent making five calls is five. Say requests, not conversations or people. Share is of total_requests, which includes the unmatched_requests that fell under no topic."
 				out["trend"] = "Each topic's trend compares it with previous_window, the period of equal length just before window. " +
 					"A null tokens_trend or cost_trend means that metric was zero in the previous period and is not now: describe it as new rather than as a change."
-				out["links"] = "Each topic's link opens its requests in the Logs view, over this window and these filters: link the topic's name to it. " +
+				out["links"] = "Each topic's and theme's link opens its requests in the Logs view, over this window and these filters: link the name to it. " +
 					"Each entry of example_links opens one example request from the topic; offer those as examples, after the name."
-				out["requests"] = "For the requests behind a topic - a list, a count, a breakdown, who sent them - call query_logs, count_logs or query_usage_by with topic_ids set to the topic's id and the same window and filters."
-				out["cannot_answer"] = "Not available yet: how many people asked about a topic (sessions are sessions, not people; a query_usage_by user ranking with topic_ids counts the users with a request in it), " +
-					"and topics grouped into broader themes. Asked for one of those, answer what the topics do show, then say it is not available yet."
+				out["requests"] = "For the requests behind a topic or theme - a list, a count, a breakdown, who sent them - call query_logs, count_logs or query_usage_by with topic_ids set to its id and the same window and filters."
+				out["cannot_answer"] = "Not available yet: how many people asked about a topic (sessions are sessions, not people; a query_usage_by user ranking with topic_ids counts the users with a request in it). " +
+					"Asked for that, answer what the topics do show, then say it is not available yet."
 			}
 			return out, nil
 		},
@@ -976,6 +1165,13 @@ func (s *Service) RunTopicsJob(ctx context.Context, job tables.TableSidekiqJob, 
 	// this process; other instances pick them up when their copy expires.
 	if s.indexer != nil {
 		s.indexer.InvalidateTopics()
+	}
+	// The themes are rebuilt over the new topics. A model that cannot group
+	// them is reported, not a failed run: the topics are in place.
+	if themes, err := s.GroupTopics(ctx); err != nil {
+		meta.LastError = fmt.Sprintf("group topics into themes: %v", err)
+	} else {
+		meta.Themes = themes.Themes
 	}
 	meta.Message = fmt.Sprintf("Clustered %d request(s) into %d topic(s).", meta.Clustered, meta.Indexed)
 	if meta.Assigned > 0 {

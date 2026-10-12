@@ -40,6 +40,7 @@ const completedRun = {
   merged: 2,
   merged_by_name: 3,
   merge_threshold: 0.95,
+  themes: 12,
   message: 'Clustered 7015 request(s) into 95 topic(s). Merged 2 near-duplicate cluster(s) at similarity 0.95 or above. 3 more joined for sharing a name.',
 }
 
@@ -112,7 +113,7 @@ test.describe('Warp topic clusters', () => {
     await expect(status).toContainText('completed')
     // Counted in requests: every model call is one, so "conversations" would overstate it.
     await expect(status).toContainText('7015 requests read')
-    await expect(status).toContainText('95 topics written')
+    await expect(status).toContainText('95 topics written · 12 themes')
     await expect(status).toContainText('Merged 2 near-duplicate cluster(s)')
     await expect(status).not.toContainText('fell back')
     await expect(status).not.toContainText('Latest error')

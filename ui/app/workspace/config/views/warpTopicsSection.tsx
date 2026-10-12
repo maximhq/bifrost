@@ -197,6 +197,7 @@ export default function WarpTopicsSection({
 					</div>
 					<div className="text-muted-foreground text-xs">
 						{shown.indexed} topic{shown.indexed === 1 ? "" : "s"} written
+						{shown.themes ? ` · ${shown.themes} theme${shown.themes === 1 ? "" : "s"}` : ""}
 						{shown.failed > 0 ? ` · ${shown.failed} label${shown.failed === 1 ? "" : "s"} fell back` : ""}
 					</div>
 					{shown.message && <p className="text-muted-foreground text-xs">{shown.message}</p>}
