@@ -1803,6 +1803,33 @@ func TestGetToolDocsStatesShapeSpecificAccess(t *testing.T) {
 	}
 }
 
+// A tool schema describes inputs, so the stub cannot name the one shape a tool returns.
+// It has to declare the union the decoder can actually produce, scalars included: a JSON
+// number, bool or null at the top level arrives as a Starlark scalar.
+func TestStubsDeclareTheUnionResultType(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+
+	stub := readGithubStub(t, mode)
+	if !strings.Contains(stub, "-> "+stubResultType) {
+		t.Fatalf("readToolFile stub does not declare the union result type, got:\n%s", stub)
+	}
+	if strings.Contains(stub, "-> dict:") || strings.Contains(stub, "-> dict\n") {
+		t.Fatalf("readToolFile stub still declares dict unconditionally, got:\n%s", stub)
+	}
+
+	msg, err := mode.handleGetToolDocs(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("tool-call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"server":"codey","tool":"add"}`},
+	})
+	docs := instructionsToolResponse(t, msg, err)
+	if !strings.Contains(docs, "-> "+stubResultType) {
+		t.Fatalf("getToolDocs does not declare the union result type, got:\n%s", docs)
+	}
+	if !strings.Contains(docs, stubResultType+": Response from the tool") {
+		t.Fatalf("getToolDocs Returns section does not name the union result type, got:\n%s", docs)
+	}
+}
+
 // The stub's byte bound comes from the client override, else the configured global — never the
 // compile-time default, which would silently exceed a lowered global or cut short a raised one.
 

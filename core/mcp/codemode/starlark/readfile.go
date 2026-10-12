@@ -299,9 +299,10 @@ func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isTo
 	// as JSON - including a JSON string wrapping the payload - arrives as a container,
 	// anything else as a str. Saying "dict, always" here is what sent models into
 	// result["key"] on values that were never dicts.
-	sb.WriteString("# Results are JSON-decoded: a dict or list when the server's text is JSON (a JSON\n")
-	sb.WriteString("# string wrapping the payload is decoded too), otherwise a plain str. Index a dict\n")
-	sb.WriteString("# with result[\"key\"], a list with result[0]; a str can only be printed.\n")
+	sb.WriteString("# Results are JSON-decoded: a dict, list or scalar (int, float, bool, None) when the\n")
+	sb.WriteString("# server's text is JSON - a JSON string wrapping the payload is decoded too - otherwise\n")
+	sb.WriteString("# a plain str. Index a dict with result[\"key\"], a list with result[0]; a str can only\n")
+	sb.WriteString("# be printed.\n")
 	sb.WriteString(fmt.Sprintf("# For detailed docs: use getToolDocs(server=\"%s\", tool=\"tool_name\")\n", clientName))
 	sb.WriteString("# Note: Descriptions may be truncated. Use getToolDocs for full details.\n")
 	if instructions != "" {
@@ -334,9 +335,9 @@ func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isTo
 
 		// Write Python signature: def tool_name(param: type, param: type = None) -> dict:  # description
 		if desc != "" {
-			sb.WriteString(fmt.Sprintf("def %s(%s) -> dict:  # %s\n", toolName, params, desc))
+			sb.WriteString(fmt.Sprintf("def %s(%s) -> %s:  # %s\n", toolName, params, stubResultType, desc))
 		} else {
-			sb.WriteString(fmt.Sprintf("def %s(%s) -> dict\n", toolName, params))
+			sb.WriteString(fmt.Sprintf("def %s(%s) -> %s\n", toolName, params, stubResultType))
 		}
 	}
 

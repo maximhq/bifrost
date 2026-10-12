@@ -329,16 +329,18 @@ Reads a virtual `.pyi` file to get compact Python function signatures for tools.
 ```python
 # youtube server tools
 # Usage: youtube.tool_name(param=value)
-# Results are JSON-decoded: an object or array when the server's text is JSON
-# (a JSON string wrapping the payload is decoded too), otherwise a plain str.
+# Results are JSON-decoded: a dict, list or scalar (int, float, bool, None) when the
+# server's text is JSON - a JSON string wrapping the payload is decoded too - otherwise
+# a plain str. Index a dict with result["key"], a list with result[0]; a str can only
+# be printed.
 # For detailed docs: use getToolDocs(server="youtube", tool="tool_name")
 #
 # ---- server instructions (from the upstream handshake) ----
 # Prefer search for discovery; call get_video only with an id search returned.
 # ---- end server instructions ----
 
-def search(query: str, maxResults: int = None) -> dict:  # Search for videos
-def get_video(id: str) -> dict:  # Get video details
+def search(query: str, maxResults: int = None) -> dict | list | str | int | float | bool | None:  # Search for videos
+def get_video(id: str) -> dict | list | str | int | float | bool | None:  # Get video details
 ```
 
 If the server described how its tools should be used when it connected, that guidance appears
@@ -373,14 +375,15 @@ Get detailed documentation for a specific tool when the compact signature from `
 #
 # CRITICAL - HANDLING RESPONSES:
 # A result is JSON-decoded once, and once more when that yields a JSON string.
-# So it is a dict or list when the server's text is JSON, otherwise a str.
+# So it is a dict, list or scalar (int, float, bool, None) when the server's text is
+# JSON, otherwise a str.
 # 1. print(result) when unsure which shape you got
 # 2. dict: result["key"], or result.get("key", default) for safe access
 # 3. list: result[0] - integer indexing; there is no .get() on a list
 # 4. str: print it and read the output - the sandbox cannot parse it in code
 # ============================================================================
 
-def search(query: str, maxResults: int = None) -> dict:
+def search(query: str, maxResults: int = None) -> dict | list | str | int | float | bool | None:
     """
     Search for videos on YouTube.
 
@@ -389,13 +392,13 @@ def search(query: str, maxResults: int = None) -> dict:
         maxResults (int): Max results to return (optional)
 
     Returns:
-        dict: Response from the tool. Structure varies by tool.
-              Use print(result) to inspect the actual structure.
+        dict | list | str | int | float | bool | None: Response from the tool.
+              Structure varies by tool. Use print(result) to inspect it.
 
     Example:
         result = youtube.search(query="...")
         print(result)  # Always inspect response first!
-        value = result.get("key", default)  # Safe access
+        value = result["key"] if isinstance(result, dict) else result  # dict-only access
     """
     ...
 ```

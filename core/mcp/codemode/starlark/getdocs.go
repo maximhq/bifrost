@@ -168,7 +168,8 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 	// parsed in code. Saying "responses are dicts" here is what sent models into
 	// result["key"] on values that were plain strings; state both shapes instead.
 	sb.WriteString("# A result is JSON-decoded once, and once more when that yields a JSON string.\n")
-	sb.WriteString("# So it is a dict or list when the server's text is JSON, otherwise a str.\n")
+	sb.WriteString("# So it is a dict, list or scalar (int, float, bool, None) when the server's text is\n")
+	sb.WriteString("# JSON, otherwise a str.\n")
 	sb.WriteString("# 1. print(result) when unsure which shape you got\n")
 	sb.WriteString("# 2. dict: result[\"key\"], or result.get(\"key\", default) for safe access\n")
 	sb.WriteString("# 3. list: result[0] - integer indexing; there is no .get() on a list\n")
@@ -197,7 +198,7 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 
 		// Generate function signature
 		params := formatPythonParams(tool.Function.Parameters)
-		sb.WriteString(fmt.Sprintf("def %s(%s) -> dict:\n", toolName, params))
+		sb.WriteString(fmt.Sprintf("def %s(%s) -> %s:\n", toolName, params, stubResultType))
 
 		// Generate docstring
 		sb.WriteString("    \"\"\"\n")
@@ -263,7 +264,7 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 
 		// Returns section
 		sb.WriteString("    Returns:\n")
-		sb.WriteString("        dict: Response from the tool. Structure varies by tool.\n")
+		sb.WriteString(fmt.Sprintf("        %s: Response from the tool. Structure varies by tool.\n", stubResultType))
 		sb.WriteString("              Use print(result) to inspect the actual structure.\n")
 		sb.WriteString("\n")
 
@@ -271,7 +272,7 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 		sb.WriteString("    Example:\n")
 		sb.WriteString(fmt.Sprintf("        result = %s.%s(%s)\n", clientName, toolName, getExampleParams(tool.Function.Parameters)))
 		sb.WriteString("        print(result)  # Always inspect response first!\n")
-		sb.WriteString("        value = result.get(\"key\", default)  # Safe access\n")
+		sb.WriteString("        value = result[\"key\"] if isinstance(result, dict) else result  # dict-only access\n")
 		sb.WriteString("    \"\"\"\n")
 		sb.WriteString("    ...\n\n")
 	}

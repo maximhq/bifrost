@@ -17,6 +17,13 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// stubResultType is the return type written into every generated stub signature. MCP tool
+// schemas describe inputs, so the shape a tool hands back is not knowable when the stub is
+// generated; naming only dict sent models into result["key"] on values that were strings,
+// lists or scalars. The union is the honest bound, and it matches what
+// extractResultFromChatMessage can produce.
+const stubResultType = "dict | list | str | int | float | bool | None"
+
 // serverInstructionsComment renders the client's upstream instructions, or "" if it advertises
 // none. Shared by readToolFile and getToolDocs: every stub documenting a server carries them.
 func (s *StarlarkCodeMode) serverInstructionsComment(clientName string) string {
