@@ -238,3 +238,12 @@ func TestIsClefModel(t *testing.T) {
 		assert.False(t, IsClefModel(model), model)
 	}
 }
+
+func TestIsPerplexityDeciderModel(t *testing.T) {
+	for _, model := range []string{"pplx-decider-v1-27b", "pplx-decider-v1.1-27b", "pplx-decider-v1.1-27b-20261006", "PPLX-Decider-v1.1-27b"} {
+		assert.True(t, IsPerplexityDeciderModel(model), model)
+	}
+	for _, model := range []string{"sonar-pro", "perplexity/pplx-decider-v1.1-27b", "decider", ""} {
+		assert.False(t, IsPerplexityDeciderModel(model), model)
+	}
+}
