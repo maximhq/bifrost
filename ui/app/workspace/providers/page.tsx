@@ -21,6 +21,7 @@ import {
 import { KnownProvider, ModelProvider, ModelProviderName, ProviderStatus } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { decisionProviderIconKey } from "@/lib/utils/decisionModelProviders";
+import { CLOUDFLARE_PROVIDER, isMigratableCloudflareProvider } from "@/lib/utils/cloudflareMigration";
 import { DATABRICKS_PROVIDER, isCustomDatabricksProvider } from "@/lib/utils/databricksMigration";
 import { findCustomProviderCollisions, normalizeProviderName } from "@/lib/utils/providerCollision";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -32,6 +33,7 @@ import { toast } from "sonner";
 import AddCustomProviderSheet from "./dialogs/addNewCustomProviderSheet";
 import ConfirmDeleteProviderDialog from "./dialogs/confirmDeleteProviderDialog";
 import ConfirmRedirectionDialog from "./dialogs/confirmRedirection";
+import CloudflareMigrationDialog from "./dialogs/cloudflareMigrationDialog";
 import DatabricksMigrationDialog from "./dialogs/databricksMigrationDialog";
 import FirstPartyProviderAvailableDialog from "./dialogs/firstPartyProviderAvailableDialog";
 import { AddProviderDropdown } from "./views/addProviderDropdown";
@@ -64,11 +66,13 @@ export default function Providers() {
 	const [provider, setProvider] = useQueryState("provider");
 	const { dismissed: dismissedCollisions, dismiss: dismissCollision, hydrated: collisionsHydrated } = useDismissedProviderCollisions();
 	const [handledCollisions, setHandledCollisions] = useState<Set<string>>(() => new Set());
-	// Custom Databricks provider the user chose not to migrate for now; cleared on every re-selection.
+	// Custom Databricks or Cloudflare provider the user chose not to migrate for now; cleared on every re-selection.
 	const [migrationDeferredFor, setMigrationDeferredFor] = useState<string | undefined>(undefined);
 	// The migration dialog is pinned to the provider it opened for: the source disappears from the
 	// list mid-migration, and the dialog must survive that.
-	const [migrationSession, setMigrationSession] = useState<{ provider: ModelProvider } | undefined>(undefined);
+	const [migrationSession, setMigrationSession] = useState<{ provider: ModelProvider; target: ModelProviderName } | undefined>(undefined);
+
+	const MigrationDialog = migrationSession?.target === CLOUDFLARE_PROVIDER ? CloudflareMigrationDialog : DatabricksMigrationDialog;
 
 	const {
 		data: savedProviders,
@@ -87,13 +91,16 @@ export default function Providers() {
 	const knownProviders = VisibleProviderNames.map((name) => ({ name }));
 
 	// Custom providers whose name matches a provider that is now supported natively.
-	// Databricks is excluded: it gets the guided migration dialog below instead of the advisory one.
+	// Databricks, and a custom "cloudflare" on Workers AI, are excluded: they get the guided migration
+	// dialog below instead of the advisory one.
 	// Hidden (unreleased) providers are excluded too, since the user cannot add them yet.
 	const activeCollision = collisionsHydrated
 		? findCustomProviderCollisions(configuredProviders).find((c) => {
 				const key = normalizeProviderName(c.customName);
+				const source = configuredProviders.find((p) => p.name === c.customName);
 				return (
 					c.knownProvider !== DATABRICKS_PROVIDER &&
+					!(source && isMigratableCloudflareProvider(source)) &&
 					!HiddenProviders.has(c.knownProvider) &&
 					!dismissedCollisions.has(key) &&
 					!handledCollisions.has(key)
@@ -102,11 +109,14 @@ export default function Providers() {
 		: undefined;
 
 	// Open the migration dialog when the selected provider is a custom provider named exactly
-	// "databricks", unless the user deferred it for this selection.
+	// "databricks", or one named exactly "cloudflare" that points at Workers AI, unless the user
+	// deferred it for this selection.
 	useEffect(() => {
 		if (migrationSession || !selectedProvider || provider !== selectedProvider.name || isLoadingProvider) return;
 		if (migrationDeferredFor === selectedProvider.name) return;
-		if (isCustomDatabricksProvider(selectedProvider)) setMigrationSession({ provider: selectedProvider });
+		if (isCustomDatabricksProvider(selectedProvider)) setMigrationSession({ provider: selectedProvider, target: DATABRICKS_PROVIDER });
+		else if (isMigratableCloudflareProvider(selectedProvider))
+			setMigrationSession({ provider: selectedProvider, target: CLOUDFLARE_PROVIDER });
 	}, [migrationSession, selectedProvider, provider, isLoadingProvider, migrationDeferredFor]);
 
 	useEffect(() => {
@@ -254,7 +264,7 @@ export default function Providers() {
 				}}
 			/>
 			{migrationSession && (
-				<DatabricksMigrationDialog
+				<MigrationDialog
 					show
 					provider={migrationSession.provider}
 					onDeferred={() => {
@@ -264,7 +274,7 @@ export default function Providers() {
 					onMigrated={() => {
 						setMigrationDeferredFor(undefined);
 						setMigrationSession(undefined);
-						setProvider(DATABRICKS_PROVIDER);
+						setProvider(migrationSession.target);
 						if (isMobile) setMobileDetailOpen(true);
 					}}
 				/>

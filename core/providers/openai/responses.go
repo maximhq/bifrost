@@ -226,14 +226,56 @@ const PromptCacheBreakpointModeExplicit = "explicit"
 // live verification behind the number.
 const maxResponsesCacheBreakpoints = 4
 
+// maxImplicitModeCacheBreakpoints is the marker ceiling on the OpenAI family when the
+// request runs in the default implicit mode: "an implicit breakpoint uses one of the
+// four cache write slots to leave three usable explicit cache write slots"
+// (https://developers.openai.com/api/docs/guides/prompt-caching).
+const maxImplicitModeCacheBreakpoints = 3
+
+// promptCacheBreakpointCeiling returns how many breakpoints translation may leave on a
+// request. Only the OpenAI family has an implicit breakpoint to make room for, and only
+// when the caller has not switched it off with mode=explicit.
+func promptCacheBreakpointCeiling(ctx *schemas.BifrostContext, openAIFamily bool, options *schemas.PromptCacheOptions, extraParams map[string]interface{}) int {
+	if !openAIFamily || effectivePromptCacheMode(ctx, options, extraParams) == PromptCacheBreakpointModeExplicit {
+		return maxResponsesCacheBreakpoints
+	}
+	return maxImplicitModeCacheBreakpoints
+}
+
+// effectivePromptCacheMode returns the prompt_cache_options.mode the provider will see.
+// With passthrough on, ExtraParams is merged into the serialized body after the typed
+// fields (providerUtils.CheckContextAndGetRequestBody), so a mode there overrides the
+// typed one. The Anthropic ingress carries a caller's prompt_cache_options only that way.
+func effectivePromptCacheMode(ctx *schemas.BifrostContext, options *schemas.PromptCacheOptions, extraParams map[string]interface{}) string {
+	if ctx != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+		switch v := extraParams["prompt_cache_options"].(type) {
+		case map[string]interface{}:
+			if mode, ok := v["mode"].(string); ok {
+				return mode
+			}
+		case *schemas.PromptCacheOptions:
+			if v != nil && v.Mode != nil {
+				return *v.Mode
+			}
+		case schemas.PromptCacheOptions:
+			if v.Mode != nil {
+				return *v.Mode
+			}
+		}
+	}
+	if options != nil && options.Mode != nil {
+		return *options.Mode
+	}
+	return ""
+}
+
 // responsesUsesPromptCacheBreakpoints reports whether this provider and model take
 // caching intent as prompt_cache_breakpoint on a content block rather than as
 // Anthropic-style per-block cache_control.
 //
 // Two unrelated families landed on the same field. OpenRouter does not expose
 // per-block cache_control through /v1/responses and converts a breakpoint back into
-// an Anthropic one (#6290). OpenAI defined the field for gpt-5.6 and later, where it pairs with
-// request-level prompt_cache_options; Azure and Bedrock Mantle serve the same models
+// an Anthropic one (#6290). OpenAI defined the field for gpt-5.6 and later; Azure and Bedrock Mantle serve the same models
 // through the same wire format, so they inherit it (#6180). Bedrock is listed for the
 // same reason: its OpenAI-compatible surfaces on both hosts speak that wire format, and
 // a request there reports the bedrock key rather than bedrock_mantle.
@@ -251,30 +293,6 @@ func responsesUsesPromptCacheBreakpoints(caps schemas.ModelCaps, provider schema
 	default:
 		return false
 	}
-}
-
-// responsesHasPromptCacheBreakpoint reports whether any content block carries a
-// breakpoint. Used to decide whether explicit cache mode is warranted: switching a
-// request to explicit mode with no breakpoint anywhere opts it out of caching
-// entirely, which is strictly worse than the implicit default it replaced.
-func responsesHasPromptCacheBreakpoint(messages []schemas.ResponsesMessage) bool {
-	for i := range messages {
-		if messages[i].Content != nil {
-			for j := range messages[i].Content.ContentBlocks {
-				if messages[i].Content.ContentBlocks[j].PromptCacheBreakpoint != nil {
-					return true
-				}
-			}
-		}
-		if blocks := responsesToolOutputBlocks(&messages[i]); blocks != nil {
-			for j := range blocks {
-				if blocks[j].PromptCacheBreakpoint != nil {
-					return true
-				}
-			}
-		}
-	}
-	return false
 }
 
 // responsesToolOutputBlocks returns the block-form output of a function_call_output
@@ -310,14 +328,19 @@ func isMarkableResponsesToolOutputBlock(b schemas.ResponsesMessageContentBlock) 
 	return isMarkableResponsesInputBlock(b, true)
 }
 
-// responsesUsesPromptCacheOptions reports whether the target also needs request-level
-// prompt_cache_options to honour an explicit breakpoint.
+// responsesIsOpenAIFamilyBreakpointTarget reports whether the target is the OpenAI half
+// of the breakpoint gate (gpt-5.6 and later on OpenAI, Azure, Bedrock and Bedrock
+// Mantle). Those targets accept breakpoints on image, file and function_call_output
+// parts, and run an implicit breakpoint alongside explicit ones.
 //
-// This is the OpenAI half only (gpt-5.6 and later). Those models default to IMPLICIT caching, which puts
-// the breakpoint on the latest message - so an agent loop rewrites the whole growing
-// prompt every turn at the cache-write rate. The block marker alone does not switch
-// that off; mode=explicit does. OpenRouter has no equivalent field and needs none.
-func responsesUsesPromptCacheOptions(caps schemas.ModelCaps, provider schemas.ModelProvider, model string) bool {
+// Bifrost never sets prompt_cache_options.mode=explicit on its own. Implicit mode, the
+// default, honours explicit breakpoints and also looks back over up to 20 earlier
+// message endings; explicit-only mode checks only the breakpoints in the current
+// request. An agent loop whose marker moves forward every turn (Claude Code marks its
+// newest tool_result) would then never read back the previous turn's entry and would
+// rewrite the whole conversation at the 1.25x write rate every turn. A caller that
+// wants explicit-only caching sends prompt_cache_options itself, and it passes through.
+func responsesIsOpenAIFamilyBreakpointTarget(caps schemas.ModelCaps, provider schemas.ModelProvider, model string) bool {
 	switch provider {
 	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle, schemas.Bedrock:
 		return caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(model))
@@ -382,7 +405,7 @@ func responsesUsesPromptCacheOptions(caps schemas.ModelCaps, provider schemas.Mo
 // messages is this function's own slice, but each element's Content pointer and
 // the block array beneath it still alias bifrostReq.Input, which plugins and the
 // fallback chain reuse. Both are copied before a marker is written.
-func applyResponsesCacheBreakpoints(messages []schemas.ResponsesMessage, openAIFamily bool) {
+func applyResponsesCacheBreakpoints(messages []schemas.ResponsesMessage, openAIFamily bool, ceiling int) {
 	// Locate every markable block in render order, and count the breakpoints the
 	// caller already set, before anything is copied. A toolOutput ref addresses a
 	// function_call_output item: block is the index into its output blocks, or -1
@@ -455,7 +478,7 @@ func applyResponsesCacheBreakpoints(messages []schemas.ResponsesMessage, openAIF
 	// Spend only the budget the caller's own breakpoints leave behind. A caller
 	// who sets more than the ceiling by hand owns that request and its upstream
 	// error; Bifrost declines to manufacture one on top.
-	budget := maxResponsesCacheBreakpoints - existing
+	budget := ceiling - existing
 	if budget <= 0 {
 		return
 	}
@@ -562,7 +585,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			needsRewrite := false
 			for _, block := range message.Content.ContentBlocks {
 				if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction ||
-					block.Type == schemas.ResponsesOutputMessageContentTypeFallback {
+					block.Type == schemas.ResponsesOutputMessageContentTypeFallback ||
+					block.Type == schemas.ResponsesInputMessageContentBlockTypeToolAddition ||
+					block.Type == schemas.ResponsesInputMessageContentBlockTypeToolRemoval {
 					needsRewrite = true
 					break
 				}
@@ -588,6 +613,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 						// Anthropic-only server-side fallback boundary marker. Unlike
 						// compaction it carries no user content (only from/to model
 						// names), so drop it rather than rendering it as text.
+					case schemas.ResponsesInputMessageContentBlockTypeToolAddition,
+						schemas.ResponsesInputMessageContentBlockTypeToolRemoval:
+						// Anthropic-only mid-conversation tool change; OpenAI has no
+						// per-turn tool-set edit and rejects unknown block types.
 					default:
 						// Keep every other block as-is
 						newContentBlocks = append(newContentBlocks, block)
@@ -874,18 +903,20 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// provider reports its own name ("my-openai"), which no case in either predicate
 	// knows, so gating on the unresolved key sends every such request down the default
 	// branch: the caller's cache_control is stripped by the serializer with nothing put
-	// in its place, and the request silently falls back to implicit caching - the exact
-	// billing profile #6180 exists to escape. The injector resolves the same way in
+	// in its place, and the caller's breakpoint silently vanishes. The injector resolves the same way in
 	// core/bifrost.go, and providers/utils does too; this call site was the odd one out.
 	cachePromptProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
-	needsExplicitPromptCacheMode := false
 	if responsesUsesPromptCacheBreakpoints(caps, cachePromptProvider, capModel) {
 		// Only the OpenAI family documents a breakpoint on image/file blocks and on
-		// function_call_output content; that is the same set of targets that takes
-		// prompt_cache_options.
-		usesPromptCacheOptions := responsesUsesPromptCacheOptions(caps, cachePromptProvider, capModel)
-		applyResponsesCacheBreakpoints(messages, usesPromptCacheOptions)
-		needsExplicitPromptCacheMode = usesPromptCacheOptions && responsesHasPromptCacheBreakpoint(messages)
+		// function_call_output content.
+		openAIFamily := responsesIsOpenAIFamilyBreakpointTarget(caps, cachePromptProvider, capModel)
+		var callerCacheOptions *schemas.PromptCacheOptions
+		var extraParams map[string]interface{}
+		if bifrostReq.Params != nil {
+			callerCacheOptions = bifrostReq.Params.PromptCacheOptions
+			extraParams = bifrostReq.Params.ExtraParams
+		}
+		applyResponsesCacheBreakpoints(messages, openAIFamily, promptCacheBreakpointCeiling(ctx, openAIFamily, callerCacheOptions, extraParams))
 	}
 
 	// Updating params
@@ -1050,17 +1081,6 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 	}
 
-	// gpt-5.6 defaults to IMPLICIT caching, which anchors the breakpoint on the latest
-	// message - so an agent loop rewrites the whole growing prompt every turn at the
-	// cache-write rate and reads almost nothing back (#6180). A block marker alone does
-	// not switch that off; mode=explicit does. Runs after the params assignment above so
-	// a caller that set prompt_cache_options themselves is visible, and wins.
-	if needsExplicitPromptCacheMode && req.ResponsesParameters.PromptCacheOptions == nil {
-		req.ResponsesParameters.PromptCacheOptions = &schemas.PromptCacheOptions{
-			Mode: schemas.Ptr(PromptCacheBreakpointModeExplicit),
-		}
-	}
-
 	// Append tools hoisted out of additional_tools items. Runs after the params
 	// assignment above, which would otherwise clobber Tools, and before the
 	// normalization below so hoisted function tools get the same treatment.
@@ -1130,13 +1150,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 // unsupported outright, or conditionally via "when_effort_none" — accepted only
 // while reasoning is off. The fallback is name detection: OpenAI reasoning models
 // (o1/o3 series, GPT-6) reject it, except GPT-5.x while effort is "none". An
-// omitted effort counts as "none" only where that is the model's default
-// (GPT-5.1 through 5.4). The -pro variants always reason, so they always strip.
+// omitted effort counts as "none" only where that is the model's default: the
+// datasheet's default_reasoning_effort, else GPT-5.1 through 5.4 by name. The
+// -pro variants always reason, so they always strip.
 // Gated on the OpenAI-family name rather than caps.SupportsReasoning:
 // this asks whether the API rejects the field, which is not the same question for
 // xAI/Groq.
 func samplingParamUnsupported(caps schemas.ModelCaps, field, model, effort string) bool {
-	effortIsNone := effort == schemas.ReasoningEffortNone || (effort == "" && !omittedEffortReasons(model))
+	effortIsNone := effort == schemas.ReasoningEffortNone || (effort == "" && !omittedEffortReasons(caps, model))
 	// An outright unsupported_fields entry outranks the conditional label: the
 	// row rejects the field whatever the effort. Probed with a false fallback so
 	// only an explicit true short-circuits.

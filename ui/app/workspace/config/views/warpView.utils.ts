@@ -50,6 +50,19 @@ export function validateWarpRetentionDays(value: unknown): true | string {
 }
 
 /**
+ * Tool-call rounds per answer, mirroring the server's 2..20 range.
+ *
+ * One is refused because the agent loop reserves its last step for answering:
+ * a budget of one is spent on a tool call and the run ends with no answer, so
+ * the server rejects it (`WarpMinMaxIterations`). Checking `< 1` here let the
+ * form submit 1 and surface that as a failed save instead of an inline error.
+ */
+export function validateWarpMaxIterations(value: unknown): true | string {
+	if (!isFiniteNumber(value) || !Number.isInteger(value) || value < 2 || value > 20) return "Must be a whole number between 2 and 20";
+	return true;
+}
+
+/**
  * The saved embedding space as one comparable string, so "did the space
  * change" is a single equality on the four fields that define it. Uses NUL as
  * the separator because it cannot appear in a config value.

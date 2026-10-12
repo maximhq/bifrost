@@ -3,6 +3,7 @@ package objectstore
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -147,6 +148,10 @@ func (s *S3ObjectStore) Get(ctx context.Context, key string) ([]byte, error) {
 		Key:    aws.String(key),
 	})
 	if err != nil {
+		var noSuchKey *types.NoSuchKey
+		if errors.As(err, &noSuchKey) {
+			return nil, fmt.Errorf("objectstore: get object %s: %w", key, ErrNotFound)
+		}
 		return nil, fmt.Errorf("objectstore: get object %s: %w", key, err)
 	}
 	defer output.Body.Close()

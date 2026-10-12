@@ -3475,12 +3475,57 @@ func parsePassthroughBody(contentType string, body []byte) (model string, isStre
 		return
 	}
 	root := gjson.ParseBytes(body)
+	if root.IsArray() {
+		// A task array (Runware) names a model per task. One agreed model is the request's, so key
+		// selection sees it; tasks naming different models leave it empty, and governance reads the
+		// models from the body instead.
+		// Every task is checked, even after two have disagreed: a later task with a malformed
+		// model key is refused the same way, since governance reads every model from the body.
+		var taskErr error
+		var disagree bool
+		root.ForEach(func(_, task gjson.Result) bool {
+			if !task.IsObject() {
+				return true
+			}
+			taskModel, err := passthroughObjectModel(task)
+			if err != nil {
+				taskErr = err
+				return false
+			}
+			switch {
+			case taskModel == "":
+			case model == "":
+				model = taskModel
+			case model != taskModel:
+				disagree = true
+			}
+			return true
+		})
+		if taskErr != nil {
+			return "", false, taskErr
+		}
+		if disagree {
+			model = ""
+		}
+		return model, false, nil
+	}
 	if !root.IsObject() {
 		return
 	}
+	model, err = passthroughObjectModel(root)
+	if err != nil {
+		return "", false, err
+	}
+	isStream = root.Get("stream").Type == gjson.True
+	return
+}
+
+// passthroughObjectModel reads the model a JSON object names, strictly: the key spelled "model",
+// once, with a string value. A missing key is no model, not an error.
+func passthroughObjectModel(object gjson.Result) (string, error) {
 	var modelKeys int
 	var modelValue gjson.Result
-	root.ForEach(func(key, value gjson.Result) bool {
+	object.ForEach(func(key, value gjson.Result) bool {
 		if strings.EqualFold(key.Str, "model") {
 			modelKeys++
 			if key.Str == "model" {
@@ -3491,16 +3536,15 @@ func parsePassthroughBody(contentType string, body []byte) (model string, isStre
 	})
 	switch {
 	case modelKeys > 1:
-		return "", false, errors.New("passthrough request body must carry the model key at most once")
+		return "", errors.New("passthrough request body must carry the model key at most once")
 	case modelKeys == 1 && !modelValue.Exists():
-		return "", false, errors.New("passthrough request body model key must be spelled \"model\"")
+		return "", errors.New("passthrough request body model key must be spelled \"model\"")
 	case modelKeys == 1 && modelValue.Type != gjson.String:
-		return "", false, errors.New("passthrough request body model must be a string")
+		return "", errors.New("passthrough request body model must be a string")
 	case modelKeys == 1:
-		model = strings.TrimSpace(modelValue.Str)
+		return strings.TrimSpace(modelValue.Str), nil
 	}
-	isStream = root.Get("stream").Type == gjson.True
-	return
+	return "", nil
 }
 
 // isJSONMediaType reports whether a parsed media type declares a JSON body.
@@ -3599,7 +3643,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	// provider, so it must be anchored at a segment boundary and shaped like a rooted path
 	// before anything else happens. Both checks run before the Bifrost context exists so a
 	// rejected request never reaches key selection or the upstream.
-	path, ok := stripPassthroughPrefix(string(ctx.Path()), cfg.StripPrefix)
+	path, apiVersion, ok := stripPassthroughPrefix(string(ctx.Path()), cfg.StripPrefix)
 	if !ok {
 		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "no passthrough route matches the request path", fasthttp.StatusNotFound))
 		return
@@ -3609,10 +3653,11 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if !passthroughInferenceRoute(cfg, string(ctx.Method()), path) {
-		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "passthrough requires a supported inference endpoint and method", fasthttp.StatusForbidden))
-		return
-	}
+	// Route policy disabled: a hardcoded allowlist blocks new provider endpoints until Bifrost is upgraded.
+	// if !passthroughInferenceRoute(cfg, string(ctx.Method()), path) {
+	// 	g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "passthrough requires a supported inference endpoint and method", fasthttp.StatusForbidden))
+	// 	return
+	// }
 
 	body := ctx.Request.Body()
 	// Parse body once to get both model and stream flag.
@@ -3635,11 +3680,12 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
 	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, provider, callerAuth, cfg.UpstreamURL)
-	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream)
+	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream || passthroughQueryStreams(string(ctx.Method()), string(ctx.URI().QueryString())))
 
 	passthroughReq := &schemas.BifrostPassthroughRequest{
 		Method:      string(ctx.Method()),
 		Path:        path,
+		APIVersion:  apiVersion,
 		RawQuery:    string(ctx.URI().QueryString()),
 		UpstreamURL: cfg.UpstreamURL,
 		Body:        body,

@@ -133,3 +133,54 @@ func TestAdmission_WebRTCCreateIsValidatedAndAuthenticated(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusUnauthorized, status, "no credential: %s", raw)
 }
+
+// splitProvider is a second OpenAI-based provider on the fake with a key per model and one key
+// for every model, so a virtual key can be limited to keys that serve one model each.
+const splitProvider = "openai-split"
+
+func TestAdmission_VirtualKeyKeysMustServeBothModels(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	forEachTransport(t, func(t *testing.T, tr transport) {
+		vk := createVirtualKey(t, virtualKeySpec{provider: splitProvider, keyNames: []string{"split-voice", "split-backend"}})
+		session := sessionFor(t, splitProvider+"/"+voiceModel, splitProvider+"/"+backendModel, nil)
+		refusal := openRefused(t, tr, clientOptions{headers: vkHeaders(vk), session: session})
+		assert.Contains(t, strings.ToLower(errorMessage(refusal)), "key", "no allowed key serves both models")
+		assert.Equal(t, 0, fake.SessionCount(session["instructions"].(string)), "nothing reaches the provider")
+	})
+}
+
+func TestAdmission_SessionUsesOnlyTheVirtualKeysKeys(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	forEachTransport(t, func(t *testing.T, tr transport) {
+		vk := createVirtualKey(t, virtualKeySpec{provider: splitProvider, keyNames: []string{"split-voice", "split-backend"}})
+		session := sessionFor(t, splitProvider+"/"+voiceModel, "", nil)
+		c := openLive(t, tr, clientOptions{headers: vkHeaders(vk), session: session})
+		s := fake.WaitSession(t, session["instructions"].(string))
+		assert.Equal(t, "Bearer sk-fake-split-voice", s.Auth(), "the one allowed key that serves the voice model, not the provider's key for every model")
+		s.WaitConnections(t, 1)
+		c.CloseSession()
+		row := findLiveLog(t, c.ProviderSessionID)
+		assert.Equal(t, "split-voice", row.Get("selected_key_name").Str)
+	})
+}
+
+// noLiveProvider is an OpenAI-based provider on the fake whose allowed requests leave live out.
+const noLiveProvider = "openai-nolive"
+
+func TestAdmission_ProviderWithoutLiveIsRefusedAsUnsupported(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, virtualKeySpec{provider: noLiveProvider})
+	session := sessionFor(t, noLiveProvider+"/"+voiceModel, "", nil)
+	forEachTransport(t, func(t *testing.T, tr transport) {
+		refusal := openRefused(t, tr, clientOptions{headers: vkHeaders(vk), session: session})
+		assert.Equal(t, "unsupported_operation", refusal.Get("error.code").Str, "%s", refusal.Raw)
+		assert.Contains(t, errorMessage(refusal), "not supported")
+		if tr == wsTransport {
+			assert.Equal(t, "invalid_request_error", refusal.Get("error.type").Str, "the provider's policy is the caller's problem, not a server fault: %s", refusal.Raw)
+		}
+		assert.Equal(t, 0, fake.SessionCount(session["instructions"].(string)), "nothing reaches the provider")
+	})
+}

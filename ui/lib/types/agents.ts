@@ -31,6 +31,7 @@ export interface AgentUpstreamAuth {
 }
 
 export interface AgentSecurityScheme {
+	definition?: Record<string, unknown>;
 	name: string;
 	type: "apiKey" | "http" | "oauth2" | "openIdConnect" | "mutualTLS" | string;
 	description?: string;
@@ -68,6 +69,7 @@ export interface InspectedAgentSkill {
 	input_modes?: string[];
 	output_modes?: string[];
 	security_requirements?: AgentSecurityRequirements;
+	security_requirement_details?: Record<string, string[]>[];
 }
 
 export interface InspectedAgentExtension {
@@ -78,6 +80,9 @@ export interface InspectedAgentExtension {
 }
 
 export interface InspectAgentCardResponse {
+	card?: Record<string, unknown>;
+	signatures?: Record<string, unknown>[];
+	security_requirement_details?: Record<string, string[]>[];
 	name?: string;
 	description?: string;
 	version?: string;

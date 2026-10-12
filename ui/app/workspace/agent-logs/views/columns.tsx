@@ -1,11 +1,13 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { StatusBarColors } from "@/lib/constants/logs";
-import type { AgentLogStatus, AgentLogSummary } from "@/lib/types/agentLogs";
+import type { AgentLogStatus, AgentLogSummary, DisplayAgentLogSummary } from "@/lib/types/agentLogs";
 import type { ColumnDef, Row } from "@tanstack/react-table";
 import { format, formatDistanceToNow, isValid } from "date-fns";
-import { ArrowUpDown, MoreHorizontal, Trash2 } from "lucide-react";
+import { ArrowUpDown, ChevronRight, Loader2, MoreHorizontal, Trash2 } from "lucide-react";
 
 // Coerce an unknown status string into one of the three states the backend
 // writes, so a surprising value still renders instead of breaking the row.
@@ -13,13 +15,6 @@ const getValidatedStatus = (status: string): AgentLogStatus => {
 	if (status === "success" || status === "error" || status === "processing") return status;
 	return "processing";
 };
-
-// Compact rendering of a long correlation id: enough prefix to recognize it,
-// full value on hover.
-function shortId(id: string | undefined): string {
-	if (!id) return "—";
-	return id.length > 12 ? `${id.slice(0, 12)}…` : id;
-}
 
 export const AGENT_COLUMN_LABELS: Record<string, string> = {
 	timestamp: "Time",
@@ -69,7 +64,76 @@ function getAgentInputPreview(input?: string): string {
 	return input;
 }
 
-export const createAgentColumns = (handleDelete?: (log: AgentLogSummary) => Promise<void>): ColumnDef<AgentLogSummary>[] => [
+interface AgentSessionExpansion {
+	expandedIds: Set<string>;
+	loadingIds: Set<string>;
+	onToggle: (log: AgentLogSummary) => void;
+}
+
+export const createAgentColumns = (
+	handleDelete?: (log: AgentLogSummary) => Promise<void>,
+	sessions?: AgentSessionExpansion,
+): ColumnDef<AgentLogSummary>[] => [
+	...(sessions
+		? [
+				{
+					id: "expand",
+					header: "",
+					size: 90,
+					cell: ({ row }: { row: Row<AgentLogSummary> }) => {
+						const log = row.original as DisplayAgentLogSummary;
+						if (log.__sessionTurn) {
+							return (
+								<div
+									data-testid="agent-log-row-kind-session"
+									className="text-muted-foreground flex h-full w-full items-center overflow-hidden pl-[19px] text-[11px] whitespace-nowrap"
+								>
+									<span className={`bg-border absolute top-0 left-[11px] w-px ${log.__isLast ? "h-1/2" : "bottom-0"}`} />
+									<span className="bg-border absolute top-1/2 left-[11px] h-px w-1.5" />
+									<span className="truncate">operation {log.__sessionTurn}</span>
+								</div>
+							);
+						}
+						const count = log.session_child_count ?? 0;
+						if (!count) return null;
+						const expanded = sessions.expandedIds.has(log.id);
+						const loading = sessions.loadingIds.has(log.id);
+						return (
+							<>
+								{expanded && !loading && (
+									<span className="bg-border absolute bottom-0 left-[11px] w-px" style={{ top: "calc(50% + 9px)" }} />
+								)}
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<button
+											type="button"
+											data-testid="agent-logs-session-expand-btn"
+											aria-label={expanded ? "Collapse this context" : `Expand ${count} more operations in this context`}
+											aria-expanded={expanded}
+											className={`hover:text-foreground relative flex h-full w-full cursor-pointer items-center gap-1 overflow-hidden pl-1 text-[11px] whitespace-nowrap transition-colors ${expanded ? "text-foreground" : "text-muted-foreground"}`}
+											onClick={(event) => {
+												event.stopPropagation();
+												sessions.onToggle(log);
+											}}
+										>
+											{loading ? (
+												<Loader2 className="size-3.5 shrink-0 animate-spin" />
+											) : (
+												<ChevronRight className={`size-3.5 shrink-0 transition-transform duration-150 ${expanded ? "rotate-90" : ""}`} />
+											)}
+											<span className="truncate tabular-nums">{count + 1} ops</span>
+										</button>
+									</TooltipTrigger>
+									<TooltipContent>
+										Context of {count + 1} operations sharing a context_id. Expand to see the other {count} operations.
+									</TooltipContent>
+								</Tooltip>
+							</>
+						);
+					},
+				},
+			]
+		: []),
 	{
 		accessorKey: "status",
 		header: "",
@@ -118,9 +182,9 @@ export const createAgentColumns = (handleDelete?: (log: AgentLogSummary) => Prom
 		header: "Operation",
 		size: 220,
 		cell: ({ row }) => (
-			<div className="min-w-0 space-y-0.5 py-1">
-				<span className="block truncate font-mono text-sm">{row.original.operation || "—"}</span>
-				{row.original.task_state && <span className="text-muted-foreground block truncate text-xs">{row.original.task_state}</span>}
+			<div className="flex min-w-0 flex-col leading-tight">
+				<span className="block truncate font-mono text-xs">{row.original.operation || "—"}</span>
+				{row.original.task_state && <span className="text-muted-foreground block truncate text-[10.5px]">{row.original.task_state}</span>}
 			</div>
 		),
 	},
@@ -141,21 +205,13 @@ export const createAgentColumns = (handleDelete?: (log: AgentLogSummary) => Prom
 		id: "context",
 		header: "Context",
 		size: 130,
-		cell: ({ row }) => (
-			<span className="font-mono text-xs" title={row.original.context_id}>
-				{shortId(row.original.context_id)}
-			</span>
-		),
+		cell: ({ row }) => <TruncatedLabel className="block font-mono text-xs">{row.original.context_id || "—"}</TruncatedLabel>,
 	},
 	{
 		id: "task",
 		header: "Task",
 		size: 130,
-		cell: ({ row }) => (
-			<span className="font-mono text-xs" title={row.original.task_id}>
-				{shortId(row.original.task_id)}
-			</span>
-		),
+		cell: ({ row }) => <TruncatedLabel className="block font-mono text-xs">{row.original.task_id || "—"}</TruncatedLabel>,
 	},
 	{
 		id: "duration",
