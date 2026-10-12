@@ -1,3 +1,4 @@
+[feat]: optional HTTPS listener (-tls-cert, -tls-key, -tls-port) with certificate hot reload [@jrimmer](https://github.com/jrimmer)
 [fix]: apply saved log retention to the running cleaner without a restart (#8212) [@Constantine3](https://github.com/Constantine3)
 
 ## ✨ Features

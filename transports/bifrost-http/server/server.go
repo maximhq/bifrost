@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -236,6 +235,13 @@ type BifrostHTTPServer struct {
 	Port   string
 	Host   string
 	AppDir string
+
+	// TLSCertFile and TLSKeyFile, when both set, serve HTTPS with that pair,
+	// reloaded when the files change. TLSPort, when also set, puts HTTPS on its
+	// own port and keeps plain HTTP on Port; otherwise Port serves HTTPS.
+	TLSCertFile string
+	TLSKeyFile  string
+	TLSPort     string
 
 	LogLevel        string
 	LogOutputStyle  string
@@ -3645,17 +3651,18 @@ func (s *BifrostHTTPServer) Start() error {
 	// Watching for signals
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	// Start server in a goroutine
-	serverAddr := net.JoinHostPort(s.Host, s.Port)
-	ln, err := net.Listen("tcp", serverAddr)
+	listeners, err := s.listen()
 	if err != nil {
-		return fmt.Errorf("failed to create listener on %s: %v", serverAddr, err)
+		return err
 	}
-	go func() {
-		logger.Info("successfully started bifrost, serving UI on http://%s", serverAddr)
-		if err := s.Server.Serve(ln); err != nil {
-			errChan <- err
-		}
-	}()
+	for _, l := range listeners {
+		go func() {
+			logger.Info("successfully started bifrost, serving UI on %s://%s", l.scheme, l.addr)
+			if err := s.Server.Serve(l.ln); err != nil {
+				errChan <- err
+			}
+		}()
+	}
 	// Wait for either termination signal or server error
 	select {
 	case sig := <-sigChan:
