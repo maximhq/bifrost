@@ -751,8 +751,6 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 	return messages
 }
 
-// ToChatMessages converts a slice of ResponsesMessages back to ChatMessages
-// This handles the aggregation of function_call messages back into assistant messages with tool calls
 // ResponsesBlocksWithoutToolReferences returns blocks with the Anthropic tool_reference entries
 // removed, for wires that cannot carry them. It returns the input slice unchanged when there is
 // nothing to drop, and nil when nothing else is left: the shape a tool output had before
@@ -801,6 +799,8 @@ func responsesBlocksWithoutToolChanges(blocks []ResponsesMessageContentBlock) []
 	return kept
 }
 
+// ToChatMessages converts a slice of ResponsesMessages back to ChatMessages
+// This handles the aggregation of function_call messages back into assistant messages with tool calls
 func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 	if len(rms) == 0 {
 		return []ChatMessage{}
