@@ -44451,143 +44451,300 @@
                   "pm.test('the request really went out on the Anthropic-compatible shape', function () {",
                   "  pm.expect(rr.messages, 'no messages on the wire: ' + wire.slice(0, 600)).to.be.an('array');",
                   "  pm.expect(rr.max_tokens, 'no max_tokens: Anthropic requires it: ' + wire.slice(0, 600)).to.be.a('number');",
+                  "});",
+                  "",
+                  "// DeepSeek documents thinking.budget_tokens as ignored, so an effort-only request must",
+                  "// not carry a synthesized one: it would be a dead field on this wire. Without this leg",
+                  "// the budget could come back while the effort assertion above still passed.",
+                  "pm.test('no thinking budget is synthesized beside the effort', function () {",
+                  "  if (rr.thinking !== undefined && rr.thinking !== null) {",
+                  "    pm.expect(rr.thinking, 'thinking is not an object: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "    pm.expect(rr.thinking.budget_tokens, 'a budget was synthesized on an effort-only request: ' + wire.slice(0, 600)).to.eql(undefined);",
+                  "  }",
                   "});"
                 ]
               }
             }
           ]
         },
-          {
-            "name": "deepseek/deepseek-v4-pro-anthropic /v1/responses preserves output_config.effort on the wire (#6740)",
-            "request": {
-              "method": "POST",
-              "header": [
-                {
-                  "key": "Content-Type",
-                  "value": "application/json"
-                },
-                {
-                  "key": "x-bf-send-back-raw-request",
-                  "value": "true"
-                }
-              ],
-              "body": {
-                "mode": "raw",
-                "raw": "{\n  \"model\": \"deepseek/deepseek-v4-pro-anthropic\",\n  \"input\": \"What is 17 * 23? Answer with the number only.\",\n  \"max_output_tokens\": 1000,\n  \"reasoning\": {\n    \"effort\": \"high\"\n  }\n}"
-              },
-              "url": {
-                "raw": "{{baseUrl}}/v1/responses",
-                "host": [
-                  "{{baseUrl}}"
-                ],
-                "path": [
-                  "v1",
-                  "responses"
-                ]
-              }
-            },
-            "event": [
+        {
+          "name": "deepseek/deepseek-v4-pro-anthropic /v1/responses preserves output_config.effort on the wire (#6740)",
+          "request": {
+            "method": "POST",
+            "header": [
               {
-                "listen": "test",
-                "script": {
-                  "type": "text/javascript",
-                  "exec": [
-                    "var txt = pm.response.text() || '';",
-                    "var body = {};",
-                    "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-                    "var rr = (body.extra_fields || {}).raw_request;",
-                    "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
-                    "var wire = JSON.stringify(rr || null);",
-                    "",
-                    "// AGENTS.md: assert the exact status rather than skipping it, and put the body in the",
-                    "// failure message. A 4xx/5xx here means the request never reached the provider, and",
-                    "// every wire assertion below would then be vacuously inspecting nothing.",
-                    "pm.test('the request succeeded', function () {",
-                    "  pm.expect(pm.response.code, 'unexpected status ' + pm.response.code + ': ' + txt.slice(0, 500)).to.eql(200);",
-                    "});",
-                    "",
-                    "// The Responses ingress runs ToAnthropicResponsesRequest, a different converter from",
-                    "// the chat path above with its own effort/budget branches. Same claim, second route:",
-                    "// a caller's reasoning.effort must still arrive as output_config.effort.",
-                    "pm.test('output_config.effort reaches the DeepSeek wire from /v1/responses', function () {",
-                    "  pm.expect(rr, 'no raw_request in extra_fields: ' + txt.slice(0, 300)).to.be.an('object');",
-                    "  pm.expect(rr.output_config, 'output_config missing from the wire: ' + wire.slice(0, 600)).to.be.an('object');",
-                    "  pm.expect(rr.output_config.effort, 'effort missing or altered on the wire: ' + wire.slice(0, 600)).to.eql('high');",
-                    "});",
-                    "",
-                    "pm.test('the request really went out on the Anthropic-compatible shape', function () {",
-                    "  pm.expect(rr.messages, 'no messages on the wire: ' + wire.slice(0, 600)).to.be.an('array');",
-                    "  pm.expect(rr.max_tokens, 'no max_tokens: Anthropic requires it: ' + wire.slice(0, 600)).to.be.a('number');",
-                    "});"
-                  ]
-                }
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
               }
-            ]
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-pro-anthropic\",\n  \"input\": \"What is 17 * 23? Answer with the number only.\",\n  \"max_output_tokens\": 1000,\n  \"reasoning\": {\n    \"effort\": \"high\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
           },
-          {
-            "name": "deepseek/deepseek-v4-pro-anthropic /anthropic/v1/messages keeps a caller's raw output_config.effort (#6740)",
-            "request": {
-              "method": "POST",
-              "header": [
-                {
-                  "key": "Content-Type",
-                  "value": "application/json"
-                },
-                {
-                  "key": "x-bf-send-back-raw-request",
-                  "value": "true"
-                }
-              ],
-              "body": {
-                "mode": "raw",
-                "raw": "{\n  \"model\": \"deepseek/deepseek-v4-pro-anthropic\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with the number only.\"\n    }\n  ],\n  \"output_config\": {\n    \"effort\": \"high\"\n  }\n}"
-              },
-              "url": {
-                "raw": "{{baseUrl}}/anthropic/v1/messages",
-                "host": [
-                  "{{baseUrl}}"
-                ],
-                "path": [
-                  "anthropic",
-                  "v1",
-                  "messages"
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// AGENTS.md: assert the exact status rather than skipping it, and put the body in the",
+                  "// failure message. A 4xx/5xx here means the request never reached the provider, and",
+                  "// every wire assertion below would then be vacuously inspecting nothing.",
+                  "pm.test('the request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status ' + pm.response.code + ': ' + txt.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "",
+                  "// The Responses ingress runs ToAnthropicResponsesRequest, a different converter from",
+                  "// the chat path above with its own effort/budget branches. Same claim, second route:",
+                  "// a caller's reasoning.effort must still arrive as output_config.effort.",
+                  "pm.test('output_config.effort reaches the DeepSeek wire from /v1/responses', function () {",
+                  "  pm.expect(rr, 'no raw_request in extra_fields: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.output_config, 'output_config missing from the wire: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(rr.output_config.effort, 'effort missing or altered on the wire: ' + wire.slice(0, 600)).to.eql('high');",
+                  "});",
+                  "",
+                  "pm.test('the request really went out on the Anthropic-compatible shape', function () {",
+                  "  pm.expect(rr.messages, 'no messages on the wire: ' + wire.slice(0, 600)).to.be.an('array');",
+                  "  pm.expect(rr.max_tokens, 'no max_tokens: Anthropic requires it: ' + wire.slice(0, 600)).to.be.a('number');",
+                  "});",
+                  "",
+                  "// DeepSeek documents thinking.budget_tokens as ignored, so an effort-only request must",
+                  "// not carry a synthesized one: it would be a dead field on this wire. Without this leg",
+                  "// the budget could come back while the effort assertion above still passed.",
+                  "pm.test('no thinking budget is synthesized beside the effort', function () {",
+                  "  if (rr.thinking !== undefined && rr.thinking !== null) {",
+                  "    pm.expect(rr.thinking, 'thinking is not an object: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "    pm.expect(rr.thinking.budget_tokens, 'a budget was synthesized on an effort-only request: ' + wire.slice(0, 600)).to.eql(undefined);",
+                  "  }",
+                  "});"
                 ]
               }
-            },
-            "event": [
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-pro-anthropic /anthropic/v1/messages keeps a caller's raw output_config.effort (#6740)",
+          "request": {
+            "method": "POST",
+            "header": [
               {
-                "listen": "test",
-                "script": {
-                  "type": "text/javascript",
-                  "exec": [
-                    "var txt = pm.response.text() || '';",
-                    "var body = {};",
-                    "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-                    "var rr = (body.extra_fields || {}).raw_request;",
-                    "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
-                    "var wire = JSON.stringify(rr || null);",
-                    "",
-                    "// AGENTS.md: assert the exact status rather than skipping it, and put the body in the",
-                    "// failure message. A 4xx/5xx here means the request never reached the provider, and",
-                    "// every wire assertion below would then be vacuously inspecting nothing.",
-                    "pm.test('the request succeeded', function () {",
-                    "  pm.expect(pm.response.code, 'unexpected status ' + pm.response.code + ': ' + txt.slice(0, 500)).to.eql(200);",
-                    "});",
-                    "",
-                    "// The native Anthropic route does not convert: the caller's own body goes out, past",
-                    "// StripUnsupportedFieldsFromRawBody. That strip is capability-gated, and the gate used",
-                    "// to be the Claude model ladder, so it DELETED output_config.effort from a DeepSeek",
-                    "// request this upstream accepts. This row is the raw-path half of the same claim.",
-                    "pm.test('the raw output_config.effort survives the capability strip', function () {",
-                    "  pm.expect(rr, 'no raw_request in extra_fields: ' + txt.slice(0, 300)).to.be.an('object');",
-                    "  pm.expect(rr.output_config, 'output_config was stripped from the wire: ' + wire.slice(0, 600)).to.be.an('object');",
-                    "  pm.expect(rr.output_config.effort, 'effort missing or altered on the wire: ' + wire.slice(0, 600)).to.eql('high');",
-                    "});"
-                  ]
-                }
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
               }
-            ]
-          }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-pro-anthropic\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with the number only.\"\n    }\n  ],\n  \"output_config\": {\n    \"effort\": \"high\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// AGENTS.md: assert the exact status rather than skipping it, and put the body in the",
+                  "// failure message. A 4xx/5xx here means the request never reached the provider, and",
+                  "// every wire assertion below would then be vacuously inspecting nothing.",
+                  "pm.test('the request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status ' + pm.response.code + ': ' + txt.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "",
+                  "// The native Anthropic route does not convert: the caller's own body goes out, past",
+                  "// StripUnsupportedFieldsFromRawBody. That strip is capability-gated, and the gate used",
+                  "// to be the Claude model ladder, so it DELETED output_config.effort from a DeepSeek",
+                  "// request this upstream accepts. This row is the raw-path half of the same claim.",
+                  "pm.test('the raw output_config.effort survives the capability strip', function () {",
+                  "  pm.expect(rr, 'no raw_request in extra_fields: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.output_config, 'output_config was stripped from the wire: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(rr.output_config.effort, 'effort missing or altered on the wire: ' + wire.slice(0, 600)).to.eql('high');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-pro-anthropic /v1/chat/completions keeps effort beside an explicit budget (#6740)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-pro-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with the number only.\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"max_tokens\": 3000\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// AGENTS.md: assert the exact status rather than skipping it, and put the body in the",
+                  "// failure message. A 4xx/5xx here means the request never reached the provider, and",
+                  "// every wire assertion below would then be vacuously inspecting nothing.",
+                  "pm.test('the request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status ' + pm.response.code + ': ' + txt.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "",
+                  "// The explicit-budget branch used to return before it ever emitted",
+                  "// output_config.effort, so a caller who sent BOTH lost the effort -- precisely the",
+                  "// request where they were most explicit about wanting it. Both must reach the wire.",
+                  "pm.test(\"the caller's effort survives beside an explicit budget\", function () {",
+                  "  pm.expect(rr, 'no raw_request in extra_fields: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.output_config, 'output_config missing from the wire: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(rr.output_config.effort, 'effort dropped when a budget was also sent: ' + wire.slice(0, 600)).to.eql('medium');",
+                  "});",
+                  "",
+                  "// The other half: honouring the effort must not cost the caller the budget either.",
+                  "pm.test('the explicit budget itself is untouched', function () {",
+                  "  pm.expect(rr.thinking, 'thinking missing from the wire: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(rr.thinking.budget_tokens, 'the caller budget was altered: ' + wire.slice(0, 600)).to.eql(3000);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-pro-anthropic /v1/responses keeps effort beside an explicit budget (#6740)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-pro-anthropic\",\n  \"input\": \"What is 17 * 23? Answer with the number only.\",\n  \"max_output_tokens\": 4000,\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"max_tokens\": 3000\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// AGENTS.md: assert the exact status rather than skipping it, and put the body in the",
+                  "// failure message. A 4xx/5xx here means the request never reached the provider, and",
+                  "// every wire assertion below would then be vacuously inspecting nothing.",
+                  "pm.test('the request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status ' + pm.response.code + ': ' + txt.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "",
+                  "// The explicit-budget branch used to return before it ever emitted",
+                  "// output_config.effort, so a caller who sent BOTH lost the effort -- precisely the",
+                  "// request where they were most explicit about wanting it. Both must reach the wire.",
+                  "pm.test(\"the caller's effort survives beside an explicit budget\", function () {",
+                  "  pm.expect(rr, 'no raw_request in extra_fields: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.output_config, 'output_config missing from the wire: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(rr.output_config.effort, 'effort dropped when a budget was also sent: ' + wire.slice(0, 600)).to.eql('medium');",
+                  "});",
+                  "",
+                  "// The other half: honouring the effort must not cost the caller the budget either.",
+                  "pm.test('the explicit budget itself is untouched', function () {",
+                  "  pm.expect(rr.thinking, 'thinking missing from the wire: ' + wire.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(rr.thinking.budget_tokens, 'the caller budget was altered: ' + wire.slice(0, 600)).to.eql(3000);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
       ]
     },
     {
